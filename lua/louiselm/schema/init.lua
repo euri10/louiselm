@@ -181,4 +181,6 @@ function M.define(spec)
   return { type = "table", fields = fields }
 end
 
+M.validate = require("louiselm.schema.validate").validate
+
 return M
