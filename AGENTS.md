@@ -42,6 +42,19 @@ Use a repository wrapper if it becomes the documented entrypoint. CI must
 enforce all gates once their configuration/harness exists. Report unavailable
 gates; never claim they passed or add unrelated tooling merely to run them.
 
+Manual test workflow from the repository root:
+
+```bash
+./scripts/install-test-deps
+nvim --headless --noplugin -u "$PWD/tests/minimal_init.lua" \
+  -c 'lua MiniTest.run()' -c 'qa!'
+```
+
+Run one file with `MiniTest.run_file("tests/schema/dsl_spec.lua")`. For
+interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
+`:lua MiniTest.run()`; starting Neovim without `--headless` intentionally keeps
+the editor open.
+
 ## 4. Test-Driven Development
 
 Use red-green-refactor for meaningful behavior changes: write the smallest
