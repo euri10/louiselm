@@ -1,6 +1,7 @@
 -- `vim` is injected by Neovim when this trusted test init is loaded.
 ---@diagnostic disable-next-line: undefined-global
-local project_root = vim.fn.getcwd()
+local nvim = vim
+local project_root = nvim.fn.getcwd()
 ---@diagnostic disable-next-line: undefined-global
 local mini_nvim_path = vim.env.MINI_NVIM_PATH
 if mini_nvim_path == nil or mini_nvim_path == "" then
@@ -29,3 +30,29 @@ require("mini.test").setup({
     end,
   },
 })
+
+local chat
+
+nvim.api.nvim_create_user_command("LouiselmChat", function()
+  if chat ~= nil and chat:buffer() ~= nil then
+    nvim.api.nvim_set_current_buf(chat:buffer())
+    return
+  end
+
+  local command = nvim.env.LOUISELM_AGENT_COMMAND
+  if command == nil or command == "" then
+    command = "claude-agent-acp"
+  end
+  local sessions, session_errors = require("louiselm.session").new({
+    default = { command = command, args = {} },
+  })
+  if sessions == nil then
+    nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
+    return
+  end
+  chat = assert(require("louiselm.ui.chat").new(sessions, { agents = { "default" } }))
+  local _, session_error = chat:new_session()
+  if session_error ~= nil then
+    nvim.notify("louiselm: " .. session_error, nvim.log.levels.ERROR)
+  end
+end, { desc = "Open the louiselm chat buffer" })

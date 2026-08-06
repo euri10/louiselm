@@ -97,6 +97,10 @@ local chat = assert(require("louiselm.ui.chat").new(sessions, {
 chat:new_session()
 ```
 
+For a quick interactive check, run `nvim -u ./tests/minimal_init.lua` and use
+`:LouiselmChat`. It launches `claude-agent-acp` by default; set
+`LOUISELM_AGENT_COMMAND` to use another ACP executable.
+
 Use `chat:switch("session-1")` for another attached session. Prompts entered in
 the buffer, including slash commands, are passed to the session unchanged.
 Call `chat:dispose()` to remove its buffers and event listeners; it does not
