@@ -1,0 +1,112 @@
+local MiniTest = require("mini.test")
+local Acp = require("louiselm.acp")
+local Protocol = require("louiselm.acp.protocol")
+
+local T = MiniTest.new_set()
+
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
+---@param system function
+local function set_system(system)
+  rawset(nvim, "system", system)
+end
+
+T["connect"] = MiniTest.new_set()
+
+T["connect"]["correlates responses and builds ACP requests"] = function()
+  local calls = {}
+  local fake_handle = {
+    is_closing = function()
+      return false
+    end,
+    write = function(_, data)
+      calls[#calls + 1] = data
+    end,
+  }
+  local original_system = nvim.system
+  set_system(function(_, options)
+    calls.stdout = options.stdout
+    return fake_handle
+  end)
+
+  local client, err = Acp.connect({ command = "agent", args = {} })
+  set_system(original_system)
+  MiniTest.expect.equality(err, nil)
+  assert(client ~= nil)
+
+  local result
+  local request_error
+  local request_id = client:initialize(nil, function(value, failure)
+    result = value
+    request_error = failure
+  end)
+  MiniTest.expect.equality(request_id, 1)
+  MiniTest.expect.equality(assert(Protocol.decode(calls[1]:sub(1, -2))), {
+    id = 1,
+    method = "initialize",
+    params = {
+      clientCapabilities = {
+        fs = { readTextFile = false, writeTextFile = false },
+        terminal = false,
+      },
+      clientInfo = { name = "louiselm.nvim", version = "0.1.0" },
+      protocolVersion = 1,
+    },
+    jsonrpc = "2.0",
+  })
+
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n')
+  MiniTest.expect.equality(result, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(request_error, nil)
+
+  local session_id
+  client:new_session({ cwd = "/tmp/project" }, function(value)
+    session_id = value.sessionId
+  end)
+  MiniTest.expect.equality(assert(Protocol.decode(calls[2]:sub(1, -2))), {
+    id = 2,
+    jsonrpc = "2.0",
+    method = "session/new",
+    params = { cwd = "/tmp/project" },
+  })
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1"}}\n')
+  MiniTest.expect.equality(session_id, "session-1")
+end
+
+T["connect"]["passes agent requests to the callback"] = function()
+  local received
+  local response
+  local fake_handle = {
+    is_closing = function()
+      return false
+    end,
+    write = function(_, data)
+      response = data
+    end,
+  }
+  local original_system = nvim.system
+  set_system(function(_, options)
+    options.stdout(nil, '{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"s"}}\n')
+    return fake_handle
+  end)
+
+  local client = assert(Acp.connect({ command = "agent", args = {} }, {
+    on_request = function(request)
+      received = request
+    end,
+  }))
+  set_system(original_system)
+
+  MiniTest.expect.equality(received.method, "session/request_permission")
+  local sent, send_error = client:respond(9, { outcome = { outcome = "cancelled" } })
+  MiniTest.expect.equality(sent, true)
+  MiniTest.expect.equality(send_error, nil)
+  MiniTest.expect.equality(assert(Protocol.decode(response:sub(1, -2))), {
+    id = 9,
+    jsonrpc = "2.0",
+    result = { outcome = { outcome = "cancelled" } },
+  })
+end
+
+return T

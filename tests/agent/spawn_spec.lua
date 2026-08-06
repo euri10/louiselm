@@ -3,20 +3,26 @@ local Spawn = require("louiselm.agent.spawn")
 
 local T = MiniTest.new_set()
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
+---@param system function
+local function set_system(system)
+  rawset(nvim, "system", system)
+end
+
 T["start"] = MiniTest.new_set()
 
 T["start"]["starts a process with an argument array and explicit environment"] = function()
   local calls = {}
   local fake_handle = {}
-  ---@diagnostic disable-next-line: undefined-global
-  local original_system = vim.system
-  ---@diagnostic disable-next-line: undefined-global
-  vim.system = function(command, options, on_exit)
+  local original_system = nvim.system
+  set_system(function(command, options, on_exit)
     calls.command = command
     calls.options = options
     calls.on_exit = on_exit
     return fake_handle
-  end
+  end)
 
   local handle, err = Spawn.start({
     command = "claude-agent-acp",
@@ -24,8 +30,7 @@ T["start"]["starts a process with an argument array and explicit environment"] =
     env = { ANTHROPIC_LOG = "debug" },
   }, function() end)
 
-  ---@diagnostic disable-next-line: undefined-global
-  vim.system = original_system
+  set_system(original_system)
 
   MiniTest.expect.equality(err, nil)
   MiniTest.expect.equality(handle, fake_handle)
@@ -35,17 +40,14 @@ T["start"]["starts a process with an argument array and explicit environment"] =
 end
 
 T["start"]["returns process launch errors instead of throwing"] = function()
-  ---@diagnostic disable-next-line: undefined-global
-  local original_system = vim.system
-  ---@diagnostic disable-next-line: undefined-global
-  vim.system = function()
+  local original_system = nvim.system
+  set_system(function()
     error("vim.system failed")
-  end
+  end)
 
   local handle, err = Spawn.start({ command = "agent", args = {} })
 
-  ---@diagnostic disable-next-line: undefined-global
-  vim.system = original_system
+  set_system(original_system)
 
   MiniTest.expect.equality(handle, nil)
   assert(err ~= nil)
