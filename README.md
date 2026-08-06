@@ -85,6 +85,23 @@ Events include streamed chunks, tool-call start/finish, permission requests,
 turn completion, and agent/process errors. Call `sessions:dispose()` when the
 owner is finished to terminate all remaining agent processes.
 
+## Chat UI
+
+The optional chat controller renders a session into a scratch markdown buffer,
+shows streamed chunks and tool calls, and keeps one buffer per session:
+
+```lua
+local chat = assert(require("louiselm.ui.chat").new(sessions, {
+  agents = { "claude" },
+}))
+chat:new_session()
+```
+
+Use `chat:switch("session-1")` for another attached session. Prompts entered in
+the buffer, including slash commands, are passed to the session unchanged.
+Call `chat:dispose()` to remove its buffers and event listeners; it does not
+dispose the sessions it displays.
+
 To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 
 ```sh
