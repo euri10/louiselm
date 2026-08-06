@@ -236,7 +236,10 @@ function Chat:attach(session)
     unsubscribe = function() end,
   }
   view.unsubscribe = session:on(function(event)
-    handle_event(self, view, event)
+    -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
+    nvim.schedule(function()
+      handle_event(self, view, event)
+    end)
   end)
   self.views[state.id] = view
   self.current_id = state.id

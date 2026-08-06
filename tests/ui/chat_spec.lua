@@ -103,6 +103,9 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     session_id = "session-1",
     data = { toolCallId = "tool-1", status = "completed" },
   })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) == 7
+  end, 1)
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
@@ -115,6 +118,38 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     "> ",
   })
 
+  chat:dispose()
+end
+
+T["chat"]["schedules session events before touching buffers"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:submit("hello"))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "scheduled" } },
+  })
+
+  MiniTest.expect.equality(#scheduled, 1)
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), { "# claude · session-1", "", "> hello", "", "> " })
+  scheduled[1]()
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1",
+    "",
+    "> hello",
+    "scheduled",
+    "> ",
+  })
   chat:dispose()
 end
 
