@@ -193,5 +193,6 @@ end
 M.validate = require("louiselm.schema.validate").validate
 M.report = require("louiselm.schema.report").format
 M.deprecated = Deprecate.create
+M.generate_luacats = require("louiselm.schema.gen_luacats").generate
 
 return M
