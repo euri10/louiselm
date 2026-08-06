@@ -95,16 +95,30 @@ local emit_field
 ---@param lines string[]
 ---@param node louiselm.schema.Field
 ---@param path string
-local function emit_table_fields(lines, node, path)
-  if node.fields == nil then
-    error("normalized table schema is missing fields")
-  end
-  for _, child_name in ipairs(sorted_field_names(node.fields)) do
-    local child = node.fields[child_name]
-    if child == nil then
-      error("normalized table schema contains a missing field")
+local function emit_nested_fields(lines, node, path)
+  if node.type == "table" then
+    if node.fields == nil then
+      error("normalized table schema is missing fields")
     end
-    emit_field(lines, child_name, child, path .. "." .. child_name)
+    for _, child_name in ipairs(sorted_field_names(node.fields)) do
+      local child = node.fields[child_name]
+      if child == nil then
+        error("normalized table schema contains a missing field")
+      end
+      emit_field(lines, child_name, child, path .. "." .. child_name)
+    end
+  elseif node.type == "array-of" then
+    if node.items == nil then
+      error("normalized array schema is missing items")
+    end
+    emit_nested_fields(lines, node.items, path .. "[]")
+  elseif node.type == "one-of" then
+    if node.options == nil then
+      error("normalized union schema is missing options")
+    end
+    for _, option in ipairs(node.options) do
+      emit_nested_fields(lines, option, path)
+    end
   end
 end
 
@@ -132,9 +146,7 @@ emit_field = function(lines, field_name, node, path)
       "    "
     )
   end
-  if node.type == "table" then
-    emit_table_fields(lines, node, path)
-  end
+  emit_nested_fields(lines, node, path)
 end
 
 ---Generate a Neovim help document from a normalized schema.

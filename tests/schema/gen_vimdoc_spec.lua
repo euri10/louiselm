@@ -60,4 +60,23 @@ T["generate"]["wraps long descriptions to the help width"] = function()
   MiniTest.expect.equality(wrapped, true)
 end
 
+T["generate"]["documents fields inside array item tables"] = function()
+  local schema = assert(Schema.define({
+    agents = {
+      type = "array-of",
+      items = {
+        type = "table",
+        fields = {
+          command = { type = "string", description = "Executable command." },
+        },
+      },
+    },
+  }))
+
+  local output = Generator.generate(schema)
+
+  MiniTest.expect.equality(output:find("*louiselm-config-agents-command*", 1, true) ~= nil, true)
+  MiniTest.expect.equality(output:find("Executable command.", 1, true) ~= nil, true)
+end
+
 return T
