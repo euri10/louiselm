@@ -27,6 +27,15 @@ For interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 
 ## ACP client
 
+For a minimal manual session, run this from the repository root:
+
+```sh
+nvim -u ./manual_init.lua
+```
+
+The config installs this checkout with `vim.pack.add`. Verify it loaded with
+`:lua print(require("louiselm.acp").PROTOCOL_VERSION)`.
+
 ACP agents communicate over newline-delimited JSON-RPC on stdio. The client
 starts the configured process, negotiates protocol version 1, then exposes
 session requests and streamed notifications without requiring a UI:
