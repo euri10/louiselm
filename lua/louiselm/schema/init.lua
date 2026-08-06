@@ -182,5 +182,6 @@ function M.define(spec)
 end
 
 M.validate = require("louiselm.schema.validate").validate
+M.report = require("louiselm.schema.report").format
 
 return M
