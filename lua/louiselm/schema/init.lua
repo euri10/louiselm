@@ -7,6 +7,7 @@
 ---@field default? louiselm.schema.Value
 ---@field description? string
 ---@field validator? louiselm.schema.Validator
+---@field deprecated? louiselm.schema.Deprecation
 ---@field fields? table<string, louiselm.schema.Field>
 ---@field items? louiselm.schema.Field
 ---@field options? louiselm.schema.Field[]
@@ -16,6 +17,7 @@
 ---@field fields table<string, louiselm.schema.Field>
 
 local M = {}
+local Deprecate = require("louiselm.schema.deprecate")
 
 local supported_types = {
   ["string"] = true,
@@ -120,6 +122,13 @@ normalize_node = function(description, path)
     end
     node.validator = description.validator
   end
+  if description.deprecated ~= nil then
+    local deprecation, deprecation_err = Deprecate.normalize(description.deprecated, path)
+    if deprecation == nil then
+      return nil, deprecation_err
+    end
+    node.deprecated = deprecation
+  end
 
   if type_name == "table" then
     if type(description.fields) ~= "table" then
@@ -183,5 +192,6 @@ end
 
 M.validate = require("louiselm.schema.validate").validate
 M.report = require("louiselm.schema.report").format
+M.deprecated = Deprecate.create
 
 return M
