@@ -4,7 +4,7 @@ local Transport = require("louiselm.acp.transport")
 ---@class louiselm.acp.ClientOptions
 ---@field cwd? string Working directory for the agent process.
 ---@field on_notification? fun(message: louiselm.acp.JsonRpcNotification) Called for agent notifications.
----@field on_request? fun(message: louiselm.acp.JsonRpcRequest, respond: fun(result: unknown, error?: louiselm.acp.JsonRpcError)) Called for agent requests.
+---@field on_request? fun(message: louiselm.acp.JsonRpcRequest, respond: fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?) Called for agent requests.
 ---@field on_error? fun(message: string) Called for transport or protocol errors.
 ---@field on_stderr? fun(message: string) Called for agent stderr chunks.
 ---@field on_exit? fun(result: louiselm.agent.ProcessResult) Called once after process exit.
@@ -39,7 +39,7 @@ local function receive_message(client, message)
       local on_request = client.options.on_request
       if on_request ~= nil then
         on_request(message, function(result, rpc_error)
-          client:respond(message.id, result, rpc_error)
+          return client:respond(message.id, result, rpc_error)
         end)
       end
       return

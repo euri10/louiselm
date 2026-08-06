@@ -59,6 +59,32 @@ end)
 Use `on_notification` and `on_request` connection callbacks for streamed
 updates and agent permission requests.
 
+## Headless sessions
+
+The session API manages multiple named ACP sessions without requiring a UI:
+
+```lua
+local sessions = assert(require("louiselm.session").new({
+  claude = { command = "claude-agent-acp", args = {} },
+}))
+
+local session = assert(sessions:create_session("claude", { cwd = vim.fn.getcwd() }, function(value, err)
+  assert(err == nil, err)
+end))
+session:on(function(event)
+  if event.type == "chunk" then
+    print(event.data.content.text)
+  end
+end)
+session:prompt("Review this project")
+```
+
+Each session is addressable through `get_session(id)`, inspectable with
+`session:inspect()`, and exposes `prompt`, `cancel`, and `dispose` methods.
+Events include streamed chunks, tool-call start/finish, permission requests,
+turn completion, and agent/process errors. Call `sessions:dispose()` when the
+owner is finished to terminate all remaining agent processes.
+
 To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 
 ```sh
