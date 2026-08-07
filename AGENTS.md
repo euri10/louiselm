@@ -68,9 +68,14 @@ not need an artificial red test. State why when test-first work is impractical.
 - Test observable behavior through public APIs, not implementation details.
 - Cover non-trivial branches, parsers, state transitions, cancellation, and
   error paths without requiring a test per function or coverage percentage.
+- Async tests must model the production callback context, not only invoke the
+  callback synchronously. Directly calling a process or transport callback is
+  insufficient coverage for fast-event behavior.
 - Keep tests deterministic: no network, credentials, or real agent binaries.
   Use the mock ACP agent for process/protocol integration tests.
 - Give UI code behavioral headless smoke tests, not pixel assertions.
+- UI async tests must cover queued work arriving after disposal and prove that
+  editor operations occur only after the required scheduling boundary.
 - Run focused tests while developing and the complete suite before handoff.
 
 ## 5. Lua Style
@@ -166,7 +171,11 @@ mutate `package.path` at runtime, or depend on deprecated APIs.
 - Spawn processes with `vim.system()` and argument arrays, never shell-built
   command strings, `os.execute`, or `io.popen`.
 - Pass cwd/environment explicitly; never interpolate untrusted command text.
-- Marshal editor/UI work to the main loop when callback context requires it.
+- Treat callbacks from `vim.system()`, RPC/stdout handlers, libuv, and process
+  exits as fast-event callbacks by default. They may validate or copy data, but
+  must not call editor/UI APIs such as `nvim.api`, buffer/window operations, or
+  notifications directly. Marshal editor/UI work to the main loop with
+  `vim.schedule()` at the narrowest shared boundary, and test that boundary.
 - Cancellation/disposal releases resources. Ignore late results for disposed
   sessions; they must not revive closed state.
 - A completion callback or terminal event must fire at most once.
@@ -196,6 +205,8 @@ Before completing a code task:
 - [ ] `lua-language-server` reports zero diagnostics.
 - [ ] Public APIs/failures are documented and typed; no error is swallowed or
       sensitive value logged.
+- [ ] Async UI/process tests exercise the production callback context; a
+  synchronous fake alone is not evidence that fast-event boundaries are safe.
 - [ ] No unnecessary dependency, compatibility shim, or abstraction was added.
 - [ ] Any unavailable check is called out explicitly in the handoff.
 
