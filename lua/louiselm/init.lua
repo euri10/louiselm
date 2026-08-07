@@ -1,6 +1,7 @@
 local Deprecate = require("louiselm.schema.deprecate")
 local Health = require("louiselm.health")
 local Schema = require("louiselm.schema")
+local Command = require("louiselm.ui.chat.command")
 
 local M = {}
 
@@ -19,6 +20,7 @@ end
 ---@return louiselm.schema.Report? report Full validation report on failure.
 function M.setup(config, schema)
   Health.reset()
+  Command.configure(nil)
   if type(schema) ~= "table" or schema.type ~= "table" or type(schema.fields) ~= "table" then
     error("setup requires a normalized schema")
   end
@@ -41,6 +43,10 @@ function M.setup(config, schema)
   local registered, registration_error = Health.configure(config, schema)
   if not registered then
     error(registration_error)
+  end
+  local command_configured, command_error = Command.configure(config)
+  if not command_configured then
+    error(command_error)
   end
   return true
 end

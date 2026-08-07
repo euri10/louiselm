@@ -4,6 +4,7 @@ local Diff = require("louiselm.ui.diff")
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
 ---@field skills? louiselm.skills.Skill[] Skills shown by the invocation picker.
+---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
@@ -20,6 +21,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
 ---@field skills louiselm.skills.Skill[] Skills for the invocation picker.
+---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field current_id string? Currently displayed session id.
@@ -97,6 +99,31 @@ local function copy_skills(value)
     end
   end
   return skills
+end
+
+---@param value unknown
+---@return louiselm.ui.ContextItem[]? contexts
+---@return string? error_message
+local function copy_initial_contexts(value)
+  if value == nil then
+    return {}
+  end
+  if type(value) ~= "table" then
+    return nil, "chat initial contexts must be a context[]"
+  end
+  local contexts = {}
+  for index, item in ipairs(value) do
+    if type(item) ~= "table" or type(item.label) ~= "string" or type(item.text) ~= "string" then
+      return nil, string.format("chat initial context at index %d is malformed", index)
+    end
+    contexts[index] = { label = item.label, text = item.text }
+  end
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
+      return nil, "chat initial contexts must be a dense context[]"
+    end
+  end
+  return contexts
 end
 
 ---@param buffer integer
@@ -261,7 +288,7 @@ function M.new(api, options)
   end
   if options ~= nil then
     for key in pairs(options) do
-      if key ~= "agents" and key ~= "skills" then
+      if key ~= "agents" and key ~= "skills" and key ~= "initial_contexts" then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
     end
@@ -274,10 +301,15 @@ function M.new(api, options)
   if skills == nil then
     return nil, skills_error
   end
+  local initial_contexts, contexts_error = copy_initial_contexts(options and options.initial_contexts)
+  if initial_contexts == nil then
+    return nil, contexts_error
+  end
   local chat = setmetatable({
     api = api,
     agents = agents,
     skills = skills,
+    initial_contexts = initial_contexts,
     diff = Diff.new(),
     views = {},
     current_id = nil,
@@ -549,6 +581,12 @@ function Chat:new_session(agent_name, options)
   local attached, attach_error = self:attach(session)
   if not attached then
     return nil, attach_error
+  end
+  for _, item in ipairs(self.initial_contexts) do
+    local queued, queue_error = self:queue_context(item)
+    if not queued then
+      return nil, queue_error
+    end
   end
   return session
 end

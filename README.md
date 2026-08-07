@@ -157,8 +157,9 @@ nvim -u ./manual_init.lua
 
 The config installs this checkout with `vim.pack.add`. Verify it loaded with
 `:lua print(require("louiselm.acp").PROTOCOL_VERSION)`.
-It also registers `:LouiselmChat`, which uses the same default agent launcher
-described below.
+It also registers `:LouiselmChat`. After `louiselm.setup()` the command uses
+the configured agents and skills; before setup it falls back to the default
+launcher described below.
 
 ACP agents communicate over newline-delimited JSON-RPC on stdio. The client
 starts the configured process, negotiates protocol version 1, then exposes
@@ -296,11 +297,12 @@ MINI_NVIM_PATH=/path/to/mini.nvim nvim --headless --noplugin \
 
 ## Dogfooding the skills workflow
 
-The reproducible manual recipe for the current P1 workflow is to construct the
-session and chat controllers explicitly. `manual_init.lua` registers
-`:LouiselmChat` as a minimal launcher, but that command currently uses its
-hard-coded `default` agent and does not load `skills.paths` or inject a skill
-index.
+The reproducible manual recipe for the current P1 workflow can construct the
+session and chat controllers explicitly. The canonical `:LouiselmChat` command
+also consumes configured `agents` (or the singular `agent` compatibility shape)
+and `skills.paths` after setup. Set `skills.policy` to `inject` to queue the
+metadata-only skill index for each new chat session; `native` leaves loading to
+the agent, and `off` disables the skill picker and index.
 
 Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
 root (replace the agent command if a different ACP launcher is intended):

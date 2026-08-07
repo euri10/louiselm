@@ -1,6 +1,8 @@
 local MiniTest = require("mini.test")
 
 local Command = require("louiselm.ui.chat.command")
+local Louiselm = require("louiselm")
+local Schema = require("louiselm.schema")
 
 local T = MiniTest.new_set()
 
@@ -110,6 +112,97 @@ T["command"]["keeps an explicit executable override unchanged"] = function()
   MiniTest.expect.equality(process.command, { "custom-acp-agent" })
   MiniTest.expect.equality(process.options.env, nil)
   delete_chat_buffers()
+end
+
+T["command"]["launches a configured named agent"] = function()
+  Command.configure({
+    agents = {
+      claude = { command = "claude-agent-acp", args = { "--test" }, env = { TOKEN = "secret" } },
+    },
+  })
+  local process, original_system = fake_process()
+
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+
+  nvim.system = original_system
+  Command.configure(nil)
+
+  MiniTest.expect.equality(process.command, { "claude-agent-acp", "--test" })
+  MiniTest.expect.equality(process.options.env, { TOKEN = "secret" })
+  delete_chat_buffers()
+end
+
+T["command"]["uses the configuration published by setup"] = function()
+  local schema = assert(Schema.define({
+    agents = {
+      type = "table",
+      fields = {
+        claude = {
+          type = "table",
+          fields = {
+            command = { type = "string" },
+          },
+        },
+      },
+    },
+    skills = {
+      type = "table",
+      fields = {
+        paths = { type = "array-of", items = "string" },
+      },
+    },
+  }))
+  assert(Louiselm.setup({ agents = { claude = { command = "configured-agent" } }, skills = { paths = {} } }, schema))
+  local process, original_system = fake_process()
+
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+
+  nvim.system = original_system
+  Command.configure(nil)
+
+  MiniTest.expect.equality(process.command, { "configured-agent" })
+  delete_chat_buffers()
+end
+
+T["command"]["injects the configured skill index while native loading stays un-injected"] = function()
+  local skill_root = nvim.fn.tempname()
+  local skill_dir = nvim.fs.joinpath(skill_root, "grill-me")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  assert(
+    nvim.fn.writefile({ "---", "name: grill-me", "description: Stress test an idea", "---" }, skill_dir .. "/SKILL.md")
+      == 0
+  )
+
+  local process, original_system = fake_process()
+  Command.configure({
+    agents = { claude = { command = "claude-agent-acp", args = {} } },
+    skills = { paths = { skill_root }, policy = "inject" },
+  })
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  local injected_lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+
+  nvim.system = original_system
+  delete_chat_buffers()
+  local native_process, native_original_system = fake_process()
+  Command.configure({
+    agents = { claude = { command = "claude-agent-acp", args = {} } },
+    skills = { paths = { skill_root }, policy = "native" },
+  })
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  local native_lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  nvim.system = native_original_system
+  Command.configure(nil)
+
+  MiniTest.expect.equality(table.concat(injected_lines, "\n"):find("[context: skill-index]", 1, true) ~= nil, true)
+  MiniTest.expect.equality(table.concat(native_lines, "\n"):find("[context: skill-index]", 1, true) ~= nil, false)
+  MiniTest.expect.equality(process.command, { "claude-agent-acp" })
+  MiniTest.expect.equality(native_process.command, { "claude-agent-acp" })
+  delete_chat_buffers()
+  nvim.fn.delete(skill_root, "rf")
 end
 
 return T
