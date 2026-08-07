@@ -106,6 +106,26 @@ the buffer, including slash commands, are passed to the session unchanged.
 Call `chat:dispose()` to remove its buffers and event listeners; it does not
 dispose the sessions it displays.
 
+## Permissions
+
+Sessions default to an `ask-human` policy: agent permission requests are held
+until an event consumer responds. For explicitly scoped automation, pass a
+policy object when creating a session:
+
+```lua
+local permission = require("louiselm.permission")
+local policy = assert(permission.auto_approve_scoped({
+  paths = { vim.fn.getcwd() },
+  commands = { { "git", "status" } },
+}))
+local session = assert(sessions:create_session("claude", {
+  permission_policy = policy,
+}))
+```
+
+File edits and command argv are checked without shell expansion. Unknown ACP
+permission requests remain askable and are never auto-approved.
+
 To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 
 ```sh

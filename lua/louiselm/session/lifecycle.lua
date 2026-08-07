@@ -1,4 +1,5 @@
 local Acp = require("louiselm.acp")
+local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
 
 ---@alias louiselm.session.Status "starting"|"ready"|"prompting"|"cancelling"|"error"|"disposed"
@@ -14,6 +15,7 @@ local Events = require("louiselm.session.events")
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
+---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
@@ -27,6 +29,7 @@ local Events = require("louiselm.session.events")
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field definition louiselm.agent.Definition Agent process definition.
 ---@field options louiselm.session.Options Session options.
+---@field permission_policy louiselm.permission.Policy Policy for agent-requested operations.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
@@ -146,6 +149,20 @@ local function handle_request(self, request, respond)
     data[key] = value
   end
   data.request_id = request.id
+  data.operation = Permission.gates.from_acp(data)
+  local decision, policy_error = Permission.gates.check(self.permission_policy, data.operation)
+  if decision == nil then
+    fail(self, "invalid ACP permission request: " .. (policy_error or "permission policy failed"))
+    return
+  end
+  data.policy_decision = decision
+  if decision ~= "ask" then
+    local automatic_response = Permission.gates.response(data, decision)
+    if automatic_response ~= nil then
+      respond(automatic_response)
+      return
+    end
+  end
   emit(self, "permission_requested", data, respond)
 end
 
@@ -253,6 +270,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback)
     owner = owner,
     definition = definition,
     options = options,
+    permission_policy = options.permission_policy or Permission.policy(),
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,

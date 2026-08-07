@@ -1,4 +1,5 @@
 local Agent = require("louiselm.agent")
+local Permission = require("louiselm.permission")
 local Lifecycle = require("louiselm.session.lifecycle")
 
 ---@class louiselm.session.Registry
@@ -35,7 +36,7 @@ local function valid_options(value)
   end
   ---@cast value table
   for key in pairs(value) do
-    if key ~= "cwd" and key ~= "on_event" then
+    if key ~= "cwd" and key ~= "on_event" and key ~= "permission_policy" then
       return false
     end
   end
@@ -83,9 +84,19 @@ function Registry:create_session(agent_name, options, ready_callback)
     return nil, "session option on_event must be a function"
   end
 
+  local permission_policy, policy_error = Permission.policy(options.permission_policy)
+  if permission_policy == nil then
+    return nil, "invalid session permission policy: " .. (policy_error or "invalid policy")
+  end
+  local session_options = {
+    cwd = options.cwd,
+    on_event = options.on_event,
+    permission_policy = permission_policy,
+  }
+
   local id = "session-" .. self.next_id
   self.next_id = self.next_id + 1
-  local session = Lifecycle.new(self, id, agent_name, definition, options, ready_callback)
+  local session = Lifecycle.new(self, id, agent_name, definition, session_options, ready_callback)
   self.sessions[id] = session
   self.order[#self.order + 1] = id
   local started, start_error = session:start()

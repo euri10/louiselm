@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
+local Permission = require("louiselm.permission")
 local Session = require("louiselm.session")
 
 local T = MiniTest.new_set()
@@ -199,6 +200,45 @@ T["new"]["publishes permission requests with a response function"] = function()
   MiniTest.expect.equality(sent, true)
   MiniTest.expect.equality(send_error, nil)
   MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).id, 9)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["automatically responds only to explicitly scoped permission requests"] = function()
+  local processes, original_system = fake_processes()
+  local policy = assert(Permission.policy("auto-approve-scoped", { paths = { "/tmp/project" } }))
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    permission_policy = policy,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+  local permission_event
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission_event = event
+    end
+  end)
+
+  local request = {
+    jsonrpc = "2.0",
+    id = 9,
+    method = "session/request_permission",
+    params = {
+      sessionId = "agent-acp",
+      toolCall = { kind = "edit", rawInput = { path = "/tmp/project/init.lua" } },
+      options = { { optionId = "allow-once", kind = "allow_once" } },
+    },
+  }
+  process.options.stdout(nil, assert(Protocol.encode(request)) .. "\n")
+
+  MiniTest.expect.equality(permission_event, nil)
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "selected", optionId = "allow-once" },
+  })
 
   api:dispose()
   restore_processes(original_system)
