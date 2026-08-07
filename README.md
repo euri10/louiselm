@@ -294,6 +294,71 @@ MINI_NVIM_PATH=/path/to/mini.nvim nvim --headless --noplugin \
   -u "$PWD/tests/minimal_init.lua" -c 'lua MiniTest.run()' -c 'qa!'
 ```
 
+## Dogfooding the skills workflow
+
+The reproducible manual recipe for the current P1 workflow is to construct the
+session and chat controllers explicitly. `manual_init.lua` registers
+`:LouiselmChat` as a minimal launcher, but that command currently uses its
+hard-coded `default` agent and does not load `skills.paths` or inject a skill
+index.
+
+Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
+root (replace the agent command if a different ACP launcher is intended):
+
+```lua
+local Session = require("louiselm.session")
+local Chat = require("louiselm.ui.chat")
+local Context = require("louiselm.ui.context")
+local Skills = require("louiselm.skills")
+
+local skill_root = vim.fn.expand("~/.config/agentskills")
+local found, discovery_errors = Skills.discover({ skill_root })
+assert(#found > 0, "no skills discovered")
+local skill_index = assert(Skills.inject(found))
+local grill_me
+for _, skill in ipairs(found) do
+  if skill.name == "grill-me" then
+    grill_me = skill
+    break
+  end
+end
+assert(grill_me, "grill-me skill not discovered")
+for _, discovery_error in ipairs(discovery_errors) do
+  vim.notify(discovery_error.path .. ": " .. discovery_error.message, vim.log.levels.WARN)
+end
+local sessions = assert(Session.new({
+  claude = { command = "claude-agent-acp", args = {} },
+}))
+local chat = assert(Chat.new(sessions, { agents = { "claude" }, skills = found }))
+
+assert(sessions:create_session("claude", { cwd = vim.fn.getcwd() }, function(session, err)
+  vim.schedule(function()
+    assert(err == nil, err)
+    assert(chat:attach(session))
+    assert(chat:queue_context({ label = "skill-index", text = skill_index }))
+    assert(chat:queue_context(Context.skills.context(grill_me)))
+    assert(chat:submit("Start the grill-me workflow for this project."))
+  end)
+end))
+```
+
+Continue the conversation in the chat buffer. After agreement, send
+`/to-beads` and let the agent route to the appropriate `to-beads-*` skill. The
+default `ask-human` permission policy remains active; file edits open the diff
+review, while command and unknown permission requests currently require a
+custom event consumer to answer them.
+
+This recipe was exercised against `claude-agent-acp` 0.64.2. LouiseLM
+initialized the real ACP session, the injected index exposed `grill-me`,
+`to-beads`, `to-beads-epic`, `to-beads-feature`, and `to-beads-tasks`, and a
+bounded chat prompt completed successfully. The configured skill tree also
+contains two `.system` skills whose nested `metadata` frontmatter is currently
+reported as malformed; the workflow skills themselves discover successfully.
+
+Decision: continue P1 dogfooding and defer P2 comfort work. The session and
+manual chat path are viable, but the canonical command and permission UI gaps
+must be resolved before treating the workflow as a daily-driver exit criterion.
+
 ## Skills
 
 Discover Agent Skills metadata from configured directories and inject a thin
