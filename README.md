@@ -35,6 +35,8 @@ nvim -u ./manual_init.lua
 
 The config installs this checkout with `vim.pack.add`. Verify it loaded with
 `:lua print(require("louiselm.acp").PROTOCOL_VERSION)`.
+It also registers `:LouiselmChat`, which uses the same default agent launcher
+described below.
 
 ACP agents communicate over newline-delimited JSON-RPC on stdio. The client
 starts the configured process, negotiates protocol version 1, then exposes
@@ -98,8 +100,18 @@ chat:new_session()
 ```
 
 For a quick interactive check, run `nvim -u ./tests/minimal_init.lua` and use
-`:LouiselmChat`. It launches `claude-agent-acp` by default; set
-`LOUISELM_AGENT_COMMAND` to use another ACP executable.
+`:LouiselmChat`. By default it launches the DeepSeek ACP agent with:
+
+```sh
+/home/lotso/code/acp-llm-adapter/acp-debug.sh \
+  acp-llm-adapter serve --backend deepseek
+```
+
+The wrapper preserves ACP JSON-RPC on stdout and records debug logs under
+`$XDG_STATE_HOME/acp-llm-adapter` (or `~/.local/state/acp-llm-adapter`). Set
+`DEEPSEEK_API_KEY` for the adapter; the bootstrap passes it as `LLM_API_KEY`.
+Alternatively, set `LOUISELM_AGENT_COMMAND` to use another ACP executable
+without implicit arguments.
 
 Use `chat:switch("session-1")` for another attached session. Prompts entered in
 the buffer, including slash commands, are passed to the session unchanged.

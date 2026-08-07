@@ -3,6 +3,27 @@ local nvim = vim
 
 local M = {}
 
+local DEFAULT_ADAPTER_DEBUG_SCRIPT = "/home/lotso/code/acp-llm-adapter/acp-debug.sh"
+
+---@return louiselm.agent.Definition definition
+local function default_agent_definition()
+  local command = nvim.env.LOUISELM_AGENT_COMMAND
+  if command ~= nil and command ~= "" then
+    return { command = command, args = {} }
+  end
+
+  local environment
+  local api_key = nvim.env.DEEPSEEK_API_KEY
+  if api_key ~= nil and api_key ~= "" then
+    environment = { LLM_API_KEY = api_key }
+  end
+  return {
+    command = DEFAULT_ADAPTER_DEBUG_SCRIPT,
+    args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
+    env = environment,
+  }
+end
+
 ---Register the interactive chat command.
 ---@return boolean registered Always true after the command is registered.
 function M.register()
@@ -14,12 +35,8 @@ function M.register()
       return
     end
 
-    local command = nvim.env.LOUISELM_AGENT_COMMAND
-    if command == nil or command == "" then
-      command = "claude-agent-acp"
-    end
     local sessions, session_errors = require("louiselm.session").new({
-      default = { command = command, args = {} },
+      default = default_agent_definition(),
     })
     if sessions == nil then
       nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
