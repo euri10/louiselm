@@ -61,14 +61,14 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
   MiniTest.expect.equality(request_error, nil)
 
   local session_id
-  client:new_session({ cwd = "/tmp/project" }, function(value)
+  client:new_session({ cwd = "/tmp/project", mcpServers = {} }, function(value)
     session_id = value.sessionId
   end)
   MiniTest.expect.equality(assert(Protocol.decode(calls[2]:sub(1, -2))), {
     id = 2,
     jsonrpc = "2.0",
     method = "session/new",
-    params = { cwd = "/tmp/project" },
+    params = { cwd = "/tmp/project", mcpServers = {} },
   })
   calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1"}}\n')
   MiniTest.expect.equality(session_id, "session-1")

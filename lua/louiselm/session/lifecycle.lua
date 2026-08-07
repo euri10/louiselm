@@ -200,7 +200,7 @@ local function handle_initialized(self, result, rpc_error)
     return
   end
   local request_id, request_error = client:new_session(
-    { cwd = self.state.working_dir },
+    { cwd = self.state.working_dir, mcpServers = {} },
     function(session_result, session_error)
       if self.state.status == "disposed" then
         return

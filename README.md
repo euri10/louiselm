@@ -48,7 +48,7 @@ client:initialize(nil, function(result, err)
   if err ~= nil then
     return
   end
-  client:new_session({ cwd = vim.fn.getcwd() }, function(session, session_err)
+  client:new_session({ cwd = vim.fn.getcwd(), mcpServers = {} }, function(session, session_err)
     if session_err == nil then
       client:prompt({ sessionId = session.sessionId, prompt = { { type = "text", text = "Hello" } } })
     end

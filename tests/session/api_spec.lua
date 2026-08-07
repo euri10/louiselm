@@ -59,6 +59,10 @@ local function start_ready_session(api, processes, name, cwd)
   end))
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
+    cwd = cwd,
+    mcpServers = {},
+  })
   respond(process, 2, { sessionId = name .. "-acp" })
   MiniTest.expect.equality(ready.error, nil)
   MiniTest.expect.equality(ready.session, session)
