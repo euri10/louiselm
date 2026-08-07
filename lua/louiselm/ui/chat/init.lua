@@ -1,4 +1,5 @@
 local Context = require("louiselm.ui.context")
+local Diff = require("louiselm.ui.diff")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -19,6 +20,7 @@ local Context = require("louiselm.ui.context")
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
 ---@field skills louiselm.skills.Skill[] Skills for the invocation picker.
+---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field current_id string? Currently displayed session id.
 ---@field disposed boolean Whether the chat UI has been disposed.
@@ -231,6 +233,14 @@ local function handle_event(self, view, event)
   elseif event.type == "error" then
     local message = field(event.data, "message") or "unknown session error"
     insert_before_prompt(self, view, { "Error: " .. message })
+  elseif event.type == "permission_requested" then
+    local data = event.data
+    if type(data) == "table" and type(data.operation) == "table" and data.operation.kind == "file_edit" then
+      local opened, open_error = self.diff:open(data, event.respond)
+      if not opened then
+        insert_before_prompt(self, view, { "Error: " .. (open_error or "could not open diff review") })
+      end
+    end
   elseif event.type == "turn_done" then
     view.response_line = nil
     view.response_tail = nil
@@ -264,8 +274,15 @@ function M.new(api, options)
   if skills == nil then
     return nil, skills_error
   end
-  local chat =
-    setmetatable({ api = api, agents = agents, skills = skills, views = {}, current_id = nil, disposed = false }, Chat)
+  local chat = setmetatable({
+    api = api,
+    agents = agents,
+    skills = skills,
+    diff = Diff.new(),
+    views = {},
+    current_id = nil,
+    disposed = false,
+  }, Chat)
   return chat, nil
 end
 
@@ -544,6 +561,7 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  self.diff:dispose()
   for id, view in pairs(self.views) do
     view.unsubscribe()
     if nvim.api.nvim_buf_is_valid(view.buffer) then

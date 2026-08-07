@@ -1,0 +1,98 @@
+local MiniTest = require("mini.test")
+local Apply = require("louiselm.ui.diff.apply")
+local Buffer = require("louiselm.ui.diff.buffer")
+local Diff = require("louiselm.ui.diff")
+
+local T = MiniTest.new_set()
+
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
+local function temp_file(lines)
+  local path = nvim.fn.tempname()
+  nvim.fn.writefile(lines, path)
+  return path
+end
+
+T["apply"] = MiniTest.new_set()
+
+T["apply"]["previews replacement content and applies only to the unchanged file"] = function()
+  local path = temp_file({ "before" })
+  local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+
+  MiniTest.expect.equality(preview.original, "before\n")
+  MiniTest.expect.equality(preview.proposed, "after\n")
+  MiniTest.expect.equality(preview.diff:find("%-before", 1, false) ~= nil, true)
+  MiniTest.expect.equality(preview.diff:find("%+after", 1, false) ~= nil, true)
+
+  local applied, apply_error = Apply.apply(preview)
+  MiniTest.expect.equality({ applied, apply_error }, { true, nil })
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "after" })
+
+  nvim.fn.writefile({ "changed" }, path)
+  local stale, stale_error = Apply.apply(preview)
+  MiniTest.expect.equality(stale, false)
+  MiniTest.expect.equality(stale_error, "file changed since diff preview")
+  nvim.fn.delete(path)
+end
+
+T["apply"]["applies a single-file unified diff"] = function()
+  local path = temp_file({ "one", "two" })
+  local preview = assert(Apply.preview({
+    path = path,
+    diff = "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n one\n-two\n+changed\n",
+  }))
+
+  MiniTest.expect.equality(preview.proposed, "one\nchanged\n")
+  assert(Apply.apply(preview))
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "one", "changed" })
+  nvim.fn.delete(path)
+end
+
+T["buffer"] = MiniTest.new_set()
+
+T["buffer"]["renders a nonmodifiable diff buffer"] = function()
+  local path = temp_file({ "before" })
+  local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+  local buffer = assert(Buffer.open(preview))
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "filetype"), "diff")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "modifiable"), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), {
+    "louiselm diff: " .. path,
+    "",
+    "--- original",
+    "+++ proposed",
+    "@@ -1 +1 @@",
+    "-before",
+    "+after",
+  })
+
+  Buffer.close(buffer)
+  nvim.fn.delete(path)
+end
+
+T["review"] = MiniTest.new_set()
+
+T["review"]["shows an edit and sends an allow response"] = function()
+  local path = temp_file({ "before" })
+  local response
+  local diff = Diff.new()
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { path = path, content = "after\n" } },
+    options = { { optionId = "allow-once", kind = "allow_once" }, "deny" },
+  }, function(result)
+    response = result
+    return true
+  end))
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_option(diff.buffer, "modifiable"), false)
+  assert(diff:accept())
+  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
+  MiniTest.expect.equality(diff.buffer, nil)
+  diff:dispose()
+  nvim.fn.delete(path)
+end
+
+return T

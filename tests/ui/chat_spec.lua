@@ -153,6 +153,45 @@ T["chat"]["schedules session events before touching buffers"] = function()
   chat:dispose()
 end
 
+T["chat"]["opens file permission requests in a scheduled diff review"] = function()
+  local path = nvim.fn.tempname()
+  nvim.fn.writefile({ "before" }, path)
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  local response
+  first:emit({
+    type = "permission_requested",
+    session_id = "session-1",
+    data = {
+      operation = { kind = "file_edit", path = path },
+      toolCall = { rawInput = { path = path, content = "after\n" } },
+      options = { { optionId = "allow-once", kind = "allow_once" }, "deny" },
+    },
+    respond = function(result)
+      response = result
+      return true
+    end,
+  })
+
+  MiniTest.expect.equality(#scheduled, 1)
+  MiniTest.expect.equality(chat.diff.buffer, nil)
+  scheduled[1]()
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(chat.diff.buffer), "louiselm-diff://" .. path)
+  assert(chat.diff:accept())
+  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
+  chat:dispose()
+  nvim.fn.delete(path)
+end
+
 T["chat"]["queues context items as ACP text before the user prompt"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

@@ -260,6 +260,12 @@ local session = assert(sessions:create_session("claude", {
 File edits and command argv are checked without shell expansion. Unknown ACP
 permission requests remain askable and are never auto-approved.
 
+When an ask-human request is a file edit with a diff or replacement content,
+the chat UI opens a read-only `louiselm-diff://` buffer before responding. Press
+`a` to allow the edit, or `d`/`q` to reject it. The review records the file
+content it displayed and rejects a local apply if the file changed meanwhile;
+the ACP agent remains responsible for writing the file after approval.
+
 ## Chat context
 
 Context providers stay thin: they point the agent at files and skills while
