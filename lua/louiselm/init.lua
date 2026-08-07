@@ -1,4 +1,5 @@
 local Deprecate = require("louiselm.schema.deprecate")
+local Health = require("louiselm.health")
 local Schema = require("louiselm.schema")
 
 local M = {}
@@ -17,6 +18,7 @@ end
 ---@return boolean ok False and a report when validation fails; true when startup may continue.
 ---@return louiselm.schema.Report? report Full validation report on failure.
 function M.setup(config, schema)
+  Health.reset()
   if type(schema) ~= "table" or schema.type ~= "table" or type(schema.fields) ~= "table" then
     error("setup requires a normalized schema")
   end
@@ -35,6 +37,10 @@ function M.setup(config, schema)
     ---@diagnostic disable-next-line: undefined-global
     local warning_level = vim.log.levels.WARN
     notify(warning.message, warning_level)
+  end
+  local registered, registration_error = Health.configure(config, schema)
+  if not registered then
+    error(registration_error)
   end
   return true
 end

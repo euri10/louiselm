@@ -141,6 +141,12 @@ nvim --headless --noplugin -u "$PWD/tests/minimal_init.lua" \
 For interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 `:lua MiniTest.run()`. Without `--headless`, Neovim intentionally stays open.
 
+Run `:checkhealth louiselm` after setup to revalidate the configuration and
+check configured agent executables, versions, and skill paths. Agent version
+results arrive asynchronously because external processes must not block the
+editor; unavailable executables and invalid skill paths are reported directly
+in the health buffer.
+
 ## ACP client
 
 For a minimal manual session, run this from the repository root:

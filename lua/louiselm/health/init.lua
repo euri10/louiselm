@@ -1,0 +1,193 @@
+---@class louiselm.health.Configuration
+---@field config unknown Validated user configuration.
+---@field schema louiselm.schema.Schema Schema used to validate the configuration.
+
+local Agent = require("louiselm.agent")
+local Schema = require("louiselm.schema")
+local Skills = require("louiselm.skills")
+
+local M = {}
+local configuration ---@type louiselm.health.Configuration?
+
+---@return table
+local function nvim()
+  ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+  return vim
+end
+
+---@param message string
+---@param ok boolean
+local function report(message, ok)
+  local health = nvim().health
+  if ok then
+    health.ok(message)
+  else
+    health.error(message)
+  end
+end
+
+---@param result louiselm.agent.HealthResult
+local function report_agent_result(result)
+  local message = result.command
+  if result.version ~= nil then
+    message = message .. " — " .. result.version
+  end
+  if result.ok then
+    report(message, true)
+  else
+    report(message .. ": " .. (result.error or "version check failed"), false)
+  end
+end
+
+---@param result louiselm.agent.HealthResult
+local function report_agent_result_safely(result)
+  local editor = nvim()
+  if not editor.in_fast_event() then
+    report_agent_result(result)
+    return
+  end
+
+  local emit = function()
+    local message = result.command
+    if result.version ~= nil then
+      message = message .. " — " .. result.version
+    end
+    if result.error ~= nil and not result.ok then
+      message = message .. ": " .. result.error
+    end
+    editor.notify("louiselm health: " .. message, result.ok and editor.log.levels.INFO or editor.log.levels.ERROR)
+  end
+
+  -- vim.system callbacks run in a fast event; health reporting is editor work.
+  editor.schedule(emit)
+end
+
+---@param value unknown
+---@return table<string, louiselm.agent.Definition>? definitions
+local function configured_agents(value)
+  if type(value) == "table" and value.agents ~= nil then
+    return value.agents
+  end
+  if type(value) == "table" and type(value.agent) == "table" then
+    return { default = value.agent }
+  end
+  return nil
+end
+
+---@param value table<string, louiselm.agent.Definition>
+---@return string[] names
+local function sorted_agent_names(value)
+  local names = {}
+  for name in pairs(value) do
+    names[#names + 1] = name
+  end
+  table.sort(names)
+  return names
+end
+
+---@param value unknown
+---@return unknown paths
+local function configured_skill_paths(value)
+  if type(value) ~= "table" or type(value.skills) ~= "table" then
+    return nil
+  end
+  return value.skills.paths
+end
+
+---@param config louiselm.health.Configuration
+local function check_configuration(config)
+  local validation = Schema.report(Schema.validate(config.schema, config.config))
+  if validation.ok then
+    report("configuration is valid", true)
+  else
+    report(validation.text, false)
+  end
+end
+
+---@param config louiselm.health.Configuration
+local function check_agents(config)
+  local definitions = configured_agents(config.config)
+  if definitions == nil then
+    nvim().health.info("no agent definitions configured")
+    return
+  end
+
+  local normalized, errors = Agent.normalize(definitions)
+  if normalized == nil then
+    for _, error_item in ipairs(errors) do
+      report(error_item.path .. ": " .. error_item.message, false)
+    end
+    return
+  end
+
+  for _, name in ipairs(sorted_agent_names(normalized)) do
+    local definition = normalized[name]
+    local callback_called = false
+    local handle, error_message = Agent.check(definition, function(result)
+      callback_called = true
+      report_agent_result_safely(result)
+    end)
+    if handle == nil then
+      if error_message ~= nil and not callback_called then
+        report("agent " .. name .. ": " .. error_message, false)
+      end
+    else
+      nvim().health.info("agent " .. name .. ": checking executable and version")
+    end
+  end
+end
+
+---@param config louiselm.health.Configuration
+local function check_skills(config)
+  local paths = configured_skill_paths(config.config)
+  if paths == nil then
+    nvim().health.info("no skill paths configured")
+    return
+  end
+
+  local skills, errors = Skills.discover(paths)
+  for _, error_item in ipairs(errors) do
+    report(error_item.path .. ": " .. error_item.message, false)
+  end
+  if #errors == 0 then
+    report(string.format("discovered %d skill%s", #skills, #skills == 1 and "" or "s"), true)
+  end
+end
+
+---Register the configuration that `:checkhealth louiselm` should inspect.
+---@param config unknown Validated user configuration. The table is only read.
+---@param schema louiselm.schema.Schema Normalized schema used for validation.
+---@return boolean registered True when the registration arguments are valid.
+---@return string? error_message Why registration failed.
+function M.configure(config, schema)
+  if type(schema) ~= "table" or schema.type ~= "table" or type(schema.fields) ~= "table" then
+    return false, "health configuration requires a normalized schema"
+  end
+  configuration = { config = config, schema = schema }
+  return true
+end
+
+---Forget the configuration used by the healthcheck.
+---@return boolean cleared Always true.
+function M.reset()
+  configuration = nil
+  return true
+end
+
+---Run the LouiseLM healthcheck discovered by `:checkhealth`.
+---@return boolean checked False when setup has not registered a configuration.
+function M.check()
+  local health = nvim().health
+  health.start("louiselm")
+  if configuration == nil then
+    health.warn("LouiseLM has not been configured; run setup() before checking configuration")
+    return false
+  end
+
+  check_configuration(configuration)
+  check_agents(configuration)
+  check_skills(configuration)
+  return true
+end
+
+return M
