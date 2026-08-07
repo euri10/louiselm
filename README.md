@@ -112,3 +112,19 @@ To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 MINI_NVIM_PATH=/path/to/mini.nvim nvim --headless --noplugin \
   -u "$PWD/tests/minimal_init.lua" -c 'lua MiniTest.run()' -c 'qa!'
 ```
+
+## Skills
+
+Discover Agent Skills metadata from configured directories and inject a thin
+index when an agent does not provide native skill loading:
+
+```lua
+local skills = require("louiselm.skills")
+local found, errors = skills.discover({ vim.fn.expand("~/.config/agentskills") })
+local policy = assert(skills.policy("inject")) -- native, inject, or off
+local index = assert(skills.inject(found))
+```
+
+The injected index contains only each skill's name, description, and
+`SKILL.md` path. Use `skills.overlap(native_skill_dir, configured_paths)` to
+detect native/configured skill trees that resolve to the same directory.
