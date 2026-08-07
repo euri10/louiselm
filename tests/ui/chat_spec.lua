@@ -153,6 +153,49 @@ T["chat"]["schedules session events before touching buffers"] = function()
   chat:dispose()
 end
 
+T["chat"]["queues context items as ACP text before the user prompt"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1",
+    "",
+    "> [context: file: init.lua] ",
+  })
+  assert(chat:submit("Review this"))
+
+  MiniTest.expect.equality(first.prompts, {
+    {
+      { type = "text", text = "Referenced file: init.lua" },
+      { type = "text", text = "Review this" },
+    },
+  })
+  chat:dispose()
+end
+
+T["chat"]["mentions the source buffer rather than the chat scratch buffer"] = function()
+  local source = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_name(source, "/tmp/source.lua")
+  nvim.api.nvim_set_current_buf(source)
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  assert(chat:mention_buffer())
+  assert(chat:submit("Review"))
+
+  MiniTest.expect.equality(first.prompts, {
+    {
+      { type = "text", text = "Current buffer: /tmp/source.lua" },
+      { type = "text", text = "Review" },
+    },
+  })
+  chat:dispose()
+  nvim.api.nvim_buf_delete(source, { force = true })
+end
+
 T["chat"]["switches between attached session buffers"] = function()
   local first = fake_session("session-1", "one")
   local second = fake_session("session-2", "two")

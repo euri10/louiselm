@@ -126,6 +126,27 @@ local session = assert(sessions:create_session("claude", {
 File edits and command argv are checked without shell expansion. Unknown ACP
 permission requests remain askable and are never auto-approved.
 
+## Chat context
+
+Context providers stay thin: they point the agent at files and skills while
+visual selections carry their selected text. Queue context on an attached chat
+view before submitting its prompt:
+
+```lua
+chat:mention_buffer()
+chat:send_selection()
+chat:pick_file()
+chat:pick_skill()
+```
+
+Pass discovered skills to the chat controller to enable the skill picker:
+
+```lua
+local found, errors = require("louiselm.skills").discover({ skill_root })
+assert(#errors == 0, "skill discovery failed")
+local chat = assert(require("louiselm.ui.chat").new(sessions, { skills = found }))
+```
+
 To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 
 ```sh

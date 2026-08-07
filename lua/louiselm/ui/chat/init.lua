@@ -1,17 +1,24 @@
+local Context = require("louiselm.ui.context")
+
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
+---@field skills? louiselm.skills.Skill[] Skills shown by the invocation picker.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
 ---@field buffer integer Scratch buffer for the session.
+---@field source_buffer integer Buffer that was current when the chat view was attached.
 ---@field prompt_line integer Zero-based prompt line.
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
+---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
+---@field context_prefix string Visible context markers prefixed to the prompt.
 ---@field unsubscribe fun() Session event listener removal function.
 
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
+---@field skills louiselm.skills.Skill[] Skills for the invocation picker.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field current_id string? Currently displayed session id.
 ---@field disposed boolean Whether the chat UI has been disposed.
@@ -19,6 +26,11 @@
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number?, string? Submit the current prompt.
+---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
+---@field mention_buffer fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer context.
+---@field send_selection fun(self: louiselm.ui.Chat): boolean, string? Queue the source visual selection.
+---@field pick_file fun(self: louiselm.ui.Chat, root?: string): boolean, string? Pick and queue a file context.
+---@field pick_skill fun(self: louiselm.ui.Chat): boolean, string? Pick and queue a skill invocation.
 ---@field new_session fun(self: louiselm.ui.Chat, agent_name?: string, options?: louiselm.session.Options): louiselm.session.Session?, string? Create a session, using the picker when needed.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
@@ -52,6 +64,67 @@ local function copy_agents(value)
     end
   end
   return agents
+end
+
+---@param value unknown
+---@return louiselm.skills.Skill[]? skills
+---@return string? error_message
+local function copy_skills(value)
+  if value == nil then
+    return {}
+  end
+  if type(value) ~= "table" then
+    return nil, "chat skills must be a skill[]"
+  end
+  local skills = {}
+  for index, skill in ipairs(value) do
+    if
+      type(skill) ~= "table"
+      or type(skill.name) ~= "string"
+      or skill.name == ""
+      or type(skill.description) ~= "string"
+      or type(skill.path) ~= "string"
+    then
+      return nil, string.format("chat skill at index %d is malformed", index)
+    end
+    skills[index] = { name = skill.name, description = skill.description, path = skill.path }
+  end
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
+      return nil, "chat skills must be a dense skill[]"
+    end
+  end
+  return skills
+end
+
+---@param buffer integer
+---@param line integer
+---@param value string
+local function set_line(buffer, line, value)
+  nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param item louiselm.ui.ContextItem
+---@return boolean queued
+---@return string? error_message
+local function queue_context(self, view, item)
+  if self.disposed or self.views[view.session:inspect().id] ~= view then
+    return false, "chat UI is disposed"
+  end
+  if type(item) ~= "table" or type(item.label) ~= "string" or type(item.text) ~= "string" then
+    return false, "context item must contain label and text strings"
+  end
+  local line = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, view.prompt_line + 1, false)[1] or "> "
+  local text = line:sub(1, 2) == "> " and line:sub(3) or line
+  if view.context_prefix ~= "" and text:sub(1, #view.context_prefix) == view.context_prefix then
+    text = text:sub(#view.context_prefix + 1)
+  end
+  view.contexts[#view.contexts + 1] = { label = item.label, text = item.text }
+  view.context_prefix = view.context_prefix .. "[context: " .. item.label .. "] "
+  set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
+  return true
 end
 
 ---@param value string
@@ -106,13 +179,6 @@ local function field(value, name)
     return value[name]
   end
   return nil
-end
-
----@param buffer integer
----@param line integer
----@param value string
-local function set_line(buffer, line, value)
-  nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
 end
 
 ---@param self louiselm.ui.Chat
@@ -185,7 +251,7 @@ function M.new(api, options)
   end
   if options ~= nil then
     for key in pairs(options) do
-      if key ~= "agents" then
+      if key ~= "agents" and key ~= "skills" then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
     end
@@ -194,7 +260,12 @@ function M.new(api, options)
   if agents == nil then
     return nil, agents_error
   end
-  local chat = setmetatable({ api = api, agents = agents, views = {}, current_id = nil, disposed = false }, Chat)
+  local skills, skills_error = copy_skills(options and options.skills)
+  if skills == nil then
+    return nil, skills_error
+  end
+  local chat =
+    setmetatable({ api = api, agents = agents, skills = skills, views = {}, current_id = nil, disposed = false }, Chat)
   return chat, nil
 end
 
@@ -219,6 +290,7 @@ function Chat:attach(session)
     return self:switch(state.id)
   end
 
+  local source_buffer = nvim.api.nvim_get_current_buf()
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_buf_set_name(buffer, "louiselm://" .. state.id)
   nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
@@ -230,9 +302,12 @@ function Chat:attach(session)
   local view = {
     session = session,
     buffer = buffer,
+    source_buffer = source_buffer,
     prompt_line = 2,
     response_line = nil,
     response_tail = nil,
+    contexts = {},
+    context_prefix = "",
     unsubscribe = function() end,
   }
   view.unsubscribe = session:on(function(event)
@@ -298,7 +373,15 @@ function Chat:submit(text)
     local line = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, view.prompt_line + 1, false)[1]
     text = line and (string.sub(line, 1, 2) == "> " and string.sub(line, 3) or line) or ""
   end
-  if type(text) ~= "string" or text == "" then
+  if type(text) ~= "string" then
+    return nil, "prompt must be a non-empty string"
+  end
+  local context_items = view.contexts
+  local context_prefix = view.context_prefix
+  if context_prefix ~= "" and text:sub(1, #context_prefix) == context_prefix then
+    text = text:sub(#context_prefix + 1)
+  end
+  if text == "" and #context_items == 0 then
     return nil, "prompt must be a non-empty string"
   end
 
@@ -311,14 +394,108 @@ function Chat:submit(text)
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
   end
 
-  local request_id, prompt_error = view.session:prompt(text)
+  ---@type string|table
+  local prompt = text
+  if #context_items > 0 then
+    prompt = {}
+    for _, item in ipairs(context_items) do
+      prompt[#prompt + 1] = { type = "text", text = item.text }
+    end
+    if text ~= "" then
+      prompt[#prompt + 1] = { type = "text", text = text }
+    end
+  end
+  local request_id, prompt_error = view.session:prompt(prompt)
   if request_id == nil then
     insert_before_prompt(self, view, { "Error: " .. (prompt_error or "prompt failed") })
     view.response_line = nil
     view.response_tail = nil
     return nil, prompt_error or "prompt failed"
   end
+  view.contexts = {}
+  view.context_prefix = ""
   return request_id
+end
+
+---Queue a context item for the current chat prompt.
+---@param self louiselm.ui.Chat
+---@param item louiselm.ui.ContextItem Context item.
+---@return boolean queued
+---@return string? error_message Validation or lifecycle error.
+function Chat:queue_context(item)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  return queue_context(self, view, item)
+end
+
+---Queue the buffer that was current when the active chat view was attached.
+---@param self louiselm.ui.Chat
+---@return boolean queued
+---@return string? error_message Context or lifecycle error.
+function Chat:mention_buffer()
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  return queue_context(self, view, Context.buffer(view.source_buffer))
+end
+
+---Queue the visual selection from the source buffer of the active chat view.
+---@param self louiselm.ui.Chat
+---@return boolean queued
+---@return string? error_message Context or selection error.
+function Chat:send_selection()
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local item, selection_error = Context.selection(view.source_buffer)
+  if item == nil then
+    return false, selection_error
+  end
+  return queue_context(self, view, item)
+end
+
+---Pick a file and queue its path for the active chat prompt.
+---@param self louiselm.ui.Chat
+---@param root? string Directory to scan.
+---@return boolean started
+---@return string? error_message Picker or lifecycle error.
+function Chat:pick_file(root)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local started, pick_error = Context.files.pick(root, function(path, error_message)
+    if path == nil then
+      return
+    end
+    local item = assert(Context.files.context(path))
+    self:queue_context(item)
+  end)
+  return started, pick_error
+end
+
+---Pick a skill and queue its slash invocation for the active chat prompt.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message Picker or lifecycle error.
+function Chat:pick_skill()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if #self.skills == 0 then
+    return false, "no chat skills configured"
+  end
+  return Context.skills.pick(self.skills, function(skill)
+    if skill ~= nil then
+      self:queue_context(Context.skills.context(skill))
+    end
+  end)
 end
 
 ---Create a session and attach it; select an agent when no name is supplied.
