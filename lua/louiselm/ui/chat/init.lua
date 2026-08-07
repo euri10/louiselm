@@ -210,10 +210,115 @@ local function field(value, name)
   return nil
 end
 
+local insert_before_prompt
+
+---@param option unknown
+---@return string? identifier
+---@return string label
+local function permission_option(option)
+  if type(option) == "string" and option ~= "" then
+    return option, option
+  end
+  if type(option) ~= "table" then
+    return nil, "invalid option"
+  end
+  local identifier = option.optionId or option.option_id
+  if type(identifier) ~= "string" or identifier == "" then
+    return nil, "invalid option"
+  end
+  local label = option.kind or option.name or identifier
+  if type(label) ~= "string" or label == "" then
+    label = identifier
+  end
+  return identifier, label
+end
+
+---@param value unknown
+---@return unknown[]? options
+local function permission_options(value)
+  if type(value) ~= "table" then
+    return nil
+  end
+  local options = {}
+  for _, option in ipairs(value) do
+    local identifier = permission_option(option)
+    if identifier ~= nil then
+      options[#options + 1] = option
+    end
+  end
+  return options
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
+---@param result table
+---@return boolean sent
+local function send_permission_response(self, view, respond, result)
+  if self.disposed or self.views[view.session:inspect().id] ~= view or not nvim.api.nvim_buf_is_valid(view.buffer) then
+    return false
+  end
+  local call_ok, sent, send_error = pcall(respond, result)
+  if not call_ok or not sent then
+    local message = call_ok and (send_error or "permission response could not be sent") or tostring(sent)
+    insert_before_prompt(self, view, { "Error: " .. message })
+    return false
+  end
+  return true
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
+---@return boolean sent
+local function cancel_permission(self, view, respond)
+  if type(respond) ~= "function" then
+    insert_before_prompt(self, view, { "Error: permission request has no response callback" })
+    return false
+  end
+  return send_permission_response(self, view, respond, { outcome = { outcome = "cancelled" } })
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param data table
+---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
+local function prompt_permission(self, view, data, respond)
+  if type(respond) ~= "function" then
+    insert_before_prompt(self, view, { "Error: permission request has no response callback" })
+    return
+  end
+  local options = permission_options(data.options)
+  if options == nil or #options == 0 then
+    cancel_permission(self, view, respond)
+    return
+  end
+  local operation = data.operation
+  local kind = type(operation) == "table" and operation.kind or "unknown"
+  nvim.ui.select(options, {
+    prompt = "louiselm permission (" .. tostring(kind) .. "): ",
+    format_item = function(option)
+      local _, label = permission_option(option)
+      return label
+    end,
+  }, function(choice)
+    if choice == nil then
+      cancel_permission(self, view, respond)
+      return
+    end
+    local identifier = permission_option(choice)
+    if identifier == nil then
+      cancel_permission(self, view, respond)
+      return
+    end
+    send_permission_response(self, view, respond, { outcome = { outcome = "selected", optionId = identifier } })
+  end)
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param lines string[]
-local function insert_before_prompt(self, view, lines)
+insert_before_prompt = function(self, view, lines)
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, view.prompt_line, false, lines)
   view.prompt_line = view.prompt_line + #lines
 end
@@ -266,7 +371,12 @@ local function handle_event(self, view, event)
       local opened, open_error = self.diff:open(data, event.respond)
       if not opened then
         insert_before_prompt(self, view, { "Error: " .. (open_error or "could not open diff review") })
+        cancel_permission(self, view, event.respond)
       end
+    elseif type(data) == "table" then
+      prompt_permission(self, view, data, event.respond)
+    else
+      cancel_permission(self, view, event.respond)
     end
   elseif event.type == "turn_done" then
     view.response_line = nil

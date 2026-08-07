@@ -267,6 +267,11 @@ the chat UI opens a read-only `louiselm-diff://` buffer before responding. Press
 content it displayed and rejects a local apply if the file changed meanwhile;
 the ACP agent remains responsible for writing the file after approval.
 
+Command and unknown permission requests use a chat picker for the ACP options;
+dismissing the picker sends a cancellation response. Permission UI work is
+scheduled onto Neovim's main loop, and late choices after chat disposal are
+ignored.
+
 ## Chat context
 
 Context providers stay thin: they point the agent at files and skills while
