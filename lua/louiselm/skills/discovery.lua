@@ -85,6 +85,7 @@ local function parse(lines, path)
   local fields = {}
   local block_key
   local block_lines = {}
+  local metadata = false
   local closed = false
 
   local function finish_block()
@@ -103,18 +104,37 @@ local function parse(lines, path)
       break
     end
 
-    local key, value = line:match("^([%w_-]+):[ \t]*(.*)$")
-    if key ~= nil then
-      finish_block()
-      if value == ">" or value == ">-" or value == "|" or value == "|-" then
-        block_key = key
-      else
-        fields[key] = scalar(value)
+    local nested_key, nested_value = line:match("^  ([%w_-]+):[ \t]*(.*)$")
+    if metadata and trim(line) == "" then
+      -- Blank lines between metadata entries are valid YAML.
+    elseif metadata and line:match("^%s") then
+      if
+        nested_key == nil
+        or nested_value == ">"
+        or nested_value == ">-"
+        or nested_value == "|"
+        or nested_value == "|-"
+      then
+        return nil, "malformed YAML frontmatter"
       end
-    elseif block_key ~= nil and line:match("^%s+") then
-      block_lines[#block_lines + 1] = trim(line)
-    elseif trim(line) ~= "" then
-      return nil, "malformed YAML frontmatter"
+      -- Metadata is optional information; discovery only consumes name and description.
+    else
+      metadata = false
+      local key, value = line:match("^([%w_-]+):[ \t]*(.*)$")
+      if key ~= nil then
+        finish_block()
+        if key == "metadata" and (value == "" or value == "{}") then
+          metadata = true
+        elseif value == ">" or value == ">-" or value == "|" or value == "|-" then
+          block_key = key
+        else
+          fields[key] = scalar(value)
+        end
+      elseif block_key ~= nil and line:match("^%s+") then
+        block_lines[#block_lines + 1] = trim(line)
+      elseif trim(line) ~= "" then
+        return nil, "malformed YAML frontmatter"
+      end
     end
   end
 

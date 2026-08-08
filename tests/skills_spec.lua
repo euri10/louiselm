@@ -59,6 +59,51 @@ T["discover"]["collects malformed metadata without stopping other skills"] = fun
   MiniTest.expect.equality(errors[1].path, nvim.fs.joinpath(invalid_dir, "SKILL.md"))
 end
 
+T["discover"]["accepts standard nested metadata"] = function()
+  local skill_dir = nvim.fs.joinpath(temp_dir, "nested-metadata")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  local path = nvim.fs.joinpath(skill_dir, "SKILL.md")
+  nvim.fn.writefile({
+    "---",
+    "name: nested-metadata",
+    "description: Top-level description remains authoritative",
+    "metadata:",
+    "  short-description: Short description for a picker",
+    "---",
+    "# Nested metadata",
+  }, path)
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(skills, {
+    {
+      name = "nested-metadata",
+      description = "Top-level description remains authoritative",
+      path = path,
+    },
+  })
+end
+
+T["discover"]["rejects malformed nested metadata indentation"] = function()
+  local skill_dir = nvim.fs.joinpath(temp_dir, "bad-metadata")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  local path = nvim.fs.joinpath(skill_dir, "SKILL.md")
+  nvim.fn.writefile({
+    "---",
+    "name: bad-metadata",
+    "description: Invalid indentation",
+    "metadata:",
+    "    short-description: Too deeply indented",
+    "---",
+  }, path)
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(skills, {})
+  MiniTest.expect.equality(errors, { { path = path, message = "malformed YAML frontmatter" } })
+end
+
 T["policy"] = MiniTest.new_set()
 
 T["policy"]["defaults to native and accepts the three policies"] = function()

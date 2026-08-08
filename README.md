@@ -352,19 +352,20 @@ end))
 Continue the conversation in the chat buffer. After agreement, send
 `/to-beads` and let the agent route to the appropriate `to-beads-*` skill. The
 default `ask-human` permission policy remains active; file edits open the diff
-review, while command and unknown permission requests currently require a
-custom event consumer to answer them.
+review, while command and unknown permission requests use the chat picker.
 
 This recipe was exercised against `claude-agent-acp` 0.64.2. LouiseLM
 initialized the real ACP session, the injected index exposed `grill-me`,
 `to-beads`, `to-beads-epic`, `to-beads-feature`, and `to-beads-tasks`, and a
 bounded chat prompt completed successfully. The configured skill tree also
-contains two `.system` skills whose nested `metadata` frontmatter is currently
-reported as malformed; the workflow skills themselves discover successfully.
+contains `.system` skills using nested `metadata` frontmatter; the discovery
+parser accepts that standard shape while validating the required top-level
+fields.
 
 Decision: continue P1 dogfooding and defer P2 comfort work. The session and
-manual chat path are viable, but the canonical command and permission UI gaps
-must be resolved before treating the workflow as a daily-driver exit criterion.
+manual chat path are viable, and the canonical command plus permission UI now
+cover the configured workflow. Remaining dogfood gaps are tracked separately
+before treating the workflow as a daily-driver exit criterion.
 
 ## Skills
 
