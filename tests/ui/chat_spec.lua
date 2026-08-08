@@ -125,7 +125,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     data = { toolCallId = "tool-1", status = "completed" },
   })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 7
+    return #buffer_lines(chat:buffer()) == 6
   end, 1)
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
@@ -134,8 +134,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     "",
     "> /compact",
     "hello **world**",
-    "[tool started] tool-1: Read file",
-    "[tool finished] tool-1 (completed)",
+    "[tool] tool-1: Read file (completed)",
     "> ",
   })
 
@@ -170,7 +169,7 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
   })
 
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 8
+    return #buffer_lines(chat:buffer()) == 7
   end, 1)
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
@@ -178,8 +177,7 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
     "",
     "> hello",
     "before tool",
-    "[tool started] tool-1: Read file",
-    "[tool finished] tool-1 (completed)",
+    "[tool] tool-1: Read file (completed)",
     "after tool",
     "> ",
   })

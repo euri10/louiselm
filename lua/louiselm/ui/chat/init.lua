@@ -15,6 +15,8 @@ local Diff = require("louiselm.ui.diff")
 ---@field transcript_tail integer? Zero-based last rendered transcript line.
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
+---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
+---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
 ---@field setup_shown boolean Whether the initial options overview was offered.
@@ -577,16 +579,34 @@ local function handle_event(self, view, event)
     view.prompt_line = view.prompt_line + added
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
     local status = field(event.data, "status")
-    local suffix = event.type == "tool_call_started" and "started" or "finished"
+    local id = tool_id(event.data)
     local title = field(event.data, "title")
-    local detail = tool_id(event.data)
-    if event.type == "tool_call_started" and title ~= nil then
-      detail = detail .. ": " .. title
+    if event.type == "tool_call_started" then
+      if title ~= nil then
+        view.tool_titles[id] = title
+      end
+      local detail = id
+      if title ~= nil then
+        detail = detail .. ": " .. title
+      end
+      insert_transcript(self, view, { "[tool] " .. detail .. " (started)" })
+      view.tool_lines[id] = view.transcript_tail
+    else
+      title = title or view.tool_titles[id]
+      local detail = id
+      if title ~= nil then
+        detail = detail .. ": " .. title
+      end
+      detail = detail .. " (" .. (status or "finished") .. ")"
+      local line = view.tool_lines[id]
+      if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
+        set_line(view.buffer, line, "[tool] " .. detail)
+      else
+        insert_transcript(self, view, { "[tool] " .. detail })
+      end
+      view.tool_lines[id] = nil
+      view.tool_titles[id] = nil
     end
-    if event.type == "tool_call_finished" and status ~= nil then
-      detail = detail .. " (" .. status .. ")"
-    end
-    insert_transcript(self, view, { "[tool " .. suffix .. "] " .. detail })
     view.response_line = nil
     view.response_tail = nil
   elseif event.type == "error" then
@@ -702,6 +722,8 @@ function Chat:attach(session)
     transcript_tail = nil,
     response_line = nil,
     response_tail = nil,
+    tool_lines = {},
+    tool_titles = {},
     contexts = {},
     context_prefix = "",
     setup_shown = false,
