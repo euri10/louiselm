@@ -11,6 +11,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field buffer integer Scratch buffer for the session.
 ---@field source_buffer integer Buffer that was current when the chat view was attached.
 ---@field prompt_line integer Zero-based prompt line.
+---@field transcript_tail integer? Zero-based last rendered transcript line.
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
@@ -175,9 +176,39 @@ local function session_summary(state)
   return table.concat(parts, " · ")
 end
 
+---@param state louiselm.session.State
+---@return string
+local function turn_label(state)
+  if state.status == "ready" then
+    return "Your turn"
+  end
+  if state.status == "prompting" then
+    return "Model responding"
+  end
+  if state.status == "waiting_permission" then
+    return "Waiting for permission"
+  end
+  if state.status == "cancelling" then
+    return "Stopping"
+  end
+  if state.status == "starting" or state.status == "configuring" then
+    return "Starting"
+  end
+  if state.status == "error" then
+    return "Error"
+  end
+  return "Unavailable"
+end
+
+---@param state louiselm.session.State
+---@return string
+local function session_header(state)
+  return session_summary(state) .. " · " .. turn_label(state)
+end
+
 ---@param view louiselm.ui.ChatView
 local function render_header(view)
-  set_line(view.buffer, 0, "# " .. session_summary(view.session:inspect()))
+  set_line(view.buffer, 0, "# " .. session_header(view.session:inspect()))
 end
 
 ---@param self louiselm.ui.Chat
@@ -257,7 +288,7 @@ local function field(value, name)
   return nil
 end
 
-local insert_before_prompt
+local insert_transcript
 local open_session_options
 
 ---@param option unknown
@@ -309,7 +340,7 @@ local function send_permission_response(self, view, respond, result)
   local call_ok, sent, send_error = pcall(respond, result)
   if not call_ok or not sent then
     local message = call_ok and (send_error or "permission response could not be sent") or tostring(sent)
-    insert_before_prompt(self, view, { "Error: " .. message })
+    insert_transcript(self, view, { "Error: " .. message })
     return false
   end
   return true
@@ -321,7 +352,7 @@ end
 ---@return boolean sent
 local function cancel_permission(self, view, respond)
   if type(respond) ~= "function" then
-    insert_before_prompt(self, view, { "Error: permission request has no response callback" })
+    insert_transcript(self, view, { "Error: permission request has no response callback" })
     return false
   end
   return send_permission_response(self, view, respond, { outcome = { outcome = "cancelled" } })
@@ -333,7 +364,7 @@ end
 ---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 local function prompt_permission(self, view, data, respond)
   if type(respond) ~= "function" then
-    insert_before_prompt(self, view, { "Error: permission request has no response callback" })
+    insert_transcript(self, view, { "Error: permission request has no response callback" })
     return
   end
   local options = permission_options(data.options)
@@ -366,14 +397,16 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param lines string[]
-insert_before_prompt = function(self, view, lines)
+insert_transcript = function(self, view, lines)
   local replacement = {}
   for _, line in ipairs(lines) do
     for _, part in ipairs(split_lines(line)) do
       replacement[#replacement + 1] = part
     end
   end
-  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, view.prompt_line, false, replacement)
+  local insertion_line = view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1
+  nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, replacement)
+  view.transcript_tail = insertion_line + #replacement - 1
   view.prompt_line = view.prompt_line + #replacement
 end
 
@@ -431,7 +464,7 @@ open_session_options = function(self, view, initial)
             return
           end
           if callback_error ~= nil then
-            insert_before_prompt(self, view, { "Error: " .. callback_error })
+            insert_transcript(self, view, { "Error: " .. callback_error })
           else
             render_header(view)
           end
@@ -439,7 +472,7 @@ open_session_options = function(self, view, initial)
         end)
       end)
       if set_error ~= nil then
-        insert_before_prompt(self, view, { "Error: " .. set_error })
+        insert_transcript(self, view, { "Error: " .. set_error })
       end
     end)
   end)
@@ -496,8 +529,8 @@ local function handle_event(self, view, event)
       return
     end
     if view.response_tail == nil then
-      insert_before_prompt(self, view, { "" })
-      view.response_line = view.prompt_line - 1
+      insert_transcript(self, view, { "" })
+      view.response_line = view.transcript_tail
       view.response_tail = view.response_line
     end
     local current = nvim.api.nvim_buf_get_lines(view.buffer, view.response_tail, view.response_tail + 1, false)[1] or ""
@@ -505,6 +538,7 @@ local function handle_event(self, view, event)
     nvim.api.nvim_buf_set_lines(view.buffer, view.response_tail, view.response_tail + 1, false, lines)
     local added = #lines - 1
     view.response_tail = view.response_tail + added
+    view.transcript_tail = view.response_tail
     view.prompt_line = view.prompt_line + added
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
     local status = field(event.data, "status")
@@ -517,12 +551,12 @@ local function handle_event(self, view, event)
     if event.type == "tool_call_finished" and status ~= nil then
       detail = detail .. " (" .. status .. ")"
     end
-    insert_before_prompt(self, view, { "[tool " .. suffix .. "] " .. detail })
+    insert_transcript(self, view, { "[tool " .. suffix .. "] " .. detail })
     view.response_line = nil
     view.response_tail = nil
   elseif event.type == "error" then
     local message = field(event.data, "message") or "unknown session error"
-    insert_before_prompt(self, view, { "Error: " .. message })
+    insert_transcript(self, view, { "Error: " .. message })
     view.response_line = nil
     view.response_tail = nil
   elseif event.type == "permission_requested" then
@@ -530,7 +564,7 @@ local function handle_event(self, view, event)
     if type(data) == "table" and type(data.operation) == "table" and data.operation.kind == "file_edit" then
       local opened, open_error = self.diff:open(data, event.respond)
       if not opened then
-        insert_before_prompt(self, view, { "Error: " .. (open_error or "could not open diff review") })
+        insert_transcript(self, view, { "Error: " .. (open_error or "could not open diff review") })
         cancel_permission(self, view, event.respond)
       end
     elseif type(data) == "table" then
@@ -541,7 +575,7 @@ local function handle_event(self, view, event)
   elseif event.type == "turn_done" then
     local line = usage_line(view.session:inspect().usage)
     if line ~= nil then
-      insert_before_prompt(self, view, { line })
+      insert_transcript(self, view, { line })
     end
     view.response_line = nil
     view.response_tail = nil
@@ -620,13 +654,14 @@ function Chat:attach(session)
   nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = buffer })
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
   nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "# " .. session_summary(state), "", "> " })
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "# " .. session_header(state), "", "> " })
 
   local view = {
     session = session,
     buffer = buffer,
     source_buffer = source_buffer,
     prompt_line = 2,
+    transcript_tail = nil,
     response_line = nil,
     response_tail = nil,
     contexts = {},
@@ -852,6 +887,7 @@ function Chat:submit(text)
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line + 1, view.prompt_line + 1, false, { "", "> " })
   view.response_line = view.prompt_line + 1
   view.response_tail = view.response_line
+  view.transcript_tail = view.response_tail
   view.prompt_line = view.prompt_line + 2
   if nvim.api.nvim_get_current_buf() == view.buffer then
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
@@ -870,7 +906,7 @@ function Chat:submit(text)
   end
   local request_id, prompt_error = view.session:prompt(prompt)
   if request_id == nil then
-    insert_before_prompt(self, view, { "Error: " .. (prompt_error or "prompt failed") })
+    insert_transcript(self, view, { "Error: " .. (prompt_error or "prompt failed") })
     view.response_line = nil
     view.response_tail = nil
     return nil, prompt_error or "prompt failed"

@@ -130,7 +130,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready",
+    "# claude · session-1 · ready · Your turn",
     "",
     "> /compact",
     "hello **world**",
@@ -159,21 +159,27 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
     data = { toolCallId = "tool-1", title = "Read file" },
   })
   first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", status = "completed" },
+  })
+  first:emit({
     type = "chunk",
     session_id = "session-1",
     data = { content = { type = "text", text = "after tool" } },
   })
 
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 7
+    return #buffer_lines(chat:buffer()) == 8
   end, 1)
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready",
+    "# claude · session-1 · ready · Your turn",
     "",
     "> hello",
     "before tool",
     "[tool started] tool-1: Read file",
+    "[tool finished] tool-1 (completed)",
     "after tool",
     "> ",
   })
@@ -196,7 +202,7 @@ T["chat"]["splits multiline error messages before inserting them"] = function()
   end, 1)
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready",
+    "# claude · session-1 · ready · Your turn",
     "",
     "Error: first line",
     "second line",
@@ -224,12 +230,15 @@ T["chat"]["schedules session events before touching buffers"] = function()
   })
 
   MiniTest.expect.equality(#scheduled, 1)
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), { "# claude · session-1 · ready", "", "> hello", "", "> " })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    { "# claude · session-1 · ready · Your turn", "", "> hello", "", "> " }
+  )
   scheduled[1]()
   nvim.schedule = original_schedule
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready",
+    "# claude · session-1 · ready · Your turn",
     "",
     "> hello",
     "scheduled",
@@ -373,7 +382,7 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready",
+    "# claude · session-1 · ready · Your turn",
     "",
     "> [context: file: init.lua] ",
   })
@@ -410,11 +419,32 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Model=opus · Brave=true · context=95/100 (95% critical) · cost=1.5 USD",
+    "# claude · session-1 · ready · Model=opus · Brave=true · context=95/100 (95% critical) · cost=1.5 USD · Your turn",
     "",
     "[usage] input_tokens=12 · cached_read_tokens=3",
     "> ",
   })
+  chat:dispose()
+end
+
+T["chat"]["shows whose turn it is in the session header"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# claude · session-1 · ready · Your turn")
+
+  first.state.status = "prompting"
+  first:emit({
+    type = "state_changed",
+    session_id = "session-1",
+    data = { status = "prompting" },
+  })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[1] == "# claude · session-1 · prompting · Model responding"
+  end, 1)
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# claude · session-1 · prompting · Model responding")
   chat:dispose()
 end
 
