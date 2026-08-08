@@ -257,6 +257,7 @@ while the session is idle; dismissing the overview keeps the agent defaults.
 The interactive controls are:
 
 - `:LouiselmSessionOptions` — inspect or change all supported options
+- `:LouiselmInline` — ask the agent to replace the current selection, or insert at the cursor
 - `:LouiselmCancel` — cancel the active turn
 - `:LouiselmNewSession` — start another session without stopping existing ones
 - `:LouiselmSwitchSession` — switch using compact session telemetry rows
@@ -267,6 +268,11 @@ The header reports lifecycle and tool activity, active option values, agent-
 reported context pressure and cumulative cost. Completed turns append only the
 usage fields reported by the agent. LouiseLM does not estimate token counts,
 prices, or compaction state.
+
+The inline assistant uses the same headless session API. It sends the current
+buffer location and selected text as context, then replaces that selection with
+the streamed response; with no selection, the response is inserted at the
+cursor.
 
 The current turn label is also shown in the window bar, so whether it is your
 turn remains visible while scrolling through a long conversation.

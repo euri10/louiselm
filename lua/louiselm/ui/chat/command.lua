@@ -116,6 +116,7 @@ end
 ---@return boolean registered Always true after the command is registered.
 function M.register()
   local chat
+  local inline
 
   ---@param message string?
   local function report_error(message)
@@ -221,6 +222,29 @@ function M.register()
     local _, options_error = chat:session_options()
     report_error(options_error)
   end, { desc = "Configure the current idle louiselm session", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmInline", function()
+    if inline == nil then
+      local definitions = configured and configured_agents(configured)
+      if definitions == nil then
+        definitions = { default = default_agent_definition() }
+      end
+      local names = sorted_agent_names(definitions)
+      local sessions, session_errors = session_module().new(definitions)
+      if sessions == nil then
+        nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
+        return
+      end
+      inline = assert(require("louiselm.ui.inline").new(sessions, { agents = names, cwd = nvim.fn.getcwd() }))
+    end
+    nvim.ui.input({ prompt = "louiselm inline: " }, function(prompt)
+      if prompt == nil then
+        return
+      end
+      local _, inline_error = inline:run(prompt)
+      report_error(inline_error)
+    end)
+  end, { desc = "Replace the current selection with louiselm output", force = true })
   return true
 end
 
