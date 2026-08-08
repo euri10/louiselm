@@ -1,0 +1,258 @@
+---@class louiselm.session.ConfigValue
+---@field value string Wire value identifier.
+---@field name string Human-readable value name.
+---@field description? string Optional agent-provided description.
+
+---@class louiselm.session.ConfigOption
+---@field id string Wire configuration identifier.
+---@field name string Human-readable option name.
+---@field description? string Optional agent-provided description.
+---@field category? string Optional ACP semantic category.
+---@field type "select"|"boolean" Supported input kind.
+---@field current_value string|boolean Current agent-reported value.
+---@field options? louiselm.session.ConfigValue[] Select values in agent order.
+
+---@class louiselm.session.ContextUsage
+---@field used number Tokens currently in context.
+---@field size number Effective context window size.
+---@field percentage number Derived percentage used.
+---@field pressure "normal"|"elevated"|"high"|"critical" Passive pressure state.
+---@field stale boolean Whether a model change made this reading stale.
+
+---@class louiselm.session.Cost
+---@field amount number Agent-reported cumulative amount.
+---@field currency string Agent-reported currency.
+
+---@class louiselm.session.TurnUsage
+---@field total_tokens? number
+---@field input_tokens? number
+---@field output_tokens? number
+---@field thought_tokens? number
+---@field cached_read_tokens? number
+---@field cached_write_tokens? number
+
+local M = {}
+
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
+---@param value unknown
+---@return boolean
+local function non_empty_string(value)
+  return type(value) == "string" and value ~= ""
+end
+
+---@param value table
+---@return boolean
+local function dense_array(value)
+  local count = 0
+  local maximum = 0
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      return false
+    end
+    count = count + 1
+    maximum = math.max(maximum, key)
+  end
+  return count == maximum
+end
+
+---@param value unknown
+---@return louiselm.session.ConfigValue[]? values
+local function parse_values(value)
+  if type(value) ~= "table" or not dense_array(value) then
+    return nil
+  end
+  local values = {}
+  local seen = {}
+  for index, item in ipairs(value) do
+    if
+      type(item) ~= "table"
+      or not non_empty_string(item.value)
+      or not non_empty_string(item.name)
+      or (item.description ~= nil and type(item.description) ~= "string")
+    then
+      return nil
+    end
+    if seen[item.value] then
+      return nil
+    end
+    seen[item.value] = true
+    values[index] = { value = item.value, name = item.name, description = item.description }
+  end
+  return values
+end
+
+---Validate and copy a complete agent-provided configuration option list.
+---Unknown future option kinds are omitted; malformed supported kinds fail.
+---@param value unknown
+---@return louiselm.session.ConfigOption[]? options
+---@return string? error_message
+function M.config_options(value)
+  if value == nil then
+    return {}
+  end
+  if type(value) ~= "table" or not dense_array(value) then
+    return nil, "configOptions must be an array"
+  end
+  local options = {}
+  local seen = {}
+  for _, item in ipairs(value) do
+    if type(item) ~= "table" or not non_empty_string(item.type) then
+      return nil, "config option must contain a type"
+    end
+    if item.type == "select" or item.type == "boolean" then
+      if
+        not non_empty_string(item.id)
+        or not non_empty_string(item.name)
+        or (item.description ~= nil and type(item.description) ~= "string")
+        or (item.category ~= nil and not non_empty_string(item.category))
+      then
+        return nil, "config option has malformed common fields"
+      end
+      if seen[item.id] then
+        return nil, "config option id is duplicated"
+      end
+      seen[item.id] = true
+      local option = {
+        id = item.id,
+        name = item.name,
+        description = item.description,
+        category = item.category,
+        type = item.type,
+        current_value = item.currentValue,
+      }
+      if item.type == "boolean" then
+        if type(item.currentValue) ~= "boolean" or item.options ~= nil then
+          return nil, "boolean config option is malformed"
+        end
+      else
+        local values = parse_values(item.options)
+        if type(item.currentValue) ~= "string" or values == nil then
+          return nil, "select config option is malformed"
+        end
+        local current_exists = false
+        for _, current in ipairs(values) do
+          if current.value == item.currentValue then
+            current_exists = true
+            break
+          end
+        end
+        if not current_exists then
+          return nil, "select config option currentValue is not available"
+        end
+        option.options = values
+      end
+      options[#options + 1] = option
+    end
+  end
+  return options
+end
+
+---Find a supported configuration option by id.
+---@param options louiselm.session.ConfigOption[]
+---@param id string
+---@return louiselm.session.ConfigOption? option
+function M.find_option(options, id)
+  for _, option in ipairs(options) do
+    if option.id == id then
+      return option
+    end
+  end
+end
+
+---Return the current model-category value, when advertised.
+---@param options louiselm.session.ConfigOption[]
+---@return string|boolean|nil value
+function M.model_value(options)
+  for _, option in ipairs(options) do
+    if option.category == "model" then
+      return option.current_value
+    end
+  end
+end
+
+---Validate one context/cost usage update.
+---@param value unknown
+---@return louiselm.session.ContextUsage? context
+---@return louiselm.session.Cost? cost
+---@return boolean cost_present
+function M.usage_update(value)
+  if
+    type(value) ~= "table"
+    or type(value.used) ~= "number"
+    or type(value.size) ~= "number"
+    or value.used < 0
+    or value.size <= 0
+    or value.used > value.size
+  then
+    return nil, nil, false
+  end
+  local percentage = value.used / value.size * 100
+  local pressure = "normal"
+  if percentage >= 95 then
+    pressure = "critical"
+  elseif percentage >= 90 then
+    pressure = "high"
+  elseif percentage >= 75 then
+    pressure = "elevated"
+  end
+  local context = {
+    used = value.used,
+    size = value.size,
+    percentage = percentage,
+    pressure = pressure,
+    stale = false,
+  }
+  if value.cost == nil then
+    return context, nil, false
+  end
+  if value.cost == nvim.NIL then
+    return context, nil, true
+  end
+  if
+    type(value.cost) ~= "table"
+    or type(value.cost.amount) ~= "number"
+    or value.cost.amount < 0
+    or type(value.cost.currency) ~= "string"
+    or value.cost.currency:match("^[A-Z][A-Z][A-Z]$") == nil
+  then
+    return nil, nil, false
+  end
+  return context, { amount = value.cost.amount, currency = value.cost.currency }, true
+end
+
+local USAGE_FIELDS = {
+  "total_tokens",
+  "input_tokens",
+  "output_tokens",
+  "thought_tokens",
+  "cached_read_tokens",
+  "cached_write_tokens",
+}
+
+---Validate and copy optional agent-reported turn usage fields.
+---@param value unknown
+---@return louiselm.session.TurnUsage? usage
+---@return boolean valid
+function M.turn_usage(value)
+  if value == nil then
+    return nil, true
+  end
+  if type(value) ~= "table" then
+    return nil, false
+  end
+  local usage = {}
+  for _, name in ipairs(USAGE_FIELDS) do
+    local amount = value[name]
+    if amount ~= nil then
+      if type(amount) ~= "number" or amount < 0 or amount % 1 ~= 0 then
+        return nil, false
+      end
+      usage[name] = amount
+    end
+  end
+  return usage, true
+end
+
+return M

@@ -117,10 +117,18 @@ end
 function M.register()
   local chat
 
-  nvim.api.nvim_create_user_command("LouiselmChat", function()
+  ---@param message string?
+  local function report_error(message)
+    if message ~= nil then
+      nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
+    end
+  end
+
+  ---@return louiselm.ui.Chat? value
+  local function open_chat()
     if chat ~= nil and chat:buffer() ~= nil then
       nvim.api.nvim_set_current_buf(chat:buffer())
-      return
+      return chat
     end
 
     local definitions = configured and configured_agents(configured)
@@ -131,7 +139,7 @@ function M.register()
     local sessions, session_errors = session_module().new(definitions)
     if sessions == nil then
       nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
-      return
+      return nil
     end
     local skills, initial_contexts, skills_error = {}, {}, nil
     if configured ~= nil then
@@ -139,7 +147,7 @@ function M.register()
     end
     if skills_error ~= nil then
       nvim.notify("louiselm: " .. skills_error, nvim.log.levels.ERROR)
-      return
+      return nil
     end
     chat = assert(require("louiselm.ui.chat").new(sessions, {
       agents = names,
@@ -147,10 +155,58 @@ function M.register()
       initial_contexts = initial_contexts,
     }))
     local _, session_error = chat:new_session()
-    if session_error ~= nil then
-      nvim.notify("louiselm: " .. session_error, nvim.log.levels.ERROR)
-    end
+    report_error(session_error)
+    return chat
+  end
+
+  nvim.api.nvim_create_user_command("LouiselmChat", function()
+    open_chat()
   end, { desc = "Open the louiselm chat buffer", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmNewSession", function()
+    if chat == nil then
+      open_chat()
+      return
+    end
+    local _, session_error = chat:new_session()
+    report_error(session_error)
+  end, { desc = "Create a separate louiselm session", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmSwitchSession", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, switch_error = chat:switch_session()
+    report_error(switch_error)
+  end, { desc = "Switch between louiselm sessions", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmCloseSession", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, close_error = chat:close_session()
+    report_error(close_error)
+  end, { desc = "Close the current louiselm session", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmCancel", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, cancel_error = chat:cancel()
+    report_error(cancel_error)
+  end, { desc = "Cancel the current louiselm turn", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmSessionOptions", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, options_error = chat:session_options()
+    report_error(options_error)
+  end, { desc = "Configure the current idle louiselm session", force = true })
   return true
 end
 

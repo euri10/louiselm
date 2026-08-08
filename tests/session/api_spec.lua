@@ -100,11 +100,21 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
       content = { type = "text", text = "previous answer" },
     },
   })
+  notification(process, "session/update", {
+    sessionId = "prior-acp",
+    update = {
+      sessionUpdate = "config_option_update",
+      configOptions = {
+        { id = "brave", name = "Brave", type = "boolean", currentValue = true },
+      },
+    },
+  })
   respond(process, 2, nvim.NIL)
 
   MiniTest.expect.equality(ready.error, nil)
   MiniTest.expect.equality(ready.session, session)
   MiniTest.expect.equality(events[1].data.content.text, "previous answer")
+  MiniTest.expect.equality(session:inspect().config_options[1].current_value, true)
   MiniTest.expect.equality(session:inspect().status, "ready")
 
   assert(api:dispose())
@@ -127,6 +137,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     status = "ready",
     working_dir = "/tmp/one",
     current_turn = 0,
+    config_options = {},
   })
   MiniTest.expect.equality(second:inspect(), {
     id = "session-2",
@@ -134,10 +145,213 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     status = "ready",
     working_dir = "/tmp/two",
     current_turn = 0,
+    config_options = {},
   })
   MiniTest.expect.equality(api:list_sessions(), { "session-1", "session-2" })
   MiniTest.expect.equality(api:get_session("session-1"), first)
   MiniTest.expect.equality(api:get_session("session-2"), second)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["tracks supported config options and replaces dependent options after a change"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local events = {}
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    on_event = function(event)
+      events[#events + 1] = event
+    end,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, {
+    sessionId = "agent-acp",
+    configOptions = {
+      {
+        id = "model",
+        name = "Model",
+        category = "model",
+        type = "select",
+        currentValue = "small",
+        options = { { value = "small", name = "Small" }, { value = "large", name = "Large" } },
+      },
+      { id = "brave", name = "Brave", type = "boolean", currentValue = false },
+      { id = "future", name = "Future", type = "slider", currentValue = 3 },
+    },
+  })
+
+  MiniTest.expect.equality(session:inspect().config_options, {
+    {
+      id = "model",
+      name = "Model",
+      category = "model",
+      type = "select",
+      current_value = "small",
+      options = { { value = "small", name = "Small" }, { value = "large", name = "Large" } },
+    },
+    { id = "brave", name = "Brave", type = "boolean", current_value = false },
+  })
+
+  local changed
+  assert(session:set_config_option("model", "large", function(options, err)
+    changed = { options = options, error = err }
+  end))
+  MiniTest.expect.equality(session:inspect().status, "configuring")
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).params, {
+    sessionId = "agent-acp",
+    configId = "model",
+    value = "large",
+  })
+  respond(process, 3, {
+    configOptions = {
+      {
+        id = "model",
+        name = "Model",
+        category = "model",
+        type = "select",
+        currentValue = "large",
+        options = { { value = "large", name = "Large" } },
+      },
+    },
+  })
+  MiniTest.expect.equality(changed.error, nil)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(changed.options, session:inspect().config_options)
+  changed.options[1].name = "mutated callback value"
+  MiniTest.expect.equality(session:inspect().config_options[1].name, "Model")
+  MiniTest.expect.equality(events[#events].type, "config_options_changed")
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = 50, size = 100 },
+  })
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "config_option_update",
+      configOptions = {
+        {
+          id = "model",
+          name = "Model",
+          category = "model",
+          type = "select",
+          currentValue = "small",
+          options = { { value = "small", name = "Small" } },
+        },
+      },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().config_options[1].current_value, "small")
+  MiniTest.expect.equality(session:inspect().context.stale, true)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["tracks context cost and reported turn usage and rejects malformed telemetry"] = function()
+  local processes, original_system = fake_processes()
+  local events = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "usage_update",
+      used = 180,
+      size = 200,
+      cost = { amount = 1.25, currency = "USD" },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().context, {
+    used = 180,
+    size = 200,
+    percentage = 90,
+    pressure = "high",
+    stale = false,
+  })
+  MiniTest.expect.equality(session:inspect().cost, { amount = 1.25, currency = "USD" })
+  MiniTest.expect.equality(events[#events].type, "usage_updated")
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = 150, size = 200 },
+  })
+  MiniTest.expect.equality(session:inspect().context.pressure, "elevated")
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = 190, size = 200 },
+  })
+  MiniTest.expect.equality(session:inspect().context.pressure, "critical")
+
+  local request_id = assert(session:prompt("hello"))
+  respond(process, request_id, {
+    stopReason = "end_turn",
+    usage = { total_tokens = 30, input_tokens = 20, cached_read_tokens = 7, ignored = "future" },
+  })
+  MiniTest.expect.equality(session:inspect().usage, {
+    total_tokens = 30,
+    input_tokens = 20,
+    cached_read_tokens = 7,
+  })
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = -1, size = 0 },
+  })
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(events[#events].data.message, "malformed ACP usage_update notification")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["rejects malformed supported config options during startup"] = function()
+  local processes, original_system = fake_processes()
+  local ready
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", nil, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, {
+    sessionId = "agent-acp",
+    configOptions = { { id = "brave", name = "Brave", type = "boolean", currentValue = "yes" } },
+  })
+
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(ready.error:find("malformed configOptions", 1, true) ~= nil, true)
+  MiniTest.expect.equality(session:inspect().status, "error")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["rejects option changes while prompting or waiting for permission"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  assert(session:prompt("hello"))
+  MiniTest.expect.equality({ session:set_config_option("model", "large") }, { nil, "session is not idle" })
+
+  local request = {
+    jsonrpc = "2.0",
+    id = 9,
+    method = "session/request_permission",
+    params = { sessionId = "agent-acp", options = { "allow", "deny" } },
+  }
+  process.options.stdout(nil, assert(Protocol.encode(request)) .. "\n")
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  MiniTest.expect.equality({ session:set_config_option("model", "large") }, { nil, "session is not idle" })
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
 
   api:dispose()
   restore_processes(original_system)
@@ -184,13 +398,19 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   })
   respond(process, request_id, { stopReason = "end_turn" })
 
-  MiniTest.expect.equality({ events[1].type, events[2].type, events[3].type, events[4].type }, {
+  local streamed = {}
+  for _, event in ipairs(events) do
+    if event.type ~= "state_changed" then
+      streamed[#streamed + 1] = event
+    end
+  end
+  MiniTest.expect.equality({ streamed[1].type, streamed[2].type, streamed[3].type, streamed[4].type }, {
     "chunk",
     "tool_call_started",
     "tool_call_finished",
     "turn_done",
   })
-  MiniTest.expect.equality(events[1].data.content.text, "hello")
+  MiniTest.expect.equality(streamed[1].data.content.text, "hello")
   MiniTest.expect.equality(completed, { result = { stopReason = "end_turn" }, error = nil })
   MiniTest.expect.equality(session:inspect().status, "ready")
 
@@ -243,6 +463,7 @@ T["new"]["publishes permission requests with a response function"] = function()
   local sent, send_error = permission.respond({ outcome = { outcome = "cancelled" } })
   MiniTest.expect.equality(sent, true)
   MiniTest.expect.equality(send_error, nil)
+  MiniTest.expect.equality(session:inspect().status, "prompting")
   MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).id, 9)
 
   api:dispose()

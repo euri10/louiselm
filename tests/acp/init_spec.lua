@@ -48,6 +48,7 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
     params = {
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
+        session = { configOptions = { boolean = {} } },
         terminal = false,
       },
       clientInfo = { name = "louiselm.nvim", version = "0.1.0" },
@@ -75,6 +76,14 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
   })
   calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1"}}\n')
   MiniTest.expect.equality(session_id, "session-1")
+
+  client:set_config_option({ sessionId = "session-1", configId = "model", value = "large" })
+  MiniTest.expect.equality(assert(Protocol.decode(calls[3]:sub(1, -2))), {
+    id = 3,
+    jsonrpc = "2.0",
+    method = "session/set_config_option",
+    params = { sessionId = "session-1", configId = "model", value = "large" },
+  })
 end
 
 T["connect"]["rejects loading when the agent lacks loadSession capability"] = function()

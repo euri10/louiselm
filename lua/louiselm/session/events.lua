@@ -3,14 +3,52 @@
 ---| "tool_call_started"
 ---| "tool_call_finished"
 ---| "permission_requested"
+---| "config_options_changed"
+---| "usage_updated"
+---| "state_changed"
 ---| "turn_done"
 ---| "error"
 
----@class louiselm.session.Event
----@field type louiselm.session.EventType Event kind.
+---@class louiselm.session.EventBase
 ---@field session_id string Local session identifier.
+
+---@class louiselm.session.StateChangedData
+---@field status louiselm.session.Status Current lifecycle state.
+---@field activity? string Current generic tool activity.
+
+---@class louiselm.session.StateChangedEvent: louiselm.session.EventBase
+---@field type "state_changed"
+---@field data louiselm.session.StateChangedData
+
+---@class louiselm.session.ConfigOptionsChangedEvent: louiselm.session.EventBase
+---@field type "config_options_changed"
+---@field data louiselm.session.ConfigOption[] Complete supported option state in agent order.
+
+---@class louiselm.session.UsageUpdatedData
+---@field context louiselm.session.ContextUsage Current context usage.
+---@field cost? louiselm.session.Cost Current cumulative cost, when reported.
+
+---@class louiselm.session.UsageUpdatedEvent: louiselm.session.EventBase
+---@field type "usage_updated"
+---@field data louiselm.session.UsageUpdatedData
+
+---@class louiselm.session.PermissionData
+---@field request_id string|number ACP request identifier.
+---@field operation louiselm.permission.Request Normalized requested operation.
+---@field policy_decision louiselm.permission.Decision Evaluated policy decision.
+---@field options? unknown[] Agent-advertised response options.
+---@field toolCall? table Agent tool call payload.
+
+---@class louiselm.session.PermissionEvent: louiselm.session.EventBase
+---@field type "permission_requested"
+---@field data louiselm.session.PermissionData
+---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? Permission response callback.
+
+---@class louiselm.session.GenericEvent: louiselm.session.EventBase
+---@field type "chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"|"error"
 ---@field data unknown Event-specific payload.
----@field respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? Permission response callback.
+
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

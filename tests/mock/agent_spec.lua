@@ -114,12 +114,16 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
     return completed ~= nil
   end)
   MiniTest.expect.equality(completed, {
-    result = { sessionUpdate = "turn_done", stopReason = "end_turn" },
+    result = { stopReason = "end_turn" },
     error = nil,
   })
-  MiniTest.expect.equality(events[1].type, "permission_requested")
-  MiniTest.expect.equality(events[2].type, "chunk")
-  MiniTest.expect.equality(events[3].type, "turn_done")
+  local meaningful = {}
+  for _, event in ipairs(events) do
+    if event.type ~= "state_changed" then
+      meaningful[#meaningful + 1] = event.type
+    end
+  end
+  MiniTest.expect.equality(meaningful, { "permission_requested", "chunk", "turn_done" })
 
   assert(api:dispose())
 end

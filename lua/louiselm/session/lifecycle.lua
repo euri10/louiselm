@@ -1,11 +1,12 @@
 local Acp = require("louiselm.acp")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
+local Validation = require("louiselm.session.validation")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
----@alias louiselm.session.Status "starting"|"ready"|"prompting"|"cancelling"|"error"|"disposed"
+---@alias louiselm.session.Status "starting"|"ready"|"configuring"|"prompting"|"waiting_permission"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
 
 ---@class louiselm.session.State
@@ -14,6 +15,11 @@ local nvim = vim
 ---@field status louiselm.session.Status Lifecycle state.
 ---@field working_dir string ACP working directory.
 ---@field current_turn integer Number of the current or most recently completed turn.
+---@field config_options louiselm.session.ConfigOption[] Supported agent-advertised options in priority order.
+---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
+---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
+---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
+---@field activity? string Current generic tool activity.
 
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
@@ -39,11 +45,25 @@ local nvim = vim
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
 ---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string|number?, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
+---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
 ---@field dispose fun(self: louiselm.session.Session): boolean, string?
 
 local M = {}
 local Session = {}
 Session.__index = Session
+
+---@param value unknown
+---@return unknown copy
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, item in pairs(value) do
+    result[key] = copy(item)
+  end
+  return result
+end
 
 ---@param error_value louiselm.acp.JsonRpcError|string|nil
 ---@return string
@@ -62,7 +82,21 @@ local function emit(self, event_type, data, respond)
   if self.state.status == "disposed" then
     return
   end
-  self.emitter:emit({ type = event_type, session_id = self.state.id, data = data, respond = respond })
+  if respond ~= nil then
+    self.emitter:emit({ type = event_type, session_id = self.state.id, data = data, respond = respond })
+  else
+    self.emitter:emit({ type = event_type, session_id = self.state.id, data = data })
+  end
+end
+
+---@param self louiselm.session.Session
+---@param status louiselm.session.Status
+local function set_status(self, status)
+  if self.state.status == status then
+    return
+  end
+  self.state.status = status
+  emit(self, "state_changed", { status = status, activity = self.state.activity })
 end
 
 ---@param self louiselm.session.Session
@@ -71,7 +105,7 @@ local function fail(self, message)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
-  self.state.status = "error"
+  set_status(self, "error")
   local prompt_callback = self.prompt_callback
   self.prompt_callback = nil
   emit(self, "error", { message = message })
@@ -95,7 +129,7 @@ local function complete_turn(self, result)
   end
   if self.turn_done_turn ~= self.state.current_turn then
     self.turn_done_turn = self.state.current_turn
-    self.state.status = "ready"
+    set_status(self, "ready")
     emit(self, "turn_done", result)
   end
   local callback = self.prompt_callback
@@ -128,12 +162,37 @@ local function handle_notification(self, message)
   elseif update_type == "tool_call" or update_type == "tool_call_update" then
     local status = update.status
     if status == "completed" or status == "failed" or status == "cancelled" then
+      self.state.activity = nil
       emit(self, "tool_call_finished", update)
     else
+      self.state.activity = type(update.title) == "string" and update.title or "tool"
       emit(self, "tool_call_started", update)
     end
-  elseif update_type == "turn_done" or update_type == "turn_complete" then
-    complete_turn(self, update)
+    emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
+  elseif update_type == "config_option_update" then
+    local options = Validation.config_options(update.configOptions)
+    if options == nil then
+      fail(self, "malformed ACP config_option_update notification")
+      return
+    end
+    local previous_model = Validation.model_value(self.state.config_options)
+    self.state.config_options = options
+    local current_model = Validation.model_value(options)
+    if self.state.context ~= nil and previous_model ~= nil and previous_model ~= current_model then
+      self.state.context.stale = true
+    end
+    emit(self, "config_options_changed", copy(options))
+  elseif update_type == "usage_update" then
+    local context, cost, cost_present = Validation.usage_update(update)
+    if context == nil then
+      fail(self, "malformed ACP usage_update notification")
+      return
+    end
+    self.state.context = context
+    if cost_present then
+      self.state.cost = cost
+    end
+    emit(self, "usage_updated", copy({ context = context, cost = self.state.cost }))
   end
 end
 
@@ -167,7 +226,15 @@ local function handle_request(self, request, respond)
       return
     end
   end
-  emit(self, "permission_requested", data, respond)
+  set_status(self, "waiting_permission")
+  local function permission_respond(result, rpc_error)
+    local sent, send_error = respond(result, rpc_error)
+    if sent and self.state.status == "waiting_permission" then
+      set_status(self, "prompting")
+    end
+    return sent, send_error
+  end
+  emit(self, "permission_requested", data, permission_respond)
 end
 
 ---@param self louiselm.session.Session
@@ -230,7 +297,25 @@ local function handle_initialized(self, result, rpc_error)
       end
       self.acp_session_id = session_result.sessionId
     end
-    self.state.status = "ready"
+    local options, options_error
+    if self.load_session_id ~= nil and session_result == nvim.NIL then
+      options = copy(self.state.config_options)
+    else
+      local config_options
+      if type(session_result) == "table" and session_result ~= nvim.NIL then
+        config_options = session_result.configOptions
+      end
+      options, options_error = Validation.config_options(config_options)
+    end
+    if options == nil then
+      fail(
+        self,
+        "ACP session/" .. method .. " returned malformed configOptions: " .. (options_error or "invalid options")
+      )
+      return
+    end
+    self.state.config_options = options
+    set_status(self, "ready")
     if not self.ready_callback_called then
       self.ready_callback_called = true
       local callback = self.ready_callback
@@ -265,6 +350,16 @@ local function handle_prompt_result(self, result, rpc_error)
     fail(self, message)
     return
   end
+  if type(result) ~= "table" then
+    fail(self, "ACP session/prompt returned a malformed result")
+    return
+  end
+  local usage, usage_valid = Validation.turn_usage(result.usage)
+  if not usage_valid then
+    fail(self, "ACP session/prompt returned malformed usage")
+    return
+  end
+  self.state.usage = usage
   complete_turn(self, result)
 end
 
@@ -286,6 +381,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       status = "starting",
       working_dir = working_dir,
       current_turn = 0,
+      config_options = {},
     },
     emitter = Events.new(),
     owner = owner,
@@ -350,10 +446,8 @@ end
 ---@param self louiselm.session.Session
 ---@return louiselm.session.State state Copy of current state.
 function Session:inspect()
-  local state = {}
-  for key, value in pairs(self.state) do
-    state[key] = value
-  end
+  local state = copy(self.state)
+  ---@cast state louiselm.session.State
   return state
 end
 
@@ -376,7 +470,7 @@ function Session:prompt(prompt, callback)
   if client == nil then
     return nil, "session has no ACP client"
   end
-  self.state.status = "prompting"
+  set_status(self, "prompting")
   self.state.current_turn = self.state.current_turn + 1
   self.turn_done_turn = nil
   self.prompt_callback = callback
@@ -399,7 +493,11 @@ end
 ---@return boolean sent
 ---@return string? error_message ACP write or state error.
 function Session:cancel()
-  if self.state.status ~= "prompting" and self.state.status ~= "cancelling" then
+  if
+    self.state.status ~= "prompting"
+    and self.state.status ~= "waiting_permission"
+    and self.state.status ~= "cancelling"
+  then
     return false, "session is not prompting"
   end
   local client = self.client
@@ -412,8 +510,94 @@ function Session:cancel()
     fail(self, message)
     return false, message
   end
-  self.state.status = "cancelling"
+  set_status(self, "cancelling")
   return true
+end
+
+---Change a supported option while the session is idle and replace all local options from the response.
+---@param self louiselm.session.Session
+---@param id string Option identifier.
+---@param value string|boolean New value matching the advertised option kind.
+---@param callback? fun(options: louiselm.session.ConfigOption[]?, error?: string) Called once with the complete replacement list.
+---@return string|number? request_id ACP request identifier.
+---@return string? error_message Validation, lifecycle, or write error.
+function Session:set_config_option(id, value, callback)
+  if self.state.status ~= "ready" then
+    return nil, "session is not idle"
+  end
+  if type(id) ~= "string" or id == "" then
+    return nil, "config option id must be a non-empty string"
+  end
+  local option = Validation.find_option(self.state.config_options, id)
+  if option == nil then
+    return nil, "unknown config option '" .. id .. "'"
+  end
+  if option.type == "boolean" then
+    if type(value) ~= "boolean" then
+      return nil, "boolean config option requires a boolean value"
+    end
+  else
+    if type(value) ~= "string" then
+      return nil, "select config option requires a string value"
+    end
+    local available = false
+    for _, item in ipairs(option.options or {}) do
+      if item.value == value then
+        available = true
+        break
+      end
+    end
+    if not available then
+      return nil, "config option value is not available"
+    end
+  end
+  local client = self.client
+  if client == nil then
+    return nil, "session has no ACP client"
+  end
+  local params = { sessionId = self.acp_session_id, configId = id, value = value }
+  if option.type == "boolean" then
+    params.type = "boolean"
+  end
+  local previous_model = Validation.model_value(self.state.config_options)
+  set_status(self, "configuring")
+  local request_id, request_error = client:set_config_option(params, function(result, rpc_error)
+    if self.state.status == "disposed" then
+      return
+    end
+    if rpc_error ~= nil then
+      local message = "ACP session/set_config_option failed: " .. error_message(rpc_error)
+      set_status(self, "ready")
+      if callback ~= nil then
+        callback(nil, message)
+      end
+      return
+    end
+    local options, options_error = Validation.config_options(type(result) == "table" and result.configOptions)
+    if options == nil then
+      local message = "ACP session/set_config_option returned malformed configOptions: "
+        .. (options_error or "invalid options")
+      fail(self, message)
+      if callback ~= nil then
+        callback(nil, message)
+      end
+      return
+    end
+    self.state.config_options = options
+    if self.state.context ~= nil and previous_model ~= Validation.model_value(options) then
+      self.state.context.stale = true
+    end
+    set_status(self, "ready")
+    emit(self, "config_options_changed", copy(options))
+    if callback ~= nil then
+      callback(copy(options))
+    end
+  end)
+  if request_id == nil then
+    set_status(self, "ready")
+    return nil, request_error or "ACP config option request could not be sent"
+  end
+  return request_id
 end
 
 ---Dispose this session, terminate its ACP process, and remove it from its registry.
@@ -424,7 +608,7 @@ function Session:dispose()
   if self.state.status == "disposed" then
     return true
   end
-  self.state.status = "disposed"
+  set_status(self, "disposed")
   self.prompt_callback = nil
   local client = self.client
   local closed, close_error = true, nil

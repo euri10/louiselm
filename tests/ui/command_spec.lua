@@ -49,7 +49,13 @@ end
 T["command"] = MiniTest.new_set()
 
 T["command"]["minimal init exposes the canonical chat command"] = function()
+  local commands = nvim.api.nvim_get_commands({ builtin = false })
   MiniTest.expect.equality(has_chat_command(), true)
+  MiniTest.expect.equality(commands.LouiselmCancel ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmNewSession ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmSwitchSession ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmCloseSession ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmSessionOptions ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
 end

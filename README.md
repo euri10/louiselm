@@ -251,6 +251,29 @@ the buffer, including slash commands, are passed to the session unchanged.
 Call `chat:dispose()` to remove its buffers and event listeners; it does not
 dispose the sessions it displays.
 
+When an agent returns supported ACP session options, a new chat opens an
+overview before the first prompt. Select and boolean options remain available
+while the session is idle; dismissing the overview keeps the agent defaults.
+The interactive controls are:
+
+- `:LouiselmSessionOptions` — inspect or change all supported options
+- `:LouiselmCancel` — cancel the active turn
+- `:LouiselmNewSession` — start another session without stopping existing ones
+- `:LouiselmSwitchSession` — switch using compact session telemetry rows
+- `:LouiselmCloseSession` — dispose the current session and remove its buffer
+
+The header reports lifecycle and tool activity, active option values, agent-
+reported context pressure and cumulative cost. Completed turns append only the
+usage fields reported by the agent. LouiseLM does not estimate token counts,
+prices, or compaction state.
+
+Headless consumers can call `session:set_config_option(id, value, callback)`
+while `session:inspect().status == "ready"`. Snapshots include
+`config_options`, optional `context`, `cost`, `usage`, and `activity` fields;
+the event stream adds `state_changed`, `config_options_changed`, and
+`usage_updated`. A model-category change marks existing context telemetry stale
+until the agent sends another `usage_update`.
+
 ## Permissions
 
 Sessions default to an `ask-human` policy: agent permission requests are held

@@ -22,6 +22,7 @@ local Transport = require("louiselm.acp.transport")
 ---@field new_session fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field load_session fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field prompt fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
+---@field set_config_option fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field cancel fun(self: louiselm.acp.Client, params: table): boolean, string?
 ---@field respond fun(self: louiselm.acp.Client, id: string|number, result: unknown, rpc_error?: louiselm.acp.JsonRpcError): boolean, string?
 ---@field close fun(self: louiselm.acp.Client): boolean, string?
@@ -177,6 +178,7 @@ function Client:initialize(params, callback)
       protocolVersion = M.PROTOCOL_VERSION,
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
+        session = { configOptions = { boolean = {} } },
         terminal = false,
       },
       clientInfo = { name = "louiselm.nvim", version = "0.1.0" },
@@ -250,6 +252,20 @@ function Client:prompt(params, callback)
     return nil, initialization_error
   end
   return self:request("session/prompt", params, callback)
+end
+
+---Change one ACP session configuration option.
+---@param self louiselm.acp.Client
+---@param params table Session id, option id, and typed value.
+---@param callback? fun(result: unknown, error?: louiselm.acp.JsonRpcError) Response callback.
+---@return string|number? id Request identifier, or nil on failure.
+---@return string? error_message Validation or write error.
+function Client:set_config_option(params, callback)
+  local initialized, initialization_error = require_initialized(self)
+  if not initialized then
+    return nil, initialization_error
+  end
+  return self:request("session/set_config_option", params, callback)
 end
 
 ---Cancel the active prompt turn for an ACP session.

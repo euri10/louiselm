@@ -9,8 +9,10 @@ local nvim = vim
 local function fake_session(id, agent)
   local listeners = {}
   local session = {
-    state = { id = id, agent = agent },
+    state = { id = id, agent = agent, status = "ready", current_turn = 0, config_options = {} },
     prompts = {},
+    config_changes = {},
+    disposed = false,
   }
 
   function session:on(callback)
@@ -32,6 +34,25 @@ local function fake_session(id, agent)
   function session:prompt(prompt)
     self.prompts[#self.prompts + 1] = prompt
     return #self.prompts
+  end
+
+  function session:set_config_option(option_id, value, callback)
+    self.config_changes[#self.config_changes + 1] = { id = option_id, value = value }
+    if callback ~= nil then
+      callback(self.state.config_options)
+    end
+    return #self.config_changes
+  end
+
+  function session:cancel()
+    self.state.status = "cancelling"
+    return true
+  end
+
+  function session:dispose()
+    self.disposed = true
+    self.state.status = "disposed"
+    return true
   end
 
   function session:emit(event)
@@ -109,7 +130,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1",
+    "# claude · session-1 · ready",
     "",
     "> /compact",
     "hello **world**",
@@ -139,12 +160,12 @@ T["chat"]["schedules session events before touching buffers"] = function()
   })
 
   MiniTest.expect.equality(#scheduled, 1)
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), { "# claude · session-1", "", "> hello", "", "> " })
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), { "# claude · session-1 · ready", "", "> hello", "", "> " })
   scheduled[1]()
   nvim.schedule = original_schedule
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1",
+    "# claude · session-1 · ready",
     "",
     "> hello",
     "scheduled",
@@ -288,7 +309,7 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1",
+    "# claude · session-1 · ready",
     "",
     "> [context: file: init.lua] ",
   })
@@ -300,6 +321,134 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
       { type = "text", text = "Review this" },
     },
   })
+  chat:dispose()
+end
+
+T["chat"]["renders state telemetry and reported-only usage"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.config_options = {
+    { id = "model", name = "Model", category = "model", type = "select", current_value = "opus", options = {} },
+    { id = "brave", name = "Brave", type = "boolean", current_value = true },
+  }
+  first.state.context = { used = 95, size = 100, percentage = 95, pressure = "critical", stale = false }
+  first.state.cost = { amount = 1.5, currency = "USD" }
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    callback(nil)
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  first.state.usage = { input_tokens = 12, cached_read_tokens = 3 }
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) == 4
+  end, 1)
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready · Model=opus · Brave=true · context=95/100 (95% critical) · cost=1.5 USD",
+    "",
+    "[usage] input_tokens=12 · cached_read_tokens=3",
+    "> ",
+  })
+  chat:dispose()
+end
+
+T["chat"]["opens the setup overview and applies a selected option"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.config_options = {
+    {
+      id = "model",
+      name = "Model",
+      type = "select",
+      current_value = "small",
+      options = { { value = "small", name = "Small" }, { value = "large", name = "Large" } },
+    },
+    { id = "brave", name = "Brave", type = "boolean", current_value = false },
+  }
+  local original_select = nvim.ui.select
+  local calls = {}
+  nvim.ui.select = function(items, options, callback)
+    calls[#calls + 1] = { items = items, options = options }
+    if #calls == 1 then
+      callback(items[1])
+    elseif #calls == 2 then
+      callback(items[2])
+    else
+      callback(nil)
+    end
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  nvim.wait(100, function()
+    return #calls == 3
+  end, 1)
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(calls[1].options.prompt, "louiselm session options: ")
+  MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Model: small")
+  MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
+  chat:dispose()
+end
+
+T["chat"]["ignores a queued setup overview after disposal"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.config_options = {
+    { id = "brave", name = "Brave", type = "boolean", current_value = false },
+  }
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local scheduled = {}
+  local selects = 0
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+  nvim.ui.select = function()
+    selects = selects + 1
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  chat:dispose()
+  scheduled[1]()
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(selects, 0)
+end
+
+T["chat"]["switches with telemetry rows and closes only the selected session"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  second.state.status = "prompting"
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2" }
+  end
+  api.get_session = function(_, id)
+    return id == "session-1" and first or second
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local original_select = nvim.ui.select
+  local prompts = {}
+  nvim.ui.select = function(items, options, callback)
+    prompts[#prompts + 1] = options
+    callback(items[1])
+  end
+
+  assert(chat:switch_session())
+  MiniTest.expect.equality(chat.current_id, "session-1")
+  assert(chat:switch("session-2"))
+  assert(chat:close_session())
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(prompts[1].prompt, "louiselm session: ")
+  MiniTest.expect.equality(prompts[1].format_item(first), "one · session-1 · ready")
+  MiniTest.expect.equality(prompts[2].prompt, "close active louiselm session? ")
+  MiniTest.expect.equality(second.disposed, true)
+  MiniTest.expect.equality(first.disposed, false)
+  MiniTest.expect.equality(chat:buffer("session-2"), nil)
   chat:dispose()
 end
 

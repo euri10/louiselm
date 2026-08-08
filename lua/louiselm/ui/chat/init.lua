@@ -15,6 +15,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field response_tail integer? Zero-based last streamed response line.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
+---@field setup_shown boolean Whether the initial options overview was offered.
 ---@field unsubscribe fun() Session event listener removal function.
 
 ---@class louiselm.ui.Chat
@@ -29,6 +30,11 @@ local Diff = require("louiselm.ui.diff")
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
+---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
+---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
+---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
+---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
+---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number?, string? Submit the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
 ---@field mention_buffer fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer context.
@@ -133,6 +139,47 @@ local function set_line(buffer, line, value)
   nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
 end
 
+---@param value number
+---@return string
+local function format_number(value)
+  if value % 1 == 0 then
+    return string.format("%.0f", value)
+  end
+  return tostring(value)
+end
+
+---@param state louiselm.session.State
+---@return string
+local function session_summary(state)
+  local parts = { state.agent, state.id, state.status or "unknown" }
+  if state.activity ~= nil then
+    parts[#parts + 1] = "activity=" .. state.activity
+  end
+  for _, option in ipairs(state.config_options or {}) do
+    parts[#parts + 1] = option.name .. "=" .. tostring(option.current_value)
+  end
+  if state.context ~= nil then
+    local stale = state.context.stale and " stale" or ""
+    parts[#parts + 1] = string.format(
+      "context=%s/%s (%.0f%% %s%s)",
+      format_number(state.context.used),
+      format_number(state.context.size),
+      state.context.percentage,
+      state.context.pressure,
+      stale
+    )
+  end
+  if state.cost ~= nil then
+    parts[#parts + 1] = "cost=" .. format_number(state.cost.amount) .. " " .. state.cost.currency
+  end
+  return table.concat(parts, " · ")
+end
+
+---@param view louiselm.ui.ChatView
+local function render_header(view)
+  set_line(view.buffer, 0, "# " .. session_summary(view.session:inspect()))
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param item louiselm.ui.ContextItem
@@ -211,6 +258,7 @@ local function field(value, name)
 end
 
 local insert_before_prompt
+local open_session_options
 
 ---@param option unknown
 ---@return string? identifier
@@ -323,6 +371,101 @@ insert_before_prompt = function(self, view, lines)
   view.prompt_line = view.prompt_line + #lines
 end
 
+---@param option louiselm.session.ConfigOption
+---@return table[] values
+local function config_values(option)
+  if option.type == "boolean" then
+    return { { value = true, name = "true" }, { value = false, name = "false" } }
+  end
+  return option.options or {}
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param initial boolean
+open_session_options = function(self, view, initial)
+  if self.disposed or self.views[view.session:inspect().id] ~= view then
+    return
+  end
+  local state = view.session:inspect()
+  if state.status ~= "ready" or #state.config_options == 0 then
+    return
+  end
+  if initial then
+    if view.setup_shown then
+      return
+    end
+    view.setup_shown = true
+  end
+  nvim.ui.select(state.config_options, {
+    prompt = "louiselm session options: ",
+    format_item = function(option)
+      return option.name .. ": " .. tostring(option.current_value)
+    end,
+  }, function(option)
+    if option == nil or self.disposed or self.views[state.id] ~= view then
+      return
+    end
+    nvim.ui.select(config_values(option), {
+      prompt = option.name .. ": ",
+      format_item = function(value)
+        return value.name
+      end,
+    }, function(choice)
+      if self.disposed or self.views[state.id] ~= view then
+        return
+      end
+      if choice == nil then
+        open_session_options(self, view, false)
+        return
+      end
+      local _, set_error = self:set_config_option(option.id, choice.value, function(_, callback_error)
+        nvim.schedule(function()
+          if self.disposed or self.views[state.id] ~= view then
+            return
+          end
+          if callback_error ~= nil then
+            insert_before_prompt(self, view, { "Error: " .. callback_error })
+          else
+            render_header(view)
+          end
+          open_session_options(self, view, false)
+        end)
+      end)
+      if set_error ~= nil then
+        insert_before_prompt(self, view, { "Error: " .. set_error })
+      end
+    end)
+  end)
+end
+
+local TURN_USAGE_FIELDS = {
+  "total_tokens",
+  "input_tokens",
+  "output_tokens",
+  "thought_tokens",
+  "cached_read_tokens",
+  "cached_write_tokens",
+}
+
+---@param usage louiselm.session.TurnUsage?
+---@return string? line
+local function usage_line(usage)
+  if usage == nil then
+    return nil
+  end
+  local fields = {}
+  for _, name in ipairs(TURN_USAGE_FIELDS) do
+    if usage[name] ~= nil then
+      fields[#fields + 1] = name .. "=" .. format_number(usage[name])
+    end
+  end
+  if #fields == 0 then
+    return nil
+  end
+  return "[usage] " .. table.concat(fields, " · ")
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param event louiselm.session.Event
@@ -332,6 +475,13 @@ local function handle_event(self, view, event)
   end
   if not nvim.api.nvim_buf_is_valid(view.buffer) then
     return
+  end
+
+  if event.type == "state_changed" or event.type == "config_options_changed" or event.type == "usage_updated" then
+    render_header(view)
+  end
+  if event.type == "state_changed" and view.session:inspect().status == "ready" then
+    open_session_options(self, view, true)
   end
 
   if event.type == "chunk" then
@@ -379,6 +529,10 @@ local function handle_event(self, view, event)
       cancel_permission(self, view, event.respond)
     end
   elseif event.type == "turn_done" then
+    local line = usage_line(view.session:inspect().usage)
+    if line ~= nil then
+      insert_before_prompt(self, view, { line })
+    end
     view.response_line = nil
     view.response_tail = nil
   end
@@ -456,7 +610,7 @@ function Chat:attach(session)
   nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = buffer })
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
   nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "# " .. state.agent .. " · " .. state.id, "", "> " })
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "# " .. session_summary(state), "", "> " })
 
   local view = {
     session = session,
@@ -467,6 +621,7 @@ function Chat:attach(session)
     response_tail = nil,
     contexts = {},
     context_prefix = "",
+    setup_shown = false,
     unsubscribe = function() end,
   }
   view.unsubscribe = session:on(function(event)
@@ -481,6 +636,11 @@ function Chat:attach(session)
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
   end, { buffer = buffer, silent = true, desc = "Submit louiselm prompt" })
+  if state.status == "ready" and #state.config_options > 0 then
+    nvim.schedule(function()
+      open_session_options(self, view, true)
+    end)
+  end
   return true
 end
 
@@ -513,6 +673,140 @@ function Chat:switch(session_id)
   self.current_id = session_id
   nvim.api.nvim_set_current_buf(view.buffer)
   return true
+end
+
+---Pick one attached session using a compact state and telemetry row.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message Lifecycle error.
+function Chat:switch_session()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local sessions = {}
+  for _, id in ipairs(self.api:list_sessions()) do
+    local view = self.views[id]
+    if view ~= nil then
+      sessions[#sessions + 1] = view.session
+    end
+  end
+  if #sessions == 0 then
+    return false, "no chat sessions are attached"
+  end
+  nvim.ui.select(sessions, {
+    prompt = "louiselm session: ",
+    format_item = function(session)
+      return session_summary(session:inspect())
+    end,
+  }, function(session)
+    if session ~= nil then
+      self:switch(session:inspect().id)
+    end
+  end)
+  return true
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+local function close_view(self, view)
+  local id = view.session:inspect().id
+  view.unsubscribe()
+  self.views[id] = nil
+  local _, close_error = view.session:dispose()
+  if nvim.api.nvim_buf_is_valid(view.buffer) then
+    nvim.api.nvim_buf_delete(view.buffer, { force = true })
+  end
+  self.current_id = nil
+  for _, candidate in ipairs(self.api:list_sessions()) do
+    if self.views[candidate] ~= nil then
+      self:switch(candidate)
+      break
+    end
+  end
+  if close_error ~= nil then
+    nvim.notify("louiselm: " .. close_error, nvim.log.levels.ERROR)
+  end
+end
+
+---Dispose the current session and remove only its chat buffer.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message Lifecycle error.
+function Chat:close_session()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local status = view.session:inspect().status
+  if status == "configuring" or status == "prompting" or status == "waiting_permission" or status == "cancelling" then
+    nvim.ui.select({ "Close", "Keep" }, { prompt = "close active louiselm session? " }, function(choice)
+      if choice == "Close" and not self.disposed and self.views[view.session:inspect().id] == view then
+        close_view(self, view)
+      end
+    end)
+    return true
+  end
+  close_view(self, view)
+  return true
+end
+
+---Cancel the current session turn.
+---@param self louiselm.ui.Chat
+---@return boolean sent
+---@return string? error_message Lifecycle or session error.
+function Chat:cancel()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  return view.session:cancel()
+end
+
+---Open the complete configuration overview for the current idle session.
+---@param self louiselm.ui.Chat
+---@return boolean opened
+---@return string? error_message Lifecycle or state error.
+function Chat:session_options()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local state = view.session:inspect()
+  if state.status ~= "ready" then
+    return false, "session is not idle; cancel the active turn first"
+  end
+  if #state.config_options == 0 then
+    return false, "session has no supported options"
+  end
+  open_session_options(self, view, false)
+  return true
+end
+
+---Change one option on the current idle session.
+---@param self louiselm.ui.Chat
+---@param id string Option identifier.
+---@param value string|boolean New typed option value.
+---@param callback? fun(options: louiselm.session.ConfigOption[]?, error?: string) Completion callback.
+---@return string|number? request_id
+---@return string? error_message
+function Chat:set_config_option(id, value, callback)
+  if self.disposed then
+    return nil, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return nil, "no chat session is attached"
+  end
+  return view.session:set_config_option(id, value, callback)
 end
 
 ---Submit text to the current session; slash commands are passed through unchanged.
