@@ -448,6 +448,27 @@ T["chat"]["shows whose turn it is in the session header"] = function()
   chat:dispose()
 end
 
+T["chat"]["keeps the turn label visible in the window bar"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), "Your turn")
+
+  first.state.status = "prompting"
+  first:emit({
+    type = "state_changed",
+    session_id = "session-1",
+    data = { status = "prompting" },
+  })
+  nvim.wait(100, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }) == "Model responding"
+  end, 1)
+
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), "Model responding")
+  chat:dispose()
+end
+
 T["chat"]["opens the setup overview and applies a selected option"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {

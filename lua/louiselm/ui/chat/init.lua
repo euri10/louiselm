@@ -9,6 +9,7 @@ local Diff = require("louiselm.ui.diff")
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
 ---@field buffer integer Scratch buffer for the session.
+---@field window integer Window displaying the session.
 ---@field source_buffer integer Buffer that was current when the chat view was attached.
 ---@field prompt_line integer Zero-based prompt line.
 ---@field transcript_tail integer? Zero-based last rendered transcript line.
@@ -26,6 +27,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
+---@field winbars table<integer, string> Previous window bars by window id.
 ---@field current_id string? Currently displayed session id.
 ---@field disposed boolean Whether the chat UI has been disposed.
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
@@ -213,6 +215,29 @@ end
 ---@return string
 local function session_header(state)
   return session_summary(state) .. " · " .. turn_label(state)
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param win integer
+local function render_winbar(self, view, win)
+  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
+    return
+  end
+  if self.winbars[win] == nil then
+    self.winbars[win] = nvim.api.nvim_get_option_value("winbar", { win = win })
+  end
+  nvim.api.nvim_set_option_value("winbar", turn_label(view.session:inspect()), { win = win })
+end
+
+---@param self louiselm.ui.Chat
+local function restore_winbars(self)
+  for win, value in pairs(self.winbars) do
+    if nvim.api.nvim_win_is_valid(win) then
+      nvim.api.nvim_set_option_value("winbar", value, { win = win })
+    end
+  end
+  self.winbars = {}
 end
 
 ---@param view louiselm.ui.ChatView
@@ -527,6 +552,7 @@ local function handle_event(self, view, event)
 
   if event.type == "state_changed" or event.type == "config_options_changed" or event.type == "usage_updated" then
     render_header(view)
+    render_winbar(self, view, view.window)
   end
   if event.type == "state_changed" and view.session:inspect().status == "ready" then
     open_session_options(self, view, true)
@@ -629,6 +655,7 @@ function M.new(api, options)
     initial_contexts = initial_contexts,
     diff = Diff.new(),
     views = {},
+    winbars = {},
     current_id = nil,
     disposed = false,
   }, Chat)
@@ -657,6 +684,7 @@ function Chat:attach(session)
   end
 
   local source_buffer = nvim.api.nvim_get_current_buf()
+  local window = nvim.api.nvim_get_current_win()
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_buf_set_name(buffer, "louiselm://" .. state.id)
   nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
@@ -668,6 +696,7 @@ function Chat:attach(session)
   local view = {
     session = session,
     buffer = buffer,
+    window = window,
     source_buffer = source_buffer,
     prompt_line = 2,
     transcript_tail = nil,
@@ -687,6 +716,7 @@ function Chat:attach(session)
   self.views[state.id] = view
   self.current_id = state.id
   nvim.api.nvim_set_current_buf(buffer)
+  render_winbar(self, view, window)
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
   end, { buffer = buffer, silent = true, desc = "Submit louiselm prompt" })
@@ -724,8 +754,11 @@ function Chat:switch(session_id)
   if not nvim.api.nvim_buf_is_valid(view.buffer) then
     return false, "session buffer is invalid"
   end
+  restore_winbars(self)
   self.current_id = session_id
+  view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
+  render_winbar(self, view, view.window)
   return true
 end
 
@@ -780,6 +813,7 @@ end
 ---@param view louiselm.ui.ChatView
 local function close_view(self, view)
   local id = view.session:inspect().id
+  restore_winbars(self)
   view.unsubscribe()
   self.views[id] = nil
   local _, close_error = view.session:dispose()
@@ -1074,6 +1108,7 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  restore_winbars(self)
   self.diff:dispose()
   for id, view in pairs(self.views) do
     view.unsubscribe()

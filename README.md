@@ -268,6 +268,9 @@ reported context pressure and cumulative cost. Completed turns append only the
 usage fields reported by the agent. LouiseLM does not estimate token counts,
 prices, or compaction state.
 
+The current turn label is also shown in the window bar, so whether it is your
+turn remains visible while scrolling through a long conversation.
+
 Sessions accept an optional `name` in their headless options. `inspect()` also
 reports whether the session was `new` or `loaded`; named sessions use that name
 in chat headers and the session switcher.
