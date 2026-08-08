@@ -204,6 +204,16 @@ end)
 session:prompt("Review this project")
 ```
 
+To load a persisted ACP conversation, use its agent-side session id. The agent
+must advertise `loadSession` during initialization; loading replays the stored
+history through the session's normal events before the ready callback runs:
+
+```lua
+local session = assert(sessions:load_session("claude", "sess_789xyz", {
+  cwd = vim.fn.getcwd(),
+}))
+```
+
 Each session is addressable through `get_session(id)`, inspectable with
 `session:inspect()`, and exposes `prompt`, `cancel`, and `dispose` methods.
 Events include streamed chunks, tool-call start/finish, permission requests,
@@ -306,8 +316,10 @@ The reproducible manual recipe for the current P1 workflow can construct the
 session and chat controllers explicitly. The canonical `:LouiselmChat` command
 also consumes configured `agents` (or the singular `agent` compatibility shape)
 and `skills.paths` after setup. Set `skills.policy` to `inject` to queue the
-metadata-only skill index for each new chat session; `native` leaves loading to
-the agent, and `off` disables the skill picker and index.
+skill index for each new chat session; `native` leaves loading to the agent,
+and `off` disables the skill picker and index. For an agent without file-reading
+tools, set `skills.full_content = true` to include each complete `SKILL.md` in
+that context instead of only its path and metadata.
 
 Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
 root (replace the agent command if a different ACP launcher is intended):
@@ -377,8 +389,11 @@ local skills = require("louiselm.skills")
 local found, errors = skills.discover({ vim.fn.expand("~/.config/agentskills") })
 local policy = assert(skills.policy("inject")) -- native, inject, or off
 local index = assert(skills.inject(found))
+local full_index = assert(skills.inject(found, true)) -- for tool-less agents
 ```
 
-The injected index contains only each skill's name, description, and
-`SKILL.md` path. Use `skills.overlap(native_skill_dir, configured_paths)` to
-detect native/configured skill trees that resolve to the same directory.
+The default injected index contains only each skill's name, description, and
+`SKILL.md` path. Pass `true` as the second argument to include the complete
+`SKILL.md` content for agents that cannot read files. Use
+`skills.overlap(native_skill_dir, configured_paths)` to detect
+native/configured skill trees that resolve to the same directory.

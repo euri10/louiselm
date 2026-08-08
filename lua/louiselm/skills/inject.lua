@@ -22,9 +22,10 @@ local function is_dense_array(value)
 end
 
 ---@param value unknown
+---@param full_content boolean
 ---@return louiselm.skills.Skill[]? skills
 ---@return string? error_message
-local function validate_skills(value)
+local function validate_skills(value, full_content)
   if type(value) ~= "table" or not is_dense_array(value) then
     return nil, "skills index must be a dense array"
   end
@@ -35,16 +36,24 @@ local function validate_skills(value)
     if type(skill.name) ~= "string" or type(skill.description) ~= "string" or type(skill.path) ~= "string" then
       return nil, string.format("skill at index %d must contain name, description, and path strings", index)
     end
+    if full_content and type(skill.content) ~= "string" then
+      return nil, string.format("skill at index %d must contain full content", index)
+    end
   end
   return value
 end
 
----Build a thin prompt index containing only skill name, description, and path.
+---Build a skill prompt index, optionally including each full SKILL.md document.
 ---@param skills unknown Discovered skill metadata.
+---@param full_content? boolean Include full content for agents without file-read tools.
 ---@return string? index Prompt text for an ACP text content item.
 ---@return string? error_message Validation failure.
-function M.index(skills)
-  local valid_skills, validation_error = validate_skills(skills)
+function M.index(skills, full_content)
+  if full_content ~= nil and type(full_content) ~= "boolean" then
+    return nil, "full content option must be a boolean"
+  end
+  full_content = full_content == true
+  local valid_skills, validation_error = validate_skills(skills, full_content)
   if valid_skills == nil then
     return nil, validation_error
   end
@@ -56,6 +65,9 @@ function M.index(skills)
       description = skill.description,
       path = skill.path,
     }
+    if full_content then
+      entries[#entries].content = skill.content
+    end
   end
   table.sort(entries, function(left, right)
     if left.name == right.name then

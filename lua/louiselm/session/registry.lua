@@ -9,6 +9,7 @@ local Lifecycle = require("louiselm.session.lifecycle")
 ---@field next_id integer Next local session number.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
+---@field load_session fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field get_session fun(self: louiselm.session.Registry, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Registry): string[]
 ---@field dispose fun(self: louiselm.session.Registry): boolean, string?
@@ -56,14 +57,14 @@ function M.new(definitions)
     {}
 end
 
----Create and asynchronously initialize a session for a named agent.
+---@param load_id string? Existing ACP session id to load.
 ---@param self louiselm.session.Registry
 ---@param agent_name string Named configured agent.
 ---@param options? louiselm.session.Options Working directory and initial listener.
 ---@param ready_callback? fun(session: louiselm.session.Session?, error?: string) Called once when initialization completes.
----@return louiselm.session.Session? session New session, or nil on immediate failure.
----@return string? error_message Validation or immediate startup error.
-function Registry:create_session(agent_name, options, ready_callback)
+---@return louiselm.session.Session? session
+---@return string? error_message
+local function start_session(self, agent_name, options, ready_callback, load_id)
   if self.disposed then
     return nil, "session registry is disposed"
   end
@@ -96,7 +97,7 @@ function Registry:create_session(agent_name, options, ready_callback)
 
   local id = "session-" .. self.next_id
   self.next_id = self.next_id + 1
-  local session = Lifecycle.new(self, id, agent_name, definition, session_options, ready_callback)
+  local session = Lifecycle.new(self, id, agent_name, definition, session_options, ready_callback, load_id)
   self.sessions[id] = session
   self.order[#self.order + 1] = id
   local started, start_error = session:start()
@@ -106,6 +107,32 @@ function Registry:create_session(agent_name, options, ready_callback)
     return nil, start_error
   end
   return session
+end
+
+---Create and asynchronously initialize a new session for a named agent.
+---@param self louiselm.session.Registry
+---@param agent_name string Named configured agent.
+---@param options? louiselm.session.Options Working directory and initial listener.
+---@param ready_callback? fun(session: louiselm.session.Session?, error?: string) Called once when initialization completes.
+---@return louiselm.session.Session? session New session, or nil on immediate failure.
+---@return string? error_message Validation or immediate startup error.
+function Registry:create_session(agent_name, options, ready_callback)
+  return start_session(self, agent_name, options, ready_callback, nil)
+end
+
+---Load and asynchronously initialize an existing ACP session.
+---@param self louiselm.session.Registry
+---@param agent_name string Named configured agent.
+---@param acp_session_id string Agent-side session identifier to load.
+---@param options? louiselm.session.Options Working directory and initial listener.
+---@param ready_callback? fun(session: louiselm.session.Session?, error?: string) Called once when loading completes.
+---@return louiselm.session.Session? session Loaded session, or nil on immediate failure.
+---@return string? error_message Validation or immediate startup error.
+function Registry:load_session(agent_name, acp_session_id, options, ready_callback)
+  if type(acp_session_id) ~= "string" or acp_session_id == "" then
+    return nil, "ACP session id must be a non-empty string"
+  end
+  return start_session(self, agent_name, options, ready_callback, acp_session_id)
 end
 
 ---Look up a live session by its local id.

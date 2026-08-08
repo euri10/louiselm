@@ -2,6 +2,7 @@
 ---@field name string Agent Skills name.
 ---@field description string Short description shown in the injected index.
 ---@field path string Absolute path to SKILL.md.
+---@field content string Full SKILL.md content for agents without file-read tools.
 
 ---@class louiselm.skills.DiscoveryError
 ---@field path string File or configured directory related to the error.
@@ -75,9 +76,10 @@ end
 
 ---@param lines string[]
 ---@param path string
+---@param content string
 ---@return louiselm.skills.Skill? skill
 ---@return string? error_message
-local function parse(lines, path)
+local function parse(lines, path, content)
   if lines[1] ~= "---" then
     return nil, "missing YAML frontmatter"
   end
@@ -155,6 +157,7 @@ local function parse(lines, path)
     name = fields.name,
     description = trim(fields.description),
     path = path,
+    content = content,
   }
 end
 
@@ -238,7 +241,7 @@ function M.discover(paths)
     if lines == nil then
       errors[#errors + 1] = { path = path, message = read_error or "could not read SKILL.md" }
     else
-      local skill, parse_error = parse(lines, path)
+      local skill, parse_error = parse(lines, path, table.concat(lines, "\n"))
       if skill == nil then
         errors[#errors + 1] = { path = path, message = parse_error or "invalid skill metadata" }
       elseif names[skill.name] ~= nil then

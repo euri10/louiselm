@@ -56,8 +56,11 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
     jsonrpc = "2.0",
   })
 
-  calls.stdout(nil, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n')
-  MiniTest.expect.equality(result, { protocolVersion = 1, agentCapabilities = {} })
+  calls.stdout(
+    nil,
+    '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}\n'
+  )
+  MiniTest.expect.equality(result, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
   MiniTest.expect.equality(request_error, nil)
 
   local session_id
@@ -72,6 +75,33 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
   })
   calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1"}}\n')
   MiniTest.expect.equality(session_id, "session-1")
+end
+
+T["connect"]["rejects loading when the agent lacks loadSession capability"] = function()
+  local calls = {}
+  local fake_handle = {
+    is_closing = function()
+      return false
+    end,
+    write = function()
+      calls.writes = (calls.writes or 0) + 1
+    end,
+  }
+  local original_system = nvim.system
+  set_system(function(_, options)
+    calls.stdout = options.stdout
+    return fake_handle
+  end)
+
+  local client = assert(Acp.connect({ command = "agent", args = {} }))
+  assert(client:initialize())
+  set_system(original_system)
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n')
+
+  local request_id, request_error = client:load_session({ sessionId = "prior" })
+  MiniTest.expect.equality(request_id, nil)
+  MiniTest.expect.equality(request_error, "ACP agent does not support session/load")
+  MiniTest.expect.equality(calls.writes, 1)
 end
 
 T["connect"]["passes agent requests to the callback"] = function()

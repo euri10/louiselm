@@ -47,6 +47,9 @@ local function configured_skills(config)
   end
 
   local skill_config = config.skills
+  if skill_config.full_content ~= nil and type(skill_config.full_content) ~= "boolean" then
+    return {}, {}, "skills full_content must be a boolean"
+  end
   local skills = {}
   if skill_config.paths ~= nil then
     local discovery_errors
@@ -67,7 +70,7 @@ local function configured_skills(config)
     return skills, {}
   end
 
-  local index, index_error = skills_module().inject(skills)
+  local index, index_error = skills_module().inject(skills, skill_config.full_content)
   if index == nil then
     return {}, {}, index_error
   end

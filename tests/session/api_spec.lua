@@ -71,6 +71,46 @@ end
 
 T["new"] = MiniTest.new_set()
 
+T["new"]["loads an existing ACP session and receives replayed history"] = function()
+  local processes, original_system = fake_processes()
+  local events = {}
+  local ready
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:load_session("agent", "prior-acp", {
+    cwd = "/tmp/project",
+    on_event = function(event)
+      events[#events + 1] = event
+    end,
+  }, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))), {
+    id = 2,
+    jsonrpc = "2.0",
+    method = "session/load",
+    params = { sessionId = "prior-acp", cwd = "/tmp/project", mcpServers = {} },
+  })
+  notification(process, "session/update", {
+    sessionId = "prior-acp",
+    update = {
+      sessionUpdate = "agent_message_chunk",
+      content = { type = "text", text = "previous answer" },
+    },
+  })
+  respond(process, 2, nvim.NIL)
+
+  MiniTest.expect.equality(ready.error, nil)
+  MiniTest.expect.equality(ready.session, session)
+  MiniTest.expect.equality(events[1].data.content.text, "previous answer")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+
+  assert(api:dispose())
+  restore_processes(original_system)
+end
+
 T["new"]["creates concurrent addressable sessions and exposes state"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({

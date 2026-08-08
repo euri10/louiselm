@@ -3,6 +3,7 @@ local Registry = require("louiselm.session.registry")
 ---@class louiselm.session.Api
 ---@field registry louiselm.session.Registry Session owner.
 ---@field create_session fun(self: louiselm.session.Api, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
+---@field load_session fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field get_session fun(self: louiselm.session.Api, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Api): string[]
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
@@ -32,6 +33,18 @@ end
 ---@return string? error_message Validation or immediate startup error.
 function Api:create_session(agent_name, options, ready_callback)
   return self.registry:create_session(agent_name, options, ready_callback)
+end
+
+---Load and asynchronously initialize an existing ACP session.
+---@param self louiselm.session.Api
+---@param agent_name string Named configured agent.
+---@param acp_session_id string Agent-side session identifier to load.
+---@param options? louiselm.session.Options Working directory and initial listener.
+---@param ready_callback? fun(session: louiselm.session.Session?, error?: string) Called once when loading completes.
+---@return louiselm.session.Session? session Loaded session, or nil on immediate failure.
+---@return string? error_message Validation or immediate startup error.
+function Api:load_session(agent_name, acp_session_id, options, ready_callback)
+  return self.registry:load_session(agent_name, acp_session_id, options, ready_callback)
 end
 
 ---Look up a live session by local id.

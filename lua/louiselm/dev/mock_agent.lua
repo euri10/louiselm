@@ -135,7 +135,7 @@ local function handle_message(message, state, options)
 
   if method == "initialize" then
     state.initialized = true
-    write_response(message.id, { protocolVersion = 1, agentCapabilities = {} })
+    write_response(message.id, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
     return true
   end
   if not state.initialized then

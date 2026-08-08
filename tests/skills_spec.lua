@@ -32,7 +32,7 @@ end
 
 T["discover"] = MiniTest.new_set()
 
-T["discover"]["reads skill metadata and ignores skill content"] = function()
+T["discover"]["reads skill metadata and full skill content"] = function()
   local first_path = write_skill(nvim.fs.joinpath(temp_dir, "z-last"), "z-last", "Last skill", "secret body")
   local second_path = write_skill(nvim.fs.joinpath(temp_dir, "a-first"), "a-first", "First skill", "secret body")
 
@@ -40,8 +40,18 @@ T["discover"]["reads skill metadata and ignores skill content"] = function()
 
   MiniTest.expect.equality(errors, {})
   MiniTest.expect.equality(skills, {
-    { name = "a-first", description = "First skill", path = second_path },
-    { name = "z-last", description = "Last skill", path = first_path },
+    {
+      name = "a-first",
+      description = "First skill",
+      path = second_path,
+      content = "---\nname: a-first\ndescription: First skill\n---\nsecret body",
+    },
+    {
+      name = "z-last",
+      description = "Last skill",
+      path = first_path,
+      content = "---\nname: z-last\ndescription: Last skill\n---\nsecret body",
+    },
   })
 end
 
@@ -81,6 +91,15 @@ T["discover"]["accepts standard nested metadata"] = function()
       name = "nested-metadata",
       description = "Top-level description remains authoritative",
       path = path,
+      content = table.concat({
+        "---",
+        "name: nested-metadata",
+        "description: Top-level description remains authoritative",
+        "metadata:",
+        "  short-description: Short description for a picker",
+        "---",
+        "# Nested metadata",
+      }, "\n"),
     },
   })
 end
@@ -133,6 +152,29 @@ T["inject"]["includes only skill index metadata"] = function()
   MiniTest.expect.equality(index:find("Stress test an idea", 1, true) ~= nil, true)
   MiniTest.expect.equality(index:find("/skills/grill%-me/SKILL.md", 1, false) ~= nil, true)
   MiniTest.expect.equality(index:find("secret", 1, true), nil)
+end
+
+T["inject"]["includes full skill content when requested"] = function()
+  local index = assert(Skills.inject({
+    {
+      name = "grill-me",
+      description = "Stress test an idea",
+      path = "/skills/grill-me/SKILL.md",
+      content = "---\nname: grill-me\ndescription: Stress test an idea\n---\nsecret body",
+    },
+  }, true))
+
+  MiniTest.expect.equality(index:find("secret body", 1, true) ~= nil, true)
+  MiniTest.expect.equality(index:find("content", 1, true) ~= nil, true)
+end
+
+T["inject"]["requires content for full injection"] = function()
+  local index, err = Skills.inject({
+    { name = "grill-me", description = "Stress test an idea", path = "/skills/grill-me/SKILL.md" },
+  }, true)
+
+  MiniTest.expect.equality(index, nil)
+  MiniTest.expect.equality(err, "skill at index 1 must contain full content")
 end
 
 T["overlap"] = MiniTest.new_set()

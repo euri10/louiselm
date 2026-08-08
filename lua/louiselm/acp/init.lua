@@ -14,6 +14,7 @@ local Transport = require("louiselm.acp.transport")
 ---@field next_id integer
 ---@field pending table<string|number, fun(result: unknown, error?: louiselm.acp.JsonRpcError)|false>
 ---@field initialized boolean
+---@field agent_capabilities table<string, unknown> Capabilities reported during initialization.
 ---@field options louiselm.acp.ClientOptions
 ---@field request fun(self: louiselm.acp.Client, method: string, params?: unknown, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field notify fun(self: louiselm.acp.Client, method: string, params?: unknown): boolean, string?
@@ -105,6 +106,7 @@ function M.connect(definition, options)
     next_id = 1,
     pending = {},
     initialized = false,
+    agent_capabilities = {},
     options = options or {},
   }, Client)
   local callbacks = transport_options(client.options)
@@ -198,6 +200,7 @@ function Client:initialize(params, callback)
       return
     end
     self.initialized = true
+    self.agent_capabilities = type(result.agentCapabilities) == "table" and result.agentCapabilities or {}
     if callback ~= nil then
       callback(result)
     end
@@ -228,6 +231,9 @@ function Client:load_session(params, callback)
   local initialized, initialization_error = require_initialized(self)
   if not initialized then
     return nil, initialization_error
+  end
+  if self.agent_capabilities.loadSession ~= true then
+    return nil, "ACP agent does not support session/load"
   end
   return self:request("session/load", params, callback)
 end

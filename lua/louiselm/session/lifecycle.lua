@@ -2,6 +2,9 @@ local Acp = require("louiselm.acp")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 ---@alias louiselm.session.Status "starting"|"ready"|"prompting"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
 
@@ -22,6 +25,7 @@ local Events = require("louiselm.session.events")
 ---@field emitter louiselm.session.EventEmitter Event subscribers.
 ---@field client louiselm.acp.Client? ACP client.
 ---@field acp_session_id string? Agent-side session identifier.
+---@field load_session_id string? Agent-side session identifier to load.
 ---@field prompt_callback? fun(result: unknown, error?: string) Current prompt completion callback.
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
@@ -199,16 +203,17 @@ local function handle_initialized(self, result, rpc_error)
     fail(self, "ACP client disappeared during initialization")
     return
   end
-  local request_id, request_error = client:new_session(
-    { cwd = self.state.working_dir, mcpServers = {} },
-    function(session_result, session_error)
-      if self.state.status == "disposed" then
-        return
-      end
-      if session_error ~= nil then
-        fail(self, "ACP session/new failed: " .. error_message(session_error))
-        return
-      end
+  local method = self.load_session_id == nil and "new" or "load"
+  local request_id, request_error
+  local on_session_ready = function(session_result, session_error)
+    if self.state.status == "disposed" then
+      return
+    end
+    if session_error ~= nil then
+      fail(self, "ACP session/" .. method .. " failed: " .. error_message(session_error))
+      return
+    end
+    if self.load_session_id == nil then
       if
         type(session_result) ~= "table"
         or type(session_result.sessionId) ~= "string"
@@ -218,18 +223,33 @@ local function handle_initialized(self, result, rpc_error)
         return
       end
       self.acp_session_id = session_result.sessionId
-      self.state.status = "ready"
-      if not self.ready_callback_called then
-        self.ready_callback_called = true
-        local callback = self.ready_callback
-        if callback ~= nil then
-          callback(self)
-        end
+    elseif session_result ~= nil and session_result ~= nvim.NIL then
+      if type(session_result) ~= "table" or session_result.sessionId ~= self.load_session_id then
+        fail(self, "ACP session/load returned a malformed result")
+        return
+      end
+      self.acp_session_id = session_result.sessionId
+    end
+    self.state.status = "ready"
+    if not self.ready_callback_called then
+      self.ready_callback_called = true
+      local callback = self.ready_callback
+      if callback ~= nil then
+        callback(self)
       end
     end
-  )
+  end
+  if self.load_session_id == nil then
+    request_id, request_error = client:new_session({ cwd = self.state.working_dir, mcpServers = {} }, on_session_ready)
+  else
+    self.acp_session_id = self.load_session_id
+    request_id, request_error = client:load_session(
+      { sessionId = self.load_session_id, cwd = self.state.working_dir, mcpServers = {} },
+      on_session_ready
+    )
+  end
   if request_id == nil then
-    fail(self, "ACP session/new failed: " .. (request_error or "request could not be sent"))
+    fail(self, "ACP session/" .. method .. " failed: " .. (request_error or "request could not be sent"))
   end
 end
 
@@ -254,8 +274,9 @@ end
 ---@param definition louiselm.agent.Definition
 ---@param options louiselm.session.Options
 ---@param ready_callback? fun(session: louiselm.session.Session?, error?: string)
+---@param load_session_id? string Existing ACP session identifier to load.
 ---@return louiselm.session.Session
-function M.new(owner, id, agent_name, definition, options, ready_callback)
+function M.new(owner, id, agent_name, definition, options, ready_callback, load_session_id)
   ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
   local working_dir = options.cwd or vim.fn.getcwd()
   local session = setmetatable({
@@ -270,6 +291,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback)
     owner = owner,
     definition = definition,
     options = options,
+    load_session_id = load_session_id,
     permission_policy = options.permission_policy or Permission.policy(),
     ready_callback = ready_callback,
     ready_callback_called = false,
@@ -281,7 +303,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback)
   return session
 end
 
----Start ACP initialization and creation of the agent-side session.
+---Start ACP initialization and creation or loading of the agent-side session.
 ---@param self louiselm.session.Session
 ---@return boolean started
 ---@return string? error_message Immediate connection or request error.

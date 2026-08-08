@@ -5,7 +5,7 @@ local Policy = require("louiselm.skills.policy")
 
 ---@class louiselm.skills.Module
 ---@field discover fun(paths: unknown): louiselm.skills.Skill[], louiselm.skills.DiscoveryError[] Discover skill metadata.
----@field inject fun(skills: unknown): string?, string? Build a thin prompt index.
+---@field inject fun(skills: unknown, full_content?: boolean): string?, string? Build a skill prompt index.
 ---@field policy fun(value?: unknown, native_supported?: boolean): louiselm.skills.Policy?, string? Normalize one agent policy.
 ---@field overlap fun(native_path: unknown, configured_paths: unknown): boolean?, string?, string? Detect path overlap.
 
