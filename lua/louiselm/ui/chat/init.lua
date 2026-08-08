@@ -367,8 +367,14 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param lines string[]
 insert_before_prompt = function(self, view, lines)
-  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, view.prompt_line, false, lines)
-  view.prompt_line = view.prompt_line + #lines
+  local replacement = {}
+  for _, line in ipairs(lines) do
+    for _, part in ipairs(split_lines(line)) do
+      replacement[#replacement + 1] = part
+    end
+  end
+  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, view.prompt_line, false, replacement)
+  view.prompt_line = view.prompt_line + #replacement
 end
 
 ---@param option louiselm.session.ConfigOption
@@ -512,9 +518,13 @@ local function handle_event(self, view, event)
       detail = detail .. " (" .. status .. ")"
     end
     insert_before_prompt(self, view, { "[tool " .. suffix .. "] " .. detail })
+    view.response_line = nil
+    view.response_tail = nil
   elseif event.type == "error" then
     local message = field(event.data, "message") or "unknown session error"
     insert_before_prompt(self, view, { "Error: " .. message })
+    view.response_line = nil
+    view.response_tail = nil
   elseif event.type == "permission_requested" then
     local data = event.data
     if type(data) == "table" and type(data.operation) == "table" and data.operation.kind == "file_edit" then

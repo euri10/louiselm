@@ -142,6 +142,70 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
   chat:dispose()
 end
 
+T["chat"]["keeps interleaved response and tool events chronological"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  assert(chat:submit("hello"))
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "before tool" } },
+  })
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "after tool" } },
+  })
+
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) == 7
+  end, 1)
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready",
+    "",
+    "> hello",
+    "before tool",
+    "[tool started] tool-1: Read file",
+    "after tool",
+    "> ",
+  })
+
+  chat:dispose()
+end
+
+T["chat"]["splits multiline error messages before inserting them"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "error",
+    session_id = "session-1",
+    data = { message = "first line\nsecond line" },
+  })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) == 5
+  end, 1)
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready",
+    "",
+    "Error: first line",
+    "second line",
+    "> ",
+  })
+
+  chat:dispose()
+end
+
 T["chat"]["schedules session events before touching buffers"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
