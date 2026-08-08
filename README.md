@@ -260,12 +260,17 @@ The interactive controls are:
 - `:LouiselmCancel` — cancel the active turn
 - `:LouiselmNewSession` — start another session without stopping existing ones
 - `:LouiselmSwitchSession` — switch using compact session telemetry rows
+- `:LouiselmRenameSession` — give the current session a human-readable name
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer
 
 The header reports lifecycle and tool activity, active option values, agent-
 reported context pressure and cumulative cost. Completed turns append only the
 usage fields reported by the agent. LouiseLM does not estimate token counts,
 prices, or compaction state.
+
+Sessions accept an optional `name` in their headless options. `inspect()` also
+reports whether the session was `new` or `loaded`; named sessions use that name
+in chat headers and the session switcher.
 
 Headless consumers can call `session:set_config_option(id, value, callback)`
 while `session:inspect().status == "ready"`. Snapshots include

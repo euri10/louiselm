@@ -35,6 +35,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
+---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number?, string? Submit the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
@@ -152,7 +153,15 @@ end
 ---@param state louiselm.session.State
 ---@return string
 local function session_summary(state)
-  local parts = { state.agent, state.id, state.status or "unknown" }
+  local parts
+  if state.name ~= nil and state.name ~= state.id then
+    parts = { state.name, state.agent, state.id, state.status or "unknown" }
+  else
+    parts = { state.agent, state.id, state.status or "unknown" }
+  end
+  if state.source == "loaded" then
+    parts[#parts + 1] = "loaded"
+  end
   if state.activity ~= nil then
     parts[#parts + 1] = "activity=" .. state.activity
   end
@@ -749,6 +758,22 @@ function Chat:switch_session()
     end
   end)
   return true
+end
+
+---Rename the current attached session.
+---@param self louiselm.ui.Chat
+---@param name string New non-empty session name.
+---@return boolean renamed
+---@return string? error_message
+function Chat:rename_session(name)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  return view.session:set_name(name)
 end
 
 ---@param self louiselm.ui.Chat

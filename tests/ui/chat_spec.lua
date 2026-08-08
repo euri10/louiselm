@@ -546,6 +546,28 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   chat:dispose()
 end
 
+T["chat"]["renames the current session and refreshes its header"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.name = "First"
+  function first:set_name(name)
+    self.state.name = name
+    self:emit({ type = "state_changed", session_id = self.state.id, data = { status = self.state.status } })
+    return true
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  assert(chat:rename_session("Review"))
+  nvim.wait(100, function()
+    return nvim.api.nvim_buf_get_lines(chat:buffer(), 0, 1, false)[1]:find("# Review", 1, true) ~= nil
+  end, 1)
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_lines(chat:buffer(), 0, 1, false)[1],
+    "# Review · claude · session-1 · ready · Your turn"
+  )
+  chat:dispose()
+end
+
 T["chat"]["mentions the source buffer rather than the chat scratch buffer"] = function()
   local source = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_buf_set_name(source, "/tmp/source.lua")

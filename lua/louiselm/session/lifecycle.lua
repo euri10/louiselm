@@ -11,6 +11,8 @@ local nvim = vim
 
 ---@class louiselm.session.State
 ---@field id string Local session identifier.
+---@field name string User-facing session name.
+---@field source "new"|"loaded" Whether the session was created or restored.
 ---@field agent string Named agent definition.
 ---@field status louiselm.session.Status Lifecycle state.
 ---@field working_dir string ACP working directory.
@@ -23,6 +25,7 @@ local nvim = vim
 
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
+---@field name? string User-facing session name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 
@@ -43,6 +46,7 @@ local nvim = vim
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
+---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
 ---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string|number?, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
@@ -377,6 +381,8 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
   local session = setmetatable({
     state = {
       id = id,
+      name = options.name or id,
+      source = load_session_id == nil and "new" or "loaded",
       agent = agent_name,
       status = "starting",
       working_dir = working_dir,
@@ -449,6 +455,23 @@ function Session:inspect()
   local state = copy(self.state)
   ---@cast state louiselm.session.State
   return state
+end
+
+---Set the user-facing name without changing the ACP session.
+---@param self louiselm.session.Session
+---@param name string New non-empty session name.
+---@return boolean renamed
+---@return string? error_message
+function Session:set_name(name)
+  if self.state.status == "disposed" then
+    return false, "session is disposed"
+  end
+  if type(name) ~= "string" or name == "" then
+    return false, "session name must be a non-empty string"
+  end
+  self.state.name = name
+  emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
+  return true
 end
 
 ---Submit one prompt and receive its completion callback.

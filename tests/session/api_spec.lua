@@ -133,6 +133,8 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
 
   MiniTest.expect.equality(first:inspect(), {
     id = "session-1",
+    name = "session-1",
+    source = "new",
     agent = "one",
     status = "ready",
     working_dir = "/tmp/one",
@@ -141,6 +143,8 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
   })
   MiniTest.expect.equality(second:inspect(), {
     id = "session-2",
+    name = "session-2",
+    source = "new",
     agent = "two",
     status = "ready",
     working_dir = "/tmp/two",

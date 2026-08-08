@@ -37,11 +37,12 @@ local function valid_options(value)
   end
   ---@cast value table
   for key in pairs(value) do
-    if key ~= "cwd" and key ~= "on_event" and key ~= "permission_policy" then
+    if key ~= "cwd" and key ~= "name" and key ~= "on_event" and key ~= "permission_policy" then
       return false
     end
   end
-  return value.cwd == nil or type(value.cwd) == "string"
+  return (value.cwd == nil or type(value.cwd) == "string")
+    and (value.name == nil or (type(value.name) == "string" and value.name ~= ""))
 end
 
 ---Create a registry after strictly normalizing named agent definitions.
@@ -76,7 +77,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     return nil, "unknown agent '" .. agent_name .. "'"
   end
   if not valid_options(options) then
-    return nil, "session options must contain only a string cwd and optional on_event callback"
+    return nil, "session options must contain only a non-empty name, string cwd, and optional on_event callback"
   end
   if options == nil then
     options = {}
@@ -91,6 +92,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   end
   local session_options = {
     cwd = options.cwd,
+    name = options.name,
     on_event = options.on_event,
     permission_policy = permission_policy,
   }

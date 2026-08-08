@@ -181,6 +181,20 @@ function M.register()
     report_error(switch_error)
   end, { desc = "Switch between louiselm sessions", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmRenameSession", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    nvim.ui.input({ prompt = "louiselm session name: " }, function(name)
+      if name == nil then
+        return
+      end
+      local _, rename_error = chat:rename_session(name)
+      report_error(rename_error)
+    end)
+  end, { desc = "Rename the current louiselm session", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmCloseSession", function()
     if chat == nil then
       report_error("no chat session is open")
