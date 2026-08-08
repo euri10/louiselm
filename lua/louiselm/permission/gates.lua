@@ -81,7 +81,11 @@ function M.from_acp(data)
     }
   end
   if kind == "command" or kind == "execute" or kind == "shell" then
-    return { kind = "command", command = raw_input.command or raw_input.argv }
+    local command = raw_input.command or raw_input.argv
+    if type(command) == "string" then
+      command = { command }
+    end
+    return { kind = "command", command = command }
   end
   return { kind = "unknown" }
 end

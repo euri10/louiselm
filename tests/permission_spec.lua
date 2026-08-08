@@ -41,4 +41,15 @@ T["policy"]["does not coerce invalid operations"] = function()
   MiniTest.expect.equality(err, "permission command must be a dense array of strings")
 end
 
+T["policy"]["accepts ACP command strings for human review"] = function()
+  local policy = assert(Permission.policy())
+  local request = Permission.gates.from_acp({
+    toolCall = { kind = "execute", rawInput = { command = "git status" } },
+  })
+  local decision, err = Permission.gates.check(policy, request)
+
+  MiniTest.expect.equality(decision, "ask")
+  MiniTest.expect.equality(err, nil)
+end
+
 return T
