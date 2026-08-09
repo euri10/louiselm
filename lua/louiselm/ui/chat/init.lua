@@ -20,8 +20,15 @@ local Diff = require("louiselm.ui.diff")
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
+---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
+---@field queue_mark integer? Extmark showing queued prompt state.
+---@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
 ---@field unsubscribe fun() Session event listener removal function.
+
+---@class louiselm.ui.QueuedPrompt
+---@field text string User-authored prompt text without visible context markers.
+---@field content string|table Prompt content with snapshotted context.
 
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
@@ -29,6 +36,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field skills louiselm.skills.Skill[] Skills for the invocation picker.
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field diff louiselm.ui.Diff File-edit review UI.
+---@field queue_namespace integer Extmark namespace for queued prompt indicators.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field current_id string? Currently displayed session id.
@@ -42,7 +50,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
----@field submit fun(self: louiselm.ui.Chat, text?: string): string|number?, string? Submit the current prompt.
+---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number|boolean?, string? Submit or queue the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
 ---@field mention_buffer fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer context.
 ---@field send_selection fun(self: louiselm.ui.Chat): boolean, string? Queue the source visual selection.
@@ -144,6 +152,21 @@ end
 ---@param value string
 local function set_line(buffer, line, value)
   nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
+end
+
+local ACTIVE_TURN_STATUS = {
+  prompting = true,
+  waiting_permission = true,
+  cancelling = true,
+}
+
+---@param view louiselm.ui.ChatView
+local function clear_queued_prompt(view)
+  view.queued_prompt = nil
+  if view.queue_mark ~= nil and nvim.api.nvim_buf_is_valid(view.buffer) then
+    nvim.api.nvim_buf_del_extmark(view.buffer, view.queue_namespace, view.queue_mark)
+  end
+  view.queue_mark = nil
 end
 
 ---@param value number
@@ -453,6 +476,89 @@ insert_transcript = function(self, view, lines)
   view.prompt_line = view.prompt_line + #replacement
 end
 
+---@param view louiselm.ui.ChatView
+---@param text string
+---@return string|table content
+local function prompt_content(view, text)
+  if #view.contexts == 0 then
+    return text
+  end
+  local content = {}
+  for _, item in ipairs(view.contexts) do
+    content[#content + 1] = { type = "text", text = item.text }
+  end
+  if text ~= "" then
+    content[#content + 1] = { type = "text", text = text }
+  end
+  return content
+end
+
+---@param view louiselm.ui.ChatView
+---@param text string
+local function set_prompt_line(view, text)
+  set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
+end
+
+---@param message string
+local function notify_prompt_error(message)
+  nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param text string
+---@param content string|table
+---@return string|number? request_id
+---@return string? error_message
+local function submit_prompt(self, view, text, content)
+  local request_id, prompt_error = view.session:prompt(content)
+  if request_id == nil then
+    local message = prompt_error or "prompt failed"
+    notify_prompt_error(message)
+    return nil, message
+  end
+
+  clear_queued_prompt(view)
+  set_line(view.buffer, view.prompt_line, "> " .. text)
+  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line + 1, view.prompt_line + 1, false, { "", "> " })
+  view.response_line = view.prompt_line + 1
+  view.response_tail = view.response_line
+  view.response_started = false
+  view.transcript_tail = view.response_tail
+  view.prompt_line = view.prompt_line + 2
+  if nvim.api.nvim_get_current_buf() == view.buffer then
+    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  end
+  view.contexts = {}
+  view.context_prefix = ""
+  return request_id
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param text string
+---@param content string|table
+local function queue_prompt(self, view, text, content)
+  clear_queued_prompt(view)
+  set_prompt_line(view, text)
+  view.queued_prompt = { text = text, content = content }
+  view.queue_mark = nvim.api.nvim_buf_set_extmark(view.buffer, self.queue_namespace, view.prompt_line, -1, {
+    virt_text = { { "Queued for next turn", "Comment" } },
+    virt_text_pos = "eol",
+  })
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+local function release_queued_prompt(self, view)
+  local queued = view.queued_prompt
+  if queued == nil then
+    return
+  end
+  clear_queued_prompt(view)
+  submit_prompt(self, view, queued.text, queued.content)
+end
+
 ---@param option louiselm.session.ConfigOption
 ---@return table[] values
 local function config_values(option)
@@ -630,6 +736,7 @@ local function handle_event(self, view, event)
     view.response_tail = nil
     view.response_started = false
   elseif event.type == "error" then
+    clear_queued_prompt(view)
     local message = field(event.data, "message") or "unknown session error"
     insert_transcript(self, view, { "Error: " .. message })
     view.response_line = nil
@@ -656,6 +763,7 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
+    release_queued_prompt(self, view)
   end
 end
 
@@ -696,6 +804,7 @@ function M.new(api, options)
     skills = skills,
     initial_contexts = initial_contexts,
     diff = Diff.new(),
+    queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
     views = {},
     winbars = {},
     current_id = nil,
@@ -749,9 +858,19 @@ function Chat:attach(session)
     tool_titles = {},
     contexts = {},
     context_prefix = "",
+    queued_prompt = nil,
+    queue_mark = nil,
+    queue_namespace = self.queue_namespace,
     setup_shown = false,
     unsubscribe = function() end,
   }
+  nvim.api.nvim_buf_attach(buffer, false, {
+    on_lines = function(_, _, _, first_line, last_line)
+      if view.queued_prompt ~= nil and first_line <= view.prompt_line and last_line > view.prompt_line then
+        clear_queued_prompt(view)
+      end
+    end,
+  })
   view.unsubscribe = session:on(function(event)
     -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
     nvim.schedule(function()
@@ -859,6 +978,7 @@ end
 local function close_view(self, view)
   local id = view.session:inspect().id
   restore_winbars(self)
+  clear_queued_prompt(view)
   view.unsubscribe()
   self.views[id] = nil
   local _, close_error = view.session:dispose()
@@ -890,8 +1010,17 @@ function Chat:close_session()
     return false, "no chat session is attached"
   end
   local status = view.session:inspect().status
-  if status == "configuring" or status == "prompting" or status == "waiting_permission" or status == "cancelling" then
-    nvim.ui.select({ "Close", "Keep" }, { prompt = "close active louiselm session? " }, function(choice)
+  local has_queued_prompt = view.queued_prompt ~= nil
+  if
+    has_queued_prompt
+    or status == "configuring"
+    or status == "prompting"
+    or status == "waiting_permission"
+    or status == "cancelling"
+  then
+    local prompt = has_queued_prompt and "close active louiselm session and discard queued prompt? "
+      or "close active louiselm session? "
+    nvim.ui.select({ "Close", "Keep" }, { prompt = prompt }, function(choice)
       if choice == "Close" and not self.disposed and self.views[view.session:inspect().id] == view then
         close_view(self, view)
       end
@@ -961,7 +1090,7 @@ end
 ---Submit text to the current session; slash commands are passed through unchanged.
 ---@param self louiselm.ui.Chat
 ---@param text? string Prompt text; defaults to the current buffer prompt line.
----@return string|number? request_id ACP request id, or nil on failure.
+---@return string|number|boolean? request_id ACP request id, true when queued, or nil on failure.
 ---@return string? error_message Validation or session error.
 function Chat:submit(text)
   if self.disposed then
@@ -986,40 +1115,19 @@ function Chat:submit(text)
   if text == "" and #context_items == 0 then
     return nil, "prompt must be a non-empty string"
   end
-
-  set_line(view.buffer, view.prompt_line, "> " .. text)
-  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line + 1, view.prompt_line + 1, false, { "", "> " })
-  view.response_line = view.prompt_line + 1
-  view.response_tail = view.response_line
-  view.response_started = false
-  view.transcript_tail = view.response_tail
-  view.prompt_line = view.prompt_line + 2
-  if nvim.api.nvim_get_current_buf() == view.buffer then
-    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  local content = prompt_content(view, text)
+  local status = view.session:inspect().status
+  if ACTIVE_TURN_STATUS[status] then
+    queue_prompt(self, view, text, content)
+    return true
   end
 
-  ---@type string|table
-  local prompt = text
-  if #context_items > 0 then
-    prompt = {}
-    for _, item in ipairs(context_items) do
-      prompt[#prompt + 1] = { type = "text", text = item.text }
-    end
-    if text ~= "" then
-      prompt[#prompt + 1] = { type = "text", text = text }
-    end
+  set_prompt_line(view, text)
+  if status ~= "ready" then
+    notify_prompt_error("session is not ready")
+    return nil, "session is not ready"
   end
-  local request_id, prompt_error = view.session:prompt(prompt)
-  if request_id == nil then
-    insert_transcript(self, view, { "Error: " .. (prompt_error or "prompt failed") })
-    view.response_line = nil
-    view.response_tail = nil
-    view.response_started = false
-    return nil, prompt_error or "prompt failed"
-  end
-  view.contexts = {}
-  view.context_prefix = ""
-  return request_id
+  return submit_prompt(self, view, text, content)
 end
 
 ---Queue a context item for the current chat prompt.
@@ -1158,6 +1266,7 @@ function Chat:dispose()
   restore_winbars(self)
   self.diff:dispose()
   for id, view in pairs(self.views) do
+    clear_queued_prompt(view)
     view.unsubscribe()
     if nvim.api.nvim_buf_is_valid(view.buffer) then
       nvim.api.nvim_buf_delete(view.buffer, { force = true })

@@ -86,6 +86,17 @@ local function buffer_lines(buffer)
   return nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
 end
 
+local function virtual_text(buffer)
+  local marks = nvim.api.nvim_buf_get_extmarks(buffer, -1, 0, -1, { details = true })
+  local text = {}
+  for _, mark in ipairs(marks) do
+    for _, chunk in ipairs(mark[4].virt_text or {}) do
+      text[#text + 1] = chunk[1]
+    end
+  end
+  return text
+end
+
 T["chat"] = MiniTest.new_set({
   hooks = {
     post_case = function()
@@ -139,6 +150,191 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     "> ",
   })
 
+  chat:dispose()
+end
+
+T["chat"]["queues one prompt in every active turn state and releases it only on turn completion"] = function()
+  for _, status in ipairs({ "prompting", "waiting_permission", "cancelling" }) do
+    local first = fake_session("session-" .. status, "claude")
+    first.state.status = status
+    local chat = assert(Chat.new(fake_api()))
+    assert(chat:attach(first))
+
+    assert(chat:submit("/compact"))
+    MiniTest.expect.equality(first.prompts, {})
+    MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+      "# claude · session-"
+        .. status
+        .. " · "
+        .. status
+        .. " · "
+        .. (
+          status == "prompting" and "Model responding"
+          or status == "waiting_permission" and "Waiting for permission"
+          or "Stopping"
+        ),
+      "",
+      "> /compact",
+    })
+    MiniTest.expect.equality(virtual_text(chat:buffer()), { "Queued for next turn" })
+
+    first.state.status = "ready"
+    first:emit({ type = "turn_done", session_id = first.state.id, data = { stopReason = "end_turn" } })
+    nvim.wait(100, function()
+      return #first.prompts == 1
+    end, 1)
+
+    MiniTest.expect.equality(first.prompts, { "/compact" })
+    MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+      buffer_lines(chat:buffer())[1],
+      "",
+      "> /compact",
+      "",
+      "> ",
+    })
+    MiniTest.expect.equality(virtual_text(chat:buffer()), {})
+    chat:dispose()
+  end
+end
+
+T["chat"]["keeps an edited queued prompt as a draft until Enter recommits it"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:submit("original"))
+
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 2, 3, false, { "> revised" })
+  first.state.status = "ready"
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(20)
+
+  MiniTest.expect.equality(first.prompts, {})
+  MiniTest.expect.equality(virtual_text(chat:buffer()), {})
+  assert(chat:submit())
+  MiniTest.expect.equality(first.prompts, { "revised" })
+  chat:dispose()
+end
+
+T["chat"]["snapshots queued context and keeps it isolated with its session"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  first.state.status = "prompting"
+  second.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local item = { label = "file", text = "original context" }
+  assert(chat:queue_context(item))
+  assert(chat:submit("first prompt"))
+  item.text = "changed context"
+
+  assert(chat:attach(second))
+  assert(chat:submit("second prompt"))
+  assert(chat:switch("session-1"))
+  first.state.status = "ready"
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return #first.prompts == 1
+  end, 1)
+
+  MiniTest.expect.equality(first.prompts, {
+    {
+      { type = "text", text = "original context" },
+      { type = "text", text = "first prompt" },
+    },
+  })
+  MiniTest.expect.equality(second.prompts, {})
+  MiniTest.expect.equality(virtual_text(chat:buffer("session-2")), { "Queued for next turn" })
+  chat:dispose()
+end
+
+T["chat"]["preserves rejected and failed prompts outside transcript history"] = function()
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message)
+    notifications[#notifications + 1] = message
+  end)
+
+  local starting = fake_session("starting", "claude")
+  starting.state.status = "starting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(starting))
+  local request_id, start_error = chat:submit("draft")
+  MiniTest.expect.equality({ request_id, start_error }, { nil, "session is not ready" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · starting · starting · Starting",
+    "",
+    "> draft",
+  })
+
+  starting.state.status = "ready"
+  function starting:prompt()
+    return nil, "write failed"
+  end
+  local failed_id, failed_error = chat:submit()
+  rawset(nvim, "notify", original_notify)
+
+  MiniTest.expect.equality({ failed_id, failed_error }, { nil, "write failed" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · starting · starting · Starting",
+    "",
+    "> draft",
+  })
+  MiniTest.expect.equality(notifications, { "louiselm: session is not ready", "louiselm: write failed" })
+  chat:dispose()
+end
+
+T["chat"]["does not release queued work after session error or chat disposal"] = function()
+  local failed = fake_session("failed", "claude")
+  failed.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(failed))
+  assert(chat:submit("keep me"))
+  failed.state.status = "error"
+  failed:emit({ type = "error", session_id = "failed", data = { message = "agent failed" } })
+  nvim.wait(100, function()
+    return virtual_text(chat:buffer())[1] == nil
+  end, 1)
+  MiniTest.expect.equality(failed.prompts, {})
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[4], "> keep me")
+
+  local late = fake_session("late", "claude")
+  late.state.status = "prompting"
+  assert(chat:attach(late))
+  assert(chat:submit("never send"))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+  late.state.status = "ready"
+  late:emit({ type = "turn_done", session_id = "late", data = {} })
+  chat:dispose()
+  scheduled[1]()
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(late.prompts, {})
+end
+
+T["chat"]["warns that closing an active session discards its queued prompt"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:submit("discard me"))
+  local original_select = nvim.ui.select
+  local close_prompt
+  nvim.ui.select = function(_, options, callback)
+    close_prompt = options.prompt
+    callback("Close")
+  end
+
+  assert(chat:close_session())
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(close_prompt, "close active louiselm session and discard queued prompt? ")
+  MiniTest.expect.equality(first.disposed, true)
+  MiniTest.expect.equality(first.prompts, {})
   chat:dispose()
 end
 

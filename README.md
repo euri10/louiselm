@@ -248,6 +248,9 @@ without implicit arguments.
 
 Use `chat:switch("session-1")` for another attached session. Prompts entered in
 the buffer, including slash commands, are passed to the session unchanged.
+While a turn is active, Enter queues one prompt for that session and marks it
+`Queued for next turn`; editing it returns it to a draft until Enter recommits
+it. The queued prompt sends after the active turn completes or is cancelled.
 Call `chat:dispose()` to remove its buffers and event listeners; it does not
 dispose the sessions it displays.
 
