@@ -286,6 +286,12 @@ local function split_lines(value)
   end
 end
 
+---@param value string
+---@return string line
+local function single_line(value)
+  return (value:gsub("[\r\n]", " "))
+end
+
 ---@param value unknown
 ---@return string? text Text carried by an ACP chunk.
 local function chunk_text(value)
@@ -581,6 +587,9 @@ local function handle_event(self, view, event)
     local status = field(event.data, "status")
     local id = tool_id(event.data)
     local title = field(event.data, "title")
+    if title ~= nil then
+      title = single_line(title)
+    end
     if event.type == "tool_call_started" then
       if title ~= nil then
         view.tool_titles[id] = title

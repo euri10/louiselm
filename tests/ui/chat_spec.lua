@@ -185,6 +185,36 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
   chat:dispose()
 end
 
+T["chat"]["keeps multiline tool titles on one buffer line"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "first line\nsecond line" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", status = "completed" },
+  })
+
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) == 4
+  end, 1)
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready · Your turn",
+    "",
+    "[tool] tool-1: first line second line (completed)",
+    "> ",
+  })
+
+  chat:dispose()
+end
+
 T["chat"]["splits multiline error messages before inserting them"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
