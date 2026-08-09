@@ -15,6 +15,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field transcript_tail integer? Zero-based last rendered transcript line.
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
+---@field response_started boolean Whether the assistant has rendered response text for this turn.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
@@ -571,10 +572,19 @@ local function handle_event(self, view, event)
     if text == nil then
       return
     end
-    if view.response_tail == nil then
-      insert_transcript(self, view, { "" })
-      view.response_line = view.transcript_tail
-      view.response_tail = view.response_line
+    if not view.response_started then
+      local lines = split_lines(text)
+      local insertion_line = view.response_tail or (view.transcript_tail + 1)
+      if view.response_tail ~= nil then
+        insertion_line = insertion_line + 1
+      end
+      nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, lines)
+      view.response_line = insertion_line
+      view.response_tail = insertion_line + #lines - 1
+      view.transcript_tail = view.response_tail
+      view.prompt_line = view.prompt_line + #lines
+      view.response_started = true
+      return
     end
     local current = nvim.api.nvim_buf_get_lines(view.buffer, view.response_tail, view.response_tail + 1, false)[1] or ""
     local lines = split_lines(current .. text)
@@ -618,11 +628,13 @@ local function handle_event(self, view, event)
     end
     view.response_line = nil
     view.response_tail = nil
+    view.response_started = false
   elseif event.type == "error" then
     local message = field(event.data, "message") or "unknown session error"
     insert_transcript(self, view, { "Error: " .. message })
     view.response_line = nil
     view.response_tail = nil
+    view.response_started = false
   elseif event.type == "permission_requested" then
     local data = event.data
     if type(data) == "table" and type(data.operation) == "table" and data.operation.kind == "file_edit" then
@@ -643,6 +655,7 @@ local function handle_event(self, view, event)
     end
     view.response_line = nil
     view.response_tail = nil
+    view.response_started = false
   end
 end
 
@@ -731,6 +744,7 @@ function Chat:attach(session)
     transcript_tail = nil,
     response_line = nil,
     response_tail = nil,
+    response_started = false,
     tool_lines = {},
     tool_titles = {},
     contexts = {},
@@ -977,6 +991,7 @@ function Chat:submit(text)
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line + 1, view.prompt_line + 1, false, { "", "> " })
   view.response_line = view.prompt_line + 1
   view.response_tail = view.response_line
+  view.response_started = false
   view.transcript_tail = view.response_tail
   view.prompt_line = view.prompt_line + 2
   if nvim.api.nvim_get_current_buf() == view.buffer then
@@ -999,6 +1014,7 @@ function Chat:submit(text)
     insert_transcript(self, view, { "Error: " .. (prompt_error or "prompt failed") })
     view.response_line = nil
     view.response_tail = nil
+    view.response_started = false
     return nil, prompt_error or "prompt failed"
   end
   view.contexts = {}

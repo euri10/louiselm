@@ -133,6 +133,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     "# claude · session-1 · ready · Your turn",
     "",
     "> /compact",
+    "",
     "hello **world**",
     "[tool] tool-1: Read file (completed)",
     "> ",
@@ -176,6 +177,7 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
     "# claude · session-1 · ready · Your turn",
     "",
     "> hello",
+    "",
     "before tool",
     "[tool] tool-1: Read file (completed)",
     "after tool",
@@ -269,7 +271,77 @@ T["chat"]["schedules session events before touching buffers"] = function()
     "# claude · session-1 · ready · Your turn",
     "",
     "> hello",
+    "",
     "scheduled",
+    "> ",
+  })
+  chat:dispose()
+end
+
+T["chat"]["keeps a blank boundary before the first scheduled assistant event"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:submit("hello"))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "scheduled" } },
+  })
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready · Your turn",
+    "",
+    "> hello",
+    "",
+    "> ",
+  })
+  scheduled[1]()
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready · Your turn",
+    "",
+    "> hello",
+    "",
+    "scheduled",
+    "> ",
+  })
+  chat:dispose()
+end
+
+T["chat"]["keeps the boundary when a tool call is the first event"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:submit("hello"))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready · Your turn",
+    "",
+    "> hello",
+    "",
+    "[tool] tool-1: Read file (started)",
     "> ",
   })
   chat:dispose()
