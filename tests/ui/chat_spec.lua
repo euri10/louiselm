@@ -100,6 +100,7 @@ end
 T["chat"] = MiniTest.new_set({
   hooks = {
     post_case = function()
+      nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_is_valid(buffer) and nvim.api.nvim_buf_get_name(buffer):match("^louiselm://") then
           nvim.api.nvim_buf_delete(buffer, { force = true })
@@ -108,6 +109,16 @@ T["chat"] = MiniTest.new_set({
     end,
   },
 })
+
+T["chat"]["focuses the prompt"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 3, 1 })
+
+  chat:dispose()
+end
 
 T["chat"]["renders session events and forwards slash prompts"] = function()
   local first = fake_session("session-1", "claude")

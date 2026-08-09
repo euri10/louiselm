@@ -887,6 +887,11 @@ function Chat:attach(session)
   self.views[state.id] = view
   self.current_id = state.id
   nvim.api.nvim_set_current_buf(buffer)
+  nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  if #nvim.api.nvim_list_uis() > 0 then
+    nvim.cmd.startinsert()
+    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  end
   render_winbar(self, view, window)
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
