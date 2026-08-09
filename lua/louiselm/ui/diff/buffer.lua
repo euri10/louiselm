@@ -21,7 +21,14 @@ end
 ---@param preview louiselm.ui.DiffPreview
 ---@return string[] lines
 local function render_lines(preview)
-  local lines = { "louiselm diff: " .. preview.path, "", "--- original", "+++ proposed" }
+  local lines = {
+    "louiselm diff: " .. preview.path,
+    "",
+    "Review proposed edit:  Esc then a = accept, d/q = reject",
+    "",
+    "--- original",
+    "+++ proposed",
+  }
   for _, line in ipairs(diff_lines(preview.diff)) do
     lines[#lines + 1] = line
   end
@@ -59,6 +66,9 @@ function M.open(preview, options)
   end
   if options == nil or options.focus ~= false then
     nvim.api.nvim_set_current_buf(buffer)
+    if nvim.api.nvim_get_mode().mode:sub(1, 1) == "i" then
+      nvim.api.nvim_input("<Esc>")
+    end
   end
   return buffer
 end

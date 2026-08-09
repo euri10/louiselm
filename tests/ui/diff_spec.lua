@@ -61,6 +61,8 @@ T["buffer"]["renders a nonmodifiable diff buffer"] = function()
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), {
     "louiselm diff: " .. path,
     "",
+    "Review proposed edit:  Esc then a = accept, d/q = reject",
+    "",
     "--- original",
     "+++ proposed",
     "@@ -1 +1 @@",
