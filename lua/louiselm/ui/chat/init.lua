@@ -247,7 +247,7 @@ end
 ---@param state louiselm.session.State
 ---@return string
 local function session_header(state)
-  return session_identity(state) .. " · " .. turn_label(state)
+  return session_summary(state) .. " · " .. turn_label(state)
 end
 
 ---@param self louiselm.ui.Chat

@@ -267,11 +267,10 @@ The interactive controls are:
 - `:LouiselmRenameSession` — give the current session a human-readable name
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer
 
-The header stays compact with session identity, lifecycle, and turn state.
-Session options remain available through `:LouiselmSessionOptions`; the session
-switcher includes activity, option, context-pressure, and cost telemetry.
-Completed turns append only the usage fields reported by the agent. LouiseLM
-does not estimate token counts, prices, or compaction state.
+The header reports lifecycle and tool activity, active option values, agent-
+reported context pressure and cumulative cost. Completed turns append only the
+usage fields reported by the agent. LouiseLM does not estimate token counts,
+prices, or compaction state.
 
 The inline assistant uses the same headless session API. It sends the current
 buffer location and selected text as context, then replaces that selection with
