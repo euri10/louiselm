@@ -1,0 +1,11 @@
+WRN 2026-08-08T16:52:48.395 c/nvim.175374.0 server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.2.0
+WRN 2026-08-08T16:53:03.353 c/nvim.175374.0 server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.2.0
+WRN 2026-08-08T16:53:13.001 c/nvim.175374.0 server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.2.0
+WRN 2026-08-08T16:53:14.027 ?.24       server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.24.0
+WRN 2026-08-08T16:53:14.037 ?.25       server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.25.0
+WRN 2026-08-08T16:53:14.047 ?.26       server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.26.0
+WRN 2026-08-08T16:54:04.879 c/nvim.175374.0 server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.39.0
+WRN 2026-08-08T16:54:04.914 ?.44       server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.44.0
+WRN 2026-08-08T16:54:04.925 ?.45       server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.45.0
+WRN 2026-08-08T16:54:04.934 ?.46       server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.46.0
+WRN 2026-08-08T16:54:15.774 c/nvim.175374.0 server_start:197: Failed to start server: operation not permitted: /run/user/1000/nvim.2.0
