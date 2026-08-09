@@ -180,7 +180,7 @@ end
 
 ---@param state louiselm.session.State
 ---@return string
-local function session_summary(state)
+local function session_identity(state)
   local parts
   if state.name ~= nil and state.name ~= state.id then
     parts = { state.name, state.agent, state.id, state.status or "unknown" }
@@ -190,6 +190,13 @@ local function session_summary(state)
   if state.source == "loaded" then
     parts[#parts + 1] = "loaded"
   end
+  return table.concat(parts, " · ")
+end
+
+---@param state louiselm.session.State
+---@return string
+local function session_summary(state)
+  local parts = { session_identity(state) }
   if state.activity ~= nil then
     parts[#parts + 1] = "activity=" .. state.activity
   end
@@ -240,7 +247,7 @@ end
 ---@param state louiselm.session.State
 ---@return string
 local function session_header(state)
-  return session_summary(state) .. " · " .. turn_label(state)
+  return session_identity(state) .. " · " .. turn_label(state)
 end
 
 ---@param self louiselm.ui.Chat

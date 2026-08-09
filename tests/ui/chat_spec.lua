@@ -693,7 +693,7 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   chat:dispose()
 end
 
-T["chat"]["renders state telemetry and reported-only usage"] = function()
+T["chat"]["keeps the header compact while options and usage remain accessible"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {
     { id = "model", name = "Model", category = "model", type = "select", current_value = "opus", options = {} },
@@ -702,11 +702,16 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
   first.state.context = { used = 95, size = 100, percentage = 95, pressure = "critical", stale = false }
   first.state.cost = { amount = 1.5, currency = "USD" }
   local original_select = nvim.ui.select
-  nvim.ui.select = function(_, _, callback)
+  local option_items
+  nvim.ui.select = function(items, options, callback)
+    if options.prompt == "louiselm session options: " then
+      option_items = items
+    end
     callback(nil)
   end
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
+  assert(chat:session_options())
   first.state.usage = { input_tokens = 12, cached_read_tokens = 3 }
   first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
   nvim.wait(100, function()
@@ -715,11 +720,12 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Model=opus · Brave=true · context=95/100 (95% critical) · cost=1.5 USD · Your turn",
+    "# claude · session-1 · ready · Your turn",
     "",
     "[usage] input_tokens=12 · cached_read_tokens=3",
     "> ",
   })
+  MiniTest.expect.equality(option_items, first.state.config_options)
   chat:dispose()
 end
 
