@@ -121,6 +121,169 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   restore_processes(original_system)
 end
 
+T["new"]["discovers paginated sessions with adapter-scoped identities"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    claude = { command = "claude-agent", args = {} },
+    codex = { command = "codex-agent", args = {} },
+  }))
+  local discovered
+  local discovery_errors
+
+  local started, start_error = api:discover_sessions(nil, function(sessions, errors)
+    discovered = sessions
+    discovery_errors = errors
+  end)
+  MiniTest.expect.equality({ started, start_error }, { true, nil })
+  MiniTest.expect.equality(#processes, 2)
+
+  local by_command = {}
+  for _, process in ipairs(processes) do
+    by_command[process.command[1]] = process
+  end
+  local claude = by_command["claude-agent"]
+  local codex = by_command["codex-agent"]
+  respond(claude, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  MiniTest.expect.equality(assert(Protocol.decode(claude.writes[2]:sub(1, -2))).params, {})
+  respond(claude, 2, {
+    sessions = {
+      { sessionId = "shared", cwd = "/tmp/one", title = "Older", updatedAt = "2026-08-08T10:00:00Z" },
+    },
+    nextCursor = "page-2",
+  })
+  MiniTest.expect.equality(assert(Protocol.decode(claude.writes[3]:sub(1, -2))).params, { cursor = "page-2" })
+  respond(claude, 3, {
+    sessions = {
+      { sessionId = "shared", cwd = "/tmp/two", title = "Newest", updatedAt = "2026-08-10T10:00:00Z" },
+    },
+  })
+  MiniTest.expect.equality(discovered, nil)
+
+  respond(codex, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  respond(codex, 2, {
+    sessions = {
+      { sessionId = "shared", cwd = "/tmp/one", title = "Middle", updatedAt = "2026-08-09T10:00:00Z" },
+    },
+  })
+
+  MiniTest.expect.equality(discovery_errors, {})
+  MiniTest.expect.equality(discovered, {
+    {
+      agent = "claude",
+      session_id = "shared",
+      cwd = "/tmp/two",
+      title = "Newest",
+      updated_at = "2026-08-10T10:00:00Z",
+    },
+    {
+      agent = "codex",
+      session_id = "shared",
+      cwd = "/tmp/one",
+      title = "Middle",
+      updated_at = "2026-08-09T10:00:00Z",
+    },
+    {
+      agent = "claude",
+      session_id = "shared",
+      cwd = "/tmp/one",
+      title = "Older",
+      updated_at = "2026-08-08T10:00:00Z",
+    },
+  })
+
+  assert(api:dispose())
+  restore_processes(original_system)
+end
+
+T["new"]["filters discovery to one workspace and reports unsupported adapters"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    supported = { command = "supported-agent", args = {} },
+    unsupported = { command = "unsupported-agent", args = {} },
+  }))
+  local discovered
+  local discovery_errors
+
+  assert(api:discover_sessions({ cwd = "/tmp/project" }, function(sessions, errors)
+    discovered = sessions
+    discovery_errors = errors
+  end))
+  local by_command = {}
+  for _, process in ipairs(processes) do
+    by_command[process.command[1]] = process
+  end
+  local supported = by_command["supported-agent"]
+  local unsupported = by_command["unsupported-agent"]
+  respond(supported, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  MiniTest.expect.equality(assert(Protocol.decode(supported.writes[2]:sub(1, -2))).params, { cwd = "/tmp/project" })
+  respond(supported, 2, {
+    sessions = {
+      { sessionId = "keep", cwd = "/tmp/project" },
+      { sessionId = "drop", cwd = "/tmp/other" },
+    },
+  })
+  respond(unsupported, 1, { protocolVersion = 1, agentCapabilities = {} })
+
+  MiniTest.expect.equality(discovered, {
+    { agent = "supported", session_id = "keep", cwd = "/tmp/project" },
+  })
+  MiniTest.expect.equality(discovery_errors, {
+    { agent = "unsupported", message = "ACP agent does not support session/list" },
+  })
+
+  assert(api:dispose())
+  restore_processes(original_system)
+end
+
+T["new"]["rejects malformed discovery and ignores late results after disposal"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local callbacks = 0
+  local discovered
+  local discovery_errors
+
+  local started, start_error = api:discover_sessions({ cwd = "relative/project" }, function() end)
+  MiniTest.expect.equality({ started, start_error }, { false, "discovery cwd must be an absolute path" })
+
+  assert(api:discover_sessions(nil, function(sessions, errors)
+    callbacks = callbacks + 1
+    discovered = sessions
+    discovery_errors = errors
+  end))
+  respond(processes[1], 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  respond(processes[1], 2, { sessions = { { sessionId = "", cwd = "/tmp/project" } } })
+  MiniTest.expect.equality(discovered, {})
+  MiniTest.expect.equality(discovery_errors, {
+    { agent = "agent", message = "ACP session/list returned malformed data: session entry has malformed fields" },
+  })
+
+  assert(api:discover_sessions(nil, function()
+    callbacks = callbacks + 1
+  end))
+  local late = processes[2]
+  assert(api:dispose())
+  MiniTest.expect.equality(late.closed, true)
+  respond(late, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  MiniTest.expect.equality(callbacks, 1)
+
+  restore_processes(original_system)
+end
+
 T["new"]["creates concurrent addressable sessions and exposes state"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({

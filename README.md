@@ -204,6 +204,19 @@ end)
 session:prompt("Review this project")
 ```
 
+Discover persisted conversations from configured agents that advertise ACP
+`sessionCapabilities.list`. Pass `cwd` for an exact workspace filter or omit it
+to list every workspace; each result includes the configured agent name needed
+for loading:
+
+```lua
+sessions:discover_sessions({ cwd = vim.fn.getcwd() }, function(found, errors)
+  for _, item in ipairs(found) do
+    print(item.agent, item.session_id, item.cwd, item.title, item.updated_at)
+  end
+end)
+```
+
 To load a persisted ACP conversation, use its agent-side session id. The agent
 must advertise `loadSession` during initialization; loading replays the stored
 history through the session's normal events before the ready callback runs:
@@ -263,6 +276,8 @@ The interactive controls are:
 - `:LouiselmInline` — ask the agent to replace the current selection, or insert at the cursor
 - `:LouiselmCancel` — cancel the active turn
 - `:LouiselmNewSession` — start another session without stopping existing ones
+- `:LouiselmResume` — discover and load a session from the current workspace
+- `:LouiselmResume!` — discover and load a session from any workspace
 - `:LouiselmSwitchSession` — switch using compact session telemetry rows
 - `:LouiselmRenameSession` — give the current session a human-readable name
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer

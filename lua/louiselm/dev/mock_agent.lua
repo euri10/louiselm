@@ -7,7 +7,7 @@
 ---@field initialized boolean
 ---@field next_session integer
 ---@field next_permission integer
----@field sessions table<string, boolean>
+---@field sessions table<string, { cwd: string }>
 ---@field pending_prompt? { id: string|number, session_id: string, text: string }
 ---@field pending_permission? string|number
 
@@ -135,7 +135,10 @@ local function handle_message(message, state, options)
 
   if method == "initialize" then
     state.initialized = true
-    write_response(message.id, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+    write_response(message.id, {
+      protocolVersion = 1,
+      agentCapabilities = { loadSession = true, sessionCapabilities = { list = {} } },
+    })
     return true
   end
   if not state.initialized then
@@ -152,7 +155,7 @@ local function handle_message(message, state, options)
   if method == "session/new" then
     local session_id = "mock-session-" .. state.next_session
     state.next_session = state.next_session + 1
-    state.sessions[session_id] = true
+    state.sessions[session_id] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
     write_response(message.id, { sessionId = session_id })
     return true
   end
@@ -162,8 +165,25 @@ local function handle_message(message, state, options)
       write_error(message.id, -32602, "sessionId must be a non-empty string")
       return true
     end
-    state.sessions[params.sessionId] = true
+    state.sessions[params.sessionId] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
     write_response(message.id, { sessionId = params.sessionId })
+    return true
+  end
+
+  if method == "session/list" then
+    local sessions = {}
+    local ids = {}
+    for session_id in pairs(state.sessions) do
+      ids[#ids + 1] = session_id
+    end
+    table.sort(ids)
+    for _, session_id in ipairs(ids) do
+      local session = state.sessions[session_id]
+      if params.cwd == nil or params.cwd == session.cwd then
+        sessions[#sessions + 1] = { sessionId = session_id, cwd = session.cwd, title = "Mock " .. session_id }
+      end
+    end
+    write_response(message.id, { sessions = sessions })
     return true
   end
 

@@ -62,6 +62,20 @@ T["mock agent"]["supports the ACP session flow and static responses"] = function
   MiniTest.expect.equality(created.error, nil)
 
   local session_id = created.result.sessionId
+  local listed
+  assert(client:list_sessions({ cwd = project_root }, function(result, err)
+    listed = { result = result, error = err }
+  end))
+  wait_for(function()
+    return listed ~= nil
+  end)
+  MiniTest.expect.equality(listed, {
+    result = {
+      sessions = { { sessionId = session_id, cwd = project_root, title = "Mock " .. session_id } },
+    },
+    error = nil,
+  })
+
   local loaded
   assert(client:load_session({ sessionId = session_id }, function(result, err)
     loaded = { result = result, error = err }

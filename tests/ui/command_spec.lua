@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 
+local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
 local Louiselm = require("louiselm")
 local Schema = require("louiselm.schema")
@@ -8,6 +9,7 @@ local T = MiniTest.new_set()
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
+local project_root = nvim.fn.getcwd()
 
 local function has_chat_command()
   return nvim.api.nvim_get_commands({ builtin = false }).LouiselmChat ~= nil
@@ -34,6 +36,26 @@ local function fake_process()
   return process, original_system
 end
 
+local function respond(process, id, result)
+  process.options.stdout(nil, assert(Protocol.encode(Protocol.response(id, result))) .. "\n")
+end
+
+local function mock_definition()
+  return {
+    command = nvim.v.progpath,
+    args = {
+      "--headless",
+      "--noplugin",
+      "-i",
+      "NONE",
+      "-u",
+      project_root .. "/tests/mock/init.lua",
+      "-c",
+      "lua require('louiselm.dev.mock_agent').run()",
+    },
+  }
+end
+
 local function restore_environment(name, value)
   nvim.env[name] = value
 end
@@ -53,6 +75,8 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(has_chat_command(), true)
   MiniTest.expect.equality(commands.LouiselmCancel ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmNewSession ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmResume ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmResume.bang, true)
   MiniTest.expect.equality(commands.LouiselmSwitchSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmRenameSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCloseSession ~= nil, true)
@@ -171,6 +195,77 @@ T["command"]["uses the configuration published by setup"] = function()
   Command.configure(nil)
 
   MiniTest.expect.equality(process.command, { "configured-agent" })
+  delete_chat_buffers()
+end
+
+T["command"]["resume discovers the current workspace and bang discovers all without creating a session"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notifications = 0
+  rawset(nvim, "notify", function()
+    notifications = notifications + 1
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmResume", args = {} }, {})
+  respond(process, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  local current_request = assert(Protocol.decode(process.writes[2]:sub(1, -2)))
+  MiniTest.expect.equality(current_request.method, "session/list")
+  MiniTest.expect.equality(current_request.params, { cwd = nvim.fn.getcwd() })
+  respond(process, 2, { sessions = {} })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmResume", args = {}, bang = true }, {})
+  respond(process, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { sessionCapabilities = { list = {} } },
+  })
+  local all_request = assert(Protocol.decode(process.writes[4]:sub(1, -2)))
+  MiniTest.expect.equality(all_request.method, "session/list")
+  MiniTest.expect.equality(all_request.params, {})
+  respond(process, 2, { sessions = {} })
+  MiniTest.expect.equality(
+    nvim.wait(100, function()
+      return notifications == 2
+    end, 1),
+    true
+  )
+
+  for _, write in ipairs(process.writes) do
+    local message = assert(Protocol.decode(write:sub(1, -2)))
+    MiniTest.expect.equality(message.method == "session/new", false)
+  end
+  for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
+    MiniTest.expect.equality(nvim.api.nvim_buf_get_name(buffer):match("^louiselm://"), nil)
+  end
+
+  nvim.system = original_system
+  rawset(nvim, "notify", original_notify)
+  Command.configure(nil)
+  delete_chat_buffers()
+end
+
+T["command"]["schedules real ACP discovery before notifying the UI"] = function()
+  Command.configure({ agents = { mock = mock_definition() } })
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message)
+    notification = { message = message, fast = nvim.in_fast_event() }
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmResume", args = {} }, {})
+  local completed = nvim.wait(3000, function()
+    return notification ~= nil
+  end, 10)
+
+  rawset(nvim, "notify", original_notify)
+  Command.configure(nil)
+  MiniTest.expect.equality(completed, true)
+  MiniTest.expect.equality(notification, { message = "louiselm: no recoverable sessions found", fast = false })
   delete_chat_buffers()
 end
 

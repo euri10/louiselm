@@ -532,6 +532,160 @@ T["chat"]["renders replayed assistant chunks before a new prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["discovers and resumes into a separate scheduled chat view"] = function()
+  local first = fake_session("session-1", "claude")
+  local restored = fake_session("session-2", "codex")
+  restored.state.status = "starting"
+  local api = fake_api()
+  local discovery_options
+  local discovery_callback
+  local load_call
+  function api:discover_sessions(options, callback)
+    discovery_options = options
+    discovery_callback = callback
+    return true
+  end
+  function api:load_session(agent, session_id, options, ready_callback)
+    load_call = { agent = agent, session_id = session_id, options = options, ready_callback = ready_callback }
+    return restored
+  end
+  function api:list_sessions()
+    return { "session-1", "session-2" }
+  end
+
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  local first_buffer = chat:buffer("session-1")
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local scheduled = {}
+  local formatted
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+  nvim.ui.select = function(items, options, callback)
+    formatted = options.format_item(items[1])
+    callback(items[1])
+  end
+
+  assert(chat:resume_session())
+  MiniTest.expect.equality(discovery_options, { cwd = nvim.fn.getcwd() })
+  discovery_callback({
+    {
+      agent = "codex",
+      session_id = "prior-acp",
+      cwd = "/tmp/project",
+      title = "Previous work",
+      updated_at = "2026-08-10T10:00:00Z",
+    },
+  }, {})
+  MiniTest.expect.equality(load_call, nil)
+  scheduled[1]()
+
+  MiniTest.expect.equality(
+    formatted,
+    "Previous work · adapter=codex · cwd=/tmp/project · updated=2026-08-10T10:00:00Z"
+  )
+  MiniTest.expect.equality(load_call.agent, "codex")
+  MiniTest.expect.equality(load_call.session_id, "prior-acp")
+  MiniTest.expect.equality(load_call.options, { cwd = "/tmp/project", name = "Previous work" })
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(first_buffer), true)
+  MiniTest.expect.equality(first.disposed, false)
+  MiniTest.expect.equality(chat:buffer(), chat:buffer("session-2"))
+
+  restored:emit({
+    type = "chunk",
+    session_id = "session-2",
+    data = { content = { type = "text", text = "replayed history" } },
+  })
+  restored.state.status = "ready"
+  restored:emit({ type = "state_changed", session_id = "session-2", data = { status = "ready" } })
+  scheduled[2]()
+  scheduled[3]()
+  load_call.ready_callback(restored)
+
+  MiniTest.expect.equality(buffer_lines(chat:buffer("session-2")), {
+    "# codex · session-2 · ready · Your turn",
+    "",
+    "replayed history",
+    "> ",
+  })
+
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+  chat:dispose()
+end
+
+T["chat"]["ignores scheduled discovery after disposal and supports all workspaces"] = function()
+  local api = fake_api()
+  local discovery_options
+  local discovery_callback
+  function api:discover_sessions(options, callback)
+    discovery_options = options
+    discovery_callback = callback
+    return true
+  end
+  local chat = assert(Chat.new(api))
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local scheduled = {}
+  local selected = false
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+  nvim.ui.select = function()
+    selected = true
+  end
+
+  assert(chat:resume_session(true))
+  MiniTest.expect.equality(discovery_options, {})
+  discovery_callback({ { agent = "codex", session_id = "prior", cwd = "/tmp/project" } }, {})
+  chat:dispose()
+  scheduled[1]()
+
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+  MiniTest.expect.equality(selected, false)
+end
+
+T["chat"]["reports a selected load failure without creating a replacement"] = function()
+  local api = fake_api()
+  local created = 0
+  function api:create_session()
+    created = created + 1
+    return fake_session("replacement", "codex")
+  end
+  function api:discover_sessions(_, callback)
+    callback({ { agent = "codex", session_id = "stale", cwd = "/tmp/project" } }, {})
+    return true
+  end
+  function api:load_session()
+    return nil, "ACP session/load failed: unknown session"
+  end
+  local original_select = nvim.ui.select
+  local original_notify = nvim.notify
+  local notifications = {}
+  nvim.ui.select = function(items, _, callback)
+    callback(items[1])
+  end
+  rawset(nvim, "notify", function(message)
+    notifications[#notifications + 1] = message
+  end)
+
+  local chat = assert(Chat.new(api))
+  assert(chat:resume_session())
+  nvim.wait(100, function()
+    return #notifications > 0
+  end, 1)
+
+  nvim.ui.select = original_select
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(notifications, { "louiselm: ACP session/load failed: unknown session" })
+  MiniTest.expect.equality(created, 0)
+  MiniTest.expect.equality(chat:buffer(), nil)
+  chat:dispose()
+end
+
 T["chat"]["keeps a blank boundary before the first scheduled assistant event"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

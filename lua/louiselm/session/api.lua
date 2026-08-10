@@ -4,6 +4,7 @@ local Registry = require("louiselm.session.registry")
 ---@field registry louiselm.session.Registry Session owner.
 ---@field create_session fun(self: louiselm.session.Api, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
+---@field discover_sessions fun(self: louiselm.session.Api, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
 ---@field get_session fun(self: louiselm.session.Api, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Api): string[]
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
@@ -45,6 +46,16 @@ end
 ---@return string? error_message Validation or immediate startup error.
 function Api:load_session(agent_name, acp_session_id, options, ready_callback)
   return self.registry:load_session(agent_name, acp_session_id, options, ready_callback)
+end
+
+---Discover recoverable sessions from every configured ACP agent.
+---@param self louiselm.session.Api
+---@param options louiselm.session.DiscoveryOptions? Optional exact workspace filter.
+---@param callback louiselm.session.DiscoveryCallback Called once with validated sessions and per-agent failures.
+---@return boolean started
+---@return string? error_message Validation or immediate startup error.
+function Api:discover_sessions(options, callback)
+  return self.registry:discover_sessions(options, callback)
 end
 
 ---Look up a live session by local id.

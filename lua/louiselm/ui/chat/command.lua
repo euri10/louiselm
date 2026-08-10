@@ -126,12 +126,10 @@ function M.register()
   end
 
   ---@return louiselm.ui.Chat? value
-  local function open_chat()
-    if chat ~= nil and chat:buffer() ~= nil then
-      nvim.api.nvim_set_current_buf(chat:buffer())
+  local function ensure_chat()
+    if chat ~= nil then
       return chat
     end
-
     local definitions = configured and configured_agents(configured)
     if definitions == nil then
       definitions = { default = default_agent_definition() }
@@ -155,9 +153,23 @@ function M.register()
       skills = skills,
       initial_contexts = initial_contexts,
     }))
-    local _, session_error = chat:new_session()
-    report_error(session_error)
     return chat
+  end
+
+  ---@return louiselm.ui.Chat? value
+  local function open_chat()
+    local current = ensure_chat()
+    if current == nil then
+      return nil
+    end
+    local buffer = current:buffer()
+    if buffer ~= nil then
+      nvim.api.nvim_set_current_buf(buffer)
+      return current
+    end
+    local _, session_error = current:new_session()
+    report_error(session_error)
+    return current
   end
 
   nvim.api.nvim_create_user_command("LouiselmChat", function()
@@ -172,6 +184,15 @@ function M.register()
     local _, session_error = chat:new_session()
     report_error(session_error)
   end, { desc = "Create a separate louiselm session", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmResume", function(arguments)
+    local current = ensure_chat()
+    if current == nil then
+      return
+    end
+    local _, resume_error = current:resume_session(arguments.bang)
+    report_error(resume_error)
+  end, { bang = true, desc = "Resume a prior louiselm session; use ! for all workspaces", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmSwitchSession", function()
     if chat == nil then

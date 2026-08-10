@@ -57,6 +57,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field pick_file fun(self: louiselm.ui.Chat, root?: string): boolean, string? Pick and queue a file context.
 ---@field pick_skill fun(self: louiselm.ui.Chat): boolean, string? Pick and queue a skill invocation.
 ---@field new_session fun(self: louiselm.ui.Chat, agent_name?: string, options?: louiselm.session.Options): louiselm.session.Session?, string? Create a session, using the picker when needed.
+---@field resume_session fun(self: louiselm.ui.Chat, all_workspaces?: boolean): boolean, string? Discover and load a prior ACP session.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
 local M = {}
@@ -224,6 +225,30 @@ local function session_summary(state)
     parts[#parts + 1] = "cost=" .. format_number(state.cost.amount) .. " " .. state.cost.currency
   end
   return table.concat(parts, " · ")
+end
+
+---@param session louiselm.session.DiscoveredSession
+---@return string
+local function discovered_session_summary(session)
+  local parts = {
+    single_line(session.title ~= nil and session.title ~= "" and session.title or session.session_id),
+    "adapter=" .. single_line(session.agent),
+    "cwd=" .. single_line(session.cwd),
+  }
+  if session.updated_at ~= nil then
+    parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
+  end
+  return table.concat(parts, " · ")
+end
+
+---@param errors louiselm.session.DiscoveryError[]
+---@return string
+local function discovery_error_summary(errors)
+  local messages = {}
+  for _, discovery_error in ipairs(errors) do
+    messages[#messages + 1] = discovery_error.agent .. ": " .. discovery_error.message
+  end
+  return table.concat(messages, "; ")
 end
 
 ---@param state louiselm.session.State
@@ -1266,6 +1291,78 @@ function Chat:new_session(agent_name, options)
     end
   end
   return session
+end
+
+---Discover and load an ACP session into a new chat buffer.
+---@param self louiselm.ui.Chat
+---@param all_workspaces? boolean Omit the current-workspace filter when true.
+---@return boolean started
+---@return string? error_message Validation or discovery startup error.
+function Chat:resume_session(all_workspaces)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if all_workspaces ~= nil and type(all_workspaces) ~= "boolean" then
+    return false, "all_workspaces must be a boolean"
+  end
+  local options = {}
+  if not all_workspaces then
+    options.cwd = nvim.fn.getcwd()
+  end
+
+  return self.api:discover_sessions(options, function(sessions, errors)
+    -- ACP process callbacks are fast events; all selection and buffer work stays on the main loop.
+    nvim.schedule(function()
+      if self.disposed then
+        return
+      end
+      if #errors > 0 then
+        local level = #sessions == 0 and nvim.log.levels.ERROR or nvim.log.levels.WARN
+        nvim.notify("louiselm: session discovery: " .. discovery_error_summary(errors), level)
+      end
+      if #sessions == 0 then
+        if #errors == 0 then
+          nvim.notify("louiselm: no recoverable sessions found", nvim.log.levels.INFO)
+        end
+        return
+      end
+
+      nvim.ui.select(sessions, {
+        prompt = all_workspaces and "louiselm session (all workspaces): " or "louiselm session: ",
+        format_item = discovered_session_summary,
+      }, function(selected)
+        if selected == nil or self.disposed then
+          return
+        end
+        local error_reported = false
+        local session, load_error = self.api:load_session(selected.agent, selected.session_id, {
+          cwd = selected.cwd,
+          name = single_line(selected.title ~= nil and selected.title ~= "" and selected.title or selected.session_id),
+        }, function(_, ready_error)
+          if ready_error == nil then
+            return
+          end
+          error_reported = true
+          nvim.schedule(function()
+            if not self.disposed then
+              nvim.notify("louiselm: " .. ready_error, nvim.log.levels.ERROR)
+            end
+          end)
+        end)
+        if session == nil then
+          if not error_reported then
+            nvim.notify("louiselm: " .. (load_error or "could not load session"), nvim.log.levels.ERROR)
+          end
+          return
+        end
+        local attached, attach_error = self:attach(session)
+        if not attached then
+          session:dispose()
+          nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
+        end
+      end)
+    end)
+  end)
 end
 
 ---Remove chat buffers and event listeners without disposing the sessions.

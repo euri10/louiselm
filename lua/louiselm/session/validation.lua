@@ -31,6 +31,13 @@
 ---@field cached_read_tokens? number
 ---@field cached_write_tokens? number
 
+---@class louiselm.session.DiscoveredSession
+---@field agent string Configured agent definition name.
+---@field session_id string Agent-side ACP session identifier.
+---@field cwd string Authoritative primary workspace.
+---@field title? string Agent-provided display title.
+---@field updated_at? string Agent-provided ISO 8601 activity timestamp.
+
 local M = {}
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -40,6 +47,16 @@ local nvim = vim
 ---@return boolean
 local function non_empty_string(value)
   return type(value) == "string" and value ~= ""
+end
+
+---@param value unknown
+---@return boolean
+local function absolute_path(value)
+  if not non_empty_string(value) then
+    return false
+  end
+  local call_ok, absolute = pcall(nvim.fs.abspath, value)
+  return call_ok and absolute == value
 end
 
 ---@param value table
@@ -147,6 +164,52 @@ function M.config_options(value)
     end
   end
   return options
+end
+
+---Validate and copy one ACP session/list page, ignoring unknown optional fields.
+---@param value unknown ACP ListSessionsResponse value.
+---@param agent string Configured agent definition name.
+---@param cwd_filter? string Exact workspace to retain defensively.
+---@return louiselm.session.DiscoveredSession[]? sessions
+---@return string? next_cursor
+---@return string? error_message
+function M.discovery_page(value, agent, cwd_filter)
+  if type(value) ~= "table" or type(value.sessions) ~= "table" or not dense_array(value.sessions) then
+    return nil, nil, "response must contain a sessions array"
+  end
+  if value.nextCursor ~= nil and type(value.nextCursor) ~= "string" then
+    return nil, nil, "nextCursor must be a string"
+  end
+
+  local sessions = {}
+  for _, item in ipairs(value.sessions) do
+    if
+      type(item) ~= "table"
+      or not non_empty_string(item.sessionId)
+      or not absolute_path(item.cwd)
+      or (item.title ~= nil and type(item.title) ~= "string")
+      or (item.updatedAt ~= nil and type(item.updatedAt) ~= "string")
+    then
+      return nil, nil, "session entry has malformed fields"
+    end
+    if cwd_filter == nil or item.cwd == cwd_filter then
+      sessions[#sessions + 1] = {
+        agent = agent,
+        session_id = item.sessionId,
+        cwd = item.cwd,
+        title = item.title,
+        updated_at = item.updatedAt,
+      }
+    end
+  end
+  return sessions, value.nextCursor
+end
+
+---Return whether a session discovery workspace is an absolute non-empty path.
+---@param value unknown
+---@return boolean valid
+function M.discovery_cwd(value)
+  return absolute_path(value)
 end
 
 ---Find a supported configuration option by id.

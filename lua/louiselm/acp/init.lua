@@ -21,6 +21,7 @@ local Transport = require("louiselm.acp.transport")
 ---@field initialize fun(self: louiselm.acp.Client, params?: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field new_session fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field load_session fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
+---@field list_sessions fun(self: louiselm.acp.Client, params?: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field prompt fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field set_config_option fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field cancel fun(self: louiselm.acp.Client, params: table): boolean, string?
@@ -238,6 +239,24 @@ function Client:load_session(params, callback)
     return nil, "ACP agent does not support session/load"
   end
   return self:request("session/load", params, callback)
+end
+
+---List sessions known to an ACP agent that advertises discovery support.
+---@param self louiselm.acp.Client
+---@param params? table Optional workspace filter and pagination cursor.
+---@param callback? fun(result: unknown, error?: louiselm.acp.JsonRpcError) Response callback.
+---@return string|number? id Request identifier, or nil on failure.
+---@return string? error_message Validation or write error.
+function Client:list_sessions(params, callback)
+  local initialized, initialization_error = require_initialized(self)
+  if not initialized then
+    return nil, initialization_error
+  end
+  local session_capabilities = self.agent_capabilities.sessionCapabilities
+  if type(session_capabilities) ~= "table" or type(session_capabilities.list) ~= "table" then
+    return nil, "ACP agent does not support session/list"
+  end
+  return self:request("session/list", params or {}, callback)
 end
 
 ---Submit a prompt to an ACP session.

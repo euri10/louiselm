@@ -113,6 +113,49 @@ T["connect"]["rejects loading when the agent lacks loadSession capability"] = fu
   MiniTest.expect.equality(calls.writes, 1)
 end
 
+T["connect"]["lists sessions only when the agent advertises support"] = function()
+  local calls = {}
+  local fake_handle = {
+    is_closing = function()
+      return false
+    end,
+    write = function(_, data)
+      calls[#calls + 1] = data
+    end,
+  }
+  local original_system = nvim.system
+  set_system(function(_, options)
+    calls.stdout = options.stdout
+    return fake_handle
+  end)
+
+  local client = assert(Acp.connect({ command = "agent", args = {} }))
+  assert(client:initialize())
+  set_system(original_system)
+  calls.stdout(
+    nil,
+    '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"list":{}}}}}\n'
+  )
+
+  local listed
+  assert(client:list_sessions({ cwd = "/tmp/project" }, function(result)
+    listed = result
+  end))
+  MiniTest.expect.equality(assert(Protocol.decode(calls[2]:sub(1, -2))), {
+    id = 2,
+    jsonrpc = "2.0",
+    method = "session/list",
+    params = { cwd = "/tmp/project" },
+  })
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"sessions":[]}}\n')
+  MiniTest.expect.equality(listed, { sessions = {} })
+
+  client.agent_capabilities = {}
+  local request_id, request_error = client:list_sessions({})
+  MiniTest.expect.equality(request_id, nil)
+  MiniTest.expect.equality(request_error, "ACP agent does not support session/list")
+end
+
 T["connect"]["passes agent requests to the callback"] = function()
   local received
   local response
