@@ -687,7 +687,8 @@ local function handle_event(self, view, event)
     end
     if not view.response_started then
       local lines = split_lines(text)
-      local insertion_line = view.response_tail or (view.transcript_tail + 1)
+      local insertion_line = view.response_tail
+        or (view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1)
       if view.response_tail ~= nil then
         insertion_line = insertion_line + 1
       end
