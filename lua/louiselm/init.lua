@@ -48,6 +48,7 @@ function M.setup(config, schema)
   if not command_configured then
     error(command_error)
   end
+  Command.register()
   return true
 end
 

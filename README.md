@@ -157,9 +157,9 @@ nvim -u ./manual_init.lua
 
 The config installs this checkout with `vim.pack.add`. Verify it loaded with
 `:lua print(require("louiselm.acp").PROTOCOL_VERSION)`.
-It also registers `:LouiselmChat`. After `louiselm.setup()` the command uses
-the configured agents and skills; before setup it falls back to the default
-launcher described below.
+It registers `:LouiselmChat` and the other chat commands. After
+`louiselm.setup()` they use the configured agents and skills; before setup they
+fall back to the default launcher described below.
 
 ACP agents communicate over newline-delimited JSON-RPC on stdio. The client
 starts the configured process, negotiates protocol version 1, then exposes

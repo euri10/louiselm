@@ -4,6 +4,9 @@ local Schema = require("louiselm.schema")
 
 local T = MiniTest.new_set()
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 local function capture_setup(config, schema)
   local notifications = {}
   ---@diagnostic disable-next-line: undefined-global
@@ -46,6 +49,20 @@ T["setup"]["starts with valid config"] = function()
   MiniTest.expect.equality(ok, true)
   MiniTest.expect.equality(report, nil)
   MiniTest.expect.equality(#notifications, 0)
+end
+
+T["setup"]["registers chat commands for a valid setup"] = function()
+  pcall(nvim.api.nvim_del_user_command, "LouiselmResume")
+  local schema = assert(Schema.define({
+    name = { type = "string" },
+  }))
+
+  local ok = capture_setup({ name = "louiselm" }, schema)
+  local commands = nvim.api.nvim_get_commands({ builtin = false })
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(commands.LouiselmResume ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmResume.bang, true)
 end
 
 T["setup"]["warns for present deprecated keys and still starts"] = function()
