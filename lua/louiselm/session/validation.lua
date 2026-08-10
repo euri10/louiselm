@@ -50,6 +50,19 @@ local function non_empty_string(value)
 end
 
 ---@param value unknown
+---@return string? normalized
+---@return boolean valid
+local function optional_string(value)
+  if value == nil or value == nvim.NIL then
+    return nil, true
+  end
+  if type(value) == "string" then
+    return value, true
+  end
+  return nil, false
+end
+
+---@param value unknown
 ---@return boolean
 local function absolute_path(value)
   if not non_empty_string(value) then
@@ -177,19 +190,19 @@ function M.discovery_page(value, agent, cwd_filter)
   if type(value) ~= "table" or type(value.sessions) ~= "table" or not dense_array(value.sessions) then
     return nil, nil, "response must contain a sessions array"
   end
-  if value.nextCursor ~= nil and type(value.nextCursor) ~= "string" then
+  local next_cursor, cursor_valid = optional_string(value.nextCursor)
+  if not cursor_valid then
     return nil, nil, "nextCursor must be a string"
   end
 
   local sessions = {}
   for _, item in ipairs(value.sessions) do
-    if
-      type(item) ~= "table"
-      or not non_empty_string(item.sessionId)
-      or not absolute_path(item.cwd)
-      or (item.title ~= nil and type(item.title) ~= "string")
-      or (item.updatedAt ~= nil and type(item.updatedAt) ~= "string")
-    then
+    if type(item) ~= "table" or not non_empty_string(item.sessionId) or not absolute_path(item.cwd) then
+      return nil, nil, "session entry has malformed fields"
+    end
+    local title, title_valid = optional_string(item.title)
+    local updated_at, updated_at_valid = optional_string(item.updatedAt)
+    if not title_valid or not updated_at_valid then
       return nil, nil, "session entry has malformed fields"
     end
     if cwd_filter == nil or item.cwd == cwd_filter then
@@ -197,12 +210,12 @@ function M.discovery_page(value, agent, cwd_filter)
         agent = agent,
         session_id = item.sessionId,
         cwd = item.cwd,
-        title = item.title,
-        updated_at = item.updatedAt,
+        title = title,
+        updated_at = updated_at,
       }
     end
   end
-  return sessions, value.nextCursor
+  return sessions, next_cursor
 end
 
 ---Return whether a session discovery workspace is an absolute non-empty path.

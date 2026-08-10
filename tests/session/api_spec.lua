@@ -168,8 +168,9 @@ T["new"]["discovers paginated sessions with adapter-scoped identities"] = functi
   })
   respond(codex, 2, {
     sessions = {
-      { sessionId = "shared", cwd = "/tmp/one", title = "Middle", updatedAt = "2026-08-09T10:00:00Z" },
+      { sessionId = "shared", cwd = "/tmp/one", title = nvim.NIL, updatedAt = nvim.NIL },
     },
+    nextCursor = nvim.NIL,
   })
 
   MiniTest.expect.equality(discovery_errors, {})
@@ -182,18 +183,16 @@ T["new"]["discovers paginated sessions with adapter-scoped identities"] = functi
       updated_at = "2026-08-10T10:00:00Z",
     },
     {
-      agent = "codex",
-      session_id = "shared",
-      cwd = "/tmp/one",
-      title = "Middle",
-      updated_at = "2026-08-09T10:00:00Z",
-    },
-    {
       agent = "claude",
       session_id = "shared",
       cwd = "/tmp/one",
       title = "Older",
       updated_at = "2026-08-08T10:00:00Z",
+    },
+    {
+      agent = "codex",
+      session_id = "shared",
+      cwd = "/tmp/one",
     },
   })
 
