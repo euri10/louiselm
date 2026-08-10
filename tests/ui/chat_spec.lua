@@ -164,6 +164,25 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
   chat:dispose()
 end
 
+T["chat"]["normalizes multiline tool activity in the session header"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first.state.status = "prompting"
+  first.state.activity = "exec command\nwith another line"
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "prompting" } })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[1] ~= "# claude · session-1 · ready · Your turn"
+  end, 1)
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer())[1],
+    "# claude · session-1 · prompting · activity=exec command with another line · Model responding"
+  )
+  chat:dispose()
+end
+
 T["chat"]["queues one prompt in every active turn state and releases it only on turn completion"] = function()
   for _, status in ipairs({ "prompting", "waiting_permission", "cancelling" }) do
     local first = fake_session("session-" .. status, "claude")

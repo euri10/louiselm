@@ -154,6 +154,12 @@ local function set_line(buffer, line, value)
   nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
 end
 
+---@param value string
+---@return string line
+local function single_line(value)
+  return (value:gsub("[\r\n]", " "))
+end
+
 local ACTIVE_TURN_STATUS = {
   prompting = true,
   waiting_permission = true,
@@ -198,7 +204,7 @@ end
 local function session_summary(state)
   local parts = { session_identity(state) }
   if state.activity ~= nil then
-    parts[#parts + 1] = "activity=" .. state.activity
+    parts[#parts + 1] = "activity=" .. single_line(state.activity)
   end
   for _, option in ipairs(state.config_options or {}) do
     parts[#parts + 1] = option.name .. "=" .. tostring(option.current_value)
@@ -315,12 +321,6 @@ local function split_lines(value)
     lines[#lines + 1] = string.sub(value, start, newline - 1)
     start = newline + 1
   end
-end
-
----@param value string
----@return string line
-local function single_line(value)
-  return (value:gsub("[\r\n]", " "))
 end
 
 ---@param value unknown
