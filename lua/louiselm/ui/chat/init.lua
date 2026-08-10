@@ -378,7 +378,7 @@ local function permission_option(option)
   if type(identifier) ~= "string" or identifier == "" then
     return nil, "invalid option"
   end
-  local label = option.kind or option.name or identifier
+  local label = option.name or option.kind or identifier
   if type(label) ~= "string" or label == "" then
     label = identifier
   end

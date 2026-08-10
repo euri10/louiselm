@@ -695,6 +695,51 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
   chat:dispose()
 end
 
+T["chat"]["preserves distinct permission option names with the same kind"] = function()
+  local first = fake_session("session-1", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local scheduled = {}
+  local labels
+  local response
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  first:emit({
+    type = "permission_requested",
+    session_id = "session-1",
+    data = {
+      operation = { kind = "command" },
+      options = {
+        { optionId = "session", name = "Allow for This Session", kind = "allow_always" },
+        { optionId = "always", name = "Allow and Don't Ask Again", kind = "allow_always" },
+      },
+    },
+    respond = function(result)
+      response = result
+      return true
+    end,
+  })
+
+  nvim.ui.select = function(options, select_options, callback)
+    labels = {}
+    for _, option in ipairs(options) do
+      labels[#labels + 1] = select_options.format_item(option)
+    end
+    callback(options[2])
+  end
+  scheduled[1]()
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(labels, { "Allow for This Session", "Allow and Don't Ask Again" })
+  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "always" } })
+  chat:dispose()
+end
+
 T["chat"]["ignores a queued permission choice after disposal"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
