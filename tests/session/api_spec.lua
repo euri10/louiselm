@@ -121,6 +121,27 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   restore_processes(original_system)
 end
 
+T["new"]["closes the ACP process when loading returns a malformed result"] = function()
+  local processes, original_system = fake_processes()
+  local ready
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:load_session("agent", "prior-acp", nil, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(process, 2, { sessionId = "different-acp" })
+
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(ready.error, "ACP session/load returned a malformed result")
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(process.closed, true)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["discovers paginated sessions with adapter-scoped identities"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({

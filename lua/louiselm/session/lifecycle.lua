@@ -110,6 +110,13 @@ local function fail(self, message)
     return
   end
   set_status(self, "error")
+  local client = self.client
+  if client ~= nil then
+    local closed, close_error = client:close()
+    if not closed then
+      message = message .. "; ACP cleanup failed: " .. (close_error or "unknown error")
+    end
+  end
   local prompt_callback = self.prompt_callback
   self.prompt_callback = nil
   emit(self, "error", { message = message })
