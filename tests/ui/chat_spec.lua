@@ -120,6 +120,26 @@ T["chat"]["focuses the prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["submits every line in a multiline prompt"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 2, -1, false, { "> first line", "> second line" })
+  assert(chat:submit())
+
+  MiniTest.expect.equality(first.prompts, { "first line\nsecond line" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1 · ready · Your turn",
+    "",
+    "> first line",
+    "> second line",
+    "",
+    "> ",
+  })
+  chat:dispose()
+end
+
 T["chat"]["renders session events and forwards slash prompts"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

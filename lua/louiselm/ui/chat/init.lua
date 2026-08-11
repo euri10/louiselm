@@ -348,6 +348,28 @@ local function split_lines(value)
   end
 end
 
+---@param view louiselm.ui.ChatView
+---@return string text
+local function prompt_text(view)
+  local lines = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, -1, false)
+  for index, line in ipairs(lines) do
+    lines[index] = line:sub(1, 2) == "> " and line:sub(3) or line
+  end
+  return table.concat(lines, "\n")
+end
+
+---@param view louiselm.ui.ChatView
+---@param text string
+---@return integer line_count
+local function replace_prompt(view, text)
+  local lines = split_lines(text)
+  for index, line in ipairs(lines) do
+    lines[index] = "> " .. line
+  end
+  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
+  return #lines
+end
+
 ---@param value unknown
 ---@return string? text Text carried by an ACP chunk.
 local function chunk_text(value)
@@ -528,7 +550,7 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param text string
 local function set_prompt_line(view, text)
-  set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
+  replace_prompt(view, view.context_prefix .. text)
 end
 
 ---@param message string
@@ -551,13 +573,14 @@ local function submit_prompt(self, view, text, content)
   end
 
   clear_queued_prompt(view)
-  set_line(view.buffer, view.prompt_line, "> " .. text)
-  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line + 1, view.prompt_line + 1, false, { "", "> " })
-  view.response_line = view.prompt_line + 1
+  local prompt_line_count = replace_prompt(view, text)
+  local response_line = view.prompt_line + prompt_line_count
+  nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " })
+  view.response_line = response_line
   view.response_tail = view.response_line
   view.response_started = false
   view.transcript_tail = view.response_tail
-  view.prompt_line = view.prompt_line + 2
+  view.prompt_line = response_line + 1
   if nvim.api.nvim_get_current_buf() == view.buffer then
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
   end
@@ -1139,8 +1162,7 @@ function Chat:submit(text)
     return nil, "no chat session is attached"
   end
   if text == nil then
-    local line = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, view.prompt_line + 1, false)[1]
-    text = line and (string.sub(line, 1, 2) == "> " and string.sub(line, 3) or line) or ""
+    text = prompt_text(view)
   end
   if type(text) ~= "string" then
     return nil, "prompt must be a non-empty string"
