@@ -14,6 +14,7 @@ local nvim = vim
 ---@field name string User-facing session name.
 ---@field source "new"|"loaded" Whether the session was created or restored.
 ---@field agent string Named agent definition.
+---@field acp_session_id? string Agent-side persistent conversation identifier, once available.
 ---@field status louiselm.session.Status Lifecycle state.
 ---@field working_dir string ACP working directory.
 ---@field current_turn integer Number of the current or most recently completed turn.
@@ -301,15 +302,12 @@ local function handle_initialized(self, result, rpc_error)
         return
       end
       self.acp_session_id = session_result.sessionId
-    elseif session_result ~= nil and session_result ~= nvim.NIL then
-      if type(session_result) ~= "table" or session_result.sessionId ~= self.load_session_id then
-        fail(self, "ACP session/load returned a malformed result")
-        return
-      end
-      self.acp_session_id = session_result.sessionId
+    elseif type(session_result) ~= "table" or session_result == nvim.NIL then
+      fail(self, "ACP session/load returned a malformed result")
+      return
     end
     local options, options_error
-    if self.load_session_id ~= nil and session_result == nvim.NIL then
+    if self.load_session_id ~= nil and session_result.configOptions == nil then
       options = copy(self.state.config_options)
     else
       local config_options
@@ -460,6 +458,7 @@ end
 ---@return louiselm.session.State state Copy of current state.
 function Session:inspect()
   local state = copy(self.state)
+  state.acp_session_id = self.acp_session_id
   ---@cast state louiselm.session.State
   return state
 end

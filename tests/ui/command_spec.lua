@@ -80,10 +80,56 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmSwitchSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmRenameSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCloseSession ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmSessionId ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionOptions ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInline ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
+end
+
+T["command"]["reports when no session id is available"] = function()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmSessionId", args = {} }, {})
+
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(notification, {
+    message = "louiselm: no chat session is open",
+    level = nvim.log.levels.ERROR,
+  })
+end
+
+T["command"]["copies and reports the current ACP session id"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local original_clipboard = nvim.fn.getreg("+")
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "prior-acp" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmSessionId", args = {} }, {})
+
+  MiniTest.expect.equality(nvim.fn.getreg("+"), "codex/prior-acp")
+  MiniTest.expect.equality(notification, {
+    message = "louiselm: copied session id codex/prior-acp",
+    level = nvim.log.levels.INFO,
+  })
+  nvim.fn.setreg("+", original_clipboard)
+  rawset(nvim, "notify", original_notify)
+  nvim.system = original_system
+  Command.configure(nil)
+  delete_chat_buffers()
 end
 
 T["command"]["manual init exposes the canonical chat command"] = function()

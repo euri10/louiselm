@@ -217,6 +217,21 @@ function M.register()
     end)
   end, { desc = "Rename the current louiselm session", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmSessionId", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local session_id, session_error = chat:session_id()
+    if session_id == nil then
+      report_error(session_error)
+      return
+    end
+    local copied = pcall(nvim.fn.setreg, "+", session_id)
+    local message = copied and "copied session id " or "session id "
+    nvim.notify("louiselm: " .. message .. session_id, nvim.log.levels.INFO)
+  end, { desc = "Copy the current agent-scoped ACP session id", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmCloseSession", function()
     if chat == nil then
       report_error("no chat session is open")

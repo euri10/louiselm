@@ -109,11 +109,12 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
       },
     },
   })
-  respond(process, 2, nvim.NIL)
+  respond(process, 2, {})
 
   MiniTest.expect.equality(ready.error, nil)
   MiniTest.expect.equality(ready.session, session)
   MiniTest.expect.equality(events[1].data.content.text, "previous answer")
+  MiniTest.expect.equality(session:inspect().acp_session_id, "prior-acp")
   MiniTest.expect.equality(session:inspect().config_options[1].current_value, true)
   MiniTest.expect.equality(session:inspect().status, "ready")
 
@@ -131,7 +132,7 @@ T["new"]["closes the ACP process when loading returns a malformed result"] = fun
   local process = processes[#processes]
 
   respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
-  respond(process, 2, { sessionId = "different-acp" })
+  respond(process, 2, nvim.NIL)
 
   MiniTest.expect.equality(ready.session, nil)
   MiniTest.expect.equality(ready.error, "ACP session/load returned a malformed result")
@@ -319,6 +320,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     name = "session-1",
     source = "new",
     agent = "one",
+    acp_session_id = "one-acp",
     status = "ready",
     working_dir = "/tmp/one",
     current_turn = 0,
@@ -329,6 +331,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     name = "session-2",
     source = "new",
     agent = "two",
+    acp_session_id = "two-acp",
     status = "ready",
     working_dir = "/tmp/two",
     current_turn = 0,

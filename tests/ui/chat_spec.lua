@@ -604,7 +604,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
 
   MiniTest.expect.equality(
     formatted,
-    "Previous work · adapter=codex · cwd=/tmp/project · updated=2026-08-10T10:00:00Z"
+    "codex/prior-acp · Previous work · cwd=/tmp/project · updated=2026-08-10T10:00:00Z"
   )
   MiniTest.expect.equality(load_call.agent, "codex")
   MiniTest.expect.equality(load_call.session_id, "prior-acp")
@@ -633,6 +633,25 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
 
   nvim.schedule = original_schedule
   nvim.ui.select = original_select
+  chat:dispose()
+end
+
+T["chat"]["reports stable ACP identities for new and resumed sessions"] = function()
+  local created = fake_session("session-1", "claude")
+  created.state.acp_session_id = "created-acp"
+  local loaded = fake_session("session-2", "codex")
+  loaded.state.acp_session_id = "loaded-acp"
+  loaded.state.source = "loaded"
+  local chat = assert(Chat.new(fake_api()))
+
+  local report_id, missing_error = chat:session_id()
+  MiniTest.expect.equality(report_id, nil)
+  MiniTest.expect.equality(missing_error, "no chat session is open")
+
+  assert(chat:attach(created))
+  MiniTest.expect.equality(chat:session_id(), "claude/created-acp")
+  assert(chat:attach(loaded))
+  MiniTest.expect.equality(chat:session_id(), "codex/loaded-acp")
   chat:dispose()
 end
 
@@ -1106,6 +1125,7 @@ end
 
 T["chat"]["switches with telemetry rows and closes only the selected session"] = function()
   local first = fake_session("session-1", "one")
+  first.state.acp_session_id = "one-acp"
   local second = fake_session("session-2", "two")
   second.state.status = "prompting"
   local api = fake_api()
@@ -1132,7 +1152,7 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(prompts[1].prompt, "louiselm session: ")
-  MiniTest.expect.equality(prompts[1].format_item(first), "one · session-1 · ready")
+  MiniTest.expect.equality(prompts[1].format_item(first), "one/one-acp · session-1 · ready")
   MiniTest.expect.equality(prompts[2].prompt, "close active louiselm session? ")
   MiniTest.expect.equality(second.disposed, true)
   MiniTest.expect.equality(first.disposed, false)

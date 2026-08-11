@@ -280,6 +280,7 @@ The interactive controls are:
 - `:LouiselmResume!` — discover and load a session from any workspace
 - `:LouiselmSwitchSession` — switch using compact session telemetry rows
 - `:LouiselmRenameSession` — give the current session a human-readable name
+- `:LouiselmSessionId` — copy the current agent-scoped ACP session identifier
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer
 
 The header reports lifecycle and tool activity, active option values, agent-
@@ -296,8 +297,13 @@ The current turn label is also shown in the window bar, so whether it is your
 turn remains visible while scrolling through a long conversation.
 
 Sessions accept an optional `name` in their headless options. `inspect()` also
-reports whether the session was `new` or `loaded`; named sessions use that name
-in chat headers and the session switcher.
+reports whether the session was `new` or `loaded` and exposes `acp_session_id`
+once the agent establishes it; named sessions use that name in chat headers and
+the session switcher.
+
+When reporting a session-specific bug, run `:LouiselmSessionId` and include the
+copied `<agent>/<ACP-session-id>` value with the reproduction steps and expected
+and actual behavior. The identifier contains no prompt or tool payload content.
 
 Headless consumers can call `session:set_config_option(id, value, callback)`
 while `session:inspect().status == "ready"`. Snapshots include

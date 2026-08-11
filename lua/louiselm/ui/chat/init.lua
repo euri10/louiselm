@@ -49,6 +49,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
+---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number|boolean?, string? Submit or queue the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
@@ -185,11 +186,25 @@ local function format_number(value)
   return tostring(value)
 end
 
+---@param agent string
+---@param acp_session_id string
+---@return string
+local function report_id(agent, acp_session_id)
+  return agent .. "/" .. acp_session_id
+end
+
 ---@param state louiselm.session.State
 ---@return string
 local function session_identity(state)
   local parts
-  if state.name ~= nil and state.name ~= state.id then
+  if state.acp_session_id ~= nil then
+    local identity = report_id(state.agent, state.acp_session_id)
+    if state.name ~= nil and state.name ~= state.id then
+      parts = { identity, state.name, state.id, state.status or "unknown" }
+    else
+      parts = { identity, state.id, state.status or "unknown" }
+    end
+  elseif state.name ~= nil and state.name ~= state.id then
     parts = { state.name, state.agent, state.id, state.status or "unknown" }
   else
     parts = { state.agent, state.id, state.status or "unknown" }
@@ -231,10 +246,12 @@ end
 ---@return string
 local function discovered_session_summary(session)
   local parts = {
-    single_line(session.title ~= nil and session.title ~= "" and session.title or session.session_id),
-    "adapter=" .. single_line(session.agent),
-    "cwd=" .. single_line(session.cwd),
+    report_id(single_line(session.agent), single_line(session.session_id)),
   }
+  if session.title ~= nil and session.title ~= "" and session.title ~= session.session_id then
+    parts[#parts + 1] = single_line(session.title)
+  end
+  parts[#parts + 1] = "cwd=" .. single_line(session.cwd)
   if session.updated_at ~= nil then
     parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
   end
@@ -1032,6 +1049,25 @@ function Chat:rename_session(name)
     return false, "no chat session is attached"
   end
   return view.session:set_name(name)
+end
+
+---Return the current agent-scoped ACP session identifier for bug reports.
+---@param self louiselm.ui.Chat
+---@return string? session_id
+---@return string? error_message
+function Chat:session_id()
+  if self.disposed then
+    return nil, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return nil, "no chat session is open"
+  end
+  local state = view.session:inspect()
+  if state.acp_session_id == nil then
+    return nil, "current session has no ACP session id yet"
+  end
+  return report_id(state.agent, state.acp_session_id)
 end
 
 ---@param self louiselm.ui.Chat
