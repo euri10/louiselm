@@ -660,6 +660,33 @@ T["new"]["publishes permission requests with a response function"] = function()
   restore_processes(original_system)
 end
 
+T["new"]["rejects malformed permission requests without terminating the session"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+
+  local request = {
+    jsonrpc = "2.0",
+    id = 9,
+    method = "session/request_permission",
+    params = {
+      sessionId = "agent-acp",
+      toolCall = { kind = "edit", rawInput = {} },
+      options = { { optionId = "allow-once", kind = "allow_once" } },
+    },
+  }
+  process.options.stdout(nil, assert(Protocol.encode(request)) .. "\n")
+
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).error, {
+    code = -32602,
+    message = "invalid ACP permission request: permission file edit must have a non-empty path",
+  })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["automatically responds only to explicitly scoped permission requests"] = function()
   local processes, original_system = fake_processes()
   local policy = assert(Permission.policy("auto-approve-scoped", { paths = { "/tmp/project" } }))

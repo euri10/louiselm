@@ -216,7 +216,7 @@ local function handle_request(self, request, respond)
     return
   end
   if type(request.params) ~= "table" or request.params.sessionId ~= self.acp_session_id then
-    fail(self, "malformed ACP permission request")
+    respond(nil, { code = -32602, message = "malformed ACP permission request" })
     return
   end
   local data = {}
@@ -227,7 +227,10 @@ local function handle_request(self, request, respond)
   data.operation = Permission.gates.from_acp(data)
   local decision, policy_error = Permission.gates.check(self.permission_policy, data.operation)
   if decision == nil then
-    fail(self, "invalid ACP permission request: " .. (policy_error or "permission policy failed"))
+    respond(nil, {
+      code = -32602,
+      message = "invalid ACP permission request: " .. (policy_error or "permission policy failed"),
+    })
     return
   end
   data.policy_decision = decision
