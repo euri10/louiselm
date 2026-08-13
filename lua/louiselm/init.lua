@@ -1,6 +1,8 @@
 local Deprecate = require("louiselm.schema.deprecate")
+local Config = require("louiselm.config")
 local Health = require("louiselm.health")
 local Schema = require("louiselm.schema")
+local CaptureCommand = require("louiselm.capture.command")
 local Command = require("louiselm.ui.chat.command")
 
 local M = {}
@@ -15,15 +17,13 @@ end
 
 ---Validate configuration and allow startup only when it is valid.
 ---@param config unknown User configuration to validate.
----@param schema louiselm.schema.Schema Normalized schema returned by `Schema.define`.
 ---@return boolean ok False and a report when validation fails; true when startup may continue.
 ---@return louiselm.schema.Report? report Full validation report on failure.
-function M.setup(config, schema)
+function M.setup(config)
   Health.reset()
+  CaptureCommand.configure(nil)
   Command.configure(nil)
-  if type(schema) ~= "table" or schema.type ~= "table" or type(schema.fields) ~= "table" then
-    error("setup requires a normalized schema")
-  end
+  local schema = Config.schema
 
   local report = Schema.report(Schema.validate(schema, config))
   if not report.ok then
@@ -48,7 +48,12 @@ function M.setup(config, schema)
   if not command_configured then
     error(command_error)
   end
+  local capture_configured, capture_error = CaptureCommand.configure(config)
+  if not capture_configured then
+    error(capture_error)
+  end
   Command.register()
+  CaptureCommand.register()
   return true
 end
 

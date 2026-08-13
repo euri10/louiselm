@@ -11,3 +11,4 @@ nvim.pack.add({
 nvim.opt.rtp:prepend(project_root)
 
 require("louiselm.ui.chat.command").register()
+require("louiselm.capture.command").register()

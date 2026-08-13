@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+config_root=${XDG_CONFIG_HOME:-"$HOME/.config"}
+data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}
+state_root=${XDG_STATE_HOME:-"$HOME/.local/state"}
+unit_root="$config_root/systemd/user"
+
+cargo build --release --manifest-path "$project_root/capture-service/Cargo.toml"
+install -d "$HOME/.local/bin" "$config_root/louiselm" "$data_root/louiselm" "$state_root/louiselm" "$unit_root"
+install -m 0755 "$project_root/capture-service/target/release/louiselm-capture" "$HOME/.local/bin/louiselm-capture"
+install -m 0644 "$project_root/capture-service/contrib/systemd/louiselm-capture.service" "$unit_root/louiselm-capture.service"
+
+if [ ! -e "$config_root/louiselm/capture.env" ]; then
+    install -m 0600 "$project_root/capture-service/contrib/systemd/capture.env.example" "$config_root/louiselm/capture.env"
+fi
+
+systemctl --user daemon-reload
+systemctl --user enable --now louiselm-capture.service
+systemctl --user --no-pager status louiselm-capture.service

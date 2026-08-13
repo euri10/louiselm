@@ -3,7 +3,6 @@ local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
 local Louiselm = require("louiselm")
-local Schema = require("louiselm.schema")
 
 local T = MiniTest.new_set()
 
@@ -212,26 +211,7 @@ T["command"]["launches a configured named agent"] = function()
 end
 
 T["command"]["uses the configuration published by setup"] = function()
-  local schema = assert(Schema.define({
-    agents = {
-      type = "table",
-      fields = {
-        claude = {
-          type = "table",
-          fields = {
-            command = { type = "string" },
-          },
-        },
-      },
-    },
-    skills = {
-      type = "table",
-      fields = {
-        paths = { type = "array-of", items = "string" },
-      },
-    },
-  }))
-  assert(Louiselm.setup({ agents = { claude = { command = "configured-agent" } }, skills = { paths = {} } }, schema))
+  assert(Louiselm.setup({ agents = { claude = { command = "configured-agent" } }, skills = { paths = {} } }))
   local process, original_system = fake_process()
 
   Command.register()

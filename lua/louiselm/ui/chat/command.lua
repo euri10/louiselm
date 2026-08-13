@@ -31,9 +31,6 @@ local function configured_agents(config)
   if type(config.agents) == "table" then
     return config.agents
   end
-  if type(config.agent) == "table" then
-    return { default = config.agent }
-  end
   return nil
 end
 

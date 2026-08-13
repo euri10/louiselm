@@ -1,0 +1,23 @@
+[Unit]
+Description=LouiseLM durable speech capture receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LOUISELM_CAPTURE_BIND=127.0.0.1:7391
+EnvironmentFile=-%h/.config/louiselm/capture.env
+ExecStart=%h/.local/bin/louiselm-capture serve --bind ${LOUISELM_CAPTURE_BIND}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/louiselm %h/.local/state/louiselm
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

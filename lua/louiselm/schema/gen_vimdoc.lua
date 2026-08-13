@@ -23,6 +23,12 @@ local function type_description(node)
     end
     return "array of " .. type_description(node.items)
   end
+  if node.type == "map-of" then
+    if node.items == nil then
+      error("normalized map schema is missing items")
+    end
+    return "string-keyed map of " .. type_description(node.items)
+  end
   if node.type == "one-of" then
     if node.options == nil then
       error("normalized union schema is missing options")
@@ -112,6 +118,11 @@ local function emit_nested_fields(lines, node, path)
       error("normalized array schema is missing items")
     end
     emit_nested_fields(lines, node.items, path .. "[]")
+  elseif node.type == "map-of" then
+    if node.items == nil then
+      error("normalized map schema is missing items")
+    end
+    emit_nested_fields(lines, node.items, path .. ".<name>")
   elseif node.type == "one-of" then
     if node.options == nil then
       error("normalized union schema is missing options")

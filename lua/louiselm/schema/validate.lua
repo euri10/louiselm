@@ -125,6 +125,9 @@ local function expected_type(node)
   if node.type == "array-of" then
     return "array"
   end
+  if node.type == "map-of" then
+    return "string-keyed table"
+  end
   if node.type ~= "one-of" then
     return node.type
   end
@@ -161,7 +164,7 @@ local function example_for(node)
   if node.type == "boolean" then
     return true
   end
-  if node.type == "table" or node.type == "array-of" then
+  if node.type == "table" or node.type == "array-of" or node.type == "map-of" then
     return {}
   end
   return example_for(node.options[1])
@@ -181,6 +184,9 @@ local function matches_type(node, value)
   end
   if node.type == "array-of" then
     return type(value) == "table" and is_dense_array(value)
+  end
+  if node.type == "map-of" then
+    return type(value) == "table"
   end
   return type(value) == node.type
 end
@@ -294,6 +300,25 @@ end
 
 ---@param errors louiselm.schema.ValidationError[]
 ---@param node louiselm.schema.Field
+---@param value table
+---@param path string
+local function validate_map(errors, node, value, path)
+  for _, key in ipairs(sorted_keys(value)) do
+    local field_path = child_path(path, key_name(key))
+    if type(key) ~= "string" or key == "" then
+      errors[#errors + 1] = {
+        type = "validation_failed",
+        path = field_path,
+        message = "map keys must be non-empty strings",
+      }
+    else
+      validate_node(errors, node.items, value[key], field_path)
+    end
+  end
+end
+
+---@param errors louiselm.schema.ValidationError[]
+---@param node louiselm.schema.Field
 ---@param value unknown
 ---@param path string
 validate_node = function(errors, node, value, path)
@@ -335,6 +360,8 @@ validate_node = function(errors, node, value, path)
     validate_table(errors, node, value, path)
   elseif node.type == "array-of" then
     validate_array(errors, node, value, path)
+  elseif node.type == "map-of" then
+    validate_map(errors, node, value, path)
   end
   validate_custom(errors, node, value, path)
 end

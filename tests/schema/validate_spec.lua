@@ -126,4 +126,31 @@ T["validate"]["validates arrays and one-of fields"] = function()
   MiniTest.expect.equality(errors[2].expected, "string or number")
 end
 
+T["validate"]["validates string-keyed maps and their values"] = function()
+  local schema = assert(Schema.define({
+    agents = {
+      type = "map-of",
+      items = {
+        type = "table",
+        fields = {
+          command = { type = "string" },
+        },
+      },
+    },
+  }))
+
+  local errors = Validate.validate(schema, {
+    agents = {
+      codex = { command = 42 },
+      [1] = { command = "agent" },
+    },
+  })
+
+  MiniTest.expect.equality(#errors, 2)
+  MiniTest.expect.equality(errors[1].path, "agents.1")
+  MiniTest.expect.equality(errors[1].type, "validation_failed")
+  MiniTest.expect.equality(errors[2].path, "agents.codex.command")
+  MiniTest.expect.equality(errors[2].type, "wrong_type")
+end
+
 return T

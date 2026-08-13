@@ -31,7 +31,7 @@ T["define"]["normalizes primitive fields and metadata"] = function()
   MiniTest.expect.equality(schema.fields.enabled.type, "boolean")
 end
 
-T["define"]["normalizes nested, array, and one-of fields"] = function()
+T["define"]["normalizes nested, array, map, and one-of fields"] = function()
   local schema, err = Schema.define({
     agent = {
       type = "table",
@@ -50,6 +50,10 @@ T["define"]["normalizes nested, array, and one-of fields"] = function()
         { type = "number" },
       },
     },
+    environment = {
+      type = "map-of",
+      items = { type = "string" },
+    },
   })
 
   assert(schema ~= nil, err)
@@ -61,6 +65,8 @@ T["define"]["normalizes nested, array, and one-of fields"] = function()
   MiniTest.expect.equality(schema.fields.value.type, "one-of")
   MiniTest.expect.equality(schema.fields.value.options[1].type, "string")
   MiniTest.expect.equality(schema.fields.value.options[2].type, "number")
+  MiniTest.expect.equality(schema.fields.environment.type, "map-of")
+  MiniTest.expect.equality(schema.fields.environment.items.type, "string")
 end
 
 T["define"]["rejects malformed descriptions"] = function()

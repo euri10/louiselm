@@ -1,0 +1,28 @@
+[package]
+name = "louiselm-capture"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Local-first durable speech capture service for LouiseLM"
+
+[dependencies]
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+fs2 = "0.4"
+http-body-util = "0.1"
+pem = "3"
+qrcode = { version = "0.14", default-features = false }
+rcgen = "0.14"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "multipart", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

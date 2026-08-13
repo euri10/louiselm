@@ -1,4 +1,4 @@
----@alias louiselm.schema.Type "string"|"number"|"boolean"|"table"|"array-of"|"one-of"
+---@alias louiselm.schema.Type "string"|"number"|"boolean"|"table"|"array-of"|"map-of"|"one-of"
 ---@alias louiselm.schema.Value string|number|boolean|table
 ---@alias louiselm.schema.Validator fun(value: louiselm.schema.Value): boolean, string?
 
@@ -25,6 +25,7 @@ local supported_types = {
   ["boolean"] = true,
   ["table"] = true,
   ["array-of"] = true,
+  ["map-of"] = true,
   ["one-of"] = true,
 }
 
@@ -55,7 +56,13 @@ end
 ---@return string? error_message
 local function normalize_type(value, path)
   if type(value) == "string" then
-    if not supported_types[value] or value == "array-of" or value == "one-of" or value == "table" then
+    if
+      not supported_types[value]
+      or value == "array-of"
+      or value == "map-of"
+      or value == "one-of"
+      or value == "table"
+    then
       return nil, string.format("field '%s' has unsupported type '%s'", path, value)
     end
     return { type = value }
@@ -139,7 +146,7 @@ normalize_node = function(description, path)
       return nil, err
     end
     node.fields = fields
-  elseif type_name == "array-of" then
+  elseif type_name == "array-of" or type_name == "map-of" then
     if description.items == nil then
       return nil, string.format("field '%s' requires an items type", path)
     end

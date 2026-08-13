@@ -5,19 +5,15 @@
 **LouiseLM Organizes Unruled Intelligent Systems into Emancipated Language
 Meshes.**
 
-> LouiseLM turns ideas into software.
+> LouiseLM turns ideas into reality.
 
 Ideas arrive wild and unordered. LouiseLM gives them enough structure to become
 real without forcing them into one prescribed path: chaos with order, directed
 by the person whose idea started it.
 
-The acronym is recursive, and so is the project. LouiseLM is being used to build
-LouiseLM: its own development is the first test of the experience it wants to
-provide.
-
 > [!IMPORTANT]
 > LouiseLM is alpha software. Today it provides an ACP-backed Neovim chat and a
-> headless session foundation. The complete idea-to-software loop described
+> headless session foundation. The complete idea-to-reality loop described
 > below is the vision being built incrementally, and APIs and workflows may
 > change as first-hand use exposes better designs.
 
@@ -36,7 +32,7 @@ to decide what deserves to exist and whether the result is right. LouiseLM aims
 to preserve that attention for creativity, taste, and judgment while agents
 handle more of the mechanical work.
 
-## From an idea to software
+## From an idea to reality
 
 LouiseLM's envisioned loop is:
 
@@ -70,7 +66,7 @@ it never means giving agents unbounded authority.
 LouiseLM connects people, agents, models, skills, tools, and capture surfaces
 through language and observable workflow boundaries. It should provide one
 coherent experience out of the box while keeping its stages replaceable. The
-default is a useful starting point, not a definition of the only correct way to
+default, which is in a sense my louislm workflow configuration is a useful starting point, not a definition of the only correct way to
 work.
 
 Ideas are personal data, so their storage should remain local and user-owned by
@@ -82,7 +78,7 @@ observing, and intervening, as well as a runtime for headless automation.
 Future voice, mobile, or dedicated capture devices may feed the workflow, but
 none is required and no editor-independent service is assumed.
 
-LouiseLM is focused on the concrete promise of turning ideas into software. The
+LouiseLM is focused on the concrete promise of turning ideas into reality, in my case software but this in hopefully more generalizable. The
 same machinery might eventually help other kinds of ideas become outcomes, but
 it is not trying to become a general notes application or second brain.
 
@@ -189,9 +185,7 @@ updates and agent permission requests.
 The session API manages multiple named ACP sessions without requiring a UI:
 
 ```lua
-local sessions = assert(require("louiselm.session").new({
-  claude = { command = "claude-agent-acp", args = {} },
-}))
+local sessions = assert(require("louiselm.session").new({ claude = { command = "claude-agent-acp", args = {} }, }))
 
 local session = assert(sessions:create_session("claude", { cwd = vim.fn.getcwd() }, function(value, err)
   assert(err == nil, err)

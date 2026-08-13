@@ -1,7 +1,6 @@
 local MiniTest = require("mini.test")
 local Health = require("louiselm.health")
 local Louiselm = require("louiselm")
-local Schema = require("louiselm.schema")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -59,21 +58,7 @@ T["check"] = MiniTest.new_set()
 T["check"]["reports setup validation and agent version"] = function()
   local skill_path = nvim.fn.tempname()
   assert(nvim.fn.mkdir(skill_path, "p") == 1)
-  local schema = assert(Schema.define({
-    agent = {
-      type = "table",
-      fields = {
-        command = { type = "string" },
-      },
-    },
-    skills = {
-      type = "table",
-      fields = {
-        paths = { type = "array-of", items = "string" },
-      },
-    },
-  }))
-  assert(Louiselm.setup({ agent = { command = "agent" }, skills = { paths = { skill_path } } }, schema))
+  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { skill_path } } }))
 
   with_health_stubs(function(calls)
     Health.check()
@@ -82,6 +67,8 @@ T["check"]["reports setup validation and agent version"] = function()
     MiniTest.expect.equality(calls.ok[1], "configuration is valid")
     MiniTest.expect.equality(calls.ok[2], "agent — agent 1.2.3")
     MiniTest.expect.equality(calls.ok[3], "discovered 0 skills")
+    MiniTest.expect.equality(calls.ok[4], "capture recorder is executable: pw-record")
+    MiniTest.expect.equality(calls.ok[5], "capture service is executable: louiselm-capture")
   end)
 
   Health.reset()

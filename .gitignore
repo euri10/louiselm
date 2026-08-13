@@ -1,1 +1,6 @@
 .deps/
+capture-service/target/
+android/.gradle/
+android/.gradle-user/
+android/local.properties
+android/**/build/

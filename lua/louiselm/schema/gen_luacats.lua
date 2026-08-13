@@ -98,6 +98,12 @@ type_for = function(context, node, name)
     end
     return item_type .. "[]"
   end
+  if node.type == "map-of" then
+    if node.items == nil then
+      error("normalized map schema is missing items")
+    end
+    return "table<string, " .. type_for(context, node.items, name .. "Value") .. ">"
+  end
   if node.type == "one-of" then
     if node.options == nil then
       error("normalized union schema is missing options")

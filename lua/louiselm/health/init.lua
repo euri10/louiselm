@@ -68,9 +68,6 @@ local function configured_agents(value)
   if type(value) == "table" and value.agents ~= nil then
     return value.agents
   end
-  if type(value) == "table" and type(value.agent) == "table" then
-    return { default = value.agent }
-  end
   return nil
 end
 
@@ -154,6 +151,23 @@ local function check_skills(config)
   end
 end
 
+---@param config louiselm.health.Configuration
+local function check_capture(config)
+  local capture = type(config.config) == "table" and config.config.capture or nil
+  capture = type(capture) == "table" and capture or {}
+  local commands = {
+    { label = "capture recorder", command = (capture.recorder or { "pw-record" })[1] },
+    { label = "capture service", command = (capture.service or { "louiselm-capture" })[1] },
+  }
+  for _, item in ipairs(commands) do
+    if nvim().fn.executable(item.command) == 1 then
+      report(item.label .. " is executable: " .. item.command, true)
+    else
+      report(item.label .. " is not executable: " .. item.command, false)
+    end
+  end
+end
+
 ---Register the configuration that `:checkhealth louiselm` should inspect.
 ---@param config unknown Validated user configuration. The table is only read.
 ---@param schema louiselm.schema.Schema Normalized schema used for validation.
@@ -187,6 +201,7 @@ function M.check()
   check_configuration(configuration)
   check_agents(configuration)
   check_skills(configuration)
+  check_capture(configuration)
   return true
 end
 
