@@ -33,6 +33,10 @@ local function valid_skill_policy(value)
   return valid, "must be one of: native, inject, off"
 end
 
+local function removed_full_content()
+  return false, 'was removed; use skills.policy = "inject" for LouiseLM-managed skills'
+end
+
 M.schema = assert(Schema.define({
   agents = {
     type = "map-of",
@@ -53,6 +57,18 @@ M.schema = assert(Schema.define({
           items = "string",
           default = {},
           description = "Environment variables passed to the process.",
+        },
+        skills = {
+          type = "table",
+          default = {},
+          description = "Agent-specific Agent Skills policy override.",
+          fields = {
+            policy = {
+              type = "string",
+              validator = valid_skill_policy,
+              description = "Override the global Agent Skills policy for this agent; omission inherits the global policy.",
+            },
+          },
         },
       },
     },
@@ -77,7 +93,8 @@ M.schema = assert(Schema.define({
       full_content = {
         type = "boolean",
         default = false,
-        description = "Inject complete skill bodies instead of the compact index.",
+        validator = removed_full_content,
+        description = "Removed legacy full-content injection switch.",
       },
     },
   },

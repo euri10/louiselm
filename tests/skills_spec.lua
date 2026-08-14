@@ -127,8 +127,6 @@ T["policy"] = MiniTest.new_set()
 
 T["policy"]["defaults to native and accepts the three policies"] = function()
   MiniTest.expect.equality(Skills.policy(), "native")
-  MiniTest.expect.equality(Skills.policy(nil, true), "native")
-  MiniTest.expect.equality(Skills.policy(nil, false), "inject")
   MiniTest.expect.equality(Skills.policy("native"), "native")
   MiniTest.expect.equality(Skills.policy("inject"), "inject")
   MiniTest.expect.equality(Skills.policy("off"), "off")
@@ -154,27 +152,18 @@ T["inject"]["includes only skill index metadata"] = function()
   MiniTest.expect.equality(index:find("secret", 1, true), nil)
 end
 
-T["inject"]["includes full skill content when requested"] = function()
-  local index = assert(Skills.inject({
+T["inject"]["does not restore removed full-content injection"] = function()
+  local index, err = Skills.inject({
     {
       name = "grill-me",
       description = "Stress test an idea",
       path = "/skills/grill-me/SKILL.md",
-      content = "---\nname: grill-me\ndescription: Stress test an idea\n---\nsecret body",
+      content = "secret body",
     },
-  }, true))
-
-  MiniTest.expect.equality(index:find("secret body", 1, true) ~= nil, true)
-  MiniTest.expect.equality(index:find("content", 1, true) ~= nil, true)
-end
-
-T["inject"]["requires content for full injection"] = function()
-  local index, err = Skills.inject({
-    { name = "grill-me", description = "Stress test an idea", path = "/skills/grill-me/SKILL.md" },
   }, true)
 
   MiniTest.expect.equality(index, nil)
-  MiniTest.expect.equality(err, "skill at index 1 must contain full content")
+  MiniTest.expect.equality(err, 'full-content injection was removed; use skills.policy = "inject"')
 end
 
 T["overlap"] = MiniTest.new_set()

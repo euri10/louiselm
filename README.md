@@ -369,12 +369,36 @@ MINI_NVIM_PATH=/path/to/mini.nvim nvim --headless --noplugin \
 
 The reproducible manual recipe for the current P1 workflow can construct the
 session and chat controllers explicitly. The canonical `:LouiselmChat` command
-also consumes configured `agents` (or the singular `agent` compatibility shape)
-and `skills.paths` after setup. Set `skills.policy` to `inject` to queue the
-skill index for each new chat session; `native` leaves loading to the agent,
-and `off` disables the skill picker and index. For an agent without file-reading
-tools, set `skills.full_content = true` to include each complete `SKILL.md` in
-that context instead of only its path and metadata.
+also consumes configured `agents` and global `skills.paths` after setup.
+`skills.policy` defaults to `native`, which leaves discovery and invocation to
+the adapter. Use `inject` for an adapter that needs LouiseLM-managed skills, or
+`off` to disable LouiseLM skill automation and its picker. An agent can override
+only the global policy:
+
+```lua
+require("louiselm").setup({
+  agents = {
+    codex = { command = "codex-acp" },
+    deepseek = {
+      command = "acp-llm-adapter",
+      skills = { policy = "inject" },
+    },
+  },
+  skills = {
+    paths = { vim.fn.expand("~/.config/agentskills") },
+    policy = "native",
+  },
+})
+```
+
+Policies are copied into each session when it is created and never inferred
+from the adapter name or changed by runtime events. `off` does not intercept
+user-authored slash prompts. Local discovery requires `lyaml`; without it,
+native and off sessions still start, the local picker is unavailable, and an
+inject session fails with installation/policy guidance. Install a Lua 5.1
+`lyaml` module where Neovim can require it (for example,
+`luarocks --lua-version=5.1 install lyaml`). The removed
+`skills.full_content` setting is a configuration error; use the `inject` policy.
 
 Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
 root (replace the agent command if a different ACP launcher is intended):
@@ -444,11 +468,8 @@ local skills = require("louiselm.skills")
 local found, errors = skills.discover({ vim.fn.expand("~/.config/agentskills") })
 local policy = assert(skills.policy("inject")) -- native, inject, or off
 local index = assert(skills.inject(found))
-local full_index = assert(skills.inject(found, true)) -- for tool-less agents
 ```
 
-The default injected index contains only each skill's name, description, and
-`SKILL.md` path. Pass `true` as the second argument to include the complete
-`SKILL.md` content for agents that cannot read files. Use
-`skills.overlap(native_skill_dir, configured_paths)` to detect
-native/configured skill trees that resolve to the same directory.
+The current injected index contains only each skill's name, description, and
+`SKILL.md` path. Use `skills.overlap(native_skill_dir, configured_paths)` to
+detect native/configured skill trees that resolve to the same directory.

@@ -6,10 +6,11 @@ local M = {}
 
 ---Normalize named agent definitions without mutating the input.
 ---@param definitions unknown Agent definitions keyed by name.
+---@param default_skills_policy? unknown Global Agent Skills policy inherited by agents without an override.
 ---@return louiselm.agent.Definitions? normalized Normalized definitions, or nil on errors.
 ---@return louiselm.agent.ConfigError[] errors Every validation error.
-function M.normalize(definitions)
-  return Config.normalize(definitions)
+function M.normalize(definitions, default_skills_policy)
+  return Config.normalize(definitions, default_skills_policy)
 end
 
 ---Start a normalized agent definition as an external process.

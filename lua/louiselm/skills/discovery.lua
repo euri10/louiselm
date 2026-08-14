@@ -2,7 +2,7 @@
 ---@field name string Agent Skills name.
 ---@field description string Short description shown in the injected index.
 ---@field path string Absolute path to SKILL.md.
----@field content string Full SKILL.md content for agents without file-read tools.
+---@field content string Complete original SKILL.md content for deliberate activation.
 
 ---@class louiselm.skills.DiscoveryError
 ---@field path string File or configured directory related to the error.

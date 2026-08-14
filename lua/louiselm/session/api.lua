@@ -15,10 +15,11 @@ Api.__index = Api
 
 ---Create the headless session API for named agent definitions.
 ---@param definitions unknown Named agent definitions.
+---@param default_skills_policy? unknown Global Agent Skills policy inherited by agents without an override.
 ---@return louiselm.session.Api? api
 ---@return louiselm.agent.ConfigError[] errors
-function M.new(definitions)
-  local registry, errors = Registry.new(definitions)
+function M.new(definitions, default_skills_policy)
+  local registry, errors = Registry.new(definitions, default_skills_policy)
   if registry == nil then
     return nil, errors
   end

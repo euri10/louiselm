@@ -35,17 +35,44 @@ local function configured_agents(config)
 end
 
 ---@param config table
----@return louiselm.skills.Skill[] skills
----@return louiselm.ui.ContextItem[] initial_contexts
+---@return louiselm.skills.Policy? policy
 ---@return string? error_message
-local function configured_skills(config)
+local function configured_skill_policy(config)
+  local value = type(config.skills) == "table" and config.skills.policy or nil
+  return skills_module().policy(value)
+end
+
+---@param definitions table<string, louiselm.agent.Definition>
+---@param default_policy louiselm.skills.Policy
+---@return boolean local_enabled
+---@return boolean inject_enabled
+local function local_policy_usage(definitions, default_policy)
+  local local_enabled = false
+  local inject_enabled = false
+  for _, definition in pairs(definitions) do
+    local override = type(definition.skills) == "table" and definition.skills.policy or nil
+    local policy = override or default_policy
+    local_enabled = local_enabled or policy ~= "off"
+    inject_enabled = inject_enabled or policy == "inject"
+  end
+  return local_enabled, inject_enabled
+end
+
+---@param config table
+---@param definitions table<string, louiselm.agent.Definition>
+---@param default_policy louiselm.skills.Policy
+---@return louiselm.skills.Skill[] skills
+---@return louiselm.ui.ContextItem? skill_context
+---@return string? error_message
+local function configured_skills(config, definitions, default_policy)
   if type(config.skills) ~= "table" then
-    return {}, {}
+    return {}, nil
   end
 
   local skill_config = config.skills
-  if skill_config.full_content ~= nil and type(skill_config.full_content) ~= "boolean" then
-    return {}, {}, "skills full_content must be a boolean"
+  local local_enabled, inject_enabled = local_policy_usage(definitions, default_policy)
+  if not local_enabled or not skills_module().local_available() then
+    return {}, nil
   end
   local skills = {}
   if skill_config.paths ~= nil then
@@ -56,22 +83,15 @@ local function configured_skills(config)
     end
   end
 
-  local policy, policy_error = skills_module().policy(skill_config.policy)
-  if policy == nil then
-    return {}, {}, policy_error
-  end
-  if policy == "off" then
-    return {}, {}
-  end
-  if policy == "native" or #skills == 0 then
-    return skills, {}
+  if not inject_enabled or #skills == 0 then
+    return skills, nil
   end
 
-  local index, index_error = skills_module().inject(skills, skill_config.full_content)
+  local index, index_error = skills_module().inject(skills)
   if index == nil then
-    return {}, {}, index_error
+    return {}, nil, index_error
   end
-  return skills, { { label = "skill-index", text = index } }
+  return skills, { label = "skill-index", text = index }
 end
 
 ---@return louiselm.agent.Definition definition
@@ -132,14 +152,19 @@ function M.register()
       definitions = { default = default_agent_definition() }
     end
     local names = sorted_agent_names(definitions)
-    local sessions, session_errors = session_module().new(definitions)
+    local default_policy, policy_error = configured_skill_policy(configured or {})
+    if default_policy == nil then
+      nvim.notify("louiselm: " .. (policy_error or "invalid skills policy"), nvim.log.levels.ERROR)
+      return nil
+    end
+    local sessions, session_errors = session_module().new(definitions, default_policy)
     if sessions == nil then
       nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
       return nil
     end
-    local skills, initial_contexts, skills_error = {}, {}, nil
+    local skills, skill_context, skills_error = {}, nil, nil
     if configured ~= nil then
-      skills, initial_contexts, skills_error = configured_skills(configured)
+      skills, skill_context, skills_error = configured_skills(configured, definitions, default_policy)
     end
     if skills_error ~= nil then
       nvim.notify("louiselm: " .. skills_error, nvim.log.levels.ERROR)
@@ -148,7 +173,7 @@ function M.register()
     chat = assert(require("louiselm.ui.chat").new(sessions, {
       agents = names,
       skills = skills,
-      initial_contexts = initial_contexts,
+      skill_context = skill_context,
     }))
     return chat
   end
@@ -263,7 +288,12 @@ function M.register()
         definitions = { default = default_agent_definition() }
       end
       local names = sorted_agent_names(definitions)
-      local sessions, session_errors = session_module().new(definitions)
+      local default_policy, policy_error = configured_skill_policy(configured or {})
+      if default_policy == nil then
+        nvim.notify("louiselm: " .. (policy_error or "invalid skills policy"), nvim.log.levels.ERROR)
+        return
+      end
+      local sessions, session_errors = session_module().new(definitions, default_policy)
       if sessions == nil then
         nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
         return

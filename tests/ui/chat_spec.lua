@@ -184,6 +184,42 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
   chat:dispose()
 end
 
+T["chat"]["shows skill status and keeps slash prompts when skills are off"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "off"
+  first.state.skills_picker = false
+  local chat = assert(Chat.new(fake_api(), {
+    skills = {
+      { name = "grill-me", description = "Stress test", path = "/skills/grill-me/SKILL.md", content = "skill" },
+    },
+  }))
+  assert(chat:attach(first))
+
+  assert(chat:submit("/compact"))
+  local picked, pick_error = chat:pick_skill()
+
+  MiniTest.expect.equality(first.prompts, { "/compact" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# claude · session-1 · ready · skills: off · Your turn")
+  MiniTest.expect.equality(picked, false)
+  MiniTest.expect.equality(pick_error, "skill picker is disabled for this session")
+  chat:dispose()
+end
+
+T["chat"]["reports an unavailable local picker without blocking a native session"] = function()
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.skills_picker = false
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  local picked, pick_error = chat:pick_skill()
+
+  MiniTest.expect.equality(picked, false)
+  MiniTest.expect.equality(pick_error, "local skill picker is unavailable because lyaml is missing")
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# codex · session-1 · ready · skills: on · Your turn")
+  chat:dispose()
+end
+
 T["chat"]["normalizes multiline tool activity in the session header"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

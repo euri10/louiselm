@@ -23,6 +23,36 @@ T["validate"]["accepts named agent definitions and returns owned copies"] = func
   MiniTest.expect.equality(normalized.claude.command, definitions.claude.command)
   MiniTest.expect.equality(normalized.claude.args, definitions.claude.args)
   MiniTest.expect.equality(normalized.claude.args == definitions.claude.args, false)
+  MiniTest.expect.equality(normalized.claude.skills.policy, "native")
+end
+
+T["validate"]["resolves per-agent skill policy against the global default"] = function()
+  local normalized, errors = Config.normalize({
+    claude = { command = "claude-agent-acp" },
+    deepseek = { command = "acp-llm-adapter", skills = { policy = "inject" } },
+  }, "off")
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.claude.skills.policy, "off")
+  MiniTest.expect.equality(normalized.deepseek.skills.policy, "inject")
+end
+
+T["validate"]["rejects unknown per-agent skill settings"] = function()
+  local normalized, errors = Config.normalize({
+    claude = { command = "claude-agent-acp", skills = { paths = { "/tmp/skills" } } },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.claude.skills.paths")
+end
+
+T["validate"]["rejects an empty per-agent skill override"] = function()
+  local normalized, errors = Config.normalize({ claude = { command = "claude-agent-acp", skills = {} } })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.claude.skills.policy")
+  MiniTest.expect.equality(errors[1].type, "missing_required")
 end
 
 T["validate"]["collects malformed definitions without coercion"] = function()

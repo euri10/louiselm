@@ -42,6 +42,7 @@ T["setup"]["starts with valid config"] = function()
   local ok, report, notifications = capture_setup({
     agents = {
       codex = { command = "codex-acp", args = {}, env = { TOKEN = "secret" } },
+      deepseek = { command = "acp-llm-adapter", skills = { policy = "inject" } },
     },
     skills = { paths = {}, policy = "native" },
   })
@@ -49,6 +50,27 @@ T["setup"]["starts with valid config"] = function()
   MiniTest.expect.equality(ok, true)
   MiniTest.expect.equality(report, nil)
   MiniTest.expect.equality(#notifications, 0)
+end
+
+T["setup"]["rejects per-agent skill paths"] = function()
+  local ok, report = capture_setup({
+    agents = {
+      codex = { command = "codex-acp", skills = { paths = { "/tmp/skills" } } },
+    },
+  })
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(report.errors[1].path, "agents.codex.skills.paths")
+end
+
+T["setup"]["rejects removed full-content injection with migration guidance"] = function()
+  local ok, report = capture_setup({ skills = { full_content = true } })
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(
+    report.errors[1].message,
+    'skills.full_content: validation failed (was removed; use skills.policy = "inject" for LouiseLM-managed skills)'
+  )
 end
 
 T["setup"]["registers chat commands for a valid setup"] = function()

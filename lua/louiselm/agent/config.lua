@@ -1,8 +1,14 @@
+local Policy = require("louiselm.skills.policy")
+
+---@class louiselm.agent.SkillConfig
+---@field policy? louiselm.skills.Policy Agent-specific policy override.
+
 ---@class louiselm.agent.Definition
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options.
+---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
 
 ---@alias louiselm.agent.ConfigErrorType "unknown_key"|"wrong_type"|"missing_required"|"invalid_value"
 
@@ -22,6 +28,7 @@ local allowed_keys = {
   command = true,
   env = true,
   options = true,
+  skills = true,
 }
 
 ---@param value unknown
@@ -157,11 +164,48 @@ local function copy_options(value)
   return options
 end
 
+---@param value unknown
+---@param path string
+---@param errors louiselm.agent.ConfigError[]
+---@param default_policy louiselm.skills.Policy
+---@return louiselm.skills.Policy policy
+local function skill_policy(value, path, errors, default_policy)
+  if value == nil then
+    return default_policy
+  end
+  if type(value) ~= "table" then
+    add_error(errors, path, "wrong_type", "expected table, got " .. value_type(value), "table", value_type(value))
+    return default_policy
+  end
+
+  for _, key in ipairs(sorted_keys(value)) do
+    if key ~= "policy" then
+      add_error(errors, child_path(path, tostring(key)), "unknown_key", "unknown agent skills configuration key")
+    end
+  end
+  if value.policy == nil then
+    add_error(errors, child_path(path, "policy"), "missing_required", "agent skills policy override is missing")
+    return default_policy
+  end
+  local normalized, policy_error = Policy.normalize(value.policy)
+  if normalized == nil then
+    add_error(errors, child_path(path, "policy"), "invalid_value", policy_error or "invalid skills policy")
+    return default_policy
+  end
+  return normalized
+end
+
 ---@param definitions unknown
+---@param default_skills_policy? unknown Global Agent Skills policy inherited by agents without an override.
 ---@return louiselm.agent.Definitions? normalized
 ---@return louiselm.agent.ConfigError[] errors
-function M.normalize(definitions)
+function M.normalize(definitions, default_skills_policy)
   local errors = {}
+  local default_policy, policy_error = Policy.normalize(default_skills_policy)
+  if default_policy == nil then
+    add_error(errors, "skills.policy", "invalid_value", policy_error or "invalid skills policy")
+    default_policy = "native"
+  end
   if type(definitions) ~= "table" then
     add_error(
       errors,
@@ -267,11 +311,13 @@ function M.normalize(definitions)
         end
       end
 
+      local effective_skill_policy = skill_policy(definition.skills, child_path(path, "skills"), errors, default_policy)
       normalized[name] = {
         command = command,
         args = args,
         env = env,
         options = options,
+        skills = { policy = effective_skill_policy },
       }
     end
   end

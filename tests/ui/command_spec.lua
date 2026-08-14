@@ -3,6 +3,7 @@ local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
 local Louiselm = require("louiselm")
+local Skills = require("louiselm.skills")
 
 local T = MiniTest.new_set()
 
@@ -295,7 +296,11 @@ T["command"]["schedules real ACP discovery before notifying the UI"] = function(
   delete_chat_buffers()
 end
 
-T["command"]["injects the configured skill index while native loading stays un-injected"] = function()
+T["command"]["blocks inject without lyaml while native starts without local discovery"] = function()
+  local original_available = Skills.local_available
+  Skills.local_available = function()
+    return false
+  end
   local skill_root = nvim.fn.tempname()
   local skill_dir = nvim.fs.joinpath(skill_root, "grill-me")
   assert(nvim.fn.mkdir(skill_dir, "p") == 1)
@@ -305,15 +310,20 @@ T["command"]["injects the configured skill index while native loading stays un-i
   )
 
   local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
   Command.configure({
     agents = { claude = { command = "claude-agent-acp", args = {} } },
     skills = { paths = { skill_root }, policy = "inject" },
   })
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
-  local injected_lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
 
   nvim.system = original_system
+  rawset(nvim, "notify", original_notify)
   delete_chat_buffers()
   local native_process, native_original_system = fake_process()
   Command.configure({
@@ -325,10 +335,14 @@ T["command"]["injects the configured skill index while native loading stays un-i
   local native_lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
   nvim.system = native_original_system
   Command.configure(nil)
+  Skills.local_available = original_available
 
-  MiniTest.expect.equality(table.concat(injected_lines, "\n"):find("[context: skill-index]", 1, true) ~= nil, true)
   MiniTest.expect.equality(table.concat(native_lines, "\n"):find("[context: skill-index]", 1, true) ~= nil, false)
-  MiniTest.expect.equality(process.command, { "claude-agent-acp" })
+  MiniTest.expect.equality(process.command, nil)
+  MiniTest.expect.equality(notification, {
+    message = 'louiselm: skills policy "inject" requires lyaml; install lyaml or use skills.policy = "native" or "off"',
+    level = nvim.log.levels.ERROR,
+  })
   MiniTest.expect.equality(native_process.command, { "claude-agent-acp" })
   delete_chat_buffers()
   nvim.fn.delete(skill_root, "rf")

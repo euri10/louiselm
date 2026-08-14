@@ -1,6 +1,7 @@
 local MiniTest = require("mini.test")
 local Health = require("louiselm.health")
 local Louiselm = require("louiselm")
+local Skills = require("louiselm.skills")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -11,6 +12,7 @@ local function with_health_stubs(callback)
   local original_executable = nvim.fn.executable
   local original_system = nvim.system
   local original_in_fast_event = nvim.in_fast_event
+  local original_skills_available = Skills.local_available
   local calls = { ok = {}, error = {}, info = {}, warn = {} }
   nvim.health = {
     start = function(message)
@@ -35,6 +37,9 @@ local function with_health_stubs(callback)
   nvim.in_fast_event = function()
     return false
   end
+  Skills.local_available = function()
+    return false
+  end
   nvim.system = function(command, options, callback)
     callback({ code = 0, signal = 0, stdout = "agent 1.2.3\n", stderr = "" })
     return {}
@@ -48,6 +53,7 @@ local function with_health_stubs(callback)
   nvim.fn.executable = original_executable
   nvim.system = original_system
   nvim.in_fast_event = original_in_fast_event
+  Skills.local_available = original_skills_available
   if not ok then
     error(err)
   end
@@ -66,9 +72,13 @@ T["check"]["reports setup validation and agent version"] = function()
     MiniTest.expect.equality(calls.error, {})
     MiniTest.expect.equality(calls.ok[1], "configuration is valid")
     MiniTest.expect.equality(calls.ok[2], "agent — agent 1.2.3")
-    MiniTest.expect.equality(calls.ok[3], "discovered 0 skills")
-    MiniTest.expect.equality(calls.ok[4], "capture recorder is executable: pw-record")
-    MiniTest.expect.equality(calls.ok[5], "capture service is executable: louiselm-capture")
+    MiniTest.expect.equality(calls.info[2], "agent agent skills policy: native")
+    MiniTest.expect.equality(
+      calls.warn[1],
+      "lyaml is missing; native sessions can start but the local skill picker is unavailable"
+    )
+    MiniTest.expect.equality(calls.ok[3], "capture recorder is executable: pw-record")
+    MiniTest.expect.equality(calls.ok[4], "capture service is executable: louiselm-capture")
   end)
 
   Health.reset()

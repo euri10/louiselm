@@ -2,6 +2,7 @@ local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
 local Permission = require("louiselm.permission")
 local Session = require("louiselm.session")
+local Skills = require("louiselm.skills")
 
 local T = MiniTest.new_set()
 
@@ -325,6 +326,8 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     working_dir = "/tmp/one",
     current_turn = 0,
     config_options = {},
+    skills_policy = "native",
+    skills_picker = Skills.local_available(),
   })
   MiniTest.expect.equality(second:inspect(), {
     id = "session-2",
@@ -336,6 +339,8 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     working_dir = "/tmp/two",
     current_turn = 0,
     config_options = {},
+    skills_policy = "native",
+    skills_picker = Skills.local_available(),
   })
   MiniTest.expect.equality(api:list_sessions(), { "session-1", "session-2" })
   MiniTest.expect.equality(api:get_session("session-1"), first)
@@ -343,6 +348,46 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
 
   api:dispose()
   restore_processes(original_system)
+end
+
+T["new"]["snapshots the effective skill policy for each session"] = function()
+  local processes, original_system = fake_processes()
+  local definitions = {
+    inherited = { command = "agent-inherited", args = {} },
+    native = { command = "agent-native", args = {}, skills = { policy = "native" } },
+  }
+  local api = assert(Session.new(definitions, "off"))
+
+  local inherited = assert(api:create_session("inherited", { cwd = "/tmp/inherited" }))
+  local native = assert(api:create_session("native", { cwd = "/tmp/native" }))
+  definitions.inherited.skills = { policy = "inject" }
+
+  MiniTest.expect.equality(inherited:inspect().skills_policy, "off")
+  MiniTest.expect.equality(native:inspect().skills_policy, "native")
+  MiniTest.expect.equality(inherited:inspect().skills_picker, false)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["blocks inject sessions when lyaml is unavailable"] = function()
+  local original_available = Skills.local_available
+  Skills.local_available = function()
+    return false
+  end
+  local api = assert(Session.new({
+    deepseek = { command = "agent", skills = { policy = "inject" } },
+  }))
+
+  local session, err = api:create_session("deepseek")
+
+  MiniTest.expect.equality(session, nil)
+  MiniTest.expect.equality(
+    err,
+    'skills policy "inject" requires lyaml; install lyaml or use skills.policy = "native" or "off"'
+  )
+  api:dispose()
+  Skills.local_available = original_available
 end
 
 T["new"]["tracks supported config options and replaces dependent options after a change"] = function()

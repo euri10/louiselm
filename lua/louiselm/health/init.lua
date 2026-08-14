@@ -91,6 +91,15 @@ local function configured_skill_paths(value)
   return value.skills.paths
 end
 
+---@param value unknown
+---@return unknown policy
+local function configured_skill_policy(value)
+  if type(value) ~= "table" or type(value.skills) ~= "table" then
+    return nil
+  end
+  return value.skills.policy
+end
+
 ---@param config louiselm.health.Configuration
 local function check_configuration(config)
   local validation = Schema.report(Schema.validate(config.schema, config.config))
@@ -136,6 +145,47 @@ end
 
 ---@param config louiselm.health.Configuration
 local function check_skills(config)
+  local default_policy = Skills.policy(configured_skill_policy(config.config))
+  if default_policy == nil then
+    return
+  end
+  local definitions = configured_agents(config.config) or {}
+  local normalized = Agent.normalize(definitions, default_policy)
+  if normalized == nil then
+    return
+  end
+
+  local local_enabled = false
+  local inject_enabled = false
+  local names = sorted_agent_names(normalized)
+  if #names == 0 then
+    nvim().health.info("default agent skills policy: " .. default_policy)
+    local_enabled = default_policy ~= "off"
+    inject_enabled = default_policy == "inject"
+  else
+    for _, name in ipairs(names) do
+      local policy = normalized[name].skills.policy
+      nvim().health.info("agent " .. name .. " skills policy: " .. policy)
+      local_enabled = local_enabled or policy ~= "off"
+      inject_enabled = inject_enabled or policy == "inject"
+    end
+  end
+  if not local_enabled then
+    nvim().health.info("LouiseLM-managed local skills are disabled")
+    return
+  end
+
+  if not Skills.local_available() then
+    if inject_enabled then
+      report(
+        'lyaml is missing; skills policy "inject" cannot start (install lyaml or use skills.policy = "native" or "off")',
+        false
+      )
+    else
+      nvim().health.warn("lyaml is missing; native sessions can start but the local skill picker is unavailable")
+    end
+    return
+  end
   local paths = configured_skill_paths(config.config)
   if paths == nil then
     nvim().health.info("no skill paths configured")

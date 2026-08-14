@@ -5,6 +5,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field agents? string[] Agent names shown by the new-session picker.
 ---@field skills? louiselm.skills.Skill[] Skills shown by the invocation picker.
 ---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
+---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
@@ -35,6 +36,7 @@ local Diff = require("louiselm.ui.diff")
 ---@field agents string[] Agent names for the picker.
 ---@field skills louiselm.skills.Skill[] Skills for the invocation picker.
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
+---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
@@ -211,6 +213,9 @@ local function session_identity(state)
   end
   if state.source == "loaded" then
     parts[#parts + 1] = "loaded"
+  end
+  if state.skills_policy ~= nil then
+    parts[#parts + 1] = "skills: " .. (state.skills_policy == "off" and "off" or "on")
   end
   return table.concat(parts, " · ")
 end
@@ -854,7 +859,7 @@ function M.new(api, options)
   end
   if options ~= nil then
     for key in pairs(options) do
-      if key ~= "agents" and key ~= "skills" and key ~= "initial_contexts" then
+      if key ~= "agents" and key ~= "skills" and key ~= "initial_contexts" and key ~= "skill_context" then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
     end
@@ -871,11 +876,17 @@ function M.new(api, options)
   if initial_contexts == nil then
     return nil, contexts_error
   end
+  local skill_contexts, skill_context_error =
+    copy_initial_contexts(options and options.skill_context and { options.skill_context } or nil)
+  if skill_contexts == nil then
+    return nil, skill_context_error
+  end
   local chat = setmetatable({
     api = api,
     agents = agents,
     skills = skills,
     initial_contexts = initial_contexts,
+    skill_context = skill_contexts[1],
     diff = Diff.new(),
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
     views = {},
@@ -1297,6 +1308,17 @@ function Chat:pick_skill()
   if self.disposed then
     return false, "chat UI is disposed"
   end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local state = view.session:inspect()
+  if state.skills_policy == "off" then
+    return false, "skill picker is disabled for this session"
+  end
+  if state.skills_picker == false then
+    return false, "local skill picker is unavailable because lyaml is missing"
+  end
   if #self.skills == 0 then
     return false, "no chat skills configured"
   end
@@ -1344,6 +1366,12 @@ function Chat:new_session(agent_name, options)
   end
   for _, item in ipairs(self.initial_contexts) do
     local queued, queue_error = self:queue_context(item)
+    if not queued then
+      return nil, queue_error
+    end
+  end
+  if session:inspect().skills_policy == "inject" and self.skill_context ~= nil then
+    local queued, queue_error = self:queue_context(self.skill_context)
     if not queued then
       return nil, queue_error
     end
