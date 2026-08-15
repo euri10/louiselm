@@ -24,14 +24,12 @@ local nvim = vim
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
 ---@field activity? string Current generic tool activity.
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
----@field skills_picker boolean Whether LouiseLM's local skill picker is available.
 
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
 ---@field name? string User-facing session name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
----@field skills_picker? boolean Internal snapshot of local skill picker availability.
 
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
@@ -400,7 +398,6 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       current_turn = 0,
       config_options = {},
       skills_policy = definition.skills.policy,
-      skills_picker = options.skills_picker == true,
     },
     emitter = Events.new(),
     owner = owner,

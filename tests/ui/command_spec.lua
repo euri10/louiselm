@@ -3,7 +3,6 @@ local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
 local Louiselm = require("louiselm")
-local Skills = require("louiselm.skills")
 
 local T = MiniTest.new_set()
 
@@ -296,54 +295,55 @@ T["command"]["schedules real ACP discovery before notifying the UI"] = function(
   delete_chat_buffers()
 end
 
-T["command"]["blocks inject without lyaml while native starts without local discovery"] = function()
-  local original_available = Skills.local_available
-  Skills.local_available = function()
-    return false
-  end
+T["command"]["injects every configured symlinked skill through the normal chat path"] = function()
   local skill_root = nvim.fn.tempname()
-  local skill_dir = nvim.fs.joinpath(skill_root, "grill-me")
-  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
-  assert(
-    nvim.fn.writefile({ "---", "name: grill-me", "description: Stress test an idea", "---" }, skill_dir .. "/SKILL.md")
-      == 0
-  )
+  local source_root = nvim.fs.joinpath(skill_root, "source")
+  local generated_root = nvim.fs.joinpath(skill_root, "generated")
+  local function write_linked_skill(name, description, metadata)
+    local source_dir = nvim.fs.joinpath(source_root, name)
+    local generated_dir = nvim.fs.joinpath(generated_root, name)
+    assert(nvim.fn.mkdir(source_dir, "p") == 1)
+    assert(nvim.fn.mkdir(generated_dir, "p") == 1)
+    local lines = { "---", "name: " .. name, "description: " .. description }
+    nvim.list_extend(lines, metadata or {})
+    lines[#lines + 1] = "---"
+    local source = nvim.fs.joinpath(source_dir, "SKILL.md")
+    assert(nvim.fn.writefile(lines, source) == 0)
+    assert(nvim.uv.fs_symlink(source, nvim.fs.joinpath(generated_dir, "SKILL.md")))
+  end
+  write_linked_skill("alpha-skill", "First skill")
+  write_linked_skill("beta-skill", "Second skill", { "triggers:", "  - beta" })
 
   local process, original_system = fake_process()
-  local original_notify = nvim.notify
-  local notification
-  rawset(nvim, "notify", function(message, level)
-    notification = { message = message, level = level }
-  end)
-  Command.configure({
+  assert(Louiselm.setup({
     agents = { claude = { command = "claude-agent-acp", args = {} } },
-    skills = { paths = { skill_root }, policy = "inject" },
-  })
+    skills = { paths = { generated_root }, policy = "inject" },
+  }))
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "skills-acp" })
+
+  local buffer = nvim.api.nvim_get_current_buf()
+  nvim.api.nvim_buf_set_lines(buffer, 2, 3, false, { "> [context: skill-index] list skills" })
+  local submit
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "i")) do
+    if mapping.desc == "Submit louiselm prompt" then
+      submit = mapping.callback
+      break
+    end
+  end
+  assert(type(submit) == "function")
+  nvim.api.nvim_buf_call(buffer, submit)
+  local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
+  local index = prompt[1].text
 
   nvim.system = original_system
-  rawset(nvim, "notify", original_notify)
-  delete_chat_buffers()
-  local native_process, native_original_system = fake_process()
-  Command.configure({
-    agents = { claude = { command = "claude-agent-acp", args = {} } },
-    skills = { paths = { skill_root }, policy = "native" },
-  })
-  Command.register()
-  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
-  local native_lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
-  nvim.system = native_original_system
   Command.configure(nil)
-  Skills.local_available = original_available
 
-  MiniTest.expect.equality(table.concat(native_lines, "\n"):find("[context: skill-index]", 1, true) ~= nil, false)
-  MiniTest.expect.equality(process.command, nil)
-  MiniTest.expect.equality(notification, {
-    message = 'louiselm: skills policy "inject" requires lyaml; install lyaml or use skills.policy = "native" or "off"',
-    level = nvim.log.levels.ERROR,
-  })
-  MiniTest.expect.equality(native_process.command, { "claude-agent-acp" })
+  MiniTest.expect.equality(process.command, { "claude-agent-acp" })
+  MiniTest.expect.equality(index:find('"alpha-skill"', 1, true) ~= nil, true)
+  MiniTest.expect.equality(index:find('"beta-skill"', 1, true) ~= nil, true)
   delete_chat_buffers()
   nvim.fn.delete(skill_root, "rf")
 end

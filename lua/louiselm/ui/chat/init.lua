@@ -1316,9 +1316,6 @@ function Chat:pick_skill()
   if state.skills_policy == "off" then
     return false, "skill picker is disabled for this session"
   end
-  if state.skills_picker == false then
-    return false, "local skill picker is unavailable because lyaml is missing"
-  end
   if #self.skills == 0 then
     return false, "no chat skills configured"
   end

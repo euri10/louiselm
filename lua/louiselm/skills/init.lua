@@ -1,5 +1,4 @@
 local Discovery = require("louiselm.skills.discovery")
-local Dependency = require("louiselm.skills.dependency")
 local Inject = require("louiselm.skills.inject")
 local Overlap = require("louiselm.skills.overlap")
 local Policy = require("louiselm.skills.policy")
@@ -7,7 +6,6 @@ local Policy = require("louiselm.skills.policy")
 ---@class louiselm.skills.Module
 ---@field discover fun(paths: unknown): louiselm.skills.Skill[], louiselm.skills.DiscoveryError[] Discover skill metadata.
 ---@field inject fun(skills: unknown): string?, string? Build a skill prompt index.
----@field local_available fun(): boolean Return whether local Agent Skills parsing is available.
 ---@field policy fun(value?: unknown): louiselm.skills.Policy?, string? Normalize one agent policy.
 ---@field overlap fun(native_path: unknown, configured_paths: unknown): boolean?, string?, string? Detect path overlap.
 
@@ -15,7 +13,6 @@ local M = {}
 
 M.discover = Discovery.discover
 M.inject = Inject.index
-M.local_available = Dependency.available
 M.policy = Policy.normalize
 M.overlap = Overlap.detect
 

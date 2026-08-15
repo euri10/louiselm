@@ -1,7 +1,6 @@
 local Agent = require("louiselm.agent")
 local Acp = require("louiselm.acp")
 local Permission = require("louiselm.permission")
-local Skills = require("louiselm.skills")
 local Lifecycle = require("louiselm.session.lifecycle")
 local Validation = require("louiselm.session.validation")
 
@@ -121,11 +120,6 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     return nil, "session option on_event must be a function"
   end
 
-  local local_skills_available = Skills.local_available()
-  if definition.skills.policy == "inject" and not local_skills_available then
-    return nil, 'skills policy "inject" requires lyaml; install lyaml or use skills.policy = "native" or "off"'
-  end
-
   local permission_policy, policy_error = Permission.policy(options.permission_policy)
   if permission_policy == nil then
     return nil, "invalid session permission policy: " .. (policy_error or "invalid policy")
@@ -135,7 +129,6 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     name = options.name,
     on_event = options.on_event,
     permission_policy = permission_policy,
-    skills_picker = definition.skills.policy ~= "off" and local_skills_available,
   }
 
   local id = "session-" .. self.next_id

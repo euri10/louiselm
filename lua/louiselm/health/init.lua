@@ -156,18 +156,15 @@ local function check_skills(config)
   end
 
   local local_enabled = false
-  local inject_enabled = false
   local names = sorted_agent_names(normalized)
   if #names == 0 then
     nvim().health.info("default agent skills policy: " .. default_policy)
     local_enabled = default_policy ~= "off"
-    inject_enabled = default_policy == "inject"
   else
     for _, name in ipairs(names) do
       local policy = normalized[name].skills.policy
       nvim().health.info("agent " .. name .. " skills policy: " .. policy)
       local_enabled = local_enabled or policy ~= "off"
-      inject_enabled = inject_enabled or policy == "inject"
     end
   end
   if not local_enabled then
@@ -175,17 +172,6 @@ local function check_skills(config)
     return
   end
 
-  if not Skills.local_available() then
-    if inject_enabled then
-      report(
-        'lyaml is missing; skills policy "inject" cannot start (install lyaml or use skills.policy = "native" or "off")',
-        false
-      )
-    else
-      nvim().health.warn("lyaml is missing; native sessions can start but the local skill picker is unavailable")
-    end
-    return
-  end
   local paths = configured_skill_paths(config.config)
   if paths == nil then
     nvim().health.info("no skill paths configured")
@@ -196,9 +182,7 @@ local function check_skills(config)
   for _, error_item in ipairs(errors) do
     report(error_item.path .. ": " .. error_item.message, false)
   end
-  if #errors == 0 then
-    report(string.format("discovered %d skill%s", #skills, #skills == 1 and "" or "s"), true)
-  end
+  report(string.format("discovered %d skill%s", #skills, #skills == 1 and "" or "s"), true)
 end
 
 ---@param config louiselm.health.Configuration

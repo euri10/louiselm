@@ -71,7 +71,7 @@ local function configured_skills(config, definitions, default_policy)
 
   local skill_config = config.skills
   local local_enabled, inject_enabled = local_policy_usage(definitions, default_policy)
-  if not local_enabled or not skills_module().local_available() then
+  if not local_enabled then
     return {}, nil
   end
   local skills = {}

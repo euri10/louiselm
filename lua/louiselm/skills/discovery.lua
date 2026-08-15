@@ -85,9 +85,10 @@ local function parse(lines, path, content)
   end
 
   local fields = {}
+  local seen_fields = {}
   local block_key
   local block_lines = {}
-  local metadata = false
+  local ignored_key
   local closed = false
 
   local function finish_block()
@@ -106,35 +107,37 @@ local function parse(lines, path, content)
       break
     end
 
-    local nested_key, nested_value = line:match("^  ([%w_-]+):[ \t]*(.*)$")
-    if metadata and trim(line) == "" then
-      -- Blank lines between metadata entries are valid YAML.
-    elseif metadata and line:match("^%s") then
-      if
-        nested_key == nil
-        or nested_value == ">"
-        or nested_value == ">-"
-        or nested_value == "|"
-        or nested_value == "|-"
-      then
+    if line:match("^\t") then
+      return nil, "malformed YAML frontmatter"
+    elseif trim(line) == "" or line:match("^%s*#") then
+      -- Blank lines and comments do not change the current YAML field.
+    elseif line:match("^%s") then
+      if block_key ~= nil then
+        block_lines[#block_lines + 1] = trim(line)
+      elseif ignored_key == nil then
         return nil, "malformed YAML frontmatter"
       end
-      -- Metadata is optional information; discovery only consumes name and description.
     else
-      metadata = false
+      finish_block()
+      ignored_key = nil
       local key, value = line:match("^([%w_-]+):[ \t]*(.*)$")
       if key ~= nil then
-        finish_block()
-        if key == "metadata" and (value == "" or value == "{}") then
-          metadata = true
-        elseif value == ">" or value == ">-" or value == "|" or value == "|-" then
-          block_key = key
+        if key == "name" or key == "description" then
+          if seen_fields[key] then
+            return nil, "duplicate frontmatter key '" .. key .. "'"
+          end
+          seen_fields[key] = true
+          if value == ">" or value == ">-" or value == "|" or value == "|-" then
+            block_key = key
+          else
+            fields[key] = scalar(value)
+          end
         else
-          fields[key] = scalar(value)
+          -- Agent Skills may define arbitrary optional YAML metadata. Discovery
+          -- validates only the name and description fields that it consumes.
+          ignored_key = key
         end
-      elseif block_key ~= nil and line:match("^%s+") then
-        block_lines[#block_lines + 1] = trim(line)
-      elseif trim(line) ~= "" then
+      else
         return nil, "malformed YAML frontmatter"
       end
     end
@@ -215,18 +218,21 @@ function M.discover(paths)
     else
       local found_ok, found_or_error = pcall(editor.fs.find, "SKILL.md", {
         path = root,
-        type = "file",
         limit = math.huge,
       })
       if not found_ok then
         errors[#errors + 1] = { path = root, message = "could not scan skill path" }
       else
         for _, file in ipairs(found_or_error) do
-          local absolute = absolute_path(file)
-          local canonical = canonical_path(absolute)
-          if not seen_files[canonical] then
-            seen_files[canonical] = true
-            files[#files + 1] = absolute
+          -- vim.fs.find's file filter excludes symlinks before resolving their targets.
+          local stat = editor.uv.fs_stat(file)
+          if stat ~= nil and stat.type == "file" then
+            local absolute = absolute_path(file)
+            local canonical = canonical_path(absolute)
+            if not seen_files[canonical] then
+              seen_files[canonical] = true
+              files[#files + 1] = absolute
+            end
           end
         end
       end

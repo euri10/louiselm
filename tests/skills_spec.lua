@@ -55,6 +55,27 @@ T["discover"]["reads skill metadata and full skill content"] = function()
   })
 end
 
+T["discover"]["reads SKILL.md symlinks whose targets are files"] = function()
+  local source = nvim.fs.joinpath(temp_dir, "source")
+  local target = write_skill(source, "linked-skill", "Linked skill")
+  local skill_dir = nvim.fs.joinpath(temp_dir, "generated", "linked-skill")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  local link = nvim.fs.joinpath(skill_dir, "SKILL.md")
+  assert(nvim.uv.fs_symlink(target, link))
+
+  local skills, errors = Skills.discover({ nvim.fs.joinpath(temp_dir, "generated") })
+
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(skills, {
+    {
+      name = "linked-skill",
+      description = "Linked skill",
+      path = link,
+      content = "---\nname: linked-skill\ndescription: Linked skill\n---\n# linked-skill",
+    },
+  })
+end
+
 T["discover"]["collects malformed metadata without stopping other skills"] = function()
   write_skill(nvim.fs.joinpath(temp_dir, "valid"), "valid", "Valid skill")
   local invalid_dir = nvim.fs.joinpath(temp_dir, "invalid")
@@ -104,7 +125,32 @@ T["discover"]["accepts standard nested metadata"] = function()
   })
 end
 
-T["discover"]["rejects malformed nested metadata indentation"] = function()
+T["discover"]["ignores optional sequence metadata"] = function()
+  local skill_dir = nvim.fs.joinpath(temp_dir, "sequence-metadata")
+  local path = nvim.fs.joinpath(skill_dir, "SKILL.md")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  nvim.fn.writefile({
+    "---",
+    "name: sequence-metadata",
+    "description: Optional metadata does not affect discovery",
+    "triggers:",
+    "  - first",
+    "  - second",
+    "metadata:",
+    "  sources:",
+    "    - first source",
+    "    - second source",
+    "---",
+  }, path)
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].name, "sequence-metadata")
+end
+
+T["discover"]["rejects tab-indented optional metadata"] = function()
   local skill_dir = nvim.fs.joinpath(temp_dir, "bad-metadata")
   assert(nvim.fn.mkdir(skill_dir, "p") == 1)
   local path = nvim.fs.joinpath(skill_dir, "SKILL.md")
@@ -113,7 +159,7 @@ T["discover"]["rejects malformed nested metadata indentation"] = function()
     "name: bad-metadata",
     "description: Invalid indentation",
     "metadata:",
-    "    short-description: Too deeply indented",
+    "\tshort-description: Tabs cannot indent YAML",
     "---",
   }, path)
 

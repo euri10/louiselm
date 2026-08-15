@@ -393,11 +393,8 @@ require("louiselm").setup({
 
 Policies are copied into each session when it is created and never inferred
 from the adapter name or changed by runtime events. `off` does not intercept
-user-authored slash prompts. Local discovery requires `lyaml`; without it,
-native and off sessions still start, the local picker is unavailable, and an
-inject session fails with installation/policy guidance. Install a Lua 5.1
-`lyaml` module where Neovim can require it (for example,
-`luarocks --lua-version=5.1 install lyaml`). The removed
+user-authored slash prompts. Local discovery and injection use only Neovim's
+built-in Lua APIs and require no runtime parser dependency. The removed
 `skills.full_content` setting is a configuration error; use the `inject` policy.
 
 Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
