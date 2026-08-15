@@ -30,12 +30,15 @@ local Validation = require("louiselm.session.validation")
 ---@field next_id integer Next local session number.
 ---@field next_discovery_id integer Next discovery operation number.
 ---@field discoveries table<integer, louiselm.session.DiscoveryState> Active adapter discovery operations.
+---@field permission_store louiselm.permission.Store Remembered rules owned by this registry.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field discover_sessions fun(self: louiselm.session.Registry, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
 ---@field get_session fun(self: louiselm.session.Registry, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Registry): string[]
+---@field list_permissions fun(self: louiselm.session.Registry): louiselm.permission.Rule[]?, string?
+---@field revoke_permission fun(self: louiselm.session.Registry, id: string): boolean, string?
 ---@field dispose fun(self: louiselm.session.Registry): boolean, string?
 ---@field remove_session fun(self: louiselm.session.Registry, id: string)
 
@@ -49,6 +52,28 @@ Registry.__index = Registry
 ---@return louiselm.agent.ConfigError[] errors
 local function normalize_definitions(definitions, default_skills_policy)
   return Agent.normalize(definitions, default_skills_policy)
+end
+
+---@param value unknown
+---@return boolean
+local function valid_permission_store(value)
+  return type(value) == "table"
+    and type(value.evaluate) == "function"
+    and type(value.remember) == "function"
+    and type(value.list) == "function"
+    and type(value.revoke) == "function"
+    and type(value.clear_session) == "function"
+end
+
+---@param value table
+---@return boolean
+local function has_only_permission_store(value)
+  for key in pairs(value) do
+    if key ~= "permission_store" then
+      return false
+    end
+  end
+  return true
 end
 
 ---@param value unknown
@@ -73,12 +98,20 @@ end
 ---Create a registry after strictly normalizing named agent definitions.
 ---@param definitions unknown Named agent definitions.
 ---@param default_skills_policy? unknown Global Agent Skills policy inherited by agents without an override.
+---@param options? louiselm.session.ApiOptions Headless owner options.
 ---@return louiselm.session.Registry? registry
 ---@return louiselm.agent.ConfigError[] errors
-function M.new(definitions, default_skills_policy)
+function M.new(definitions, default_skills_policy, options)
   local normalized, errors = normalize_definitions(definitions, default_skills_policy)
   if normalized == nil then
     return nil, errors
+  end
+  if options ~= nil and (type(options) ~= "table" or not has_only_permission_store(options)) then
+    return nil, { { path = "session", message = "session API options may contain only permission_store" } }
+  end
+  local permission_store = options and options.permission_store or Permission.store()
+  if not valid_permission_store(permission_store) then
+    return nil, { { path = "session.permission_store", message = "permission_store is malformed" } }
   end
   return setmetatable({
     definitions = normalized,
@@ -87,6 +120,7 @@ function M.new(definitions, default_skills_policy)
     next_id = 1,
     next_discovery_id = 1,
     discoveries = {},
+    permission_store = permission_store,
     disposed = false,
   }, Registry),
     {}
@@ -129,6 +163,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     name = options.name,
     on_event = options.on_event,
     permission_policy = permission_policy,
+    permission_store = self.permission_store,
   }
 
   local id = "session-" .. self.next_id
@@ -397,6 +432,23 @@ function Registry:list_sessions()
     end
   end
   return ids
+end
+
+---List persistent and live remembered permission rules.
+---@param self louiselm.session.Registry
+---@return louiselm.permission.Rule[]? rules
+---@return string? error_message State read or validation failure.
+function Registry:list_permissions()
+  return self.permission_store:list()
+end
+
+---Revoke one remembered permission rule.
+---@param self louiselm.session.Registry
+---@param id string Stable rule identifier.
+---@return boolean revoked
+---@return string? error_message Validation or persistence failure.
+function Registry:revoke_permission(id)
+  return self.permission_store:revoke(id)
 end
 
 ---Dispose every live session and close the registry.

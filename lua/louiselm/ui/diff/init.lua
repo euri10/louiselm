@@ -65,17 +65,13 @@ local function clear(self)
 end
 
 ---@param self louiselm.ui.Diff
----@param decision louiselm.permission.Decision
+---@param result table
 ---@return boolean responded
 ---@return string? error_message
-local function respond(self, decision)
+local function send_response(self, result)
   local callback = self.response
   if callback == nil or self.preview == nil then
     return false, "no diff permission request is open"
-  end
-  local result = Gates.response(self.request, decision)
-  if result == nil then
-    return false, "permission request has no matching " .. decision .. " option"
   end
   local call_ok, sent, send_error = pcall(callback, result)
   if not call_ok then
@@ -86,6 +82,52 @@ local function respond(self, decision)
   end
   clear(self)
   return true
+end
+
+---@param option unknown
+---@return string
+local function option_label(option)
+  if type(option) == "string" then
+    return option
+  end
+  if type(option) ~= "table" then
+    return "invalid option"
+  end
+  return option.name or option.kind or option.optionId or option.option_id or "invalid option"
+end
+
+---@param self louiselm.ui.Diff
+---@param decision louiselm.permission.Decision
+---@return boolean responded
+---@return string? error_message
+local function respond(self, decision)
+  local options = Gates.decision_options(self.request, decision)
+  if #options == 1 then
+    local result = Gates.select_response(options[1])
+    if result == nil then
+      return false, "permission option has no identifier"
+    end
+    return send_response(self, result)
+  end
+  if #options > 1 then
+    nvim.ui.select(options, {
+      prompt = "louiselm file edit " .. decision .. ": ",
+      format_item = option_label,
+    }, function(option)
+      if option ~= nil and not self.disposed then
+        local result = Gates.select_response(option)
+        if result ~= nil then
+          send_response(self, result)
+        end
+      end
+    end)
+    return true
+  end
+  local result = Gates.response(self.request, decision)
+  if result == nil then
+    return false, "permission request has no matching " .. decision .. " option"
+  end
+  return send_response(self, result)
 end
 
 ---Create a diff review controller without opening a buffer.

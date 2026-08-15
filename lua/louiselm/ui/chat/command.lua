@@ -290,6 +290,15 @@ function M.register()
     report_error(options_error)
   end, { desc = "Configure the current idle louiselm session", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmPermissions", function()
+    local current = ensure_chat()
+    if current == nil then
+      return
+    end
+    local _, permissions_error = current:manage_permissions()
+    report_error(permissions_error)
+  end, { desc = "Inspect and revoke remembered louiselm permissions", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmInline", function()
     if inline == nil then
       local definitions = configured and configured_agents(configured)

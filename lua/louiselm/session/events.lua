@@ -36,6 +36,8 @@
 ---@field request_id string|number ACP request identifier.
 ---@field operation louiselm.permission.Request Normalized requested operation.
 ---@field policy_decision louiselm.permission.Decision Evaluated policy decision.
+---@field remembered_decision? "allow"|"deny" A matching rule that could not be replayed through the offered option kinds.
+---@field permission_error? string Non-fatal remembered-permission lookup failure.
 ---@field options? unknown[] Agent-advertised response options.
 ---@field toolCall? table Agent tool call payload.
 

@@ -54,6 +54,7 @@ local Skills = require("louiselm.skills")
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
+---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
@@ -827,6 +828,11 @@ local function handle_event(self, view, event)
     view.response_started = false
   elseif event.type == "permission_requested" then
     local data = event.data
+    if type(data) == "table" and type(data.permission_error) == "string" then
+      insert_transcript(self, view, { "Warning: " .. data.permission_error })
+    elseif type(data) == "table" and data.remembered_decision ~= nil then
+      insert_transcript(self, view, { "Warning: remembered decision requires a compatible once-only option" })
+    end
     if type(data) == "table" and type(data.operation) == "table" and data.operation.kind == "file_edit" then
       local opened, open_error = self.diff:open(data, event.respond)
       if not opened then
@@ -848,6 +854,59 @@ local function handle_event(self, view, event)
     view.response_started = false
     release_queued_prompt(self, view)
   end
+end
+
+---@param rule louiselm.permission.Rule
+---@return string
+local function permission_rule_label(rule)
+  local scope
+  if rule.kind == "command" then
+    scope = "command " .. nvim.json.encode(rule.command)
+  else
+    scope = "file " .. tostring(rule.path)
+  end
+  return table.concat({ rule.decision .. " " .. rule.lifetime, rule.agent, rule.workspace, scope }, " · ")
+end
+
+---Inspect remembered permissions and confirm revocation through the configured picker.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message State or API error.
+function Chat:manage_permissions()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if type(self.api.list_permissions) ~= "function" or type(self.api.revoke_permission) ~= "function" then
+    return false, "session API does not support remembered permissions"
+  end
+  local rules, rules_error = self.api:list_permissions()
+  if rules == nil then
+    return false, rules_error or "could not read remembered permissions"
+  end
+  if #rules == 0 then
+    nvim.notify("louiselm: no remembered permissions", nvim.log.levels.INFO)
+    return true
+  end
+  nvim.ui.select(rules, {
+    prompt = "louiselm remembered permissions: ",
+    format_item = permission_rule_label,
+  }, function(rule)
+    if rule == nil or self.disposed then
+      return
+    end
+    nvim.ui.select({ "Revoke", "Keep" }, { prompt = "revoke " .. rule.id .. "? " }, function(choice)
+      if choice ~= "Revoke" or self.disposed then
+        return
+      end
+      local revoked, revoke_error = self.api:revoke_permission(rule.id)
+      if not revoked then
+        nvim.notify("louiselm: " .. (revoke_error or "permission rule no longer exists"), nvim.log.levels.ERROR)
+        return
+      end
+      nvim.notify("louiselm: revoked permission " .. rule.id, nvim.log.levels.INFO)
+    end)
+  end)
+  return true
 end
 
 ---Create a chat UI controller without creating buffers or mappings.

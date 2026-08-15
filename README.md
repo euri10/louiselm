@@ -267,6 +267,7 @@ while the session is idle; dismissing the overview keeps the agent defaults.
 The interactive controls are:
 
 - `:LouiselmSessionOptions` — inspect or change all supported options
+- `:LouiselmPermissions` — inspect and revoke remembered permission rules
 - `:LouiselmInline` — ask the agent to replace the current selection, or insert at the cursor
 - `:LouiselmCancel` — cancel the active turn
 - `:LouiselmNewSession` — start another session without stopping existing ones
@@ -345,9 +346,27 @@ local session = assert(sessions:create_session("claude", {
 File edits and command argv are checked without shell expansion. Unknown ACP
 permission requests remain askable and are never auto-approved.
 
+For typed ACP choices, LouiseLM gives their lifetimes literal semantics:
+`allow_once`/`reject_once` are not saved, `allow_session`/`reject_session` stay
+in memory until that local session is disposed, and
+`allow_always`/`reject_always` persist in
+`stdpath("state")/louiselm/permissions.json`. Labels never determine lifetime.
+Rules are keyed by the configured agent, exact adapter command and args, and
+canonical session workspace. A command rule stores the complete selected argv
+as an exact prefix; a file rule stores one exact normalized path. This means a
+remembered choice cannot silently spread to another adapter, workspace,
+command prefix, or file.
+
+Remembered decisions replay only through a matching typed once-only option. If
+the adapter later omits one, LouiseLM asks again instead of guessing from a
+label. Malformed or unreadable state also fails closed: the request remains
+askable, an attempted persistent choice is cancelled with an actionable error,
+and the state file is not replaced.
+
 When an ask-human request is a file edit with a diff or replacement content,
 the chat UI opens a read-only `louiselm-diff://` buffer before responding. Press
-`a` to allow the edit, or `d`/`q` to reject it. The review records the file
+`a` to allow the edit, or `d`/`q` to reject it. When the adapter offers several
+typed lifetimes, a picker asks which one to use. The review records the file
 content it displayed and rejects a local apply if the file changed meanwhile;
 the ACP agent remains responsible for writing the file after approval.
 
@@ -355,6 +374,12 @@ Command and unknown permission requests use a chat picker for the ACP options;
 dismissing the picker sends a cancellation response. Permission UI work is
 scheduled onto Neovim's main loop, and late choices after chat disposal are
 ignored.
+
+Headless consumers can inspect and revoke through
+`sessions:list_permissions()` and `sessions:revoke_permission(rule_id)`. Tests
+or isolated embedders can pass an explicit store as the third constructor
+argument to `Session.new`; set its `permission_store` field to
+`permission.store(path)`.
 
 ## Chat context
 

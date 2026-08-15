@@ -60,6 +60,102 @@ local function option_identifier(option)
   return identifier, lower(label)
 end
 
+---@param option unknown
+---@return louiselm.permission.Decision? decision
+---@return louiselm.permission.Lifetime? lifetime
+local function remembered_kind(option)
+  if type(option) ~= "table" or type(option.kind) ~= "string" then
+    return nil, nil
+  end
+  local kinds = {
+    allow_once = { "allow", nil },
+    reject_once = { "deny", nil },
+    deny_once = { "deny", nil },
+    allow_session = { "allow", "session" },
+    reject_session = { "deny", "session" },
+    deny_session = { "deny", "session" },
+    allow_always = { "allow", "always" },
+    reject_always = { "deny", "always" },
+    deny_always = { "deny", "always" },
+  }
+  local mapped = kinds[option.kind]
+  if mapped == nil then
+    return nil, nil
+  end
+  return mapped[1], mapped[2]
+end
+
+---Classify a selected ACP option for remembered-permission handling.
+---Only exact option kinds carry lifetime semantics; labels are never interpreted.
+---@param data table ACP permission request parameters.
+---@param result unknown Selected ACP response.
+---@return louiselm.permission.Decision? decision
+---@return louiselm.permission.Lifetime? lifetime Nil for once-only or unknown choices.
+function M.remembered_choice(data, result)
+  if type(result) ~= "table" or type(result.outcome) ~= "table" or result.outcome.outcome ~= "selected" then
+    return nil, nil
+  end
+  local selected = result.outcome.optionId
+  if type(selected) ~= "string" or type(data.options) ~= "table" then
+    return nil, nil
+  end
+  for _, option in ipairs(data.options) do
+    local identifier = option_identifier(option)
+    if identifier == selected then
+      return remembered_kind(option)
+    end
+  end
+  return nil, nil
+end
+
+---Build an automatic response for a remembered decision using an exact once-only ACP option kind.
+---@param data table ACP permission request parameters.
+---@param decision louiselm.permission.Decision Remembered decision.
+---@return table? result Nil when the adapter offers no compatible option kind.
+function M.remembered_response(data, decision)
+  if decision ~= "allow" and decision ~= "deny" or type(data.options) ~= "table" then
+    return nil
+  end
+  for _, option in ipairs(data.options) do
+    local identifier = option_identifier(option)
+    local option_decision, lifetime = remembered_kind(option)
+    if identifier ~= nil and option_decision == decision and lifetime == nil then
+      return { outcome = { outcome = "selected", optionId = identifier } }
+    end
+  end
+  return nil
+end
+
+---Return agent options whose exact kind represents one decision.
+---@param data table ACP permission request parameters.
+---@param decision louiselm.permission.Decision Requested decision.
+---@return unknown[] options Empty when no typed option matches.
+function M.decision_options(data, decision)
+  local matches = {}
+  if decision ~= "allow" and decision ~= "deny" or type(data.options) ~= "table" then
+    return matches
+  end
+  for _, option in ipairs(data.options) do
+    local identifier = option_identifier(option)
+    local option_decision = remembered_kind(option)
+    if identifier ~= nil and option_decision == decision then
+      matches[#matches + 1] = option
+    end
+  end
+  return matches
+end
+
+---Build a selected ACP response for one advertised option.
+---@param option unknown Agent-advertised option.
+---@return table? result Nil when the option has no identifier.
+function M.select_response(option)
+  local identifier = option_identifier(option)
+  if identifier == nil then
+    return nil
+  end
+  return { outcome = { outcome = "selected", optionId = identifier } }
+end
+
 ---Extract a gate operation from an ACP permission payload.
 ---@param data table ACP permission request parameters.
 ---@return louiselm.permission.Request request Normalized operation; unknown operations remain askable.

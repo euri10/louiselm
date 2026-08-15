@@ -1,6 +1,7 @@
 local Gates = require("louiselm.permission.gates")
 local HumanPrompt = require("louiselm.permission.human-prompt")
 local Policy = require("louiselm.permission.policy")
+local Store = require("louiselm.permission.store")
 
 local M = {}
 
@@ -14,6 +15,14 @@ end
 
 M.gates = Gates
 M.human_prompt = HumanPrompt.new
+
+---Create an explicit remembered-permission store.
+---@param path? string JSON path. Defaults below stdpath("state").
+---@return louiselm.permission.Store? store
+---@return string? error_message
+function M.store(path)
+  return Store.new(path)
+end
 ---Create a policy that leaves every request for a human decision.
 ---@return louiselm.permission.Policy policy
 function M.ask_human()

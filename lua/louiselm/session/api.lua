@@ -7,7 +7,12 @@ local Registry = require("louiselm.session.registry")
 ---@field discover_sessions fun(self: louiselm.session.Api, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
 ---@field get_session fun(self: louiselm.session.Api, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Api): string[]
+---@field list_permissions fun(self: louiselm.session.Api): louiselm.permission.Rule[]?, string?
+---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
+
+---@class louiselm.session.ApiOptions
+---@field permission_store? louiselm.permission.Store Explicit remembered-permission store.
 
 local M = {}
 local Api = {}
@@ -16,10 +21,11 @@ Api.__index = Api
 ---Create the headless session API for named agent definitions.
 ---@param definitions unknown Named agent definitions.
 ---@param default_skills_policy? unknown Global Agent Skills policy inherited by agents without an override.
+---@param options? louiselm.session.ApiOptions Headless owner options.
 ---@return louiselm.session.Api? api
 ---@return louiselm.agent.ConfigError[] errors
-function M.new(definitions, default_skills_policy)
-  local registry, errors = Registry.new(definitions, default_skills_policy)
+function M.new(definitions, default_skills_policy, options)
+  local registry, errors = Registry.new(definitions, default_skills_policy, options)
   if registry == nil then
     return nil, errors
   end
@@ -72,6 +78,23 @@ end
 ---@return string[] ids
 function Api:list_sessions()
   return self.registry:list_sessions()
+end
+
+---List remembered permission rules for inspection.
+---@param self louiselm.session.Api
+---@return louiselm.permission.Rule[]? rules
+---@return string? error_message State read or validation failure.
+function Api:list_permissions()
+  return self.registry:list_permissions()
+end
+
+---Revoke one remembered permission rule.
+---@param self louiselm.session.Api
+---@param id string Stable rule identifier.
+---@return boolean revoked
+---@return string? error_message Validation or persistence failure.
+function Api:revoke_permission(id)
+  return self.registry:revoke_permission(id)
 end
 
 ---Dispose every session and close the headless API.

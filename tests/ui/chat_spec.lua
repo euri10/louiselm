@@ -120,6 +120,56 @@ T["chat"]["focuses the prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["lists and confirms revocation of remembered permission rules"] = function()
+  local api = fake_api()
+  local revoked
+  api.list_permissions = function()
+    return {
+      {
+        id = "rule-1",
+        decision = "allow",
+        lifetime = "always",
+        agent = "codex",
+        adapter = { command = "codex-acp", args = {} },
+        workspace = "/workspace",
+        kind = "command",
+        command = { "git", "status" },
+      },
+    }
+  end
+  api.revoke_permission = function(_, id)
+    revoked = id
+    return true
+  end
+  local chat = assert(Chat.new(api))
+  local original_select = nvim.ui.select
+  local original_notify = nvim.notify
+  local prompts = {}
+  local labels = {}
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  nvim.ui.select = function(items, options, callback)
+    prompts[#prompts + 1] = options.prompt
+    labels[#labels + 1] = options.format_item and options.format_item(items[1]) or items[1]
+    callback(#prompts == 1 and items[1] or "Revoke")
+  end
+
+  assert(chat:manage_permissions())
+
+  nvim.ui.select = original_select
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(prompts, { "louiselm remembered permissions: ", "revoke rule-1? " })
+  MiniTest.expect.equality(labels[1], 'allow always · codex · /workspace · command ["git","status"]')
+  MiniTest.expect.equality(revoked, "rule-1")
+  MiniTest.expect.equality(
+    notification,
+    { message = "louiselm: revoked permission rule-1", level = nvim.log.levels.INFO }
+  )
+  chat:dispose()
+end
+
 T["chat"]["submits every line in a multiline prompt"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

@@ -97,4 +97,37 @@ T["review"]["shows an edit and sends an allow response"] = function()
   nvim.fn.delete(path)
 end
 
+T["review"]["asks which lifetime to use when an edit has multiple allow options"] = function()
+  local path = temp_file({ "before" })
+  local response
+  local labels
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(options, config, callback)
+    labels = nvim.tbl_map(config.format_item, options)
+    callback(options[2])
+  end
+  local diff = Diff.new()
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { path = path, content = "after\n" } },
+    options = {
+      { optionId = "allow-once", name = "Allow Once", kind = "allow_once" },
+      { optionId = "allow-always", name = "Always Allow This File", kind = "allow_always" },
+      { optionId = "reject", name = "Reject", kind = "reject_once" },
+    },
+  }, function(result)
+    response = result
+    return true
+  end))
+
+  assert(diff:accept())
+
+  nvim.ui.select = original_select
+  MiniTest.expect.equality(labels, { "Allow Once", "Always Allow This File" })
+  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-always" } })
+  MiniTest.expect.equality(diff.buffer, nil)
+  diff:dispose()
+  nvim.fn.delete(path)
+end
+
 return T

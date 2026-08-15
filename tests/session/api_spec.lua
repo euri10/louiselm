@@ -762,6 +762,139 @@ T["new"]["automatically responds only to explicitly scoped permission requests"]
   restore_processes(original_system)
 end
 
+T["new"]["persists exact always choices and replays only through compatible option kinds"] = function()
+  local root = nvim.fn.tempname()
+  local state_path = nvim.fs.joinpath(root, "permissions.json")
+  local processes, original_system = fake_processes()
+  local store = assert(Permission.store(state_path))
+  local api = assert(Session.new({ agent = { command = "agent", args = { "serve" } } }, nil, {
+    permission_store = store,
+  }))
+  local session, process = start_ready_session(api, processes, "agent", nvim.fs.joinpath(root, "workspace"))
+  local permission_events = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission_events[#permission_events + 1] = event
+    end
+  end)
+  local function request(id, options)
+    process.options.stdout(nil, assert(Protocol.encode({
+      jsonrpc = "2.0",
+      id = id,
+      method = "session/request_permission",
+      params = {
+        sessionId = "agent-acp",
+        toolCall = { kind = "execute", rawInput = { command = { "git", "status" } } },
+        options = options,
+      },
+    })) .. "\n")
+  end
+
+  request(9, {
+    { optionId = "allow-once", kind = "allow_once" },
+    { optionId = "allow-always", kind = "allow_always" },
+  })
+  assert(permission_events[1].respond({ outcome = { outcome = "selected", optionId = "allow-always" } }))
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "selected", optionId = "allow-always" },
+  })
+  local remembered = assert(api:list_permissions())
+  MiniTest.expect.equality(#remembered, 1)
+  MiniTest.expect.equality(remembered[1].command, { "git", "status" })
+  MiniTest.expect.equality(remembered[1].adapter, { command = "agent", args = { "serve" } })
+
+  request(10, { { optionId = "allow-once", kind = "allow_once" } })
+  MiniTest.expect.equality(#permission_events, 1)
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "selected", optionId = "allow-once" },
+  })
+
+  request(11, { { optionId = "custom", name = "Allow", kind = "custom" } })
+  MiniTest.expect.equality(#permission_events, 2)
+  assert(permission_events[2].respond({ outcome = { outcome = "cancelled" } }))
+  api:dispose()
+
+  local reloaded_api = assert(Session.new({ agent = { command = "agent", args = { "serve" } } }, nil, {
+    permission_store = assert(Permission.store(state_path)),
+  }))
+  local reloaded, reloaded_process =
+    start_ready_session(reloaded_api, processes, "agent", nvim.fs.joinpath(root, "workspace"))
+  local replayed_event
+  reloaded:on(function(event)
+    if event.type == "permission_requested" then
+      replayed_event = event
+    end
+  end)
+  reloaded_process.options.stdout(nil, assert(Protocol.encode({
+    jsonrpc = "2.0",
+    id = 12,
+    method = "session/request_permission",
+    params = {
+      sessionId = "agent-acp",
+      toolCall = { kind = "execute", rawInput = { command = { "git", "status", "--short" } } },
+      options = { { optionId = "once", kind = "allow_once" } },
+    },
+  })) .. "\n")
+
+  MiniTest.expect.equality(replayed_event, nil)
+  MiniTest.expect.equality(
+    assert(Protocol.decode(reloaded_process.writes[#reloaded_process.writes]:sub(1, -2))).result,
+    {
+      outcome = { outcome = "selected", optionId = "once" },
+    }
+  )
+  MiniTest.expect.equality(reloaded_api:revoke_permission(remembered[1].id), true)
+  MiniTest.expect.equality(assert(reloaded_api:list_permissions()), {})
+  reloaded_api:dispose()
+  restore_processes(original_system)
+  nvim.fn.delete(root, "rf")
+end
+
+T["new"]["asks again and cancels an always choice when permission state is malformed"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local state_path = nvim.fs.joinpath(root, "permissions.json")
+  assert(nvim.fn.writefile({ "not json" }, state_path) == 0)
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, {
+    permission_store = assert(Permission.store(state_path)),
+  }))
+  local session, process = start_ready_session(api, processes, "agent", root)
+  local permission_event
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission_event = event
+    end
+  end)
+
+  process.options.stdout(nil, assert(Protocol.encode({
+    jsonrpc = "2.0",
+    id = 9,
+    method = "session/request_permission",
+    params = {
+      sessionId = "agent-acp",
+      toolCall = { kind = "execute", rawInput = { command = { "git", "status" } } },
+      options = { { optionId = "always", kind = "allow_always" } },
+    },
+  })) .. "\n")
+
+  MiniTest.expect.equality(permission_event.data.permission_error, "permission state is not valid JSON")
+  local sent, send_error = permission_event.respond({ outcome = { outcome = "selected", optionId = "always" } })
+  MiniTest.expect.equality(sent, false)
+  MiniTest.expect.equality(
+    send_error,
+    "permission choice was cancelled because it could not be remembered: permission state is not valid JSON"
+  )
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "cancelled" },
+  })
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(nvim.fn.readfile(state_path), { "not json" })
+  api:dispose()
+  restore_processes(original_system)
+  nvim.fn.delete(root, "rf")
+end
+
 T["new"]["calls a prompt callback with the error when the agent crashes"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))

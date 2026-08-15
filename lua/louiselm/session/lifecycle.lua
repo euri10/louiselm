@@ -30,6 +30,7 @@ local nvim = vim
 ---@field name? string User-facing session name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
+---@field permission_store? louiselm.permission.Store Remembered-permission owner.
 
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
@@ -45,6 +46,7 @@ local nvim = vim
 ---@field definition louiselm.agent.Definition Agent process definition.
 ---@field options louiselm.session.Options Session options.
 ---@field permission_policy louiselm.permission.Policy Policy for agent-requested operations.
+---@field permission_store louiselm.permission.Store Remembered-permission owner.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
@@ -235,6 +237,24 @@ local function handle_request(self, request, respond)
     return
   end
   data.policy_decision = decision
+  if decision == "ask" then
+    local remembered, remembered_error = self.permission_store:evaluate({
+      session_id = self.state.id,
+      agent = self.state.agent,
+      adapter = { command = self.definition.command, args = self.definition.args },
+      workspace = self.state.working_dir,
+    }, data.operation)
+    if remembered == nil then
+      data.permission_error = remembered_error or "remembered permission lookup failed"
+    elseif remembered ~= "ask" then
+      local remembered_response = Permission.gates.remembered_response(data, remembered)
+      if remembered_response ~= nil then
+        respond(remembered_response)
+        return
+      end
+      data.remembered_decision = remembered
+    end
+  end
   if decision ~= "ask" then
     local automatic_response = Permission.gates.response(data, decision)
     if automatic_response ~= nil then
@@ -244,6 +264,26 @@ local function handle_request(self, request, respond)
   end
   set_status(self, "waiting_permission")
   local function permission_respond(result, rpc_error)
+    local selected_decision, lifetime = Permission.gates.remembered_choice(data, result)
+    if selected_decision ~= nil and lifetime ~= nil then
+      local _, remember_error = self.permission_store:remember({
+        session_id = self.state.id,
+        agent = self.state.agent,
+        adapter = { command = self.definition.command, args = self.definition.args },
+        workspace = self.state.working_dir,
+      }, data.operation, selected_decision, lifetime)
+      if remember_error ~= nil then
+        local cancelled, cancel_error = respond({ outcome = { outcome = "cancelled" } })
+        if cancelled and self.state.status == "waiting_permission" then
+          set_status(self, "prompting")
+        end
+        local message = "permission choice was cancelled because it could not be remembered: " .. remember_error
+        if not cancelled then
+          message = message .. "; cancellation failed: " .. (cancel_error or "unknown error")
+        end
+        return false, message
+      end
+    end
     local sent, send_error = respond(result, rpc_error)
     if sent and self.state.status == "waiting_permission" then
       set_status(self, "prompting")
@@ -405,6 +445,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     options = options,
     load_session_id = load_session_id,
     permission_policy = options.permission_policy or Permission.policy(),
+    permission_store = options.permission_store or Permission.store(),
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,
@@ -643,6 +684,7 @@ function Session:dispose()
     return true
   end
   set_status(self, "disposed")
+  self.permission_store:clear_session(self.state.id)
   self.prompt_callback = nil
   local client = self.client
   local closed, close_error = true, nil
