@@ -70,12 +70,25 @@ local function read_file(path)
 end
 
 ---@return louiselm.skills.Yaml? yaml
+---@return string? error_message
 local function load_yaml()
   local call_ok, module = pcall(require, "lyaml")
-  if not call_ok or type(module) ~= "table" or type(module.load) ~= "function" then
-    return nil
+  if not call_ok then
+    return nil, tostring(module)
   end
-  return module
+  if type(module) ~= "table" or type(module.load) ~= "function" then
+    return nil, "lyaml does not expose the expected load function"
+  end
+  return module, nil
+end
+
+---@param error_message string
+---@return string
+local function yaml_dependency_message(error_message)
+  if error_message:find("module 'lyaml' not found", 1, true) ~= nil then
+    return 'Neovim cannot find lyaml in package.path or package.cpath; install it with `luarocks --lua-version 5.1 install lyaml` or, if LuaRocks already reports it installed, start Neovim after `eval "$(luarocks path --lua-version 5.1)"`'
+  end
+  return "Neovim found lyaml but could not load it; reinstall lyaml for Lua 5.1 and verify that LibYAML is available"
 end
 
 ---@param paths unknown
@@ -269,11 +282,11 @@ function M.discover(paths, cwd)
     sort_diagnostics(diagnostics)
     return {}, diagnostics
   end
-  local yaml = load_yaml()
+  local yaml, yaml_error = load_yaml()
   if yaml == nil then
     diagnostics[#diagnostics + 1] = {
       path = "skills",
-      message = "lyaml is required for local skill discovery; install it with `luarocks --lua-version 5.1 install lyaml`",
+      message = yaml_dependency_message(yaml_error or "unknown lyaml load failure"),
       code = "missing_dependency",
     }
     sort_diagnostics(diagnostics)

@@ -565,7 +565,7 @@ T["discover"]["reports a structured missing lyaml dependency"] = function()
   local preload = package.preload.lyaml
   package.loaded.lyaml = nil
   rawset(package.preload, "lyaml", function()
-    error("forced missing lyaml")
+    error("module 'lyaml' not found", 0)
   end)
 
   local call_ok, skills, diagnostics = pcall(Skills.discover, { temp_dir })
@@ -577,7 +577,31 @@ T["discover"]["reports a structured missing lyaml dependency"] = function()
   MiniTest.expect.equality(diagnostics, {
     {
       path = "skills",
-      message = "lyaml is required for local skill discovery; install it with `luarocks --lua-version 5.1 install lyaml`",
+      message = 'Neovim cannot find lyaml in package.path or package.cpath; install it with `luarocks --lua-version 5.1 install lyaml` or, if LuaRocks already reports it installed, start Neovim after `eval "$(luarocks path --lua-version 5.1)"`',
+      code = "missing_dependency",
+    },
+  })
+end
+
+T["discover"]["distinguishes a lyaml native loader failure"] = function()
+  write_skill(nvim.fs.joinpath(temp_dir, "valid"), "valid", "Valid skill")
+  local loaded = package.loaded.lyaml
+  local preload = package.preload.lyaml
+  package.loaded.lyaml = nil
+  rawset(package.preload, "lyaml", function()
+    error("error loading module 'yaml': libyaml.so.0: cannot open shared object file", 0)
+  end)
+
+  local call_ok, skills, diagnostics = pcall(Skills.discover, { temp_dir })
+
+  package.loaded.lyaml = loaded
+  rawset(package.preload, "lyaml", preload)
+  assert(call_ok)
+  MiniTest.expect.equality(skills, {})
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = "skills",
+      message = "Neovim found lyaml but could not load it; reinstall lyaml for Lua 5.1 and verify that LibYAML is available",
       code = "missing_dependency",
     },
   })

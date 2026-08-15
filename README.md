@@ -451,8 +451,17 @@ luarocks --lua-version 5.1 install lyaml
 ```
 
 The dependency is loaded only when configured local skill files need parsing.
-Install it in Lua's standard search path, or export the `LUA_PATH` and
-`LUA_CPATH` printed by `luarocks path --lua-version 5.1` before starting Neovim.
+Install it in Lua's standard search path. If LuaRocks reports it installed but
+Neovim cannot find it, start Neovim from a POSIX shell with the LuaRocks paths:
+
+```sh
+eval "$(luarocks path --lua-version 5.1)"
+nvim
+```
+
+For non-system trees such as asdf, add the `eval` line to the shell startup
+file used to launch Neovim. GUI launchers must inherit the resulting `LUA_PATH`
+and `LUA_CPATH` too.
 Missing `lyaml` does not affect sessions whose effective policy is `off` and
 does not block native session startup. It prevents the managed local picker
 from opening and blocks `inject` chat creation when an index is required.
