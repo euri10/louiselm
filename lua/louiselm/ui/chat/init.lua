@@ -1,5 +1,6 @@
 local Context = require("louiselm.ui.context")
 local Diff = require("louiselm.ui.diff")
+local Gates = require("louiselm.permission.gates")
 local Skills = require("louiselm.skills")
 
 ---@class louiselm.ui.ChatOptions
@@ -473,7 +474,18 @@ local function permission_options(value)
       options[#options + 1] = option
     end
   end
-  return options
+  local ordered = {}
+  local rejections = {}
+  for _, option in ipairs(Gates.decision_options({ options = options }, "deny")) do
+    ordered[#ordered + 1] = option
+    rejections[option] = true
+  end
+  for _, option in ipairs(options) do
+    if not rejections[option] then
+      ordered[#ordered + 1] = option
+    end
+  end
+  return ordered
 end
 
 ---@param self louiselm.ui.Chat

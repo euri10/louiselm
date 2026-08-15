@@ -1045,6 +1045,53 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
   chat:dispose()
 end
 
+T["chat"]["puts rejection options first so permission pickers fail closed"] = function()
+  local first = fake_session("session-1", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local scheduled
+  local option_ids = {}
+  local response
+  nvim.schedule = function(callback)
+    scheduled = callback
+  end
+
+  first:emit({
+    type = "permission_requested",
+    session_id = "session-1",
+    data = {
+      operation = { kind = "command", command = { "git", "commit" } },
+      options = {
+        { optionId = "allow_once", name = "Allow Once", kind = "allow_once" },
+        { optionId = "allow_always", name = "Allow for Session", kind = "allow_always" },
+        { optionId = "allow_prefix", name = "Allow Commands Starting With git", kind = "allow_always" },
+        { optionId = "reject_once", name = "Reject", kind = "reject_once" },
+      },
+    },
+    respond = function(result)
+      response = result
+      return true
+    end,
+  })
+
+  nvim.ui.select = function(options, _, callback)
+    for _, option in ipairs(options) do
+      option_ids[#option_ids + 1] = option.optionId
+    end
+    callback(options[1])
+  end
+  assert(scheduled)
+  scheduled()
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(option_ids, { "reject_once", "allow_once", "allow_always", "allow_prefix" })
+  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "reject_once" } })
+  chat:dispose()
+end
+
 T["chat"]["preserves distinct permission option names with the same kind"] = function()
   local first = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))
