@@ -191,4 +191,48 @@ T["connect"]["passes agent requests to the callback"] = function()
   })
 end
 
+T["connect"]["defers agent callbacks from fast events"] = function()
+  local calls = {}
+  local scheduled
+  local received
+  local fake_handle = {
+    is_closing = function()
+      return false
+    end,
+    write = function(_, data)
+      calls.response = data
+    end,
+  }
+  local original_system = nvim.system
+  local original_in_fast_event = nvim.in_fast_event
+  local original_schedule = nvim.schedule
+  set_system(function(_, options)
+    calls.stdout = options.stdout
+    return fake_handle
+  end)
+  nvim.in_fast_event = function()
+    return true
+  end
+  nvim.schedule = function(callback)
+    scheduled = callback
+  end
+
+  local client = assert(Acp.connect({ command = "agent", args = {} }, {
+    on_request = function(request)
+      received = request
+    end,
+  }))
+
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"s"}}\n')
+  MiniTest.expect.equality(received, nil)
+  MiniTest.expect.equality(type(scheduled), "function")
+
+  set_system(original_system)
+  nvim.in_fast_event = original_in_fast_event
+  nvim.schedule = original_schedule
+  scheduled()
+  MiniTest.expect.equality(received.method, "session/request_permission")
+  client:close()
+end
+
 return T

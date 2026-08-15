@@ -1,6 +1,9 @@
 local Protocol = require("louiselm.acp.protocol")
 local Transport = require("louiselm.acp.transport")
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 ---@class louiselm.acp.ClientOptions
 ---@field cwd? string Working directory for the agent process.
 ---@field on_notification? fun(message: louiselm.acp.JsonRpcNotification) Called for agent notifications.
@@ -33,6 +36,15 @@ local M = { PROTOCOL_VERSION = 1 }
 local Client = {}
 Client.__index = Client
 
+---@param callback fun()
+local function dispatch(callback)
+  if nvim.in_fast_event() then
+    nvim.schedule(callback)
+  else
+    callback()
+  end
+end
+
 ---@param client louiselm.acp.Client
 ---@param message louiselm.acp.JsonRpcMessage
 local function receive_message(client, message)
@@ -41,8 +53,10 @@ local function receive_message(client, message)
       ---@cast message louiselm.acp.JsonRpcRequest
       local on_request = client.options.on_request
       if on_request ~= nil then
-        on_request(message, function(result, rpc_error)
-          return client:respond(message.id, result, rpc_error)
+        dispatch(function()
+          on_request(message, function(result, rpc_error)
+            return client:respond(message.id, result, rpc_error)
+          end)
         end)
       end
       return
