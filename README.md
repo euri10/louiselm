@@ -277,6 +277,25 @@ The interactive controls are:
 - `:LouiselmSessionId` — copy the current agent-scoped ACP session identifier
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer
 
+LouiseLM sends picker choices through `vim.ui.select`, so the active UI provider
+owns their layout. If Snacks reports several choices while only one row appears
+usable, disable wrapping for its `select` source. Long rows otherwise consume
+multiple display lines even though they are separate items:
+
+```lua
+require("snacks").setup({
+  picker = {
+    sources = {
+      select = { win = { list = { wo = { wrap = false } } } },
+    },
+  },
+})
+```
+
+This source-specific override can coexist with `wrap = true` for other Snacks
+picker lists. LouiseLM intentionally does not detect or reconfigure a
+`vim.ui.select` provider.
+
 The header reports lifecycle and tool activity, active option values, agent-
 reported context pressure and cumulative cost. Completed turns append only the
 usage fields reported by the agent. LouiseLM does not estimate token counts,
