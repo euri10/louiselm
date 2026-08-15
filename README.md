@@ -370,11 +370,11 @@ typed lifetimes, a picker asks which one to use. The review records the file
 content it displayed and rejects a local apply if the file changed meanwhile;
 the ACP agent remains responsible for writing the file after approval.
 
-Command and unknown permission requests use a chat picker for the ACP options.
-Typed rejection choices are listed before approvals so a picker's default item
-fails closed; dismissing the picker sends a cancellation response. Permission
-UI work is scheduled onto Neovim's main loop, and late choices after chat
-disposal are ignored.
+Command and unknown permission requests show a numbered input for the ACP
+options. Typed rejection choices are listed before approvals; type the displayed
+number to select one. Blank, invalid, or out-of-range input sends a cancellation
+response. Permission UI work is scheduled onto Neovim's main loop, and late
+choices after chat disposal are ignored.
 
 Headless consumers can inspect and revoke through
 `sessions:list_permissions()` and `sessions:revoke_permission(rule_id)`. Tests
