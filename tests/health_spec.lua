@@ -133,6 +133,42 @@ T["check"]["reports the Neovim working directory used for relative skill roots"]
   end
 end
 
+T["check"]["reports persistent LuaRocks path guidance"] = function()
+  local skill_path = nvim.fn.tempname()
+  local skill_dir = nvim.fs.joinpath(skill_path, "local-skill")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  assert(
+    nvim.fn.writefile(
+      { "---", "name: local-skill", "description: Local skill", "---" },
+      nvim.fs.joinpath(skill_dir, "SKILL.md")
+    ) == 0
+  )
+  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { skill_path } } }))
+  local loaded = package.loaded.lyaml
+  local preload = package.preload.lyaml
+  package.loaded.lyaml = nil
+  rawset(package.preload, "lyaml", function()
+    error("module 'lyaml' not found", 0)
+  end)
+
+  local call_ok, call_error = pcall(function()
+    with_health_stubs(function(calls)
+      Health.check()
+      MiniTest.expect.equality(calls.error, {
+        'skills: Neovim cannot find lyaml in package.path or package.cpath; install it with `luarocks --lua-version 5.1 install lyaml` or, if LuaRocks already reports it installed, add `eval "$(luarocks path --lua-version 5.1 --no-bin)"` to the shell startup file that launches Neovim',
+      })
+    end)
+  end)
+
+  package.loaded.lyaml = loaded
+  rawset(package.preload, "lyaml", preload)
+  Health.reset()
+  nvim.fn.delete(skill_path, "rf")
+  if not call_ok then
+    error(call_error)
+  end
+end
+
 T["check"]["reports missing setup as a warning"] = function()
   Health.reset()
   with_health_stubs(function(calls)

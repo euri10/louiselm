@@ -8,6 +8,7 @@
 ---@class louiselm.skills.DiscoveryDiagnostic
 ---@field path string File or configured directory related to the error.
 ---@field message string Actionable discovery failure.
+---@field detail? string Expanded guidance for health checks.
 ---@field severity? "warning" Omitted for errors.
 ---@field code? "missing_dependency" Machine-readable code for failures callers must distinguish.
 
@@ -86,7 +87,7 @@ end
 ---@return string
 local function yaml_dependency_message(error_message)
   if error_message:find("module 'lyaml' not found", 1, true) ~= nil then
-    return 'Neovim cannot find lyaml in package.path or package.cpath; install it with `luarocks --lua-version 5.1 install lyaml` or, if LuaRocks already reports it installed, start Neovim after `eval "$(luarocks path --lua-version 5.1)"`'
+    return 'Neovim cannot find lyaml in package.path or package.cpath; install it with `luarocks --lua-version 5.1 install lyaml` or, if LuaRocks already reports it installed, add `eval "$(luarocks path --lua-version 5.1 --no-bin)"` to the shell startup file that launches Neovim'
   end
   return "Neovim found lyaml but could not load it; reinstall lyaml for Lua 5.1 and verify that LibYAML is available"
 end
@@ -286,7 +287,8 @@ function M.discover(paths, cwd)
   if yaml == nil then
     diagnostics[#diagnostics + 1] = {
       path = "skills",
-      message = yaml_dependency_message(yaml_error or "unknown lyaml load failure"),
+      message = "Neovim cannot load lyaml; run :checkhealth louiselm",
+      detail = yaml_dependency_message(yaml_error or "unknown lyaml load failure"),
       code = "missing_dependency",
     }
     sort_diagnostics(diagnostics)

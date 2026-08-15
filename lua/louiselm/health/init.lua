@@ -202,7 +202,7 @@ local function check_skills(config)
   end
   local skills, errors = Skills.discover(paths, cwd)
   for _, error_item in ipairs(errors) do
-    local message = error_item.path .. ": " .. error_item.message
+    local message = error_item.path .. ": " .. (error_item.detail or error_item.message)
     if error_item.severity == "warning" then
       nvim().health.warn(message)
     else
