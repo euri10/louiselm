@@ -393,9 +393,23 @@ require("louiselm").setup({
 
 Policies are copied into each session when it is created and never inferred
 from the adapter name or changed by runtime events. `off` does not intercept
-user-authored slash prompts. Local discovery and injection use only Neovim's
-built-in Lua APIs and require no runtime parser dependency. The removed
-`skills.full_content` setting is a configuration error; use the `inject` policy.
+user-authored slash prompts. LouiseLM-managed local discovery requires the
+`lyaml` LibYAML binding so `SKILL.md` metadata follows the Agent Skills YAML
+format instead of a LouiseLM-specific subset:
+
+```sh
+luarocks --lua-version 5.1 install lyaml
+```
+
+The dependency is loaded only when configured local skill files need parsing.
+Install it in Lua's standard search path, or export the `LUA_PATH` and
+`LUA_CPATH` printed by `luarocks path --lua-version 5.1` before starting Neovim.
+Missing `lyaml` does not affect sessions whose effective policy is `off`, or
+native sessions without LouiseLM-managed local skill paths. LouiseLM never
+installs it automatically. If configured local skill files do need parsing,
+the missing dependency blocks chat creation instead of silently dropping the
+picker or injected catalog. The removed `skills.full_content` setting is a
+configuration error; use the `inject` policy.
 
 Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
 root (replace the agent command if a different ACP launcher is intended):
@@ -467,6 +481,12 @@ local policy = assert(skills.policy("inject")) -- native, inject, or off
 local index = assert(skills.inject(found))
 ```
 
-The current injected index contains only each skill's name, description, and
-`SKILL.md` path. Use `skills.overlap(native_skill_dir, configured_paths)` to
-detect native/configured skill trees that resolve to the same directory.
+Discovery validates the standard `name`, `description`, `license`,
+`compatibility`, `metadata`, and `allowed-tools` fields. `allowed-tools` remains
+metadata and never grants or bypasses LouiseLM ACP permissions. Skills marked
+by `disable-model-invocation: true` or by
+`agents/openai.yaml`'s `policy.allow_implicit_invocation: false` remain available
+to the picker and are marked explicit-only for the policy layer. The current
+injected index contains only each skill's name, description, and `SKILL.md`
+path. Use `skills.overlap(native_skill_dir, configured_paths)` to detect
+native/configured skill trees that resolve to the same directory.

@@ -79,6 +79,9 @@ local function configured_skills(config, definitions, default_policy)
     local discovery_errors
     skills, discovery_errors = skills_module().discover(skill_config.paths)
     for _, discovery_error in ipairs(discovery_errors) do
+      if discovery_error.code == "missing_dependency" then
+        return {}, nil, discovery_error.message
+      end
       nvim.notify("louiselm: " .. discovery_error.path .. ": " .. discovery_error.message, nvim.log.levels.WARN)
     end
   end

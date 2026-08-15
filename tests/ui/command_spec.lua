@@ -224,6 +224,49 @@ T["command"]["uses the configuration published by setup"] = function()
   delete_chat_buffers()
 end
 
+T["command"]["blocks configured local skill discovery when lyaml is missing"] = function()
+  local skill_root = nvim.fn.tempname()
+  local skill_dir = nvim.fs.joinpath(skill_root, "local-skill")
+  assert(nvim.fn.mkdir(skill_dir, "p") == 1)
+  assert(
+    nvim.fn.writefile(
+      { "---", "name: local-skill", "description: Local skill", "---" },
+      nvim.fs.joinpath(skill_dir, "SKILL.md")
+    ) == 0
+  )
+  assert(Louiselm.setup({
+    agents = { claude = { command = "configured-agent" } },
+    skills = { paths = { skill_root }, policy = "native" },
+  }))
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  local loaded = package.loaded.lyaml
+  local preload = package.preload.lyaml
+  package.loaded.lyaml = nil
+  rawset(package.preload, "lyaml", function()
+    error("forced missing lyaml")
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+
+  package.loaded.lyaml = loaded
+  rawset(package.preload, "lyaml", preload)
+  rawset(nvim, "notify", original_notify)
+  nvim.system = original_system
+  Command.configure(nil)
+  nvim.fn.delete(skill_root, "rf")
+  MiniTest.expect.equality(process.command, nil)
+  MiniTest.expect.equality(notification, {
+    message = "louiselm: lyaml is required for local skill discovery; install it with `luarocks --lua-version 5.1 install lyaml`",
+    level = nvim.log.levels.ERROR,
+  })
+end
+
 T["command"]["resume discovers the current workspace and bang discovers all without creating a session"] = function()
   Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()

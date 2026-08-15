@@ -189,7 +189,13 @@ T["chat"]["shows skill status and keeps slash prompts when skills are off"] = fu
   first.state.skills_policy = "off"
   local chat = assert(Chat.new(fake_api(), {
     skills = {
-      { name = "grill-me", description = "Stress test", path = "/skills/grill-me/SKILL.md", content = "skill" },
+      {
+        name = "grill-me",
+        description = "Stress test",
+        path = "/skills/grill-me/SKILL.md",
+        content = "skill",
+        explicit_only = false,
+      },
     },
   }))
   assert(chat:attach(first))

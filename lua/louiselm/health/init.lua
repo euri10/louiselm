@@ -180,7 +180,12 @@ local function check_skills(config)
 
   local skills, errors = Skills.discover(paths)
   for _, error_item in ipairs(errors) do
-    report(error_item.path .. ": " .. error_item.message, false)
+    local message = error_item.path .. ": " .. error_item.message
+    if error_item.severity == "warning" then
+      nvim().health.warn(message)
+    else
+      report(message, false)
+    end
   end
   report(string.format("discovered %d skill%s", #skills, #skills == 1 and "" or "s"), true)
 end

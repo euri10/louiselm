@@ -3,11 +3,15 @@
 ---@field description string Short description shown in the injected index.
 ---@field path string Absolute path to SKILL.md.
 ---@field content string Complete original SKILL.md content for deliberate activation.
+---@field explicit_only boolean Whether only deliberate picker activation may select the skill.
 
----@class louiselm.skills.DiscoveryError
+---@class louiselm.skills.DiscoveryDiagnostic
 ---@field path string File or configured directory related to the error.
 ---@field message string Actionable discovery failure.
+---@field severity? "warning" Omitted for errors.
+---@field code? "missing_dependency" Machine-readable code for failures callers must distinguish.
 
+local Metadata = require("louiselm.skills.metadata")
 local M = {}
 
 ---@return table
@@ -49,135 +53,29 @@ local function canonical_path(value)
   return editor.fs.normalize(value)
 end
 
----@param value string
----@return string
-local function trim(value)
-  return value:match("^%s*(.-)%s*$") or ""
-end
-
----@param value string
----@return string
-local function scalar(value)
-  value = trim(value)
-  local first = value:sub(1, 1)
-  local last = value:sub(-1)
-  if first == '"' and last == '"' and #value > 1 then
-    local call_ok, decoded = pcall(nvim().json.decode, value)
-    if call_ok and type(decoded) == "string" then
-      return decoded
-    end
-  end
-  if first == "'" and last == "'" and #value > 1 then
-    local unquoted = value:sub(2, -2):gsub("''", "'")
-    return unquoted
-  end
-  return value
-end
-
----@param lines string[]
----@param path string
----@param content string
----@return louiselm.skills.Skill? skill
----@return string? error_message
-local function parse(lines, path, content)
-  if lines[1] ~= "---" then
-    return nil, "missing YAML frontmatter"
-  end
-
-  local fields = {}
-  local seen_fields = {}
-  local block_key
-  local block_lines = {}
-  local ignored_key
-  local closed = false
-
-  local function finish_block()
-    if block_key ~= nil then
-      fields[block_key] = table.concat(block_lines, " ")
-      block_key = nil
-      block_lines = {}
-    end
-  end
-
-  for index = 2, #lines do
-    local line = lines[index]
-    if line == "---" then
-      finish_block()
-      closed = true
-      break
-    end
-
-    if line:match("^\t") then
-      return nil, "malformed YAML frontmatter"
-    elseif trim(line) == "" or line:match("^%s*#") then
-      -- Blank lines and comments do not change the current YAML field.
-    elseif line:match("^%s") then
-      if block_key ~= nil then
-        block_lines[#block_lines + 1] = trim(line)
-      elseif ignored_key == nil then
-        return nil, "malformed YAML frontmatter"
-      end
-    else
-      finish_block()
-      ignored_key = nil
-      local key, value = line:match("^([%w_-]+):[ \t]*(.*)$")
-      if key ~= nil then
-        if key == "name" or key == "description" then
-          if seen_fields[key] then
-            return nil, "duplicate frontmatter key '" .. key .. "'"
-          end
-          seen_fields[key] = true
-          if value == ">" or value == ">-" or value == "|" or value == "|-" then
-            block_key = key
-          else
-            fields[key] = scalar(value)
-          end
-        else
-          -- Agent Skills may define arbitrary optional YAML metadata. Discovery
-          -- validates only the name and description fields that it consumes.
-          ignored_key = key
-        end
-      else
-        return nil, "malformed YAML frontmatter"
-      end
-    end
-  end
-
-  if not closed then
-    return nil, "unterminated YAML frontmatter"
-  end
-  if type(fields.name) ~= "string" or fields.name == "" then
-    return nil, "frontmatter requires a non-empty name"
-  end
-  if not fields.name:match("^[a-z0-9][a-z0-9-]*$") then
-    return nil, "skill name must contain only lowercase letters, numbers, and hyphens"
-  end
-  if type(fields.description) ~= "string" or trim(fields.description) == "" then
-    return nil, "frontmatter requires a non-empty description"
-  end
-
-  return {
-    name = fields.name,
-    description = trim(fields.description),
-    path = path,
-    content = content,
-  }
-end
-
 ---@param path string
 ---@return string[]? lines
----@return string? error_message
+---@return string? content
 local function read_file(path)
-  local call_ok, lines_or_error = pcall(nvim().fn.readfile, path)
-  if not call_ok then
-    return nil, "could not read SKILL.md"
+  local call_ok, lines = pcall(nvim().fn.readfile, path, "b")
+  if not call_ok or type(lines) ~= "table" then
+    return nil, nil
   end
-  return lines_or_error
+  return lines, table.concat(lines, "\n")
+end
+
+---@return louiselm.skills.Yaml? yaml
+local function load_yaml()
+  local call_ok, module = pcall(require, "lyaml")
+  if not call_ok or type(module) ~= "table" or type(module.load) ~= "function" then
+    return nil
+  end
+  return module
 end
 
 ---@param paths unknown
 ---@return string[]? normalized
----@return louiselm.skills.DiscoveryError[] errors
+---@return louiselm.skills.DiscoveryDiagnostic[] errors
 local function normalize_paths(paths)
   local errors = {}
   if type(paths) ~= "table" or not is_dense_array(paths) then
@@ -198,14 +96,31 @@ local function normalize_paths(paths)
   return normalized, errors
 end
 
+---@param diagnostics louiselm.skills.DiscoveryDiagnostic[]
+local function sort_diagnostics(diagnostics)
+  table.sort(diagnostics, function(left, right)
+    if left.path == right.path then
+      return left.message < right.message
+    end
+    return left.path < right.path
+  end)
+end
+
+---@param diagnostics louiselm.skills.DiscoveryDiagnostic[]
+---@param path string
+---@param message string
+local function add_warning(diagnostics, path, message)
+  diagnostics[#diagnostics + 1] = { path = path, message = message, severity = "warning" }
+end
+
 ---Discover Agent Skills metadata below configured directories.
 ---@param paths unknown Dense array of directories containing SKILL.md files.
 ---@return louiselm.skills.Skill[] skills Valid skills, sorted by name and path.
----@return louiselm.skills.DiscoveryError[] errors All invalid paths and metadata errors.
+---@return louiselm.skills.DiscoveryDiagnostic[] diagnostics All invalid paths, metadata errors, and warnings.
 function M.discover(paths)
-  local normalized_paths, errors = normalize_paths(paths)
+  local normalized_paths, diagnostics = normalize_paths(paths)
   if normalized_paths == nil then
-    return {}, errors
+    return {}, diagnostics
   end
 
   local editor = nvim()
@@ -214,14 +129,14 @@ function M.discover(paths)
   for _, root in ipairs(normalized_paths) do
     local stat = editor.uv.fs_stat(root)
     if stat == nil or stat.type ~= "directory" then
-      errors[#errors + 1] = { path = root, message = "skill path is not an existing directory" }
+      diagnostics[#diagnostics + 1] = { path = root, message = "skill path is not an existing directory" }
     else
       local found_ok, found_or_error = pcall(editor.fs.find, "SKILL.md", {
         path = root,
         limit = math.huge,
       })
       if not found_ok then
-        errors[#errors + 1] = { path = root, message = "could not scan skill path" }
+        diagnostics[#diagnostics + 1] = { path = root, message = "could not scan skill path" }
       else
         for _, file in ipairs(found_or_error) do
           -- vim.fs.find's file filter excludes symlinks before resolving their targets.
@@ -240,21 +155,72 @@ function M.discover(paths)
   end
 
   table.sort(files)
+  if #files == 0 then
+    sort_diagnostics(diagnostics)
+    return {}, diagnostics
+  end
+  local yaml = load_yaml()
+  if yaml == nil then
+    diagnostics[#diagnostics + 1] = {
+      path = "skills",
+      message = "lyaml is required for local skill discovery; install it with `luarocks --lua-version 5.1 install lyaml`",
+      code = "missing_dependency",
+    }
+    sort_diagnostics(diagnostics)
+    return {}, diagnostics
+  end
+
   local skills = {}
   local names = {}
   for _, path in ipairs(files) do
-    local lines, read_error = read_file(path)
-    if lines == nil then
-      errors[#errors + 1] = { path = path, message = read_error or "could not read SKILL.md" }
+    local lines, content = read_file(path)
+    if lines == nil or content == nil then
+      diagnostics[#diagnostics + 1] = { path = path, message = "could not read SKILL.md" }
     else
-      local skill, parse_error = parse(lines, path, table.concat(lines, "\n"))
-      if skill == nil then
-        errors[#errors + 1] = { path = path, message = parse_error or "invalid skill metadata" }
-      elseif names[skill.name] ~= nil then
-        errors[#errors + 1] = { path = path, message = "duplicate skill name '" .. skill.name .. "'" }
+      local directory_name = editor.fs.basename(editor.fs.dirname(path))
+      local result, parse_error = Metadata.skill(lines, path, content, directory_name, yaml)
+      if result == nil then
+        diagnostics[#diagnostics + 1] = { path = path, message = parse_error or "invalid skill metadata" }
+      elseif names[result.skill.name] ~= nil then
+        diagnostics[#diagnostics + 1] = {
+          path = path,
+          message = "duplicate skill name '" .. result.skill.name .. "'",
+        }
       else
-        names[skill.name] = true
-        skills[#skills + 1] = skill
+        for _, warning in ipairs(result.warnings) do
+          add_warning(diagnostics, path, warning)
+        end
+
+        local openai_path = editor.fs.joinpath(editor.fs.dirname(path), "agents", "openai.yaml")
+        local openai_stat = editor.uv.fs_stat(openai_path)
+        local allow_implicit_invocation
+        local openai_error
+        if openai_stat ~= nil then
+          if openai_stat.type ~= "file" then
+            openai_error = "could not read agents/openai.yaml; treating skill as explicit-only"
+          else
+            local _, openai_content = read_file(openai_path)
+            if openai_content == nil then
+              openai_error = "could not read agents/openai.yaml; treating skill as explicit-only"
+            else
+              allow_implicit_invocation, openai_error = Metadata.openai(openai_content, yaml)
+            end
+          end
+        end
+
+        if openai_error ~= nil then
+          result.skill.explicit_only = true
+          add_warning(diagnostics, openai_path, openai_error)
+        elseif allow_implicit_invocation ~= nil then
+          local openai_explicit_only = not allow_implicit_invocation
+          if result.disable_model_invocation ~= nil and result.disable_model_invocation ~= openai_explicit_only then
+            add_warning(diagnostics, openai_path, "invocation controls disagree; treating skill as explicit-only")
+          end
+          result.skill.explicit_only = result.skill.explicit_only or openai_explicit_only
+        end
+
+        names[result.skill.name] = true
+        skills[#skills + 1] = result.skill
       end
     end
   end
@@ -265,13 +231,8 @@ function M.discover(paths)
     end
     return left.name < right.name
   end)
-  table.sort(errors, function(left, right)
-    if left.path == right.path then
-      return left.message < right.message
-    end
-    return left.path < right.path
-  end)
-  return skills, errors
+  sort_diagnostics(diagnostics)
+  return skills, diagnostics
 end
 
 return M
