@@ -3,6 +3,10 @@
 *.db-journal
 *.db-shm
 *.db-wal
+# fsqlite runtime sidecars, including schema-migration/VACUUM databases
+*-fsqlite-ns-gate
+*-fsqlite-ns-use
+*.db-wal-cert*
 
 # Lock files
 .write.lock
