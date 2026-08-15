@@ -103,6 +103,36 @@ T["check"]["reports discovered skills alongside invalid siblings"] = function()
   nvim.fn.delete(root, "rf")
 end
 
+T["check"]["reports the Neovim working directory used for relative skill roots"] = function()
+  local original_cwd = nvim.fn.getcwd()
+  local workspace = nvim.fn.tempname()
+  local skill_path = nvim.fs.joinpath(workspace, "skills")
+  assert(nvim.fn.mkdir(skill_path, "p") == 1)
+  nvim.api.nvim_set_current_dir(workspace)
+  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { "skills" } } }))
+
+  local call_ok, call_error = pcall(function()
+    with_health_stubs(function(calls)
+      Health.check()
+      MiniTest.expect.equality(
+        nvim.tbl_contains(
+          calls.info,
+          "relative skill paths resolve against Neovim's current working directory: " .. workspace
+        ),
+        true
+      )
+      MiniTest.expect.equality(calls.ok[3], "discovered 0 skills")
+    end)
+  end)
+
+  Health.reset()
+  nvim.api.nvim_set_current_dir(original_cwd)
+  nvim.fn.delete(workspace, "rf")
+  if not call_ok then
+    error(call_error)
+  end
+end
+
 T["check"]["reports missing setup as a warning"] = function()
   Health.reset()
   with_health_stubs(function(calls)

@@ -1,9 +1,11 @@
 local Context = require("louiselm.ui.context")
 local Diff = require("louiselm.ui.diff")
+local Skills = require("louiselm.skills")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
 ---@field skills? louiselm.skills.Skill[] Skills shown by the invocation picker.
+---@field skill_paths? string[] Configured roots rediscovered when the invocation picker opens.
 ---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
 
@@ -35,6 +37,8 @@ local Diff = require("louiselm.ui.diff")
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
 ---@field skills louiselm.skills.Skill[] Skills for the invocation picker.
+---@field skill_paths string[] Configured roots rediscovered when the invocation picker opens.
+---@field skill_warning_signature string? Last reported discovery diagnostics, for notification deduplication.
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
@@ -71,28 +75,29 @@ Chat.__index = Chat
 local nvim = vim
 
 ---@param value unknown
----@return string[]? agents
+---@param label string
+---@return string[]? values
 ---@return string? error_message
-local function copy_agents(value)
+local function copy_string_array(value, label)
   if value == nil then
     return {}
   end
   if type(value) ~= "table" then
-    return nil, "chat agents must be a string[]"
+    return nil, "chat " .. label .. " must be a string[]"
   end
-  local agents = {}
+  local values = {}
   for index = 1, #value do
     if type(value[index]) ~= "string" or value[index] == "" then
-      return nil, "chat agents must be a string[]"
+      return nil, "chat " .. label .. " must be a string[]"
     end
-    agents[index] = value[index]
+    values[index] = value[index]
   end
   for key in pairs(value) do
     if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
-      return nil, "chat agents must be a dense string[]"
+      return nil, "chat " .. label .. " must be a dense string[]"
     end
   end
-  return agents
+  return values
 end
 
 ---@param value unknown
@@ -859,14 +864,24 @@ function M.new(api, options)
   end
   if options ~= nil then
     for key in pairs(options) do
-      if key ~= "agents" and key ~= "skills" and key ~= "initial_contexts" and key ~= "skill_context" then
+      if
+        key ~= "agents"
+        and key ~= "skills"
+        and key ~= "skill_paths"
+        and key ~= "initial_contexts"
+        and key ~= "skill_context"
+      then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
     end
   end
-  local agents, agents_error = copy_agents(options and options.agents)
+  local agents, agents_error = copy_string_array(options and options.agents, "agents")
   if agents == nil then
     return nil, agents_error
+  end
+  local skill_paths, skill_paths_error = copy_string_array(options and options.skill_paths, "skill paths")
+  if skill_paths == nil then
+    return nil, skill_paths_error
   end
   local skills, skills_error = copy_skills(options and options.skills)
   if skills == nil then
@@ -885,6 +900,8 @@ function M.new(api, options)
     api = api,
     agents = agents,
     skills = skills,
+    skill_paths = skill_paths,
+    skill_warning_signature = nil,
     initial_contexts = initial_contexts,
     skill_context = skill_contexts[1],
     diff = Diff.new(),
@@ -1316,12 +1333,43 @@ function Chat:pick_skill()
   if state.skills_policy == "off" then
     return false, "skill picker is disabled for this session"
   end
-  if #self.skills == 0 then
+  local skills = self.skills
+  if #self.skill_paths > 0 then
+    local diagnostics
+    skills, diagnostics = Skills.discover(self.skill_paths, state.working_dir)
+    for _, diagnostic in ipairs(diagnostics) do
+      if diagnostic.code == "missing_dependency" then
+        return false, diagnostic.message
+      end
+    end
+    if #diagnostics == 0 then
+      self.skill_warning_signature = nil
+    else
+      local signature_parts = {}
+      for _, diagnostic in ipairs(diagnostics) do
+        signature_parts[#signature_parts + 1] = diagnostic.path .. "\0" .. diagnostic.message
+      end
+      local signature = table.concat(signature_parts, "\0")
+      if signature ~= self.skill_warning_signature then
+        nvim.notify(
+          string.format(
+            "louiselm: skill discovery found %d issue(s); run :checkhealth louiselm for details",
+            #diagnostics
+          ),
+          nvim.log.levels.WARN
+        )
+        self.skill_warning_signature = signature
+      end
+    end
+  end
+  if #skills == 0 then
     return false, "no chat skills configured"
   end
-  return Context.skills.pick(self.skills, function(skill)
+  return Context.skills.pick(skills, function(skill, error_message)
     if skill ~= nil then
       self:queue_context(Context.skills.context(skill))
+    elseif error_message ~= nil then
+      nvim.notify("louiselm: " .. error_message, nvim.log.levels.ERROR)
     end
   end)
 end

@@ -1,4 +1,5 @@
 local M = {}
+local Skills = require("louiselm.skills")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -66,7 +67,22 @@ function M.pick(skills, callback)
       return skill.name .. " — " .. skill.description
     end,
   }, function(choice)
-    callback(choice)
+    if choice == nil then
+      callback(nil)
+      return
+    end
+    local content = Skills.read(choice.path)
+    if content == nil then
+      callback(nil, "could not read selected skill: " .. choice.path)
+      return
+    end
+    callback({
+      name = choice.name,
+      description = choice.description,
+      path = choice.path,
+      content = content,
+      explicit_only = choice.explicit_only == true,
+    })
   end)
   return true
 end

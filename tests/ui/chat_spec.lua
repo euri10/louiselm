@@ -224,6 +224,73 @@ T["chat"]["reports an empty picker catalog without blocking a native session"] =
   chat:dispose()
 end
 
+T["chat"]["refreshes relative skill paths from the session working directory for each picker"] = function()
+  local workspace = nvim.fn.tempname()
+  local skill_root = nvim.fs.joinpath(workspace, "skills")
+  local function write_skill(name)
+    local directory = nvim.fs.joinpath(skill_root, name)
+    assert(nvim.fn.mkdir(directory, "p") == 1)
+    assert(
+      nvim.fn.writefile(
+        { "---", "name: " .. name, "description: " .. name, "---" },
+        nvim.fs.joinpath(directory, "SKILL.md")
+      ) == 0
+    )
+  end
+  write_skill("first")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.working_dir = workspace
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { "skills" } }))
+  assert(chat:attach(first))
+  local original_select = nvim.ui.select
+  local catalogs = {}
+  nvim.ui.select = function(items, _, callback)
+    catalogs[#catalogs + 1] = nvim.tbl_map(function(skill)
+      return skill.name
+    end, items)
+    callback(nil)
+  end
+
+  assert(chat:pick_skill())
+  write_skill("second")
+  assert(chat:pick_skill())
+
+  nvim.ui.select = original_select
+  MiniTest.expect.equality(catalogs, { { "first" }, { "first", "second" } })
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["deduplicates the summary warning while picker diagnostics stay unchanged"] = function()
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.working_dir = "/workspace"
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { "missing-one", "missing-two" } }))
+  assert(chat:attach(first))
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+
+  local first_started, first_error = chat:pick_skill()
+  local second_started, second_error = chat:pick_skill()
+
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(first_started, false)
+  MiniTest.expect.equality(first_error, "no chat skills configured")
+  MiniTest.expect.equality(second_started, false)
+  MiniTest.expect.equality(second_error, "no chat skills configured")
+  MiniTest.expect.equality(notifications, {
+    {
+      message = "louiselm: skill discovery found 2 issue(s); run :checkhealth louiselm for details",
+      level = nvim.log.levels.WARN,
+    },
+  })
+  chat:dispose()
+end
+
 T["chat"]["normalizes multiline tool activity in the session header"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

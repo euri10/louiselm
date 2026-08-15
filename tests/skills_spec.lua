@@ -72,6 +72,169 @@ T["discover"]["reads skill metadata and full skill content"] = function()
   })
 end
 
+T["discover"]["uses root order before name order and reports shadowed names"] = function()
+  local first_root = nvim.fs.joinpath(temp_dir, "z-first-root")
+  local second_root = nvim.fs.joinpath(temp_dir, "a-second-root")
+  local zulu_path = write_skill(nvim.fs.joinpath(first_root, "zulu"), "zulu", "First root")
+  local first_shared = write_skill(nvim.fs.joinpath(first_root, "shared"), "shared", "First wins")
+  local alpha_path = write_skill(nvim.fs.joinpath(second_root, "alpha"), "alpha", "Second root")
+  local shadowed = write_skill(nvim.fs.joinpath(second_root, "shared"), "shared", "Second loses")
+
+  local skills, diagnostics = Skills.discover({ first_root, second_root })
+
+  MiniTest.expect.equality(
+    nvim.tbl_map(function(skill)
+      return { skill.name, skill.path }
+    end, skills),
+    {
+      { "shared", first_shared },
+      { "zulu", zulu_path },
+      { "alpha", alpha_path },
+    }
+  )
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = shadowed,
+      message = "skill 'shared' is shadowed by " .. first_shared,
+      severity = "warning",
+    },
+  })
+  local repeated_skills, repeated_diagnostics = Skills.discover({ first_root, second_root })
+  MiniTest.expect.equality(
+    nvim.tbl_map(function(skill)
+      return skill.path
+    end, repeated_skills),
+    nvim.tbl_map(function(skill)
+      return skill.path
+    end, skills)
+  )
+  MiniTest.expect.equality(repeated_diagnostics, diagnostics)
+end
+
+T["discover"]["deduplicates canonical roots while preserving the first alias"] = function()
+  local target = nvim.fs.joinpath(temp_dir, "target")
+  write_skill(nvim.fs.joinpath(target, "linked"), "linked", "Linked skill")
+  local first_alias = nvim.fs.joinpath(temp_dir, "z-first-alias")
+  local second_alias = nvim.fs.joinpath(temp_dir, "a-second-alias")
+  assert(nvim.uv.fs_symlink(target, first_alias))
+  assert(nvim.uv.fs_symlink(target, second_alias))
+
+  local skills, diagnostics = Skills.discover({ first_alias, second_alias })
+
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].path, nvim.fs.joinpath(first_alias, "linked", "SKILL.md"))
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = second_alias,
+      message = "configured root resolves to the already scanned root " .. first_alias,
+      severity = "warning",
+    },
+  })
+end
+
+T["discover"]["deduplicates identical canonical skill files"] = function()
+  local root = nvim.fs.joinpath(temp_dir, "root")
+  local target_directory = nvim.fs.joinpath(root, "target")
+  assert(nvim.fn.mkdir(target_directory, "p") == 1)
+  local target = nvim.fs.joinpath(target_directory, "instructions.md")
+  assert(nvim.fn.writefile({ "---", "name: linked", "description: Linked skill", "---" }, target) == 0)
+  local first_directory = nvim.fs.joinpath(root, "a-first", "linked")
+  local second_directory = nvim.fs.joinpath(root, "b-second", "linked")
+  assert(nvim.fn.mkdir(first_directory, "p") == 1)
+  assert(nvim.fn.mkdir(second_directory, "p") == 1)
+  local first = nvim.fs.joinpath(first_directory, "SKILL.md")
+  local second = nvim.fs.joinpath(second_directory, "SKILL.md")
+  assert(nvim.uv.fs_symlink(target, first))
+  assert(nvim.uv.fs_symlink(target, second))
+
+  local skills, diagnostics = Skills.discover({ root })
+
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].path, first)
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = second,
+      message = "canonical SKILL.md already discovered: " .. second .. " -> " .. first,
+      severity = "warning",
+    },
+  })
+end
+
+T["discover"]["follows skill directory symlinks and warns when they leave the root"] = function()
+  local root = nvim.fs.joinpath(temp_dir, "root")
+  local outside = nvim.fs.joinpath(temp_dir, "outside", "external")
+  local target = write_skill(outside, "external", "External skill")
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local alias = nvim.fs.joinpath(root, "external")
+  assert(nvim.uv.fs_symlink(outside, alias))
+
+  local skills, diagnostics = Skills.discover({ root })
+
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].path, nvim.fs.joinpath(alias, "SKILL.md"))
+  MiniTest.expect.equality(skills[1].content:find("External skill", 1, true) ~= nil, true)
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = alias,
+      message = "symlink resolves outside configured root: " .. alias .. " -> " .. nvim.fs.dirname(target),
+      severity = "warning",
+    },
+  })
+end
+
+T["discover"]["detects symlink cycles without traversing them"] = function()
+  local root = nvim.fs.joinpath(temp_dir, "root")
+  local skill_path = write_skill(nvim.fs.joinpath(root, "safe"), "safe", "Safe skill")
+  local loop = nvim.fs.joinpath(root, "loop")
+  assert(nvim.uv.fs_symlink(root, loop))
+
+  local skills, diagnostics = Skills.discover({ root })
+
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].path, skill_path)
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = loop,
+      message = "canonical directory already scanned: " .. loop .. " -> " .. root,
+      severity = "warning",
+    },
+  })
+end
+
+T["discover"]["resolves relative roots against an explicit session cwd"] = function()
+  local cwd = nvim.fs.joinpath(temp_dir, "workspace")
+  local path = write_skill(nvim.fs.joinpath(cwd, "relative-skills", "relative"), "relative", "Relative skill")
+
+  local skills, diagnostics = Skills.discover({ "relative-skills" }, cwd)
+
+  MiniTest.expect.equality(diagnostics, {})
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].path, path)
+end
+
+T["discover"]["continues past unreadable skills with stable diagnostics"] = function()
+  local readable = write_skill(nvim.fs.joinpath(temp_dir, "readable"), "readable", "Readable skill")
+  local unreadable = write_skill(nvim.fs.joinpath(temp_dir, "unreadable"), "unreadable", "Unreadable skill")
+  local original_readfile = nvim.fn.readfile
+  nvim.fn.readfile = function(path, ...)
+    if path == unreadable then
+      error("permission denied")
+    end
+    return original_readfile(path, ...)
+  end
+
+  local call_ok, skills, diagnostics = pcall(Skills.discover, { temp_dir })
+
+  nvim.fn.readfile = original_readfile
+  assert(call_ok)
+  MiniTest.expect.equality(#skills, 1)
+  MiniTest.expect.equality(skills[1].path, readable)
+  MiniTest.expect.equality(diagnostics, { { path = unreadable, message = "could not read SKILL.md" } })
+  local repeated_skills, repeated_diagnostics = Skills.discover({ temp_dir })
+  MiniTest.expect.equality(#repeated_skills, 2)
+  MiniTest.expect.equality(repeated_diagnostics, {})
+end
+
 T["discover"]["reads SKILL.md symlinks whose targets are files"] = function()
   local source = nvim.fs.joinpath(temp_dir, "source")
   local target = write_skill(source, "linked-skill", "Linked skill")
@@ -82,7 +245,13 @@ T["discover"]["reads SKILL.md symlinks whose targets are files"] = function()
 
   local skills, errors = Skills.discover({ nvim.fs.joinpath(temp_dir, "generated") })
 
-  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(errors, {
+    {
+      path = link,
+      message = "symlink resolves outside configured root: " .. link .. " -> " .. target,
+      severity = "warning",
+    },
+  })
   MiniTest.expect.equality(skills, {
     {
       name = "linked-skill",

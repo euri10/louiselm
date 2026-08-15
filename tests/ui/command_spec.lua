@@ -224,7 +224,7 @@ T["command"]["uses the configuration published by setup"] = function()
   delete_chat_buffers()
 end
 
-T["command"]["blocks configured local skill discovery when lyaml is missing"] = function()
+T["command"]["does not block a native session when local picker discovery lacks lyaml"] = function()
   local skill_root = nvim.fn.tempname()
   local skill_dir = nvim.fs.joinpath(skill_root, "local-skill")
   assert(nvim.fn.mkdir(skill_dir, "p") == 1)
@@ -260,11 +260,9 @@ T["command"]["blocks configured local skill discovery when lyaml is missing"] = 
   nvim.system = original_system
   Command.configure(nil)
   nvim.fn.delete(skill_root, "rf")
-  MiniTest.expect.equality(process.command, nil)
-  MiniTest.expect.equality(notification, {
-    message = "louiselm: lyaml is required for local skill discovery; install it with `luarocks --lua-version 5.1 install lyaml`",
-    level = nvim.log.levels.ERROR,
-  })
+  MiniTest.expect.equality(process.command, { "configured-agent" })
+  MiniTest.expect.equality(notification, nil)
+  delete_chat_buffers()
 end
 
 T["command"]["resume discovers the current workspace and bang discovers all without creating a session"] = function()

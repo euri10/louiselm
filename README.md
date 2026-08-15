@@ -350,13 +350,18 @@ chat:pick_file()
 chat:pick_skill()
 ```
 
-Pass discovered skills to the chat controller to enable the skill picker:
+Pass configured roots to the chat controller to rediscover skills whenever the
+picker opens. Relative roots resolve against the attached session's working
+directory:
 
 ```lua
-local found, errors = require("louiselm.skills").discover({ skill_root })
-assert(#errors == 0, "skill discovery failed")
-local chat = assert(require("louiselm.ui.chat").new(sessions, { skills = found }))
+local chat = assert(require("louiselm.ui.chat").new(sessions, {
+  skill_paths = { skill_root },
+}))
 ```
+
+Passing a pre-discovered `skills` array remains useful for an explicit static
+catalog. The picker still rereads the selected `SKILL.md` at selection time.
 
 To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 
@@ -404,12 +409,11 @@ luarocks --lua-version 5.1 install lyaml
 The dependency is loaded only when configured local skill files need parsing.
 Install it in Lua's standard search path, or export the `LUA_PATH` and
 `LUA_CPATH` printed by `luarocks path --lua-version 5.1` before starting Neovim.
-Missing `lyaml` does not affect sessions whose effective policy is `off`, or
-native sessions without LouiseLM-managed local skill paths. LouiseLM never
-installs it automatically. If configured local skill files do need parsing,
-the missing dependency blocks chat creation instead of silently dropping the
-picker or injected catalog. The removed `skills.full_content` setting is a
-configuration error; use the `inject` policy.
+Missing `lyaml` does not affect sessions whose effective policy is `off` and
+does not block native session startup. It prevents the managed local picker
+from opening and blocks `inject` chat creation when an index is required.
+LouiseLM never installs it automatically. The removed `skills.full_content`
+setting is a configuration error; use the `inject` policy.
 
 Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
 root (replace the agent command if a different ACP launcher is intended):
@@ -490,3 +494,11 @@ to the picker and are marked explicit-only for the policy layer. The current
 injected index contains only each skill's name, description, and `SKILL.md`
 path. Use `skills.overlap(native_skill_dir, configured_paths)` to detect
 native/configured skill trees that resolve to the same directory.
+
+Configured roots are processed in order; valid skills within each root are
+ordered by name and configured path. The first valid duplicate name wins.
+Canonical file and directory aliases are traversed once, while advertised
+paths retain the configured root alias. Symlinks outside that root remain
+usable but produce a checkhealth warning. `~` expands normally, and relative
+roots use the session working directory (`:checkhealth louiselm` instead uses
+and reports Neovim's current working directory).

@@ -44,18 +44,16 @@ end
 
 ---@param definitions table<string, louiselm.agent.Definition>
 ---@param default_policy louiselm.skills.Policy
----@return boolean local_enabled
----@return boolean inject_enabled
-local function local_policy_usage(definitions, default_policy)
-  local local_enabled = false
-  local inject_enabled = false
+---@return boolean enabled
+local function inject_policy_enabled(definitions, default_policy)
   for _, definition in pairs(definitions) do
     local override = type(definition.skills) == "table" and definition.skills.policy or nil
     local policy = override or default_policy
-    local_enabled = local_enabled or policy ~= "off"
-    inject_enabled = inject_enabled or policy == "inject"
+    if policy == "inject" then
+      return true
+    end
   end
-  return local_enabled, inject_enabled
+  return false
 end
 
 ---@param config table
@@ -70,8 +68,7 @@ local function configured_skills(config, definitions, default_policy)
   end
 
   local skill_config = config.skills
-  local local_enabled, inject_enabled = local_policy_usage(definitions, default_policy)
-  if not local_enabled then
+  if not inject_policy_enabled(definitions, default_policy) then
     return {}, nil
   end
   local skills = {}
@@ -82,11 +79,19 @@ local function configured_skills(config, definitions, default_policy)
       if discovery_error.code == "missing_dependency" then
         return {}, nil, discovery_error.message
       end
-      nvim.notify("louiselm: " .. discovery_error.path .. ": " .. discovery_error.message, nvim.log.levels.WARN)
+    end
+    if #discovery_errors > 0 then
+      nvim.notify(
+        string.format(
+          "louiselm: skill discovery found %d issue(s); run :checkhealth louiselm for details",
+          #discovery_errors
+        ),
+        nvim.log.levels.WARN
+      )
     end
   end
 
-  if not inject_enabled or #skills == 0 then
+  if #skills == 0 then
     return skills, nil
   end
 
@@ -176,6 +181,7 @@ function M.register()
     chat = assert(require("louiselm.ui.chat").new(sessions, {
       agents = names,
       skills = skills,
+      skill_paths = configured and configured.skills and configured.skills.paths or nil,
       skill_context = skill_context,
     }))
     return chat

@@ -100,6 +100,24 @@ local function configured_skill_policy(value)
   return value.skills.policy
 end
 
+---@param paths unknown
+---@return boolean
+local function has_relative_path(paths)
+  if type(paths) ~= "table" then
+    return false
+  end
+  local editor = nvim()
+  for _, path in ipairs(paths) do
+    if type(path) == "string" then
+      local normalized = editor.fs.normalize(path)
+      if editor.fs.abspath(normalized) ~= normalized then
+        return true
+      end
+    end
+  end
+  return false
+end
+
 ---@param config louiselm.health.Configuration
 local function check_configuration(config)
   local validation = Schema.report(Schema.validate(config.schema, config.config))
@@ -178,7 +196,11 @@ local function check_skills(config)
     return
   end
 
-  local skills, errors = Skills.discover(paths)
+  local cwd = nvim().fn.getcwd()
+  if has_relative_path(paths) then
+    nvim().health.info("relative skill paths resolve against Neovim's current working directory: " .. cwd)
+  end
+  local skills, errors = Skills.discover(paths, cwd)
   for _, error_item in ipairs(errors) do
     local message = error_item.path .. ": " .. error_item.message
     if error_item.severity == "warning" then
