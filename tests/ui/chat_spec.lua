@@ -1162,6 +1162,52 @@ T["chat"]["sends the exact permission option chosen by the select provider"] = f
   chat:dispose()
 end
 
+T["chat"]["opens permission pickers outside insert mode"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local original_stopinsert = nvim.cmd.stopinsert
+  local scheduled
+  local mode = "i"
+  local mode_at_select
+  nvim.schedule = function(callback)
+    scheduled = callback
+  end
+  nvim.cmd.stopinsert = function()
+    mode = "n"
+  end
+  nvim.ui.select = function(options, _, callback)
+    mode_at_select = mode
+    callback(options[2], 2)
+  end
+
+  first:emit({
+    type = "permission_requested",
+    session_id = "session-1",
+    data = {
+      operation = { kind = "command", command = { "rm", "toto.md" } },
+      options = {
+        { optionId = "reject", name = "Deny", kind = "reject_once" },
+        { optionId = "allow", name = "Allow Once", kind = "allow_once" },
+      },
+    },
+    respond = function()
+      return true
+    end,
+  })
+
+  assert(scheduled)
+  scheduled()
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+  nvim.cmd.stopinsert = original_stopinsert
+
+  MiniTest.expect.equality(mode_at_select, "n")
+  chat:dispose()
+end
+
 T["chat"]["preserves distinct permission option names with the same kind"] = function()
   local first = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))

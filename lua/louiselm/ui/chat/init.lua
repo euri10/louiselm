@@ -534,6 +534,7 @@ local function prompt_permission(self, view, data, respond)
   end
   local operation = data.operation
   local kind = type(operation) == "table" and operation.kind or "unknown"
+  nvim.cmd.stopinsert()
   nvim.ui.select(options, {
     prompt = "louiselm permission (" .. tostring(kind) .. "): ",
     format_item = function(option)
