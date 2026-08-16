@@ -1305,7 +1305,7 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   chat:dispose()
 end
 
-T["chat"]["ignores a queued permission choice after disposal"] = function()
+T["chat"]["cancels a queued permission choice after disposal"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -1336,7 +1336,7 @@ T["chat"]["ignores a queued permission choice after disposal"] = function()
 
   nvim.schedule = original_schedule
   nvim.ui.select = original_select
-  MiniTest.expect.equality(response, nil)
+  MiniTest.expect.equality(response, { outcome = { outcome = "cancelled" } })
 end
 
 T["chat"]["queues context items as ACP text before the user prompt"] = function()

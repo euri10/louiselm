@@ -400,8 +400,19 @@ malformed or unknown requests say that details are unavailable. Use the active
 provider's normal navigation and confirm the highlighted choice. Typed
 rejection choices are listed before approvals so the initial choice fails
 closed. Dismissing the picker sends a cancellation response. Permission UI work
-is scheduled onto Neovim's main loop, and late choices after chat disposal are
-ignored.
+is scheduled onto Neovim's main loop, and a choice arriving after chat disposal
+cancels the request instead of granting it.
+
+Agents ask for several permissions at once when they run parallel tool calls. A
+session publishes those requests one at a time and stays in
+`waiting_permission` until the last outstanding request is answered, so a
+picker or diff review never has to host two decisions at once. Each request is
+answered exactly once; answering an already-answered request fails with an
+error instead of writing a second response. Remembered rules are consulted when
+a request is published rather than when it arrives, so an `always` choice also
+covers the requests still queued behind it. Cancelling the turn answers every
+outstanding request with the ACP cancelled outcome, which releases an agent
+that is blocked waiting for a decision.
 
 Headless consumers can inspect and revoke through
 `sessions:list_permissions()` and `sessions:revoke_permission(rule_id)`. Tests

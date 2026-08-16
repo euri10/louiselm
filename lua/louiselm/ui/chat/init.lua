@@ -702,7 +702,10 @@ end
 ---@return boolean sent
 local function send_permission_response(self, view, respond, result)
   if self.disposed or self.views[view.session:inspect().id] ~= view or not nvim.api.nvim_buf_is_valid(view.buffer) then
-    return false
+    -- A choice made after the view is gone must grant nothing, but the request still
+    -- has to be answered or the agent blocks on it for the rest of the session.
+    local closed_ok, closed = pcall(respond, { outcome = { outcome = "cancelled" } })
+    return closed_ok and closed == true
   end
   local call_ok, sent, send_error = pcall(respond, result)
   if not call_ok or not sent then

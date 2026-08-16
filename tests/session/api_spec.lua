@@ -52,6 +52,28 @@ local function notification(process, method, params)
   process.options.stdout(nil, encoded .. "\n")
 end
 
+local function permission_request(process, acp_session_id, id, options)
+  local message = {
+    jsonrpc = "2.0",
+    id = id,
+    method = "session/request_permission",
+    params = { sessionId = acp_session_id, options = options },
+  }
+  process.options.stdout(nil, assert(Protocol.encode(message)) .. "\n")
+end
+
+---@return { id: string|number, outcome: unknown }[] outcomes One entry per permission response written to the agent.
+local function permission_outcomes(process)
+  local outcomes = {}
+  for _, write in ipairs(process.writes) do
+    local message = assert(Protocol.decode(write:sub(1, -2)))
+    if type(message.result) == "table" and type(message.result.outcome) == "table" then
+      outcomes[#outcomes + 1] = { id = message.id, outcome = message.result.outcome.outcome }
+    end
+  end
+  return outcomes
+end
+
 local function start_ready_session(api, processes, name, cwd)
   local ready
   local session = assert(api:create_session(name, { cwd = cwd }, function(value, err)
@@ -702,6 +724,77 @@ T["new"]["publishes permission requests with a response function"] = function()
   restore_processes(original_system)
 end
 
+T["new"]["publishes overlapping permission requests one at a time"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  assert(session:prompt("hello"))
+  local permissions = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+
+  permission_request(process, "agent-acp", 9, { "allow", "deny" })
+  permission_request(process, "agent-acp", 10, { "allow", "deny" })
+
+  MiniTest.expect.equality(#permissions, 1)
+  MiniTest.expect.equality(permissions[1].data.request_id, 9)
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "allow" } }))
+  MiniTest.expect.equality(#permissions, 2)
+  MiniTest.expect.equality(permissions[2].data.request_id, 10)
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  MiniTest.expect.equality(
+    { permissions[1].respond({ outcome = { outcome = "cancelled" } }) },
+    { false, "permission request was already answered" }
+  )
+
+  assert(permissions[2].respond({ outcome = { outcome = "cancelled" } }))
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(permission_outcomes(process), {
+    { id = 9, outcome = "selected" },
+    { id = 10, outcome = "cancelled" },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["cancels every outstanding permission request when the turn is cancelled"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  assert(session:prompt("hello"))
+  local permissions = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+
+  permission_request(process, "agent-acp", 9, { "allow", "deny" })
+  permission_request(process, "agent-acp", 10, { "allow", "deny" })
+  assert(session:cancel())
+
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
+  MiniTest.expect.equality(#permissions, 1)
+  MiniTest.expect.equality(permission_outcomes(process), {
+    { id = 9, outcome = "cancelled" },
+    { id = 10, outcome = "cancelled" },
+  })
+  MiniTest.expect.equality(
+    { permissions[1].respond({ outcome = { outcome = "selected", optionId = "allow" } }) },
+    { false, "permission request was already answered" }
+  )
+  MiniTest.expect.equality(#permission_outcomes(process), 2)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["rejects malformed permission requests without terminating the session"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
@@ -852,6 +945,55 @@ T["new"]["persists exact always choices and replays only through compatible opti
   MiniTest.expect.equality(reloaded_api:revoke_permission(remembered[1].id), true)
   MiniTest.expect.equality(assert(reloaded_api:list_permissions()), {})
   reloaded_api:dispose()
+  restore_processes(original_system)
+  nvim.fn.delete(root, "rf")
+end
+
+T["new"]["applies a fresh always choice to permission requests already queued"] = function()
+  local root = nvim.fn.tempname()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, {
+    permission_store = assert(Permission.store(nvim.fs.joinpath(root, "permissions.json"))),
+  }))
+  local session, process = start_ready_session(api, processes, "agent", nvim.fs.joinpath(root, "workspace"))
+  local permissions = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+  local function request(id)
+    process.options.stdout(nil, assert(Protocol.encode({
+      jsonrpc = "2.0",
+      id = id,
+      method = "session/request_permission",
+      params = {
+        sessionId = "agent-acp",
+        toolCall = { kind = "execute", rawInput = { command = { "git", "status" } } },
+        options = {
+          { optionId = "allow-once", kind = "allow_once" },
+          { optionId = "allow-always", kind = "allow_always" },
+        },
+      },
+    })) .. "\n")
+  end
+
+  request(9)
+  request(10)
+  MiniTest.expect.equality(#permissions, 1)
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "allow-always" } }))
+
+  MiniTest.expect.equality(#permissions, 1)
+  MiniTest.expect.equality(permission_outcomes(process), {
+    { id = 9, outcome = "selected" },
+    { id = 10, outcome = "selected" },
+  })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "selected", optionId = "allow-once" },
+  })
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+
+  api:dispose()
   restore_processes(original_system)
   nvim.fn.delete(root, "rf")
 end

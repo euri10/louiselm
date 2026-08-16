@@ -32,6 +32,11 @@ local nvim = vim
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
 
+---@class louiselm.session.PermissionEntry
+---@field data table ACP permission request parameters enriched with louiselm metadata.
+---@field respond fun(result: unknown, rpc_error?: louiselm.acp.JsonRpcError): boolean, string? Raw ACP responder.
+---@field answered boolean Whether a response was already written for this request.
+
 ---@class louiselm.session.Session
 ---@field state louiselm.session.State Internal mutable state.
 ---@field emitter louiselm.session.EventEmitter Event subscribers.
@@ -47,6 +52,8 @@ local nvim = vim
 ---@field options louiselm.session.Options Session options.
 ---@field permission_policy louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store louiselm.permission.Store Remembered-permission owner.
+---@field permission_active? louiselm.session.PermissionEntry Permission request published for a decision.
+---@field permission_queue louiselm.session.PermissionEntry[] Permission requests waiting for the active one.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
@@ -114,6 +121,8 @@ local function fail(self, message)
     return
   end
   set_status(self, "error")
+  self.permission_active = nil
+  self.permission_queue = {}
   local client = self.client
   if client ~= nil then
     local closed, close_error = client:close()
@@ -211,6 +220,141 @@ local function handle_notification(self, message)
   end
 end
 
+---@type fun(self: louiselm.session.Session)
+local pump_permissions
+
+---Write one ACP permission response and publish the next queued request.
+---@param self louiselm.session.Session
+---@param entry louiselm.session.PermissionEntry Request being answered.
+---@param result unknown ACP permission result.
+---@param rpc_error? louiselm.acp.JsonRpcError Protocol error returned instead of a result.
+---@return boolean sent
+---@return string? error_message ACP write error; the request stays outstanding.
+local function send_permission(self, entry, result, rpc_error)
+  local sent, send_error = entry.respond(result, rpc_error)
+  if not sent then
+    return false, send_error
+  end
+  entry.answered = true
+  if self.permission_active == entry then
+    self.permission_active = nil
+  end
+  pump_permissions(self)
+  if self.permission_active == nil and self.state.status == "waiting_permission" then
+    set_status(self, "prompting")
+  end
+  return true
+end
+
+---Answer one published permission request, remembering an explicit lifetime choice first.
+---@param self louiselm.session.Session
+---@param entry louiselm.session.PermissionEntry Request being answered.
+---@param result unknown ACP permission result.
+---@param rpc_error? louiselm.acp.JsonRpcError Protocol error returned instead of a result.
+---@return boolean sent
+---@return string? error_message Duplicate response, remembered-permission, or ACP write failure.
+local function respond_permission(self, entry, result, rpc_error)
+  if entry.answered then
+    return false, "permission request was already answered"
+  end
+  local data = entry.data
+  local selected_decision, lifetime = Permission.gates.remembered_choice(data, result)
+  if selected_decision ~= nil and lifetime ~= nil then
+    local _, remember_error = self.permission_store:remember({
+      session_id = self.state.id,
+      agent = self.state.agent,
+      adapter = { command = self.definition.command, args = self.definition.args },
+      workspace = self.state.working_dir,
+    }, data.operation, selected_decision, lifetime)
+    if remember_error ~= nil then
+      local cancelled, cancel_error = send_permission(self, entry, { outcome = { outcome = "cancelled" } })
+      local message = "permission choice was cancelled because it could not be remembered: " .. remember_error
+      if not cancelled then
+        message = message .. "; cancellation failed: " .. (cancel_error or "unknown error")
+      end
+      return false, message
+    end
+  end
+  return send_permission(self, entry, result, rpc_error)
+end
+
+---Answer a queued request from remembered permissions, or annotate it for a human decision.
+---Remembered rules are read here rather than on arrival so that a choice made for one
+---request also covers the parallel requests still queued behind it.
+---@param self louiselm.session.Session
+---@param entry louiselm.session.PermissionEntry Queued request.
+---@return boolean answered Whether the request was answered without asking.
+local function apply_remembered_permission(self, entry)
+  local data = entry.data
+  if data.policy_decision ~= "ask" then
+    return false
+  end
+  local remembered, remembered_error = self.permission_store:evaluate({
+    session_id = self.state.id,
+    agent = self.state.agent,
+    adapter = { command = self.definition.command, args = self.definition.args },
+    workspace = self.state.working_dir,
+  }, data.operation)
+  if remembered == nil then
+    data.permission_error = remembered_error or "remembered permission lookup failed"
+    return false
+  end
+  if remembered == "ask" then
+    return false
+  end
+  local response = Permission.gates.remembered_response(data, remembered)
+  if response == nil then
+    data.remembered_decision = remembered
+    return false
+  end
+  local sent = entry.respond(response)
+  entry.answered = sent
+  return sent
+end
+
+---Publish the next permission request that still needs a human decision.
+---Agents may ask for several parallel tool calls at once, but a decision UI can host
+---only one choice, and a request the client never answers blocks the agent forever.
+---@param self louiselm.session.Session
+pump_permissions = function(self)
+  while self.permission_active == nil do
+    if self.state.status == "disposed" or self.state.status == "error" then
+      return
+    end
+    local entry = table.remove(self.permission_queue, 1)
+    if entry == nil then
+      return
+    end
+    if not apply_remembered_permission(self, entry) then
+      self.permission_active = entry
+      set_status(self, "waiting_permission")
+      emit(self, "permission_requested", entry.data, function(result, rpc_error)
+        return respond_permission(self, entry, result, rpc_error)
+      end)
+    end
+  end
+end
+
+---Answer every outstanding permission request with the ACP cancelled outcome.
+---Write failures stay unreported: the caller cancels through the same transport and
+---already surfaces its own write error.
+---@param self louiselm.session.Session
+local function cancel_permissions(self)
+  local outstanding = self.permission_queue
+  local active = self.permission_active
+  self.permission_queue = {}
+  self.permission_active = nil
+  if active ~= nil then
+    table.insert(outstanding, 1, active)
+  end
+  for _, entry in ipairs(outstanding) do
+    if not entry.answered then
+      entry.answered = true
+      entry.respond({ outcome = { outcome = "cancelled" } })
+    end
+  end
+end
+
 ---@param self louiselm.session.Session
 ---@param request louiselm.acp.JsonRpcRequest
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
@@ -237,24 +381,6 @@ local function handle_request(self, request, respond)
     return
   end
   data.policy_decision = decision
-  if decision == "ask" then
-    local remembered, remembered_error = self.permission_store:evaluate({
-      session_id = self.state.id,
-      agent = self.state.agent,
-      adapter = { command = self.definition.command, args = self.definition.args },
-      workspace = self.state.working_dir,
-    }, data.operation)
-    if remembered == nil then
-      data.permission_error = remembered_error or "remembered permission lookup failed"
-    elseif remembered ~= "ask" then
-      local remembered_response = Permission.gates.remembered_response(data, remembered)
-      if remembered_response ~= nil then
-        respond(remembered_response)
-        return
-      end
-      data.remembered_decision = remembered
-    end
-  end
   if decision ~= "ask" then
     local automatic_response = Permission.gates.response(data, decision)
     if automatic_response ~= nil then
@@ -262,35 +388,8 @@ local function handle_request(self, request, respond)
       return
     end
   end
-  set_status(self, "waiting_permission")
-  local function permission_respond(result, rpc_error)
-    local selected_decision, lifetime = Permission.gates.remembered_choice(data, result)
-    if selected_decision ~= nil and lifetime ~= nil then
-      local _, remember_error = self.permission_store:remember({
-        session_id = self.state.id,
-        agent = self.state.agent,
-        adapter = { command = self.definition.command, args = self.definition.args },
-        workspace = self.state.working_dir,
-      }, data.operation, selected_decision, lifetime)
-      if remember_error ~= nil then
-        local cancelled, cancel_error = respond({ outcome = { outcome = "cancelled" } })
-        if cancelled and self.state.status == "waiting_permission" then
-          set_status(self, "prompting")
-        end
-        local message = "permission choice was cancelled because it could not be remembered: " .. remember_error
-        if not cancelled then
-          message = message .. "; cancellation failed: " .. (cancel_error or "unknown error")
-        end
-        return false, message
-      end
-    end
-    local sent, send_error = respond(result, rpc_error)
-    if sent and self.state.status == "waiting_permission" then
-      set_status(self, "prompting")
-    end
-    return sent, send_error
-  end
-  emit(self, "permission_requested", data, permission_respond)
+  self.permission_queue[#self.permission_queue + 1] = { data = data, respond = respond, answered = false }
+  pump_permissions(self)
 end
 
 ---@param self louiselm.session.Session
@@ -446,6 +545,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     load_session_id = load_session_id,
     permission_policy = options.permission_policy or Permission.policy(),
     permission_store = options.permission_store or Permission.store(),
+    permission_queue = {},
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,
@@ -585,6 +685,7 @@ function Session:cancel()
     fail(self, message)
     return false, message
   end
+  cancel_permissions(self)
   set_status(self, "cancelling")
   return true
 end
@@ -685,6 +786,8 @@ function Session:dispose()
   end
   set_status(self, "disposed")
   self.permission_store:clear_session(self.state.id)
+  self.permission_active = nil
+  self.permission_queue = {}
   self.prompt_callback = nil
   local client = self.client
   local closed, close_error = true, nil
