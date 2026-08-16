@@ -1406,6 +1406,46 @@ T["chat"]["cancels permission decisions still queued when the chat is disposed"]
   MiniTest.expect.equality(responses[2], { id = "first", result = { outcome = { outcome = "cancelled" } } })
 end
 
+T["chat"]["refuses command pickers while a permission decision is open"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.status = "waiting_permission"
+  first.state.config_options = {
+    { id = "model", name = "Model", type = "select", current_value = "opus", options = { { value = "large" } } },
+  }
+  local api = fake_api()
+  api.list_permissions = function()
+    return {}
+  end
+  local chat = assert(Chat.new(api, { agents = { "one", "two" } }))
+  assert(chat:attach(first))
+  local request, run_scheduled, pickers, responses = permission_harness()
+
+  request(first, "first")
+  run_scheduled()
+  MiniTest.expect.equality(#pickers, 1)
+
+  local busy = "a louiselm permission decision is open; answer it first"
+  MiniTest.expect.equality({ chat:pick_skill() }, { false, busy })
+  MiniTest.expect.equality({ chat:pick_file() }, { false, busy })
+  MiniTest.expect.equality({ chat:switch_session() }, { false, busy })
+  MiniTest.expect.equality({ chat:session_options() }, { false, busy })
+  MiniTest.expect.equality({ chat:manage_permissions() }, { false, busy })
+  MiniTest.expect.equality({ chat:resume_session() }, { false, busy })
+  MiniTest.expect.equality({ chat:new_session() }, { nil, busy })
+  MiniTest.expect.equality(#pickers, 1)
+
+  -- Closing the session stays reachable: it is the way out when a decision is stuck.
+  assert(chat:close_session())
+  MiniTest.expect.equality(#pickers, 2)
+  MiniTest.expect.equality(pickers[2].prompt, "close active louiselm session? ")
+
+  pickers[1].callback(pickers[1].items[2], 2)
+  run_scheduled()
+  MiniTest.expect.equality(#responses, 1)
+  MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
+  chat:dispose()
+end
+
 T["chat"]["cancels a permission request delivered after disposal"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

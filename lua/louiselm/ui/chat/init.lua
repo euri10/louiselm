@@ -175,6 +175,11 @@ local function single_line(value)
   return (value:gsub("[\r\n]", " "))
 end
 
+-- A select provider closes the picker a new one replaces, which would answer an open
+-- permission request without a choice. Commands that open their own picker refuse while
+-- a decision is presented instead of queueing behind it: a decision can open a nested
+-- picker of its own, and the way out of a stuck decision must never be queued behind it.
+local DECISION_OPEN_ERROR = "a louiselm permission decision is open; answer it first"
 local HEADER_LINE_COUNT = 4
 local ACP_HIGHLIGHT = "LouiselmAcpValue"
 local DERIVED_HIGHLIGHT = "LouiselmDerivedValue"
@@ -968,7 +973,7 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param initial boolean
 open_session_options = function(self, view, initial)
-  if self.disposed or self.views[view.session:inspect().id] ~= view then
+  if self.disposed or self.views[view.session:inspect().id] ~= view or self.decision_active then
     return
   end
   local state = view.session:inspect()
@@ -1184,6 +1189,9 @@ end
 function Chat:manage_permissions()
   if self.disposed then
     return false, "chat UI is disposed"
+  end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
   end
   if type(self.api.list_permissions) ~= "function" or type(self.api.revoke_permission) ~= "function" then
     return false, "session API does not support remembered permissions"
@@ -1415,6 +1423,9 @@ function Chat:switch_session()
   if self.disposed then
     return false, "chat UI is disposed"
   end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
+  end
   local sessions = {}
   for _, id in ipairs(self.api:list_sessions()) do
     local view = self.views[id]
@@ -1554,6 +1565,9 @@ function Chat:session_options()
   if self.disposed then
     return false, "chat UI is disposed"
   end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
+  end
   local view = self.current_id and self.views[self.current_id]
   if view == nil then
     return false, "no chat session is attached"
@@ -1682,6 +1696,9 @@ function Chat:pick_file(root)
   if self.disposed then
     return false, "chat UI is disposed"
   end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
+  end
   local started, pick_error = Context.files.pick(root, function(path, error_message)
     if path == nil then
       return
@@ -1699,6 +1716,9 @@ end
 function Chat:pick_skill()
   if self.disposed then
     return false, "chat UI is disposed"
+  end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
   end
   local view = self.current_id and self.views[self.current_id]
   if view == nil then
@@ -1764,6 +1784,9 @@ function Chat:new_session(agent_name, options)
       return nil, "no chat agents configured"
     end
     if #self.agents > 1 then
+      if self.decision_active then
+        return nil, DECISION_OPEN_ERROR
+      end
       Picker.select(self.agents, { prompt = "louiselm agent: " }, function(choice)
         if choice ~= nil then
           self:new_session(choice, options)
@@ -1807,6 +1830,9 @@ end
 function Chat:resume_session(all_workspaces)
   if self.disposed then
     return false, "chat UI is disposed"
+  end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
   end
   if all_workspaces ~= nil and type(all_workspaces) ~= "boolean" then
     return false, "all_workspaces must be a boolean"

@@ -421,6 +421,15 @@ can no longer host with a cancellation. Because a review buffer is
 `bufhidden=wipe`, navigating away from it abandons the review and cancels its
 request rather than leaving the agent waiting.
 
+While a decision is presented, commands that open their own picker — file,
+skill, session switch, session resume, agent choice, session options, and
+remembered-permission management — refuse with `a louiselm permission decision
+is open; answer it first` rather than replacing the open picker. They are
+refused instead of queued because a decision can open a nested picker of its
+own, and a queued command would surface long after the keypress. Closing the
+session stays available as the way out of a decision you cannot answer, and
+cancelling the turn is not a picker at all.
+
 Headless consumers can inspect and revoke through
 `sessions:list_permissions()` and `sessions:revoke_permission(rule_id)`. Tests
 or isolated embedders can pass an explicit store as the third constructor
