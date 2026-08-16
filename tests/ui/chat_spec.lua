@@ -1394,9 +1394,17 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
     { id = "brave", name = "Brave", type = "boolean", current_value = false },
   }
   local original_select = nvim.ui.select
+  local original_stopinsert = nvim.cmd.stopinsert
   local calls = {}
+  local mode = "i"
+  local modes_at_select = {}
+  nvim.cmd.stopinsert = function()
+    mode = "n"
+  end
   nvim.ui.select = function(items, options, callback)
     calls[#calls + 1] = { items = items, options = options }
+    modes_at_select[#modes_at_select + 1] = mode
+    mode = "i"
     if #calls == 1 then
       callback(items[1])
     elseif #calls == 2 then
@@ -1411,9 +1419,11 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
     return #calls == 3
   end, 1)
   nvim.ui.select = original_select
+  nvim.cmd.stopinsert = original_stopinsert
 
   MiniTest.expect.equality(calls[1].options.prompt, "louiselm session options: ")
   MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Model: small")
+  MiniTest.expect.equality(modes_at_select, { "n", "n", "n" })
   MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
   chat:dispose()
 end

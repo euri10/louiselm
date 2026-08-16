@@ -1,4 +1,5 @@
 local M = {}
+local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -61,7 +62,7 @@ function M.pick(skills, callback)
   table.sort(choices, function(left, right)
     return left.name < right.name
   end)
-  nvim.ui.select(choices, {
+  Picker.select(choices, {
     prompt = "louiselm skill: ",
     format_item = function(skill)
       return skill.name .. " — " .. skill.description

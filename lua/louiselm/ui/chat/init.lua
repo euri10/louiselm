@@ -1,6 +1,7 @@
 local Context = require("louiselm.ui.context")
 local Diff = require("louiselm.ui.diff")
 local Gates = require("louiselm.permission.gates")
+local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 
 ---@class louiselm.ui.ChatOptions
@@ -534,8 +535,7 @@ local function prompt_permission(self, view, data, respond)
   end
   local operation = data.operation
   local kind = type(operation) == "table" and operation.kind or "unknown"
-  nvim.cmd.stopinsert()
-  nvim.ui.select(options, {
+  Picker.select(options, {
     prompt = "louiselm permission (" .. tostring(kind) .. "): ",
     format_item = function(option)
       local _, label = permission_option(option)
@@ -681,7 +681,7 @@ open_session_options = function(self, view, initial)
     end
     view.setup_shown = true
   end
-  nvim.ui.select(state.config_options, {
+  Picker.select(state.config_options, {
     prompt = "louiselm session options: ",
     format_item = function(option)
       return option.name .. ": " .. tostring(option.current_value)
@@ -690,7 +690,7 @@ open_session_options = function(self, view, initial)
     if option == nil or self.disposed or self.views[state.id] ~= view then
       return
     end
-    nvim.ui.select(config_values(option), {
+    Picker.select(config_values(option), {
       prompt = option.name .. ": ",
       format_item = function(value)
         return value.name
@@ -900,14 +900,14 @@ function Chat:manage_permissions()
     nvim.notify("louiselm: no remembered permissions", nvim.log.levels.INFO)
     return true
   end
-  nvim.ui.select(rules, {
+  Picker.select(rules, {
     prompt = "louiselm remembered permissions: ",
     format_item = permission_rule_label,
   }, function(rule)
     if rule == nil or self.disposed then
       return
     end
-    nvim.ui.select({ "Revoke", "Keep" }, { prompt = "revoke " .. rule.id .. "? " }, function(choice)
+    Picker.select({ "Revoke", "Keep" }, { prompt = "revoke " .. rule.id .. "? " }, function(choice)
       if choice ~= "Revoke" or self.disposed then
         return
       end
@@ -1122,7 +1122,7 @@ function Chat:switch_session()
   if #sessions == 0 then
     return false, "no chat sessions are attached"
   end
-  nvim.ui.select(sessions, {
+  Picker.select(sessions, {
     prompt = "louiselm session: ",
     format_item = function(session)
       return session_summary(session:inspect())
@@ -1217,7 +1217,7 @@ function Chat:close_session()
   then
     local prompt = has_queued_prompt and "close active louiselm session and discard queued prompt? "
       or "close active louiselm session? "
-    nvim.ui.select({ "Close", "Keep" }, { prompt = prompt }, function(choice)
+    Picker.select({ "Close", "Keep" }, { prompt = prompt }, function(choice)
       if choice == "Close" and not self.disposed and self.views[view.session:inspect().id] == view then
         close_view(self, view)
       end
@@ -1461,7 +1461,7 @@ function Chat:new_session(agent_name, options)
       return nil, "no chat agents configured"
     end
     if #self.agents > 1 then
-      nvim.ui.select(self.agents, { prompt = "louiselm agent: " }, function(choice)
+      Picker.select(self.agents, { prompt = "louiselm agent: " }, function(choice)
         if choice ~= nil then
           self:new_session(choice, options)
         end
@@ -1530,7 +1530,7 @@ function Chat:resume_session(all_workspaces)
         return
       end
 
-      nvim.ui.select(sessions, {
+      Picker.select(sessions, {
         prompt = all_workspaces and "louiselm session (all workspaces): " or "louiselm session: ",
         format_item = discovered_session_summary,
       }, function(selected)

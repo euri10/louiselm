@@ -1,4 +1,5 @@
 local M = {}
+local Picker = require("louiselm.ui.picker")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -74,7 +75,7 @@ function M.pick(root, callback)
     callback(nil, list_error)
     return false, list_error
   end
-  nvim.ui.select(files, { prompt = "louiselm file: " }, function(choice)
+  Picker.select(files, { prompt = "louiselm file: " }, function(choice)
     callback(choice)
   end)
   return true

@@ -51,8 +51,15 @@ T["files"]["lists files and picks one through the native picker"] = function()
   })
 
   local original_select = nvim.ui.select
+  local original_stopinsert = nvim.cmd.stopinsert
+  local mode = "i"
+  local mode_at_select
   local selected
+  nvim.cmd.stopinsert = function()
+    mode = "n"
+  end
   nvim.ui.select = function(items, _, callback)
+    mode_at_select = mode
     MiniTest.expect.equality(items, files)
     callback(items[1])
   end
@@ -60,7 +67,9 @@ T["files"]["lists files and picks one through the native picker"] = function()
     selected = path
   end))
   nvim.ui.select = original_select
+  nvim.cmd.stopinsert = original_stopinsert
 
+  MiniTest.expect.equality(mode_at_select, "n")
   MiniTest.expect.equality(selected, files[1])
   nvim.fn.delete(root, "rf")
 end

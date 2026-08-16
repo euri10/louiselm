@@ -1,6 +1,7 @@
 local Apply = require("louiselm.ui.diff.apply")
 local Buffer = require("louiselm.ui.diff.buffer")
 local Gates = require("louiselm.permission.gates")
+local Picker = require("louiselm.ui.picker")
 
 ---@class louiselm.ui.Diff
 ---@field buffer integer? Current diff buffer.
@@ -110,7 +111,7 @@ local function respond(self, decision)
     return send_response(self, result)
   end
   if #options > 1 then
-    nvim.ui.select(options, {
+    Picker.select(options, {
       prompt = "louiselm file edit " .. decision .. ": ",
       format_item = option_label,
     }, function(option)
