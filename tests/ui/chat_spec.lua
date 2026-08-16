@@ -995,9 +995,9 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   local original_schedule = nvim.schedule
-  local original_input = nvim.ui.input
+  local original_select = nvim.ui.select
   local scheduled = {}
-  local prompts = {}
+  local selections = 0
   local responses = {}
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
@@ -1036,21 +1036,21 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
 
   MiniTest.expect.equality(#scheduled, 3)
   MiniTest.expect.equality(responses, {})
-  nvim.ui.input = function(options, callback)
-    prompts[#prompts + 1] = options.prompt
-    if #prompts == 1 then
-      callback("1")
-    elseif #prompts == 2 then
+  nvim.ui.select = function(options, _, callback)
+    selections = selections + 1
+    if selections == 1 then
+      callback(options[1], 1)
+    elseif selections == 2 then
       callback(nil)
     else
-      callback("3")
+      callback({})
     end
   end
   scheduled[1]()
   scheduled[2]()
   scheduled[3]()
   nvim.schedule = original_schedule
-  nvim.ui.input = original_input
+  nvim.ui.select = original_select
 
   MiniTest.expect.equality(responses, {
     { outcome = { outcome = "selected", optionId = "allow-once" } },
@@ -1065,9 +1065,10 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   local original_schedule = nvim.schedule
-  local original_input = nvim.ui.input
+  local original_select = nvim.ui.select
   local scheduled
-  local prompt
+  local labels
+  local option_ids
   local response
   nvim.schedule = function(callback)
     scheduled = callback
@@ -1091,42 +1092,46 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
     end,
   })
 
-  nvim.ui.input = function(options, callback)
-    prompt = options.prompt
-    callback("1")
+  nvim.ui.select = function(options, select_options, callback)
+    labels = {}
+    option_ids = {}
+    for _, option in ipairs(options) do
+      labels[#labels + 1] = select_options.format_item(option)
+      option_ids[#option_ids + 1] = option.optionId
+    end
+    callback(options[1], 1)
   end
   assert(scheduled)
   scheduled()
   nvim.schedule = original_schedule
-  nvim.ui.input = original_input
+  nvim.ui.select = original_select
 
-  MiniTest.expect.equality(
-    prompt,
-    "louiselm permission (command) [1. Reject | 2. Allow Once | 3. Allow for Session | 4. Allow Commands Starting With git] — type number: "
-  )
+  MiniTest.expect.equality(labels, { "Reject", "Allow Once", "Allow for Session", "Allow Commands Starting With git" })
+  MiniTest.expect.equality(option_ids, { "reject_once", "allow_once", "allow_always", "allow_prefix" })
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "reject_once" } })
   chat:dispose()
 end
 
-T["chat"]["resolves a typed permission number independently of the select provider"] = function()
+T["chat"]["sends the exact permission option chosen by the select provider"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   local original_schedule = nvim.schedule
-  local original_input = nvim.ui.input
   local original_select = nvim.ui.select
   local scheduled
+  local labels
   local prompt
   local response
   nvim.schedule = function(callback)
     scheduled = callback
   end
-  nvim.ui.input = function(options, callback)
-    prompt = options.prompt
-    callback("2")
-  end
-  nvim.ui.select = function()
-    error("permission choices must not use vim.ui.select")
+  nvim.ui.select = function(options, select_options, callback)
+    prompt = select_options.prompt
+    labels = {}
+    for _, option in ipairs(options) do
+      labels[#labels + 1] = select_options.format_item(option)
+    end
+    callback(options[2], 2)
   end
 
   first:emit({
@@ -1149,13 +1154,10 @@ T["chat"]["resolves a typed permission number independently of the select provid
   assert(scheduled)
   scheduled()
   nvim.schedule = original_schedule
-  nvim.ui.input = original_input
   nvim.ui.select = original_select
 
-  MiniTest.expect.equality(
-    prompt,
-    "louiselm permission (command) [1. Deny | 2. Allow Once | 3. Always Allow] — type number: "
-  )
+  MiniTest.expect.equality(prompt, "louiselm permission (command): ")
+  MiniTest.expect.equality(labels, { "Deny", "Allow Once", "Always Allow" })
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow" } })
   chat:dispose()
 end
@@ -1165,9 +1167,9 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   local original_schedule = nvim.schedule
-  local original_input = nvim.ui.input
+  local original_select = nvim.ui.select
   local scheduled = {}
-  local prompt
+  local labels
   local response
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
@@ -1189,18 +1191,18 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
     end,
   })
 
-  nvim.ui.input = function(options, callback)
-    prompt = options.prompt
-    callback("2")
+  nvim.ui.select = function(options, select_options, callback)
+    labels = {}
+    for _, option in ipairs(options) do
+      labels[#labels + 1] = select_options.format_item(option)
+    end
+    callback(options[2], 2)
   end
   scheduled[1]()
   nvim.schedule = original_schedule
-  nvim.ui.input = original_input
+  nvim.ui.select = original_select
 
-  MiniTest.expect.equality(
-    prompt,
-    "louiselm permission (command) [1. Allow for This Session | 2. Allow and Don't Ask Again] — type number: "
-  )
+  MiniTest.expect.equality(labels, { "Allow for This Session", "Allow and Don't Ask Again" })
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "always" } })
   chat:dispose()
 end
@@ -1210,14 +1212,14 @@ T["chat"]["ignores a queued permission choice after disposal"] = function()
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   local original_schedule = nvim.schedule
-  local original_input = nvim.ui.input
+  local original_select = nvim.ui.select
   local scheduled = {}
   local choose
   local response
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
   end
-  nvim.ui.input = function(_, callback)
+  nvim.ui.select = function(_, _, callback)
     choose = callback
   end
 
@@ -1232,10 +1234,10 @@ T["chat"]["ignores a queued permission choice after disposal"] = function()
   })
   scheduled[1]()
   chat:dispose()
-  choose("1")
+  choose("allow", 1)
 
   nvim.schedule = original_schedule
-  nvim.ui.input = original_input
+  nvim.ui.select = original_select
   MiniTest.expect.equality(response, nil)
 end
 

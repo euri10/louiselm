@@ -488,18 +488,6 @@ local function permission_options(value)
   return ordered
 end
 
----@param kind string
----@param options unknown[]
----@return string prompt
-local function permission_prompt(kind, options)
-  local labels = {}
-  for index, option in ipairs(options) do
-    local _, label = permission_option(option)
-    labels[index] = tostring(index) .. ". " .. single_line(label)
-  end
-  return "louiselm permission (" .. kind .. ") [" .. table.concat(labels, " | ") .. "] — type number: "
-end
-
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
@@ -546,18 +534,23 @@ local function prompt_permission(self, view, data, respond)
   end
   local operation = data.operation
   local kind = type(operation) == "table" and operation.kind or "unknown"
-  nvim.ui.input({ prompt = permission_prompt(tostring(kind), options) }, function(choice)
-    if type(choice) ~= "string" or choice:match("^[1-9]%d*$") == nil then
+  nvim.ui.select(options, {
+    prompt = "louiselm permission (" .. tostring(kind) .. "): ",
+    format_item = function(option)
+      local _, label = permission_option(option)
+      return label
+    end,
+  }, function(choice)
+    if choice == nil then
       cancel_permission(self, view, respond)
       return
     end
-    local index = tonumber(choice)
-    local identifier = index ~= nil and permission_option(options[index]) or nil
-    if identifier == nil then
+    local result = Gates.select_response(choice)
+    if result == nil then
       cancel_permission(self, view, respond)
       return
     end
-    send_permission_response(self, view, respond, { outcome = { outcome = "selected", optionId = identifier } })
+    send_permission_response(self, view, respond, result)
   end)
 end
 

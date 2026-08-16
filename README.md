@@ -370,9 +370,10 @@ typed lifetimes, a picker asks which one to use. The review records the file
 content it displayed and rejects a local apply if the file changed meanwhile;
 the ACP agent remains responsible for writing the file after approval.
 
-Command and unknown permission requests show a numbered input for the ACP
-options. Typed rejection choices are listed before approvals; type the displayed
-number to select one. Blank, invalid, or out-of-range input sends a cancellation
+Command and unknown permission requests send the ACP options through
+`vim.ui.select`; use the active provider's normal navigation and confirm the
+highlighted choice. Typed rejection choices are listed before approvals so the
+initial choice fails closed. Dismissing the picker sends a cancellation
 response. Permission UI work is scheduled onto Neovim's main loop, and late
 choices after chat disposal are ignored.
 
