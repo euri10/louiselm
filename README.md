@@ -394,11 +394,14 @@ content it displayed and rejects a local apply if the file changed meanwhile;
 the ACP agent remains responsible for writing the file after approval.
 
 Command and unknown permission requests send the ACP options through
-`vim.ui.select`; use the active provider's normal navigation and confirm the
-highlighted choice. Typed rejection choices are listed before approvals so the
-initial choice fails closed. Dismissing the picker sends a cancellation
-response. Permission UI work is scheduled onto Neovim's main loop, and late
-choices after chat disposal are ignored.
+`vim.ui.select`. Command picker prompts include the exact normalized command as
+a JSON array so argument boundaries and embedded shell text remain inspectable;
+malformed or unknown requests say that details are unavailable. Use the active
+provider's normal navigation and confirm the highlighted choice. Typed
+rejection choices are listed before approvals so the initial choice fails
+closed. Dismissing the picker sends a cancellation response. Permission UI work
+is scheduled onto Neovim's main loop, and late choices after chat disposal are
+ignored.
 
 Headless consumers can inspect and revoke through
 `sessions:list_permissions()` and `sessions:revoke_permission(rule_id)`. Tests

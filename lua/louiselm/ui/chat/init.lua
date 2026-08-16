@@ -679,6 +679,22 @@ local function permission_options(value)
   return ordered
 end
 
+---@param operation unknown
+---@return string prompt
+local function permission_prompt(operation)
+  local kind = type(operation) == "table" and operation.kind or "unknown"
+  if kind == "command" and type(operation.command) == "table" then
+    local encoded_ok, encoded_command = pcall(nvim.json.encode, operation.command)
+    if encoded_ok and type(encoded_command) == "string" then
+      return "louiselm permission (command): " .. encoded_command .. " "
+    end
+  end
+  if type(kind) ~= "string" or kind == "" then
+    kind = "unknown"
+  end
+  return "louiselm permission (" .. kind .. ", details unavailable): "
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
@@ -723,10 +739,8 @@ local function prompt_permission(self, view, data, respond)
     cancel_permission(self, view, respond)
     return
   end
-  local operation = data.operation
-  local kind = type(operation) == "table" and operation.kind or "unknown"
   Picker.select(options, {
-    prompt = "louiselm permission (" .. tostring(kind) .. "): ",
+    prompt = permission_prompt(data.operation),
     format_item = function(option)
       local _, label = permission_option(option)
       return label

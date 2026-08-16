@@ -1035,6 +1035,7 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
   local original_select = nvim.ui.select
   local scheduled = {}
   local selections = 0
+  local prompts = {}
   local responses = {}
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
@@ -1073,8 +1074,9 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
 
   MiniTest.expect.equality(#scheduled, 3)
   MiniTest.expect.equality(responses, {})
-  nvim.ui.select = function(options, _, callback)
+  nvim.ui.select = function(options, select_options, callback)
     selections = selections + 1
+    prompts[#prompts + 1] = select_options.prompt
     if selections == 1 then
       callback(options[1], 1)
     elseif selections == 2 then
@@ -1094,6 +1096,11 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
     { outcome = { outcome = "cancelled" } },
     { outcome = { outcome = "cancelled" } },
   })
+  MiniTest.expect.equality(prompts, {
+    'louiselm permission (command): ["git","status"] ',
+    "louiselm permission (unknown, details unavailable): ",
+    "louiselm permission (unknown, details unavailable): ",
+  })
   chat:dispose()
 end
 
@@ -1106,6 +1113,7 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
   local scheduled
   local labels
   local option_ids
+  local prompt
   local response
   nvim.schedule = function(callback)
     scheduled = callback
@@ -1130,6 +1138,7 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
   })
 
   nvim.ui.select = function(options, select_options, callback)
+    prompt = select_options.prompt
     labels = {}
     option_ids = {}
     for _, option in ipairs(options) do
@@ -1145,6 +1154,7 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
 
   MiniTest.expect.equality(labels, { "Reject", "Allow Once", "Allow for Session", "Allow Commands Starting With git" })
   MiniTest.expect.equality(option_ids, { "reject_once", "allow_once", "allow_always", "allow_prefix" })
+  MiniTest.expect.equality(prompt, 'louiselm permission (command): ["git","commit"] ')
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "reject_once" } })
   chat:dispose()
 end
@@ -1159,6 +1169,8 @@ T["chat"]["sends the exact permission option chosen by the select provider"] = f
   local labels
   local prompt
   local response
+  local command =
+    'git add nvim/.config/nvim/nvim-pack-lock.json && git commit -m "chore(nvim): update lock" && git push'
   nvim.schedule = function(callback)
     scheduled = callback
   end
@@ -1175,7 +1187,7 @@ T["chat"]["sends the exact permission option chosen by the select provider"] = f
     type = "permission_requested",
     session_id = "session-1",
     data = {
-      operation = { kind = "command", command = { "rm", "toto.md" } },
+      operation = { kind = "command", command = { command } },
       options = {
         { optionId = "reject", name = "Deny", kind = "reject_once" },
         { optionId = "allow", name = "Allow Once", kind = "allow_once" },
@@ -1193,7 +1205,7 @@ T["chat"]["sends the exact permission option chosen by the select provider"] = f
   nvim.schedule = original_schedule
   nvim.ui.select = original_select
 
-  MiniTest.expect.equality(prompt, "louiselm permission (command): ")
+  MiniTest.expect.equality(prompt, "louiselm permission (command): " .. nvim.json.encode({ command }) .. " ")
   MiniTest.expect.equality(labels, { "Deny", "Allow Once", "Always Allow" })
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow" } })
   chat:dispose()
@@ -1253,6 +1265,7 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   local original_select = nvim.ui.select
   local scheduled = {}
   local labels
+  local prompt
   local response
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
@@ -1275,6 +1288,7 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   })
 
   nvim.ui.select = function(options, select_options, callback)
+    prompt = select_options.prompt
     labels = {}
     for _, option in ipairs(options) do
       labels[#labels + 1] = select_options.format_item(option)
@@ -1286,6 +1300,7 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(labels, { "Allow for This Session", "Allow and Don't Ask Again" })
+  MiniTest.expect.equality(prompt, "louiselm permission (command, details unavailable): ")
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "always" } })
   chat:dispose()
 end
