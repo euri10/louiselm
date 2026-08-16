@@ -45,6 +45,7 @@ local Skills = require("louiselm.skills")
 ---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
+---@field header_namespace integer Highlight namespace for session diagnostics.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field current_id string? Currently displayed session id.
@@ -172,6 +173,36 @@ local function single_line(value)
   return (value:gsub("[\r\n]", " "))
 end
 
+local HEADER_LINE_COUNT = 4
+local ACP_HIGHLIGHT = "LouiselmAcpValue"
+local DERIVED_HIGHLIGHT = "LouiselmDerivedValue"
+
+local STATUS_HIGHLIGHTS = {
+  ready = "LouiselmStatusReady",
+  prompting = "LouiselmStatusActive",
+  configuring = "LouiselmStatusActive",
+  starting = "LouiselmStatusActive",
+  waiting_permission = "LouiselmStatusWarning",
+  cancelling = "LouiselmStatusWarning",
+  error = "LouiselmStatusError",
+  disposed = "LouiselmStatusWarning",
+}
+
+local DEFAULT_HIGHLIGHTS = {
+  [ACP_HIGHLIGHT] = "Identifier",
+  [DERIVED_HIGHLIGHT] = "Number",
+  LouiselmStatusReady = "DiagnosticOk",
+  LouiselmStatusActive = "DiagnosticInfo",
+  LouiselmStatusWarning = "DiagnosticWarn",
+  LouiselmStatusError = "DiagnosticError",
+}
+
+local function setup_highlights()
+  for name, link in pairs(DEFAULT_HIGHLIGHTS) do
+    nvim.api.nvim_set_hl(0, name, { default = true, link = link })
+  end
+end
+
 local ACTIVE_TURN_STATUS = {
   prompting = true,
   waiting_permission = true,
@@ -203,6 +234,14 @@ local function report_id(agent, acp_session_id)
   return agent .. "/" .. acp_session_id
 end
 
+---@param value string
+---@return string
+local function statusline_escape(value)
+  return (single_line(value):gsub("%%", function()
+    return "%%"
+  end))
+end
+
 ---@param state louiselm.session.State
 ---@return string
 local function session_identity(state)
@@ -223,7 +262,7 @@ local function session_identity(state)
     parts[#parts + 1] = "loaded"
   end
   if state.skills_policy ~= nil then
-    parts[#parts + 1] = "skills: " .. (state.skills_policy == "off" and "off" or "on")
+    parts[#parts + 1] = "skills: " .. state.skills_policy
   end
   return table.concat(parts, " · ")
 end
@@ -241,11 +280,10 @@ local function session_summary(state)
   if state.context ~= nil then
     local stale = state.context.stale and " stale" or ""
     parts[#parts + 1] = string.format(
-      "context=%s/%s (%.0f%% %s%s)",
+      "context=%s/%s (%.0f%%%s)",
       format_number(state.context.used),
       format_number(state.context.size),
       state.context.percentage,
-      state.context.pressure,
       stale
     )
   end
@@ -306,9 +344,148 @@ local function turn_label(state)
 end
 
 ---@param state louiselm.session.State
+---@return string raw
+---@return string derived
+local function context_display(state)
+  local context = state.context
+  if context == nil then
+    return "", ""
+  end
+  local raw = "context=" .. format_number(context.used) .. "/" .. format_number(context.size)
+  local derived = string.format("%.0f%%", context.percentage)
+  if context.stale then
+    derived = derived .. " stale"
+  end
+  return raw, derived
+end
+
+---@param state louiselm.session.State
+---@return string?
+local function cost_display(state)
+  if state.cost == nil then
+    return nil
+  end
+  return "cost=" .. format_number(state.cost.amount) .. " " .. single_line(state.cost.currency)
+end
+
+---@param state louiselm.session.State
 ---@return string
+local function header_identity(state)
+  local agent = single_line(state.agent)
+  local parts = {
+    state.acp_session_id and report_id(agent, single_line(state.acp_session_id)) or agent,
+  }
+  if state.name ~= nil and state.name ~= state.id then
+    parts[#parts + 1] = single_line(state.name)
+  end
+  parts[#parts + 1] = single_line(state.id)
+  return "# " .. table.concat(parts, " · ")
+end
+
+---@class louiselm.ui.HeaderHighlight
+---@field line integer Zero-based header line.
+---@field start_col integer Zero-based byte column.
+---@field end_col integer Exclusive zero-based byte column.
+---@field group string Highlight group name.
+
+---@param highlights louiselm.ui.HeaderHighlight[]
+---@param line integer
+---@param start_col integer
+---@param text string
+---@param group string
+local function add_header_highlight(highlights, line, start_col, text, group)
+  highlights[#highlights + 1] = {
+    line = line,
+    start_col = start_col,
+    end_col = start_col + #text,
+    group = group,
+  }
+end
+
+---@param state louiselm.session.State
+---@return string[] lines
+---@return louiselm.ui.HeaderHighlight[] highlights
 local function session_header(state)
-  return session_summary(state) .. " · " .. turn_label(state)
+  local highlights = {}
+  local session_parts = {
+    "status=" .. tostring(state.status or "unknown"),
+    "display=" .. turn_label(state),
+  }
+  if state.skills_policy ~= nil then
+    session_parts[#session_parts + 1] = "skills=" .. state.skills_policy
+  end
+  if state.source == "loaded" then
+    session_parts[#session_parts + 1] = "source=loaded"
+  end
+  local session_line = "Session: " .. table.concat(session_parts, " · ")
+  local display_text = "display=" .. turn_label(state)
+  local display_start = assert(session_line:find(display_text, 1, true)) - 1
+  add_header_highlight(
+    highlights,
+    1,
+    display_start,
+    display_text,
+    STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"
+  )
+
+  local options_line = "ACP options:"
+  for index, option in ipairs(state.config_options or {}) do
+    options_line = options_line .. (index == 1 and " " or " · ")
+    local option_text = single_line(option.name) .. "=" .. single_line(tostring(option.current_value))
+    local start_col = #options_line
+    options_line = options_line .. option_text
+    add_header_highlight(highlights, 2, start_col, option_text, ACP_HIGHLIGHT)
+  end
+
+  local telemetry_line = "Telemetry:"
+  local raw_context, derived_context = context_display(state)
+  if raw_context ~= "" then
+    telemetry_line = telemetry_line .. " "
+    local raw_start = #telemetry_line
+    telemetry_line = telemetry_line .. raw_context
+    add_header_highlight(highlights, 3, raw_start, raw_context, ACP_HIGHLIGHT)
+    telemetry_line = telemetry_line .. " ("
+    local derived_start = #telemetry_line
+    telemetry_line = telemetry_line .. derived_context
+    add_header_highlight(highlights, 3, derived_start, derived_context, DERIVED_HIGHLIGHT)
+    telemetry_line = telemetry_line .. ")"
+  end
+  local cost = cost_display(state)
+  if cost ~= nil then
+    telemetry_line = telemetry_line .. (raw_context == "" and " " or " · ")
+    local cost_start = #telemetry_line
+    telemetry_line = telemetry_line .. cost
+    add_header_highlight(highlights, 3, cost_start, cost, ACP_HIGHLIGHT)
+  end
+
+  return { header_identity(state), session_line, options_line, telemetry_line }, highlights
+end
+
+---@param group string
+---@param text string
+---@return string
+local function winbar_segment(group, text)
+  return "%#" .. group .. "#" .. statusline_escape(text) .. "%*"
+end
+
+---@param state louiselm.session.State
+---@return string
+local function session_winbar(state)
+  local fields = {
+    winbar_segment(STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning", turn_label(state)),
+  }
+  local raw_context, derived_context = context_display(state)
+  if raw_context ~= "" then
+    fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, raw_context)
+      .. " ("
+      .. winbar_segment(DERIVED_HIGHLIGHT, derived_context)
+      .. ")"
+  end
+  local cost = cost_display(state)
+  if cost ~= nil then
+    fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, cost)
+  end
+  return table.concat(fields, " · ")
 end
 
 ---@param self louiselm.ui.Chat
@@ -321,7 +498,7 @@ local function render_winbar(self, view, win)
   if self.winbars[win] == nil then
     self.winbars[win] = nvim.api.nvim_get_option_value("winbar", { win = win })
   end
-  nvim.api.nvim_set_option_value("winbar", turn_label(view.session:inspect()), { win = win })
+  nvim.api.nvim_set_option_value("winbar", session_winbar(view.session:inspect()), { win = win })
 end
 
 ---@param self louiselm.ui.Chat
@@ -334,9 +511,22 @@ local function restore_winbars(self)
   self.winbars = {}
 end
 
+---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
-local function render_header(view)
-  set_line(view.buffer, 0, "# " .. session_header(view.session:inspect()))
+local function render_header(self, view)
+  local lines, highlights = session_header(view.session:inspect())
+  nvim.api.nvim_buf_set_lines(view.buffer, 0, HEADER_LINE_COUNT, false, lines)
+  nvim.api.nvim_buf_clear_namespace(view.buffer, self.header_namespace, 0, HEADER_LINE_COUNT)
+  for _, highlight in ipairs(highlights) do
+    nvim.api.nvim_buf_add_highlight(
+      view.buffer,
+      self.header_namespace,
+      highlight.group,
+      highlight.line,
+      highlight.start_col,
+      highlight.end_col
+    )
+  end
 end
 
 ---@param self louiselm.ui.Chat
@@ -711,7 +901,7 @@ open_session_options = function(self, view, initial)
           if callback_error ~= nil then
             insert_transcript(self, view, { "Error: " .. callback_error })
           else
-            render_header(view)
+            render_header(self, view)
           end
           open_session_options(self, view, false)
         end)
@@ -762,7 +952,7 @@ local function handle_event(self, view, event)
   end
 
   if event.type == "state_changed" or event.type == "config_options_changed" or event.type == "usage_updated" then
-    render_header(view)
+    render_header(self, view)
     render_winbar(self, view, view.window)
   end
   if event.type == "state_changed" and view.session:inspect().status == "ready" then
@@ -968,6 +1158,7 @@ function M.new(api, options)
   if skill_contexts == nil then
     return nil, skill_context_error
   end
+  setup_highlights()
   local chat = setmetatable({
     api = api,
     agents = agents,
@@ -978,6 +1169,7 @@ function M.new(api, options)
     skill_context = skill_contexts[1],
     diff = Diff.new(),
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
+    header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
     views = {},
     winbars = {},
     current_id = nil,
@@ -1015,14 +1207,16 @@ function Chat:attach(session)
   nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = buffer })
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
   nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "# " .. session_header(state), "", "> " })
+  local header = session_header(state)
+  local initial_lines = nvim.list_extend(header, { "", "> " })
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, initial_lines)
 
   local view = {
     session = session,
     buffer = buffer,
     window = window,
     source_buffer = source_buffer,
-    prompt_line = 2,
+    prompt_line = HEADER_LINE_COUNT + 1,
     transcript_tail = nil,
     response_line = nil,
     response_tail = nil,
@@ -1058,6 +1252,7 @@ function Chat:attach(session)
     nvim.cmd.startinsert()
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
   end
+  render_header(self, view)
   render_winbar(self, view, window)
   nvim.keymap.set("i", "<CR>", function()
     self:submit()

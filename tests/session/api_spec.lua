@@ -510,6 +510,12 @@ T["new"]["tracks context cost and reported turn usage and rejects malformed tele
     update = { sessionUpdate = "usage_update", used = 150, size = 200 },
   })
   MiniTest.expect.equality(session:inspect().context.pressure, "elevated")
+  MiniTest.expect.equality(session:inspect().cost, { amount = 1.25, currency = "USD" })
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = 160, size = 200, cost = nvim.NIL },
+  })
+  MiniTest.expect.equality(session:inspect().cost, nil)
   notification(process, "session/update", {
     sessionId = "agent-acp",
     update = { sessionUpdate = "usage_update", used = 190, size = 200 },

@@ -297,18 +297,41 @@ This source-specific override can coexist with `wrap = true` for other Snacks
 picker lists. LouiseLM intentionally does not detect or reconfigure a
 `vim.ui.select` provider.
 
-The header reports lifecycle and tool activity, active option values, agent-
-reported context pressure and cumulative cost. Completed turns append only the
-usage fields reported by the agent. LouiseLM does not estimate token counts,
-prices, or compaction state.
+Each chat begins with a contiguous diagnostic block that stays copyable as
+plain text:
+
+```text
+# codex/ACP_SESSION_ID · session-1
+Session: status=ready · display=Your turn · skills=native
+ACP options: Mode=agent · Model=gpt-5.6-sol · Fast mode=false
+Telemetry: context=148222/258400 (57%) · cost=1.5 USD
+```
+
+The identity line keeps the ACP and local session identifiers. `Session` keeps
+the raw lifecycle state beside its friendly label and reports the exact
+`native`, `inject`, or `off` skills policy. `ACP options` preserves the agent's
+names, typed current values, and order. Tool activity stays in chronological
+`[tool]` transcript messages instead of the diagnostic block.
+
+The window bar persists the friendly lifecycle label, reported context counts,
+LouiseLM's derived percentage, and cumulative cost while the transcript is
+scrolled. Context and cost segments are omitted until the agent reports them;
+an omitted cost in a later update retains the last reported cumulative value,
+while an explicit ACP null clears it. A model-option change marks the retained
+percentage `stale` until fresh usage arrives. LouiseLM does not estimate token
+counts, prices, or compaction state, and it does not display a context-pressure
+classification.
+
+Adapter values use the user-overridable `LouiselmAcpValue` highlight and derived
+percentage/staleness use `LouiselmDerivedValue`. Lifecycle labels use
+`LouiselmStatusReady`, `LouiselmStatusActive`, `LouiselmStatusWarning`, and
+`LouiselmStatusError`; their text remains meaningful without color. Completed
+turns append only usage fields reported by the agent.
 
 The inline assistant uses the same headless session API. It sends the current
 buffer location and selected text as context, then replaces that selection with
 the streamed response; with no selection, the response is inserted at the
 cursor.
-
-The current turn label is also shown in the window bar, so whether it is your
-turn remains visible while scrolling through a long conversation.
 
 Sessions accept an optional `name` in their headless options. `inspect()` also
 reports whether the session was `new` or `loaded` and exposes `acp_session_id`

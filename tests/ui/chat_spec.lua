@@ -86,6 +86,17 @@ local function buffer_lines(buffer)
   return nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
 end
 
+local function chat_lines(identity, session, body, options, telemetry)
+  local lines = {
+    "# " .. identity,
+    "Session: " .. session,
+    "ACP options:" .. (options and " " .. options or ""),
+    "Telemetry:" .. (telemetry and " " .. telemetry or ""),
+  }
+  nvim.list_extend(lines, body)
+  return lines
+end
+
 local function virtual_text(buffer)
   local marks = nvim.api.nvim_buf_get_extmarks(buffer, -1, 0, -1, { details = true })
   local text = {}
@@ -95,6 +106,22 @@ local function virtual_text(buffer)
     end
   end
   return text
+end
+
+local function header_highlights(buffer)
+  local namespace = nvim.api.nvim_get_namespaces()["louiselm.chat.header"]
+  local lines = buffer_lines(buffer)
+  local highlights = {}
+  for _, mark in ipairs(nvim.api.nvim_buf_get_extmarks(buffer, namespace, 0, -1, { details = true })) do
+    local details = mark[4]
+    if details.hl_group ~= nil then
+      highlights[#highlights + 1] = {
+        text = lines[mark[2] + 1]:sub(mark[3] + 1, details.end_col),
+        group = details.hl_group,
+      }
+    end
+  end
+  return highlights
 end
 
 T["chat"] = MiniTest.new_set({
@@ -115,7 +142,7 @@ T["chat"]["focuses the prompt"] = function()
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
 
-  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 3, 1 })
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 6, 1 })
 
   chat:dispose()
 end
@@ -175,18 +202,20 @@ T["chat"]["submits every line in a multiline prompt"] = function()
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
 
-  nvim.api.nvim_buf_set_lines(chat:buffer(), 2, -1, false, { "> first line", "> second line" })
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, { "> first line", "> second line" })
   assert(chat:submit())
 
   MiniTest.expect.equality(first.prompts, { "first line\nsecond line" })
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> first line",
-    "> second line",
-    "",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> first line",
+      "> second line",
+      "",
+      "> ",
+    })
+  )
   chat:dispose()
 end
 
@@ -217,19 +246,21 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     data = { toolCallId = "tool-1", status = "completed" },
   })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 6
+    return #buffer_lines(chat:buffer()) == 9
   end, 1)
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> /compact",
-    "",
-    "hello **world**",
-    "[tool] tool-1: Read file (completed)",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> /compact",
+      "",
+      "hello **world**",
+      "[tool] tool-1: Read file (completed)",
+      "> ",
+    })
+  )
 
   chat:dispose()
 end
@@ -254,7 +285,7 @@ T["chat"]["shows skill status and keeps slash prompts when skills are off"] = fu
   local picked, pick_error = chat:pick_skill()
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
-  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# claude · session-1 · ready · skills: off · Your turn")
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[2], "Session: status=ready · display=Your turn · skills=off")
   MiniTest.expect.equality(picked, false)
   MiniTest.expect.equality(pick_error, "skill picker is disabled for this session")
   chat:dispose()
@@ -270,7 +301,10 @@ T["chat"]["reports an empty picker catalog without blocking a native session"] =
 
   MiniTest.expect.equality(picked, false)
   MiniTest.expect.equality(pick_error, "no chat skills configured")
-  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# codex · session-1 · ready · skills: on · Your turn")
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer())[2],
+    "Session: status=ready · display=Your turn · skills=native"
+  )
   chat:dispose()
 end
 
@@ -341,7 +375,7 @@ T["chat"]["deduplicates the summary warning while picker diagnostics stay unchan
   chat:dispose()
 end
 
-T["chat"]["normalizes multiline tool activity in the session header"] = function()
+T["chat"]["keeps tool activity out of persistent session diagnostics"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -350,13 +384,15 @@ T["chat"]["normalizes multiline tool activity in the session header"] = function
   first.state.activity = "exec command\nwith another line"
   first:emit({ type = "state_changed", session_id = "session-1", data = { status = "prompting" } })
   nvim.wait(100, function()
-    return buffer_lines(chat:buffer())[1] ~= "# claude · session-1 · ready · Your turn"
+    return buffer_lines(chat:buffer())[2] == "Session: status=prompting · display=Model responding"
   end, 1)
 
-  MiniTest.expect.equality(
-    buffer_lines(chat:buffer())[1],
-    "# claude · session-1 · prompting · activity=exec command with another line · Model responding"
-  )
+  MiniTest.expect.equality(nvim.list_slice(buffer_lines(chat:buffer()), 1, 4), {
+    "# claude · session-1",
+    "Session: status=prompting · display=Model responding",
+    "ACP options:",
+    "Telemetry:",
+  })
   chat:dispose()
 end
 
@@ -369,20 +405,16 @@ T["chat"]["queues one prompt in every active turn state and releases it only on 
 
     assert(chat:submit("/compact"))
     MiniTest.expect.equality(first.prompts, {})
-    MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-      "# claude · session-"
-        .. status
-        .. " · "
-        .. status
-        .. " · "
-        .. (
-          status == "prompting" and "Model responding"
-          or status == "waiting_permission" and "Waiting for permission"
-          or "Stopping"
-        ),
-      "",
-      "> /compact",
-    })
+    local display = status == "prompting" and "Model responding"
+      or status == "waiting_permission" and "Waiting for permission"
+      or "Stopping"
+    MiniTest.expect.equality(
+      buffer_lines(chat:buffer()),
+      chat_lines("claude · session-" .. status, "status=" .. status .. " · display=" .. display, {
+        "",
+        "> /compact",
+      })
+    )
     MiniTest.expect.equality(virtual_text(chat:buffer()), { "Queued for next turn" })
 
     first.state.status = "ready"
@@ -392,13 +424,15 @@ T["chat"]["queues one prompt in every active turn state and releases it only on 
     end, 1)
 
     MiniTest.expect.equality(first.prompts, { "/compact" })
-    MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-      buffer_lines(chat:buffer())[1],
-      "",
-      "> /compact",
-      "",
-      "> ",
-    })
+    MiniTest.expect.equality(
+      buffer_lines(chat:buffer()),
+      chat_lines("claude · session-" .. status, "status=" .. status .. " · display=" .. display, {
+        "",
+        "> /compact",
+        "",
+        "> ",
+      })
+    )
     MiniTest.expect.equality(virtual_text(chat:buffer()), {})
     chat:dispose()
   end
@@ -411,7 +445,7 @@ T["chat"]["keeps an edited queued prompt as a draft until Enter recommits it"] =
   assert(chat:attach(first))
   assert(chat:submit("original"))
 
-  nvim.api.nvim_buf_set_lines(chat:buffer(), 2, 3, false, { "> revised" })
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, 6, false, { "> revised" })
   first.state.status = "ready"
   first:emit({ type = "turn_done", session_id = "session-1", data = {} })
   nvim.wait(20)
@@ -468,11 +502,10 @@ T["chat"]["preserves rejected and failed prompts outside transcript history"] = 
   assert(chat:attach(starting))
   local request_id, start_error = chat:submit("draft")
   MiniTest.expect.equality({ request_id, start_error }, { nil, "session is not ready" })
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · starting · starting · Starting",
-    "",
-    "> draft",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · starting", "status=starting · display=Starting", { "", "> draft" })
+  )
 
   starting.state.status = "ready"
   function starting:prompt()
@@ -482,11 +515,10 @@ T["chat"]["preserves rejected and failed prompts outside transcript history"] = 
   rawset(nvim, "notify", original_notify)
 
   MiniTest.expect.equality({ failed_id, failed_error }, { nil, "write failed" })
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · starting · starting · Starting",
-    "",
-    "> draft",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · starting", "status=starting · display=Starting", { "", "> draft" })
+  )
   MiniTest.expect.equality(notifications, { "louiselm: session is not ready", "louiselm: write failed" })
   chat:dispose()
 end
@@ -503,7 +535,7 @@ T["chat"]["does not release queued work after session error or chat disposal"] =
     return virtual_text(chat:buffer())[1] == nil
   end, 1)
   MiniTest.expect.equality(failed.prompts, {})
-  MiniTest.expect.equality(buffer_lines(chat:buffer())[4], "> keep me")
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[7], "> keep me")
 
   local late = fake_session("late", "claude")
   late.state.status = "prompting"
@@ -573,19 +605,21 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
   })
 
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 7
+    return #buffer_lines(chat:buffer()) == 10
   end, 1)
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> hello",
-    "",
-    "before tool",
-    "[tool] tool-1: Read file (completed)",
-    "after tool",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> hello",
+      "",
+      "before tool",
+      "[tool] tool-1: Read file (completed)",
+      "after tool",
+      "> ",
+    })
+  )
 
   chat:dispose()
 end
@@ -607,15 +641,17 @@ T["chat"]["keeps multiline tool titles on one buffer line"] = function()
   })
 
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 4
+    return #buffer_lines(chat:buffer()) == 7
   end, 1)
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "[tool] tool-1: first line second line (completed)",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "[tool] tool-1: first line second line (completed)",
+      "> ",
+    })
+  )
 
   chat:dispose()
 end
@@ -631,16 +667,18 @@ T["chat"]["splits multiline error messages before inserting them"] = function()
     data = { message = "first line\nsecond line" },
   })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 5
+    return #buffer_lines(chat:buffer()) == 8
   end, 1)
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "Error: first line",
-    "second line",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "Error: first line",
+      "second line",
+      "> ",
+    })
+  )
 
   chat:dispose()
 end
@@ -665,19 +703,21 @@ T["chat"]["schedules session events before touching buffers"] = function()
   MiniTest.expect.equality(#scheduled, 1)
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
-    { "# claude · session-1 · ready · Your turn", "", "> hello", "", "> " }
+    chat_lines("claude · session-1", "status=ready · display=Your turn", { "", "> hello", "", "> " })
   )
   scheduled[1]()
   nvim.schedule = original_schedule
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> hello",
-    "",
-    "scheduled",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> hello",
+      "",
+      "scheduled",
+      "> ",
+    })
+  )
   chat:dispose()
 end
 
@@ -700,12 +740,10 @@ T["chat"]["renders replayed assistant chunks before a new prompt"] = function()
   scheduled[1]()
   nvim.schedule = original_schedule
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# codex · session-1 · ready · Your turn",
-    "",
-    "replayed",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("codex · session-1", "status=ready · display=Your turn", { "", "replayed", "> " })
+  )
   chat:dispose()
 end
 
@@ -781,12 +819,10 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   scheduled[3]()
   load_call.ready_callback(restored)
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer("session-2")), {
-    "# codex · session-2 · ready · Your turn",
-    "",
-    "replayed history",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer("session-2")),
+    chat_lines("codex · session-2", "status=ready · display=Your turn", { "", "replayed history", "> " })
+  )
 
   nvim.schedule = original_schedule
   nvim.ui.select = original_select
@@ -899,24 +935,23 @@ T["chat"]["keeps a blank boundary before the first scheduled assistant event"] =
     data = { content = { type = "text", text = "scheduled" } },
   })
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> hello",
-    "",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", { "", "> hello", "", "> " })
+  )
   scheduled[1]()
   nvim.schedule = original_schedule
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> hello",
-    "",
-    "scheduled",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> hello",
+      "",
+      "scheduled",
+      "> ",
+    })
+  )
   chat:dispose()
 end
 
@@ -940,14 +975,16 @@ T["chat"]["keeps the boundary when a tool call is the first event"] = function()
   scheduled[1]()
   nvim.schedule = original_schedule
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> hello",
-    "",
-    "[tool] tool-1: Read file (started)",
-    "> ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> hello",
+      "",
+      "[tool] tool-1: Read file (started)",
+      "> ",
+    })
+  )
   chat:dispose()
 end
 
@@ -1293,11 +1330,13 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   assert(chat:attach(first))
   assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Your turn",
-    "",
-    "> [context: file: init.lua] ",
-  })
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> [context: file: init.lua] ",
+    })
+  )
   assert(chat:submit("Review this"))
 
   MiniTest.expect.equality(first.prompts, {
@@ -1326,16 +1365,138 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
   first.state.usage = { input_tokens = 12, cached_read_tokens = 3 }
   first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 4
+    return #buffer_lines(chat:buffer()) == 7
   end, 1)
   nvim.ui.select = original_select
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1 · ready · Model=opus · Brave=true · context=95/100 (95% critical) · cost=1.5 USD · Your turn",
-    "",
-    "[usage] input_tokens=12 · cached_read_tokens=3",
-    "> ",
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines(
+      "claude · session-1",
+      "status=ready · display=Your turn",
+      { "", "[usage] input_tokens=12 · cached_read_tokens=3", "> " },
+      "Model=opus · Brave=true",
+      "context=95/100 (95%) · cost=1.5 USD"
+    )
+  )
+  chat:dispose()
+end
+
+T["chat"]["groups session diagnostics and keeps telemetry in the window bar"] = function()
+  local first = fake_session("session-1", "codex")
+  first.state.acp_session_id = "acp-session-1"
+  first.state.skills_policy = "native"
+  first.state.context = { used = 148222, size = 258400, percentage = 57.361455, pressure = "normal", stale = false }
+  first.state.cost = { amount = 1.5, currency = "USD" }
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  first.state.config_options = {
+    { id = "mode", name = "Mode", type = "select", current_value = "agent", options = {} },
+    { id = "fast", name = "Fast mode", type = "boolean", current_value = false },
+  }
+  first:emit({ type = "config_options_changed", session_id = "session-1", data = first.state.config_options })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[3] == "ACP options: Mode=agent · Fast mode=false"
+  end, 1)
+
+  MiniTest.expect.equality(nvim.list_slice(buffer_lines(chat:buffer()), 1, 4), {
+    "# codex/acp-session-1 · session-1",
+    "Session: status=ready · display=Your turn · skills=native",
+    "ACP options: Mode=agent · Fast mode=false",
+    "Telemetry: context=148222/258400 (57%) · cost=1.5 USD",
   })
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusReady#Your turn%* · %#LouiselmAcpValue#context=148222/258400%* (%#LouiselmDerivedValue#57%%%*) · %#LouiselmAcpValue#cost=1.5 USD%*"
+  )
+  MiniTest.expect.equality(header_highlights(chat:buffer()), {
+    { text = "display=Your turn", group = "LouiselmStatusReady" },
+    { text = "Mode=agent", group = "LouiselmAcpValue" },
+    { text = "Fast mode=false", group = "LouiselmAcpValue" },
+    { text = "context=148222/258400", group = "LouiselmAcpValue" },
+    { text = "57%", group = "LouiselmDerivedValue" },
+    { text = "cost=1.5 USD", group = "LouiselmAcpValue" },
+  })
+  chat:dispose()
+end
+
+T["chat"]["omits unavailable telemetry and refreshes stale and cleared values"] = function()
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "inject"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer())[2],
+    "Session: status=ready · display=Your turn · skills=inject"
+  )
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[4], "Telemetry:")
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), "%#LouiselmStatusReady#Your turn%*")
+
+  first.state.context = { used = 50, size = 100, percentage = 50, pressure = "normal", stale = false }
+  first.state.cost = { amount = 2, currency = "U%S\nX" }
+  first:emit({ type = "usage_updated", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[4] == "Telemetry: context=50/100 (50%) · cost=2 U%S X"
+  end, 1)
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusReady#Your turn%* · %#LouiselmAcpValue#context=50/100%* (%#LouiselmDerivedValue#50%%%*) · %#LouiselmAcpValue#cost=2 U%%S X%*"
+  )
+
+  first.state.context.stale = true
+  first:emit({ type = "config_options_changed", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[4]:find("50%% stale", 1) ~= nil
+  end, 1)
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[4], "Telemetry: context=50/100 (50% stale) · cost=2 U%S X")
+
+  first.state.context = { used = 60, size = 100, percentage = 60, pressure = "normal", stale = false }
+  first.state.cost = nil
+  first:emit({ type = "usage_updated", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[4] == "Telemetry: context=60/100 (60%)"
+  end, 1)
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusReady#Your turn%* · %#LouiselmAcpValue#context=60/100%* (%#LouiselmDerivedValue#60%%%*)"
+  )
+  chat:dispose()
+end
+
+T["chat"]["uses semantic window bar highlights for every lifecycle state"] = function()
+  local cases = {
+    { status = "ready", label = "Your turn", group = "LouiselmStatusReady" },
+    { status = "prompting", label = "Model responding", group = "LouiselmStatusActive" },
+    { status = "waiting_permission", label = "Waiting for permission", group = "LouiselmStatusWarning" },
+    { status = "cancelling", label = "Stopping", group = "LouiselmStatusWarning" },
+    { status = "starting", label = "Starting", group = "LouiselmStatusActive" },
+    { status = "configuring", label = "Starting", group = "LouiselmStatusActive" },
+    { status = "error", label = "Error", group = "LouiselmStatusError" },
+    { status = "disposed", label = "Unavailable", group = "LouiselmStatusWarning" },
+  }
+  for _, case in ipairs(cases) do
+    local session = fake_session("session-" .. case.status, "codex")
+    session.state.status = case.status
+    local chat = assert(Chat.new(fake_api()))
+    assert(chat:attach(session))
+    MiniTest.expect.equality(
+      nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+      "%#" .. case.group .. "#" .. case.label .. "%*"
+    )
+    chat:dispose()
+  end
+end
+
+T["chat"]["preserves user provenance highlight overrides"] = function()
+  nvim.api.nvim_set_hl(0, "LouiselmAcpValue", { fg = 0x123456 })
+  MiniTest.finally(function()
+    nvim.api.nvim_set_hl(0, "LouiselmAcpValue", { link = "Identifier" })
+  end)
+
+  local chat = assert(Chat.new(fake_api()))
+
+  MiniTest.expect.equality(nvim.api.nvim_get_hl(0, { name = "LouiselmAcpValue" }).fg, 0x123456)
   chat:dispose()
 end
 
@@ -1344,7 +1505,7 @@ T["chat"]["shows whose turn it is in the session header"] = function()
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# claude · session-1 · ready · Your turn")
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[2], "Session: status=ready · display=Your turn")
 
   first.state.status = "prompting"
   first:emit({
@@ -1353,10 +1514,10 @@ T["chat"]["shows whose turn it is in the session header"] = function()
     data = { status = "prompting" },
   })
   nvim.wait(100, function()
-    return buffer_lines(chat:buffer())[1] == "# claude · session-1 · prompting · Model responding"
+    return buffer_lines(chat:buffer())[2] == "Session: status=prompting · display=Model responding"
   end, 1)
 
-  MiniTest.expect.equality(buffer_lines(chat:buffer())[1], "# claude · session-1 · prompting · Model responding")
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[2], "Session: status=prompting · display=Model responding")
   chat:dispose()
 end
 
@@ -1365,7 +1526,7 @@ T["chat"]["keeps the turn label visible in the window bar"] = function()
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
 
-  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), "Your turn")
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), "%#LouiselmStatusReady#Your turn%*")
 
   first.state.status = "prompting"
   first:emit({
@@ -1374,10 +1535,13 @@ T["chat"]["keeps the turn label visible in the window bar"] = function()
     data = { status = "prompting" },
   })
   nvim.wait(100, function()
-    return nvim.api.nvim_get_option_value("winbar", { win = 0 }) == "Model responding"
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }) == "%#LouiselmStatusActive#Model responding%*"
   end, 1)
 
-  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), "Model responding")
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusActive#Model responding%*"
+  )
   chat:dispose()
 end
 
@@ -1503,11 +1667,11 @@ T["chat"]["renames the current session and refreshes its header"] = function()
 
   assert(chat:rename_session("Review"))
   nvim.wait(100, function()
-    return nvim.api.nvim_buf_get_lines(chat:buffer(), 0, 1, false)[1]:find("# Review", 1, true) ~= nil
+    return nvim.api.nvim_buf_get_lines(chat:buffer(), 0, 1, false)[1]:find("# claude · Review", 1, true) ~= nil
   end, 1)
   MiniTest.expect.equality(
     nvim.api.nvim_buf_get_lines(chat:buffer(), 0, 1, false)[1],
-    "# Review · claude · session-1 · ready · Your turn"
+    "# claude · Review · session-1"
   )
   chat:dispose()
 end
