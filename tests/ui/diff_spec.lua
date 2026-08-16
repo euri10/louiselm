@@ -97,6 +97,28 @@ T["review"]["shows an edit and sends an allow response"] = function()
   nvim.fn.delete(path)
 end
 
+T["review"]["cancels the permission request when its review buffer is wiped"] = function()
+  local path = temp_file({ "before" })
+  local responses = {}
+  local diff = Diff.new()
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { path = path, content = "after\n" } },
+    options = { { optionId = "allow-once", kind = "allow_once" }, { optionId = "reject", kind = "reject_once" } },
+  }, function(result)
+    responses[#responses + 1] = result
+    return true
+  end))
+
+  nvim.api.nvim_buf_delete(diff.buffer, { force = true })
+
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "cancelled" } } })
+  MiniTest.expect.equality(diff.buffer, nil)
+  diff:dispose()
+  MiniTest.expect.equality(#responses, 1)
+  nvim.fn.delete(path)
+end
+
 T["review"]["asks which lifetime to use when an edit has multiple allow options"] = function()
   local path = temp_file({ "before" })
   local response

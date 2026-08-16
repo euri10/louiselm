@@ -172,6 +172,27 @@ function Diff:open(request, response)
   self.buffer = buffer
   self.preview = preview
   self.response = response
+  nvim.api.nvim_create_autocmd("BufWipeout", {
+    buffer = buffer,
+    once = true,
+    callback = function()
+      -- The review buffer is `bufhidden=wipe`, so navigating away abandons the review.
+      -- Field teardown happens before the response so answering cannot re-enter this
+      -- buffer, and the previously focused buffer is left alone: the user already moved.
+      local pending = self.response
+      self.buffer = nil
+      self.preview = nil
+      self.response = nil
+      self.previous_buffer = nil
+      if pending == nil then
+        return
+      end
+      local call_ok, sent = pcall(pending, { outcome = { outcome = "cancelled" } })
+      if not call_ok or not sent then
+        nvim.notify("louiselm: abandoned diff review could not be cancelled", nvim.log.levels.WARN)
+      end
+    end,
+  })
   nvim.keymap.set("n", "a", function()
     self:accept()
   end, { buffer = buffer, silent = true, nowait = true, desc = "Allow louiselm file edit" })

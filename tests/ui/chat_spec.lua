@@ -124,9 +124,15 @@ local function header_highlights(buffer)
   return highlights
 end
 
+local original_schedule = nvim.schedule
+local original_select = nvim.ui.select
+
 T["chat"] = MiniTest.new_set({
   hooks = {
     post_case = function()
+      -- A failing expectation skips a test's own restore, and MiniTest itself needs these.
+      nvim.schedule = original_schedule
+      nvim.ui.select = original_select
       nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_is_valid(buffer) and nvim.api.nvim_buf_get_name(buffer):match("^louiselm://") then
@@ -1303,6 +1309,115 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   MiniTest.expect.equality(prompt, "louiselm permission (command, details unavailable): ")
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "always" } })
   chat:dispose()
+end
+
+---@return fun(session: table, id: string) request Emit one command permission request.
+---@return fun() run_scheduled Drain callbacks queued through the stubbed `vim.schedule`.
+---@return table pickers Recorded `vim.ui.select` calls.
+---@return table responses Recorded permission responses.
+local function permission_harness()
+  local scheduled = {}
+  local drained = 0
+  local pickers = {}
+  local responses = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+  nvim.ui.select = function(items, options, callback)
+    pickers[#pickers + 1] = { items = items, prompt = options.prompt, callback = callback }
+  end
+  local function request(session, id)
+    session:emit({
+      type = "permission_requested",
+      session_id = session.state.id,
+      data = {
+        operation = { kind = "command", command = { "git", "status" } },
+        options = {
+          { optionId = "allow-once", kind = "allow_once" },
+          { optionId = "deny", kind = "deny_once" },
+        },
+      },
+      respond = function(result)
+        responses[#responses + 1] = { id = id, result = result }
+        return true
+      end,
+    })
+  end
+  local function run_scheduled()
+    while drained < #scheduled do
+      drained = drained + 1
+      scheduled[drained]()
+    end
+  end
+  return request, run_scheduled, pickers, responses
+end
+
+T["chat"]["opens one permission decision at a time across sessions"] = function()
+  local first = fake_session("session-1", "claude")
+  local second = fake_session("session-2", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local request, run_scheduled, pickers, responses = permission_harness()
+
+  request(first, "first")
+  request(second, "second")
+  run_scheduled()
+
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(responses, {})
+
+  pickers[1].callback(pickers[1].items[2], 2)
+  run_scheduled()
+
+  MiniTest.expect.equality(#pickers, 2)
+  MiniTest.expect.equality(#responses, 1)
+
+  pickers[2].callback(nil)
+  run_scheduled()
+
+  MiniTest.expect.equality(responses, {
+    { id = "first", result = { outcome = { outcome = "selected", optionId = "allow-once" } } },
+    { id = "second", result = { outcome = { outcome = "cancelled" } } },
+  })
+  chat:dispose()
+end
+
+T["chat"]["cancels permission decisions still queued when the chat is disposed"] = function()
+  local first = fake_session("session-1", "claude")
+  local second = fake_session("session-2", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local request, run_scheduled, pickers, responses = permission_harness()
+
+  request(first, "first")
+  request(second, "second")
+  run_scheduled()
+  MiniTest.expect.equality(#pickers, 1)
+
+  chat:dispose()
+  MiniTest.expect.equality(responses, { { id = "second", result = { outcome = { outcome = "cancelled" } } } })
+
+  pickers[1].callback(pickers[1].items[2], 2)
+  run_scheduled()
+
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(responses[2], { id = "first", result = { outcome = { outcome = "cancelled" } } })
+end
+
+T["chat"]["cancels a permission request delivered after disposal"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local request, run_scheduled, pickers, responses = permission_harness()
+
+  request(first, "first")
+  chat:dispose()
+  run_scheduled()
+
+  MiniTest.expect.equality(#pickers, 0)
+  MiniTest.expect.equality(responses, { { id = "first", result = { outcome = { outcome = "cancelled" } } } })
 end
 
 T["chat"]["cancels a queued permission choice after disposal"] = function()

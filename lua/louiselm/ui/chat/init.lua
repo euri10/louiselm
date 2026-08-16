@@ -44,6 +44,8 @@ local Skills = require("louiselm.skills")
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
+---@field decision_active boolean Whether a permission decision is currently presented.
+---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
 ---@field header_namespace integer Highlight namespace for session diagnostics.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
@@ -697,11 +699,18 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
+---@return boolean hosted Whether this view can still host a permission decision.
+local function hosts_view(self, view)
+  return not self.disposed and self.views[view.session:inspect().id] == view and nvim.api.nvim_buf_is_valid(view.buffer)
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 ---@param result table
 ---@return boolean sent
 local function send_permission_response(self, view, respond, result)
-  if self.disposed or self.views[view.session:inspect().id] ~= view or not nvim.api.nvim_buf_is_valid(view.buffer) then
+  if not hosts_view(self, view) then
     -- A choice made after the view is gone must grant nothing, but the request still
     -- has to be answered or the agent blocks on it for the rest of the session.
     local closed_ok, closed = pcall(respond, { outcome = { outcome = "cancelled" } })
@@ -731,12 +740,8 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param data table
----@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
+---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? Decision responder.
 local function prompt_permission(self, view, data, respond)
-  if type(respond) ~= "function" then
-    insert_transcript(self, view, { "Error: permission request has no response callback" })
-    return
-  end
   local options = permission_options(data.options)
   if options == nil or #options == 0 then
     cancel_permission(self, view, respond)
@@ -760,6 +765,94 @@ local function prompt_permission(self, view, data, respond)
     end
     send_permission_response(self, view, respond, result)
   end)
+end
+
+---@class louiselm.ui.ChatDecision
+---@field view louiselm.ui.ChatView View whose session asked for a decision.
+---@field data table ACP permission request data.
+---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
+
+---@type fun(self: louiselm.ui.Chat)
+local pump_decisions
+
+---Wrap one ACP responder so the decision slot is released exactly once, after the answer.
+---@param self louiselm.ui.Chat
+---@param decision louiselm.ui.ChatDecision Decision being opened.
+---@return fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? respond
+local function decision_responder(self, decision)
+  local released = false
+  return function(result, rpc_error)
+    if released then
+      return false, "permission decision was already answered"
+    end
+    released = true
+    local sent, send_error = decision.respond(result, rpc_error)
+    self.decision_active = false
+    pump_decisions(self)
+    return sent, send_error
+  end
+end
+
+---Open one decision: a diff review for file edits, a picker for everything else.
+---@param self louiselm.ui.Chat
+---@param decision louiselm.ui.ChatDecision Decision to present.
+local function open_decision(self, decision)
+  local view = decision.view
+  local data = decision.data
+  local respond = decision_responder(self, decision)
+  if not hosts_view(self, view) then
+    cancel_permission(self, view, respond)
+    return
+  end
+  if type(data.operation) == "table" and data.operation.kind == "file_edit" then
+    local opened, open_error = self.diff:open(data, respond)
+    if not opened then
+      insert_transcript(self, view, { "Error: " .. (open_error or "could not open diff review") })
+      cancel_permission(self, view, respond)
+    end
+    return
+  end
+  -- A select provider that throws would otherwise strand every later decision behind it.
+  local call_ok, prompt_error = pcall(prompt_permission, self, view, data, respond)
+  if not call_ok then
+    insert_transcript(self, view, { "Error: permission picker failed: " .. tostring(prompt_error) })
+    cancel_permission(self, view, respond)
+  end
+end
+
+---Present the next queued decision while none is open.
+---One picker or review hosts one decision at a time across every attached session,
+---because an async select provider closes the picker a new one replaces, which answers
+---that request without the user choosing and can leave the replacement unanswered.
+---@param self louiselm.ui.Chat
+pump_decisions = function(self)
+  while not self.decision_active do
+    local decision = table.remove(self.decision_queue, 1)
+    if decision == nil then
+      return
+    end
+    if self.disposed then
+      -- Disposal answers what it can no longer host: an unanswered request blocks its agent.
+      cancel_permission(self, decision.view, decision.respond)
+    else
+      self.decision_active = true
+      open_decision(self, decision)
+    end
+  end
+end
+
+---Queue one permission decision and present it as soon as the chat is free.
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView View whose session asked for a decision.
+---@param data table ACP permission request data.
+---@param respond? fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
+local function queue_decision(self, view, data, respond)
+  if type(respond) ~= "function" then
+    insert_transcript(self, view, { "Error: permission request has no response callback" })
+    return
+  end
+  self.decision_queue[#self.decision_queue + 1] = { view = view, data = data, respond = respond }
+  pump_decisions(self)
 end
 
 ---@param self louiselm.ui.Chat
@@ -961,10 +1054,12 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param event louiselm.session.Event
 local function handle_event(self, view, event)
-  if self.disposed or self.views[event.session_id] ~= view then
-    return
-  end
-  if not nvim.api.nvim_buf_is_valid(view.buffer) then
+  if self.disposed or self.views[event.session_id] ~= view or not nvim.api.nvim_buf_is_valid(view.buffer) then
+    if event.type == "permission_requested" and type(event.respond) == "function" then
+      -- Scheduled before teardown, delivered after it: no view is left to host the choice,
+      -- and no other consumer will answer. The result has nowhere left to be reported.
+      pcall(event.respond, { outcome = { outcome = "cancelled" } })
+    end
     return
   end
 
@@ -1053,14 +1148,8 @@ local function handle_event(self, view, event)
     elseif type(data) == "table" and data.remembered_decision ~= nil then
       insert_transcript(self, view, { "Warning: remembered decision requires a compatible once-only option" })
     end
-    if type(data) == "table" and type(data.operation) == "table" and data.operation.kind == "file_edit" then
-      local opened, open_error = self.diff:open(data, event.respond)
-      if not opened then
-        insert_transcript(self, view, { "Error: " .. (open_error or "could not open diff review") })
-        cancel_permission(self, view, event.respond)
-      end
-    elseif type(data) == "table" then
-      prompt_permission(self, view, data, event.respond)
+    if type(data) == "table" then
+      queue_decision(self, view, data, event.respond)
     else
       cancel_permission(self, view, event.respond)
     end
@@ -1185,6 +1274,8 @@ function M.new(api, options)
     initial_contexts = initial_contexts,
     skill_context = skill_contexts[1],
     diff = Diff.new(),
+    decision_active = false,
+    decision_queue = {},
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
     header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
     views = {},
@@ -1790,6 +1881,8 @@ function Chat:dispose()
   self.disposed = true
   restore_winbars(self)
   self.diff:dispose()
+  self.decision_active = false
+  pump_decisions(self)
   for id, view in pairs(self.views) do
     clear_queued_prompt(view)
     view.unsubscribe()

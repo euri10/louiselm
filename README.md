@@ -414,6 +414,13 @@ covers the requests still queued behind it. Cancelling the turn answers every
 outstanding request with the ACP cancelled outcome, which releases an agent
 that is blocked waiting for a decision.
 
+The chat controller applies the same rule across sessions: one picker or diff
+review is presented at a time for every attached session, and the next decision
+opens when the current one is answered. Disposing the chat answers whatever it
+can no longer host with a cancellation. Because a review buffer is
+`bufhidden=wipe`, navigating away from it abandons the review and cancels its
+request rather than leaving the agent waiting.
+
 Headless consumers can inspect and revoke through
 `sessions:list_permissions()` and `sessions:revoke_permission(rule_id)`. Tests
 or isolated embedders can pass an explicit store as the third constructor
