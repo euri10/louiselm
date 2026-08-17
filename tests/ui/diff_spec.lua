@@ -49,6 +49,25 @@ T["apply"]["applies a single-file unified diff"] = function()
   nvim.fn.delete(path)
 end
 
+T["apply"]["previews an exact-text replacement and reports a missing one"] = function()
+  local path = temp_file({ "one", "two" })
+  local preview = assert(Apply.preview({ path = path, replacement = { old = "two", new = "three" } }))
+  MiniTest.expect.equality(preview.proposed, "one\nthree\n")
+
+  local missing, missing_error = Apply.preview({ path = path, replacement = { old = "four", new = "five" } })
+  MiniTest.expect.equality(missing, nil)
+  MiniTest.expect.equality(missing_error, "diff edit replacement text is not in the file")
+
+  local repeated = temp_file({ "x", "x" })
+  local first = assert(Apply.preview({ path = repeated, replacement = { old = "x", new = "y" } }))
+  MiniTest.expect.equality(first.proposed, "y\nx\n")
+  local all = assert(Apply.preview({ path = repeated, replacement = { old = "x", new = "y", all = true } }))
+  MiniTest.expect.equality(all.proposed, "y\ny\n")
+
+  nvim.fn.delete(path)
+  nvim.fn.delete(repeated)
+end
+
 T["buffer"] = MiniTest.new_set()
 
 T["buffer"]["renders a nonmodifiable diff buffer"] = function()
@@ -93,6 +112,55 @@ T["review"]["shows an edit and sends an allow response"] = function()
   assert(diff:accept())
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
   MiniTest.expect.equality(diff.buffer, nil)
+  diff:dispose()
+  nvim.fn.delete(path)
+end
+
+T["review"]["reviews an edit carried only in ACP diff content"] = function()
+  local path = temp_file({ "hello" })
+  local response
+  local diff = Diff.new()
+  -- Shaped like a claude-agent-acp Edit request: tool arguments verbatim in rawInput,
+  -- reviewable text only in the ACP diff content entry.
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = {
+      kind = "edit",
+      rawInput = { file_path = path, old_string = "hello", new_string = "hello world", replace_all = false },
+      content = { { type = "diff", path = path, oldText = "hello", newText = "hello world" } },
+    },
+    options = { { optionId = "allow-once", kind = "allow_once" }, { optionId = "reject", kind = "reject_once" } },
+  }, function(result)
+    response = result
+    return true
+  end))
+
+  local lines = nvim.api.nvim_buf_get_lines(diff.buffer, 0, -1, false)
+  MiniTest.expect.equality(lines[#lines - 1], "-hello")
+  MiniTest.expect.equality(lines[#lines], "+hello world")
+  assert(diff:accept())
+  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
+
+  diff:dispose()
+  nvim.fn.delete(path)
+end
+
+T["review"]["reviews a whole-file ACP diff content entry without old text"] = function()
+  local path = temp_file({ "hello" })
+  local diff = Diff.new()
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = {
+      kind = "write",
+      rawInput = { file_path = path },
+      content = { { type = "diff", path = path, newText = "replaced\n" } },
+    },
+    options = { { optionId = "allow-once", kind = "allow_once" } },
+  }, function()
+    return true
+  end))
+
+  MiniTest.expect.equality(diff.preview.proposed, "replaced\n")
   diff:dispose()
   nvim.fn.delete(path)
 end

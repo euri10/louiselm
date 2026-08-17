@@ -3,10 +3,16 @@ local M = {}
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+---@class louiselm.ui.DiffReplacement
+---@field old string Exact text the agent expects to find.
+---@field new string Text that takes its place.
+---@field all? boolean Replace every occurrence; absent replaces only the first.
+
 ---@class louiselm.ui.DiffEdit
 ---@field path string File to inspect.
 ---@field diff? string Unified diff for one file.
 ---@field content? string Replacement file content.
+---@field replacement? louiselm.ui.DiffReplacement Exact-text replacement of one fragment.
 
 ---@class louiselm.ui.DiffPreview
 ---@field path string File being previewed.
@@ -156,6 +162,49 @@ local function apply_unified_diff(original, value)
   return join_lines(result, proposed_trailing)
 end
 
+---@param value unknown Replacement payload, if the agent sent one.
+---@return louiselm.ui.DiffReplacement? replacement Nil when absent or invalid.
+---@return string? error_message Validation error; nil when the payload was simply absent.
+local function normalize_replacement(value)
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" then
+    return nil, "diff edit replacement must be a table"
+  end
+  if type(value.old) ~= "string" or value.old == "" then
+    return nil, "diff edit replacement must have non-empty old text"
+  end
+  if type(value.new) ~= "string" then
+    return nil, "diff edit replacement must have new text"
+  end
+  if value.all ~= nil and type(value.all) ~= "boolean" then
+    return nil, "diff edit replacement all must be a boolean"
+  end
+  return { old = value.old, new = value.new, all = value.all == true }
+end
+
+---@param original string Current file content.
+---@param replacement louiselm.ui.DiffReplacement Exact-text replacement.
+---@return string? proposed Content with the replacement applied.
+---@return string? error_message Set when the old text is absent.
+local function apply_replacement(original, replacement)
+  local start = original:find(replacement.old, 1, true)
+  if start == nil then
+    return nil, "diff edit replacement text is not in the file"
+  end
+  local parts = {}
+  local position = 1
+  while start ~= nil do
+    parts[#parts + 1] = original:sub(position, start - 1)
+    parts[#parts + 1] = replacement.new
+    position = start + #replacement.old
+    start = replacement.all and original:find(replacement.old, position, true) or nil
+  end
+  parts[#parts + 1] = original:sub(position)
+  return table.concat(parts)
+end
+
 ---@param edit unknown Agent file-edit payload.
 ---@return louiselm.ui.DiffEdit? normalized_edit
 ---@return string? error_message
@@ -169,19 +218,33 @@ function M.normalize(edit)
   end
   local diff = edit.diff
   local content = edit.content or edit.newText or edit.new_text
+  local replacement, replacement_error = normalize_replacement(edit.replacement)
+  if replacement_error ~= nil then
+    return nil, replacement_error
+  end
   if diff ~= nil and type(diff) ~= "string" then
     return nil, "diff edit diff must be a string"
   end
   if content ~= nil and type(content) ~= "string" then
     return nil, "diff edit content must be a string"
   end
-  if diff ~= nil and content ~= nil then
-    return nil, "diff edit cannot contain both diff and content"
+  local provided = 0
+  if diff ~= nil then
+    provided = provided + 1
   end
-  if diff == nil and content == nil then
-    return nil, "diff edit must contain diff or content"
+  if content ~= nil then
+    provided = provided + 1
   end
-  return { path = path, diff = diff, content = content }
+  if replacement ~= nil then
+    provided = provided + 1
+  end
+  if provided > 1 then
+    return nil, "diff edit must contain only one of diff, content, or replacement"
+  end
+  if provided == 0 then
+    return nil, "diff edit must contain a diff, content, or replacement"
+  end
+  return { path = path, diff = diff, content = content, replacement = replacement }
 end
 
 ---Build a file preview from an ACP edit payload without changing the file.
@@ -198,7 +261,13 @@ function M.preview(edit)
     return nil, read_error
   end
   local proposed = normalized.content
-  if proposed == nil then
+  if proposed == nil and normalized.replacement ~= nil then
+    local replaced, replace_error = apply_replacement(original, normalized.replacement)
+    if replaced == nil then
+      return nil, replace_error
+    end
+    proposed = replaced
+  elseif proposed == nil then
     proposed, read_error = apply_unified_diff(original, normalized.diff)
     if proposed == nil then
       return nil, read_error

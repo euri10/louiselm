@@ -23,6 +23,20 @@ Diff.__index = Diff
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+---@param tool_call unknown ACP tool call.
+---@return table? entry First ACP diff content entry, when the agent sent one.
+local function acp_diff_entry(tool_call)
+  if type(tool_call) ~= "table" or type(tool_call.content) ~= "table" then
+    return nil
+  end
+  for _, entry in ipairs(tool_call.content) do
+    if type(entry) == "table" and entry.type == "diff" and type(entry.newText) == "string" then
+      return entry
+    end
+  end
+  return nil
+end
+
 ---@param request table ACP permission request data.
 ---@return louiselm.ui.DiffEdit? edit
 ---@return string? error_message
@@ -42,11 +56,28 @@ local function request_edit(request)
   if type(raw_input) ~= "table" then
     raw_input = {}
   end
-  return {
+  local edit = {
     path = raw_input.path or raw_input.filePath or raw_input.file_path or operation.path,
     diff = raw_input.diff or operation.diff,
     content = raw_input.content or raw_input.newText or raw_input.new_text,
   }
+  if edit.diff ~= nil or edit.content ~= nil then
+    return edit
+  end
+  -- An agent that forwards its edit tool arguments verbatim leaves nothing reviewable in
+  -- rawInput and carries the text in the ACP diff content entry instead: whole-file text
+  -- when it has no old text, otherwise the exact fragment it expects to replace.
+  local entry = acp_diff_entry(tool_call)
+  if entry == nil then
+    return edit
+  end
+  edit.path = edit.path or entry.path
+  if type(entry.oldText) == "string" and entry.oldText ~= "" then
+    edit.replacement = { old = entry.oldText, new = entry.newText, all = raw_input.replace_all == true }
+  else
+    edit.content = entry.newText
+  end
+  return edit
 end
 
 ---@param self louiselm.ui.Diff
