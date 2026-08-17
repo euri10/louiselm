@@ -769,9 +769,12 @@ T["new"]["cancels every outstanding permission request when the turn is cancelle
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   assert(session:prompt("hello"))
   local permissions = {}
+  local cancelled = {}
   session:on(function(event)
     if event.type == "permission_requested" then
       permissions[#permissions + 1] = event
+    elseif event.type == "permission_cancelled" then
+      cancelled[#cancelled + 1] = event.data
     end
   end)
 
@@ -781,6 +784,7 @@ T["new"]["cancels every outstanding permission request when the turn is cancelle
 
   MiniTest.expect.equality(session:inspect().status, "cancelling")
   MiniTest.expect.equality(#permissions, 1)
+  MiniTest.expect.equality(cancelled, { { request_ids = { 9, 10 } } })
   MiniTest.expect.equality(permission_outcomes(process), {
     { id = 9, outcome = "cancelled" },
     { id = 10, outcome = "cancelled" },

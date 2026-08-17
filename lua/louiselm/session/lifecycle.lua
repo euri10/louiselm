@@ -335,7 +335,8 @@ pump_permissions = function(self)
   end
 end
 
----Answer every outstanding permission request with the ACP cancelled outcome.
+---Answer every outstanding permission request with the ACP cancelled outcome and tell
+---consumers which requests they no longer own, so a decision UI can close itself.
 ---Write failures stay unreported: the caller cancels through the same transport and
 ---already surfaces its own write error.
 ---@param self louiselm.session.Session
@@ -347,11 +348,16 @@ local function cancel_permissions(self)
   if active ~= nil then
     table.insert(outstanding, 1, active)
   end
+  local request_ids = {}
   for _, entry in ipairs(outstanding) do
     if not entry.answered then
       entry.answered = true
       entry.respond({ outcome = { outcome = "cancelled" } })
+      request_ids[#request_ids + 1] = entry.data.request_id
     end
+  end
+  if #request_ids > 0 then
+    emit(self, "permission_cancelled", { request_ids = request_ids })
   end
 end
 

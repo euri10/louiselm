@@ -3,6 +3,7 @@
 ---| "tool_call_started"
 ---| "tool_call_finished"
 ---| "permission_requested"
+---| "permission_cancelled"
 ---| "config_options_changed"
 ---| "usage_updated"
 ---| "state_changed"
@@ -46,11 +47,18 @@
 ---@field data louiselm.session.PermissionData
 ---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? Permission response callback.
 
+---@class louiselm.session.PermissionCancelledData
+---@field request_ids (string|number)[] ACP requests the session answered on the consumer's behalf.
+
+---@class louiselm.session.PermissionCancelledEvent: louiselm.session.EventBase
+---@field type "permission_cancelled"
+---@field data louiselm.session.PermissionCancelledData
+
 ---@class louiselm.session.GenericEvent: louiselm.session.EventBase
 ---@field type "chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"|"error"
 ---@field data unknown Event-specific payload.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 
