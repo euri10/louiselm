@@ -116,6 +116,28 @@ T["review"]["shows an edit and sends an allow response"] = function()
   nvim.fn.delete(path)
 end
 
+T["review"]["returns to the buffer focused before the review"] = function()
+  local path = temp_file({ "before" })
+  local origin = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_set_current_buf(origin)
+  local diff = Diff.new()
+  assert(diff:open({
+    operation = { kind = "file_edit", path = path },
+    toolCall = { rawInput = { path = path, content = "after\n" } },
+    options = { { optionId = "allow-once", kind = "allow_once" } },
+  }, function()
+    return true
+  end))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), diff.buffer)
+
+  assert(diff:accept())
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), origin)
+  diff:dispose()
+  nvim.api.nvim_buf_delete(origin, { force = true })
+  nvim.fn.delete(path)
+end
+
 T["review"]["reviews an edit carried only in ACP diff content"] = function()
   local path = temp_file({ "hello" })
   local response

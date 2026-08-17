@@ -83,14 +83,16 @@ end
 ---@param self louiselm.ui.Diff
 local function clear(self)
   local buffer = self.buffer
+  -- Read every field before closing: wiping the review buffer runs the BufWipeout
+  -- handler below, which clears them all.
+  local previous_buffer = self.previous_buffer
   self.buffer = nil
   self.preview = nil
   self.response = nil
+  self.previous_buffer = nil
   if buffer ~= nil then
     Buffer.close(buffer)
   end
-  local previous_buffer = self.previous_buffer
-  self.previous_buffer = nil
   if previous_buffer ~= nil and nvim.api.nvim_buf_is_valid(previous_buffer) then
     nvim.api.nvim_set_current_buf(previous_buffer)
   end
