@@ -1,5 +1,6 @@
 ---@alias louiselm.session.EventType
 ---| "chunk"
+---| "user_chunk"
 ---| "tool_call_started"
 ---| "tool_call_finished"
 ---| "permission_requested"
@@ -55,8 +56,10 @@
 ---@field data louiselm.session.PermissionCancelledData
 
 ---@class louiselm.session.GenericEvent: louiselm.session.EventBase
----@field type "chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"|"error"
----@field data unknown Event-specific payload.
+---@field type "chunk"|"user_chunk"|"tool_call_started"|"tool_call_finished"|"turn_done"|"error"
+---@field data unknown Event-specific payload. For "chunk"/"user_chunk" this is the raw ACP
+---`agent_message_chunk`/`user_message_chunk` update; "user_chunk" only arrives while replaying
+---a resumed session's history via session/load, never for a live turn.
 
 ---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 

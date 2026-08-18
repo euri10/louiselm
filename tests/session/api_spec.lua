@@ -144,6 +144,43 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   restore_processes(original_system)
 end
 
+T["new"]["replays the user's own prior messages as user_chunk events when loading a session"] = function()
+  local processes, original_system = fake_processes()
+  local events = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:load_session("agent", "prior-acp", {
+    cwd = "/tmp/project",
+    on_event = function(event)
+      events[#events + 1] = event
+    end,
+  }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  notification(process, "session/update", {
+    sessionId = "prior-acp",
+    update = {
+      sessionUpdate = "user_message_chunk",
+      content = { type = "text", text = "what did we decide last time" },
+    },
+  })
+  notification(process, "session/update", {
+    sessionId = "prior-acp",
+    update = {
+      sessionUpdate = "agent_message_chunk",
+      content = { type = "text", text = "previous answer" },
+    },
+  })
+  respond(process, 2, {})
+
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality({ events[1].type, events[2].type }, { "user_chunk", "chunk" })
+  MiniTest.expect.equality(events[1].data.content.text, "what did we decide last time")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["closes the ACP process when loading returns a malformed result"] = function()
   local processes, original_system = fake_processes()
   local ready

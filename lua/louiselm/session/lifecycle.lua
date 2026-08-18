@@ -183,6 +183,10 @@ local function handle_notification(self, message)
   local update_type = update.sessionUpdate
   if update_type == "agent_message_chunk" then
     emit(self, "chunk", update)
+  elseif update_type == "user_message_chunk" then
+    -- Only seen on session/load replay of a resumed conversation's history: a live
+    -- turn's prompt is sent by this client, not echoed back by the agent.
+    emit(self, "user_chunk", update)
   elseif update_type == "tool_call" or update_type == "tool_call_update" then
     local status = update.status
     if status == "completed" or status == "failed" or status == "cancelled" then

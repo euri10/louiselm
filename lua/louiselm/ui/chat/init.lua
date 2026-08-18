@@ -3,6 +3,7 @@ local Diff = require("louiselm.ui.diff")
 local Gates = require("louiselm.permission.gates")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
+local Transcript = require("louiselm.session.transcript")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -29,6 +30,7 @@ local Skills = require("louiselm.skills")
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
+---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
 
 ---@class louiselm.ui.QueuedPrompt
@@ -62,6 +64,7 @@ local Skills = require("louiselm.skills")
 ---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
+---@field to_markdown fun(self: louiselm.ui.Chat, session_id?: string, path?: string): string?, string? Export a session's full transcript to a markdown file.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number|boolean?, string? Submit or queue the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
@@ -953,6 +956,7 @@ local function submit_prompt(self, view, text, content)
     notify_prompt_error(message)
     return nil, message
   end
+  view.transcript:record_user(text)
 
   clear_queued_prompt(view)
   local prompt_line_count = replace_prompt(view, text)
@@ -1382,6 +1386,7 @@ function Chat:attach(session)
     queue_mark = nil,
     queue_namespace = self.queue_namespace,
     setup_shown = false,
+    transcript = Transcript.new(),
     unsubscribe = function() end,
   }
   nvim.api.nvim_buf_attach(buffer, false, {
@@ -1392,6 +1397,9 @@ function Chat:attach(session)
     end,
   })
   view.unsubscribe = session:on(function(event)
+    -- Recording is a pure data transform, not an editor/UI operation, so it can run
+    -- directly in this fast-event callback instead of waiting for the scheduled turn.
+    view.transcript:record(event)
     -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
     nvim.schedule(function()
       handle_event(self, view, event)
@@ -1519,6 +1527,41 @@ function Chat:session_id()
     return nil, "current session has no ACP session id yet"
   end
   return report_id(state.agent, state.acp_session_id)
+end
+
+---@param state louiselm.session.State
+---@return string path
+local function default_markdown_path(state)
+  return nvim.fs.joinpath(nvim.fn.getcwd(), "louiselm-" .. state.id .. "-" .. os.date("%Y%m%d-%H%M%S") .. ".md")
+end
+
+---Export a session's full, untruncated transcript to a markdown file: every user
+---message, every assistant message, and every tool call with its full command and
+---result, reconstructed from the session's typed event stream rather than the
+---(lossy, single-line) chat buffer. See `louiselm.session.transcript` for the exact
+---output format; later blog tooling depends on it staying a plain, deterministic
+---mapping from recorded turns to text.
+---@param self louiselm.ui.Chat
+---@param session_id? string Session id; defaults to the current session.
+---@param path? string Destination file path; defaults to a generated path in the current working directory.
+---@return string? path Markdown file written.
+---@return string? error_message Lifecycle, lookup, or filesystem error.
+function Chat:to_markdown(session_id, path)
+  if self.disposed then
+    return nil, "chat UI is disposed"
+  end
+  local id = session_id or self.current_id
+  local view = id and self.views[id]
+  if view == nil then
+    return nil, session_id ~= nil and "session is not attached" or "no chat session is open"
+  end
+  local state = view.session:inspect()
+  local destination = path or default_markdown_path(state)
+  local markdown = Transcript.render(view.transcript:snapshot(), state)
+  if nvim.fn.writefile(split_lines(markdown), destination) ~= 0 then
+    return nil, "could not write markdown file: " .. destination
+  end
+  return destination
 end
 
 ---@param self louiselm.ui.Chat

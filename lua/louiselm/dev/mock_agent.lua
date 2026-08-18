@@ -2,6 +2,7 @@
 ---@field mode? "echo"|"static"|"permission"|"crash" Response behavior. Defaults to echo.
 ---@field response? string Static response text.
 ---@field crash_on? "initialize"|"session/new"|"session/load"|"session/prompt" Crash before handling a request.
+---@field replay_user_message? string User text replayed as a `user_message_chunk` notification before the `session/load` response, modeling an agent launched with history replay.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
@@ -166,6 +167,15 @@ local function handle_message(message, state, options)
       return true
     end
     state.sessions[params.sessionId] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
+    if options.replay_user_message ~= nil then
+      write_notification("session/update", {
+        sessionId = params.sessionId,
+        update = {
+          sessionUpdate = "user_message_chunk",
+          content = { type = "text", text = options.replay_user_message },
+        },
+      })
+    end
     write_response(message.id, { sessionId = params.sessionId })
     return true
   end
@@ -248,7 +258,9 @@ function M.run(options)
     response = nvim.env.LOUISELM_MOCK_RESPONSE
   end
   local crash_on = options.crash_on or nvim.env.LOUISELM_MOCK_CRASH_ON
-  local configured = { mode = mode, response = response, crash_on = crash_on }
+  local replay_user_message = options.replay_user_message or nvim.env.LOUISELM_MOCK_REPLAY_USER
+  local configured =
+    { mode = mode, response = response, crash_on = crash_on, replay_user_message = replay_user_message }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
 
   while true do

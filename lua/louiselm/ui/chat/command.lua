@@ -263,6 +263,29 @@ function M.register()
     nvim.notify("louiselm: " .. message .. session_id, nvim.log.levels.INFO)
   end, { desc = "Copy the current agent-scoped ACP session id", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmToMarkdown", function(arguments)
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local session_id = arguments.args ~= "" and arguments.args or nil
+    nvim.ui.input({ prompt = "louiselm markdown path (blank for default): " }, function(path)
+      if path == nil then
+        return
+      end
+      local written_path, write_error = chat:to_markdown(session_id, path ~= "" and path or nil)
+      if written_path == nil then
+        report_error(write_error)
+        return
+      end
+      nvim.notify("louiselm: exported transcript to " .. written_path, nvim.log.levels.INFO)
+    end)
+  end, {
+    nargs = "?",
+    desc = "Export a louiselm session transcript to markdown; takes an optional session id",
+    force = true,
+  })
+
   nvim.api.nvim_create_user_command("LouiselmCloseSession", function()
     if chat == nil then
       report_error("no chat session is open")

@@ -80,6 +80,7 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmRenameSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCloseSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionId ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmToMarkdown ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionOptions ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmPermissions ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInline ~= nil, true)
@@ -129,6 +130,91 @@ T["command"]["copies and reports the current ACP session id"] = function()
   rawset(nvim, "notify", original_notify)
   nvim.system = original_system
   Command.configure(nil)
+  delete_chat_buffers()
+end
+
+T["command"]["reports when no chat session is open for LouiselmToMarkdown"] = function()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = {} }, {})
+
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(notification, {
+    message = "louiselm: no chat session is open",
+    level = nvim.log.levels.ERROR,
+  })
+end
+
+T["command"]["prompts for a path and exports the current session's transcript to a generated default"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_input = nvim.ui.input
+  local input_prompt
+  nvim.ui.input = function(options, callback)
+    input_prompt = options.prompt
+    callback("")
+  end
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "acp-1" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = {} }, {})
+
+  nvim.ui.input = original_input
+  rawset(nvim, "notify", original_notify)
+  nvim.system = original_system
+  Command.configure(nil)
+
+  MiniTest.expect.equality(input_prompt, "louiselm markdown path (blank for default): ")
+  MiniTest.expect.equality(notification ~= nil and notification.level, nvim.log.levels.INFO)
+  local path = notification and notification.message:match("^louiselm: exported transcript to (.+)$")
+  MiniTest.expect.equality(type(path), "string")
+  MiniTest.expect.equality(nvim.fn.filereadable(path), 1)
+  if type(path) == "string" then
+    nvim.fn.delete(path)
+  end
+  delete_chat_buffers()
+end
+
+T["command"]["passes an explicit session id argument to LouiselmToMarkdown"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_input = nvim.ui.input
+  nvim.ui.input = function(_, callback)
+    callback("")
+  end
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "acp-1" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = { "does-not-exist" } }, {})
+
+  nvim.ui.input = original_input
+  rawset(nvim, "notify", original_notify)
+  nvim.system = original_system
+  Command.configure(nil)
+
+  MiniTest.expect.equality(notification, {
+    message = "louiselm: session is not attached",
+    level = nvim.log.levels.ERROR,
+  })
   delete_chat_buffers()
 end
 
