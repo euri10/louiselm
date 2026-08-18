@@ -240,6 +240,20 @@ T["to_markdown"]["reports an error when the given session id is not attached"] =
   chat:dispose()
 end
 
+T["to_markdown"]["reports a clean error instead of crashing when the destination directory does not exist"] = function()
+  local session = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  assert(chat:submit("hello"))
+
+  local path = nvim.fn.tempname() .. "/nope/qa-export.md"
+  local written_path, write_error = chat:to_markdown(nil, path)
+
+  MiniTest.expect.equality(written_path, nil)
+  MiniTest.expect.equality(write_error, "could not write markdown file: " .. path)
+  chat:dispose()
+end
+
 T["to_markdown"]["reports an error once the chat UI is disposed"] = function()
   local session = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

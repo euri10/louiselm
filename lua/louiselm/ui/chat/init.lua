@@ -1558,7 +1558,8 @@ function Chat:to_markdown(session_id, path)
   local state = view.session:inspect()
   local destination = path or default_markdown_path(state)
   local markdown = Transcript.render(view.transcript:snapshot(), state)
-  if nvim.fn.writefile(split_lines(markdown), destination) ~= 0 then
+  local ok, result = pcall(nvim.fn.writefile, split_lines(markdown), destination)
+  if not ok or result ~= 0 then
     return nil, "could not write markdown file: " .. destination
   end
   return destination
