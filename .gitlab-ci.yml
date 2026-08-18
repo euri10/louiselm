@@ -1,0 +1,84 @@
+# GitLab CI pipeline for the private blog/ publishing pipeline
+# (blog.bartab.fr, served via GitLab Pages).
+#
+# Scope: this ONLY builds blog/ with MyST and publishes the static
+# output via GitLab Pages. Nothing else in this repo (the Neovim
+# plugin itself) is built or tested here.
+#
+# Hard constraint: Neovim is NEVER installed or invoked in this
+# pipeline. The nvim-transcript excerpts embedded in posts are
+# rendered locally, ahead of time, by blog/scripts/render-post.sh
+# (which shells out to the author's real Neovim config with
+# Catppuccin/Tree-sitter/plugins) and the resulting fragment
+# HTML/CSS is committed to the repo alongside each post. CI's only
+# job is `myst build --html --strict` against that already-rendered,
+# already-committed content — reproducing the personal editor config
+# inside a CI container is explicitly out of scope.
+#
+# One-time manual step (outside this repo, NOT automated here):
+# to make blog.bartab.fr actually resolve to this Pages site, the
+# repo owner must, in their DNS provider:
+#   1. Add a CNAME (or ALIAS, if the provider disallows CNAME at
+#      that label) record for `blog.bartab.fr` pointing at this
+#      GitLab instance's Pages domain for this project
+#      (see Deploy > Pages in the project once the first pipeline
+#      here has run — GitLab shows the exact target + a verification
+#      TXT record to add).
+#   2. In this project's Deploy > Pages settings, add `blog.bartab.fr`
+#      as a new domain, add the TXT verification record GitLab gives
+#      you, then click "Retry verification".
+# DNS propagation aside, this is a few-minutes, one-time task and is
+# independent of this pipeline. See:
+# https://docs.gitlab.com/user/project/pages/custom_domains_ssl_tls_certification/
+
+stages:
+  - pages
+
+pages:
+  stage: pages
+  # mystmd requires Node 20+ (even-numbered releases recommended:
+  # https://mystmd.org/guide/install-node). Node 24 is the current
+  # Active LTS line and is exactly what was used to verify this build
+  # locally, so it's pinned here rather than floating a `-lts` tag
+  # that could jump major versions out from under the pipeline.
+  image: node:24-bookworm
+  rules:
+    # Only build/deploy from the default branch, and only when
+    # something under blog/ (or this file) actually changed — a
+    # push touching only the Neovim plugin code shouldn't rebuild or
+    # redeploy the blog.
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - blog/**/*
+        - .gitlab-ci.yml
+  # NOTE for whoever watches the first real run of this job: `myst
+  # build --html` briefly spins up its own local Node server and
+  # fetches from it (to prerender pages) before writing output. In
+  # local testing, this succeeded when run directly on a bare host,
+  # but failed with ECONNREFUSED against its own localhost server
+  # when reproduced inside a plain `docker run` using this same
+  # image under default bridge networking (it succeeded again under
+  # `--network host`). Root cause wasn't pinned down and this GitLab
+  # instance's actual runner/executor network mode is unknown, so if
+  # this job's first run fails with ECONNREFUSED to localhost during
+  # the myst build step, start there rather than assuming the CI
+  # config itself is wrong.
+  script:
+    # Pin mystmd to the version confirmed to build this project
+    # cleanly (mystmd@1.10.1), rather than floating `latest`, so an
+    # upstream mystmd release can't silently break this pipeline.
+    - npm install -g mystmd@1.10.1
+    - cd blog
+    # --strict promotes warnings (e.g. a broken literalinclude
+    # reference) to errors, so a broken build fails the job/pipeline
+    # loudly instead of silently publishing a bad site.
+    - myst build --html --strict
+    - cd ..
+    # myst build's HTML output lands in blog/_build/html/. GitLab
+    # Pages' documented convention is a `public/` artifact directory,
+    # so copy the build output there for the pages job to publish.
+    - mkdir -p public
+    - cp -r blog/_build/html/. public/
+  artifacts:
+    paths:
+      - public

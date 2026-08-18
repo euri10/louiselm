@@ -1,0 +1,13 @@
+/*
+ * blog/blog.css — MINIMAL starter stylesheet.
+ *
+ * This is NOT the real visual design (that is a separate, deferred, human
+ * task — see louiselm-0ee). It exists only to prove that blog.css is wired
+ * into the MyST build via `site.options.style` in myst.yml: the distinct
+ * serif font and accent color below are a deliberate, visibly-non-default
+ * marker, not a design choice to keep.
+ */
+article {
+  font-family: Georgia, 'Times New Roman', serif;
+  color: #7a2e2e;
+}

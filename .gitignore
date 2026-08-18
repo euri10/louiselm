@@ -1,5 +1,7 @@
 .deps/
 capture-service/target/
+blog/_build/
+/public/
 android/.gradle/
 android/.gradle-user/
 android/local.properties
