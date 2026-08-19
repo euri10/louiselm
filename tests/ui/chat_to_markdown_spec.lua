@@ -132,7 +132,7 @@ T["to_markdown"]["exports the current session's full transcript, in order, with 
   local content = read_file(path)
   MiniTest.expect.equality(content:find("## User", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find("run the tests", 1, true) ~= nil, true)
-  MiniTest.expect.equality(content:find("## Tool: Run tests (completed)", 1, true) ~= nil, true)
+  MiniTest.expect.equality(content:find("<sub>**Run tests** — completed</sub>", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find('"make"', 1, true) ~= nil, true)
   local ok_count = 0
   for _ in content:gmatch("ok") do
@@ -142,7 +142,7 @@ T["to_markdown"]["exports the current session's full transcript, in order, with 
   MiniTest.expect.equality(content:find("## Assistant", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find("All green.", 1, true) ~= nil, true)
   local user_pos = assert(content:find("## User", 1, true))
-  local tool_pos = assert(content:find("## Tool:", 1, true))
+  local tool_pos = assert(content:find("## Tool", 1, true))
   local assistant_pos = assert(content:find("## Assistant", 1, true))
   MiniTest.expect.equality(user_pos < tool_pos, true)
   MiniTest.expect.equality(tool_pos < assistant_pos, true)

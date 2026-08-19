@@ -213,14 +213,18 @@ T["render"]["renders user, assistant, and tool blocks in order with full text"] 
   MiniTest.expect.equality(markdown:find("run the tests", 1, true) ~= nil, true)
   MiniTest.expect.equality(markdown:find("## Assistant", 1, true) ~= nil, true)
   MiniTest.expect.equality(markdown:find("Running them now.", 1, true) ~= nil, true)
-  MiniTest.expect.equality(markdown:find("## Tool: Run tests (completed)", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("## Tool", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("<sub>**Run tests** — completed</sub>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("<details>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("<summary>payload</summary>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("</details>", 1, true) ~= nil, true)
   -- Full, untruncated tool output: all 50 lines of stdout must survive into the export.
   MiniTest.expect.equality(count_occurrences(markdown, "line"), 50)
   MiniTest.expect.equality(markdown:find("All green.", 1, true) ~= nil, true)
 
   local user_pos = markdown:find("## User", 1, true)
   local assistant_pos = markdown:find("## Assistant", 1, true)
-  local tool_pos = markdown:find("## Tool:", 1, true)
+  local tool_pos = markdown:find("## Tool", 1, true)
   local last_assistant_pos = markdown:find("All green.", 1, true)
   MiniTest.expect.equality(user_pos < assistant_pos, true)
   MiniTest.expect.equality(assistant_pos < tool_pos, true)
@@ -249,7 +253,7 @@ T["render"]["falls back to the tool call id and an unknown status when absent"] 
     { kind = "tool_call", id = "tool-9", raw = { toolCallId = "tool-9" } },
   }, state())
 
-  MiniTest.expect.equality(markdown:find("## Tool: tool-9 (unknown)", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("<sub>**tool-9** — unknown</sub>", 1, true) ~= nil, true)
 end
 
 return T

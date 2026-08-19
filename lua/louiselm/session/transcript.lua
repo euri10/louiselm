@@ -16,12 +16,13 @@
 ---tool call with a different id) always starts a new block, so tool calls
 ---interleaved with assistant text render as separate, ordered blocks.
 ---
----`M.render` turns a snapshot of these blocks into markdown: one `## User`,
----`## Assistant`, or `## Tool: <title> (<status>)` section per block, in arrival
----order, holding the full text or a `vim.inspect` dump of the tool call's full raw
----payload. This format is a dependency of later blog tooling (louiselm-mia); keep it
----a plain, deterministic mapping from entries to text rather than a templating
----system.
+---`M.render` turns a snapshot of these blocks into markdown: one `## User` or
+---`## Assistant` section per block holding the full text, or one `## Tool` section
+---per tool call holding a `<sub>` line with its title/status and a `<details>`
+---block (collapsed by default) with a `vim.inspect` dump of its full raw payload,
+---in arrival order. This format is a dependency of later blog tooling
+---(louiselm-mia); keep it a plain, deterministic mapping from entries to text
+---rather than a templating system.
 
 ---@alias louiselm.session.TranscriptEntryKind "user"|"assistant"|"tool_call"
 
@@ -178,11 +179,18 @@ local function render_entry(entry)
   local title = type(raw.title) == "string" and raw.title or entry.id
   local status = type(raw.status) == "string" and raw.status or "unknown"
   return {
-    "## Tool: " .. tostring(title) .. " (" .. status .. ")",
+    "## Tool",
+    "",
+    "<sub>**" .. tostring(title) .. "** — " .. status .. "</sub>",
+    "",
+    "<details>",
+    "<summary>payload</summary>",
     "",
     "```",
     nvim.inspect(raw),
     "```",
+    "",
+    "</details>",
     "",
   }
 end
