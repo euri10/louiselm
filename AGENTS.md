@@ -15,7 +15,35 @@ build extension points for hypothetical consumers. The established extension
 boundaries are the headless session API, typed events, permission policies, and
 agent configuration.
 
-## 2. Runtime and Dependencies
+## 2. Work Tracking
+
+Work is tracked in beads (`br`). `.beads/` is committed; its JSONL export is the
+shared record across sessions, agents, and adapters.
+
+- Run `br robot-docs guide` for command syntax. Do not restate it here.
+- Discover work with `br ready`. Triage with `bv --robot-*` flags only; bare
+  `bv` opens a blocking TUI.
+- Read the graph through `br` and `bv`, never by parsing `.beads/*.jsonl`.
+- File findings as beads before fixing them, including work deliberately
+  deferred. File before the fix, while the failing evidence still exists: the
+  log line, payload, or hung process that proves it disappears the moment it is
+  repaired. A finding that survives only in a transcript is lost, and deferred
+  work that is not filed becomes work that never happens.
+- Prefer finishing in-progress work to starting new work, even when triage
+  ranks an unstarted issue higher. Scoring rewards unblocking leverage and
+  cannot see that a claimed issue is half-done.
+- Keep durable context in the repository, never in an agent's private memory.
+  Context anchored to one issue belongs in `br comments`; a standing convention
+  belongs in this file. Anything an agent knows that another adapter cannot
+  read is a defect in the record.
+- Run `br sync --flush-only` before committing, and commit `.beads/` alongside
+  the work it describes.
+
+The maintainer's own loop — grill-me, to-beads, sessions, qa-review — is
+described in [docs/example-workflow.md](docs/example-workflow.md). That document
+is an example, not a contract. It binds nobody, and other loops are expected.
+
+## 3. Runtime and Dependencies
 
 - Target the latest stable Neovim at release and its embedded LuaJIT/Lua 5.1.
   Do not support standalone Lua or add Lua 5.2+ syntax, APIs, or version shims.
@@ -24,7 +52,7 @@ agent configuration.
 - Any additional development dependency requires a demonstrated gap and
   explicit approval. Never vendor a dependency or utility for convenience.
 
-## 3. Required Tooling
+## 4. Required Tooling
 
 StyLua owns formatting, `lua-language-server` owns static analysis/LuaCATS, and
 `mini.test` owns tests. Do not add overlapping tools.
@@ -55,7 +83,7 @@ interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 `:lua MiniTest.run()`; starting Neovim without `--headless` intentionally keeps
 the editor open.
 
-## 4. Test-Driven Development
+## 5. Test-Driven Development
 
 Use red-green-refactor for meaningful behavior changes: write the smallest
 failing test, confirm it fails for the intended reason, implement only enough
@@ -78,7 +106,7 @@ not need an artificial red test. State why when test-first work is impractical.
   editor operations occur only after the required scheduling boundary.
 - Run focused tests while developing and the complete suite before handoff.
 
-## 5. Lua Style
+## 6. Lua Style
 
 - Use `snake_case` for files, modules, functions, and variables; `PascalCase`
   for LuaCATS types; `UPPER_SNAKE_CASE` only for true constants.
@@ -103,7 +131,7 @@ not need an artificial red test. State why when test-first work is impractical.
 - Do not silently coerce strings, numbers, booleans, or missing values.
 - Make in-place mutation explicit in its name or API documentation.
 
-## 6. Types and Documentation
+## 7. Types and Documentation
 
 LuaCATS is mandatory for public APIs, configuration, protocol values, callbacks,
 and events. Do not annotate trivial locals when inference is clear.
@@ -118,7 +146,7 @@ disable a diagnostic for a file/project. A narrow
 `---@diagnostic disable-next-line` requires an unrepresentable external API and
 a comment explaining why.
 
-## 7. Architecture and Lifecycle
+## 8. Architecture and Lifecycle
 
 - Separate transformation, validation, and state transitions from Neovim UI,
   filesystem, and process I/O.
@@ -134,7 +162,7 @@ a comment explaining why.
 Core modules never notify, print, open UI, or choose presentation. They return
 structured errors and typed events; setup, health, and UI modules display them.
 
-## 8. Errors and Validation
+## 9. Errors and Validation
 
 - Expected failures return explicit values such as `nil, err` or `false, err`.
   Check both results of every `pcall`; never swallow its error.
@@ -155,7 +183,7 @@ Configuration uses a closed schema:
 For ACP/JSON-RPC, validate consumed fields and reject malformed/contradictory
 messages, but ignore unknown optional fields from newer peers.
 
-## 9. Neovim APIs, Async Work, and Processes
+## 10. Neovim APIs, Async Work, and Processes
 
 Prefer APIs in this order:
 
@@ -180,7 +208,7 @@ mutate `package.path` at runtime, or depend on deprecated APIs.
   sessions; they must not revive closed state.
 - A completion callback or terminal event must fire at most once.
 
-## 10. Security
+## 11. Security
 
 - Validate all external input before changing state.
 - Never log tokens, environments, prompts, tool payloads, or sensitive data by
@@ -189,7 +217,7 @@ mutate `package.path` at runtime, or depend on deprecated APIs.
   LuaJIT FFI, or global/package monkey-patching.
 - Use `dofile` only for trusted project development files when a module cannot.
 
-## 11. Editing and Completion Discipline
+## 12. Editing and Completion Discipline
 
 - Preserve existing user changes. Make the smallest root-cause change; avoid
   unrelated refactors.
