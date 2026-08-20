@@ -2,6 +2,8 @@
 capture-service/target/
 blog/_build/
 /public/
+# bvr's static site export (`bvr --robot-*` / graph views), regenerated on demand
+/site/
 android/.gradle/
 android/.gradle-user/
 android/local.properties
