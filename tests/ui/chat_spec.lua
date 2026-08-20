@@ -1981,4 +1981,26 @@ T["chat"]["uses the agent picker for a new session"] = function()
   chat:dispose()
 end
 
+T["chat"]["uses a distinct filetype, not the literal markdown third parties key off"] = function()
+  local first = fake_session("session-1", "one")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  local buffer = chat:buffer("session-1")
+  MiniTest.expect.equality(nvim.bo[buffer].filetype == "markdown", false)
+
+  chat:dispose()
+end
+
+T["chat"]["keeps markdown treesitter highlighting despite the distinct filetype"] = function()
+  local first = fake_session("session-1", "one")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  local buffer = chat:buffer("session-1")
+  MiniTest.expect.equality(nvim.treesitter.highlighter.active[buffer] ~= nil, true)
+
+  chat:dispose()
+end
+
 return T

@@ -1363,7 +1363,16 @@ function Chat:attach(session)
   nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
   nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = buffer })
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
-  nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
+  -- Not the literal "markdown": that filetype is what third-party
+  -- filetype-keyed integrations (image.nvim's markdown integration, at
+  -- least) key off of, and they cannot tell this live, ever-growing
+  -- transcript apart from a real markdown file a user is editing -- causing
+  -- e.g. a full buffer re-parse on every keystroke looking for images that
+  -- will never exist here. Highlighting is attached explicitly below,
+  -- decoupled from `filetype`, so this buffer opts back into only what it
+  -- actually wants.
+  nvim.api.nvim_set_option_value("filetype", "louiselm-session", { buf = buffer })
+  nvim.treesitter.start(buffer, "markdown")
   local header = session_header(state)
   local initial_lines = nvim.list_extend(header, { "", "> " })
   nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, initial_lines)
