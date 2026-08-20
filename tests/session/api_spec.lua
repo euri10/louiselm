@@ -384,6 +384,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     working_dir = "/tmp/one",
     current_turn = 0,
     config_options = {},
+    commands = {},
     skills_policy = "native",
   })
   MiniTest.expect.equality(second:inspect(), {
@@ -396,6 +397,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     working_dir = "/tmp/two",
     current_turn = 0,
     config_options = {},
+    commands = {},
     skills_policy = "native",
   })
   MiniTest.expect.equality(api:list_sessions(), { "session-1", "session-2" })
@@ -1119,6 +1121,94 @@ T["new"]["turns an unexpected agent exit into a session error event"] = function
   MiniTest.expect.equality(session:inspect().status, "error")
   MiniTest.expect.equality(event.session_id, "session-1")
   MiniTest.expect.equality(event.data.message, "agent process exited with code 23")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["tracks advertised commands and replaces the cache on every update"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local events = {}
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  MiniTest.expect.equality(session:inspect().commands, {})
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "available_commands_update",
+      availableCommands = {
+        { name = "grill-me", description = "Stress-test an idea" },
+        { name = "plan", description = "Draft an execution plan" },
+      },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().commands, {
+    { name = "grill-me", description = "Stress-test an idea" },
+    { name = "plan", description = "Draft an execution plan" },
+  })
+  MiniTest.expect.equality(events[#events].type, "commands_changed")
+  MiniTest.expect.equality(events[#events].data.commands, session:inspect().commands)
+  MiniTest.expect.equality(events[#events].data.diagnostics, {})
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "available_commands_update",
+      availableCommands = { { name = "research", description = "Research the codebase" } },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().commands, { { name = "research", description = "Research the codebase" } })
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "available_commands_update", availableCommands = {} },
+  })
+  MiniTest.expect.equality(session:inspect().commands, {})
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["skips malformed advertised commands, diagnoses them, and keeps duplicates visible"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local events = {}
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "available_commands_update",
+      availableCommands = {
+        { name = "grill-me", description = "Stress-test an idea" },
+        { name = "grill-me", description = "Stress-test an idea" },
+        { name = "", description = "empty name" },
+        { name = "no-description" },
+        "not a table",
+      },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().commands, {
+    { name = "grill-me", description = "Stress-test an idea" },
+    { name = "grill-me", description = "Stress-test an idea" },
+  })
+  MiniTest.expect.equality(#events[#events].data.diagnostics, 3)
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "available_commands_update", availableCommands = "not an array" },
+  })
+  MiniTest.expect.equality(session:inspect().commands, {})
+  MiniTest.expect.equality(#events[#events].data.diagnostics, 1)
+  MiniTest.expect.equality(session:inspect().status, "ready")
 
   api:dispose()
   restore_processes(original_system)

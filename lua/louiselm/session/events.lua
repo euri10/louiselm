@@ -6,6 +6,7 @@
 ---| "permission_requested"
 ---| "permission_cancelled"
 ---| "config_options_changed"
+---| "commands_changed"
 ---| "usage_updated"
 ---| "state_changed"
 ---| "turn_done"
@@ -25,6 +26,14 @@
 ---@class louiselm.session.ConfigOptionsChangedEvent: louiselm.session.EventBase
 ---@field type "config_options_changed"
 ---@field data louiselm.session.ConfigOption[] Complete supported option state in agent order.
+
+---@class louiselm.session.CommandsChangedData
+---@field commands louiselm.session.AvailableCommand[] Complete supported command state in agent order.
+---@field diagnostics string[] Messages for advertised entries skipped as malformed.
+
+---@class louiselm.session.CommandsChangedEvent: louiselm.session.EventBase
+---@field type "commands_changed"
+---@field data louiselm.session.CommandsChangedData
 
 ---@class louiselm.session.UsageUpdatedData
 ---@field context louiselm.session.ContextUsage Current context usage.
@@ -61,7 +70,7 @@
 ---`agent_message_chunk`/`user_message_chunk` update; "user_chunk" only arrives while replaying
 ---a resumed session's history via session/load, never for a live turn.
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

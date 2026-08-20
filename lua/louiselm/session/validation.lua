@@ -248,6 +248,32 @@ function M.model_value(options)
   end
 end
 
+---Validate and copy an agent-advertised command list, skipping malformed entries.
+---A malformed top-level value is treated as empty rather than rejected, matching the wire
+---format's own tolerance for a noisy or partially malformed command stream: the cache is always
+---replaced with whatever is valid instead of failing the whole notification and going stale.
+---@param value unknown
+---@return louiselm.session.AvailableCommand[] commands Valid entries in agent order; duplicates are kept.
+---@return string[] diagnostics One message per skipped malformed entry.
+function M.available_commands(value)
+  local diagnostics = {}
+  if type(value) ~= "table" or not dense_array(value) then
+    if value ~= nil then
+      diagnostics[1] = "availableCommands must be an array"
+    end
+    return {}, diagnostics
+  end
+  local commands = {}
+  for index, item in ipairs(value) do
+    if type(item) == "table" and non_empty_string(item.name) and non_empty_string(item.description) then
+      commands[#commands + 1] = { name = item.name, description = item.description }
+    else
+      diagnostics[#diagnostics + 1] = "skipped malformed available command at index " .. index
+    end
+  end
+  return commands, diagnostics
+end
+
 ---Validate one context/cost usage update.
 ---@param value unknown
 ---@return louiselm.session.ContextUsage? context

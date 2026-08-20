@@ -298,6 +298,7 @@ T["discover"]["accepts standard nested metadata"] = function()
     {
       name = "nested-metadata",
       description = "Top-level description remains authoritative",
+      short_description = "Short description for a picker",
       path = path,
       content = table.concat({
         "---",
@@ -719,6 +720,89 @@ T["overlap"]["does not confuse path prefixes"] = function()
 
   MiniTest.expect.equality(overlaps, false)
   MiniTest.expect.equality(overlap_path, nil)
+end
+
+T["resolve_command"] = MiniTest.new_set()
+
+local function skill(name, description, short_description)
+  return { name = name, description = description, short_description = short_description, path = "/x", content = "" }
+end
+
+T["resolve_command"]["prefers a unique dollar-prefixed command regardless of description"] = function()
+  local name, err = Skills.resolve_command(skill("grill-me", "Stress-test an idea"), {
+    { name = "$grill-me", description = "unrelated advertised text" },
+  })
+
+  MiniTest.expect.equality(name, "$grill-me")
+  MiniTest.expect.equality(err, nil)
+end
+
+T["resolve_command"]["does not let a bare built-in steal a skill when the dollar form is advertised"] = function()
+  local name, err = Skills.resolve_command(skill("plan", "Draft an execution plan"), {
+    { name = "$plan", description = "Draft an execution plan" },
+    { name = "plan", description = "Built-in planning mode, unrelated to the skill" },
+  })
+
+  MiniTest.expect.equality(name, "$plan")
+  MiniTest.expect.equality(err, nil)
+end
+
+T["resolve_command"]["resolves a bare exact command only when the description matches the local skill"] = function()
+  local name, err = Skills.resolve_command(skill("grill-me", "Stress-test an idea"), {
+    { name = "grill-me", description = "Stress-test  an   idea" },
+  })
+
+  MiniTest.expect.equality(name, "grill-me")
+  MiniTest.expect.equality(err, nil)
+end
+
+T["resolve_command"]["resolves a bare exact command when the description matches the OpenAI short description"] = function()
+  local name, err =
+    Skills.resolve_command(skill("grill-me", "Long injected-catalog description", "Short picker description"), {
+      { name = "grill-me", description = "Short picker description" },
+    })
+
+  MiniTest.expect.equality(name, "grill-me")
+  MiniTest.expect.equality(err, nil)
+end
+
+T["resolve_command"]["rejects a bare exact command whose description matches neither local description"] = function()
+  local name, err = Skills.resolve_command(skill("grill-me", "Stress-test an idea"), {
+    { name = "grill-me", description = "Something else entirely" },
+  })
+
+  MiniTest.expect.equality(name, nil)
+  MiniTest.expect.equality(err, "advertised command 'grill-me' description does not match the skill")
+end
+
+T["resolve_command"]["rejects an ambiguous dollar command without falling back to the bare form"] = function()
+  local name, err = Skills.resolve_command(skill("grill-me", "Stress-test an idea"), {
+    { name = "$grill-me", description = "one" },
+    { name = "$grill-me", description = "two" },
+    { name = "grill-me", description = "Stress-test an idea" },
+  })
+
+  MiniTest.expect.equality(name, nil)
+  MiniTest.expect.equality(err, "advertised command '$grill-me' is ambiguous")
+end
+
+T["resolve_command"]["rejects duplicate bare commands even when every duplicate's description matches"] = function()
+  local name, err = Skills.resolve_command(skill("grill-me", "Stress-test an idea"), {
+    { name = "grill-me", description = "Stress-test an idea" },
+    { name = "grill-me", description = "Stress-test an idea" },
+  })
+
+  MiniTest.expect.equality(name, nil)
+  MiniTest.expect.equality(err, "advertised command 'grill-me' is ambiguous")
+end
+
+T["resolve_command"]["reports no match when nothing is advertised for the skill"] = function()
+  local name, err = Skills.resolve_command(skill("grill-me", "Stress-test an idea"), {
+    { name = "unrelated", description = "Something else" },
+  })
+
+  MiniTest.expect.equality(name, nil)
+  MiniTest.expect.equality(err, "no advertised command matches skill 'grill-me'")
 end
 
 return T

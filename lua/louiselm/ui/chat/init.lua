@@ -27,6 +27,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
+---@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
@@ -36,7 +37,6 @@ local Transcript = require("louiselm.session.transcript")
 
 ---@class louiselm.ui.QueuedPrompt
 ---@field text string User-authored prompt text without visible context markers.
----@field content string|table Prompt content with snapshotted context.
 
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
@@ -549,29 +549,58 @@ local function render_header(self, view)
   end
 end
 
+---Render one context chip in the visible prompt prefix without touching queued content.
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
----@param item louiselm.ui.ContextItem
----@return boolean queued
+---@param label string
+---@return boolean rendered
 ---@return string? error_message
-local function queue_context(self, view, item)
+local function render_chip(self, view, label)
   if self.disposed or self.views[view.session:inspect().id] ~= view then
     return false, "chat UI is disposed"
-  end
-  if not is_context_item(item) then
-    return false, "context item must contain a label and a text or uri string"
   end
   local line = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, view.prompt_line + 1, false)[1] or "> "
   local text = line:sub(1, 2) == "> " and line:sub(3) or line
   if view.context_prefix ~= "" and text:sub(1, #view.context_prefix) == view.context_prefix then
     text = text:sub(#view.context_prefix + 1)
   end
-  view.contexts[#view.contexts + 1] = { label = item.label, text = item.text, uri = item.uri }
-  view.context_prefix = view.context_prefix .. "[context: " .. item.label .. "] "
+  view.context_prefix = view.context_prefix .. "[context: " .. label .. "] "
   set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
   if nvim.api.nvim_get_current_buf() == view.buffer then
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #view.context_prefix })
   end
+  return true
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param item louiselm.ui.ContextItem
+---@return boolean queued
+---@return string? error_message
+local function queue_context(self, view, item)
+  if not is_context_item(item) then
+    return false, "context item must contain a label and a text or uri string"
+  end
+  local rendered, render_error = render_chip(self, view, item.label)
+  if not rendered then
+    return false, render_error
+  end
+  view.contexts[#view.contexts + 1] = { label = item.label, text = item.text, uri = item.uri }
+  return true
+end
+
+---Queue a native-mode skill selection, resolved against advertised commands only at submission.
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param skill louiselm.skills.Skill
+---@return boolean queued
+---@return string? error_message
+local function queue_native_skill(self, view, skill)
+  local rendered, render_error = render_chip(self, view, "skill: " .. skill.name)
+  if not rendered then
+    return false, render_error
+  end
+  view.pending_skill = skill
   return true
 end
 
@@ -928,12 +957,25 @@ insert_transcript = function(self, view, lines)
   view.prompt_line = view.prompt_line + #replacement
 end
 
+---Build prompt content from the current context queue and a pending native skill selection.
+---A pending skill is resolved here, against the caller's latest advertised commands, so that
+---both an immediate submission and a queued-prompt release each see the freshest command cache
+---rather than one snapshotted when the picker ran.
 ---@param view louiselm.ui.ChatView
 ---@param text string
----@return string|table content
-local function prompt_content(view, text)
+---@return string|table? content
+---@return string? error_message Native command resolution failure; content is unsent.
+local function build_content(view, text)
+  local final_text = text
+  if view.pending_skill ~= nil then
+    local command_name, resolve_error = Skills.resolve_command(view.pending_skill, view.session:inspect().commands)
+    if command_name == nil then
+      return nil, resolve_error
+    end
+    final_text = final_text == "" and ("/" .. command_name) or ("/" .. command_name .. " " .. final_text)
+  end
   if #view.contexts == 0 then
-    return text
+    return final_text
   end
   local content = {}
   for _, item in ipairs(view.contexts) do
@@ -943,8 +985,8 @@ local function prompt_content(view, text)
       content[#content + 1] = { type = "text", text = item.text }
     end
   end
-  if text ~= "" then
-    content[#content + 1] = { type = "text", text = text }
+  if final_text ~= "" then
+    content[#content + 1] = { type = "text", text = final_text }
   end
   return content
 end
@@ -963,10 +1005,14 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
----@param content string|table
 ---@return string|number? request_id
 ---@return string? error_message
-local function submit_prompt(self, view, text, content)
+local function submit_prompt(self, view, text)
+  local content, resolve_error = build_content(view, text)
+  if content == nil then
+    notify_prompt_error(resolve_error or "prompt could not be resolved")
+    return nil, resolve_error
+  end
   local request_id, prompt_error = view.session:prompt(content)
   if request_id == nil then
     local message = prompt_error or "prompt failed"
@@ -989,17 +1035,17 @@ local function submit_prompt(self, view, text, content)
   end
   view.contexts = {}
   view.context_prefix = ""
+  view.pending_skill = nil
   return request_id
 end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
----@param content string|table
-local function queue_prompt(self, view, text, content)
+local function queue_prompt(self, view, text)
   clear_queued_prompt(view)
   set_prompt_line(view, text)
-  view.queued_prompt = { text = text, content = content }
+  view.queued_prompt = { text = text }
   view.queue_mark = nvim.api.nvim_buf_set_extmark(view.buffer, self.queue_namespace, view.prompt_line, -1, {
     virt_text = { { "Queued for next turn", "Comment" } },
     virt_text_pos = "eol",
@@ -1014,7 +1060,7 @@ local function release_queued_prompt(self, view)
     return
   end
   clear_queued_prompt(view)
-  submit_prompt(self, view, queued.text, queued.content)
+  submit_prompt(self, view, queued.text)
 end
 
 ---@param option louiselm.session.ConfigOption
@@ -1415,6 +1461,7 @@ function Chat:attach(session)
     tool_titles = {},
     contexts = {},
     context_prefix = "",
+    pending_skill = nil,
     queued_prompt = nil,
     queue_mark = nil,
     queue_namespace = self.queue_namespace,
@@ -1739,13 +1786,12 @@ function Chat:submit(text)
   if context_prefix ~= "" and text:sub(1, #context_prefix) == context_prefix then
     text = text:sub(#context_prefix + 1)
   end
-  if text == "" and #context_items == 0 then
+  if text == "" and #context_items == 0 and view.pending_skill == nil then
     return nil, "prompt must be a non-empty string"
   end
-  local content = prompt_content(view, text)
   local status = view.session:inspect().status
   if ACTIVE_TURN_STATUS[status] then
-    queue_prompt(self, view, text, content)
+    queue_prompt(self, view, text)
     return true
   end
 
@@ -1754,7 +1800,7 @@ function Chat:submit(text)
     notify_prompt_error("session is not ready")
     return nil, "session is not ready"
   end
-  return submit_prompt(self, view, text, content)
+  return submit_prompt(self, view, text)
 end
 
 ---Queue a context item for the current chat prompt.
@@ -1876,7 +1922,14 @@ function Chat:pick_skill()
   end
   return Context.skills.pick(skills, function(skill, error_message)
     if skill ~= nil then
-      self:queue_context(Context.skills.context(skill))
+      if state.skills_policy == "native" then
+        local queued, queue_error = queue_native_skill(self, view, skill)
+        if not queued then
+          nvim.notify("louiselm: " .. (queue_error or "could not queue skill"), nvim.log.levels.ERROR)
+        end
+      else
+        self:queue_context(Context.skills.context(skill))
+      end
     elseif error_message ~= nil then
       nvim.notify("louiselm: " .. error_message, nvim.log.levels.ERROR)
     end

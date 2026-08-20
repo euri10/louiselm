@@ -3,6 +3,7 @@
 ---@field response? string Static response text.
 ---@field crash_on? "initialize"|"session/new"|"session/load"|"session/prompt" Crash before handling a request.
 ---@field replay_user_message? string User text replayed as a `user_message_chunk` notification before the `session/load` response, modeling an agent launched with history replay.
+---@field available_commands? table[] Commands advertised via `available_commands_update` right after the session is created or loaded.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
@@ -158,6 +159,12 @@ local function handle_message(message, state, options)
     state.next_session = state.next_session + 1
     state.sessions[session_id] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
     write_response(message.id, { sessionId = session_id })
+    if options.available_commands ~= nil then
+      write_notification("session/update", {
+        sessionId = session_id,
+        update = { sessionUpdate = "available_commands_update", availableCommands = options.available_commands },
+      })
+    end
     return true
   end
 
@@ -177,6 +184,12 @@ local function handle_message(message, state, options)
       })
     end
     write_response(message.id, { sessionId = params.sessionId })
+    if options.available_commands ~= nil then
+      write_notification("session/update", {
+        sessionId = params.sessionId,
+        update = { sessionUpdate = "available_commands_update", availableCommands = options.available_commands },
+      })
+    end
     return true
   end
 
@@ -259,8 +272,20 @@ function M.run(options)
   end
   local crash_on = options.crash_on or nvim.env.LOUISELM_MOCK_CRASH_ON
   local replay_user_message = options.replay_user_message or nvim.env.LOUISELM_MOCK_REPLAY_USER
-  local configured =
-    { mode = mode, response = response, crash_on = crash_on, replay_user_message = replay_user_message }
+  local available_commands = options.available_commands
+  if available_commands == nil and nvim.env.LOUISELM_MOCK_AVAILABLE_COMMANDS ~= nil then
+    local decode_ok, decoded = pcall(nvim.json.decode, nvim.env.LOUISELM_MOCK_AVAILABLE_COMMANDS)
+    if decode_ok then
+      available_commands = decoded
+    end
+  end
+  local configured = {
+    mode = mode,
+    response = response,
+    crash_on = crash_on,
+    replay_user_message = replay_user_message,
+    available_commands = available_commands,
+  }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
 
   while true do

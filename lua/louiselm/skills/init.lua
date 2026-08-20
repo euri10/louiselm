@@ -1,5 +1,6 @@
 local Discovery = require("louiselm.skills.discovery")
 local Inject = require("louiselm.skills.inject")
+local NativeCommand = require("louiselm.skills.native_command")
 local Overlap = require("louiselm.skills.overlap")
 local Policy = require("louiselm.skills.policy")
 
@@ -9,6 +10,7 @@ local Policy = require("louiselm.skills.policy")
 ---@field inject fun(skills: unknown): string?, string? Build a skill prompt index.
 ---@field policy fun(value?: unknown): louiselm.skills.Policy?, string? Normalize one agent policy.
 ---@field overlap fun(native_path: unknown, configured_paths: unknown): boolean?, string?, string? Detect path overlap.
+---@field resolve_command fun(skill: unknown, commands: unknown): string?, string? Resolve a selected skill against advertised native commands.
 
 local M = {}
 
@@ -17,5 +19,6 @@ M.read = Discovery.read
 M.inject = Inject.index
 M.policy = Policy.normalize
 M.overlap = Overlap.detect
+M.resolve_command = NativeCommand.resolve
 
 return M

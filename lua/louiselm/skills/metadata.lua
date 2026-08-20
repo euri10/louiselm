@@ -165,6 +165,7 @@ function M.skill(lines, path, content, directory_name, yaml)
     skill = {
       name = fields.name,
       description = trim(fields.description),
+      short_description = type(fields.metadata) == "table" and fields.metadata["short-description"] or nil,
       path = path,
       content = content,
       explicit_only = explicit_only,

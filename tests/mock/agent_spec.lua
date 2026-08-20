@@ -8,10 +8,13 @@ local T = MiniTest.new_set()
 local nvim = vim
 local project_root = nvim.fn.getcwd()
 
-local function mock_definition(mode, response)
+local function mock_definition(mode, response, extra_env)
   local env = { LOUISELM_MOCK_MODE = mode }
   if response ~= nil then
     env.LOUISELM_MOCK_RESPONSE = response
+  end
+  for key, value in pairs(extra_env or {}) do
+    env[key] = value
   end
   return {
     command = nvim.v.progpath,
@@ -138,6 +141,44 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
     end
   end
   MiniTest.expect.equality(meaningful, { "permission_requested", "chunk", "turn_done" })
+
+  assert(api:dispose())
+end
+
+T["mock agent"]["advertises commands through session/update and delivers them on the session"] = function()
+  local events = {}
+  local ready
+  local api = assert(Session.new({
+    mock = mock_definition("echo", nil, {
+      LOUISELM_MOCK_AVAILABLE_COMMANDS = nvim.json.encode({
+        { name = "grill-me", description = "Stress-test an idea" },
+      }),
+    }),
+  }))
+  local session = assert(api:create_session("mock", {
+    cwd = project_root,
+    on_event = function(event)
+      events[#events + 1] = event
+    end,
+  }, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  wait_for(function()
+    return ready ~= nil
+  end)
+  MiniTest.expect.equality(ready.error, nil)
+  MiniTest.expect.equality(session:inspect().commands, { { name = "grill-me", description = "Stress-test an idea" } })
+
+  local changed
+  for _, event in ipairs(events) do
+    if event.type == "commands_changed" then
+      changed = event
+    end
+  end
+  MiniTest.expect.equality(changed.data, {
+    commands = { { name = "grill-me", description = "Stress-test an idea" } },
+    diagnostics = {},
+  })
 
   assert(api:dispose())
 end

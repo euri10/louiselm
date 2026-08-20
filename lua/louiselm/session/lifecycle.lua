@@ -24,6 +24,11 @@ local nvim = vim
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
 ---@field activity? string Current generic tool activity.
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
+---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
+
+---@class louiselm.session.AvailableCommand
+---@field name string Command name as advertised by the agent.
+---@field description string Human-readable command description.
 
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
@@ -221,6 +226,10 @@ local function handle_notification(self, message)
       self.state.cost = cost
     end
     emit(self, "usage_updated", copy({ context = context, cost = self.state.cost }))
+  elseif update_type == "available_commands_update" then
+    local commands, diagnostics = Validation.available_commands(update.availableCommands)
+    self.state.commands = commands
+    emit(self, "commands_changed", { commands = copy(commands), diagnostics = diagnostics })
   end
 end
 
@@ -546,6 +555,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       working_dir = working_dir,
       current_turn = 0,
       config_options = {},
+      commands = {},
       skills_policy = definition.skills.policy,
     },
     emitter = Events.new(),

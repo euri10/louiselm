@@ -381,6 +381,173 @@ T["chat"]["deduplicates the summary warning while picker diagnostics stay unchan
   chat:dispose()
 end
 
+---@param root string
+---@param name string
+---@param description string
+local function write_skill_file(root, name, description)
+  local directory = nvim.fs.joinpath(root, name)
+  assert(nvim.fn.mkdir(directory, "p") == 1)
+  assert(
+    nvim.fn.writefile(
+      { "---", "name: " .. name, "description: " .. description, "---" },
+      nvim.fs.joinpath(directory, "SKILL.md")
+    ) == 0
+  )
+end
+
+---Stub `vim.ui.select` to pick the first offered item; returns a restorer.
+---@return fun()
+local function select_first()
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(select_items, _, callback)
+    callback(select_items[1])
+  end
+  return function()
+    nvim.ui.select = original_select
+  end
+end
+
+T["chat"]["sends a native picker's resolved dollar command merged with the task as one text block"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "grill-me", "Stress-test an idea")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.commands = { { name = "$grill-me", description = "unrelated advertised text" } }
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  local restore = select_first()
+
+  assert(chat:pick_skill())
+  restore()
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: skill: grill-me] ")
+
+  assert(chat:submit("stress-test this"))
+
+  MiniTest.expect.equality(first.prompts, { "/$grill-me stress-test this" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> stress-test this")
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["prefers the dollar form over a colliding bare built-in and sends it alone without a task"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "plan", "Draft an execution plan")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.commands = {
+    { name = "$plan", description = "Draft an execution plan" },
+    { name = "plan", description = "Built-in planning mode, unrelated to the skill" },
+  }
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  local restore = select_first()
+
+  assert(chat:pick_skill())
+  restore()
+  assert(chat:submit())
+
+  MiniTest.expect.equality(first.prompts, { "/$plan" })
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["notifies and preserves the prompt and chip when the advertised command disappears before submission"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "grill-me", "Stress-test an idea")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.commands = { { name = "$grill-me", description = "x" } }
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  local restore = select_first()
+  assert(chat:pick_skill())
+  restore()
+
+  first.state.commands = {}
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+  local request_id, submit_error = chat:submit("stress-test this")
+  rawset(nvim, "notify", original_notify)
+
+  MiniTest.expect.equality(request_id, nil)
+  MiniTest.expect.equality(submit_error, "no advertised command matches skill 'grill-me'")
+  MiniTest.expect.equality(first.prompts, {})
+  MiniTest.expect.equality(
+    notifications,
+    { { message = "louiselm: no advertised command matches skill 'grill-me'", level = nvim.log.levels.ERROR } }
+  )
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: skill: grill-me] stress-test this")
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["re-resolves a queued native command against the latest cache only when the turn releases it"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "grill-me", "Stress-test an idea")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.status = "prompting"
+  first.state.commands = {}
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  local restore = select_first()
+  assert(chat:pick_skill())
+  restore()
+
+  assert(chat:submit("stress-test this"))
+  MiniTest.expect.equality(first.prompts, {})
+
+  first.state.commands = { { name = "$grill-me", description = "x" } }
+  first.state.status = "ready"
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return #first.prompts == 1
+  end, 1)
+
+  MiniTest.expect.equality(first.prompts, { "/$grill-me stress-test this" })
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["leaves a manually typed slash command untouched in a native session"] = function()
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.commands = { { name = "grill-me", description = "Stress-test an idea" } }
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  assert(chat:submit("/grill-me hand-typed, not picked"))
+
+  MiniTest.expect.equality(first.prompts, { "/grill-me hand-typed, not picked" })
+  chat:dispose()
+end
+
+T["chat"]["never resends a native command after it was consumed by an earlier prompt"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "grill-me", "Stress-test an idea")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.commands = { { name = "$grill-me", description = "x" } }
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  local restore = select_first()
+  assert(chat:pick_skill())
+  restore()
+  assert(chat:submit("stress-test this"))
+
+  assert(chat:submit("a follow-up with no skill picked"))
+
+  MiniTest.expect.equality(first.prompts, {
+    "/$grill-me stress-test this",
+    "a follow-up with no skill picked",
+  })
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
 T["chat"]["keeps tool activity out of persistent session diagnostics"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
