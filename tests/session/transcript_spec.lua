@@ -17,6 +17,13 @@ local function event(fields)
   return fields --[[@as louiselm.session.Event]]
 end
 
+---Iterate `text` line by line, without depending on the `vim` global.
+---@param text string
+---@return fun(): string?
+local function lines_of(text)
+  return (text .. "\n"):gmatch("([^\n]*)\n")
+end
+
 ---@param haystack string
 ---@param needle string
 ---@return integer count
@@ -254,6 +261,54 @@ T["render"]["falls back to the tool call id and an unknown status when absent"] 
   }, state())
 
   MiniTest.expect.equality(markdown:find("<sub>**tool-9** — unknown</sub>", 1, true) ~= nil, true)
+end
+
+-- Shell tools carry the whole command as their title, so a real payload's title
+-- is routinely multi-line. Leaking those newlines splits the single-line `<sub>`
+-- caption across the document, leaves the element unclosed, and lets the command
+-- body render as markdown -- including any `##` line in it, which fabricates
+-- sections indistinguishable from the export's own (louiselm-cmr).
+T["render"]["keeps the caption on one line when the tool title spans several"] = function()
+  local markdown = Transcript.render({
+    {
+      kind = "tool_call",
+      id = "tool-1",
+      raw = {
+        toolCallId = "tool-1",
+        title = 'br create --description "$(cat <<EOF\n## Observed\nit broke\nEOF\n)"',
+        status = "completed",
+      },
+    },
+  }, state())
+
+  local captions = 0
+  local headings = 0
+  for line in lines_of(markdown) do
+    if line:find("<sub>", 1, true) ~= nil then
+      captions = captions + 1
+      MiniTest.expect.equality(line:sub(-6), "</sub>")
+    end
+    if line:sub(1, 2) == "##" then
+      headings = headings + 1
+    end
+  end
+
+  MiniTest.expect.equality(captions, 1)
+  -- Exactly the one real `## Tool`: the `## Observed` inside the title must not
+  -- have escaped the caption to become a section of its own.
+  MiniTest.expect.equality(headings, 1)
+end
+
+T["render"]["keeps the caption on one line when the tool status spans several"] = function()
+  local markdown = Transcript.render({
+    {
+      kind = "tool_call",
+      id = "tool-1",
+      raw = { toolCallId = "tool-1", title = "Run tests", status = "failed\nhard" },
+    },
+  }, state())
+
+  MiniTest.expect.equality(markdown:find("<sub>**Run tests** — failed hard</sub>", 1, true) ~= nil, true)
 end
 
 return T

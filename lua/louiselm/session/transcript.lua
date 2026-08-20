@@ -166,6 +166,20 @@ function M.new()
   return setmetatable({ entries = {}, open_tool_calls = {} }, Transcript)
 end
 
+---Collapse a value onto one line so it can be interpolated into a single-line
+---construct. Shell tools carry their whole command as the title, so a real
+---payload's title is routinely multi-line; leaving those newlines in place
+---splits the `<sub>` caption across the document, leaves the element unclosed,
+---and renders the command body as markdown -- a `##` line inside it fabricates
+---a section indistinguishable from this format's own (louiselm-cmr).
+---@param value string
+---@return string collapsed
+local function single_line(value)
+  local collapsed = (value:gsub("%s*[\r\n]+%s*", " "))
+  local without_leading = (collapsed:gsub("^%s+", ""))
+  return (without_leading:gsub("%s+$", ""))
+end
+
 ---@param entry louiselm.session.TranscriptEntry
 ---@return string[] lines
 local function render_entry(entry)
@@ -176,8 +190,8 @@ local function render_entry(entry)
     return { "## Assistant", "", entry.text or "", "" }
   end
   local raw = entry.raw or {}
-  local title = type(raw.title) == "string" and raw.title or entry.id
-  local status = type(raw.status) == "string" and raw.status or "unknown"
+  local title = type(raw.title) == "string" and single_line(raw.title) or entry.id
+  local status = type(raw.status) == "string" and single_line(raw.status) or "unknown"
   return {
     "## Tool",
     "",
