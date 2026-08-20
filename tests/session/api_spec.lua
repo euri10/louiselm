@@ -838,10 +838,16 @@ T["new"]["cancels every outstanding permission request when the turn is cancelle
   restore_processes(original_system)
 end
 
-T["new"]["rejects malformed permission requests without terminating the session"] = function()
+T["new"]["publishes pathless edit permission requests as generic decisions"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local permission
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    end
+  end)
 
   local request = {
     jsonrpc = "2.0",
@@ -849,17 +855,22 @@ T["new"]["rejects malformed permission requests without terminating the session"
     method = "session/request_permission",
     params = {
       sessionId = "agent-acp",
-      toolCall = { kind = "edit", rawInput = {} },
-      options = { { optionId = "allow-once", kind = "allow_once" } },
+      toolCall = { toolCallId = "call-1", kind = "edit", status = "pending" },
+      options = {
+        { optionId = "allow-once", kind = "allow_once" },
+        { optionId = "reject-once", kind = "reject_once" },
+      },
     },
   }
   process.options.stdout(nil, assert(Protocol.encode(request)) .. "\n")
 
-  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).error, {
-    code = -32602,
-    message = "invalid ACP permission request: permission file edit must have a non-empty path",
+  assert(permission ~= nil, "pathless edit permission was not published")
+  MiniTest.expect.equality(permission.data.operation, { kind = "unknown" })
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  assert(permission.respond({ outcome = { outcome = "selected", optionId = "allow-once" } }))
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).result, {
+    outcome = { outcome = "selected", optionId = "allow-once" },
   })
-  MiniTest.expect.equality(session:inspect().status, "ready")
 
   api:dispose()
   restore_processes(original_system)

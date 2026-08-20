@@ -170,9 +170,13 @@ function M.from_acp(data)
   end
   local kind = lower(tool_call.kind)
   if kind == "edit" or kind == "file_edit" or kind == "write" then
+    local path = raw_input.path or raw_input.filePath or raw_input.file_path
+    if path == nil or path == "" then
+      return { kind = "unknown" }
+    end
     return {
       kind = "file_edit",
-      path = raw_input.path or raw_input.filePath or raw_input.file_path,
+      path = path,
       diff = raw_input.diff,
     }
   end
