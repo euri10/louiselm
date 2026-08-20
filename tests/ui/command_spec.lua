@@ -517,4 +517,49 @@ T["command"]["injects every configured symlinked skill through the normal chat p
   nvim.fn.delete(skill_root, "rf")
 end
 
+T["command"]["attaches a project instructions resource_link on a new session through the normal chat path"] = function()
+  local project = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(project, "p") == 1)
+  local instructions_path = nvim.fs.joinpath(project, "AGENTS.md")
+  assert(nvim.fn.writefile({ "# Contract" }, instructions_path) == 0)
+  local original_cwd = nvim.fn.getcwd()
+  nvim.fn.chdir(project)
+
+  local process, original_system = fake_process()
+  assert(Louiselm.setup({
+    agents = { claude = { command = "claude-agent-acp", args = {} } },
+    context = { instructions_file = "AGENTS.md" },
+  }))
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "instructions-acp" })
+
+  local buffer = nvim.api.nvim_get_current_buf()
+  local prompt_line = nvim.api.nvim_buf_line_count(buffer) - 1
+  nvim.api.nvim_buf_set_lines(buffer, prompt_line, prompt_line + 1, false, { "> [context: AGENTS.md] hello" })
+  local submit
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "i")) do
+    if mapping.desc == "Submit louiselm prompt" then
+      submit = mapping.callback
+      break
+    end
+  end
+  assert(type(submit) == "function")
+  nvim.api.nvim_buf_call(buffer, submit)
+  local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
+
+  nvim.system = original_system
+  Command.configure(nil)
+  nvim.fn.chdir(original_cwd)
+
+  MiniTest.expect.equality(process.command, { "claude-agent-acp" })
+  MiniTest.expect.equality(prompt, {
+    { type = "resource_link", uri = "file://" .. instructions_path, name = "AGENTS.md" },
+    { type = "text", text = "hello" },
+  })
+  delete_chat_buffers()
+  nvim.fn.delete(project, "rf")
+end
+
 return T

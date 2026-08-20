@@ -11,6 +11,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field skill_paths? string[] Configured roots rediscovered when the invocation picker opens.
 ---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
+---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
@@ -45,6 +46,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field skill_warning_signature string? Last reported discovery diagnostics, for notification deduplication.
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
+---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
 ---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
@@ -140,6 +142,14 @@ local function copy_skills(value)
   return skills
 end
 
+---@param item unknown
+---@return boolean valid
+local function is_context_item(item)
+  return type(item) == "table"
+    and type(item.label) == "string"
+    and (type(item.text) == "string" or type(item.uri) == "string")
+end
+
 ---@param value unknown
 ---@return louiselm.ui.ContextItem[]? contexts
 ---@return string? error_message
@@ -152,10 +162,10 @@ local function copy_initial_contexts(value)
   end
   local contexts = {}
   for index, item in ipairs(value) do
-    if type(item) ~= "table" or type(item.label) ~= "string" or type(item.text) ~= "string" then
+    if not is_context_item(item) then
       return nil, string.format("chat initial context at index %d is malformed", index)
     end
-    contexts[index] = { label = item.label, text = item.text }
+    contexts[index] = { label = item.label, text = item.text, uri = item.uri }
   end
   for key in pairs(value) do
     if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
@@ -548,15 +558,15 @@ local function queue_context(self, view, item)
   if self.disposed or self.views[view.session:inspect().id] ~= view then
     return false, "chat UI is disposed"
   end
-  if type(item) ~= "table" or type(item.label) ~= "string" or type(item.text) ~= "string" then
-    return false, "context item must contain label and text strings"
+  if not is_context_item(item) then
+    return false, "context item must contain a label and a text or uri string"
   end
   local line = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, view.prompt_line + 1, false)[1] or "> "
   local text = line:sub(1, 2) == "> " and line:sub(3) or line
   if view.context_prefix ~= "" and text:sub(1, #view.context_prefix) == view.context_prefix then
     text = text:sub(#view.context_prefix + 1)
   end
-  view.contexts[#view.contexts + 1] = { label = item.label, text = item.text }
+  view.contexts[#view.contexts + 1] = { label = item.label, text = item.text, uri = item.uri }
   view.context_prefix = view.context_prefix .. "[context: " .. item.label .. "] "
   set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
   return true
@@ -924,7 +934,11 @@ local function prompt_content(view, text)
   end
   local content = {}
   for _, item in ipairs(view.contexts) do
-    content[#content + 1] = { type = "text", text = item.text }
+    if item.uri ~= nil then
+      content[#content + 1] = { type = "resource_link", uri = item.uri, name = item.label }
+    else
+      content[#content + 1] = { type = "text", text = item.text }
+    end
   end
   if text ~= "" then
     content[#content + 1] = { type = "text", text = text }
@@ -1288,6 +1302,7 @@ function M.new(api, options)
         and key ~= "skill_paths"
         and key ~= "initial_contexts"
         and key ~= "skill_context"
+        and key ~= "instructions_context"
       then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
@@ -1314,6 +1329,11 @@ function M.new(api, options)
   if skill_contexts == nil then
     return nil, skill_context_error
   end
+  local instructions_contexts, instructions_context_error =
+    copy_initial_contexts(options and options.instructions_context and { options.instructions_context } or nil)
+  if instructions_contexts == nil then
+    return nil, instructions_context_error
+  end
   setup_highlights()
   local chat = setmetatable({
     api = api,
@@ -1323,6 +1343,7 @@ function M.new(api, options)
     skill_warning_signature = nil,
     initial_contexts = initial_contexts,
     skill_context = skill_contexts[1],
+    instructions_context = instructions_contexts[1],
     diff = Diff.new(),
     decision_queue = {},
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
@@ -1905,6 +1926,12 @@ function Chat:new_session(agent_name, options)
   end
   if session:inspect().skills_policy == "inject" and self.skill_context ~= nil then
     local queued, queue_error = self:queue_context(self.skill_context)
+    if not queued then
+      return nil, queue_error
+    end
+  end
+  if self.instructions_context ~= nil then
+    local queued, queue_error = self:queue_context(self.instructions_context)
     if not queued then
       return nil, queue_error
     end

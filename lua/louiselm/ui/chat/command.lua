@@ -14,6 +14,10 @@ local function skills_module()
   return require("louiselm.skills")
 end
 
+local function instructions_module()
+  return require("louiselm.instructions")
+end
+
 ---@param value table<string, louiselm.agent.Definition>
 ---@return string[] names
 local function sorted_agent_names(value)
@@ -102,6 +106,13 @@ local function configured_skills(config, definitions, default_policy)
   return skills, { label = "skill-index", text = index }
 end
 
+---@param config table
+---@return louiselm.ui.ContextItem? instructions_context
+local function configured_instructions(config)
+  local filename = type(config.context) == "table" and config.context.instructions_file or nil
+  return instructions_module().link(filename)
+end
+
 ---@return louiselm.agent.Definition definition
 local function default_agent_definition()
   local command = nvim.env.LOUISELM_AGENT_COMMAND
@@ -171,8 +182,10 @@ function M.register()
       return nil
     end
     local skills, skill_context, skills_error = {}, nil, nil
+    local instructions_context
     if configured ~= nil then
       skills, skill_context, skills_error = configured_skills(configured, definitions, default_policy)
+      instructions_context = configured_instructions(configured)
     end
     if skills_error ~= nil then
       nvim.notify("louiselm: " .. skills_error, nvim.log.levels.ERROR)
@@ -183,6 +196,7 @@ function M.register()
       skills = skills,
       skill_paths = configured and configured.skills and configured.skills.paths or nil,
       skill_context = skill_context,
+      instructions_context = instructions_context,
     }))
     return chat
   end

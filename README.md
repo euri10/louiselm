@@ -462,6 +462,18 @@ local chat = assert(require("louiselm.ui.chat").new(sessions, {
 Passing a pre-discovered `skills` array remains useful for an explicit static
 catalog. The picker still rereads the selected `SKILL.md` at selection time.
 
+Set `context.instructions_file` to attach the project's governing instructions
+file (e.g. `AGENTS.md`) to a brand-new session's first prompt, as an ACP
+`resource_link` — a name and URI, not the file body. The agent decides whether
+to fetch it; this is a hint, not a guarantee. Empty (the default) disables it.
+Resumed sessions never receive it, and it is sent at most once per session:
+
+```lua
+require("louiselm").setup({
+  context = { instructions_file = "AGENTS.md" },
+})
+```
+
 To use an existing `mini.nvim` checkout instead of `.deps/mini.nvim`:
 
 ```sh

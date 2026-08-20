@@ -1592,6 +1592,58 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   chat:dispose()
 end
 
+T["chat"]["sends a queued resource-link context item as an ACP resource_link block"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:queue_context({ label = "AGENTS.md", uri = "file:///repo/AGENTS.md" }))
+  assert(chat:submit("hello"))
+
+  MiniTest.expect.equality(first.prompts, {
+    {
+      { type = "resource_link", uri = "file:///repo/AGENTS.md", name = "AGENTS.md" },
+      { type = "text", text = "hello" },
+    },
+  })
+  chat:dispose()
+end
+
+T["chat"]["queues configured instructions context only for a brand-new session"] = function()
+  local created_session = fake_session("session-1", "claude")
+  local api = {
+    create_session = function()
+      return created_session
+    end,
+  }
+  local chat = assert(Chat.new(api, {
+    agents = { "claude" },
+    instructions_context = { label = "AGENTS.md", uri = "file:///repo/AGENTS.md" },
+  }))
+
+  assert(chat:new_session("claude"))
+  assert(chat:submit("hello"))
+
+  MiniTest.expect.equality(created_session.prompts, {
+    {
+      { type = "resource_link", uri = "file:///repo/AGENTS.md", name = "AGENTS.md" },
+      { type = "text", text = "hello" },
+    },
+  })
+  chat:dispose()
+end
+
+T["chat"]["does not inject instructions context into an attached, already-existing session"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api(), {
+    instructions_context = { label = "AGENTS.md", uri = "file:///repo/AGENTS.md" },
+  }))
+  assert(chat:attach(first))
+  assert(chat:submit("hello"))
+
+  MiniTest.expect.equality(first.prompts, { "hello" })
+  chat:dispose()
+end
+
 T["chat"]["renders state telemetry and reported-only usage"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {

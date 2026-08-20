@@ -1,6 +1,7 @@
 ---@class louiselm.ui.ContextItem
 ---@field label string Short label shown in the chat prompt.
----@field text string ACP text content.
+---@field text? string ACP text content; required unless uri is present.
+---@field uri? string Resource URI; emits an ACP resource_link block instead of text when present.
 
 local M = {}
 

@@ -98,6 +98,18 @@ M.schema = assert(Schema.define({
       },
     },
   },
+  context = {
+    type = "table",
+    default = {},
+    description = "Project-context injection settings.",
+    fields = {
+      instructions_file = {
+        type = "string",
+        default = "",
+        description = "Project-root filename attached as a resource_link on new sessions; empty disables.",
+      },
+    },
+  },
   capture = {
     type = "table",
     default = {},
