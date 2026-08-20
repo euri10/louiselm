@@ -129,7 +129,11 @@ function M.check(definition, on_result)
     return nil, normalized.command .. ": " .. error_message
   end
 
-  local command = { normalized.command, "--version" }
+  local command = { normalized.command }
+  for _, argument in ipairs(normalized.args) do
+    command[#command + 1] = argument
+  end
+  command[#command + 1] = "--version"
   local options = { text = true }
   if normalized.env ~= nil then
     options.env = normalized.env

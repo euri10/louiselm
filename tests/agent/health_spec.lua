@@ -83,6 +83,31 @@ local function with_deferred_stubs(executable, callback)
   end
 end
 
+T["check"]["includes wrapper args before --version"] = function()
+  local report
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    local handle, err = Health.check({
+      command = "acp-debug.sh",
+      args = { "codex-acp" },
+    }, function(result)
+      report = result
+    end)
+
+    MiniTest.expect.equality(err, nil)
+    assert(handle ~= nil)
+    MiniTest.expect.equality(calls[1].command, { "acp-debug.sh", "codex-acp", "--version" })
+
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "@agentclientprotocol/codex-acp 1.1.14\n", stderr = "" })
+  end)
+
+  assert(report ~= nil)
+  MiniTest.expect.equality(report.ok, true)
+  MiniTest.expect.equality(report.version, "@agentclientprotocol/codex-acp 1.1.14")
+end
+
 T["check"]["latest version"] = MiniTest.new_set()
 
 T["check"]["latest version"]["combines both independent completions into one outdated report"] = function()

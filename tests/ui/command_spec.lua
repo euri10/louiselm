@@ -508,7 +508,7 @@ T["command"]["warns without blocking chat creation when a configured agent trail
   for _, entry in ipairs(calls) do
     if entry.command[1] == "npm" then
       latest_call = entry
-    elseif entry.command[2] == "--version" then
+    elseif entry.command[#entry.command] == "--version" then
       version_call = entry
     end
   end
