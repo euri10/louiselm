@@ -1592,6 +1592,24 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   chat:dispose()
 end
 
+T["chat"]["positions the cursor after queued context, not before it"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
+
+  local lines = buffer_lines(chat:buffer())
+  local line = lines[#lines]
+  local window = nvim.api.nvim_get_current_win()
+  -- Headless tests never enter insert mode, so the cursor clamps to the last
+  -- valid column; the point being proven is that it moved to line-end (past
+  -- the queued "[context: ...]" chip), not that it stayed at the fixed
+  -- column 2 the pre-fix code left it at regardless of chip length.
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(window), { #lines, #line - 1 })
+
+  chat:dispose()
+end
+
 T["chat"]["sends a queued resource-link context item as an ACP resource_link block"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

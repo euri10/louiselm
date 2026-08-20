@@ -569,6 +569,9 @@ local function queue_context(self, view, item)
   view.contexts[#view.contexts + 1] = { label = item.label, text = item.text, uri = item.uri }
   view.context_prefix = view.context_prefix .. "[context: " .. item.label .. "] "
   set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
+  if nvim.api.nvim_get_current_buf() == view.buffer then
+    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #view.context_prefix })
+  end
   return true
 end
 
