@@ -192,15 +192,18 @@ local function check_skills(config)
   end
 
   local local_enabled = false
+  local inject_enabled = false
   local names = sorted_agent_names(normalized)
   if #names == 0 then
     nvim().health.info("default agent skills policy: " .. default_policy)
     local_enabled = default_policy ~= "off"
+    inject_enabled = default_policy == "inject"
   else
     for _, name in ipairs(names) do
       local policy = normalized[name].skills.policy
       nvim().health.info("agent " .. name .. " skills policy: " .. policy)
       local_enabled = local_enabled or policy ~= "off"
+      inject_enabled = inject_enabled or policy == "inject"
     end
   end
   if not local_enabled then
@@ -228,6 +231,20 @@ local function check_skills(config)
     end
   end
   report(string.format("discovered %d skill%s", #skills, #skills == 1 and "" or "s"), true)
+  if inject_enabled then
+    local catalog, catalog_error = Skills.inject(skills)
+    if catalog == nil then
+      report("injected skill catalog: " .. (catalog_error or "could not build catalog"), false)
+      return
+    end
+    nvim().health.info(string.format("injected skill catalog: %d/8000 bytes", #catalog.text))
+    if #catalog.truncated > 0 then
+      nvim().health.warn("injected skill catalog shortened descriptions: " .. table.concat(catalog.truncated, ", "))
+    end
+    if #catalog.omitted > 0 then
+      nvim().health.warn("injected skill catalog omitted skills: " .. table.concat(catalog.omitted, ", "))
+    end
+  end
 end
 
 ---@param config louiselm.health.Configuration

@@ -1,5 +1,7 @@
 local MiniTest = require("mini.test")
+local Config = require("louiselm.config")
 local Louiselm = require("louiselm")
+local Schema = require("louiselm.schema")
 
 local T = MiniTest.new_set()
 
@@ -140,6 +142,19 @@ T["setup"]["rejects invalid skills without mutating caller config"] = function()
   MiniTest.expect.equality(ok, false)
   MiniTest.expect.equality(report.errors[1].path, "skills.policy")
   MiniTest.expect.equality(config, { skills = { paths = { "/tmp/skills" }, policy = "maybe" } })
+end
+
+T["setup"]["keeps generated Agent Skills policy docs aligned"] = function()
+  local outputs = {
+    Schema.generate_vimdoc(Config.schema),
+    Schema.generate_luacats(Config.schema),
+  }
+  for _, output in ipairs(outputs) do
+    local normalized = output:gsub("%s+", " ")
+    MiniTest.expect.equality(normalized:find("native delegates to the adapter", 1, true) ~= nil, true)
+    MiniTest.expect.equality(normalized:find("inject uses LouiseLM discovery", 1, true) ~= nil, true)
+    MiniTest.expect.equality(normalized:find("off disables automation", 1, true) ~= nil, true)
+  end
 end
 
 T["setup"]["rejects a recorder command without an output placeholder"] = function()

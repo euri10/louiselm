@@ -503,20 +503,38 @@ MINI_NVIM_PATH=/path/to/mini.nvim nvim --headless --noplugin \
 
 ## Dogfooding the skills workflow
 
-The reproducible manual recipe for the current P1 workflow can construct the
-session and chat controllers explicitly. The canonical `:LouiselmChat` command
-also consumes configured `agents` and global `skills.paths` after setup.
-`skills.policy` defaults to `native`, which leaves discovery and invocation to
-the adapter. Use `inject` for an adapter that needs LouiseLM-managed skills, or
-`off` to disable LouiseLM skill automation and its picker. An agent can override
-only the global policy:
+Agent Skills specifies the `SKILL.md` format. ACP transports prompts and
+advertised commands, but does not define skill discovery, invocation, or
+filesystem access. Native skill loading and Codex-like catalog fallback are
+adapter or host behavior.
+
+`skills.policy` defaults to `native`. Choose a policy for an unfamiliar adapter
+from its documented behavior:
+
+- `native` when the adapter advertises that it discovers and invokes Agent
+  Skills. LouiseLM sends no catalog or skill body automatically.
+- `inject` when the adapter has no native integration but its agent can read
+  the local absolute paths advertised by LouiseLM.
+- `off` when neither mechanism is wanted or the agent cannot be trusted with
+  configured skill paths. This also disables `:LouiselmPickSkill`.
+
+Codex and Claude adapters should normally inherit `native`; custom DeepSeek or
+GLM adapters can opt into `inject`. Paths stay global. An agent may override
+only the policy:
 
 ```lua
 require("louiselm").setup({
   agents = {
     codex = { command = "codex-acp" },
+    claude = { command = "claude-agent-acp" },
     deepseek = {
       command = "acp-llm-adapter",
+      args = { "serve", "--backend", "deepseek" },
+      skills = { policy = "inject" },
+    },
+    glm = {
+      command = "acp-llm-adapter",
+      args = { "serve", "--backend", "glm" },
       skills = { policy = "inject" },
     },
   },
@@ -528,10 +546,22 @@ require("louiselm").setup({
 ```
 
 Policies are copied into each session when it is created and never inferred
-from the adapter name or changed by runtime events. `off` does not intercept
-user-authored slash prompts. LouiseLM-managed local discovery requires the
-`lyaml` LibYAML binding so `SKILL.md` metadata follows the Agent Skills YAML
-format instead of a LouiseLM-specific subset:
+from the adapter name or changed by runtime events. Natural-language activation
+in `native` belongs entirely to the adapter. In `inject`, LouiseLM sends one
+bounded catalog for the first accepted prompt so the agent can choose a skill.
+The picker is deliberate activation: native mode sends one matching advertised
+command plus the task, while inject mode attaches the selected `SKILL.md` body
+once. LouiseLM never combines native and injected activation, so one selection
+cannot be double-sent. Explicit-only skills remain picker-visible but are never
+placed in the implicit injected catalog. `off` does not intercept user-authored
+slash prompts.
+
+LouiseLM-managed local discovery requires the `lyaml` LibYAML binding so
+`SKILL.md` metadata follows the Agent Skills YAML format instead of a
+LouiseLM-specific subset. Install LibYAML and LuaRocks with the operating
+system's package manager, then build `lyaml` for Neovim's Lua 5.1 ABI. Common
+prerequisites are `libyaml-dev` plus `luarocks` on Debian/Ubuntu, or `libyaml`
+plus `luarocks` with Homebrew on macOS:
 
 ```sh
 luarocks --lua-version 5.1 install lyaml
@@ -565,50 +595,49 @@ from opening and blocks `inject` chat creation when an index is required.
 LouiseLM never installs it automatically. The removed `skills.full_content`
 setting is a configuration error; use the `inject` policy.
 
-Run `nvim -u ./manual_init.lua`, then evaluate this setup from the repository
-root (replace the agent command if a different ACP launcher is intended):
+After setup, run `:checkhealth louiselm`. It reports each agent's effective
+policy, dependency failures, the cwd used for relative roots, invalid metadata,
+duplicate shadowing, invocation-metadata conflicts, line warnings, and symlink
+escapes. If any agent uses `inject`, it also reports catalog bytes and the exact
+skill names whose descriptions were shortened or whose entries were omitted.
+It cannot verify whether an ACP agent can read local files; ACP exposes no such
+capability.
 
-```lua
-local Session = require("louiselm.session")
-local Chat = require("louiselm.ui.chat")
-local Skills = require("louiselm.skills")
+### Manual adapter smoke checks
 
-local skill_root = vim.fn.expand("~/.config/agentskills")
-local found, discovery_errors = Skills.discover({ skill_root })
-assert(#found > 0, "no skills discovered")
-local skill_catalog = assert(Skills.inject(found))
-for _, discovery_error in ipairs(discovery_errors) do
-  vim.notify(discovery_error.path .. ": " .. discovery_error.message, vim.log.levels.WARN)
-end
-local sessions = assert(Session.new({
-  claude = { command = "claude-agent-acp", args = {} },
-}))
-local chat = assert(Chat.new(sessions, {
-  agents = { "claude" },
-  skills = found,
-  skill_catalog = skill_catalog.text,
-}))
-assert(chat:new_session("claude", { cwd = vim.fn.getcwd() }))
+Start `nvim -u ./manual_init.lua` from the repository root and evaluate the
+setup example above with installed commands and credentials.
+
+For Codex and Claude, test each adapter separately:
+
+1. Run `:LouiselmChat`, select the adapter, and wait for
+   `skills=native` in the session header.
+2. Submit a natural-language request that matches an adapter-installed skill
+   and confirm that the adapter invokes it once.
+3. Run `:LouiselmPickSkill`, choose a configured skill, submit a task, and
+   confirm one advertised native command is sent. No injected catalog or
+   selected `SKILL.md` body should appear in the transcript.
+
+For a custom DeepSeek/GLM adapter, set its override to `inject`:
+
+1. Confirm the header says `skills=inject`; in a fresh session, submit a normal
+   prompt matching an implicitly invokable skill and confirm it is selected.
+2. Pick an explicit-only skill and submit a task. Open the resulting context
+   fold with `zo` and verify that exactly one selected `SKILL.md` body was sent.
+3. Confirm the hidden `<available_skills>` catalog is invisible before
+   submission and appears afterward only inside the closed context fold. Run
+   `:checkhealth louiselm` to inspect its budget outcome.
+
+The deterministic mock-adapter smoke for injected transport requires no
+credentials:
+
+```sh
+nvim --headless --noplugin -u ./tests/minimal_init.lua \
+  -c 'lua MiniTest.run_file("tests/ui/command_spec.lua")' -c 'qa!'
 ```
 
-Wait for the session to become ready, run `:LouiselmPickSkill`, choose
-`grill-me`, and submit the task. Continue the conversation in the chat buffer. After agreement, send
-`/to-beads` and let the agent route to the appropriate `to-beads-*` skill. The
-default `ask-human` permission policy remains active; file edits open the diff
-review, while command and unknown permission requests use the chat picker.
-
-This recipe was exercised against `claude-agent-acp` 0.64.2. LouiseLM
-initialized the real ACP session, the injected catalog exposed `grill-me`,
-`to-beads`, `to-beads-epic`, `to-beads-feature`, and `to-beads-tasks`, and a
-bounded chat prompt completed successfully. The configured skill tree also
-contains `.system` skills using nested `metadata` frontmatter; the discovery
-parser accepts that standard shape while validating the required top-level
-fields.
-
-Decision: continue P1 dogfooding and defer P2 comfort work. The session and
-manual chat path are viable, and the canonical command plus permission UI now
-cover the configured workflow. Remaining dogfood gaps are tracked separately
-before treating the workflow as a daily-driver exit criterion.
+Installed-adapter checks are deliberately manual and are not CI requirements.
+The default `ask-human` permission policy remains active during them.
 
 ## Skills
 
@@ -628,12 +657,16 @@ metadata and never grants or bypasses LouiseLM ACP permissions. Skills marked
 by `disable-model-invocation: true` or by
 `agents/openai.yaml`'s `policy.allow_implicit_invocation: false` remain available
 to the picker and are marked explicit-only for the policy layer. The injected
-catalog uses the `<available_skills>` XML shape and contains only each
-implicitly invokable skill's name, description, and absolute configured-alias
-`SKILL.md` path. Its complete hidden block is capped at 8,000 UTF-8 bytes:
+catalog uses a fixed instruction preamble and the `<available_skills>` XML
+shape. It contains only each implicitly invokable skill's name, description,
+and absolute configured-alias `SKILL.md` path. Its complete hidden block is
+capped at 8,000 UTF-8 bytes:
 descriptions are shortened fairly first, then a deterministic sorted tail is
 omitted when minimum metadata cannot fit. `catalog.truncated` and
-`catalog.omitted` expose both outcomes.
+`catalog.omitted` expose both outcomes. This conservative budget and fallback
+shape are inspired by Codex behavior; they are not part of Agent Skills or ACP.
+Reconsider them if a future shared specification standardizes discovery or
+skill transport.
 
 The catalog is held locally and sent as the first hidden text block of the
 first accepted non-slash prompt in a brand-new inject session. Slash commands
@@ -644,10 +677,21 @@ their exact selected `SKILL.md` body once. Use
 `skills.overlap(native_skill_dir, configured_paths)` to detect
 native/configured skill trees that resolve to the same directory.
 
+Implicit injected activation gives the agent only an absolute path, so it
+requires agent-side file access and reveals the local directory layout to that
+agent. A picker-attached, instruction-only skill can work without agent-side
+file access because LouiseLM sends its body. Any referenced scripts,
+references, or assets still require suitable agent tools. `allowed-tools` is
+advisory metadata and never expands LouiseLM permissions. Neither ACP nor
+`:checkhealth` can prove those tools or filesystem access exist.
+
 Configured roots are processed in order; valid skills within each root are
 ordered by name and configured path. The first valid duplicate name wins.
 Canonical file and directory aliases are traversed once, while advertised
 paths retain the configured root alias. Symlinks outside that root remain
 usable but produce a checkhealth warning. `~` expands normally, and relative
 roots use the session working directory (`:checkhealth louiselm` instead uses
-and reports Neovim's current working directory).
+and reports Neovim's current working directory). Configuring a root trusts its
+skill folders and any followed symlink targets; a relative root also trusts the
+active workspace to supply that path. LouiseLM does not add project roots
+automatically and has no trust database.

@@ -1,6 +1,7 @@
 local MiniTest = require("mini.test")
 local Health = require("louiselm.health")
 local Louiselm = require("louiselm")
+local Skills = require("louiselm.skills")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -131,6 +132,42 @@ T["check"]["reports discovered skills alongside invalid siblings"] = function()
 
   Health.reset()
   nvim.fn.delete(root, "rf")
+end
+
+T["check"]["reports injected catalog budget diagnostics"] = function()
+  assert(Louiselm.setup({
+    agents = { agent = { command = "agent", skills = { policy = "inject" } } },
+    skills = { paths = { "/tmp/skills" } },
+  }))
+  local original_discover = Skills.discover
+  local original_inject = Skills.inject
+  Skills.discover = function()
+    return {
+      { name = "alpha", description = "Alpha", path = "/tmp/skills/alpha/SKILL.md" },
+      { name = "omega", description = "Omega", path = "/tmp/skills/omega/SKILL.md" },
+    }, {}
+  end
+  Skills.inject = function()
+    return { text = string.rep("x", 8000), truncated = { "alpha" }, omitted = { "omega" } }
+  end
+
+  local call_ok, call_error = pcall(function()
+    with_health_stubs(function(calls)
+      Health.check()
+      MiniTest.expect.equality(nvim.tbl_contains(calls.info, "injected skill catalog: 8000/8000 bytes"), true)
+      MiniTest.expect.equality(calls.warn, {
+        "injected skill catalog shortened descriptions: alpha",
+        "injected skill catalog omitted skills: omega",
+      })
+    end)
+  end)
+
+  Skills.discover = original_discover
+  Skills.inject = original_inject
+  Health.reset()
+  if not call_ok then
+    error(call_error)
+  end
 end
 
 T["check"]["reports the Neovim working directory used for relative skill roots"] = function()

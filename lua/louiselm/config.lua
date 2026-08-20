@@ -61,12 +61,12 @@ M.schema = assert(Schema.define({
         skills = {
           type = "table",
           default = {},
-          description = "Agent-specific Agent Skills policy override.",
+          description = "Agent-specific Agent Skills policy override; paths remain global and the effective value is fixed when a session is created.",
           fields = {
             policy = {
               type = "string",
               validator = valid_skill_policy,
-              description = "Override the global Agent Skills policy for this agent; omission inherits the global policy.",
+              description = "Override the global Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation; omission inherits the global policy.",
             },
           },
         },
@@ -128,19 +128,19 @@ M.schema = assert(Schema.define({
         type = "array-of",
         items = "string",
         default = {},
-        description = "Directories searched for Agent Skills.",
+        description = "Global directories searched for Agent Skills; relative paths resolve against each session workspace.",
       },
       policy = {
         type = "string",
         default = "native",
         validator = valid_skill_policy,
-        description = "Whether agents load skills natively, by injection, or not at all.",
+        description = "Default Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation.",
       },
       full_content = {
         type = "boolean",
         default = false,
         validator = removed_full_content,
-        description = "Removed legacy full-content injection switch.",
+        description = 'Removed legacy full-content injection switch; migrate to skills.policy = "inject".',
       },
     },
   },
