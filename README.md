@@ -455,6 +455,15 @@ chat:pick_file()
 chat:pick_skill()
 ```
 
+Pending manual contexts appear as compact chips on the editable prompt. After
+ACP accepts a non-slash prompt, every attached context moves into one closed
+native Neovim fold immediately before the ordinary visible user prompt. The
+fold summary lists context labels in transport order; opening it reveals the
+exact text bodies and resource-link fields that were sent. `zo`, `zc`, and
+other normal fold commands affect presentation only and can never add context
+to a later prompt. These folds exist only in the live `nofile`, swap-disabled
+chat buffer; session reload and Neovim restart do not reconstruct them.
+
 Pass configured roots to the chat controller to rediscover skills whenever the
 picker opens. Relative roots resolve against the attached session's working
 directory:
@@ -557,47 +566,34 @@ root (replace the agent command if a different ACP launcher is intended):
 ```lua
 local Session = require("louiselm.session")
 local Chat = require("louiselm.ui.chat")
-local Context = require("louiselm.ui.context")
 local Skills = require("louiselm.skills")
 
 local skill_root = vim.fn.expand("~/.config/agentskills")
 local found, discovery_errors = Skills.discover({ skill_root })
 assert(#found > 0, "no skills discovered")
-local skill_index = assert(Skills.inject(found))
-local grill_me
-for _, skill in ipairs(found) do
-  if skill.name == "grill-me" then
-    grill_me = skill
-    break
-  end
-end
-assert(grill_me, "grill-me skill not discovered")
+local skill_catalog = assert(Skills.inject(found))
 for _, discovery_error in ipairs(discovery_errors) do
   vim.notify(discovery_error.path .. ": " .. discovery_error.message, vim.log.levels.WARN)
 end
 local sessions = assert(Session.new({
   claude = { command = "claude-agent-acp", args = {} },
 }))
-local chat = assert(Chat.new(sessions, { agents = { "claude" }, skills = found }))
-
-assert(sessions:create_session("claude", { cwd = vim.fn.getcwd() }, function(session, err)
-  vim.schedule(function()
-    assert(err == nil, err)
-    assert(chat:attach(session))
-    assert(chat:queue_context({ label = "skill-index", text = skill_index }))
-    assert(chat:queue_context(Context.skills.context(grill_me)))
-    assert(chat:submit("Start the grill-me workflow for this project."))
-  end)
-end))
+local chat = assert(Chat.new(sessions, {
+  agents = { "claude" },
+  skills = found,
+  skill_catalog = skill_catalog.text,
+}))
+assert(chat:new_session("claude", { cwd = vim.fn.getcwd() }))
 ```
 
-Continue the conversation in the chat buffer. After agreement, send
+Wait for the session to become ready, run `:LouiselmPickSkill`, choose
+`grill-me`, and submit the task. Continue the conversation in the chat buffer. After agreement, send
 `/to-beads` and let the agent route to the appropriate `to-beads-*` skill. The
 default `ask-human` permission policy remains active; file edits open the diff
 review, while command and unknown permission requests use the chat picker.
 
 This recipe was exercised against `claude-agent-acp` 0.64.2. LouiseLM
-initialized the real ACP session, the injected index exposed `grill-me`,
+initialized the real ACP session, the injected catalog exposed `grill-me`,
 `to-beads`, `to-beads-epic`, `to-beads-feature`, and `to-beads-tasks`, and a
 bounded chat prompt completed successfully. The configured skill tree also
 contains `.system` skills using nested `metadata` frontmatter; the discovery
@@ -611,14 +607,14 @@ before treating the workflow as a daily-driver exit criterion.
 
 ## Skills
 
-Discover Agent Skills metadata from configured directories and inject a thin
-index when an agent does not provide native skill loading:
+Discover Agent Skills metadata from configured directories and build a bounded
+catalog when an agent does not provide native skill loading:
 
 ```lua
 local skills = require("louiselm.skills")
 local found, errors = skills.discover({ vim.fn.expand("~/.config/agentskills") })
 local policy = assert(skills.policy("inject")) -- native, inject, or off
-local index = assert(skills.inject(found))
+local catalog = assert(skills.inject(found))
 ```
 
 Discovery validates the standard `name`, `description`, `license`,
@@ -626,9 +622,21 @@ Discovery validates the standard `name`, `description`, `license`,
 metadata and never grants or bypasses LouiseLM ACP permissions. Skills marked
 by `disable-model-invocation: true` or by
 `agents/openai.yaml`'s `policy.allow_implicit_invocation: false` remain available
-to the picker and are marked explicit-only for the policy layer. The current
-injected index contains only each skill's name, description, and `SKILL.md`
-path. Use `skills.overlap(native_skill_dir, configured_paths)` to detect
+to the picker and are marked explicit-only for the policy layer. The injected
+catalog uses the `<available_skills>` XML shape and contains only each
+implicitly invokable skill's name, description, and absolute configured-alias
+`SKILL.md` path. Its complete hidden block is capped at 8,000 UTF-8 bytes:
+descriptions are shortened fairly first, then a deterministic sorted tail is
+omitted when minimum metadata cannot fit. `catalog.truncated` and
+`catalog.omitted` expose both outcomes.
+
+The catalog is held locally and sent as the first hidden text block of the
+first accepted non-slash prompt in a brand-new inject session. Slash commands
+defer it, and resumed or externally attached sessions never receive a guessed
+catalog; start a new session when catalog provenance is uncertain.
+Deliberately picked skills remain available even when explicit-only and attach
+their exact selected `SKILL.md` body once. Use
+`skills.overlap(native_skill_dir, configured_paths)` to detect
 native/configured skill trees that resolve to the same directory.
 
 Configured roots are processed in order; valid skills within each root are

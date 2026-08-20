@@ -1,9 +1,9 @@
 ---@class louiselm.skills.Skill
 ---@field name string Agent Skills name.
----@field description string Short description shown in the injected index.
+---@field description string Short description shown in the injected catalog.
 ---@field short_description? string OpenAI `metadata.short-description` extension, used to correlate native picker commands.
 ---@field path string Absolute path to SKILL.md.
----@field content string Complete original SKILL.md content for deliberate activation.
+---@field content? string Complete original SKILL.md content captured for deliberate activation.
 ---@field explicit_only boolean Whether only deliberate picker activation may select the skill.
 
 ---@class louiselm.skills.DiscoveryDiagnostic

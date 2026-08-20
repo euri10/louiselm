@@ -65,7 +65,7 @@ end
 ---@param definitions table<string, louiselm.agent.Definition>
 ---@param default_policy louiselm.skills.Policy
 ---@return louiselm.skills.Skill[] skills
----@return louiselm.ui.ContextItem? skill_context
+---@return string? skill_catalog
 ---@return string? error_message
 local function configured_skills(config, definitions, default_policy)
   if type(config.skills) ~= "table" then
@@ -100,11 +100,21 @@ local function configured_skills(config, definitions, default_policy)
     return skills, nil
   end
 
-  local index, index_error = skills_module().inject(skills)
-  if index == nil then
-    return {}, nil, index_error
+  local catalog, catalog_error = skills_module().inject(skills)
+  if catalog == nil then
+    return {}, nil, catalog_error
   end
-  return skills, { label = "skill-index", text = index }
+  if #catalog.truncated > 0 or #catalog.omitted > 0 then
+    nvim.notify(
+      string.format(
+        "louiselm: injected skill catalog shortened %d description(s) and omitted %d skill(s) to fit 8000 bytes",
+        #catalog.truncated,
+        #catalog.omitted
+      ),
+      nvim.log.levels.WARN
+    )
+  end
+  return skills, catalog.text
 end
 
 ---@param config table
@@ -222,10 +232,10 @@ function M.register()
       nvim.notify("louiselm: invalid agent configuration (" .. #session_errors .. " errors)", nvim.log.levels.ERROR)
       return nil
     end
-    local skills, skill_context, skills_error = {}, nil, nil
+    local skills, skill_catalog, skills_error = {}, nil, nil
     local instructions_context
     if configured ~= nil then
-      skills, skill_context, skills_error = configured_skills(configured, definitions, default_policy)
+      skills, skill_catalog, skills_error = configured_skills(configured, definitions, default_policy)
       instructions_context = configured_instructions(configured)
     end
     if skills_error ~= nil then
@@ -236,7 +246,7 @@ function M.register()
       agents = names,
       skills = skills,
       skill_paths = configured and configured.skills and configured.skills.paths or nil,
-      skill_context = skill_context,
+      skill_catalog = skill_catalog,
       instructions_context = instructions_context,
     }))
     return chat

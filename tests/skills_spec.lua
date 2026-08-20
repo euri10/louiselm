@@ -672,15 +672,79 @@ end
 
 T["inject"] = MiniTest.new_set()
 
-T["inject"]["includes only skill index metadata"] = function()
-  local index = assert(Skills.inject({
-    { name = "grill-me", description = "Stress test an idea", path = "/skills/grill-me/SKILL.md", content = "secret" },
+T["inject"]["builds escaped Agent Skills XML and excludes explicit-only skills"] = function()
+  local catalog = assert(Skills.inject({
+    {
+      name = "grill&me",
+      description = "Stress <test> an idea",
+      path = "/skills/grill&me/SKILL.md",
+      content = "secret",
+      explicit_only = false,
+    },
+    {
+      name = "manual",
+      description = "Only when selected",
+      path = "/skills/manual/SKILL.md",
+      explicit_only = true,
+    },
   }))
 
-  MiniTest.expect.equality(index:find("grill%-me", 1, false) ~= nil, true)
-  MiniTest.expect.equality(index:find("Stress test an idea", 1, true) ~= nil, true)
-  MiniTest.expect.equality(index:find("/skills/grill%-me/SKILL.md", 1, false) ~= nil, true)
-  MiniTest.expect.equality(index:find("secret", 1, true), nil)
+  MiniTest.expect.equality(catalog.text:find("<skills_instructions>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(catalog.text:find("<available_skills>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(catalog.text:find("<name>grill&amp;me</name>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(catalog.text:find("Stress &lt;test&gt; an idea", 1, true) ~= nil, true)
+  MiniTest.expect.equality(catalog.text:find("/skills/grill&amp;me/SKILL.md", 1, true) ~= nil, true)
+  MiniTest.expect.equality(catalog.text:find("manual", 1, true), nil)
+  MiniTest.expect.equality(catalog.text:find("secret", 1, true), nil)
+  MiniTest.expect.equality(catalog.truncated, {})
+  MiniTest.expect.equality(catalog.omitted, {})
+end
+
+T["inject"]["fairly truncates multibyte descriptions within the complete byte budget"] = function()
+  local skills = {}
+  for index = 1, 40 do
+    skills[index] = {
+      name = string.format("skill-%02d", index),
+      description = string.rep("é<&", 200),
+      path = string.format("/skills/skill-%02d/SKILL.md", index),
+      explicit_only = false,
+    }
+  end
+
+  local catalog = assert(Skills.inject(skills))
+
+  MiniTest.expect.equality(#catalog.text <= 8000, true)
+  MiniTest.expect.equality(pcall(nvim.str_utfindex, catalog.text), true)
+  MiniTest.expect.equality(#catalog.truncated, 40)
+  MiniTest.expect.equality(catalog.omitted, {})
+  for _, skill in ipairs(skills) do
+    MiniTest.expect.equality(catalog.text:find("<name>" .. skill.name .. "</name>", 1, true) ~= nil, true)
+    MiniTest.expect.equality(catalog.text:find("<location>" .. skill.path .. "</location>", 1, true) ~= nil, true)
+  end
+end
+
+T["inject"]["omits only the sorted tail when minimum metadata cannot fit"] = function()
+  local skills = {}
+  for index = 1, 80 do
+    skills[index] = {
+      name = string.format("skill-%02d", index),
+      description = "x",
+      path = "/skills/" .. string.rep("p", 120) .. string.format("/%02d/SKILL.md", index),
+      explicit_only = false,
+    }
+  end
+
+  local catalog = assert(Skills.inject(skills))
+
+  MiniTest.expect.equality(#catalog.text <= 8000, true)
+  MiniTest.expect.equality(#catalog.omitted > 0, true)
+  local first_omitted = catalog.omitted[1]
+  local omitted_index = assert(tonumber(first_omitted:match("(%d+)$")))
+  MiniTest.expect.equality(
+    catalog.text:find("<name>skill%-" .. string.format("%02d", omitted_index - 1), 1, false) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(catalog.text:find("<name>" .. first_omitted .. "</name>", 1, true), nil)
 end
 
 T["inject"]["does not restore removed full-content injection"] = function()

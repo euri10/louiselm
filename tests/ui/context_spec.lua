@@ -76,7 +76,7 @@ end
 
 T["skills"] = MiniTest.new_set()
 
-T["skills"]["rereads the selected skill and turns it into an invocation context"] = function()
+T["skills"]["returns the selected skill and turns captured content into an exact context"] = function()
   local root = nvim.fn.tempname()
   assert(nvim.fn.mkdir(root, "p") == 1)
   local path = nvim.fs.joinpath(root, "SKILL.md")
@@ -86,7 +86,6 @@ T["skills"]["rereads the selected skill and turns it into an invocation context"
   local selected
   nvim.ui.select = function(items, _, callback)
     MiniTest.expect.equality(items, skills)
-    assert(nvim.fn.writefile({ "fresh instructions" }, path) == 0)
     callback(items[1])
   end
   assert(Context.skills.pick(skills, function(skill)
@@ -94,34 +93,32 @@ T["skills"]["rereads the selected skill and turns it into an invocation context"
   end))
   nvim.ui.select = original_select
 
-  MiniTest.expect.equality(selected.content, "fresh instructions\n")
+  MiniTest.expect.equality(selected, skills[1])
+  selected.content = "fresh instructions\n"
   MiniTest.expect.equality(Context.skills.context(selected), {
     label = "skill: grill-me",
-    text = "/grill-me",
+    text = "fresh instructions\n",
   })
   nvim.fn.delete(root, "rf")
 end
 
-T["skills"]["reports when the selected skill can no longer be read"] = function()
+T["skills"]["does not read a selected skill before the chat owns the selection"] = function()
   local root = nvim.fn.tempname()
   assert(nvim.fn.mkdir(root, "p") == 1)
   local path = nvim.fs.joinpath(root, "SKILL.md")
   assert(nvim.fn.writefile({ "instructions" }, path) == 0)
   local original_select = nvim.ui.select
   local selected
-  local selection_error
   nvim.ui.select = function(items, _, callback)
     assert(nvim.fn.delete(path) == 0)
     callback(items[1])
   end
-  assert(Context.skills.pick({ { name = "gone", description = "Gone", path = path } }, function(skill, error_message)
+  assert(Context.skills.pick({ { name = "gone", description = "Gone", path = path } }, function(skill)
     selected = skill
-    selection_error = error_message
   end))
   nvim.ui.select = original_select
 
-  MiniTest.expect.equality(selected, nil)
-  MiniTest.expect.equality(selection_error, "could not read selected skill: " .. path)
+  MiniTest.expect.equality(selected.name, "gone")
   nvim.fn.delete(root, "rf")
 end
 

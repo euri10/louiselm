@@ -11,6 +11,7 @@ local function fake_session(id, agent)
   local session = {
     state = { id = id, agent = agent, status = "ready", current_turn = 0, config_options = {} },
     prompts = {},
+    prompt_error = nil,
     config_changes = {},
     disposed = false,
   }
@@ -32,6 +33,9 @@ local function fake_session(id, agent)
   end
 
   function session:prompt(prompt)
+    if self.prompt_error ~= nil then
+      return nil, self.prompt_error
+    end
     self.prompts[#self.prompts + 1] = prompt
     return #self.prompts
   end
@@ -84,6 +88,13 @@ end
 
 local function buffer_lines(buffer)
   return nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+end
+
+---@param line integer One-based line number in the current window.
+---@return integer first
+---@return integer last
+local function fold_range(line)
+  return nvim.fn.foldclosed(line), nvim.fn.foldclosedend(line)
 end
 
 local function chat_lines(identity, session, body, options, telemetry)
@@ -523,6 +534,140 @@ T["chat"]["leaves a manually typed slash command untouched in a native session"]
 
   MiniTest.expect.equality(first.prompts, { "/grill-me hand-typed, not picked" })
   chat:dispose()
+end
+
+T["chat"]["keeps a new injected catalog hidden and defers it with contexts across slash prompts"] = function()
+  local created = fake_session("session-1", "claude")
+  created.state.skills_policy = "inject"
+  local api = fake_api()
+  api.create_session = function()
+    return created
+  end
+  local chat = assert(Chat.new(api, {
+    agents = { "claude" },
+    skill_catalog = "<available_skills>catalog</available_skills>",
+  }))
+
+  assert(chat:new_session("claude"))
+  assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
+  MiniTest.expect.equality(table.concat(buffer_lines(chat:buffer()), "\n"):find("skill%-index"), nil)
+  MiniTest.expect.equality(table.concat(buffer_lines(chat:buffer()), "\n"):find("available_skills", 1, true), nil)
+
+  assert(chat:submit("/compact"))
+  MiniTest.expect.equality(created.prompts, { "/compact" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[8], "> [context: file: init.lua] ")
+
+  assert(chat:submit("Review this"))
+  MiniTest.expect.equality(created.prompts[2], {
+    { type = "text", text = "<available_skills>catalog</available_skills>" },
+    { type = "text", text = "Referenced file: init.lua" },
+    { type = "text", text = "Review this" },
+  })
+
+  assert(chat:submit("Again"))
+  MiniTest.expect.equality(created.prompts[3], "Again")
+  chat:dispose()
+end
+
+T["chat"]["retains a hidden catalog and visible contexts after a local prompt failure"] = function()
+  local created = fake_session("session-1", "claude")
+  created.state.skills_policy = "inject"
+  local api = fake_api()
+  api.create_session = function()
+    return created
+  end
+  local chat = assert(Chat.new(api, {
+    agents = { "claude" },
+    skill_catalog = "hidden catalog",
+  }))
+  assert(chat:new_session("claude"))
+  assert(chat:queue_context({ label = "file", text = "file body" }))
+  created.prompt_error = "write failed"
+
+  local request_id, prompt_error = chat:submit("draft")
+
+  MiniTest.expect.equality({ request_id, prompt_error }, { nil, "write failed" })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: file] draft")
+  created.prompt_error = nil
+  assert(chat:submit())
+  MiniTest.expect.equality(created.prompts[1], {
+    { type = "text", text = "hidden catalog" },
+    { type = "text", text = "file body" },
+    { type = "text", text = "draft" },
+  })
+  chat:dispose()
+end
+
+T["chat"]["does not inject a catalog into an attached existing session"] = function()
+  local existing = fake_session("session-1", "claude")
+  existing.state.skills_policy = "inject"
+  local chat = assert(Chat.new(fake_api(), { skill_catalog = "hidden catalog" }))
+
+  assert(chat:attach(existing))
+  assert(chat:submit("hello"))
+
+  MiniTest.expect.equality(existing.prompts, { "hello" })
+  chat:dispose()
+end
+
+T["chat"]["sends the exact selected skill body once in inject mode"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "grill-me", "Stress-test an idea")
+  local path = nvim.fs.joinpath(workspace, "grill-me", "SKILL.md")
+  local first_body = table.concat({ "---", "name: grill-me", "description: Stress-test an idea", "---" }, "\n") .. "\n"
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  local restore = select_first()
+
+  assert(chat:pick_skill())
+  restore()
+  assert(nvim.fn.writefile({ "changed after selection" }, path) == 0)
+  assert(chat:submit("use it"))
+  assert(chat:submit("again"))
+
+  MiniTest.expect.equality(first.prompts[1], {
+    { type = "text", text = first_body },
+    { type = "text", text = "use it" },
+  })
+  MiniTest.expect.equality(first.prompts[2], "again")
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["blocks on a selected skill read failure while preserving the prompt and selection"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "grill-me", "Stress-test an idea")
+  local path = nvim.fs.joinpath(workspace, "grill-me", "SKILL.md")
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  assert(chat:attach(first))
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, 6, false, { "> draft" })
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(items, _, callback)
+    assert(nvim.fn.delete(path) == 0)
+    callback(items[1])
+  end
+
+  assert(chat:pick_skill())
+  nvim.ui.select = original_select
+  local request_id, prompt_error = chat:submit()
+
+  MiniTest.expect.equality(request_id, nil)
+  MiniTest.expect.equality(prompt_error, "could not read selected skill: " .. path)
+  MiniTest.expect.equality(first.prompts, {})
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: skill: grill-me] draft")
+
+  assert(nvim.fn.writefile({ "restored body" }, path) == 0)
+  assert(chat:submit())
+  MiniTest.expect.equality(first.prompts[1], {
+    { type = "text", text = "restored body\n" },
+    { type = "text", text = "draft" },
+  })
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
 end
 
 T["chat"]["never resends a native command after it was consumed by an earlier prompt"] = function()
@@ -1756,6 +1901,108 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
       { type = "text", text = "Review this" },
     },
   })
+  chat:dispose()
+end
+
+T["chat"]["renders every accepted context in one closed native fold before the user prompt"] = function()
+  local created = fake_session("session-1", "claude")
+  created.state.skills_policy = "inject"
+  local api = fake_api()
+  api.create_session = function()
+    return created
+  end
+  local chat = assert(Chat.new(api, {
+    agents = { "claude" },
+    skill_catalog = "catalog line one\ncatalog line two",
+  }))
+  assert(chat:new_session("claude"))
+  assert(chat:queue_context({ label = "file: init.lua", text = "first line\nsecond line" }))
+  assert(chat:queue_context({ label = "AGENTS.md", uri = "file:///repo/AGENTS.md" }))
+
+  assert(chat:submit("Review this"))
+
+  MiniTest.expect.equality(created.prompts[1], {
+    { type = "text", text = "catalog line one\ncatalog line two" },
+    { type = "text", text = "first line\nsecond line" },
+    { type = "resource_link", uri = "file:///repo/AGENTS.md", name = "AGENTS.md" },
+    { type = "text", text = "Review this" },
+  })
+  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+    "# claude · session-1",
+    "Session: status=ready · display=Your turn · skills=inject",
+    "ACP options:",
+    "Telemetry:",
+    "",
+    "> [contexts: skill-index · file: init.lua · AGENTS.md]",
+    "[context: skill-index]",
+    "catalog line one",
+    "catalog line two",
+    "[context: file: init.lua]",
+    "first line",
+    "second line",
+    "[context: AGENTS.md]",
+    "type: resource_link",
+    "name: AGENTS.md",
+    "uri: file:///repo/AGENTS.md",
+    "> Review this",
+    "",
+    "> ",
+  })
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("buftype", { buf = chat:buffer() }), "nofile")
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("swapfile", { buf = chat:buffer() }), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("foldmethod", { win = 0 }), "manual")
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 16 })
+
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  nvim.api.nvim_cmd({ cmd = "normal", args = { "zo" }, bang = true }, {})
+  MiniTest.expect.equality(fold_range(6), -1)
+  nvim.api.nvim_cmd({ cmd = "normal", args = { "zc" }, bang = true }, {})
+  assert(chat:submit("Next"))
+  MiniTest.expect.equality(created.prompts[2], "Next")
+  chat:dispose()
+end
+
+T["chat"]["keeps failed context chips without creating a submitted fold"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:queue_context({ label = "file", text = "file body" }))
+  first.prompt_error = "write failed"
+
+  local request_id = chat:submit("draft")
+
+  MiniTest.expect.equality(request_id, nil)
+  MiniTest.expect.equality(table.concat(buffer_lines(chat:buffer()), "\n"):find("[contexts:", 1, true), nil)
+  MiniTest.expect.equality(fold_range(6), -1)
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: file] draft")
+  first.prompt_error = nil
+  assert(chat:submit())
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
+  chat:dispose()
+end
+
+T["chat"]["applies a queued context fold when its hidden session buffer is focused"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  first.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:queue_context({ label = "file", text = "queued body" }))
+  assert(chat:submit("queued prompt"))
+  assert(chat:attach(second))
+
+  first.state.status = "ready"
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return #first.prompts == 1
+  end, 1)
+  assert(chat:switch("session-1"))
+
+  MiniTest.expect.equality(first.prompts[1], {
+    { type = "text", text = "queued body" },
+    { type = "text", text = "queued prompt" },
+  })
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
   chat:dispose()
 end
 

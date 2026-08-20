@@ -1,6 +1,5 @@
 local M = {}
 local Picker = require("louiselm.ui.picker")
-local Skills = require("louiselm.skills")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -33,11 +32,11 @@ local function valid_skill(skill)
     and type(skill.path) == "string"
 end
 
----Build a slash-command context item for a discovered skill.
----@param skill louiselm.skills.Skill Skill metadata.
----@return louiselm.ui.ContextItem item Skill invocation context.
+---Build an exact text context from a selected skill body.
+---@param skill louiselm.skills.Skill Skill metadata with content captured at selection.
+---@return louiselm.ui.ContextItem item Skill instruction context.
 function M.context(skill)
-  return { label = "skill: " .. skill.name, text = "/" .. skill.name }
+  return { label = "skill: " .. skill.name, text = skill.content }
 end
 
 ---Pick a discovered skill through Neovim's configured UI picker.
@@ -72,18 +71,7 @@ function M.pick(skills, callback)
       callback(nil)
       return
     end
-    local content = Skills.read(choice.path)
-    if content == nil then
-      callback(nil, "could not read selected skill: " .. choice.path)
-      return
-    end
-    callback({
-      name = choice.name,
-      description = choice.description,
-      path = choice.path,
-      content = content,
-      explicit_only = choice.explicit_only == true,
-    })
+    callback(choice)
   end)
   return true
 end

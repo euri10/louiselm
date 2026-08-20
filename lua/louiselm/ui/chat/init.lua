@@ -10,7 +10,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field skills? louiselm.skills.Skill[] Skills shown by the invocation picker.
 ---@field skill_paths? string[] Configured roots rediscovered when the invocation picker opens.
 ---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
----@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
+---@field skill_catalog? string Hidden catalog held for the first accepted model prompt in a new inject session.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 
 ---@class louiselm.ui.ChatView
@@ -27,7 +27,10 @@ local Transcript = require("louiselm.session.transcript")
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
+---@field skill_catalog? string Hidden catalog pending for this new inject session.
 ---@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
+---@field context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
+---@field fold_counts table<integer, integer> Number of context folds installed in each window.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
@@ -45,7 +48,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field skill_paths string[] Configured roots rediscovered when the invocation picker opens.
 ---@field skill_warning_signature string? Last reported discovery diagnostics, for notification deduplication.
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
----@field skill_context? louiselm.ui.ContextItem Skill catalog queued only for inject sessions.
+---@field skill_catalog? string Hidden catalog copied only into brand-new inject sessions.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
@@ -132,7 +135,12 @@ local function copy_skills(value)
     then
       return nil, string.format("chat skill at index %d is malformed", index)
     end
-    skills[index] = { name = skill.name, description = skill.description, path = skill.path }
+    skills[index] = {
+      name = skill.name,
+      description = skill.description,
+      path = skill.path,
+      explicit_only = skill.explicit_only == true,
+    }
   end
   for key in pairs(value) do
     if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
@@ -604,6 +612,28 @@ local function queue_native_skill(self, view, skill)
   return true
 end
 
+---Queue one inject-mode skill body in context order, retaining a failed read for retry.
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param skill louiselm.skills.Skill
+---@return boolean queued
+---@return string? error_message
+local function queue_injected_skill(self, view, skill)
+  local rendered, render_error = render_chip(self, view, "skill: " .. skill.name)
+  if not rendered then
+    return false, render_error
+  end
+  view.contexts[#view.contexts + 1] = {
+    label = "skill: " .. skill.name,
+    text = skill.content,
+    skill_path = skill.path,
+  }
+  if skill.content == nil then
+    return true, "could not read selected skill: " .. skill.path
+  end
+  return true
+end
+
 ---@param value string
 ---@return string[] lines Split text while preserving a trailing empty line.
 local function split_lines(value)
@@ -618,6 +648,73 @@ local function split_lines(value)
     lines[#lines + 1] = string.sub(value, start, newline - 1)
     start = newline + 1
   end
+end
+
+---@class louiselm.ui.ContextFold
+---@field first integer Zero-based first folded line.
+---@field last integer Zero-based last folded line.
+
+---@param item louiselm.ui.ContextItem
+---@return table block
+local function context_content(item)
+  if item.uri ~= nil then
+    return { type = "resource_link", uri = item.uri, name = item.label }
+  end
+  return { type = "text", text = item.text }
+end
+
+---@param view louiselm.ui.ChatView
+---@param win integer
+local function apply_context_folds(view, win)
+  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
+    return
+  end
+  nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
+  nvim.api.nvim_set_option_value("foldenable", true, { win = win })
+  local applied = view.fold_counts[win] or 0
+  nvim.api.nvim_win_call(win, function()
+    for index = applied + 1, #view.context_folds do
+      local fold = view.context_folds[index]
+      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+    end
+  end)
+  view.fold_counts[win] = #view.context_folds
+end
+
+---@param view louiselm.ui.ChatView
+---@param text string
+---@param contexts louiselm.ui.ContextItem[]
+---@return integer line_count
+local function replace_submitted_prompt(view, text, contexts)
+  local lines = {}
+  if #contexts > 0 then
+    local labels = {}
+    for index, item in ipairs(contexts) do
+      labels[index] = single_line(item.label)
+    end
+    lines[1] = "> [contexts: " .. table.concat(labels, " · ") .. "]"
+    for _, item in ipairs(contexts) do
+      lines[#lines + 1] = "[context: " .. single_line(item.label) .. "]"
+      if item.text ~= nil then
+        nvim.list_extend(lines, split_lines(item.text))
+      else
+        local block = context_content(item)
+        lines[#lines + 1] = "type: " .. block.type
+        lines[#lines + 1] = "name: " .. block.name
+        lines[#lines + 1] = "uri: " .. block.uri
+      end
+    end
+    view.context_folds[#view.context_folds + 1] = {
+      first = view.prompt_line,
+      last = view.prompt_line + #lines - 1,
+    }
+  end
+  for _, line in ipairs(split_lines(text)) do
+    lines[#lines + 1] = "> " .. line
+  end
+  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
+  apply_context_folds(view, view.window)
+  return #lines
 end
 
 ---@param view louiselm.ui.ChatView
@@ -965,30 +1062,51 @@ end
 ---@param text string
 ---@return string|table? content
 ---@return string? error_message Native command resolution failure; content is unsent.
+---@return louiselm.ui.ContextItem[] contexts Exact attached contexts in transport order.
 local function build_content(view, text)
+  if text:sub(1, 1) == "/" then
+    return text, nil, {}
+  end
   local final_text = text
   if view.pending_skill ~= nil then
+    if view.pending_skill.content == nil then
+      local content = Skills.read(view.pending_skill.path)
+      if content == nil then
+        return nil, "could not read selected skill: " .. view.pending_skill.path, {}
+      end
+      view.pending_skill.content = content
+    end
     local command_name, resolve_error = Skills.resolve_command(view.pending_skill, view.session:inspect().commands)
     if command_name == nil then
-      return nil, resolve_error
+      return nil, resolve_error, {}
     end
     final_text = final_text == "" and ("/" .. command_name) or ("/" .. command_name .. " " .. final_text)
   end
-  if #view.contexts == 0 then
-    return final_text
+  if view.skill_catalog == nil and #view.contexts == 0 then
+    return final_text, nil, {}
   end
   local content = {}
+  local contexts = {}
+  if view.skill_catalog ~= nil then
+    local catalog = { label = "skill-index", text = view.skill_catalog }
+    contexts[#contexts + 1] = catalog
+    content[#content + 1] = context_content(catalog)
+  end
   for _, item in ipairs(view.contexts) do
-    if item.uri ~= nil then
-      content[#content + 1] = { type = "resource_link", uri = item.uri, name = item.label }
-    else
-      content[#content + 1] = { type = "text", text = item.text }
+    if item.text == nil and item.skill_path ~= nil then
+      local skill_content = Skills.read(item.skill_path)
+      if skill_content == nil then
+        return nil, "could not read selected skill: " .. item.skill_path, {}
+      end
+      item.text = skill_content
     end
+    contexts[#contexts + 1] = item
+    content[#content + 1] = context_content(item)
   end
   if final_text ~= "" then
     content[#content + 1] = { type = "text", text = final_text }
   end
-  return content
+  return content, nil, contexts
 end
 
 ---@param view louiselm.ui.ChatView
@@ -1008,7 +1126,7 @@ end
 ---@return string|number? request_id
 ---@return string? error_message
 local function submit_prompt(self, view, text)
-  local content, resolve_error = build_content(view, text)
+  local content, resolve_error, contexts = build_content(view, text)
   if content == nil then
     notify_prompt_error(resolve_error or "prompt could not be resolved")
     return nil, resolve_error
@@ -1022,20 +1140,25 @@ local function submit_prompt(self, view, text)
   view.transcript:record_user(text)
 
   clear_queued_prompt(view)
-  local prompt_line_count = replace_prompt(view, text)
+  local slash_prompt = text:sub(1, 1) == "/"
+  local prompt_line_count = replace_submitted_prompt(view, text, contexts)
   local response_line = view.prompt_line + prompt_line_count
-  nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " })
+  local next_prefix = slash_prompt and view.context_prefix or ""
+  nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " .. next_prefix })
   view.response_line = response_line
   view.response_tail = view.response_line
   view.response_started = false
   view.transcript_tail = view.response_tail
   view.prompt_line = response_line + 1
   if nvim.api.nvim_get_current_buf() == view.buffer then
-    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #next_prefix })
   end
-  view.contexts = {}
-  view.context_prefix = ""
-  view.pending_skill = nil
+  if not slash_prompt then
+    view.contexts = {}
+    view.context_prefix = ""
+    view.skill_catalog = nil
+    view.pending_skill = nil
+  end
   return request_id
 end
 
@@ -1350,7 +1473,7 @@ function M.new(api, options)
         and key ~= "skills"
         and key ~= "skill_paths"
         and key ~= "initial_contexts"
-        and key ~= "skill_context"
+        and key ~= "skill_catalog"
         and key ~= "instructions_context"
       then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
@@ -1373,10 +1496,9 @@ function M.new(api, options)
   if initial_contexts == nil then
     return nil, contexts_error
   end
-  local skill_contexts, skill_context_error =
-    copy_initial_contexts(options and options.skill_context and { options.skill_context } or nil)
-  if skill_contexts == nil then
-    return nil, skill_context_error
+  local skill_catalog = options and options.skill_catalog
+  if skill_catalog ~= nil and (type(skill_catalog) ~= "string" or skill_catalog == "") then
+    return nil, "chat skill catalog must be a non-empty string"
   end
   local instructions_contexts, instructions_context_error =
     copy_initial_contexts(options and options.instructions_context and { options.instructions_context } or nil)
@@ -1391,7 +1513,7 @@ function M.new(api, options)
     skill_paths = skill_paths,
     skill_warning_signature = nil,
     initial_contexts = initial_contexts,
-    skill_context = skill_contexts[1],
+    skill_catalog = skill_catalog,
     instructions_context = instructions_contexts[1],
     diff = Diff.new(),
     decision_queue = {},
@@ -1461,7 +1583,10 @@ function Chat:attach(session)
     tool_titles = {},
     contexts = {},
     context_prefix = "",
+    skill_catalog = nil,
     pending_skill = nil,
+    context_folds = {},
+    fold_counts = {},
     queued_prompt = nil,
     queue_mark = nil,
     queue_namespace = self.queue_namespace,
@@ -1536,6 +1661,7 @@ function Chat:switch(session_id)
   self.current_id = session_id
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
+  apply_context_folds(view, view.window)
   render_winbar(self, view, view.window)
   return true
 end
@@ -1922,13 +2048,22 @@ function Chat:pick_skill()
   end
   return Context.skills.pick(skills, function(skill, error_message)
     if skill ~= nil then
+      local content = Skills.read(skill.path)
+      local selected = {
+        name = skill.name,
+        description = skill.description,
+        path = skill.path,
+        content = content,
+        explicit_only = skill.explicit_only == true,
+      }
+      local queued, queue_error
       if state.skills_policy == "native" then
-        local queued, queue_error = queue_native_skill(self, view, skill)
-        if not queued then
-          nvim.notify("louiselm: " .. (queue_error or "could not queue skill"), nvim.log.levels.ERROR)
-        end
+        queued, queue_error = queue_native_skill(self, view, selected)
       else
-        self:queue_context(Context.skills.context(skill))
+        queued, queue_error = queue_injected_skill(self, view, selected)
+      end
+      if not queued or queue_error ~= nil then
+        nvim.notify("louiselm: " .. (queue_error or "could not queue skill"), nvim.log.levels.ERROR)
       end
     elseif error_message ~= nil then
       nvim.notify("louiselm: " .. error_message, nvim.log.levels.ERROR)
@@ -1980,11 +2115,8 @@ function Chat:new_session(agent_name, options)
       return nil, queue_error
     end
   end
-  if session:inspect().skills_policy == "inject" and self.skill_context ~= nil then
-    local queued, queue_error = self:queue_context(self.skill_context)
-    if not queued then
-      return nil, queue_error
-    end
+  if session:inspect().skills_policy == "inject" and self.skill_catalog ~= nil then
+    self.views[session:inspect().id].skill_catalog = self.skill_catalog
   end
   if self.instructions_context ~= nil then
     local queued, queue_error = self:queue_context(self.instructions_context)

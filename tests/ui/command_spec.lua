@@ -599,7 +599,7 @@ T["command"]["warns without blocking chat creation when a configured agent trail
   delete_chat_buffers()
 end
 
-T["command"]["injects every configured symlinked skill through the normal chat path"] = function()
+T["command"]["injects the hidden bounded catalog through the normal chat path"] = function()
   local skill_root = nvim.fn.tempname()
   local source_root = nvim.fs.joinpath(skill_root, "source")
   local generated_root = nvim.fs.joinpath(skill_root, "generated")
@@ -629,7 +629,9 @@ T["command"]["injects every configured symlinked skill through the normal chat p
   respond(process, 2, { sessionId = "skills-acp" })
 
   local buffer = nvim.api.nvim_get_current_buf()
-  nvim.api.nvim_buf_set_lines(buffer, 2, 3, false, { "> [context: skill-index] list skills" })
+  MiniTest.expect.equality(buffer_contains(buffer, "skill-index"), false)
+  MiniTest.expect.equality(buffer_contains(buffer, "available_skills"), false)
+  nvim.api.nvim_buf_set_lines(buffer, 5, 6, false, { "> list skills" })
   local submit
   for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "i")) do
     if mapping.desc == "Submit louiselm prompt" then
@@ -646,8 +648,9 @@ T["command"]["injects every configured symlinked skill through the normal chat p
   Command.configure(nil)
 
   MiniTest.expect.equality(process.command, { "claude-agent-acp" })
-  MiniTest.expect.equality(index:find('"alpha-skill"', 1, true) ~= nil, true)
-  MiniTest.expect.equality(index:find('"beta-skill"', 1, true) ~= nil, true)
+  MiniTest.expect.equality(#index <= 8000, true)
+  MiniTest.expect.equality(index:find("<name>alpha-skill</name>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(index:find("<name>beta-skill</name>", 1, true) ~= nil, true)
   delete_chat_buffers()
   nvim.fn.delete(skill_root, "rf")
 end

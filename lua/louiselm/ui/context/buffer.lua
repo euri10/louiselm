@@ -2,6 +2,7 @@
 ---@field label string Short label shown in the chat prompt.
 ---@field text? string ACP text content; required unless uri is present.
 ---@field uri? string Resource URI; emits an ACP resource_link block instead of text when present.
+---@field skill_path? string Selected SKILL.md path retried when its selection-time read failed.
 
 local M = {}
 

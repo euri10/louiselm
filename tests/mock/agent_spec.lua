@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Acp = require("louiselm.acp")
+local Chat = require("louiselm.ui.chat")
 local Session = require("louiselm.session")
 
 local T = MiniTest.new_set()
@@ -181,6 +182,40 @@ T["mock agent"]["advertises commands through session/update and delivers them on
   })
 
   assert(api:dispose())
+end
+
+T["mock agent"]["defers and consumes a hidden catalog once across the process boundary"] = function()
+  local api = assert(Session.new({ mock = mock_definition("echo") }, "inject"))
+  local chat = assert(Chat.new(api, {
+    agents = { "mock" },
+    skill_catalog = "hidden catalog",
+  }))
+  local session = assert(chat:new_session("mock", { cwd = project_root }))
+  local chunks = {}
+  session:on(function(event)
+    if event.type == "chunk" then
+      chunks[#chunks + 1] = event.data.content.text
+    end
+  end)
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+
+  assert(chat:submit("/compact"))
+  wait_for(function()
+    return session:inspect().status == "ready" and #chunks == 1
+  end)
+  assert(chat:submit("hello"))
+  wait_for(function()
+    return session:inspect().status == "ready" and #chunks == 2
+  end)
+  assert(chat:submit("again"))
+  wait_for(function()
+    return session:inspect().status == "ready" and #chunks == 3
+  end)
+
+  MiniTest.expect.equality(chunks, { "/compact", "hidden catalog", "again" })
+  chat:dispose()
 end
 
 T["mock agent"]["surfaces a simulated crash as a session error"] = function()
