@@ -36,6 +36,11 @@ shared record across sessions, agents, and adapters.
   Context anchored to one issue belongs in `br comments`; a standing convention
   belongs in this file. Anything an agent knows that another adapter cannot
   read is a defect in the record.
+- File a design question worth a full `grill-me` session as a beads `question`
+  issue, labeled `needs-design`, titled "Grill-me needed: <question>". Open
+  with a line telling the grill not to resolve the question in passing, then
+  the question itself, the context/evidence that raised it, and the threads
+  worth pulling — not a pre-baked answer.
 - Run `br sync --flush-only` before committing, and commit `.beads/` alongside
   the work it describes.
 
