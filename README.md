@@ -695,3 +695,15 @@ and reports Neovim's current working directory). Configuring a root trusts its
 skill folders and any followed symlink targets; a relative root also trusts the
 active workspace to supply that path. LouiseLM does not add project roots
 automatically and has no trust database.
+
+## Licence
+
+LouiseLM is licensed under the [MIT License](LICENSE). MIT was chosen to serve
+reach: the project's usefulness depends on being installable and adaptable
+anywhere without licensing friction.
+
+If reach stops being the project's binding constraint, the licence choice for
+future versions will be revisited; versions already released keep their
+existing terms. The separate [trademark policy](TRADEMARK_POLICY.md) governs
+use of the LouiseLM name, and the [political statement](POLITICAL_STATEMENT.md)
+explains the position behind this permissive posture.
