@@ -19,3 +19,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+This licence covers the code only. The "LouiseLM" name and associated marks
+are reserved and not granted here; see TRADEMARK_POLICY.md. The reasoning
+behind choosing this licence, and what the maintainer retains outside it, is
+set out in POLITICAL_STATEMENT.md.

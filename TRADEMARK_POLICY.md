@@ -32,6 +32,18 @@ the marks only. Entities in this class retain the same rights to use, modify,
 and distribute the code that the software licence grants to everyone else, and
 may still refer truthfully to LouiseLM.
 
+## Transfer of the mark
+
+If the LouiseLM name or marks are ever sold, assigned, or otherwise
+transferred to another party, the maintainer's intent is that the refusal
+above transfers with them — a successor should not gain a mark this policy
+was written to keep out of a given class of hands. That intent is stated here
+so it is legible, not because this document can enforce it against a future
+owner by itself; a transfer that omits this covenant would leave a successor
+unbound by it. Anyone relying on this policy for more than the maintainer's
+current word should treat it accordingly: a present commitment, not a
+permanent property right attached to the mark.
+
 ## Other uses
 
 Ask the maintainer before using a LouiseLM mark in a way not expressly covered

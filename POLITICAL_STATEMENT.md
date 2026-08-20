@@ -28,8 +28,10 @@ more valuable here than using copyright to select acceptable users.
 A permissive copyright licence is not a surrender of every instrument. The
 LouiseLM name and associated marks remain reserved. The licence contains no
 explicit patent grant. The maintainer also retains the ability to release
-future versions under different terms; versions already received under their
-licence keep the rights that licence granted.
+future versions under different terms — narrower, source-available, or
+otherwise — if the maintainer's incentives change or the project changes
+hands. Versions already distributed keep the rights their licence granted;
+that grant does not reach forward to versions not yet released.
 
 Those choices are deliberate. Trademark is the instrument available now for
 deciding who may present themselves as LouiseLM. Patent rights, where they
@@ -73,3 +75,13 @@ organization, or political action. LouiseLM keeps the name, any patent leverage
 that may exist, and control over future releases while making the present code
 easy to adopt. Claiming that this arrangement achieves more would be flattery;
 pretending it is politically neutral would be dishonest.
+
+Reserving these instruments concentrates them in one person, which cuts both
+ways. It keeps them out of a fork's hands without that fork paying for them;
+it does not keep them out of a buyer's hands if the maintainer chooses to
+sell. No text here, in the trademark policy, or in the code licence binds
+that choice — the reserved name, patent leverage, and future-release control
+are exactly what a buyer would be purchasing, and their transfer would carry
+no obligation to this statement's politics. That is not a gap closable by
+better wording; it is the shape of holding these instruments personally
+rather than not holding them at all.
