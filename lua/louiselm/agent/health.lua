@@ -13,6 +13,16 @@ local Config = require("louiselm.agent.config")
 
 local M = {}
 
+---Extract the trailing semver-looking token from a version string, so a
+---banner like "@scope/pkg 1.6.0" compares equal to a bare "1.6.0" from a
+---separate latest-version check. Falls back to the whole string when no
+---such token is found (e.g. an already-bare version).
+---@param value string
+---@return string
+local function extract_version(value)
+  return value:match("v?(%d[%d%.%-%+%w]*)%s*$") or value
+end
+
 ---@param value string
 ---@return string?
 local function first_line(value)
@@ -202,7 +212,7 @@ function M.check(definition, on_result)
     health_result.latest_version = latest_version
     health_result.latest_error = latest_error
     if health_result.version ~= nil and latest_version ~= nil then
-      health_result.outdated = health_result.version ~= latest_version
+      health_result.outdated = extract_version(health_result.version) ~= extract_version(latest_version)
     end
     on_result(health_result)
   end

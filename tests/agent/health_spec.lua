@@ -244,6 +244,32 @@ T["check"]["latest version"]["fires the health callback exactly once for two ind
   MiniTest.expect.equality(calls_to_result, 1)
 end
 
+T["check"]["latest version"]["reports outdated false when the installed banner carries a name prefix the latest check doesn't"] = function()
+  local report
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    Health.check({
+      command = "codex-acp",
+      args = {},
+      latest = { command = "npm", args = { "view", "@agentclientprotocol/codex-acp", "version" } },
+    }, function(result)
+      report = result
+    end)
+
+    -- codex-acp's own --version banner includes the package name; npm view
+    -- returns a bare semver. Both resolve to the same 1.6.0, so this must
+    -- not be reported as outdated just because the raw strings differ.
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "@agentclientprotocol/codex-acp 1.6.0\n", stderr = "" })
+    calls[2].on_exit({ code = 0, signal = 0, stdout = "1.6.0\n", stderr = "" })
+  end)
+
+  MiniTest.expect.equality(report.version, "@agentclientprotocol/codex-acp 1.6.0")
+  MiniTest.expect.equality(report.latest_version, "1.6.0")
+  MiniTest.expect.equality(report.outdated, false)
+end
+
 T["check"]["latest version"]["reports outdated false when the installed and latest versions match"] = function()
   local report
 
