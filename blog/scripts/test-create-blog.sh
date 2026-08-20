@@ -165,23 +165,11 @@ else
 	fi
 
 	blog_md="$session_post_dir/blog.md"
-	expected_block=$(
-		cat <<'EOF'
-```{literalinclude} ./conversations/mock-prior-acp-session-1.md
-:lines: 1
-:class: nvim-transcript
-```
-EOF
-	)
-	# grep -F with an embedded-newline pattern matches each line as its own
-	# alternative (like -e per line), not a contiguous block -- so pull the
-	# three lines starting at the opening fence and compare them for an exact,
-	# contiguous, in-order match instead.
-	actual_block=$(grep -A3 -F -- '```{literalinclude} ./conversations/mock-prior-acp-session-1.md' "$blog_md" || true)
-	if [ -f "$blog_md" ] && [ "$actual_block" = "$expected_block" ]; then
-		ok "blog.md got the documented literalinclude stub, with the ':lines: 1' placeholder untouched"
+	expected_line='% nvim-transcript: ./conversations/mock-prior-acp-session-1.md :lines: 1'
+	if [ -f "$blog_md" ] && grep -qxF -- "$expected_line" "$blog_md"; then
+		ok "blog.md got the documented nvim-transcript comment stub, with the ':lines: 1' placeholder untouched"
 	else
-		fail "blog.md got the documented literalinclude stub, with the ':lines: 1' placeholder untouched"
+		fail "blog.md got the documented nvim-transcript comment stub, with the ':lines: 1' placeholder untouched"
 		cat "$blog_md" >&2 || true
 	fi
 

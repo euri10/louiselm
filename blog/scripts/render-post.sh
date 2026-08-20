@@ -9,17 +9,18 @@
 #
 # What it does
 # ------------
-# Given <post-dir>/blog.md, finds every MyST literalinclude code block tagged
-# `:class: nvim-transcript`, e.g.:
+# Given <post-dir>/blog.md, finds every `% nvim-transcript: <source> :lines:
+# N-M` marker comment, e.g.:
 #
-#   ```{literalinclude} ./conversations/claude-xxx.md
-#   :lines: 87-112
-#   :class: nvim-transcript
-#   ```
+#   % nvim-transcript: ./conversations/claude-xxx.md :lines: 87-112
 #
-# (`:lines:` is 1-based and inclusive on both ends, per MyST's literalinclude
-# docs — https://mystmd.org/guide/directives — line 87 through line 112,
-# not a 0-based/exclusive range.)
+# This is a MyST `%` line comment (https://mystmd.org/guide, "comments"), so
+# it is never rendered by `myst build` — it exists purely as input to this
+# script, which rewrites the line(s) after it in place on every run. Because
+# the comment itself is never touched, the author can keep editing `:lines:`
+# and re-run this indefinitely; nothing here is a one-shot destructive
+# rewrite. (`:lines:` is 1-based and inclusive on both ends — line 87 through
+# line 112, not a 0-based/exclusive range.)
 #
 # For the whole batch, it opens the referenced source files in ONE shared
 # headless Neovim instance (see tohtml-driver.lua), using the author's real
@@ -29,41 +30,63 @@
 # highlighting. Each excerpt is rendered via `:TOhtml`'s Lua API
 # (`require("tohtml").tohtml(0, {range = {first, last}, ...})`).
 #
-# Only the `<pre>...</pre>` fragment and the generated `<style>` CSS are ever
-# extracted from TOhtml's output — the full HTML document TOhtml produces is
-# discarded. Every generated CSS selector is namespaced under `.nvim-transcript`
-# (e.g. `.Comment` becomes `.nvim-transcript .Comment`, `body {...}` becomes
-# `.nvim-transcript {...}`, and the bare `*` TOhtml emits becomes
-# `.nvim-transcript *`) so this CSS can never leak into or collide with the
-# surrounding blog theme. Selectors are deduplicated across every excerpt in
-# the post into one shared stylesheet.
+# The `<pre>...</pre>` fragment and the generated `<style>` CSS are extracted
+# from TOhtml's output unmodified (no selector rewriting) and wrapped into a
+# standalone HTML document per excerpt. Delivery is through MyST's `{iframe}`
+# directive rather than same-page embedding: mystmd's HTML build target does
+# not pass raw HTML through from markdown (neither a literal `<style>`/`<pre>`
+# written in blog.md nor the `{raw}` directive survive to the built page —
+# both were tried and confirmed broken, see louiselm-xrf), so an iframe's own
+# isolated document is the only way to ship real TOhtml markup byte-for-byte.
+# That isolation also means no CSS-selector namespacing or shared stylesheet
+# is needed: each fragment's <style> block only ever applies inside its own
+# iframe.
 #
 # Output naming (written directly into <post-dir>, nothing else in that
-# directory is touched)
+# directory is touched) and wiring
 # ------------------------------------------------------------------------
-#   <slug>.nvim-transcript.html   -- one fragment per excerpt, where <slug> is
-#                                    the excerpt's source path (relative to
-#                                    <post-dir>, `/` -> `-`, extension
-#                                    dropped) plus `.L<first>-<last>`, e.g.
-#                                    conversations-claude-xxx.L87-112.nvim-transcript.html
-#                                    A numeric `-2`, `-3`, ... suffix is added
-#                                    (in document order) if the same
-#                                    (source, range) pair appears twice.
-#                                    Each fragment's body is exactly:
-#                                      <div class="nvim-transcript">
-#                                      <pre>...</pre>
-#                                      </div>
-#   nvim-transcript.css           -- one shared, namespaced stylesheet for
-#                                    every excerpt in the post.
+#   <post-dir-name>--<slug>.nvim-transcript.html
+#                                  -- one standalone document per excerpt,
+#                                     where <slug> is the excerpt's source
+#                                     path (relative to <post-dir>, `/` -> `-`,
+#                                     extension dropped) plus `.L<first>-<last>`,
+#                                     e.g. post-foo--conversations-claude-xxx.L87-112.nvim-transcript.html.
+#                                     The post directory's own name is folded
+#                                     into the filename because MyST's
+#                                     `static_files` copy step (see below)
+#                                     flattens every declared file into one
+#                                     shared directory by basename alone — two
+#                                     posts' same-slug excerpts would
+#                                     otherwise collide. A numeric `-2`, `-3`,
+#                                     ... suffix is added (in document order)
+#                                     if the same (source, range) pair appears
+#                                     twice within one post.
 #
-# Every run first removes any *.nvim-transcript.html / nvim-transcript.css
-# already in <post-dir>, then regenerates from the current blog.md, so output
-# is a pure function of the current input (never accumulated state from a
-# previous run) and running twice against unchanged input is byte-identical.
+# Every run first removes any *.nvim-transcript.html already in <post-dir>,
+# then regenerates from the current blog.md, so fragment output is a pure
+# function of the current input (never accumulated state from a previous
+# run) and running twice against unchanged input is byte-identical.
 #
-# The markdown parsing and CSS-rewriting live in render-post.mjs (Node) since
-# that is far cleaner than hand-rolled sed/awk; this file just validates
-# arguments, resolves the real Neovim config, and hands off.
+# Two more files are rewritten in place, both idempotently:
+#   - blog.md: any previously generated `{iframe}` block (matched by its
+#     `/<post-dir-name>--...` src, regardless of whether its marker comment
+#     still exists) is stripped, then a fresh one is inserted directly after
+#     each current marker comment, referencing the fragment by its absolute
+#     site-root path (`/<basename>` — relative paths break under the book
+#     theme's client-side routing). MyST's `{iframe}` directive has no
+#     height option, and the theme sizes the box to a fixed width-relative
+#     aspect ratio it does not expose for us to configure — the fragment
+#     document itself scrolls instead, so a tall excerpt stays reachable
+#     rather than silently clipped.
+#   - <project-root>/myst.yml: this post's entries in `project.static_files`
+#     (the list of files `myst build` copies verbatim into the deployed
+#     site) are replaced with whatever fragments this run produced; every
+#     other post's entries are left untouched.
+#
+# The markdown parsing, fragment generation, and blog.md/myst.yml rewriting
+# live in render-post.mjs (Node) since that is far cleaner than hand-rolled
+# sed/awk; this file just validates arguments, resolves the real Neovim
+# config, and hands off.
 set -euo pipefail
 
 usage() {

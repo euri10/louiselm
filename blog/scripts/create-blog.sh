@@ -39,15 +39,14 @@
 #      If two arguments would sanitize to the same output filename, this
 #      script fails loudly rather than silently overwriting one export with
 #      another.
-#   2. Appends a literalinclude block to blog.md referencing it:
+#   2. Appends a marker comment to blog.md referencing it:
 #
-#        ```{literalinclude} ./conversations/claude-71c82ed5-9db8-44a3-9e64-e610a51b6cea.md
-#        :lines: 1
-#        :class: nvim-transcript
-#        ```
+#        % nvim-transcript: ./conversations/claude-71c82ed5-9db8-44a3-9e64-e610a51b6cea.md :lines: 1
 #
-#      `:lines: 1` is a deliberate placeholder -- the author picks real
-#      ranges by hand afterward. Do not try to be smarter about it here.
+#      This is a MyST `%` line comment, so it never renders -- it exists only
+#      for render-post.sh to read and to rewrite in place. `:lines: 1` is a
+#      deliberate placeholder -- the author picks real ranges by hand
+#      afterward. Do not try to be smarter about it here.
 #
 # Exports run one at a time, each in its own headless Neovim process (matching
 # transcript_export.lua's documented one-shot `-c "lua ... run(...)" -c "qa!"`
@@ -270,10 +269,7 @@ for arg in "$@"; do
 
 	cat >>"$blog_md" <<EOF
 
-\`\`\`{literalinclude} ./conversations/$filename
-:lines: 1
-:class: nvim-transcript
-\`\`\`
+% nvim-transcript: ./conversations/$filename :lines: 1
 EOF
 
 	echo "exported $arg -> conversations/$filename"

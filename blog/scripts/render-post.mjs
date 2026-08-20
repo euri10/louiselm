@@ -6,22 +6,30 @@
 // Invoked only by render-post.sh, not meant to be run directly.
 //
 // Responsibilities:
-//   1. Parse <post-dir>/blog.md for `:class: nvim-transcript` literalinclude
-//      blocks (source path + :lines: range).
+//   1. Parse <post-dir>/blog.md for `% nvim-transcript: <source> :lines: N-M`
+//      marker comments (never rendered by MyST -- see the `%` comment
+//      syntax).
 //   2. Spawn ONE headless Neovim process (tohtml-driver.lua) that renders
 //      every excerpt through :TOhtml using the real user config.
 //   3. Extract the <pre>...</pre> fragment and <style> CSS from each raw
-//      TOhtml document, namespace every CSS selector under `.nvim-transcript`,
-//      dedupe the CSS across the whole post, and write the fragment/CSS
-//      files into <post-dir>.
+//      TOhtml document, unmodified, and wrap them into a standalone HTML
+//      document per excerpt (no shared stylesheet, no selector namespacing
+//      -- the fragment is embedded through an <iframe>, which already
+//      isolates it from the surrounding page and from every other excerpt).
+//   4. Rewrite blog.md in place, inserting/replacing an `{iframe}` block
+//      after each marker comment -- the comment itself is never touched, so
+//      the author can keep editing `:lines:` and re-run this indefinitely.
+//   5. Keep the project's `myst.yml` `static_files` list in sync with the
+//      fragment files this post currently produces, so `myst build` copies
+//      them into the deployed site.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const WRAPPER_CLASS = 'nvim-transcript';
-const CSS_FILENAME = `${WRAPPER_CLASS}.css`;
-const FRAGMENT_SUFFIX = `.${WRAPPER_CLASS}.html`;
+const FRAGMENT_SUFFIX = '.nvim-transcript.html';
+const COMMENT_RE = /^%\s*nvim-transcript:\s*(\S+)\s*:lines:\s*(.+?)\s*$/;
+const IFRAME_OPEN_RE = /^```\{iframe\}\s+(\S+)\s*$/;
 
 function fail(message) {
 	console.error(`render-post: ${message}`);
@@ -29,14 +37,13 @@ function fail(message) {
 }
 
 /**
- * Scans blog.md for fenced `{literalinclude}` blocks tagged
- * `:class: nvim-transcript` and returns their source path and 1-based,
- * inclusive :lines: range.
+ * Scans blog.md for `% nvim-transcript: <source> :lines: N-M` marker
+ * comments and returns their source path, 1-based inclusive line range, and
+ * the 1-based line the comment itself was found on.
  *
- * Only a single contiguous "N-M" :lines: range is supported (matching the
- * one concrete example in the spec); MyST's fuller :lines: grammar (e.g.
- * "1,3,5-10,20-") is out of scope here and raises a clear error instead of
- * silently mis-rendering it.
+ * Only a single contiguous "N-M" :lines: range is supported; anything else
+ * (including the `:lines: 1` placeholder create-blog.sh stubs in) raises a
+ * clear error instead of silently mis-rendering it.
  *
  * @param {string} text contents of blog.md
  * @returns {{sourcePath: string, first: number, last: number, declaredAtLine: number}[]}
@@ -46,58 +53,24 @@ export function parseTranscriptBlocks(text) {
 	const blocks = [];
 
 	for (let i = 0; i < lines.length; i++) {
-		const open = lines[i].match(/^(`{3,}|:{3,})\{literalinclude\}\s+(\S+)\s*$/);
-		if (!open) continue;
+		const m = lines[i].match(COMMENT_RE);
+		if (!m) continue;
 
-		const fenceToken = open[1];
-		const fenceChar = fenceToken[0];
-		const fenceLen = fenceToken.length;
-		const sourcePath = open[2];
+		const sourcePath = m[1];
+		const linesOpt = m[2];
 		const declaredAtLine = i + 1;
-		const closeRe = new RegExp(`^\\${fenceChar}{${fenceLen},}\\s*$`);
 
-		let closeIdx = -1;
-		const options = {};
-		let j = i + 1;
-		for (; j < lines.length; j++) {
-			if (closeRe.test(lines[j])) {
-				closeIdx = j;
-				break;
-			}
-			const opt = lines[j].match(/^:(\S+):\s*(.*)$/);
-			if (opt) {
-				options[opt[1]] = opt[2].trim();
-			} else if (lines[j].trim() !== '') {
-				// Unexpected non-option, non-blank content inside what we assumed
-				// was an options-only leaf directive -- stop trusting this block
-				// rather than silently misparsing it.
-				break;
-			}
-		}
-
-		if (closeIdx === -1) {
-			throw new Error(`unclosed {literalinclude} fence starting at blog.md:${declaredAtLine}`);
-		}
-		i = closeIdx;
-
-		const classes = (options.class ?? '').split(/\s+/).filter(Boolean);
-		if (!classes.includes('nvim-transcript')) continue;
-
-		const linesOpt = options.lines;
-		if (!linesOpt) {
-			throw new Error(`nvim-transcript block at blog.md:${declaredAtLine} is missing a :lines: option`);
-		}
 		const range = linesOpt.match(/^(\d+)-(\d+)$/);
 		if (!range) {
 			throw new Error(
-				`nvim-transcript block at blog.md:${declaredAtLine} has an unsupported :lines: value ` +
-					`${JSON.stringify(linesOpt)} (only a single "N-M" range is supported)`,
+				`nvim-transcript comment at blog.md:${declaredAtLine} has an unsupported :lines: value ` +
+					`${JSON.stringify(linesOpt)} (expected a single "N-M" range -- replace the placeholder before rendering)`,
 			);
 		}
 		const first = Number(range[1]);
 		const last = Number(range[2]);
 		if (first < 1 || last < first) {
-			throw new Error(`nvim-transcript block at blog.md:${declaredAtLine} has an invalid :lines: range ${linesOpt}`);
+			throw new Error(`nvim-transcript comment at blog.md:${declaredAtLine} has an invalid :lines: range ${linesOpt}`);
 		}
 
 		blocks.push({ sourcePath, first, last, declaredAtLine });
@@ -107,8 +80,8 @@ export function parseTranscriptBlocks(text) {
 }
 
 /**
- * Deterministic output slug for an excerpt: its source path (relative to
- * the post dir, extension dropped, `/` -> `-`) plus its line range, e.g.
+ * Deterministic slug for an excerpt: its source path (relative to the post
+ * dir, extension dropped, `/` -> `-`) plus its line range, e.g.
  * "conversations/claude-xxx.md" lines 87-112 -> "conversations-claude-xxx.L87-112".
  * @param {string} sourcePath
  * @param {number} first
@@ -118,6 +91,18 @@ export function slugFor(sourcePath, first, last) {
 	const noExt = sourcePath.replace(/\.[^./]+$/, '');
 	const cleaned = noExt.replace(/^\.\//, '').replace(/\//g, '-');
 	return `${cleaned}.L${first}-${last}`;
+}
+
+/**
+ * A generated fragment's site-wide-unique basename: `static_files` copies
+ * every declared file into one flat directory keyed by basename alone, so
+ * the post directory name is folded into the filename itself rather than
+ * relying on directory structure to keep two posts' excerpts apart.
+ * @param {string} postName basename of the post directory, e.g. "post-foo"
+ * @param {string} slug see slugFor
+ */
+export function fragmentBasename(postName, slug) {
+	return `${postName}--${slug}${FRAGMENT_SUFFIX}`;
 }
 
 /**
@@ -143,50 +128,154 @@ function extractTagBlock(lines, openTag, closeTag) {
 }
 
 /**
- * Namespaces a single TOhtml-generated CSS selector under `.nvim-transcript`
- * so it can never affect anything outside that wrapper:
- *   `*`            -> `.nvim-transcript *`
- *   `body`         -> `.nvim-transcript`
- *   `.ClassName`   -> `.nvim-transcript .ClassName`
- * Throws on any other shape rather than guessing -- TOhtml is only known to
- * emit these three selector shapes (verified against real output).
- * @param {string} selector
+ * Wraps a TOhtml capture's raw <style> and <pre> blocks (unmodified, tags
+ * included) into a standalone HTML document. No selector namespacing is
+ * needed: this document is only ever loaded through an <iframe>, which
+ * already isolates it from the surrounding blog page and from every other
+ * excerpt's fragment.
+ *
+ * MyST's `{iframe}` directive has no height option (only width/align/title/
+ * placeholder) -- the theme sizes the iframe itself via a fixed
+ * width-relative aspect ratio it does not expose for us to configure. Rather
+ * than fight that, the document scrolls: an excerpt taller than the iframe
+ * box stays fully reachable instead of silently clipped.
+ * @param {string[]} styleBlock
+ * @param {string[]} preBlock
  */
-export function namespaceSelector(selector) {
-	if (selector === '*') return `.${WRAPPER_CLASS} *`;
-	if (selector === 'body') return `.${WRAPPER_CLASS}`;
-	if (selector.startsWith('.')) return `.${WRAPPER_CLASS} ${selector}`;
-	throw new Error(`unexpected TOhtml CSS selector, refusing to guess how to namespace it safely: ${JSON.stringify(selector)}`);
+export function buildFragmentDoc(styleBlock, preBlock) {
+	return [
+		'<!DOCTYPE html>',
+		'<html>',
+		'<head>',
+		'<meta charset="utf-8">',
+		'<style>html, body { margin: 0; height: 100%; overflow: auto; }</style>',
+		...styleBlock,
+		'</head>',
+		'<body>',
+		...preBlock,
+		'</body>',
+		'</html>',
+		'',
+	].join('\n');
 }
 
 /**
- * Parses the CSS rule lines found between a TOhtml document's <style> tags
- * (as returned by extractTagBlock, tags included) and merges their
- * namespaced form into `cssRules` (selector -> declaration body).
- * @param {string[]} styleBlock
- * @param {Map<string,string>} cssRules
+ * Removes every previously generated `{iframe}` block for this post (any
+ * fence whose src is `/<postName>--...<FRAGMENT_SUFFIX>`), along with the
+ * one blank line this tool always inserts immediately before it. This runs
+ * before regenerating blocks, so it is what makes regeneration a clean
+ * fixed point regardless of whether a block's source comment still exists
+ * (an author deleting a whole marker comment leaves no dangling iframe
+ * behind) or its content changed (stale content never lingers next to
+ * fresh content).
+ * @param {string[]} lines
+ * @param {string} postName
  */
-export function collectCss(styleBlock, cssRules) {
-	for (const line of styleBlock.slice(1, -1)) {
-		if (line.trim() === '') continue;
-		const rule = line.match(/^(.*?)\s*\{(.*)\}\s*$/);
-		if (!rule) throw new Error(`could not parse TOhtml CSS rule: ${JSON.stringify(line)}`);
-		const selector = namespaceSelector(rule[1].trim());
-		const body = rule[2].trim();
-		const existing = cssRules.get(selector);
-		if (existing !== undefined && existing !== body) {
-			throw new Error(
-				`TOhtml produced two different rule bodies for the same namespaced selector ` +
-					`${selector} (${JSON.stringify(existing)} vs ${JSON.stringify(body)}) -- ` +
-					`refusing to silently pick one`,
-			);
+export function stripGeneratedBlocks(lines, postName) {
+	const out = [];
+	for (let i = 0; i < lines.length; i++) {
+		const m = lines[i].match(IFRAME_OPEN_RE);
+		if (m && isGeneratedSrc(m[1], postName)) {
+			let k = i + 1;
+			while (k < lines.length && lines[k] !== '```') k++;
+			if (k >= lines.length) {
+				throw new Error(`blog.md: found an opening \`\`\`{iframe} fence for a generated fragment with no closing \`\`\` (near line ${i + 1})`);
+			}
+			if (out.length > 0 && out[out.length - 1] === '') {
+				out.pop();
+			}
+			i = k;
+			continue;
 		}
-		cssRules.set(selector, body);
+		out.push(lines[i]);
 	}
+	return out;
 }
 
-function formatRule(selector, body) {
-	return body === '' ? `${selector} {}` : `${selector} { ${body} }`;
+function isGeneratedSrc(src, postName) {
+	return src.startsWith(`/${postName}--`) && src.endsWith(FRAGMENT_SUFFIX);
+}
+
+/**
+ * Inserts one `{iframe}` fence block, preceded by a blank line, immediately
+ * after each entry's marker comment line. Assumes `lines` has already been
+ * through stripGeneratedBlocks, so this is pure insertion -- no existing
+ * block to find or remove. Entries are applied in descending
+ * `declaredAtLine` order so earlier insertions never shift the line numbers
+ * later entries were computed against.
+ * @param {string[]} lines
+ * @param {{declaredAtLine: number, iframeSrc: string}[]} entries
+ */
+export function insertGeneratedBlocks(lines, entries) {
+	const out = lines.slice();
+	const ordered = [...entries].sort((a, b) => b.declaredAtLine - a.declaredAtLine);
+	for (const entry of ordered) {
+		const commentIdx = entry.declaredAtLine - 1;
+		const block = ['', `\`\`\`{iframe} ${entry.iframeSrc}`, ':width: 100%', '```'];
+		out.splice(commentIdx + 1, 0, ...block);
+	}
+	return out;
+}
+
+/**
+ * Merges this post's current fragment paths into myst.yml's
+ * `project.static_files` list, replacing (not appending to) any existing
+ * entries under `<postRelDir>/` so removed excerpts don't leave stale
+ * entries behind. Entries from every other post are left untouched. The
+ * merged list is always written back sorted, so re-running with an
+ * unchanged input set is byte-identical regardless of iteration order.
+ * @param {string} mystYmlText
+ * @param {string} postRelDir project-root-relative post directory, e.g. "post-foo"
+ * @param {string[]} relPaths project-root-relative fragment paths for this post
+ */
+export function mergeStaticFiles(mystYmlText, postRelDir, relPaths) {
+	const lines = mystYmlText.split(/\r?\n/);
+	const projectIdx = lines.findIndex((l) => l === 'project:');
+	if (projectIdx === -1) {
+		throw new Error('myst.yml has no top-level "project:" key');
+	}
+	let projectEnd = lines.length;
+	for (let i = projectIdx + 1; i < lines.length; i++) {
+		if (/^\S/.test(lines[i])) {
+			projectEnd = i;
+			break;
+		}
+	}
+
+	let staticIdx = -1;
+	for (let i = projectIdx + 1; i < projectEnd; i++) {
+		if (lines[i] === '  static_files:') {
+			staticIdx = i;
+			break;
+		}
+	}
+
+	let existingItems = [];
+	let staticEnd = staticIdx === -1 ? -1 : staticIdx + 1;
+	if (staticIdx !== -1) {
+		let i = staticIdx + 1;
+		for (; i < projectEnd; i++) {
+			const m = lines[i].match(/^ {4}- '([^']*)'$/);
+			if (!m) break;
+			existingItems.push(m[1]);
+		}
+		staticEnd = i;
+	}
+
+	const prefix = `${postRelDir}/`;
+	const kept = existingItems.filter((p) => !p.startsWith(prefix));
+	const merged = [...new Set([...kept, ...relPaths])].sort();
+
+	const newLines = lines.slice();
+	if (staticIdx !== -1) {
+		newLines.splice(staticIdx, staticEnd - staticIdx);
+		if (merged.length > 0) {
+			newLines.splice(staticIdx, 0, '  static_files:', ...merged.map((p) => `    - '${p}'`));
+		}
+	} else if (merged.length > 0) {
+		newLines.splice(projectIdx + 1, 0, '  static_files:', ...merged.map((p) => `    - '${p}'`));
+	}
+	return newLines.join('\n');
 }
 
 function main() {
@@ -196,18 +285,24 @@ function main() {
 	}
 
 	const postDir = resolve(postDirArg);
+	const postName = basename(postDir);
 	const blogMdPath = join(postDir, 'blog.md');
 	if (!existsSync(blogMdPath)) fail(`${blogMdPath} not found`);
 
+	const mystYmlPath = resolve(postDir, '..', 'myst.yml');
+	if (!existsSync(mystYmlPath)) fail(`${mystYmlPath} not found (post directory must be a direct child of the MyST project root)`);
+
+	const originalText = readFileSync(blogMdPath, 'utf8');
+
 	let blocks;
 	try {
-		blocks = parseTranscriptBlocks(readFileSync(blogMdPath, 'utf8'));
+		blocks = parseTranscriptBlocks(originalText);
 	} catch (err) {
 		fail(err.message);
 	}
 
 	const seenSlugs = new Map();
-	const entries = blocks.map((block, idx) => {
+	const entries = blocks.map((block) => {
 		const absSource = resolve(postDir, block.sourcePath);
 		if (!existsSync(absSource)) {
 			fail(`blog.md:${block.declaredAtLine} references a source file that does not exist: ${block.sourcePath}`);
@@ -225,36 +320,61 @@ function main() {
 		seenSlugs.set(baseSlug, count);
 		const slug = count === 1 ? baseSlug : `${baseSlug}-${count}`;
 
+		const basename_ = fragmentBasename(postName, slug);
 		return {
-			id: String(idx + 1).padStart(3, '0'),
 			absSource,
 			first: block.first,
 			last: block.last,
-			fragmentPath: join(postDir, `${slug}${FRAGMENT_SUFFIX}`),
+			declaredAtLine: block.declaredAtLine,
+			basename: basename_,
+			fragmentPath: join(postDir, basename_),
+			iframeSrc: `/${basename_}`,
+			staticRelPath: `${postName}/${basename_}`,
 		};
 	});
 
 	// Output is a pure function of the current blog.md: always clear
-	// previously generated files first so a removed/renamed block can never
-	// leave an orphaned fragment behind.
+	// previously generated fragment files first so a removed/renamed block
+	// can never leave an orphan behind.
 	for (const name of readdirSync(postDir)) {
-		if (name === CSS_FILENAME || name.endsWith(FRAGMENT_SUFFIX)) {
+		if (name.endsWith(FRAGMENT_SUFFIX)) {
 			unlinkSync(join(postDir, name));
 		}
 	}
 
-	if (entries.length === 0) {
-		console.log('render-post: no :class: nvim-transcript blocks found in blog.md, nothing to do');
+	// blog.md and myst.yml bookkeeping happens regardless of whether there is
+	// anything left to render, so deleting the last excerpt from a post
+	// cleans up its dangling iframe block and static_files entry too.
+	const strippedLines = stripGeneratedBlocks(originalText.split(/\r?\n/), postName);
+	const freshBlocks = parseTranscriptBlocks(strippedLines.join('\n'));
+	const finalEntries = entries.map((entry, idx) => ({ ...entry, declaredAtLine: freshBlocks[idx].declaredAtLine }));
+	const newBlogMd = insertGeneratedBlocks(strippedLines, finalEntries).join('\n');
+	if (newBlogMd !== originalText) {
+		writeFileSync(blogMdPath, newBlogMd);
+	}
+
+	const mystYmlText = readFileSync(mystYmlPath, 'utf8');
+	const newMystYml = mergeStaticFiles(
+		mystYmlText,
+		postName,
+		finalEntries.map((e) => e.staticRelPath),
+	);
+	if (newMystYml !== mystYmlText) {
+		writeFileSync(mystYmlPath, newMystYml);
+	}
+
+	if (finalEntries.length === 0) {
+		console.log('render-post: no nvim-transcript comments found in blog.md, nothing to render');
 		return;
 	}
 
 	const tmpDir = mkdtempSync(join(tmpdir(), 'louiselm-render-post-'));
 	try {
-		const manifest = entries.map((e) => ({
+		const manifest = finalEntries.map((e, idx) => ({
 			file: e.absSource,
 			first: e.first,
 			last: e.last,
-			out: join(tmpDir, `${e.id}.raw.html`),
+			out: join(tmpDir, `${String(idx + 1).padStart(3, '0')}.raw.html`),
 		}));
 		const manifestPath = join(tmpDir, 'manifest.json');
 		writeFileSync(manifestPath, JSON.stringify(manifest));
@@ -274,25 +394,14 @@ function main() {
 			fail(`nvim exited with status ${result.status}\n${result.stderr}${result.stdout}`);
 		}
 
-		const cssRules = new Map();
-		entries.forEach((entry, idx) => {
+		finalEntries.forEach((entry, idx) => {
 			const raw = readFileSync(manifest[idx].out, 'utf8').split('\n');
-
 			const preBlock = extractTagBlock(raw, '<pre>', '</pre>');
-			const fragment = [`<div class="${WRAPPER_CLASS}">`, ...preBlock, '</div>', ''].join('\n');
-			writeFileSync(entry.fragmentPath, fragment);
-
-			collectCss(extractTagBlock(raw, '<style>', '</style>'), cssRules);
+			const styleBlock = extractTagBlock(raw, '<style>', '</style>');
+			writeFileSync(entry.fragmentPath, buildFragmentDoc(styleBlock, preBlock));
 		});
 
-		const cssLines = [
-			'/* Generated by blog/scripts/render-post.sh -- do not edit by hand. */',
-			...[...cssRules.keys()].sort().map((selector) => formatRule(selector, cssRules.get(selector))),
-			'',
-		];
-		writeFileSync(join(postDir, CSS_FILENAME), cssLines.join('\n'));
-
-		console.log(`render-post: wrote ${entries.length} fragment(s) and ${CSS_FILENAME} to ${postDir}`);
+		console.log(`render-post: wrote ${finalEntries.length} fragment(s) to ${postDir}, updated blog.md and myst.yml`);
 	} finally {
 		rmSync(tmpDir, { recursive: true, force: true });
 	}
