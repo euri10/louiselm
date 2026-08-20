@@ -277,6 +277,10 @@ The interactive controls are:
 - `:LouiselmRenameSession` — give the current session a human-readable name
 - `:LouiselmSessionId` — copy the current agent-scoped ACP session identifier
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer
+- `:LouiselmPickSkill` — pick a configured skill and queue its invocation
+- `:LouiselmPickFile [root]` — pick a file and queue its path as context
+- `:LouiselmMentionBuffer` — queue the source buffer as context
+- `:LouiselmSendSelection` — queue the source buffer's visual selection as context
 
 LouiseLM sends picker choices through `vim.ui.select`, so the active UI provider
 owns their layout. If Snacks reports several choices while only one row appears
@@ -439,8 +443,10 @@ argument to `Session.new`; set its `permission_store` field to
 ## Chat context
 
 Context providers stay thin: they point the agent at files and skills while
-visual selections carry their selected text. Queue context on an attached chat
-view before submitting its prompt:
+visual selections carry their selected text. `:LouiselmChat` exposes them as
+`:LouiselmMentionBuffer`, `:LouiselmSendSelection`, `:LouiselmPickFile`, and
+`:LouiselmPickSkill`. A headless `Chat` you construct yourself queues context
+on an attached view the same way, before submitting its prompt:
 
 ```lua
 chat:mention_buffer()

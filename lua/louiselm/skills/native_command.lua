@@ -39,8 +39,6 @@ local function find(commands, name)
   return count, first
 end
 
----@param description string
----@param skill louiselm.skills.Skill
 ---@param haystack string
 ---@param needle string
 ---@return boolean
@@ -51,6 +49,8 @@ end
 ---Real adapters annotate an advertised description with a trailing scope marker (Claude Code's
 ---ACP bridge appends " (user)" to every command sourced from a user-configured skill path), so a
 ---match only requires the advertised text to *start with* the local description, not equal it.
+---@param description string
+---@param skill louiselm.skills.Skill
 ---@return boolean
 local function description_matches(description, skill)
   local normalized = normalize(description)

@@ -67,6 +67,18 @@ local function delete_chat_buffers()
   end
 end
 
+---@param buffer integer
+---@param needle string
+---@return boolean
+local function buffer_contains(buffer, needle)
+  for _, line in ipairs(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+    if line:find(needle, 1, true) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
 T["command"] = MiniTest.new_set()
 
 T["command"]["minimal init exposes the canonical chat command"] = function()
@@ -84,6 +96,10 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmSessionOptions ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmPermissions ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInline ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmPickSkill ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmPickFile ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmMentionBuffer ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmSendSelection ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
 end
@@ -148,6 +164,59 @@ T["command"]["reports when no chat session is open for LouiselmToMarkdown"] = fu
     message = "louiselm: no chat session is open",
     level = nvim.log.levels.ERROR,
   })
+end
+
+T["command"]["reports when no chat session is open for the context-picker commands"] = function()
+  for _, name in ipairs({ "LouiselmPickSkill", "LouiselmPickFile", "LouiselmMentionBuffer", "LouiselmSendSelection" }) do
+    local original_notify = nvim.notify
+    local notification
+    rawset(nvim, "notify", function(message, level)
+      notification = { message = message, level = level }
+    end)
+    Command.register()
+
+    nvim.api.nvim_cmd({ cmd = name, args = {} }, {})
+
+    rawset(nvim, "notify", original_notify)
+    MiniTest.expect.equality(notification, {
+      message = "louiselm: no chat session is open",
+      level = nvim.log.levels.ERROR,
+    })
+  end
+end
+
+T["command"]["queues the source buffer as context through LouiselmMentionBuffer and sends it with the next prompt"] = function()
+  local process, original_system = fake_process()
+  assert(Louiselm.setup({ agents = { claude = { command = "claude-agent-acp", args = {} } } }))
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "mention-acp" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmMentionBuffer", args = {} }, {})
+  local buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(buffer_contains(buffer, "[context: buffer:"), true)
+
+  local prompt_line = nvim.api.nvim_buf_line_count(buffer) - 1
+  local line = nvim.api.nvim_buf_get_lines(buffer, prompt_line, prompt_line + 1, false)[1]
+  nvim.api.nvim_buf_set_lines(buffer, prompt_line, prompt_line + 1, false, { line .. "hello" })
+  local submit
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "i")) do
+    if mapping.desc == "Submit louiselm prompt" then
+      submit = mapping.callback
+      break
+    end
+  end
+  assert(type(submit) == "function")
+  nvim.api.nvim_buf_call(buffer, submit)
+  local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
+
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+
+  MiniTest.expect.equality(prompt[1].text:find("buffer", 1, true) ~= nil, true)
+  MiniTest.expect.equality(prompt[2], { type = "text", text = "hello" })
+  delete_chat_buffers()
 end
 
 T["command"]["prompts for a path and exports the current session's transcript to a generated default"] = function()

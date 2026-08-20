@@ -377,6 +377,43 @@ function M.register()
     report_error(permissions_error)
   end, { desc = "Inspect and revoke remembered louiselm permissions", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmPickSkill", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, pick_error = chat:pick_skill()
+    report_error(pick_error)
+  end, { desc = "Pick a louiselm skill to invoke", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmPickFile", function(arguments)
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local root = arguments.args ~= "" and arguments.args or nil
+    local _, pick_error = chat:pick_file(root)
+    report_error(pick_error)
+  end, { nargs = "?", desc = "Pick a file to queue as louiselm context", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmMentionBuffer", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, mention_error = chat:mention_buffer()
+    report_error(mention_error)
+  end, { desc = "Queue the source buffer as louiselm context", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmSendSelection", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, selection_error = chat:send_selection()
+    report_error(selection_error)
+  end, { desc = "Queue the visual selection as louiselm context", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmInline", function()
     if inline == nil then
       local definitions = configured and configured_agents(configured)
