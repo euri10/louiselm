@@ -41,13 +41,23 @@ end
 
 ---@param description string
 ---@param skill louiselm.skills.Skill
+---@param haystack string
+---@param needle string
+---@return boolean
+local function starts_with(haystack, needle)
+  return haystack:sub(1, #needle) == needle
+end
+
+---Real adapters annotate an advertised description with a trailing scope marker (Claude Code's
+---ACP bridge appends " (user)" to every command sourced from a user-configured skill path), so a
+---match only requires the advertised text to *start with* the local description, not equal it.
 ---@return boolean
 local function description_matches(description, skill)
   local normalized = normalize(description)
-  if normalized == normalize(skill.description) then
+  if starts_with(normalized, normalize(skill.description)) then
     return true
   end
-  return skill.short_description ~= nil and normalized == normalize(skill.short_description)
+  return skill.short_description ~= nil and starts_with(normalized, normalize(skill.short_description))
 end
 
 ---Resolve one selected skill against the session's latest advertised commands.

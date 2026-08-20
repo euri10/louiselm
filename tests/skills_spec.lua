@@ -756,6 +756,28 @@ T["resolve_command"]["resolves a bare exact command only when the description ma
   MiniTest.expect.equality(err, nil)
 end
 
+T["resolve_command"]["resolves a bare exact command when the real Claude adapter appends a scope annotation"] = function()
+  -- Captured verbatim from a real claude-agent-acp available_commands_update:
+  -- every command sourced from a user-configured skill path gets " (user)"
+  -- appended to its description; louiselm's own SKILL.md carries no such
+  -- suffix. See louiselm-s88.
+  local name, err = Skills.resolve_command(
+    skill(
+      "grill-me",
+      "Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases."
+    ),
+    {
+      {
+        name = "grill-me",
+        description = "Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases. (user)",
+      },
+    }
+  )
+
+  MiniTest.expect.equality(name, "grill-me")
+  MiniTest.expect.equality(err, nil)
+end
+
 T["resolve_command"]["resolves a bare exact command when the description matches the OpenAI short description"] = function()
   local name, err =
     Skills.resolve_command(skill("grill-me", "Long injected-catalog description", "Short picker description"), {
