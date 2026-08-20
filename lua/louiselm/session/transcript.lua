@@ -180,6 +180,24 @@ local function single_line(value)
   return (without_leading:gsub("%s+$", ""))
 end
 
+---Longest tool title kept in the `<sub>` caption, in characters. A caption is a
+---label, not the payload: shell tools carry their whole command as the title and
+---routinely run to thousands of characters, which a fixed-width renderer cannot
+---show without horizontal overflow. Nothing is lost by cutting it here -- the
+---untruncated title is always a few lines below inside `<details>`.
+local CAPTION_TITLE_LIMIT = 120
+
+---Shorten a caption to `CAPTION_TITLE_LIMIT`, counting characters rather than
+---bytes so a multi-byte character is never split in half.
+---@param value string
+---@return string shortened
+local function truncate(value)
+  if nvim.fn.strchars(value) <= CAPTION_TITLE_LIMIT then
+    return value
+  end
+  return nvim.fn.strcharpart(value, 0, CAPTION_TITLE_LIMIT) .. "…"
+end
+
 ---@param entry louiselm.session.TranscriptEntry
 ---@return string[] lines
 local function render_entry(entry)
@@ -190,7 +208,7 @@ local function render_entry(entry)
     return { "## Assistant", "", entry.text or "", "" }
   end
   local raw = entry.raw or {}
-  local title = type(raw.title) == "string" and single_line(raw.title) or entry.id
+  local title = type(raw.title) == "string" and truncate(single_line(raw.title)) or entry.id
   local status = type(raw.status) == "string" and single_line(raw.status) or "unknown"
   return {
     "## Tool",

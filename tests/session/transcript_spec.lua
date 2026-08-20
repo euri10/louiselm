@@ -299,6 +299,59 @@ T["render"]["keeps the caption on one line when the tool title spans several"] =
   MiniTest.expect.equality(headings, 1)
 end
 
+-- A caption is a label. Shell tool titles run to several thousand characters in
+-- practice (7319 was the longest in a real 156-call export), which a
+-- fixed-width renderer cannot show without horizontal overflow -- the blog
+-- pipeline's TOhtml excerpts especially. Nothing is lost by cutting it: the
+-- untruncated payload sits a few lines below in the `<details>` block.
+T["render"]["truncates an overlong title in the caption but keeps it whole in the payload"] = function()
+  local long_title = string.rep("x", 400)
+  local markdown = Transcript.render({
+    {
+      kind = "tool_call",
+      id = "tool-1",
+      raw = { toolCallId = "tool-1", title = long_title, status = "completed" },
+    },
+  }, state())
+
+  MiniTest.expect.equality(
+    markdown:find("<sub>**" .. string.rep("x", 120) .. "…** — completed</sub>", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(markdown:find(long_title, 1, true) ~= nil, true)
+end
+
+T["render"]["truncates on character boundaries, not bytes"] = function()
+  local markdown = Transcript.render({
+    {
+      kind = "tool_call",
+      id = "tool-1",
+      raw = { toolCallId = "tool-1", title = string.rep("é", 400), status = "completed" },
+    },
+  }, state())
+
+  MiniTest.expect.equality(
+    markdown:find("<sub>**" .. string.rep("é", 120) .. "…** — completed</sub>", 1, true) ~= nil,
+    true
+  )
+end
+
+T["render"]["leaves a title at the limit untouched"] = function()
+  local markdown = Transcript.render({
+    {
+      kind = "tool_call",
+      id = "tool-1",
+      raw = { toolCallId = "tool-1", title = string.rep("x", 120), status = "completed" },
+    },
+  }, state())
+
+  MiniTest.expect.equality(
+    markdown:find("<sub>**" .. string.rep("x", 120) .. "** — completed</sub>", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(markdown:find("…", 1, true), nil)
+end
+
 T["render"]["keeps the caption on one line when the tool status spans several"] = function()
   local markdown = Transcript.render({
     {
