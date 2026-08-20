@@ -21,9 +21,9 @@ Work is tracked in beads (`br`). `.beads/` is committed; its JSONL export is the
 shared record across sessions, agents, and adapters.
 
 - Run `br robot-docs guide` for command syntax. Do not restate it here.
-- Discover work with `br ready`. Triage with `bv --robot-*` flags only; bare
-  `bv` opens a blocking TUI.
-- Read the graph through `br` and `bv`, never by parsing `.beads/*.jsonl`.
+- Discover work with `br ready`. Triage with `bvr --robot-*` flags only; bare
+  `bvr` opens a blocking TUI.
+- Read the graph through `br` and `bvr`, never by parsing `.beads/*.jsonl`.
 - File findings as beads before fixing them, including work deliberately
   deferred. File before the fix, while the failing evidence still exists: the
   log line, payload, or hung process that proves it disappears the moment it is

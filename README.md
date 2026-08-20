@@ -90,7 +90,7 @@ One workflow already works manually and is beginning to move into LouiseLM:
    idea until the user and agent share an understanding.
 2. Turn the agreement into a plan, then use the `to-beads` skills to split it
    into epics, features, and independently executable tasks.
-3. Use `br`, `bv`, or `bvr` to inspect the dependency graph, recommend the next
+3. Use `br` and `bvr` to inspect the dependency graph, recommend the next
    useful task, or expose parallel execution tracks.
 4. Give well-specified tasks to coding agents that can implement and verify
    them with less supervision, escalating the decisions that still need human

@@ -52,7 +52,7 @@ property of the data rather than something to remember.
 ### 3. Execute
 
 Tasks get picked up and done, in sessions that may be interactive, automated, or
-some mix. `br ready` and `bv --robot-*` decide what is actionable; the graph,
+some mix. `br ready` and `bvr --robot-*` decide what is actionable; the graph,
 not a memory of the planning conversation, is the source of truth.
 
 This is the stage most likely to be handled by an agent working alone, which is
