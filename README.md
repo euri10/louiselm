@@ -34,7 +34,8 @@ handle more of the mechanical work.
 
 The project's anti-capitalist position and the reasoning behind its permissive
 licensing posture are set out separately in the
-[political statement](POLITICAL_STATEMENT.md).
+[political statement](POLITICAL_STATEMENT.md). Use of the LouiseLM name and
+associated marks is covered by the [trademark policy](TRADEMARK_POLICY.md).
 
 ## From an idea to reality
 
