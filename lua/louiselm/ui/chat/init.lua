@@ -1302,7 +1302,21 @@ local function handle_event(self, view, event)
     open_session_options(self, view, true)
   end
 
-  if event.type == "chunk" then
+  if event.type == "user_chunk" then
+    local text = chunk_text(event.data)
+    if text == nil then
+      return
+    end
+    local lines = split_lines(text)
+    for index, line in ipairs(lines) do
+      lines[index] = "> " .. line
+    end
+    lines[#lines + 1] = ""
+    insert_transcript(self, view, lines)
+    view.response_line = nil
+    view.response_tail = nil
+    view.response_started = false
+  elseif event.type == "chunk" then
     local text = chunk_text(event.data)
     if text == nil then
       return

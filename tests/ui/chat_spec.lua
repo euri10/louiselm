@@ -1039,7 +1039,7 @@ T["chat"]["schedules session events before touching buffers"] = function()
   chat:dispose()
 end
 
-T["chat"]["renders replayed assistant chunks before a new prompt"] = function()
+T["chat"]["renders replayed user and assistant chunks before a new prompt"] = function()
   local restored = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(restored))
@@ -1050,17 +1050,30 @@ T["chat"]["renders replayed assistant chunks before a new prompt"] = function()
   end
 
   restored:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "previous prompt\nsecond line" } },
+  })
+  restored:emit({
     type = "chunk",
     session_id = "session-1",
     data = { content = { type = "text", text = "replayed" } },
   })
 
   scheduled[1]()
+  scheduled[2]()
   nvim.schedule = original_schedule
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
-    chat_lines("codex · session-1", "status=ready · display=Your turn", { "", "replayed", "> " })
+    chat_lines("codex · session-1", "status=ready · display=Your turn", {
+      "",
+      "> previous prompt",
+      "> second line",
+      "",
+      "replayed",
+      "> ",
+    })
   )
   chat:dispose()
 end
