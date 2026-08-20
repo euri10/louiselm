@@ -15,6 +15,7 @@
 
 local Metadata = require("louiselm.skills.metadata")
 local M = {}
+local PRUNED_DIRECTORIES = { [".git"] = true, _build = true, node_modules = true, target = true }
 
 ---@return table
 local function nvim()
@@ -176,13 +177,6 @@ local function scan_entries(directory)
   return entries
 end
 
----@param diagnostics louiselm.skills.DiscoveryDiagnostic[]
----@param alias string
----@param canonical string
-local function warn_outside_root(diagnostics, alias, canonical)
-  add_warning(diagnostics, alias, "symlink resolves outside configured root: " .. alias .. " -> " .. canonical)
-end
-
 ---@param root string
 ---@param canonical_root string
 ---@param seen_directories table<string, string>
@@ -194,6 +188,15 @@ local function scan_root(root, canonical_root, seen_directories, seen_files, dia
   local directories = { root }
   local files = {}
   local index = 1
+  local warned_layout = false
+
+  local function warn_layout(path, message)
+    if warned_layout then
+      return
+    end
+    add_warning(diagnostics, path, message)
+    warned_layout = true
+  end
 
   while index <= #directories do
     local directory = directories[index]
@@ -205,14 +208,16 @@ local function scan_root(root, canonical_root, seen_directories, seen_files, dia
       for _, entry in ipairs(entries) do
         local alias = editor.fs.joinpath(directory, entry.name)
         local stat = editor.uv.fs_stat(alias)
-        if stat ~= nil and stat.type == "directory" then
+        local pruned = PRUNED_DIRECTORIES[entry.name]
+          and editor.uv.fs_stat(editor.fs.joinpath(alias, "SKILL.md")) == nil
+        if stat ~= nil and stat.type == "directory" and not pruned then
           local canonical = canonical_path(alias)
           if entry.type == "link" and not is_within(canonical, canonical_root) then
-            warn_outside_root(diagnostics, alias, canonical)
+            warn_layout(alias, "symlink resolves outside configured root: " .. alias .. " -> " .. canonical)
           end
           local first_alias = seen_directories[canonical]
           if first_alias ~= nil then
-            add_warning(diagnostics, alias, "canonical directory already scanned: " .. alias .. " -> " .. first_alias)
+            warn_layout(alias, "canonical directory already scanned: " .. alias .. " -> " .. first_alias)
           else
             seen_directories[canonical] = alias
             directories[#directories + 1] = alias
@@ -220,11 +225,11 @@ local function scan_root(root, canonical_root, seen_directories, seen_files, dia
         elseif entry.name == "SKILL.md" and stat ~= nil and stat.type == "file" then
           local canonical = canonical_path(alias)
           if entry.type == "link" and not is_within(canonical, canonical_root) then
-            warn_outside_root(diagnostics, alias, canonical)
+            warn_layout(alias, "symlink resolves outside configured root: " .. alias .. " -> " .. canonical)
           end
           local first_alias = seen_files[canonical]
           if first_alias ~= nil then
-            add_warning(diagnostics, alias, "canonical SKILL.md already discovered: " .. alias .. " -> " .. first_alias)
+            warn_layout(alias, "canonical SKILL.md already discovered: " .. alias .. " -> " .. first_alias)
           else
             seen_files[canonical] = alias
             files[#files + 1] = alias

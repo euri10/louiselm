@@ -688,11 +688,13 @@ advisory metadata and never expands LouiseLM permissions. Neither ACP nor
 Configured roots are processed in order; valid skills within each root are
 ordered by name and configured path. The first valid duplicate name wins.
 Canonical file and directory aliases are traversed once, while advertised
-paths retain the configured root alias. Symlinks outside that root remain
-usable but produce a checkhealth warning. `~` expands normally, and relative
-roots use the session working directory (`:checkhealth louiselm` instead uses
-and reports Neovim's current working directory). Configuring a root trusts its
-skill folders and any followed symlink targets; a relative root also trusts the
+paths retain the configured root alias. Canonical aliases, cycles, and symlinks
+outside a root remain usable but produce at most one layout warning per root.
+`.git`, `target`, `node_modules`, and `_build` subtrees are pruned unless that
+directory itself contains a `SKILL.md`. `~` expands normally, and relative roots
+use the session working directory (`:checkhealth louiselm` instead uses and
+reports Neovim's current working directory). Configuring a root trusts its skill
+folders and any followed symlink targets; a relative root also trusts the
 active workspace to supply that path. LouiseLM does not add project roots
 automatically and has no trust database.
 

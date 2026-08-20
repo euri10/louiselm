@@ -182,6 +182,40 @@ T["discover"]["follows skill directory symlinks and warns when they leave the ro
   })
 end
 
+T["discover"]["warns once per root and prunes build directories"] = function()
+  local root = nvim.fs.joinpath(temp_dir, "root")
+  local outside = nvim.fs.joinpath(temp_dir, "outside")
+  local first = nvim.fs.joinpath(outside, "first")
+  local second = nvim.fs.joinpath(outside, "second")
+  write_skill(first, "first", "First skill")
+  write_skill(second, "second", "Second skill")
+  write_skill(nvim.fs.joinpath(first, "target", "hidden"), "hidden", "Must not be scanned")
+  write_skill(nvim.fs.joinpath(root, "target"), "target", "Direct skills still win over pruning")
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local first_alias = nvim.fs.joinpath(root, "first")
+  local second_alias = nvim.fs.joinpath(root, "second")
+  local repeated_alias = nvim.fs.joinpath(root, "z-repeated")
+  assert(nvim.uv.fs_symlink(first, first_alias))
+  assert(nvim.uv.fs_symlink(second, second_alias))
+  assert(nvim.uv.fs_symlink(first, repeated_alias))
+
+  local skills, diagnostics = Skills.discover({ root })
+
+  MiniTest.expect.equality(
+    nvim.tbl_map(function(skill)
+      return skill.name
+    end, skills),
+    { "first", "second", "target" }
+  )
+  MiniTest.expect.equality(diagnostics, {
+    {
+      path = first_alias,
+      message = "symlink resolves outside configured root: " .. first_alias .. " -> " .. first,
+      severity = "warning",
+    },
+  })
+end
+
 T["discover"]["detects symlink cycles without traversing them"] = function()
   local root = nvim.fs.joinpath(temp_dir, "root")
   local skill_path = write_skill(nvim.fs.joinpath(root, "safe"), "safe", "Safe skill")
