@@ -108,6 +108,79 @@ T["check"]["includes wrapper args before --version"] = function()
   MiniTest.expect.equality(report.version, "@agentclientprotocol/codex-acp 1.1.14")
 end
 
+T["check"]["installed-version override"] = MiniTest.new_set()
+
+T["check"]["installed-version override"]["uses the override command/args verbatim instead of appending --version to the launch args"] = function()
+  local report
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    local handle, err = Health.check({
+      command = "/opt/acp-debug.sh",
+      args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
+      version = { command = "/opt/acp-debug.sh", args = { "acp-llm-adapter", "--version" } },
+    }, function(result)
+      report = result
+    end)
+
+    MiniTest.expect.equality(err, nil)
+    assert(handle ~= nil)
+    MiniTest.expect.equality(#calls, 1)
+    MiniTest.expect.equality(calls[1].command, { "/opt/acp-debug.sh", "acp-llm-adapter", "--version" })
+
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "acp-llm-adapter 0.7.2\n", stderr = "" })
+  end)
+
+  assert(report ~= nil)
+  MiniTest.expect.equality(report.ok, true)
+  MiniTest.expect.equality(report.command, "/opt/acp-debug.sh")
+  MiniTest.expect.equality(report.version, "acp-llm-adapter 0.7.2")
+end
+
+T["check"]["installed-version override"]["uses the override's own env instead of the agent's launch env"] = function()
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    Health.check({
+      command = "/opt/acp-debug.sh",
+      args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
+      env = { LLM_API_KEY = "secret" },
+      version = { command = "/opt/acp-debug.sh", args = { "acp-llm-adapter", "--version" }, env = { NO_COLOR = "1" } },
+    }, function() end)
+
+    MiniTest.expect.equality(calls[1].options, { text = true, env = { NO_COLOR = "1" } })
+  end)
+end
+
+T["check"]["installed-version override"]["reports a missing override executable without spawning"] = function()
+  local report
+
+  with_stubs(function(command)
+    if command == "/opt/acp-debug.sh" then
+      return 1
+    end
+    return 0
+  end, function()
+    error("vim.system must not be called when the override executable is missing")
+  end, function()
+    local handle, err = Health.check({
+      command = "/opt/acp-debug.sh",
+      args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
+      version = { command = "missing-version-checker", args = {} },
+    }, function(result)
+      report = result
+    end)
+
+    MiniTest.expect.equality(handle, nil)
+    MiniTest.expect.equality(err, "missing-version-checker: executable not found on PATH")
+  end)
+
+  MiniTest.expect.equality(report.ok, false)
+  MiniTest.expect.equality(report.available, true)
+  MiniTest.expect.equality(report.error, "executable not found on PATH")
+end
+
 T["check"]["latest version"] = MiniTest.new_set()
 
 T["check"]["latest version"]["combines both independent completions into one outdated report"] = function()

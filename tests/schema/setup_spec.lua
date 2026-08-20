@@ -76,6 +76,30 @@ T["setup"]["rejects a per-agent latest-version check missing its command"] = fun
   MiniTest.expect.equality(report.errors[1].path, "agents.codex.latest.command")
 end
 
+T["setup"]["accepts an optional per-agent installed-version override"] = function()
+  local ok, report = capture_setup({
+    agents = {
+      deepseek = {
+        command = "acp-debug.sh",
+        args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
+        version = { command = "acp-debug.sh", args = { "acp-llm-adapter", "--version" } },
+      },
+    },
+  })
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+end
+
+T["setup"]["rejects a per-agent installed-version override missing its command"] = function()
+  local ok, report = capture_setup({
+    agents = { codex = { command = "codex-acp", version = { args = { "--version" } } } },
+  })
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(report.errors[1].path, "agents.codex.version.command")
+end
+
 T["setup"]["rejects per-agent skill paths"] = function()
   local ok, report = capture_setup({
     agents = {

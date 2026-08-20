@@ -27,6 +27,17 @@ local function first_line(value)
   return line
 end
 
+---@param executable string
+---@param args string[]
+---@return string[]
+local function build_argv(executable, args)
+  local argv = { executable }
+  for _, argument in ipairs(args) do
+    argv[#argv + 1] = argument
+  end
+  return argv
+end
+
 ---@param definition unknown
 ---@return louiselm.agent.Definition? normalized
 ---@return string? error_message
@@ -74,7 +85,7 @@ end
 ---Spawn a normalized `latest` check, deferring completion to `on_done`.
 ---`on_done` is always called exactly once, synchronously when the
 ---executable cannot be found and asynchronously otherwise.
----@param latest louiselm.agent.LatestCheck
+---@param latest louiselm.agent.CommandCheck
 ---@param on_done fun(latest_version: string?, latest_error: string?)
 local function start_latest_check(latest, on_done)
   ---@diagnostic disable-next-line: undefined-global -- vim.fn.executable is Neovim's PATH lookup API.
@@ -83,10 +94,7 @@ local function start_latest_check(latest, on_done)
     return
   end
 
-  local command = { latest.command }
-  for _, argument in ipairs(latest.args) do
-    command[#command + 1] = argument
-  end
+  local command = build_argv(latest.command, latest.args)
   local options = { text = true }
   if latest.env ~= nil then
     options.env = latest.env
@@ -129,14 +137,37 @@ function M.check(definition, on_result)
     return nil, normalized.command .. ": " .. error_message
   end
 
-  local command = { normalized.command }
-  for _, argument in ipairs(normalized.args) do
-    command[#command + 1] = argument
+  local version_check = normalized.version
+  if version_check ~= nil then
+    ---@diagnostic disable-next-line: undefined-global -- vim.fn.executable is Neovim's PATH lookup API.
+    if vim.fn.executable(version_check.command) == 0 then
+      local error_message = "executable not found on PATH"
+      if on_result ~= nil then
+        on_result({
+          ok = false,
+          command = normalized.command,
+          available = true,
+          error = error_message,
+        })
+      end
+      return nil, version_check.command .. ": " .. error_message
+    end
   end
-  command[#command + 1] = "--version"
-  local options = { text = true }
-  if normalized.env ~= nil then
-    options.env = normalized.env
+
+  local command, options
+  if version_check ~= nil then
+    command = build_argv(version_check.command, version_check.args)
+    options = { text = true }
+    if version_check.env ~= nil then
+      options.env = version_check.env
+    end
+  else
+    command = build_argv(normalized.command, normalized.args)
+    command[#command + 1] = "--version"
+    options = { text = true }
+    if normalized.env ~= nil then
+      options.env = normalized.env
+    end
   end
 
   local latest = normalized.latest

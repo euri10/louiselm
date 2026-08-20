@@ -121,6 +121,72 @@ T["validate"]["rejects a latest-version check that is not a table"] = function()
   MiniTest.expect.equality(errors[1].type, "wrong_type")
 end
 
+T["validate"]["accepts an optional installed-version check shaped like command/args/env"] = function()
+  local definitions = {
+    deepseek = {
+      command = "/opt/acp-debug.sh",
+      args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
+      version = {
+        command = "/opt/acp-debug.sh",
+        args = { "acp-llm-adapter", "--version" },
+      },
+    },
+  }
+
+  local normalized, errors = Config.normalize(definitions)
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.deepseek.version, definitions.deepseek.version)
+  MiniTest.expect.equality(normalized.deepseek.version ~= definitions.deepseek.version, true)
+  MiniTest.expect.equality(normalized.deepseek.version.args ~= definitions.deepseek.version.args, true)
+end
+
+T["validate"]["defaults version.args to an empty array when omitted"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", version = { command = "codex-agent-acp" } },
+  })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.version, { command = "codex-agent-acp", args = {} })
+end
+
+T["validate"]["leaves version nil when the agent has no installed-version override"] = function()
+  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp" } })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.version, nil)
+end
+
+T["validate"]["rejects a malformed installed-version check without coercion"] = function()
+  local normalized, errors = Config.normalize({
+    codex = {
+      command = "codex-agent-acp",
+      version = { command = 7, args = { "view", false }, bogus = true },
+    },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(#errors, 3)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.version.args[2]")
+  MiniTest.expect.equality(errors[2].path, "agents.codex.version.bogus")
+  MiniTest.expect.equality(errors[2].type, "unknown_key")
+  MiniTest.expect.equality(errors[3].path, "agents.codex.version.command")
+  MiniTest.expect.equality(errors[3].type, "wrong_type")
+end
+
+T["validate"]["rejects an installed-version check that is not a table"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", version = "acp-llm-adapter --version" },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.version")
+  MiniTest.expect.equality(errors[1].type, "wrong_type")
+end
+
 T["validate"]["collects malformed definitions without coercion"] = function()
   local normalized, errors = Config.normalize({
     claude = {

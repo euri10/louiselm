@@ -3,9 +3,9 @@ local Policy = require("louiselm.skills.policy")
 ---@class louiselm.agent.SkillConfig
 ---@field policy? louiselm.skills.Policy Agent-specific policy override.
 
----@class louiselm.agent.LatestCheck
----@field command string Executable that prints the latest available version.
----@field args string[] Arguments passed after the command.
+---@class louiselm.agent.CommandCheck
+---@field command string Executable that prints a version.
+---@field args string[] Arguments passed after the command, verbatim (nothing is auto-appended).
 ---@field env? table<string, string> Environment variables for the process.
 
 ---@class louiselm.agent.Definition
@@ -14,7 +14,8 @@ local Policy = require("louiselm.skills.policy")
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
----@field latest? louiselm.agent.LatestCheck Optional command that resolves the latest available version.
+---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
+---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
 
 ---@alias louiselm.agent.ConfigErrorType "unknown_key"|"wrong_type"|"missing_required"|"invalid_value"
 
@@ -36,9 +37,10 @@ local allowed_keys = {
   latest = true,
   options = true,
   skills = true,
+  version = true,
 }
 
-local latest_allowed_keys = {
+local command_check_allowed_keys = {
   args = true,
   command = true,
   env = true,
@@ -180,16 +182,16 @@ end
 ---@param value unknown
 ---@param path string
 ---@param errors louiselm.agent.ConfigError[]
----@return louiselm.agent.LatestCheck? latest
-local function parse_latest(value, path, errors)
+---@return louiselm.agent.CommandCheck? check
+local function parse_command_check(value, path, errors)
   if type(value) ~= "table" then
     add_error(errors, path, "wrong_type", "expected table, got " .. value_type(value), "table", value_type(value))
     return nil
   end
 
   for _, key in ipairs(sorted_keys(value)) do
-    if type(key) ~= "string" or not latest_allowed_keys[key] then
-      add_error(errors, child_path(path, tostring(key)), "unknown_key", "unknown latest-version configuration key")
+    if type(key) ~= "string" or not command_check_allowed_keys[key] then
+      add_error(errors, child_path(path, tostring(key)), "unknown_key", "unknown version-check configuration key")
     end
   end
 
@@ -394,7 +396,11 @@ function M.normalize(definitions, default_skills_policy)
       local effective_skill_policy = skill_policy(definition.skills, child_path(path, "skills"), errors, default_policy)
       local latest
       if definition.latest ~= nil then
-        latest = parse_latest(definition.latest, child_path(path, "latest"), errors)
+        latest = parse_command_check(definition.latest, child_path(path, "latest"), errors)
+      end
+      local version
+      if definition.version ~= nil then
+        version = parse_command_check(definition.version, child_path(path, "version"), errors)
       end
       normalized[name] = {
         command = command,
@@ -403,6 +409,7 @@ function M.normalize(definitions, default_skills_policy)
         options = options,
         skills = { policy = effective_skill_policy },
         latest = latest,
+        version = version,
       }
     end
   end

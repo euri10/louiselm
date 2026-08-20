@@ -93,6 +93,29 @@ M.schema = assert(Schema.define({
             },
           },
         },
+        version = {
+          type = "table",
+          default = {},
+          description = "Optional override for querying the installed version, verbatim (nothing is auto-appended). Use when `command args... --version` is not the right invocation, e.g. a subcommand-based CLI wrapped by a debug script.",
+          fields = {
+            command = {
+              type = "string",
+              description = "Executable that prints the installed version.",
+            },
+            args = {
+              type = "array-of",
+              items = "string",
+              default = {},
+              description = "Arguments passed after the executable.",
+            },
+            env = {
+              type = "map-of",
+              items = "string",
+              default = {},
+              description = "Environment variables passed to the process.",
+            },
+          },
+        },
       },
     },
   },
