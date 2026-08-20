@@ -17,7 +17,7 @@ end
 local function fake_process()
   local process = { writes = {} }
   local original_system = nvim.system
-  nvim.system = function(command, options, on_exit)
+  rawset(nvim, "system", function(command, options, on_exit)
     process.command = command
     process.options = options
     process.on_exit = on_exit
@@ -31,7 +31,7 @@ local function fake_process()
       end,
     }
     return process.handle
-  end
+  end)
   return process, original_system
 end
 
@@ -128,7 +128,7 @@ T["command"]["copies and reports the current ACP session id"] = function()
   })
   nvim.fn.setreg("+", original_clipboard)
   rawset(nvim, "notify", original_notify)
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
   delete_chat_buffers()
 end
@@ -173,7 +173,7 @@ T["command"]["prompts for a path and exports the current session's transcript to
 
   nvim.ui.input = original_input
   rawset(nvim, "notify", original_notify)
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
 
   MiniTest.expect.equality(input_prompt, "louiselm markdown path (blank for default): ")
@@ -208,7 +208,7 @@ T["command"]["passes an explicit session id argument to LouiselmToMarkdown"] = f
 
   nvim.ui.input = original_input
   rawset(nvim, "notify", original_notify)
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
 
   MiniTest.expect.equality(notification, {
@@ -244,7 +244,7 @@ T["command"]["launches the default adapter through the debug wrapper"] = functio
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   restore_environment("DEEPSEEK_API_KEY", original_api_key)
   restore_environment("LOUISELM_AGENT_COMMAND", original_command)
 
@@ -269,7 +269,7 @@ T["command"]["keeps an explicit executable override unchanged"] = function()
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   restore_environment("DEEPSEEK_API_KEY", original_api_key)
   restore_environment("LOUISELM_AGENT_COMMAND", original_command)
 
@@ -289,7 +289,7 @@ T["command"]["launches a configured named agent"] = function()
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
 
   MiniTest.expect.equality(process.command, { "claude-agent-acp", "--test" })
@@ -304,7 +304,7 @@ T["command"]["uses the configuration published by setup"] = function()
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
 
   MiniTest.expect.equality(process.command, { "configured-agent" })
@@ -344,7 +344,7 @@ T["command"]["does not block a native session when local picker discovery lacks 
   package.loaded.lyaml = loaded
   rawset(package.preload, "lyaml", preload)
   rawset(nvim, "notify", original_notify)
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
   nvim.fn.delete(skill_root, "rf")
   MiniTest.expect.equality(process.command, { "configured-agent" })
@@ -437,7 +437,7 @@ T["command"]["resume discovers the current workspace and bang discovers all with
     MiniTest.expect.equality(nvim.api.nvim_buf_get_name(buffer):match("^louiselm://"), nil)
   end
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   rawset(nvim, "notify", original_notify)
   Command.configure(nil)
   delete_chat_buffers()
@@ -461,6 +461,72 @@ T["command"]["schedules real ACP discovery before notifying the UI"] = function(
   Command.configure(nil)
   MiniTest.expect.equality(completed, true)
   MiniTest.expect.equality(notification, { message = "louiselm: no recoverable sessions found", fast = false })
+  delete_chat_buffers()
+end
+
+T["command"]["warns without blocking chat creation when a configured agent trails its latest-version check"] = function()
+  local definition = mock_definition()
+  definition.latest = { command = "npm", args = { "view", "mock-acp", "version" } }
+  Command.configure({ agents = { mock = definition } })
+
+  local original_system = nvim.system
+  local original_executable = nvim.fn.executable
+  local calls = {}
+  rawset(nvim, "system", function(command, options, on_exit)
+    local entry = { command = command, options = options, on_exit = on_exit }
+    calls[#calls + 1] = entry
+    entry.handle = {
+      write = function() end,
+      kill = function() end,
+      is_closing = function()
+        return false
+      end,
+    }
+    return entry.handle
+  end)
+  rawset(nvim.fn, "executable", function()
+    return 1
+  end)
+
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+
+  Command.register()
+  local buffer_before = nvim.api.nvim_get_current_buf()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  local buffer_after = nvim.api.nvim_get_current_buf()
+
+  -- The chat buffer opens synchronously; the staleness checks below are
+  -- still pending vim.system calls at this point, proving they cannot have
+  -- delayed chat creation.
+  MiniTest.expect.equality(buffer_after ~= buffer_before, true)
+
+  local version_call, latest_call
+  for _, entry in ipairs(calls) do
+    if entry.command[1] == "npm" then
+      latest_call = entry
+    elseif entry.command[2] == "--version" then
+      version_call = entry
+    end
+  end
+  assert(version_call ~= nil, "expected a --version health check to have been spawned")
+  assert(latest_call ~= nil, "expected the configured latest-version check to have been spawned")
+
+  latest_call.on_exit({ code = 0, signal = 0, stdout = "9.9.9\n", stderr = "" })
+  MiniTest.expect.equality(notifications, {})
+  version_call.on_exit({ code = 0, signal = 0, stdout = "mock-acp 1.0.0\n", stderr = "" })
+
+  rawset(nvim, "system", original_system)
+  rawset(nvim.fn, "executable", original_executable)
+  rawset(nvim, "notify", original_notify)
+  Command.configure(nil)
+
+  MiniTest.expect.equality(notifications, {
+    { message = "louiselm: mock is outdated (mock-acp 1.0.0 installed, 9.9.9 upstream)", level = nvim.log.levels.WARN },
+  })
   delete_chat_buffers()
 end
 
@@ -507,7 +573,7 @@ T["command"]["injects every configured symlinked skill through the normal chat p
   local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
   local index = prompt[1].text
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
 
   MiniTest.expect.equality(process.command, { "claude-agent-acp" })
@@ -549,7 +615,7 @@ T["command"]["attaches a project instructions resource_link on a new session thr
   nvim.api.nvim_buf_call(buffer, submit)
   local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
 
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
   nvim.fn.chdir(original_cwd)
 

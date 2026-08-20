@@ -6,7 +6,9 @@ local Louiselm = require("louiselm")
 local nvim = vim
 local T = MiniTest.new_set()
 
-local function with_health_stubs(callback)
+---@param callback fun(calls: table)
+---@param system? function Override for `vim.system`, for scenarios beyond a single "agent 1.2.3" reply.
+local function with_health_stubs(callback, system)
   local original_health = nvim.health
   local original_executable = nvim.fn.executable
   local original_system = nvim.system
@@ -35,10 +37,11 @@ local function with_health_stubs(callback)
   nvim.in_fast_event = function()
     return false
   end
-  nvim.system = function(command, options, callback)
-    callback({ code = 0, signal = 0, stdout = "agent 1.2.3\n", stderr = "" })
-    return {}
-  end
+  nvim.system = system
+    or function(command, options, callback)
+      callback({ code = 0, signal = 0, stdout = "agent 1.2.3\n", stderr = "" })
+      return {}
+    end
 
   local ok, err = pcall(function()
     callback(calls)
@@ -75,6 +78,33 @@ T["check"]["reports setup validation and agent version"] = function()
 
   Health.reset()
   nvim.fn.delete(skill_path, "rf")
+end
+
+T["check"]["warns instead of failing when the installed agent trails the latest check"] = function()
+  assert(Louiselm.setup({
+    agents = {
+      agent = {
+        command = "agent",
+        latest = { command = "npm", args = { "view", "agent", "version" } },
+      },
+    },
+  }))
+
+  with_health_stubs(function(calls)
+    Health.check()
+    MiniTest.expect.equality(calls.error, {})
+    MiniTest.expect.equality(nvim.tbl_contains(calls.ok, "agent — agent 1.2.3"), false)
+    MiniTest.expect.equality(calls.warn, { "agent — agent 1.2.3 (latest 9.9.9 available)" })
+  end, function(command, options, callback)
+    if command[1] == "npm" then
+      callback({ code = 0, signal = 0, stdout = "9.9.9\n", stderr = "" })
+    else
+      callback({ code = 0, signal = 0, stdout = "agent 1.2.3\n", stderr = "" })
+    end
+    return {}
+  end)
+
+  Health.reset()
 end
 
 T["check"]["reports discovered skills alongside invalid siblings"] = function()

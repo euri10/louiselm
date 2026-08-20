@@ -70,6 +70,29 @@ M.schema = assert(Schema.define({
             },
           },
         },
+        latest = {
+          type = "table",
+          default = {},
+          description = "Optional command that resolves the agent's latest available version, e.g. `npm view <pkg> version`; omission disables the staleness check.",
+          fields = {
+            command = {
+              type = "string",
+              description = "Executable that prints the latest available version.",
+            },
+            args = {
+              type = "array-of",
+              items = "string",
+              default = {},
+              description = "Arguments passed after the executable.",
+            },
+            env = {
+              type = "map-of",
+              items = "string",
+              default = {},
+              description = "Environment variables passed to the process.",
+            },
+          },
+        },
       },
     },
   },

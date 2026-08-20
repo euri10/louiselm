@@ -3,12 +3,18 @@ local Policy = require("louiselm.skills.policy")
 ---@class louiselm.agent.SkillConfig
 ---@field policy? louiselm.skills.Policy Agent-specific policy override.
 
+---@class louiselm.agent.LatestCheck
+---@field command string Executable that prints the latest available version.
+---@field args string[] Arguments passed after the command.
+---@field env? table<string, string> Environment variables for the process.
+
 ---@class louiselm.agent.Definition
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
+---@field latest? louiselm.agent.LatestCheck Optional command that resolves the latest available version.
 
 ---@alias louiselm.agent.ConfigErrorType "unknown_key"|"wrong_type"|"missing_required"|"invalid_value"
 
@@ -27,8 +33,15 @@ local allowed_keys = {
   args = true,
   command = true,
   env = true,
+  latest = true,
   options = true,
   skills = true,
+}
+
+local latest_allowed_keys = {
+  args = true,
+  command = true,
+  env = true,
 }
 
 ---@param value unknown
@@ -162,6 +175,73 @@ local function copy_options(value)
     options[key] = option
   end
   return options
+end
+
+---@param value unknown
+---@param path string
+---@param errors louiselm.agent.ConfigError[]
+---@return louiselm.agent.LatestCheck? latest
+local function parse_latest(value, path, errors)
+  if type(value) ~= "table" then
+    add_error(errors, path, "wrong_type", "expected table, got " .. value_type(value), "table", value_type(value))
+    return nil
+  end
+
+  for _, key in ipairs(sorted_keys(value)) do
+    if type(key) ~= "string" or not latest_allowed_keys[key] then
+      add_error(errors, child_path(path, tostring(key)), "unknown_key", "unknown latest-version configuration key")
+    end
+  end
+
+  local command = value.command
+  if command == nil then
+    add_error(errors, child_path(path, "command"), "missing_required", "required command is missing", "string", "nil")
+  elseif type(command) ~= "string" then
+    add_error(
+      errors,
+      child_path(path, "command"),
+      "wrong_type",
+      "expected string, got " .. value_type(command),
+      "string",
+      value_type(command)
+    )
+  elseif command == "" then
+    add_error(errors, child_path(path, "command"), "invalid_value", "command must be a non-empty string")
+  end
+
+  local args = {}
+  if value.args ~= nil then
+    if type(value.args) ~= "table" then
+      add_error(
+        errors,
+        child_path(path, "args"),
+        "wrong_type",
+        "expected table, got " .. value_type(value.args),
+        "string[]",
+        value_type(value.args)
+      )
+    else
+      args = copy_args(value.args, child_path(path, "args"), errors) or {}
+    end
+  end
+
+  local env
+  if value.env ~= nil then
+    if type(value.env) ~= "table" then
+      add_error(
+        errors,
+        child_path(path, "env"),
+        "wrong_type",
+        "expected table, got " .. value_type(value.env),
+        "table<string, string>",
+        value_type(value.env)
+      )
+    else
+      env = copy_env(value.env, child_path(path, "env"), errors)
+    end
+  end
+
+  return { command = command, args = args, env = env }
 end
 
 ---@param value unknown
@@ -312,12 +392,17 @@ function M.normalize(definitions, default_skills_policy)
       end
 
       local effective_skill_policy = skill_policy(definition.skills, child_path(path, "skills"), errors, default_policy)
+      local latest
+      if definition.latest ~= nil then
+        latest = parse_latest(definition.latest, child_path(path, "latest"), errors)
+      end
       normalized[name] = {
         command = command,
         args = args,
         env = env,
         options = options,
         skills = { policy = effective_skill_policy },
+        latest = latest,
       }
     end
   end

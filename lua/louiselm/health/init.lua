@@ -26,16 +26,34 @@ local function report(message, ok)
   end
 end
 
+---Build the human-readable report for an agent health result.
 ---@param result louiselm.agent.HealthResult
-local function report_agent_result(result)
+---@return string message
+---@return boolean ok Whether the version check itself succeeded.
+---@return boolean outdated Whether the installed version trails the configured latest check.
+local function describe_agent_result(result)
   local message = result.command
   if result.version ~= nil then
     message = message .. " — " .. result.version
   end
-  if result.ok then
-    report(message, true)
+  if not result.ok then
+    return message .. ": " .. (result.error or "version check failed"), false, false
+  end
+  if result.outdated then
+    message = message .. " (latest " .. (result.latest_version or "unknown") .. " available)"
+  end
+  return message, true, result.outdated == true
+end
+
+---@param result louiselm.agent.HealthResult
+local function report_agent_result(result)
+  local message, ok, outdated = describe_agent_result(result)
+  if not ok then
+    report(message, false)
+  elseif outdated then
+    nvim().health.warn(message)
   else
-    report(message .. ": " .. (result.error or "version check failed"), false)
+    report(message, true)
   end
 end
 
@@ -48,14 +66,14 @@ local function report_agent_result_safely(result)
   end
 
   local emit = function()
-    local message = result.command
-    if result.version ~= nil then
-      message = message .. " — " .. result.version
+    local message, ok, outdated = describe_agent_result(result)
+    local level = editor.log.levels.INFO
+    if not ok then
+      level = editor.log.levels.ERROR
+    elseif outdated then
+      level = editor.log.levels.WARN
     end
-    if result.error ~= nil and not result.ok then
-      message = message .. ": " .. result.error
-    end
-    editor.notify("louiselm health: " .. message, result.ok and editor.log.levels.INFO or editor.log.levels.ERROR)
+    editor.notify("louiselm health: " .. message, level)
   end
 
   -- vim.system callbacks run in a fast event; health reporting is editor work.

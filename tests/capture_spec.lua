@@ -25,7 +25,7 @@ local function fake_runtime()
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
   end
-  nvim.system = function(command, options, callback)
+  rawset(nvim, "system", function(command, options, callback)
     local process = { command = command, options = options, callback = callback }
     process.handle = {
       kill = function(_, signal)
@@ -34,13 +34,13 @@ local function fake_runtime()
     }
     processes[#processes + 1] = process
     return process.handle
-  end
+  end)
 
   return {
     processes = processes,
     scheduled = scheduled,
     restore = function()
-      nvim.system = original_system
+      rawset(nvim, "system", original_system)
       nvim.schedule = original_schedule
       nvim.fn.stdpath = original_stdpath
       nvim.fn.delete(state_directory, "rf")

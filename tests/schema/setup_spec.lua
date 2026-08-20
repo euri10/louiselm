@@ -52,6 +52,30 @@ T["setup"]["starts with valid config"] = function()
   MiniTest.expect.equality(#notifications, 0)
 end
 
+T["setup"]["accepts an optional per-agent latest-version check"] = function()
+  local ok, report = capture_setup({
+    agents = {
+      codex = {
+        command = "codex-acp",
+        latest = { command = "npm", args = { "view", "@agentclientprotocol/codex-acp", "version" } },
+      },
+      deepseek = { command = "acp-llm-adapter" },
+    },
+  })
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+end
+
+T["setup"]["rejects a per-agent latest-version check missing its command"] = function()
+  local ok, report = capture_setup({
+    agents = { codex = { command = "codex-acp", latest = { args = { "view", "version" } } } },
+  })
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(report.errors[1].path, "agents.codex.latest.command")
+end
+
 T["setup"]["rejects per-agent skill paths"] = function()
   local ok, report = capture_setup({
     agents = {

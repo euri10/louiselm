@@ -23,7 +23,7 @@ end
 ---Start an external agent process without invoking a shell.
 ---@param definition louiselm.agent.Definition Normalized agent definition.
 ---@param on_exit? fun(result: louiselm.agent.ProcessResult) Called once when the process exits.
----@return userdata? handle The `vim.system()` process handle, or nil on failure.
+---@return table? handle The `vim.system()` process handle, or nil on failure.
 ---@return string? error_message A validation or launch error.
 function M.start(definition, on_exit)
   local normalized, validation_error = normalize_definition(definition)

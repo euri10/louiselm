@@ -55,6 +55,72 @@ T["validate"]["rejects an empty per-agent skill override"] = function()
   MiniTest.expect.equality(errors[1].type, "missing_required")
 end
 
+T["validate"]["accepts an optional latest-version check shaped like command/args/env"] = function()
+  local definitions = {
+    codex = {
+      command = "codex-agent-acp",
+      latest = {
+        command = "npm",
+        args = { "view", "@agentclientprotocol/codex-acp", "version" },
+        env = { NPM_CONFIG_LOGLEVEL = "error" },
+      },
+    },
+  }
+
+  local normalized, errors = Config.normalize(definitions)
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.latest, definitions.codex.latest)
+  MiniTest.expect.equality(normalized.codex.latest ~= definitions.codex.latest, true)
+  MiniTest.expect.equality(normalized.codex.latest.args ~= definitions.codex.latest.args, true)
+end
+
+T["validate"]["defaults latest.args to an empty array when omitted"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", latest = { command = "npm" } },
+  })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.latest, { command = "npm", args = {} })
+end
+
+T["validate"]["leaves latest nil when the agent has no latest-version check"] = function()
+  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp" } })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.latest, nil)
+end
+
+T["validate"]["rejects a malformed latest-version check without coercion"] = function()
+  local normalized, errors = Config.normalize({
+    codex = {
+      command = "codex-agent-acp",
+      latest = { command = 7, args = { "view", false }, bogus = true },
+    },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(#errors, 3)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.latest.args[2]")
+  MiniTest.expect.equality(errors[2].path, "agents.codex.latest.bogus")
+  MiniTest.expect.equality(errors[2].type, "unknown_key")
+  MiniTest.expect.equality(errors[3].path, "agents.codex.latest.command")
+  MiniTest.expect.equality(errors[3].type, "wrong_type")
+end
+
+T["validate"]["rejects a latest-version check that is not a table"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", latest = "npm view codex-acp version" },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.latest")
+  MiniTest.expect.equality(errors[1].type, "wrong_type")
+end
+
 T["validate"]["collects malformed definitions without coercion"] = function()
   local normalized, errors = Config.normalize({
     claude = {

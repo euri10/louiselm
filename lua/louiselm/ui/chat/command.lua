@@ -1,5 +1,6 @@
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
+local Agent = require("louiselm.agent")
 
 local M = {}
 local configured ---@type table?
@@ -132,6 +133,45 @@ local function default_agent_definition()
   }
 end
 
+---Notify from whichever context we're called in: directly on the main loop,
+---or scheduled when invoked from a fast event (e.g. a vim.system callback).
+---@param message string
+---@param level integer
+local function notify_safely(message, level)
+  if nvim.in_fast_event() then
+    nvim.schedule(function()
+      nvim.notify(message, level)
+    end)
+  else
+    nvim.notify(message, level)
+  end
+end
+
+---Fire a non-blocking latest-version check for every configured agent and
+---warn when the installed version trails it. `Agent.check` starts async
+---vim.system() calls and returns immediately, so this never delays chat or
+---session creation; the notification (if any) arrives whenever the
+---independent checks resolve.
+---@param definitions table<string, louiselm.agent.Definition>
+local function check_agent_staleness(definitions)
+  for name, definition in pairs(definitions) do
+    Agent.check(definition, function(result)
+      if not result.outdated then
+        return
+      end
+      notify_safely(
+        string.format(
+          "louiselm: %s is outdated (%s installed, %s upstream)",
+          name,
+          result.version,
+          result.latest_version
+        ),
+        nvim.log.levels.WARN
+      )
+    end)
+  end
+end
+
 ---Publish the validated setup configuration to the chat command.
 ---@param config? unknown Validated configuration, or nil to restore defaults.
 ---@return boolean configured True when the configuration is accepted.
@@ -171,6 +211,7 @@ function M.register()
       definitions = { default = default_agent_definition() }
     end
     local names = sorted_agent_names(definitions)
+    check_agent_staleness(definitions)
     local default_policy, policy_error = configured_skill_policy(configured or {})
     if default_policy == nil then
       nvim.notify("louiselm: " .. (policy_error or "invalid skills policy"), nvim.log.levels.ERROR)

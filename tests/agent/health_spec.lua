@@ -54,6 +54,160 @@ T["check"]["reports executable availability and detected version"] = function()
   MiniTest.expect.equality(report.version, "claude-agent-acp 1.2.3")
 end
 
+---Stub `vim.fn.executable`/`vim.system` without invoking `vim.system`'s
+---completion callback synchronously, so tests can drive each independent
+---process completion in whichever order a real fast-event scheduler would.
+---@param executable function
+---@param callback fun(calls: table[])
+local function with_deferred_stubs(executable, callback)
+  ---@diagnostic disable-next-line: undefined-global
+  local original_executable = vim.fn.executable
+  ---@diagnostic disable-next-line: undefined-global
+  local original_system = vim.system
+  local calls = {}
+  ---@diagnostic disable-next-line: undefined-global
+  vim.fn.executable = executable
+  ---@diagnostic disable-next-line: undefined-global
+  vim.system = function(command, options, on_exit)
+    local entry = { command = command, options = options, on_exit = on_exit, handle = {} }
+    calls[#calls + 1] = entry
+    return entry.handle
+  end
+  local ok, err = pcall(callback, calls)
+  ---@diagnostic disable-next-line: undefined-global
+  vim.fn.executable = original_executable
+  ---@diagnostic disable-next-line: undefined-global
+  vim.system = original_system
+  if not ok then
+    error(err)
+  end
+end
+
+T["check"]["latest version"] = MiniTest.new_set()
+
+T["check"]["latest version"]["combines both independent completions into one outdated report"] = function()
+  local report
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    local handle, err = Health.check({
+      command = "codex-agent-acp",
+      args = {},
+      latest = {
+        command = "npm",
+        args = { "view", "codex-acp", "version" },
+        env = { NPM_CONFIG_LOGLEVEL = "error" },
+      },
+    }, function(result)
+      report = result
+    end)
+
+    MiniTest.expect.equality(err, nil)
+    assert(handle ~= nil)
+    MiniTest.expect.equality(#calls, 2)
+    MiniTest.expect.equality(calls[1].command, { "codex-agent-acp", "--version" })
+    MiniTest.expect.equality(calls[1].options, { text = true })
+    MiniTest.expect.equality(calls[2].command, { "npm", "view", "codex-acp", "version" })
+    MiniTest.expect.equality(calls[2].options, { text = true, env = { NPM_CONFIG_LOGLEVEL = "error" } })
+
+    -- Two independent vim.system calls; the latest check resolves first here
+    -- to prove the combined callback waits for both regardless of order.
+    calls[2].on_exit({ code = 0, signal = 0, stdout = "1.4.0\n", stderr = "" })
+    MiniTest.expect.equality(report, nil)
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "codex-agent-acp 1.3.0\n", stderr = "" })
+  end)
+
+  assert(report ~= nil)
+  MiniTest.expect.equality(report.ok, true)
+  MiniTest.expect.equality(report.version, "codex-agent-acp 1.3.0")
+  MiniTest.expect.equality(report.latest_version, "1.4.0")
+  MiniTest.expect.equality(report.outdated, true)
+end
+
+T["check"]["latest version"]["fires the health callback exactly once for two independent completions"] = function()
+  local calls_to_result = 0
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    Health.check({
+      command = "codex-agent-acp",
+      args = {},
+      latest = { command = "npm", args = { "view", "codex-acp", "version" } },
+    }, function()
+      calls_to_result = calls_to_result + 1
+    end)
+
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "codex-agent-acp 1.3.0\n", stderr = "" })
+    calls[2].on_exit({ code = 0, signal = 0, stdout = "1.3.0\n", stderr = "" })
+  end)
+
+  MiniTest.expect.equality(calls_to_result, 1)
+end
+
+T["check"]["latest version"]["reports outdated false when the installed and latest versions match"] = function()
+  local report
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    Health.check({
+      command = "codex-agent-acp",
+      args = {},
+      latest = { command = "npm", args = { "view", "codex-acp", "version" } },
+    }, function(result)
+      report = result
+    end)
+
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "1.3.0\n", stderr = "" })
+    calls[2].on_exit({ code = 0, signal = 0, stdout = "1.3.0\n", stderr = "" })
+  end)
+
+  MiniTest.expect.equality(report.version, "1.3.0")
+  MiniTest.expect.equality(report.latest_version, "1.3.0")
+  MiniTest.expect.equality(report.outdated, false)
+end
+
+T["check"]["latest version"]["records a latest-check error without failing the primary version check"] = function()
+  local report
+
+  with_deferred_stubs(function(command)
+    if command == "npm" then
+      return 0
+    end
+    return 1
+  end, function(calls)
+    Health.check({
+      command = "codex-agent-acp",
+      args = {},
+      latest = { command = "npm", args = { "view", "codex-acp", "version" } },
+    }, function(result)
+      report = result
+    end)
+
+    -- The latest executable is missing, so only the primary version check spawns.
+    MiniTest.expect.equality(#calls, 1)
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "codex-agent-acp 1.3.0\n", stderr = "" })
+  end)
+
+  MiniTest.expect.equality(report.ok, true)
+  MiniTest.expect.equality(report.version, "codex-agent-acp 1.3.0")
+  MiniTest.expect.equality(report.latest_version, nil)
+  MiniTest.expect.equality(report.latest_error, "executable not found on PATH")
+  MiniTest.expect.equality(report.outdated, nil)
+end
+
+T["check"]["latest version"]["does not spawn a second process when latest is not configured"] = function()
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    Health.check({ command = "codex-agent-acp", args = {} }, function() end)
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "codex-agent-acp 1.3.0\n", stderr = "" })
+    MiniTest.expect.equality(#calls, 1)
+  end)
+end
+
 T["check"]["reports a missing executable without spawning"] = function()
   local process_started = false
   local report

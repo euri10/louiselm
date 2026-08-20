@@ -11,7 +11,7 @@ local nvim = vim
 local function fake_processes()
   local processes = {}
   local original_system = nvim.system
-  nvim.system = function(command, options, on_exit)
+  rawset(nvim, "system", function(command, options, on_exit)
     local process = {
       command = command,
       options = options,
@@ -32,12 +32,12 @@ local function fake_processes()
     }
     processes[#processes + 1] = process
     return process.handle
-  end
+  end)
   return processes, original_system
 end
 
 local function restore_processes(original_system)
-  nvim.system = original_system
+  rawset(nvim, "system", original_system)
 end
 
 local function respond(process, id, result)
