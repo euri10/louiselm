@@ -32,6 +32,10 @@ to decide what deserves to exist and whether the result is right. LouiseLM aims
 to preserve that attention for creativity, taste, and judgment while agents
 handle more of the mechanical work.
 
+The project's anti-capitalist position and the reasoning behind its permissive
+licensing posture are set out separately in the
+[political statement](POLITICAL_STATEMENT.md).
+
 ## From an idea to reality
 
 LouiseLM's envisioned loop is:
