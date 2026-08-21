@@ -200,6 +200,21 @@ local function single_line(value)
   return (value:gsub("[\r\n]", " "))
 end
 
+---Return a human-readable label for an option's current value.
+---For select options, resolves the wire value to its ConfigValue name when available.
+---@param option louiselm.session.ConfigOption
+---@return string
+local function option_display_value(option)
+  if option.type == "select" and type(option.options) == "table" then
+    for _, v in ipairs(option.options) do
+      if v.value == option.current_value then
+        return v.name
+      end
+    end
+  end
+  return tostring(option.current_value)
+end
+
 -- A select provider closes the picker a new one replaces, which would answer an open
 -- permission request without a choice. Commands that open their own picker refuse while
 -- a decision is presented instead of queueing behind it: a decision can open a nested
@@ -307,7 +322,7 @@ local function session_summary(state)
     parts[#parts + 1] = "activity=" .. single_line(state.activity)
   end
   for _, option in ipairs(state.config_options or {}) do
-    parts[#parts + 1] = option.name .. "=" .. tostring(option.current_value)
+    parts[#parts + 1] = option.name .. "=" .. option_display_value(option)
   end
   if state.context ~= nil then
     local stale = state.context.stale and " stale" or ""
@@ -463,7 +478,7 @@ local function session_header(state)
   local options_line = "ACP options:"
   for index, option in ipairs(state.config_options or {}) do
     options_line = options_line .. (index == 1 and " " or " · ")
-    local option_text = single_line(option.name) .. "=" .. single_line(tostring(option.current_value))
+    local option_text = single_line(option.name) .. "=" .. single_line(option_display_value(option))
     local start_col = #options_line
     options_line = options_line .. option_text
     add_header_highlight(highlights, 2, start_col, option_text, ACP_HIGHLIGHT)
@@ -1242,7 +1257,7 @@ open_session_options = function(self, view, initial)
   Picker.select(state.config_options, {
     prompt = "louiselm session options: ",
     format_item = function(option)
-      return option.name .. ": " .. tostring(option.current_value)
+      return option.name .. ": " .. option_display_value(option)
     end,
   }, function(option)
     if option == nil or self.disposed or self.views[state.id] ~= view then

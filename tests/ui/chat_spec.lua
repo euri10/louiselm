@@ -2447,7 +2447,7 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
   nvim.cmd.stopinsert = original_stopinsert
 
   MiniTest.expect.equality(calls[1].options.prompt, "louiselm session options: ")
-  MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Model: small")
+  MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Model: Small")
   MiniTest.expect.equality(modes_at_select, { "n", "n", "n" })
   MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
   chat:dispose()
