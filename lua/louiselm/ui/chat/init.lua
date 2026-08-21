@@ -4,6 +4,7 @@ local Gates = require("louiselm.permission.gates")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
+local Validation = require("louiselm.session.validation")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -70,6 +71,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
+---@field change_model fun(self: louiselm.ui.Chat): boolean, string? Open the model value picker for the current session.
 ---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
@@ -1222,6 +1224,49 @@ local function config_values(option)
   return option.options or {}
 end
 
+---Pick a value for one advertised option and apply it to the session.
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param option louiselm.session.ConfigOption
+---@param done fun()? Called once the picker closes, whether the value was applied or dismissed.
+local function select_config_value(self, view, option, done)
+  local session_id = view.session:inspect().id
+  Picker.select(config_values(option), {
+    prompt = option.name .. ": ",
+    format_item = function(value)
+      return value.name
+    end,
+  }, function(choice)
+    if self.disposed or self.views[session_id] ~= view then
+      return
+    end
+    if choice == nil then
+      if done ~= nil then
+        done()
+      end
+      return
+    end
+    local _, set_error = self:set_config_option(option.id, choice.value, function(_, callback_error)
+      nvim.schedule(function()
+        if self.disposed or self.views[session_id] ~= view then
+          return
+        end
+        if callback_error ~= nil then
+          insert_transcript(self, view, { "Error: " .. callback_error })
+        else
+          render_header(self, view)
+        end
+        if done ~= nil then
+          done()
+        end
+      end)
+    end)
+    if set_error ~= nil then
+      insert_transcript(self, view, { "Error: " .. set_error })
+    end
+  end)
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param initial boolean
@@ -1248,35 +1293,8 @@ open_session_options = function(self, view, initial)
     if option == nil or self.disposed or self.views[state.id] ~= view then
       return
     end
-    Picker.select(config_values(option), {
-      prompt = option.name .. ": ",
-      format_item = function(value)
-        return value.name
-      end,
-    }, function(choice)
-      if self.disposed or self.views[state.id] ~= view then
-        return
-      end
-      if choice == nil then
-        open_session_options(self, view, false)
-        return
-      end
-      local _, set_error = self:set_config_option(option.id, choice.value, function(_, callback_error)
-        nvim.schedule(function()
-          if self.disposed or self.views[state.id] ~= view then
-            return
-          end
-          if callback_error ~= nil then
-            insert_transcript(self, view, { "Error: " .. callback_error })
-          else
-            render_header(self, view)
-          end
-          open_session_options(self, view, false)
-        end)
-      end)
-      if set_error ~= nil then
-        insert_transcript(self, view, { "Error: " .. set_error })
-      end
+    select_config_value(self, view, option, function()
+      open_session_options(self, view, false)
     end)
   end)
 end
@@ -1954,6 +1972,34 @@ function Chat:session_options()
     return false, "session has no supported options"
   end
   open_session_options(self, view, false)
+  return true
+end
+
+---Change the model on the current idle session, skipping the options overview.
+---Only the model value picker opens; dismissing it does not fall back to the overview.
+---@param self louiselm.ui.Chat
+---@return boolean opened
+---@return string? error_message Lifecycle, state, or capability error.
+function Chat:change_model()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local state = view.session:inspect()
+  if state.status ~= "ready" then
+    return false, "session is not idle; cancel the active turn first"
+  end
+  local option = Validation.model_option(state.config_options)
+  if option == nil then
+    return false, "session has no model option"
+  end
+  select_config_value(self, view, option, nil)
   return true
 end
 

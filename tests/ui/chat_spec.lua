@@ -1875,6 +1875,7 @@ T["chat"]["refuses command pickers while a permission decision is open"] = funct
   MiniTest.expect.equality({ chat:pick_file() }, { false, busy })
   MiniTest.expect.equality({ chat:switch_session() }, { false, busy })
   MiniTest.expect.equality({ chat:session_options() }, { false, busy })
+  MiniTest.expect.equality({ chat:change_model() }, { false, busy })
   MiniTest.expect.equality({ chat:manage_permissions() }, { false, busy })
   MiniTest.expect.equality({ chat:resume_session() }, { false, busy })
   MiniTest.expect.equality({ chat:new_session() }, { nil, busy })
@@ -2451,6 +2452,90 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
   MiniTest.expect.equality(modes_at_select, { "n", "n", "n" })
   MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
   chat:dispose()
+end
+
+T["chat"]["opens the model value picker directly and applies the choice"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  first.state.config_options = {
+    { id = "mode", name = "Mode", type = "select", current_value = "agent", options = {} },
+    {
+      id = "model",
+      name = "Model",
+      category = "model",
+      type = "select",
+      current_value = "small",
+      options = { { value = "small", name = "Small" }, { value = "large", name = "Large" } },
+    },
+  }
+  local original_select = nvim.ui.select
+  local calls = {}
+  nvim.ui.select = function(items, options, callback)
+    calls[#calls + 1] = { items = items, options = options }
+    callback(items[2])
+  end
+  local opened, open_error = chat:change_model()
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality({ opened, open_error }, { true, nil })
+  MiniTest.expect.equality(#calls, 1)
+  MiniTest.expect.equality(calls[1].options.prompt, "Model: ")
+  MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Small")
+  MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
+  chat:dispose()
+end
+
+T["chat"]["closes a dismissed model picker without opening the options overview"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  first.state.config_options = {
+    { id = "mode", name = "Mode", type = "select", current_value = "agent", options = {} },
+    {
+      id = "model",
+      name = "Model",
+      category = "model",
+      type = "select",
+      current_value = "small",
+      options = { { value = "small", name = "Small" }, { value = "large", name = "Large" } },
+    },
+  }
+  local original_select = nvim.ui.select
+  local calls = 0
+  nvim.ui.select = function(_, _, callback)
+    calls = calls + 1
+    callback(nil)
+  end
+  assert(chat:change_model())
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(calls, 1)
+  MiniTest.expect.equality(first.config_changes, {})
+  chat:dispose()
+end
+
+T["chat"]["reports why a model change is unavailable"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.expect.equality({ chat:change_model() }, { false, "no chat session is attached" })
+
+  assert(chat:attach(first))
+  MiniTest.expect.equality({ chat:change_model() }, { false, "session has no model option" })
+
+  first.state.config_options = {
+    { id = "mode", name = "Mode", type = "select", current_value = "agent", options = {} },
+  }
+  MiniTest.expect.equality({ chat:change_model() }, { false, "session has no model option" })
+
+  first.state.config_options = {
+    { id = "model", name = "Model", category = "model", type = "select", current_value = "small", options = {} },
+  }
+  first.state.status = "prompting"
+  MiniTest.expect.equality({ chat:change_model() }, { false, "session is not idle; cancel the active turn first" })
+
+  chat:dispose()
+  MiniTest.expect.equality({ chat:change_model() }, { false, "chat UI is disposed" })
 end
 
 T["chat"]["ignores a queued setup overview after disposal"] = function()

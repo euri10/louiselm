@@ -237,15 +237,26 @@ function M.find_option(options, id)
   end
 end
 
+---Find the model-category option, when the agent advertises one.
+---@param options louiselm.session.ConfigOption[]
+---@return louiselm.session.ConfigOption? option First option whose ACP category is `model`.
+function M.model_option(options)
+  for _, option in ipairs(options) do
+    if option.category == "model" then
+      return option
+    end
+  end
+end
+
 ---Return the current model-category value, when advertised.
 ---@param options louiselm.session.ConfigOption[]
 ---@return string|boolean|nil value
 function M.model_value(options)
-  for _, option in ipairs(options) do
-    if option.category == "model" then
-      return option.current_value
-    end
+  local option = M.model_option(options)
+  if option == nil then
+    return nil
   end
+  return option.current_value
 end
 
 ---Validate and copy an agent-advertised command list, skipping malformed entries.
