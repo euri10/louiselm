@@ -169,4 +169,27 @@ T["commands"]["register exposes capture workflow commands"] = function()
   MiniTest.expect.equality(commands.LouiselmCaptureRetry ~= nil, true)
 end
 
+T["commands"]["pairing QR is black on white independently of the colorscheme"] = function()
+  local runtime = fake_runtime()
+  local ok, error_message = pcall(function()
+    assert(CaptureCommand.configure({}))
+    assert(CaptureCommand.register())
+    nvim.cmd("LouiselmCapturePair https://192.0.2.1:7391")
+    runtime.processes[1].callback({ code = 0, signal = 0, stdout = " █ \n██ ", stderr = "" })
+    runtime.scheduled[1]()
+
+    local highlight = nvim.api.nvim_get_hl(0, { name = "LouiselmCaptureQr" })
+    MiniTest.expect.equality(highlight.fg, 0x000000)
+    MiniTest.expect.equality(highlight.bg, 0xffffff)
+
+    local namespace = nvim.api.nvim_get_namespaces().louiselm_capture_qr
+    local marks = nvim.api.nvim_buf_get_extmarks(0, namespace, 0, -1, { details = true })
+    MiniTest.expect.equality(#marks, 2)
+    MiniTest.expect.equality(marks[1][4].hl_group, "LouiselmCaptureQr")
+    MiniTest.expect.equality(marks[2][4].hl_group, "LouiselmCaptureQr")
+  end)
+  runtime.restore()
+  assert(ok, error_message)
+end
+
 return T

@@ -14,6 +14,7 @@ end
 
 ---@param name string
 ---@param lines string[]
+---@return integer buffer
 local function open_buffer(name, lines)
   local existing = nvim.fn.bufnr(name)
   if existing ~= -1 and nvim.api.nvim_buf_is_valid(existing) then
@@ -29,6 +30,16 @@ local function open_buffer(name, lines)
   nvim.bo[buffer].modifiable = false
   nvim.api.nvim_set_current_buf(buffer)
   nvim.wo.wrap = false
+  return buffer
+end
+
+---@param buffer integer
+local function highlight_qr(buffer)
+  local namespace = nvim.api.nvim_create_namespace("louiselm_capture_qr")
+  nvim.api.nvim_set_hl(0, "LouiselmCaptureQr", { fg = "#000000", bg = "#ffffff" })
+  for line = 0, nvim.api.nvim_buf_line_count(buffer) - 1 do
+    nvim.api.nvim_buf_add_highlight(buffer, namespace, "LouiselmCaptureQr", line, 0, -1)
+  end
 end
 
 ---@param error_message? string
@@ -163,7 +174,8 @@ function M.register()
         report_error(pair_error)
         return
       end
-      open_buffer("louiselm://capture-pairing", nvim.split(output, "\n", { plain = true }))
+      local buffer = open_buffer("louiselm://capture-pairing", nvim.split(output, "\n", { plain = true }))
+      highlight_qr(buffer)
     end)
     if not started then
       report_error(error_message)
