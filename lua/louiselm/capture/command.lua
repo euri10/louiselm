@@ -71,7 +71,7 @@ local function inbox_lines(captures)
     if capture.audio_path ~= nil then
       lines[#lines + 1] = "- audio: `" .. capture.audio_path .. "`"
     end
-    if capture.transcript ~= nil and capture.transcript.text ~= nil then
+    if type(capture.transcript) == "table" and type(capture.transcript.text) == "string" then
       lines[#lines + 1] = ""
       lines[#lines + 1] = capture.transcript.text
     elseif transcription.last_error ~= nil then

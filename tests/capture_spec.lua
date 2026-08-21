@@ -176,6 +176,40 @@ T["commands"]["register exposes capture workflow commands"] = function()
   MiniTest.expect.equality(commands.LouiselmCaptureRetry ~= nil, true)
 end
 
+T["commands"]["opens inbox when a capture transcript is null"] = function()
+  local runtime = fake_runtime()
+  local ok, error_message = pcall(function()
+    assert(CaptureCommand.configure({ capture = { service = { "test-capture-service" } } }))
+    assert(CaptureCommand.register())
+    nvim.cmd("LouiselmInbox")
+    runtime.processes[1].callback({
+      code = 0,
+      signal = 0,
+      stdout = [=[
+      [
+        {
+          "record": { "id": "capture-id", "source": "android", "duration_ms": 1 },
+          "state": { "transcription": { "status": "pending" } },
+          "transcript": null
+        }
+      ]
+      ]=],
+      stderr = "",
+    })
+    runtime.scheduled[1]()
+
+    MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, -1, false), {
+      "# LouiseLM capture inbox",
+      "",
+      "## capture-id",
+      "- pending · android · 1 ms",
+      "",
+    })
+  end)
+  runtime.restore()
+  assert(ok, error_message)
+end
+
 T["commands"]["pairing QR is black on white independently of the colorscheme"] = function()
   local runtime = fake_runtime()
   local original_list = nvim.wo.list
