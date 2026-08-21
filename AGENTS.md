@@ -23,15 +23,29 @@ shared record across sessions, agents, and adapters.
 - Run `br robot-docs guide` for command syntax. Do not restate it here.
 - Discover work with `br ready`. Triage with `bvr --robot-*` flags only; bare
   `bvr` opens a blocking TUI.
+- Claim work with `br update <id> --claim --actor "<your session id>"`, never
+  with a bare `--status=in_progress`. `--claim` atomically sets the assignee to
+  the actor, which is the only thing that makes a claim attributable, and it
+  refuses to overwrite a live claim. Take the actor from your adapter's session
+  identifier (Claude Code exports `CLAUDE_CODE_SESSION_ID`) so the claim points
+  at a transcript someone can actually open. `bvr` suggests the bare
+  `--status=in_progress` form in its `claim_command` field; do not copy it.
 - Read the graph through `br` and `bvr`, never by parsing `.beads/*.jsonl`.
 - File findings as beads before fixing them, including work deliberately
   deferred. File before the fix, while the failing evidence still exists: the
   log line, payload, or hung process that proves it disappears the moment it is
   repaired. A finding that survives only in a transcript is lost, and deferred
   work that is not filed becomes work that never happens.
-- Prefer finishing in-progress work to starting new work, even when triage
-  ranks an unstarted issue higher. Scoring rewards unblocking leverage and
-  cannot see that a claimed issue is half-done.
+- Prefer finishing **your own** in-progress work to starting new work, even
+  when triage ranks an unstarted issue higher. Scoring rewards unblocking
+  leverage and cannot see that a claimed issue is half-done. This preference
+  covers only issues you claimed; another agent's claim is not your backlog.
+- Before working an issue that is already `in_progress`, check
+  `br coordination status` for its claim age and classification. A live claim
+  belongs to its holder: pick something else. `br scheduler` already excludes
+  claimed work and explains its ranking, so prefer it over hand-scanning
+  `br list --status in_progress`. Take over an abandoned claim only past the
+  abandoned threshold, and say in a comment that you did and why.
 - Keep durable context in the repository, never in an agent's private memory.
   Context anchored to one issue belongs in `br comments`; a standing convention
   belongs in this file. Anything an agent knows that another adapter cannot
