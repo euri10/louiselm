@@ -272,7 +272,6 @@ while the session is idle; dismissing the overview keeps the agent defaults.
 The interactive controls are:
 
 - `:LouiselmSessionOptions` — inspect or change all supported options
-- `:LouiselmModelChange` — change the model directly, without the full options overview
 - `:LouiselmPermissions` — inspect and revoke remembered permission rules
 - `:LouiselmInline` — ask the agent to replace the current selection, or insert at the cursor
 - `:LouiselmCancel` — cancel the active turn

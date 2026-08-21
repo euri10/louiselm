@@ -389,15 +389,6 @@ function M.register()
     report_error(options_error)
   end, { desc = "Configure the current idle louiselm session", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmModelChange", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, model_error = chat:change_model()
-    report_error(model_error)
-  end, { desc = "Change the model on the current idle louiselm session", force = true })
-
   nvim.api.nvim_create_user_command("LouiselmPermissions", function()
     local current = ensure_chat()
     if current == nil then
