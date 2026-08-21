@@ -5,9 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=LOUISELM_CAPTURE_BIND=127.0.0.1:7391
 EnvironmentFile=-%h/.config/louiselm/capture.env
-ExecStart=%h/.local/bin/louiselm-capture serve --bind ${LOUISELM_CAPTURE_BIND}
+ExecStart=%h/.local/bin/louiselm-capture serve
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

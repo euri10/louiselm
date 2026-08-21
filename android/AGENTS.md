@@ -27,7 +27,7 @@ then clarity, simplicity, and performance.
 ## Architecture and lifecycle
 
 - Keep capture files and their state in `CaptureStore`; keep pairing secrets in
-  `PairingStore`; keep HTTPS and certificate pinning in `PinnedHttps`.
+  `PairingStore`; keep HTTPS and receiver-identity pinning in `PinnedHttps`.
 - Activities own presentation and permission prompts, not durable state.
 - Workers must be restart-safe and idempotent. Never assume a callback or a
   process survives app termination.
@@ -44,8 +44,9 @@ then clarity, simplicity, and performance.
   one rename only after audio and metadata are complete.
 - Reuse one UUID for every retry of the same recording. A successful duplicate
   upload is not a second idea.
-- Accept pairing only from an HTTPS QR payload. Pin the exact SHA-256
-  certificate fingerprint from that one-time payload for pairing and uploads.
+- Accept pairing only from an HTTPS QR payload. Pin the SHA-256 fingerprint of
+  the receiver SubjectPublicKeyInfo from that one-time payload for pairing and
+  uploads; routine certificate renewal must retain that key.
 - Store the device credential encrypted with an Android Keystore key. Never log
   credentials, QR payloads, transcripts, audio, request bodies, or environment
   data.

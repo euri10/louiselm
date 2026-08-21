@@ -19,15 +19,6 @@ local function valid_service(value)
   return #value > 0 and value[1] ~= "", "must start with the louiselm-capture executable"
 end
 
-local function valid_receiver_url(value)
-  if value == "" then
-    return true
-  end
-  local authority = value:match("^https://(.+)$")
-  local valid = authority ~= nil and authority ~= "" and authority:find("[%s/@%?#]") == nil
-  return valid, "must be empty or a clean HTTPS base URL"
-end
-
 local function valid_skill_policy(value)
   local valid = value == "native" or value == "inject" or value == "off"
   return valid, "must be one of: native, inject, off"
@@ -159,7 +150,7 @@ M.schema = assert(Schema.define({
   capture = {
     type = "table",
     default = {},
-    description = "Durable speech-capture commands and receiver settings.",
+    description = "Durable speech-capture command settings.",
     fields = {
       recorder = {
         type = "array-of",
@@ -174,12 +165,6 @@ M.schema = assert(Schema.define({
         default = { "louiselm-capture" },
         validator = valid_service,
         description = "Capture-service argv prefix.",
-      },
-      receiver_url = {
-        type = "string",
-        default = "",
-        validator = valid_receiver_url,
-        description = "HTTPS URL placed in Android pairing offers.",
       },
     },
   },

@@ -20,8 +20,8 @@ pub struct PairingOffer {
     pub version: u8,
     /// HTTPS receiver URL reachable by the phone.
     pub receiver_url: String,
-    /// Lowercase SHA-256 fingerprint of the receiver certificate DER.
-    pub certificate_sha256: String,
+    /// Lowercase SHA-256 fingerprint of the receiver public-key identity.
+    pub receiver_identity_sha256: String,
     /// Short-lived bearer used only by the pairing endpoint.
     pub token: String,
     /// Unix epoch milliseconds after which the token is invalid.
@@ -140,11 +140,11 @@ impl PairingRegistry {
     ///
     /// # Errors
     ///
-    /// Rejects invalid URLs, fingerprints, timestamps, and persistence errors.
+    /// Rejects invalid URLs, identities, timestamps, and persistence errors.
     pub fn issue(
         &self,
         receiver_url: &str,
-        certificate_sha256: &str,
+        receiver_identity_sha256: &str,
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<PairingOffer, PairingError> {
@@ -163,13 +163,13 @@ impl PairingRegistry {
                 "receiver URL must be a clean HTTPS base URL".to_owned(),
             ));
         }
-        if certificate_sha256.len() != 64
-            || !certificate_sha256
+        if receiver_identity_sha256.len() != 64
+            || !receiver_identity_sha256
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(PairingError::Rejected(
-                "certificate fingerprint must be hexadecimal".to_owned(),
+                "receiver identity fingerprint must be hexadecimal".to_owned(),
             ));
         }
         if now_ms == 0 || ttl_ms == 0 {
@@ -186,9 +186,9 @@ impl PairingRegistry {
                 expires_at_ms,
             });
             Ok(PairingOffer {
-                version: 1,
+                version: 2,
                 receiver_url: receiver_url.to_owned(),
-                certificate_sha256: certificate_sha256.to_ascii_lowercase(),
+                receiver_identity_sha256: receiver_identity_sha256.to_ascii_lowercase(),
                 token,
                 expires_at_ms,
             })

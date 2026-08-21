@@ -3,6 +3,7 @@
 pub mod cli;
 mod identity;
 mod model;
+mod network;
 mod openai;
 mod pairing;
 mod receiver;
@@ -13,6 +14,7 @@ pub use identity::{IdentityError, TlsIdentity};
 pub use model::{
     CaptureDraft, CaptureRecord, CaptureSource, CaptureState, Transcript, TranscriptionState,
 };
+pub use network::{NetworkProfile, NetworkProfileError, NetworkProfileKind};
 pub use openai::OpenAiTranscriber;
 pub use pairing::{
     DeviceCredential, DeviceStatus, PairingError, PairingOffer, PairingRegistry, PairingStatus,

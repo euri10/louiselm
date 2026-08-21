@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rcgen::generate_simple_self_signed;
+use rcgen::{KeyPair, PublicKeyData, generate_simple_self_signed};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
@@ -26,19 +26,19 @@ pub enum IdentityError {
     Incomplete,
 }
 
-/// Persistent private key, certificate, and pin fingerprint for the receiver.
+/// Persistent TLS key, certificate, and public-key identity for the receiver.
 #[derive(Clone, Debug)]
 pub struct TlsIdentity {
     certificate_path: PathBuf,
     private_key_path: PathBuf,
-    certificate_sha256: String,
+    public_key_sha256: String,
 }
 
 impl TlsIdentity {
     /// Load or generate the receiver's persistent self-signed identity.
     ///
-    /// The phone trusts this exact certificate fingerprint from the one-time QR
-    /// payload; it does not rely on a public certificate authority.
+    /// The phone trusts the persistent public key from the one-time QR payload;
+    /// it does not rely on a public certificate authority or one certificate.
     ///
     /// # Errors
     ///
@@ -69,12 +69,14 @@ impl TlsIdentity {
         set_private_permissions(&certificate_path, false)?;
         set_private_permissions(&private_key_path, false)?;
         let certificate_pem = fs::read(&certificate_path)?;
-        let certificate = pem::parse(certificate_pem)?;
-        let certificate_sha256 = format!("{:x}", Sha256::digest(certificate.contents()));
+        pem::parse(certificate_pem)?;
+        let private_key_pem = fs::read_to_string(&private_key_path)?;
+        let key_pair = KeyPair::from_pem(&private_key_pem)?;
+        let public_key_sha256 = format!("{:x}", Sha256::digest(key_pair.subject_public_key_info()));
         Ok(Self {
             certificate_path,
             private_key_path,
-            certificate_sha256,
+            public_key_sha256,
         })
     }
 
@@ -90,10 +92,10 @@ impl TlsIdentity {
         &self.private_key_path
     }
 
-    /// Lowercase SHA-256 fingerprint of certificate DER.
+    /// Lowercase SHA-256 fingerprint of the SubjectPublicKeyInfo DER.
     #[must_use]
-    pub fn certificate_sha256(&self) -> &str {
-        &self.certificate_sha256
+    pub fn public_key_sha256(&self) -> &str {
+        &self.public_key_sha256
     }
 }
 

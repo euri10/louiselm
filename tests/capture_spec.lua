@@ -57,6 +57,13 @@ T["recorder"]["rejects unsafe direct configuration without starting work"] = fun
   MiniTest.expect.equality(error_message, "capture recorder must contain {output} exactly once")
 end
 
+T["recorder"]["rejects the removed receiver URL configuration"] = function()
+  local capture, error_message = Capture.new({ receiver_url = "https://192.168.1.20:7391" })
+
+  MiniTest.expect.equality(capture, nil)
+  MiniTest.expect.equality(error_message, "unknown capture configuration key: receiver_url")
+end
+
 T["recorder"]["records, stops, then ingests only after leaving the fast event"] = function()
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
@@ -176,7 +183,8 @@ T["commands"]["pairing QR is black on white independently of the colorscheme"] =
   local ok, error_message = pcall(function()
     assert(CaptureCommand.configure({}))
     assert(CaptureCommand.register())
-    nvim.cmd("LouiselmCapturePair https://192.0.2.1:7391")
+    nvim.cmd("LouiselmCapturePair")
+    MiniTest.expect.equality(runtime.processes[1].command, { "louiselm-capture", "pair" })
     runtime.processes[1].callback({ code = 0, signal = 0, stdout = " █ \n██ ", stderr = "" })
     runtime.scheduled[1]()
 

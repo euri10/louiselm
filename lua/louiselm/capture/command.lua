@@ -164,13 +164,8 @@ function M.register()
     force = true,
   })
 
-  nvim.api.nvim_create_user_command("LouiselmCapturePair", function(arguments)
-    local receiver_url = arguments.args ~= "" and arguments.args or configured.receiver_url
-    if receiver_url == "" then
-      report_error("capture.receiver_url is required for pairing")
-      return
-    end
-    local started, error_message = configured:pair(receiver_url, function(output, pair_error)
+  nvim.api.nvim_create_user_command("LouiselmCapturePair", function()
+    local started, error_message = configured:pair(function(output, pair_error)
       if output == nil then
         report_error(pair_error)
         return
@@ -181,7 +176,7 @@ function M.register()
     if not started then
       report_error(error_message)
     end
-  end, { nargs = "?", desc = "Create a one-time Android pairing QR", force = true })
+  end, { desc = "Create a one-time Android pairing QR", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmCaptureRevoke", function(arguments)
     local started, error_message = configured:revoke(arguments.args, function(_, revoke_error)

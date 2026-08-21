@@ -44,13 +44,60 @@ fn local_ingest_and_list_expose_the_durable_inbox() {
 }
 
 #[test]
-fn pairing_outputs_a_compact_qr_without_the_raw_offer() {
+fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
     let temporary = tempfile::tempdir().expect("temporary directory");
+    let refused = command(
+        &temporary.path().join("data"),
+        &temporary.path().join("state"),
+    )
+    .arg("pair")
+    .output()
+    .expect("pair command");
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8(refused.stderr)
+            .expect("stderr")
+            .contains("configure-network")
+    );
+
+    let configured = command(
+        &temporary.path().join("data"),
+        &temporary.path().join("state"),
+    )
+    .args([
+        "configure-network",
+        "--profile",
+        "lan",
+        "--bind",
+        "192.168.1.20:7391",
+        "--url",
+        "https://192.168.1.20:7391",
+    ])
+    .output()
+    .expect("configure command");
+    assert!(configured.status.success(), "{:?}", configured.stderr);
+
+    let status = command(
+        &temporary.path().join("data"),
+        &temporary.path().join("state"),
+    )
+    .arg("status")
+    .output()
+    .expect("status command");
+    assert!(status.status.success(), "{:?}", status.stderr);
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).expect("status JSON");
+    assert_eq!(status["network"]["profile"], "lan");
+    assert_eq!(status["network"]["bind"], "192.168.1.20:7391");
+    assert_eq!(
+        status["network"]["receiver_url"],
+        "https://192.168.1.20:7391"
+    );
+
     let output = command(
         &temporary.path().join("data"),
         &temporary.path().join("state"),
     )
-    .args(["pair", "--url", "https://192.0.2.1:7391"])
+    .arg("pair")
     .output()
     .expect("pair command");
     assert!(output.status.success(), "{:?}", output.stderr);
@@ -71,6 +118,7 @@ fn command(data: &std::path::Path, state: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"));
     command
         .env("LOUISELM_CAPTURE_DATA_DIR", data)
-        .env("LOUISELM_CAPTURE_STATE_DIR", state);
+        .env("LOUISELM_CAPTURE_STATE_DIR", state)
+        .env("LOUISELM_CAPTURE_CONFIG_DIR", state);
     command
 }

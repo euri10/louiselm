@@ -19,6 +19,11 @@ fn one_time_token_creates_a_persistent_hashed_device_credential() {
     assert_eq!(paired.device_name, "garden-phone");
     assert!(registry.authenticate(&paired.credential).expect("auth"));
     assert!(registry.consume(&offer.token, "second", 2_001).is_err());
+    assert_eq!(offer.version, 2);
+    assert_eq!(
+        offer.receiver_identity_sha256,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
 
     let state =
         std::fs::read_to_string(temporary.path().join("pairing.json")).expect("persisted state");
@@ -56,7 +61,7 @@ fn expired_pairing_offer_is_rejected_and_device_listing_exposes_no_secret() {
 }
 
 #[test]
-fn pairing_offer_requires_a_clean_https_base_url_and_full_fingerprint() {
+fn pairing_offer_requires_a_clean_https_base_url_and_full_receiver_identity() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let registry = PairingRegistry::open(temporary.path()).expect("registry");
     let fingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

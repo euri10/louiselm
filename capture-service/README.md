@@ -7,8 +7,9 @@ boundary. It deliberately does not interpret or delete ideas.
 ## Commands
 
 ```text
-serve --bind IP:PORT
-pair --url HTTPS_URL
+configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL
+serve
+pair
 revoke-device DEVICE_UUID
 ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]
 list
@@ -17,12 +18,41 @@ retry CAPTURE_UUID
 transcribe-once
 ```
 
-The default user service binds TLS on `127.0.0.1:7391`. Set
-`LOUISELM_CAPTURE_BIND` explicitly to a LAN address before pairing a phone.
-`pair` prints a ten-minute, one-use QR payload containing the receiver URL,
-exact certificate fingerprint, and pairing token. Pairing returns a revocable
-device credential; only hashes of tokens and credentials are persisted by the
-receiver.
+The default user service binds TLS on `127.0.0.1:7391` and `pair` refuses while
+that safe, phone-unreachable default is active. Configure exactly one private
+profile, then restart the service and pair:
+
+```sh
+# Home LAN only: captures made away from home stay queued on the phone.
+louiselm-capture configure-network --profile lan \
+  --bind 192.168.1.20:7391 \
+  --url https://192.168.1.20:7391
+
+# Private overlay: use the address reported by externally managed Tailscale or
+# WireGuard. LouiseLM detects the shared 100.64.0.0/10 range as private but does
+# not install or manage the overlay.
+louiselm-capture configure-network --profile overlay \
+  --bind 100.100.20.30:7391 \
+  --url https://desktop.example.ts.net:7391
+
+systemctl --user restart louiselm-capture.service
+louiselm-capture status
+louiselm-capture pair
+```
+
+`private` is the explicit advanced profile for unusual private networks. All
+profiles reject wildcard binds, public bind addresses, and literal public
+advertised IPs. Public internet exposure, port forwarding, simultaneous
+listeners, cloud discovery, and relay are intentionally unsupported.
+
+The profile is stored at
+`~/.config/louiselm/capture-network.json` (under `XDG_CONFIG_HOME` when set), so
+`serve`, `pair`, and `status` cannot drift onto separate bind and advertised
+addresses. `pair` prints a ten-minute, one-use QR payload containing the
+receiver URL, stable public-key identity, and pairing token. Pairing returns a
+revocable device credential; only hashes of tokens and credentials are
+persisted by the receiver. Renewing the TLS certificate with the same persisted
+receiver key does not require re-pairing; replacing the key does.
 
 Android uploads stream to a private temporary file, are limited to 20 MiB,
 must carry their original SHA-256 digest, and become visible only after an
@@ -52,8 +82,9 @@ audio is never deleted automatically. A successful Neovim local ingest removes
 only its temporary recorder file after the canonical store has synced it.
 
 Override XDG roots for tests or deployments with
-`LOUISELM_CAPTURE_DATA_DIR` and `LOUISELM_CAPTURE_STATE_DIR`. These overrides
-are roots; the service still appends `louiselm/...`.
+`LOUISELM_CAPTURE_CONFIG_DIR`, `LOUISELM_CAPTURE_DATA_DIR`, and
+`LOUISELM_CAPTURE_STATE_DIR`. These overrides are roots; the service still
+appends `louiselm/...`.
 
 ## Transcription
 

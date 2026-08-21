@@ -13,7 +13,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 internal data class PairingConfig(
     val receiverUrl: String,
-    val certificateSha256: String,
+    val receiverIdentitySha256: String,
     val deviceId: String,
     val credential: String,
 )
@@ -23,7 +23,7 @@ internal class PairingStore(context: Context) {
 
     fun save(config: PairingConfig) {
         require(validReceiverUrl(config.receiverUrl)) { "receiver URL is invalid" }
-        require(decodeSha256(config.certificateSha256) != null) { "certificate fingerprint is invalid" }
+        require(decodeSha256(config.receiverIdentitySha256) != null) { "receiver identity is invalid" }
         require(
             config.deviceId.isNotBlank() &&
                 config.deviceId.length <= 80 &&
@@ -32,7 +32,7 @@ internal class PairingStore(context: Context) {
         ) { "device credential is invalid" }
         val plaintext = JSONObject()
             .put("receiver_url", config.receiverUrl)
-            .put("certificate_sha256", config.certificateSha256)
+            .put("receiver_identity_sha256", config.receiverIdentitySha256)
             .put("device_id", config.deviceId)
             .put("credential", config.credential)
             .toString()
@@ -63,13 +63,13 @@ internal class PairingStore(context: Context) {
         val value = JSONObject(String(plaintext, Charsets.UTF_8))
         return PairingConfig(
             receiverUrl = value.getString("receiver_url"),
-            certificateSha256 = value.getString("certificate_sha256"),
+            receiverIdentitySha256 = value.getString("receiver_identity_sha256"),
             deviceId = value.getString("device_id"),
             credential = value.getString("credential"),
         ).also {
             require(
                 validReceiverUrl(it.receiverUrl) &&
-                    decodeSha256(it.certificateSha256) != null &&
+                    decodeSha256(it.receiverIdentitySha256) != null &&
                     it.deviceId.isNotBlank() &&
                     it.deviceId.length <= 80 &&
                     it.credential.isNotBlank() &&
@@ -99,8 +99,8 @@ internal class PairingStore(context: Context) {
     }
 
     companion object {
-        private const val PREFERENCES = "pairing"
-        private const val KEY_ALIAS = "louiselm-capture-pairing-v1"
+        private const val PREFERENCES = "pairing-v2"
+        private const val KEY_ALIAS = "louiselm-capture-pairing-v2"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val NONCE = "nonce"
         private const val CIPHERTEXT = "ciphertext"

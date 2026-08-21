@@ -18,7 +18,7 @@ import javax.net.ssl.X509TrustManager
 
 internal data class PairingOffer(
     val receiverUrl: String,
-    val certificateSha256: String,
+    val receiverIdentitySha256: String,
     val token: String,
     val expiresAtMs: Long,
 ) {
@@ -26,15 +26,15 @@ internal data class PairingOffer(
         fun parse(payload: String): PairingOffer {
             require(payload.length <= MAX_PAIRING_PAYLOAD) { "pairing QR is too large" }
             val value = JSONObject(payload)
-            require(value.getInt("version") == 1) { "pairing QR version is unsupported" }
+            require(value.getInt("version") == 2) { "pairing QR version is unsupported" }
             val offer = PairingOffer(
                 receiverUrl = value.getString("receiver_url").trimEnd('/'),
-                certificateSha256 = value.getString("certificate_sha256").lowercase(),
+                receiverIdentitySha256 = value.getString("receiver_identity_sha256").lowercase(),
                 token = value.getString("token"),
                 expiresAtMs = value.getLong("expires_at_ms"),
             )
             require(validReceiverUrl(offer.receiverUrl)) { "pairing receiver URL is invalid" }
-            require(decodeSha256(offer.certificateSha256) != null) { "pairing certificate pin is invalid" }
+            require(decodeSha256(offer.receiverIdentitySha256) != null) { "pairing receiver identity is invalid" }
             require(offer.token.isNotBlank() && offer.token.length <= 256) { "pairing token is invalid" }
             require(offer.expiresAtMs >= System.currentTimeMillis()) { "pairing QR has expired" }
             return offer
@@ -57,7 +57,7 @@ internal object PinnedHttps {
             .put("device_name", deviceName.take(80))
             .toString()
             .toByteArray(Charsets.UTF_8)
-        val connection = connection("${offer.receiverUrl}/v1/pair", offer.certificateSha256).apply {
+        val connection = connection("${offer.receiverUrl}/v1/pair", offer.receiverIdentitySha256).apply {
             requestMethod = "POST"
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
@@ -73,7 +73,7 @@ internal object PinnedHttps {
         connection.disconnect()
         return PairingConfig(
             receiverUrl = offer.receiverUrl,
-            certificateSha256 = offer.certificateSha256,
+            receiverIdentitySha256 = offer.receiverIdentitySha256,
             deviceId = response.getString("device_id"),
             credential = response.getString("credential"),
         )
@@ -82,7 +82,7 @@ internal object PinnedHttps {
     fun upload(config: PairingConfig, record: CaptureRecord): UploadAttempt = try {
         val connection = connection(
             "${config.receiverUrl}/v1/captures/${record.id}",
-            config.certificateSha256,
+            config.receiverIdentitySha256,
         ).apply {
             requestMethod = "PUT"
             doOutput = true
@@ -106,7 +106,7 @@ internal object PinnedHttps {
         }
     } catch (error: SSLHandshakeException) {
         if (hasCertificateCause(error)) {
-            UploadAttempt.OperatorAction("receiver certificate does not match pairing")
+            UploadAttempt.OperatorAction("receiver identity does not match pairing")
         } else {
             UploadAttempt.Retry("secure connection failed")
         }
@@ -116,8 +116,8 @@ internal object PinnedHttps {
         UploadAttempt.OperatorAction("receiver security configuration is invalid")
     }
 
-    private fun connection(value: String, certificateSha256: String): HttpsURLConnection {
-        val pin = decodeSha256(certificateSha256) ?: throw SecurityException("certificate pin is invalid")
+    private fun connection(value: String, receiverIdentitySha256: String): HttpsURLConnection {
+        val pin = decodeSha256(receiverIdentitySha256) ?: throw SecurityException("receiver identity is invalid")
         val trustManager = PinnedTrustManager(pin)
         val context = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
@@ -131,7 +131,7 @@ internal object PinnedHttps {
             sslSocketFactory = context.socketFactory
             hostnameVerifier = HostnameVerifier { _, session ->
                 val certificate = runCatching { session.peerCertificates.firstOrNull() as? X509Certificate }.getOrNull()
-                certificate != null && MessageDigest.isEqual(pin, sha256(certificate.encoded))
+                certificate != null && matchesReceiverIdentity(pin, certificate.publicKey.encoded)
             }
         }
     }
@@ -160,14 +160,12 @@ internal object PinnedHttps {
         return false
     }
 
-    private fun sha256(value: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(value)
-
     private class PinnedTrustManager(private val pin: ByteArray) : X509TrustManager {
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             val certificate = chain?.firstOrNull() ?: throw CertificateException("receiver sent no certificate")
             certificate.checkValidity()
-            if (!MessageDigest.isEqual(pin, sha256(certificate.encoded))) {
-                throw CertificateException("receiver certificate pin mismatch")
+            if (!matchesReceiverIdentity(pin, certificate.publicKey.encoded)) {
+                throw CertificateException("receiver identity mismatch")
             }
         }
 
@@ -182,3 +180,9 @@ internal object PinnedHttps {
     private const val READ_TIMEOUT_MS = 180_000
     private const val MAX_RESPONSE_BYTES = 64 * 1024
 }
+
+internal fun matchesReceiverIdentity(expectedSha256: ByteArray, publicKeyEncoded: ByteArray): Boolean =
+    MessageDigest.isEqual(
+        expectedSha256,
+        MessageDigest.getInstance("SHA-256").digest(publicKeyEncoded),
+    )

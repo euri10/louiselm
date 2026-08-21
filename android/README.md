@@ -23,9 +23,14 @@ Connect an API 28+ device, then run:
 
 The app uses the system camera to take a full-resolution image of the terminal
 QR and bundled ML Kit to decode it offline. Pairing and uploads use HTTPS with
-the exact certificate fingerprint carried by that one-time QR; the long-lived
-device credential is encrypted by Android Keystore. WorkManager retries only
-network, timeout, rate-limit, and server failures.
+the stable receiver public-key identity carried by the version-2 one-time QR;
+routine TLS certificate renewal with that key remains trusted. The long-lived
+device credential and receiver identity are encrypted by Android Keystore.
+WorkManager retries only network, timeout, rate-limit, and server failures.
+
+Configure one private receiver profile before running
+`:LouiselmCapturePair`; the receiver refuses pairing while it is loopback-only.
+The Android app does not support version-1 exact-certificate pairing offers.
 
 ## Physical acceptance checklist
 
@@ -40,7 +45,7 @@ network, timeout, rate-limit, and server failures.
   after connectivity returns.
 - Revoke the device with `louiselm-capture revoke-device`, record again, and
   confirm upload needs operator attention while the original remains local.
-- Change the receiver certificate and confirm the app rejects it rather than
-  trusting the host or a replacement self-signed certificate.
+- Renew the receiver certificate with the same key and confirm uploads continue;
+  replace the receiver key and confirm the app rejects the new identity.
 
 Automated tests never use a real microphone, receiver, credential, or network.

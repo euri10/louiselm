@@ -18,12 +18,21 @@ class ProtocolTest {
     }
 
     @Test
-    fun pairingInputsRequireExactFingerprintAndHttpsAuthority() {
+    fun pairingInputsRequireReceiverIdentityAndHttpsAuthority() {
         assertArrayEquals(ByteArray(32) { 0xaa.toByte() }, decodeSha256("aa".repeat(32)))
         assertNull(decodeSha256("aa"))
         assertNull(decodeSha256("z".repeat(64)))
         assertTrue(validReceiverUrl("https://192.0.2.1:7391"))
         assertFalse(validReceiverUrl("http://192.0.2.1:7391"))
         assertFalse(validReceiverUrl("https://user@192.0.2.1:7391"))
+    }
+
+    @Test
+    fun receiverIdentityPinsThePublicKeyRatherThanCertificateBytes() {
+        val publicKey = byteArrayOf(1, 2, 3)
+        val identity = decodeSha256("039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81")
+
+        assertTrue(matchesReceiverIdentity(identity!!, publicKey))
+        assertFalse(matchesReceiverIdentity(identity, byteArrayOf(3, 2, 1)))
     }
 }

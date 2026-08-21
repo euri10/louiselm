@@ -4,7 +4,6 @@ local nvim = vim
 ---@class louiselm.capture.Config
 ---@field recorder? string[] Recorder argv containing one `{output}` placeholder.
 ---@field service? string[] Capture-service argv prefix.
----@field receiver_url? string HTTPS receiver URL used for pairing.
 
 ---@class louiselm.capture.Result
 ---@field id string Capture UUID.
@@ -13,7 +12,6 @@ local nvim = vim
 ---@class louiselm.capture.Instance
 ---@field private recorder string[]
 ---@field private service string[]
----@field receiver_url string
 ---@field private recording? table
 local Capture = {}
 Capture.__index = Capture
@@ -198,7 +196,7 @@ function M.new(config)
     return nil, "capture configuration must be a table"
   end
   for key in pairs(config) do
-    if key ~= "recorder" and key ~= "service" and key ~= "receiver_url" then
+    if key ~= "recorder" and key ~= "service" then
       return nil, "unknown capture configuration key: " .. tostring(key)
     end
   end
@@ -210,18 +208,9 @@ function M.new(config)
   if service == nil then
     return nil, service_error
   end
-  if type(config.receiver_url or "") ~= "string" then
-    return nil, "capture receiver_url must be a string"
-  end
-  local receiver_url = config.receiver_url or ""
-  local authority = receiver_url:match("^https://(.+)$")
-  if receiver_url ~= "" and (authority == nil or authority == "" or authority:find("[%s/@%?#]") ~= nil) then
-    return nil, "capture receiver_url must be empty or a clean HTTPS base URL"
-  end
   local capture = setmetatable({
     recorder = copy(recorder),
     service = copy(service),
-    receiver_url = config.receiver_url or "",
   }, Capture)
   return capture, nil
 end
@@ -321,12 +310,11 @@ function Capture:status(callback)
 end
 
 ---Create a one-time Android pairing offer.
----@param receiver_url string
 ---@param callback fun(output?: string, error_message?: string)
 ---@return boolean started
 ---@return string? error_message
-function Capture:pair(receiver_url, callback)
-  return self:run_service({ "pair", "--url", receiver_url }, false, callback)
+function Capture:pair(callback)
+  return self:run_service({ "pair" }, false, callback)
 end
 
 ---Revoke a paired Android device credential.

@@ -15,9 +15,9 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError, OpenAiTranscriber,
-    PairingError, PairingRegistry, Receiver, Store, StoreError, TlsIdentity, Transcript,
-    TranscriptionWorker,
+    CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError, NetworkProfile,
+    NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry,
+    Receiver, Store, StoreError, TlsIdentity, Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -41,6 +41,9 @@ pub enum CliError {
     /// TLS identity operation failed.
     #[error(transparent)]
     Identity(#[from] IdentityError),
+    /// Network-profile validation or persistence failed.
+    #[error(transparent)]
+    Network(#[from] NetworkProfileError),
     /// JSON output failed.
     #[error("JSON output failed: {0}")]
     Json(#[from] serde_json::Error),
@@ -74,6 +77,7 @@ pub async fn run() -> Result<(), CliError> {
         "status" => status(&store, &paths),
         "retry" => retry(&store, options),
         "transcribe-once" => transcribe_once(&store),
+        "configure-network" => configure_network(&paths, options),
         "pair" => pair(&paths, options),
         "revoke-device" => revoke_device(&paths, options),
         "serve" => serve(store, &paths, options).await,
@@ -133,6 +137,7 @@ fn list(store: &Store) -> Result<(), CliError> {
 fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
     let captures = store.list()?;
     let pairing = PairingRegistry::open(paths.pairing())?;
+    let network = NetworkProfile::load_or_default(&paths.network())?;
     let mut pending = 0;
     let mut retrying = 0;
     let mut failed = 0;
@@ -157,6 +162,12 @@ fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
                 "completed": completed,
             },
             "devices": pairing.status()?.devices,
+            "network": {
+                "profile": network.kind(),
+                "bind": network.bind().to_string(),
+                "receiver_url": network.receiver_url(),
+                "phone_reachable": network.phone_reachable(),
+            },
         }))?
     );
     Ok(())
@@ -176,13 +187,30 @@ fn transcribe_once(store: &Store) -> Result<(), CliError> {
     Ok(())
 }
 
+fn configure_network(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
+    let profile = required_option(arguments, "--profile")?.parse::<NetworkProfileKind>()?;
+    let bind = required_option(arguments, "--bind")?
+        .parse::<SocketAddr>()
+        .map_err(|_| CliError::Invalid("--bind must be an explicit IP:port".to_owned()))?;
+    let network = NetworkProfile::new(profile, bind, required_option(arguments, "--url")?)?;
+    network.save(&paths.network())?;
+    println!("{}", serde_json::to_string_pretty(&network)?);
+    Ok(())
+}
+
 fn pair(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let receiver_url = required_option(arguments, "--url")?;
+    no_arguments(arguments, "pair")?;
+    let network = NetworkProfile::load_or_default(&paths.network())?;
+    let receiver_url = network.receiver_url().ok_or_else(|| {
+        CliError::Invalid(
+            "phone pairing requires configure-network with one private receiver profile".to_owned(),
+        )
+    })?;
     let identity = TlsIdentity::load_or_create(paths.tls())?;
     let registry = PairingRegistry::open(paths.pairing())?;
     let offer = registry.issue(
         receiver_url,
-        identity.certificate_sha256(),
+        identity.public_key_sha256(),
         now_ms(),
         PAIRING_TTL_MS,
     )?;
@@ -201,9 +229,8 @@ fn revoke_device(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
 }
 
 async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    let bind = required_option(arguments, "--bind")?
-        .parse::<SocketAddr>()
-        .map_err(|_| CliError::Invalid("--bind must be an explicit IP:port".to_owned()))?;
+    no_arguments(arguments, "serve")?;
+    let bind = NetworkProfile::load_or_default(&paths.network())?.bind();
     let identity = TlsIdentity::load_or_create(paths.tls())?;
     let pairing = Arc::new(PairingRegistry::open(paths.pairing())?);
     let receiver = Receiver::new(store.clone(), pairing, paths.uploads())?;
@@ -267,6 +294,15 @@ fn positional<'a>(arguments: &'a [String], index: usize, label: &str) -> Result<
         .ok_or_else(|| CliError::Invalid(format!("{label} is required")))
 }
 
+fn no_arguments(arguments: &[String], command: &str) -> Result<(), CliError> {
+    if arguments.is_empty() {
+        return Ok(());
+    }
+    Err(CliError::Invalid(format!(
+        "{command} takes no arguments; use configure-network"
+    )))
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -282,6 +318,7 @@ struct CaptureStatus {
 }
 
 struct Paths {
+    config: PathBuf,
     data: PathBuf,
     state: PathBuf,
 }
@@ -289,6 +326,7 @@ struct Paths {
 impl Paths {
     fn discover() -> Result<Self, CliError> {
         Ok(Self {
+            config: configured_root("LOUISELM_CAPTURE_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")?,
             data: configured_root("LOUISELM_CAPTURE_DATA_DIR", "XDG_DATA_HOME", ".local/share")?,
             state: configured_root(
                 "LOUISELM_CAPTURE_STATE_DIR",
@@ -300,6 +338,10 @@ impl Paths {
 
     fn captures(&self) -> PathBuf {
         self.data.join("louiselm/captures")
+    }
+
+    fn network(&self) -> PathBuf {
+        self.config.join("louiselm/capture-network.json")
     }
 
     fn pairing(&self) -> PathBuf {
@@ -336,6 +378,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  serve --bind IP:PORT\n  pair --url HTTPS_URL\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  pair\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }
