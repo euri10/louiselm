@@ -296,7 +296,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     data = { toolCallId = "tool-1", status = "completed" },
   })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 9
+    return #buffer_lines(chat:buffer()) == 10
   end, 1)
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
@@ -307,6 +307,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
       "> /compact",
       "",
       "hello **world**",
+      "",
       "[tool] tool-1: Read file (completed)",
       "> ",
     })
@@ -956,7 +957,7 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
   })
 
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 10
+    return #buffer_lines(chat:buffer()) == 12
   end, 1)
 
   MiniTest.expect.equality(
@@ -966,12 +967,98 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
       "> hello",
       "",
       "before tool",
+      "",
       "[tool] tool-1: Read file (completed)",
+      "",
       "after tool",
       "> ",
     })
   )
 
+  chat:dispose()
+end
+
+T["chat"]["does not separate consecutive tool calls with a blank line"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  assert(chat:submit("hello"))
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", status = "completed" },
+  })
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-2", title = "Write file" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-2", status = "completed" },
+  })
+
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) == 9
+  end, 1)
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("claude · session-1", "status=ready · display=Your turn", {
+      "",
+      "> hello",
+      "",
+      "[tool] tool-1: Read file (completed)",
+      "[tool] tool-2: Write file (completed)",
+      "> ",
+    })
+  )
+
+  chat:dispose()
+end
+
+T["chat"]["does not double a blank line between a replayed user chunk and a tool call"] = function()
+  local restored = fake_session("session-1", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(restored))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  restored:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "previous prompt" } },
+  })
+  restored:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+
+  scheduled[1]()
+  scheduled[2]()
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("codex · session-1", "status=ready · display=Your turn", {
+      "",
+      "> previous prompt",
+      "",
+      "[tool] tool-1: Read file (started)",
+      "> ",
+    })
+  )
   chat:dispose()
 end
 

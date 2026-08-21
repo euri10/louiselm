@@ -25,6 +25,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
 ---@field response_started boolean Whether the assistant has rendered response text for this turn.
+---@field last_block_kind ("prose"|"tool")? Kind of the most recently rendered transcript block; separates adjacent prose and tool blocks with a blank line.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
@@ -1173,6 +1174,7 @@ local function submit_prompt(self, view, text)
   view.response_line = response_line
   view.response_tail = view.response_line
   view.response_started = false
+  view.last_block_kind = nil
   view.transcript_tail = view.response_tail
   mark_prompt(view, response_line + 1)
   if nvim.api.nvim_get_current_buf() == view.buffer then
@@ -1341,6 +1343,7 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
+    view.last_block_kind = nil
   elseif event.type == "chunk" then
     local text = chunk_text(event.data)
     if text == nil then
@@ -1353,12 +1356,19 @@ local function handle_event(self, view, event)
       if view.response_tail ~= nil then
         insertion_line = insertion_line + 1
       end
+      local separator = 0
+      if view.last_block_kind == "tool" then
+        nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, { "" })
+        insertion_line = insertion_line + 1
+        separator = 1
+      end
       nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, lines)
       view.response_line = insertion_line
       view.response_tail = insertion_line + #lines - 1
       view.transcript_tail = view.response_tail
-      mark_prompt(view, view.prompt_line + #lines)
+      mark_prompt(view, view.prompt_line + separator + #lines)
       view.response_started = true
+      view.last_block_kind = "prose"
       return
     end
     local current = nvim.api.nvim_buf_get_lines(view.buffer, view.response_tail, view.response_tail + 1, false)[1] or ""
@@ -1383,8 +1393,13 @@ local function handle_event(self, view, event)
       if title ~= nil then
         detail = detail .. ": " .. title
       end
-      insert_transcript(self, view, { "[tool] " .. detail .. " (started)" })
+      local lines = { "[tool] " .. detail .. " (started)" }
+      if view.last_block_kind == "prose" then
+        table.insert(lines, 1, "")
+      end
+      insert_transcript(self, view, lines)
       view.tool_lines[id] = view.transcript_tail
+      view.last_block_kind = "tool"
     else
       title = title or view.tool_titles[id]
       local detail = id
@@ -1396,7 +1411,12 @@ local function handle_event(self, view, event)
       if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
         set_line(view.buffer, line, "[tool] " .. detail)
       else
-        insert_transcript(self, view, { "[tool] " .. detail })
+        local lines = { "[tool] " .. detail }
+        if view.last_block_kind == "prose" then
+          table.insert(lines, 1, "")
+        end
+        insert_transcript(self, view, lines)
+        view.last_block_kind = "tool"
       end
       view.tool_lines[id] = nil
       view.tool_titles[id] = nil
@@ -1411,6 +1431,7 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
+    view.last_block_kind = nil
   elseif event.type == "permission_requested" then
     local data = event.data
     if type(data) == "table" and type(data.permission_error) == "string" then
@@ -1433,6 +1454,7 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
+    view.last_block_kind = nil
     release_queued_prompt(self, view)
   end
 end
@@ -1619,6 +1641,7 @@ function Chat:attach(session)
     response_line = nil,
     response_tail = nil,
     response_started = false,
+    last_block_kind = nil,
     tool_lines = {},
     tool_titles = {},
     contexts = {},
