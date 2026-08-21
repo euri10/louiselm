@@ -17,14 +17,19 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PairingOffer {
     /// Pairing protocol version.
+    #[serde(rename = "v")]
     pub version: u8,
     /// HTTPS receiver URL reachable by the phone.
+    #[serde(rename = "u")]
     pub receiver_url: String,
     /// Lowercase SHA-256 fingerprint of the receiver public-key identity.
+    #[serde(rename = "i")]
     pub receiver_identity_sha256: String,
     /// Short-lived bearer used only by the pairing endpoint.
+    #[serde(rename = "t")]
     pub token: String,
     /// Unix epoch milliseconds after which the token is invalid.
+    #[serde(rename = "e")]
     pub expires_at_ms: u64,
 }
 

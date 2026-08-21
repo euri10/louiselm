@@ -26,12 +26,12 @@ internal data class PairingOffer(
         fun parse(payload: String): PairingOffer {
             require(payload.length <= MAX_PAIRING_PAYLOAD) { "pairing QR is too large" }
             val value = JSONObject(payload)
-            require(value.getInt("version") == 2) { "pairing QR version is unsupported" }
+            require(value.getInt("v") == 2) { "pairing QR version is unsupported" }
             val offer = PairingOffer(
-                receiverUrl = value.getString("receiver_url").trimEnd('/'),
-                receiverIdentitySha256 = value.getString("receiver_identity_sha256").lowercase(),
-                token = value.getString("token"),
-                expiresAtMs = value.getLong("expires_at_ms"),
+                receiverUrl = value.getString("u").trimEnd('/'),
+                receiverIdentitySha256 = value.getString("i").lowercase(),
+                token = value.getString("t"),
+                expiresAtMs = value.getLong("e"),
             )
             require(validReceiverUrl(offer.receiverUrl)) { "pairing receiver URL is invalid" }
             require(decodeSha256(offer.receiverIdentitySha256) != null) { "pairing receiver identity is invalid" }

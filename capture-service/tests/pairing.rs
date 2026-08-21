@@ -1,4 +1,5 @@
 use louiselm_capture::{PairingRegistry, PairingStatus};
+use qrcode::QrCode;
 
 #[test]
 fn one_time_token_creates_a_persistent_hashed_device_credential() {
@@ -36,6 +37,18 @@ fn one_time_token_creates_a_persistent_hashed_device_credential() {
         offer.receiver_identity_sha256,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
+    let payload = serde_json::to_string(&offer).expect("pairing payload");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&payload).expect("pairing JSON"),
+        serde_json::json!({
+            "v": 2,
+            "u": "https://192.0.2.1:7391",
+            "i": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "t": offer.token,
+            "e": 61_000,
+        })
+    );
+    assert!(QrCode::new(payload).expect("pairing QR").width() <= 57);
 
     let state =
         std::fs::read_to_string(temporary.path().join("pairing.json")).expect("persisted state");

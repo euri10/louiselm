@@ -2,7 +2,8 @@
 
 use std::{
     env,
-    fs::File,
+    fs::{self, File, OpenOptions},
+    io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,7 +11,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use qrcode::{QrCode, render::unicode};
+use qrcode::{
+    QrCode,
+    render::{svg, unicode},
+};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -216,7 +220,15 @@ fn configure_network(paths: &Paths, arguments: &[String]) -> Result<(), CliError
 }
 
 fn pair(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
-    no_arguments(arguments, "pair")?;
+    let svg_path = match arguments {
+        [] => None,
+        [flag, path] if flag == "--svg" && !path.is_empty() => Some(PathBuf::from(path)),
+        _ => {
+            return Err(CliError::Invalid(
+                "pair accepts either no arguments or --svg PATH".to_owned(),
+            ));
+        }
+    };
     let network = NetworkProfile::load_or_default(&paths.network())?;
     let receiver_url = network.receiver_url().ok_or_else(|| {
         CliError::Invalid(
@@ -233,9 +245,40 @@ fn pair(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     )?;
     let payload = serde_json::to_string(&offer)?;
     let code = QrCode::new(payload.as_bytes())?;
+    if let Some(path) = svg_path {
+        let rendered = code
+            .render::<svg::Color>()
+            .quiet_zone(true)
+            .min_dimensions(1024, 1024)
+            .build();
+        write_pairing_svg(&path, rendered.as_bytes())?;
+        println!("{}", path.display());
+        return Ok(());
+    }
     let rendered = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
     println!("{rendered}");
     Ok(())
+}
+
+fn write_pairing_svg(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let result = (|| {
+        file.write_all(contents)?;
+        file.sync_all()
+    })();
+    drop(file);
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result
 }
 
 fn revoke_device(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
@@ -400,6 +443,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  pair\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }

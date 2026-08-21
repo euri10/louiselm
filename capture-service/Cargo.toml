@@ -11,7 +11,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 fs2 = "0.4"
 http-body-util = "0.1"
 pem = "3"
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rcgen = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "multipart", "rustls"] }
 serde = { version = "1", features = ["derive"] }

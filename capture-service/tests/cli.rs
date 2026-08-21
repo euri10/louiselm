@@ -1,5 +1,8 @@
 use std::{fs, process::Command};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use louiselm_capture::PairingRegistry;
 
 #[test]
@@ -117,6 +120,37 @@ fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
         .max()
         .expect("QR width");
     assert!(width <= lines.len() * 2 + 2);
+
+    let svg_path = temporary.path().join("pairing.svg");
+    let svg_output = command(
+        &temporary.path().join("data"),
+        &temporary.path().join("state"),
+    )
+    .args(["pair", "--svg", svg_path.to_str().expect("SVG path")])
+    .output()
+    .expect("SVG pair command");
+    assert!(svg_output.status.success(), "{:?}", svg_output.stderr);
+    assert_eq!(
+        String::from_utf8(svg_output.stdout).expect("SVG command output"),
+        format!("{}\n", svg_path.display())
+    );
+
+    let svg = fs::read_to_string(&svg_path).expect("pairing SVG");
+    assert!(svg.contains("shape-rendering=\"crispEdges\""));
+    assert!(svg.contains("fill=\"#fff\""));
+    assert!(svg.contains("fill=\"#000\""));
+    assert!(!svg.contains("receiver_url"));
+    assert!(!svg.contains("\"token\""));
+
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&svg_path)
+            .expect("SVG metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }
 
 #[test]
