@@ -171,6 +171,8 @@ end
 
 T["commands"]["pairing QR is black on white independently of the colorscheme"] = function()
   local runtime = fake_runtime()
+  local original_list = nvim.wo.list
+  nvim.wo.list = true
   local ok, error_message = pcall(function()
     assert(CaptureCommand.configure({}))
     assert(CaptureCommand.register())
@@ -187,8 +189,10 @@ T["commands"]["pairing QR is black on white independently of the colorscheme"] =
     MiniTest.expect.equality(#marks, 2)
     MiniTest.expect.equality(marks[1][4].hl_group, "LouiselmCaptureQr")
     MiniTest.expect.equality(marks[2][4].hl_group, "LouiselmCaptureQr")
+    MiniTest.expect.equality(nvim.wo.list, false)
   end)
   runtime.restore()
+  nvim.wo.list = original_list
   assert(ok, error_message)
 end
 

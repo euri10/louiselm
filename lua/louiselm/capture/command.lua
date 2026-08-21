@@ -37,6 +37,7 @@ end
 local function highlight_qr(buffer)
   local namespace = nvim.api.nvim_create_namespace("louiselm_capture_qr")
   nvim.api.nvim_set_hl(0, "LouiselmCaptureQr", { fg = "#000000", bg = "#ffffff" })
+  nvim.wo.list = false
   for line = 0, nvim.api.nvim_buf_line_count(buffer) - 1 do
     nvim.api.nvim_buf_add_highlight(buffer, namespace, "LouiselmCaptureQr", line, 0, -1)
   end
