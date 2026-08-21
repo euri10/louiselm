@@ -12,8 +12,11 @@
 //   2. Spawn ONE headless Neovim process (tohtml-driver.lua) that renders
 //      every excerpt through :TOhtml using the real user config.
 //   3. Extract the <pre>...</pre> fragment and <style> CSS from each raw
-//      TOhtml document, unmodified, and wrap them into a standalone HTML
-//      document per excerpt (no shared stylesheet, no selector namespacing
+//      TOhtml document and wrap them into a standalone HTML document per
+//      excerpt. The <pre> is verbatim; the <style> block is sorted into a
+//      canonical order (see normalizeStyleBlock) so that re-rendering an
+//      unchanged post does not rewrite its fragment with different bytes
+//      (no shared stylesheet, no selector namespacing
 //      -- the fragment is embedded through an <iframe>, which already
 //      isolates it from the surrounding page and from every other excerpt).
 //   4. Rewrite blog.md in place, inserting/replacing an `{iframe}` block
@@ -128,8 +131,54 @@ function extractTagBlock(lines, openTag, closeTag) {
 }
 
 /**
- * Wraps a TOhtml capture's raw <style> and <pre> blocks (unmodified, tags
- * included) into a standalone HTML document. No selector namespacing is
+ * Sorts a TOhtml <style> block into a canonical form: rules ordered by
+ * selector, and declarations ordered within each rule. The <style>/</style>
+ * lines keep their positions.
+ *
+ * TOhtml builds this block by iterating the highlight groups it collected
+ * with `pairs()`, whose order Lua leaves unspecified and which varies
+ * between processes. Two runs over identical input therefore emit the same
+ * rules in different orders, and rendering an unchanged post rewrote its
+ * committed fragment with a semantically null diff (louiselm-qcq).
+ *
+ * Reordering is safe precisely *because* TOhtml's order is already
+ * arbitrary: if the cascade were load-bearing here, TOhtml's own output
+ * would already be nondeterministically wrong. Selector specificity, which
+ * sorting cannot change, is what actually resolves these rules.
+ *
+ * Lines that do not parse as `selector {declarations}` are passed through
+ * unchanged and sorted by their raw text, so an unexpected TOhtml output
+ * shape degrades to "still deterministic" rather than being dropped.
+ * @param {string[]} styleBlock inclusive <style>...</style> slice
+ * @returns {string[]} the same slice, canonically ordered
+ */
+export function normalizeStyleBlock(styleBlock) {
+	const open = styleBlock[0];
+	const close = styleBlock[styleBlock.length - 1];
+	const rules = styleBlock.slice(1, -1).map((line) => {
+		const match = /^(.*?)\s*\{(.*)\}\s*$/.exec(line);
+		if (!match) {
+			return { key: line, text: line };
+		}
+		const selector = match[1];
+		const declarations = match[2]
+			.split(';')
+			.map((d) => d.trim())
+			.filter(Boolean)
+			.sort();
+		return { key: selector, text: `${selector} {${declarations.join('; ')}}` };
+	});
+	// Code-unit comparison, not localeCompare: the output must not depend on
+	// the locale of whoever runs the pipeline.
+	rules.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	return [open, ...rules.map((r) => r.text), close];
+}
+
+/**
+ * Wraps a TOhtml capture's <style> and <pre> blocks (tags included) into a
+ * standalone HTML document. The <pre> block is used verbatim; the <style>
+ * block is canonically ordered by normalizeStyleBlock, which is what makes
+ * the fragment a pure function of its input. No selector namespacing is
  * needed: this document is only ever loaded through an <iframe>, which
  * already isolates it from the surrounding blog page and from every other
  * excerpt's fragment.
@@ -149,7 +198,7 @@ export function buildFragmentDoc(styleBlock, preBlock) {
 		'<head>',
 		'<meta charset="utf-8">',
 		'<style>html, body { margin: 0; height: 100%; overflow: auto; }</style>',
-		...styleBlock,
+		...normalizeStyleBlock(styleBlock),
 		'</head>',
 		'<body>',
 		...preBlock,

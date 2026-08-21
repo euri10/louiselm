@@ -84,6 +84,16 @@ EOF
 fixture_post="$work_dir/post-fixture"
 mkdir -p "$fixture_post/conversations"
 
+# The excerpted ranges below must stay rich enough to expose CSS ordering
+# non-determinism (louiselm-qcq): TOhtml emits one CSS rule per highlight
+# group it encountered, and with only a handful of groups the varying
+# iteration order does not actually change the emitted order often enough to
+# fail. Prose emphasis, inline code, a link, a blockquote, a list and two
+# different fenced languages together produce enough groups that ten runs
+# reliably disagree without normalisation. Line numbers are load-bearing --
+# excerpt A is 9-20 and excerpt B is 22-26, counting the `# Session
+# transcript` line as 1; the ruler comments are inside the heredoc's content
+# only as a reminder, so keep them out of it.
 cat >"$fixture_post/conversations/fixture-session.md" <<'EOF'
 # Session transcript
 
@@ -93,12 +103,18 @@ Please list the files in this repo.
 
 ## Assistant
 
+Here is **bold text**, *italic text*, `inline code`, and a
+[link](http://example.com) all in one paragraph.
+
+> A blockquote containing **emphasis** and `code`.
+
+- first list item
+- second list item
+
 ```bash
 ls -la
 git status
 ```
-
-Here is the output above. Let me also show a Lua snippet:
 
 ```lua
 local function greet(name)
@@ -118,11 +134,11 @@ title: Fixture Post
 
 Excerpt A:
 
-% nvim-transcript: ./conversations/fixture-session.md :lines: 9-12
+% nvim-transcript: ./conversations/fixture-session.md :lines: 9-20
 
 Excerpt B:
 
-% nvim-transcript: ./conversations/fixture-session.md :lines: 16-20
+% nvim-transcript: ./conversations/fixture-session.md :lines: 22-26
 EOF
 
 echo "== part 1: fragment content matches an independent real TOhtml capture =="
@@ -132,7 +148,7 @@ raw_capture="$work_dir/capture-A.raw.html"
 cat >"$capture_lua" <<EOF
 vim.cmd('packadd nvim.tohtml')
 vim.cmd('edit $fixture_post/conversations/fixture-session.md')
-local html = require('tohtml').tohtml(0, { range = { 9, 12 }, number_lines = false, title = false })
+local html = require('tohtml').tohtml(0, { range = { 9, 20 }, number_lines = false, title = false })
 vim.fn.writefile(html, '$raw_capture')
 EOF
 
@@ -150,7 +166,7 @@ else
 	cat "$work_dir/run1.log" >&2 || true
 fi
 
-fragment_a="$fixture_post/post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html"
+fragment_a="$fixture_post/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html"
 
 expected_fragment_js="$work_dir/expected-fragment.mjs"
 cat >"$expected_fragment_js" <<EOF
@@ -218,8 +234,8 @@ run2_dir="$work_dir/run2"
 collect_outputs "$run2_dir"
 
 expected_files=(
-	"post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html"
-	"post-fixture--conversations-fixture-session.L16-20.nvim-transcript.html"
+	"post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html"
+	"post-fixture--conversations-fixture-session.L22-26.nvim-transcript.html"
 )
 missing=0
 for f in "${expected_files[@]}"; do
@@ -241,17 +257,46 @@ else
 	cat "$work_dir/diff.log" >&2 || true
 fi
 
-if grep -qF '```{iframe} /post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html' "$fixture_post/blog.md" &&
-	grep -qF '```{iframe} /post-fixture--conversations-fixture-session.L16-20.nvim-transcript.html' "$fixture_post/blog.md" &&
-	grep -qF '% nvim-transcript: ./conversations/fixture-session.md :lines: 9-12' "$fixture_post/blog.md"; then
+# Two runs is not enough evidence for the "pure function of the current
+# input" claim in render-post.sh's header. TOhtml's CSS rule order varies
+# between Neovim processes (louiselm-qcq), and each render-post.sh
+# invocation is a fresh process, so a two-run check passes whenever the two
+# happen to agree. Ten runs makes agreement-by-luck vanishingly unlikely.
+determinism_runs=10
+determinism_failed=0
+for i in $(seq 2 "$determinism_runs"); do
+	if ! "$render_post_sh" "$fixture_post" >"$work_dir/run-det-$i.log" 2>&1; then
+		determinism_failed=1
+		echo "  render-post.sh run $i exited non-zero" >&2
+		cat "$work_dir/run-det-$i.log" >&2 || true
+		break
+	fi
+	det_dir="$work_dir/run-det-$i"
+	collect_outputs "$det_dir"
+	if ! diff -rq "$run1_dir" "$det_dir" >"$work_dir/diff-det-$i.log" 2>&1; then
+		determinism_failed=1
+		echo "  run $i differs from run 1:" >&2
+		cat "$work_dir/diff-det-$i.log" >&2 || true
+		break
+	fi
+done
+if [ "$determinism_failed" -eq 0 ]; then
+	ok "$determinism_runs consecutive runs against unchanged input are all byte-identical"
+else
+	fail "$determinism_runs consecutive runs against unchanged input are all byte-identical"
+fi
+
+if grep -qF '```{iframe} /post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html' "$fixture_post/blog.md" &&
+	grep -qF '```{iframe} /post-fixture--conversations-fixture-session.L22-26.nvim-transcript.html' "$fixture_post/blog.md" &&
+	grep -qF '% nvim-transcript: ./conversations/fixture-session.md :lines: 9-20' "$fixture_post/blog.md"; then
 	ok "blog.md has an iframe block per excerpt, and marker comments are untouched"
 else
 	fail "blog.md has an iframe block per excerpt, and marker comments are untouched"
 	cat "$fixture_post/blog.md" >&2 || true
 fi
 
-if grep -qF -- "- 'post-fixture/post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html'" "$work_dir/myst.yml" &&
-	grep -qF -- "- 'post-fixture/post-fixture--conversations-fixture-session.L16-20.nvim-transcript.html'" "$work_dir/myst.yml"; then
+if grep -qF -- "- 'post-fixture/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html'" "$work_dir/myst.yml" &&
+	grep -qF -- "- 'post-fixture/post-fixture--conversations-fixture-session.L22-26.nvim-transcript.html'" "$work_dir/myst.yml"; then
 	ok "myst.yml static_files lists both generated fragments"
 else
 	fail "myst.yml static_files lists both generated fragments"
@@ -270,7 +315,7 @@ title: Fixture Post
 
 Excerpt A only now:
 
-% nvim-transcript: ./conversations/fixture-session.md :lines: 9-12
+% nvim-transcript: ./conversations/fixture-session.md :lines: 9-20
 EOF
 
 if "$render_post_sh" "$fixture_post" >"$work_dir/run3.log" 2>&1; then
@@ -280,27 +325,27 @@ else
 	cat "$work_dir/run3.log" >&2 || true
 fi
 
-fragment_b="$fixture_post/post-fixture--conversations-fixture-session.L16-20.nvim-transcript.html"
+fragment_b="$fixture_post/post-fixture--conversations-fixture-session.L22-26.nvim-transcript.html"
 if [ -f "$fragment_a" ] && [ ! -f "$fragment_b" ]; then
 	ok "removing a block deletes its stale fragment and keeps the remaining one"
 else
 	fail "removing a block deletes its stale fragment and keeps the remaining one"
 fi
 
-if diff -q "$run1_dir/post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html" "$fragment_a" >/dev/null 2>&1; then
+if diff -q "$run1_dir/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html" "$fragment_a" >/dev/null 2>&1; then
 	ok "excerpt A's fragment is unchanged by removing an unrelated block"
 else
 	fail "excerpt A's fragment is unchanged by removing an unrelated block"
 fi
 
-if ! grep -qF 'L16-20' "$fixture_post/blog.md"; then
+if ! grep -qF 'L22-26' "$fixture_post/blog.md"; then
 	ok "removed block's iframe reference is gone from blog.md"
 else
 	fail "removed block's iframe reference is gone from blog.md"
 	cat "$fixture_post/blog.md" >&2 || true
 fi
 
-if ! grep -qF 'L16-20' "$work_dir/myst.yml"; then
+if ! grep -qF 'L22-26' "$work_dir/myst.yml"; then
 	ok "removed block's entry is gone from myst.yml's static_files"
 else
 	fail "removed block's entry is gone from myst.yml's static_files"
@@ -338,14 +383,14 @@ else
 		cat "$build_log" >&2 || true
 	fi
 
-	expected_src="/post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html"
+	expected_src="/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html"
 	if [ -f "$target_page" ] && grep -qF "src=\"$expected_src\"" "$target_page"; then
 		ok "deployed page embeds the fragment through an iframe with the expected absolute src"
 	else
 		fail "deployed page embeds the fragment through an iframe with the expected absolute src"
 	fi
 
-	deployed_fragment="$work_dir/_build/html/post-fixture--conversations-fixture-session.L9-12.nvim-transcript.html"
+	deployed_fragment="$work_dir/_build/html/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html"
 	if [ -f "$deployed_fragment" ] && diff -q "$fragment_a" "$deployed_fragment" >/dev/null 2>&1; then
 		ok "the deployed fragment file is byte-identical to the one render-post.sh generated"
 	else

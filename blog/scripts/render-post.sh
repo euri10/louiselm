@@ -31,8 +31,13 @@
 # (`require("tohtml").tohtml(0, {range = {first, last}, ...})`).
 #
 # The `<pre>...</pre>` fragment and the generated `<style>` CSS are extracted
-# from TOhtml's output unmodified (no selector rewriting) and wrapped into a
-# standalone HTML document per excerpt. Delivery is through MyST's `{iframe}`
+# from TOhtml's output and wrapped into a standalone HTML document per
+# excerpt. Neither is rewritten (no selector namespacing, no property
+# translation); the only transformation is that the `<style>` block's rules
+# and declarations are sorted into a canonical order, because TOhtml emits
+# them in an unspecified `pairs()` order that varies between processes and
+# would otherwise make every re-render dirty the committed fragment
+# (louiselm-qcq). Delivery is through MyST's `{iframe}`
 # directive rather than same-page embedding: mystmd's HTML build target does
 # not pass raw HTML through from markdown (neither a literal `<style>`/`<pre>`
 # written in blog.md nor the `{raw}` directive survive to the built page —
@@ -65,7 +70,10 @@
 # Every run first removes any *.nvim-transcript.html already in <post-dir>,
 # then regenerates from the current blog.md, so fragment output is a pure
 # function of the current input (never accumulated state from a previous
-# run) and running twice against unchanged input is byte-identical.
+# run) and repeated runs against unchanged input are byte-identical. That
+# last property depends on the CSS canonicalisation described above and is
+# checked over ten consecutive runs by test-render-post.sh part 2 -- two
+# runs used to pass by luck.
 #
 # Two more files are rewritten in place, both idempotently:
 #   - blog.md: any previously generated `{iframe}` block (matched by its
