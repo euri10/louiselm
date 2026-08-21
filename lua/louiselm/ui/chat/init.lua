@@ -1706,6 +1706,28 @@ function Chat:buffer(session_id)
   return view and view.buffer or nil
 end
 
+---Report whether a session id is attached, without switching to it or
+---touching its buffer.
+---
+---`LouiselmToMarkdown` needs this to reject an unknown session id before it
+---opens its destination-path prompt: the equivalent check inside
+---`Chat:to_markdown` only runs once `vim.ui.input`'s callback has fired, so
+---without a predicate the user types a full path for an export that was
+---never going to happen (louiselm-euj).
+---@param self louiselm.ui.Chat
+---@param session_id string Session id.
+---@return boolean attached
+---@return string? error_message Reason the session cannot be used.
+function Chat:is_attached(session_id)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if self.views[session_id] == nil then
+    return false, "session is not attached"
+  end
+  return true
+end
+
 ---Switch focus to an attached session buffer.
 ---@param self louiselm.ui.Chat
 ---@param session_id string Session id.

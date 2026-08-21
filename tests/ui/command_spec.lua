@@ -287,6 +287,89 @@ T["command"]["passes an explicit session id argument to LouiselmToMarkdown"] = f
   delete_chat_buffers()
 end
 
+T["command"]["rejects an unknown session id without prompting for a path"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_input = nvim.ui.input
+  -- The sibling test above stubs vim.ui.input to invoke its callback at once,
+  -- so it cannot see whether the prompt was opened before the session id was
+  -- rejected. Counting calls is the whole point of this test (louiselm-euj).
+  local input_calls = 0
+  nvim.ui.input = function(_, callback)
+    input_calls = input_calls + 1
+    callback("")
+  end
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "acp-1" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = { "does-not-exist" } }, {})
+
+  nvim.ui.input = original_input
+  rawset(nvim, "notify", original_notify)
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+
+  -- Buffers are dropped before asserting: this spec has no post_case hook, so
+  -- a failed expectation would otherwise abort the test with its chat buffer
+  -- still open and cascade "Buffer with this name already exists" into every
+  -- later case (louiselm-f0n2).
+  delete_chat_buffers()
+
+  MiniTest.expect.equality(input_calls, 0)
+  MiniTest.expect.equality(notification, {
+    message = "louiselm: session is not attached",
+    level = nvim.log.levels.ERROR,
+  })
+end
+
+T["command"]["still prompts for a path when an explicit session id is attached"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_input = nvim.ui.input
+  local input_calls = 0
+  nvim.ui.input = function(_, callback)
+    input_calls = input_calls + 1
+    callback("")
+  end
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "acp-1" })
+
+  -- Views are keyed by the session's own state.id, not by the ACP sessionId
+  -- echoed above, and the chat buffer is named "louiselm://<state.id>" -- so
+  -- read the id back rather than hardcoding an internal one.
+  local session_id = nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()):match("^louiselm://(.+)$")
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = { session_id } }, {})
+
+  nvim.ui.input = original_input
+  rawset(nvim, "notify", original_notify)
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+
+  local path = notification and notification.message:match("^louiselm: exported transcript to (.+)$")
+  if type(path) == "string" then
+    nvim.fn.delete(path)
+  end
+  delete_chat_buffers()
+
+  MiniTest.expect.equality(input_calls, 1)
+  MiniTest.expect.equality(type(path), "string")
+end
+
 T["command"]["manual init exposes the canonical chat command"] = function()
   local original_add = nvim.pack.add
   nvim.pack.add = function() end

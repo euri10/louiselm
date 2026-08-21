@@ -334,6 +334,17 @@ function M.register()
       return
     end
     local session_id = arguments.args ~= "" and arguments.args or nil
+    -- Validate an explicitly typed session id up front: prompting first and
+    -- failing afterwards makes the user enter a destination path for an
+    -- export that cannot happen (louiselm-euj). With no argument there is
+    -- nothing to check here -- Chat:to_markdown resolves the current session.
+    if session_id ~= nil then
+      local attached, attach_error = chat:is_attached(session_id)
+      if not attached then
+        report_error(attach_error)
+        return
+      end
+    end
     nvim.ui.input({ prompt = "louiselm markdown path (blank for default): " }, function(path)
       if path == nil then
         return
