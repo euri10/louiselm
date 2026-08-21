@@ -29,6 +29,7 @@ struct ReceiverState {
     store: Store,
     pairing: Arc<PairingRegistry>,
     uploads: PathBuf,
+    receiver_identity_sha256: String,
 }
 
 /// Authenticated HTTP boundary for pairing devices and ingesting recordings.
@@ -41,12 +42,23 @@ impl Receiver {
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when the streaming upload directory cannot be created.
+    /// Returns an I/O error when the identity is malformed or upload storage cannot be created.
     pub fn new(
         store: Store,
         pairing: Arc<PairingRegistry>,
         uploads: impl AsRef<Path>,
+        receiver_identity_sha256: &str,
     ) -> Result<Self, std::io::Error> {
+        if receiver_identity_sha256.len() != 64
+            || !receiver_identity_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "receiver identity fingerprint must be hexadecimal",
+            ));
+        }
         fs::create_dir_all(uploads.as_ref())?;
         set_private_permissions(uploads.as_ref(), true)?;
         Ok(Self {
@@ -54,6 +66,7 @@ impl Receiver {
                 store,
                 pairing,
                 uploads: uploads.as_ref().to_path_buf(),
+                receiver_identity_sha256: receiver_identity_sha256.to_ascii_lowercase(),
             },
         })
     }
@@ -73,10 +86,14 @@ impl Receiver {
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
+    receiver_identity_sha256: String,
 }
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+async fn health(State(state): State<ReceiverState>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        receiver_identity_sha256: state.receiver_identity_sha256,
+    })
 }
 
 #[derive(Deserialize)]
@@ -105,7 +122,7 @@ async fn upload(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    authenticate(&state, &headers)?;
+    let device_id = authenticate(&state, &headers)?;
     let source = match required_header(&headers, "x-louiselm-source")? {
         "android" => CaptureSource::Android,
         "neovim" => CaptureSource::Neovim,
@@ -163,8 +180,14 @@ async fn upload(
     let _ = tokio::fs::remove_file(&temporary).await;
     let outcome = task.map_err(|_| ApiError::internal("capture ingestion task failed"))?;
     match outcome {
-        Ok(IngestOutcome::Created) => Ok(StatusCode::CREATED.into_response()),
-        Ok(IngestOutcome::Existing) => Ok(StatusCode::OK.into_response()),
+        Ok(IngestOutcome::Created) => {
+            record_delivery(state.pairing, device_id).await?;
+            Ok(StatusCode::CREATED.into_response())
+        }
+        Ok(IngestOutcome::Existing) => {
+            record_delivery(state.pairing, device_id).await?;
+            Ok(StatusCode::OK.into_response())
+        }
         Err(StoreError::TooLarge { .. }) => Err(ApiError::payload_too_large()),
         Err(StoreError::InvalidCapture(message) | StoreError::Conflict(message)) => {
             Err(ApiError::bad_request(message))
@@ -173,19 +196,23 @@ async fn upload(
     }
 }
 
-fn authenticate(state: &ReceiverState, headers: &HeaderMap) -> Result<(), ApiError> {
+fn authenticate(state: &ReceiverState, headers: &HeaderMap) -> Result<String, ApiError> {
     let authorization = required_header(headers, header::AUTHORIZATION.as_str())?;
     let credential = authorization
         .strip_prefix("Bearer ")
         .ok_or_else(|| ApiError::unauthorized("invalid authorization scheme"))?;
-    if !state
+    state
         .pairing
-        .authenticate(credential)
+        .authenticate_device(credential)
         .map_err(|error| ApiError::internal(error.to_string()))?
-    {
-        return Err(ApiError::unauthorized("device credential is invalid"));
-    }
-    Ok(())
+        .ok_or_else(|| ApiError::unauthorized("device credential is invalid"))
+}
+
+async fn record_delivery(pairing: Arc<PairingRegistry>, device_id: String) -> Result<(), ApiError> {
+    tokio::task::spawn_blocking(move || pairing.record_delivery(&device_id, now_ms()))
+        .await
+        .map_err(|_| ApiError::internal("delivery-state task failed"))?
+        .map_err(|_| ApiError::internal("delivery state could not be persisted"))
 }
 
 fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ApiError> {

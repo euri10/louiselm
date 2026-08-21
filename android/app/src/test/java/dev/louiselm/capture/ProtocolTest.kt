@@ -35,4 +35,24 @@ class ProtocolTest {
         assertTrue(matchesReceiverIdentity(identity!!, publicKey))
         assertFalse(matchesReceiverIdentity(identity, byteArrayOf(3, 2, 1)))
     }
+
+    @Test
+    fun pairingTransitionSeparatesFirstPairEndpointUpdateAndReceiverMigration() {
+        assertEquals(PairingTransition.FIRST_PAIR, pairingTransition(null, "aa".repeat(32)))
+        assertEquals(
+            PairingTransition.ENDPOINT_UPDATE,
+            pairingTransition("aa".repeat(32), "aa".repeat(32)),
+        )
+        assertEquals(
+            PairingTransition.RECEIVER_MIGRATION,
+            pairingTransition("aa".repeat(32), "bb".repeat(32)),
+        )
+    }
+
+    @Test
+    fun uploadEligibilityRequiresAnExplicitMatchingQueueOwner() {
+        assertFalse(queueBelongsToReceiver(null, "aa".repeat(32)))
+        assertTrue(queueBelongsToReceiver("aa".repeat(32), "aa".repeat(32)))
+        assertFalse(queueBelongsToReceiver("bb".repeat(32), "aa".repeat(32)))
+    }
 }

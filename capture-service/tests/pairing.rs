@@ -17,7 +17,19 @@ fn one_time_token_creates_a_persistent_hashed_device_credential() {
         .consume(&offer.token, "garden-phone", 2_000)
         .expect("consume");
     assert_eq!(paired.device_name, "garden-phone");
-    assert!(registry.authenticate(&paired.credential).expect("auth"));
+    assert_eq!(
+        registry
+            .authenticate_device(&paired.credential)
+            .expect("auth"),
+        Some(paired.device_id.clone())
+    );
+    assert_eq!(
+        registry.status().expect("status").devices[0].last_delivery_at_ms,
+        None
+    );
+    registry
+        .record_delivery(&paired.device_id, 3_000)
+        .expect("record delivery");
     assert!(registry.consume(&offer.token, "second", 2_001).is_err());
     assert_eq!(offer.version, 2);
     assert_eq!(
@@ -31,13 +43,23 @@ fn one_time_token_creates_a_persistent_hashed_device_credential() {
     assert!(!state.contains(&paired.credential));
 
     let restarted = PairingRegistry::open(temporary.path()).expect("restart");
-    assert!(
+    assert_eq!(
         restarted
-            .authenticate(&paired.credential)
-            .expect("restart auth")
+            .authenticate_device(&paired.credential)
+            .expect("restart auth"),
+        Some(paired.device_id.clone())
+    );
+    assert_eq!(
+        restarted.status().expect("restart status").devices[0].last_delivery_at_ms,
+        Some(3_000)
     );
     restarted.revoke(&paired.device_id).expect("revoke");
-    assert!(!restarted.authenticate(&paired.credential).expect("revoked"));
+    assert_eq!(
+        restarted
+            .authenticate_device(&paired.credential)
+            .expect("revoked"),
+        None
+    );
 }
 
 #[test]
@@ -99,13 +121,15 @@ fn separate_cli_and_server_registries_observe_pairing_and_revocation() {
         .consume(&offer.token, "garden phone", 2_000)
         .expect("server observes offer");
     assert!(
-        cli.authenticate(&paired.credential)
+        cli.authenticate_device(&paired.credential)
             .expect("CLI observes device")
+            .is_some()
     );
     cli.revoke(&paired.device_id).expect("CLI revokes device");
     assert!(
         !server
-            .authenticate(&paired.credential)
+            .authenticate_device(&paired.credential)
             .expect("server observes revocation")
+            .is_some()
     );
 }

@@ -48,6 +48,8 @@ pub struct DeviceStatus {
     pub device_name: String,
     /// Unix epoch milliseconds when pairing succeeded.
     pub paired_at_ms: u64,
+    /// Unix epoch milliseconds of the last durably accepted capture.
+    pub last_delivery_at_ms: Option<u64>,
 }
 
 /// Public pairing registry state safe to display.
@@ -127,7 +129,7 @@ impl PairingRegistry {
                 registry.load()?;
             } else {
                 registry.persist(&RegistryState {
-                    schema_version: 1,
+                    schema_version: 2,
                     ..RegistryState::default()
                 })?;
             }
@@ -232,6 +234,7 @@ impl PairingRegistry {
                     device_id: device_id.clone(),
                     device_name: device_name.to_owned(),
                     paired_at_ms: now_ms,
+                    last_delivery_at_ms: None,
                 },
                 credential_sha256: hash(&credential),
             });
@@ -243,22 +246,48 @@ impl PairingRegistry {
         })
     }
 
-    /// Authenticate a bearer without exposing persisted hashes.
+    /// Authenticate a bearer and return its public device identifier.
     ///
     /// # Errors
     ///
     /// Returns lock failure.
-    pub fn authenticate(&self, credential: &str) -> Result<bool, PairingError> {
+    pub fn authenticate_device(&self, credential: &str) -> Result<Option<String>, PairingError> {
         self.with_state(false, |state| {
             let credential_hash = hash(credential);
-            Ok(state.devices.iter().any(|device| {
-                bool::from(
+            Ok(state.devices.iter().find_map(|device| {
+                if bool::from(
                     device
                         .credential_sha256
                         .as_bytes()
                         .ct_eq(credential_hash.as_bytes()),
-                )
+                ) {
+                    Some(device.status.device_id.clone())
+                } else {
+                    None
+                }
             }))
+        })
+    }
+
+    /// Persist a successful canonical delivery for one authenticated device.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unknown devices or zero timestamps and returns persistence failures.
+    pub fn record_delivery(&self, device_id: &str, now_ms: u64) -> Result<(), PairingError> {
+        if now_ms == 0 {
+            return Err(PairingError::Rejected(
+                "delivery timestamp must be positive".to_owned(),
+            ));
+        }
+        self.with_state(true, |state| {
+            let device = state
+                .devices
+                .iter_mut()
+                .find(|device| device.status.device_id == device_id)
+                .ok_or_else(|| PairingError::Rejected("device is unknown".to_owned()))?;
+            device.status.last_delivery_at_ms = Some(now_ms);
+            Ok(())
         })
     }
 
@@ -328,7 +357,7 @@ impl PairingRegistry {
     fn load(&self) -> Result<RegistryState, PairingError> {
         let state: RegistryState =
             serde_json::from_reader(BufReader::new(File::open(&self.path)?))?;
-        if state.schema_version != 1 {
+        if state.schema_version != 2 {
             return Err(PairingError::Rejected(
                 "pairing registry version is unsupported".to_owned(),
             ));

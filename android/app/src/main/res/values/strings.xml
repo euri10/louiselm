@@ -6,7 +6,7 @@
     <string name="stop_capture">Stop and save</string>
     <string name="pair_receiver">Pair receiver QR</string>
     <string name="sync_now">Sync now</string>
-    <string name="status_format">%1$s\n%2$d capture(s) waiting locally · %3$d need attention</string>
+    <string name="status_format">%1$s\nPending: %2$d · oldest: %3$s\nLast sync: %4$s\nNeed attention: %5$d\nLatest failure: %6$s</string>
     <string name="paired_status">Paired with %1$s</string>
     <string name="unpaired_status">Not paired; recording still works offline</string>
     <string name="recording_status">Recording… speak freely, then tap stop.</string>
@@ -18,8 +18,16 @@
     <string name="camera_missing">No camera app is available to scan the pairing QR.</string>
     <string name="qr_not_found">No LouiseLM pairing QR was found. Move closer and try again.</string>
     <string name="pairing_in_progress">Pairing with the pinned receiver…</string>
-    <string name="pairing_succeeded">Receiver paired. Pending captures are queued for upload.</string>
     <string name="pairing_failed">Pairing failed: %1$s</string>
+    <string name="confirm_pairing_title">Confirm receiver</string>
+    <string name="confirm_pairing">Confirm</string>
+    <string name="confirm_first_pair">Pair with %2$s and assign %1$d unowned pending capture(s) to it?</string>
+    <string name="confirm_receiver_migration">This receiver has a different identity. Move %1$d pending capture(s) to %2$s? Original recordings and capture IDs will remain unchanged.</string>
     <string name="sync_queued">Upload work queued.</string>
     <string name="queue_failed">Capture queue needs attention: %1$s</string>
+    <string name="none_status">none</string>
+    <string name="never_status">never</string>
+    <string name="less_than_minute">less than a minute</string>
+    <string name="minutes_age">%1$d min</string>
+    <string name="hours_age">%1$d h</string>
 </resources>

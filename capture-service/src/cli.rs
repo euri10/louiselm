@@ -137,7 +137,19 @@ fn list(store: &Store) -> Result<(), CliError> {
 fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
     let captures = store.list()?;
     let pairing = PairingRegistry::open(paths.pairing())?;
+    let pairing_status = pairing.status()?;
     let network = NetworkProfile::load_or_default(&paths.network())?;
+    let phone_reachable = network.phone_reachable();
+    let paired_device_count = pairing_status.devices.len();
+    let delivery_state = if phone_reachable {
+        "reachable"
+    } else if paired_device_count == 0 {
+        "unconfigured"
+    } else {
+        "degraded"
+    };
+    let delivery_warning = (delivery_state == "degraded")
+        .then_some("paired devices cannot reach the loopback-only receiver");
     let mut pending = 0;
     let mut retrying = 0;
     let mut failed = 0;
@@ -161,12 +173,17 @@ fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
                 "failed": failed,
                 "completed": completed,
             },
-            "devices": pairing.status()?.devices,
+            "paired_device_count": paired_device_count,
+            "devices": pairing_status.devices,
+            "delivery": {
+                "state": delivery_state,
+                "warning": delivery_warning,
+            },
             "network": {
                 "profile": network.kind(),
                 "bind": network.bind().to_string(),
                 "receiver_url": network.receiver_url(),
-                "phone_reachable": network.phone_reachable(),
+                "phone_reachable": phone_reachable,
             },
         }))?
     );
@@ -233,7 +250,12 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
     let bind = NetworkProfile::load_or_default(&paths.network())?.bind();
     let identity = TlsIdentity::load_or_create(paths.tls())?;
     let pairing = Arc::new(PairingRegistry::open(paths.pairing())?);
-    let receiver = Receiver::new(store.clone(), pairing, paths.uploads())?;
+    let receiver = Receiver::new(
+        store.clone(),
+        pairing,
+        paths.uploads(),
+        identity.public_key_sha256(),
+    )?;
     if let Ok(provider) = openai_provider() {
         thread::spawn(move || {
             loop {

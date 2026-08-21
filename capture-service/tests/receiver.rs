@@ -7,7 +7,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use louiselm_capture::{PairingRegistry, Receiver, Store};
+use louiselm_capture::{CaptureDraft, CaptureSource, PairingRegistry, Receiver, Store};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -32,9 +32,39 @@ async fn pairing_then_authenticated_upload_is_retry_safe() {
             60_000,
         )
         .expect("offer");
-    let receiver =
-        Receiver::new(store.clone(), pairing, temporary.path().join("uploads")).expect("receiver");
+    let receiver = Receiver::new(
+        store.clone(),
+        pairing.clone(),
+        temporary.path().join("uploads"),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("receiver");
     let app = receiver.router();
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/health")
+                .body(Body::empty())
+                .expect("health request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: Value = serde_json::from_slice(
+        &to_bytes(health.into_body(), 1024)
+            .await
+            .expect("health body"),
+    )
+    .expect("health JSON");
+    assert_eq!(
+        health,
+        serde_json::json!({
+            "status": "ok",
+            "receiver_identity_sha256":
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        })
+    );
 
     let response = app
         .clone()
@@ -81,6 +111,9 @@ async fn pairing_then_authenticated_upload_is_retry_safe() {
             .status(),
         StatusCode::CREATED
     );
+    let first_delivery = pairing.status().expect("device status").devices[0]
+        .last_delivery_at_ms
+        .expect("first delivery");
     assert_eq!(
         app.clone()
             .oneshot(request())
@@ -89,11 +122,17 @@ async fn pairing_then_authenticated_upload_is_retry_safe() {
             .status(),
         StatusCode::OK
     );
+    assert!(
+        pairing.status().expect("retry status").devices[0]
+            .last_delivery_at_ms
+            .expect("retry delivery")
+            >= first_delivery
+    );
     assert_eq!(store.capture(&id).expect("capture").record.sha256, digest);
 }
 
 #[tokio::test]
-async fn upload_rejects_missing_auth_and_digest_mismatch_without_a_capture() {
+async fn failed_uploads_do_not_record_device_delivery() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = Store::new(temporary.path().join("captures")).expect("store");
     let pairing = Arc::new(PairingRegistry::open(temporary.path().join("state")).expect("pairing"));
@@ -109,8 +148,13 @@ async fn upload_rejects_missing_auth_and_digest_mismatch_without_a_capture() {
         .consume(&offer.token, "garden-phone", now_ms())
         .expect("pair")
         .credential;
-    let receiver =
-        Receiver::new(store.clone(), pairing, temporary.path().join("uploads")).expect("receiver");
+    let receiver = Receiver::new(
+        store.clone(),
+        pairing.clone(),
+        temporary.path().join("uploads"),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("receiver");
     let app = receiver.router();
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -136,13 +180,55 @@ async fn upload_rejects_missing_auth_and_digest_mismatch_without_a_capture() {
         .body(Body::from("speech"))
         .expect("request");
     assert_eq!(
-        app.oneshot(mismatch)
+        app.clone()
+            .oneshot(mismatch)
             .await
             .expect("digest mismatch")
             .status(),
         StatusCode::BAD_REQUEST
     );
+    assert_eq!(
+        pairing.status().expect("device status").devices[0].last_delivery_at_ms,
+        None
+    );
     assert!(store.capture(&id).is_err());
+
+    store
+        .ingest(
+            CaptureDraft {
+                id: id.clone(),
+                source: CaptureSource::Android,
+                recorded_at_ms: 1_765_000_000_000,
+                duration_ms: 4_200,
+                mime_type: "audio/mp4".to_owned(),
+            },
+            b"canonical".as_slice(),
+        )
+        .expect("canonical capture");
+    let conflicting_audio = b"different";
+    let conflict = Request::put(format!("/v1/captures/{id}"))
+        .header("authorization", format!("Bearer {credential}"))
+        .header("content-type", "audio/mp4")
+        .header("x-louiselm-source", "android")
+        .header("x-louiselm-recorded-at-ms", "1765000000000")
+        .header("x-louiselm-duration-ms", "4200")
+        .header(
+            "x-louiselm-sha256",
+            format!("{:x}", Sha256::digest(conflicting_audio)),
+        )
+        .body(Body::from(conflicting_audio.as_slice()))
+        .expect("conflicting request");
+    assert_eq!(
+        app.oneshot(conflict)
+            .await
+            .expect("conflicting ingest")
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        pairing.status().expect("failed ingest status").devices[0].last_delivery_at_ms,
+        None
+    );
 }
 
 #[tokio::test]
@@ -151,9 +237,14 @@ async fn pairing_json_is_bounded_before_deserialization() {
     let store = Store::new(temporary.path().join("captures")).expect("store");
     let pairing =
         Arc::new(PairingRegistry::open(temporary.path().join("pairing")).expect("pairing"));
-    let app = Receiver::new(store, pairing, temporary.path().join("uploads"))
-        .expect("receiver")
-        .router();
+    let app = Receiver::new(
+        store,
+        pairing,
+        temporary.path().join("uploads"),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("receiver")
+    .router();
     let request = Request::builder()
         .method("POST")
         .uri("/v1/pair")

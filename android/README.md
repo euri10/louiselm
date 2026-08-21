@@ -32,6 +32,19 @@ Configure one private receiver profile before running
 `:LouiselmCapturePair`; the receiver refuses pairing while it is loopback-only.
 The Android app does not support version-1 exact-certificate pairing offers.
 
+Each pending capture records its receiver-key owner separately from the
+immutable audio and capture manifest. Captures made before pairing remain
+unowned until the first-pair confirmation states their count. Scanning a QR
+with the same receiver identity verifies `/v1/health` through the existing pin
+and changes only the endpoint, preserving the device credential and queue.
+Moving pending captures to a different receiver identity requires a separate
+confirmation that states the affected count; reassignment resets upload retry
+state but never changes or removes the original audio or capture UUID.
+
+The phone status shows the current endpoint, pending count and oldest age, last
+successful sync, and the latest actionable upload failure. **Sync now** remains
+the manual WorkManager retry path.
+
 ## Physical acceptance checklist
 
 - Record while offline, stop, force-stop the app, reopen it, and confirm the
@@ -47,5 +60,11 @@ The Android app does not support version-1 exact-certificate pairing offers.
   confirm upload needs operator attention while the original remains local.
 - Renew the receiver certificate with the same key and confirm uploads continue;
   replace the receiver key and confirm the app rejects the new identity.
+- Change the configured URL while retaining the receiver key, scan a fresh QR,
+  and confirm the endpoint changes without a new device credential or queue
+  reassignment.
+- With pending captures, scan a QR for a different receiver key. Cancel once
+  and confirm ownership is unchanged; confirm once and verify the displayed
+  count migrates while every original UUID and audio file remains intact.
 
 Automated tests never use a real microphone, receiver, credential, or network.

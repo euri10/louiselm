@@ -51,6 +51,27 @@ internal sealed class UploadAttempt {
 }
 
 internal object PinnedHttps {
+    fun verifyEndpoint(receiverUrl: String, receiverIdentitySha256: String) {
+        val connection = connection("${receiverUrl.trimEnd('/')}/v1/health", receiverIdentitySha256).apply {
+            requestMethod = "GET"
+        }
+        val status = connection.responseCode
+        if (status !in 200..299) {
+            connection.disconnect()
+            throw IOException("receiver health check failed ($status)")
+        }
+        val response = JSONObject(readBounded(connection))
+        connection.disconnect()
+        val reportedIdentity = response.getString("receiver_identity_sha256").lowercase()
+        val expected = decodeSha256(receiverIdentitySha256)
+            ?: throw SecurityException("receiver identity is invalid")
+        val reported = decodeSha256(reportedIdentity)
+            ?: throw SecurityException("receiver health identity is invalid")
+        if (response.getString("status") != "ok" || !MessageDigest.isEqual(expected, reported)) {
+            throw SecurityException("receiver health identity does not match pairing")
+        }
+    }
+
     fun pair(offer: PairingOffer, deviceName: String): PairingConfig {
         val body = JSONObject()
             .put("token", offer.token)

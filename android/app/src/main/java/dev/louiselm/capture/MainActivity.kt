@@ -2,6 +2,7 @@ package dev.louiselm.capture
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.MediaStore
+import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -24,6 +26,13 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import java.io.File
+
+private data class PairingPlan(
+    val offer: PairingOffer,
+    val existing: PairingConfig?,
+    val transition: PairingTransition,
+    val affectedCaptureCount: Int,
+)
 
 class MainActivity : Activity() {
     private lateinit var captureStore: CaptureStore
@@ -169,7 +178,10 @@ class MainActivity : Activity() {
         captureButton.isEnabled = false
         statusView.text = getString(R.string.saving_status)
         networkExecutor.execute {
-            val result = runCatching { captureStore.complete(pending, durationMs) }
+            val result = runCatching {
+                val receiverIdentity = runCatching { pairingStore.load()?.receiverIdentitySha256 }.getOrNull()
+                captureStore.complete(pending, durationMs, receiverIdentity)
+            }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 captureButton.isEnabled = true
@@ -250,20 +262,86 @@ class MainActivity : Activity() {
     }
 
     private fun pair(payload: String) {
-        pairButton.isEnabled = false
+        setPairingBusy(true)
         statusView.text = getString(R.string.pairing_in_progress)
         networkExecutor.execute {
             val result = runCatching {
                 val offer = PairingOffer.parse(payload)
-                val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80)
-                PinnedHttps.pair(offer, deviceName).also(pairingStore::save)
+                val existing = pairingStore.load()
+                val transition = pairingTransition(existing?.receiverIdentitySha256, offer.receiverIdentitySha256)
+                val count = when (transition) {
+                    PairingTransition.FIRST_PAIR -> captureStore.unownedPendingCount()
+                    PairingTransition.ENDPOINT_UPDATE -> 0
+                    PairingTransition.RECEIVER_MIGRATION ->
+                        captureStore.pendingOwnedBy(checkNotNull(existing).receiverIdentitySha256)
+                }
+                PairingPlan(offer, existing, transition, count)
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
-                pairButton.isEnabled = true
+                result.onSuccess { plan ->
+                    if (plan.transition == PairingTransition.ENDPOINT_UPDATE) {
+                        executePairing(plan)
+                    } else {
+                        confirmPairing(plan)
+                    }
+                }.onFailure { error ->
+                    setPairingBusy(false)
+                    statusView.text = getString(R.string.pairing_failed, error.message ?: "receiver unavailable")
+                }
+            }
+        }
+    }
+
+    private fun confirmPairing(plan: PairingPlan) {
+        val message = when (plan.transition) {
+            PairingTransition.FIRST_PAIR ->
+                getString(R.string.confirm_first_pair, plan.affectedCaptureCount, plan.offer.receiverUrl)
+            PairingTransition.RECEIVER_MIGRATION ->
+                getString(R.string.confirm_receiver_migration, plan.affectedCaptureCount, plan.offer.receiverUrl)
+            PairingTransition.ENDPOINT_UPDATE -> error("endpoint updates do not require migration consent")
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.confirm_pairing_title)
+            .setMessage(message)
+            .setPositiveButton(R.string.confirm_pairing) { _, _ -> executePairing(plan) }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> cancelPairing() }
+            .setOnCancelListener { cancelPairing() }
+            .show()
+    }
+
+    private fun executePairing(plan: PairingPlan) {
+        statusView.text = getString(R.string.pairing_in_progress)
+        networkExecutor.execute {
+            val result = runCatching {
+                when (plan.transition) {
+                    PairingTransition.FIRST_PAIR -> {
+                        val config = PinnedHttps.pair(plan.offer, deviceName())
+                        captureStore.assignUnowned(config.receiverIdentitySha256)
+                        pairingStore.save(config)
+                    }
+                    PairingTransition.ENDPOINT_UPDATE -> {
+                        val existing = checkNotNull(plan.existing)
+                        PinnedHttps.verifyEndpoint(plan.offer.receiverUrl, existing.receiverIdentitySha256)
+                        pairingStore.save(existing.copy(receiverUrl = plan.offer.receiverUrl))
+                    }
+                    PairingTransition.RECEIVER_MIGRATION -> {
+                        val existing = checkNotNull(plan.existing)
+                        val config = PinnedHttps.pair(plan.offer, deviceName())
+                        captureStore.migratePending(
+                            existing.receiverIdentitySha256,
+                            config.receiverIdentitySha256,
+                        )
+                        pairingStore.save(config)
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                setPairingBusy(false)
                 result.onSuccess {
                     UploadWorker.enqueue(applicationContext)
-                    statusView.text = getString(R.string.pairing_succeeded)
+                    refreshStatus()
                 }.onFailure { error ->
                     statusView.text = getString(R.string.pairing_failed, error.message ?: "receiver unavailable")
                 }
@@ -271,18 +349,38 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun setPairingBusy(busy: Boolean) {
+        pairButton.isEnabled = !busy
+        captureButton.isEnabled = !busy
+    }
+
+    private fun cancelPairing() {
+        setPairingBusy(false)
+        refreshStatus()
+    }
+
+    private fun deviceName(): String = "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80)
+
     private fun refreshStatus() {
         networkExecutor.execute {
             val status = runCatching {
-                captureStore.recover()
                 val pairing = pairingStore.load()
+                captureStore.recover(pairing?.receiverIdentitySha256)
                 val pairingText = if (pairing == null) {
                     getString(R.string.unpaired_status)
                 } else {
                     getString(R.string.paired_status, pairing.receiverUrl)
                 }
-                val counts = captureStore.queueCounts()
-                getString(R.string.status_format, pairingText, counts.waiting, counts.attention)
+                val queue = captureStore.queueStatus()
+                getString(
+                    R.string.status_format,
+                    pairingText,
+                    queue.pending,
+                    formatAge(queue.oldestPendingAgeMs),
+                    formatSyncTime(queue.lastSyncAtMs),
+                    queue.attention,
+                    queue.latestFailure ?: getString(R.string.none_status),
+                )
             }
             runOnUiThread {
                 if (isDestroyed || recorder != null) return@runOnUiThread
@@ -290,6 +388,17 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    private fun formatAge(ageMs: Long?): String = when {
+        ageMs == null -> getString(R.string.none_status)
+        ageMs < 60_000 -> getString(R.string.less_than_minute)
+        ageMs < 60 * 60_000 -> getString(R.string.minutes_age, ageMs / 60_000)
+        else -> getString(R.string.hours_age, ageMs / (60 * 60_000))
+    }
+
+    private fun formatSyncTime(timestampMs: Long?): String =
+        timestampMs?.let { DateFormat.format("yyyy-MM-dd HH:mm", it).toString() }
+            ?: getString(R.string.never_status)
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)

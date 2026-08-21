@@ -54,10 +54,19 @@ revocable device credential; only hashes of tokens and credentials are
 persisted by the receiver. Renewing the TLS certificate with the same persisted
 receiver key does not require re-pairing; replacing the key does.
 
+`status` reports the selected profile, bind and advertised URL, whether that
+configuration is phone-reachable, the paired-device count, and each device's
+last successful delivery time. A paired device with only the loopback default
+is reported as degraded. The bounded, unauthenticated `/v1/health` response
+contains only `status` and the public receiver-key identity so an already
+paired phone can verify a new endpoint before saving it.
+
 Android uploads stream to a private temporary file, are limited to 20 MiB,
 must carry their original SHA-256 digest, and become visible only after an
 atomic directory rename. Retrying the same complete record and UUID is safe;
-changing audio or metadata under an existing UUID is rejected.
+changing audio or metadata under an existing UUID is rejected. Both newly
+created and retry-safe existing uploads update the authenticated device's
+durable delivery timestamp only after canonical storage succeeds.
 
 ## Local data
 

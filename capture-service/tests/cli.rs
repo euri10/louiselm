@@ -1,5 +1,7 @@
 use std::{fs, process::Command};
 
+use louiselm_capture::PairingRegistry;
+
 #[test]
 fn local_ingest_and_list_expose_the_durable_inbox() {
     let temporary = tempfile::tempdir().expect("temporary directory");
@@ -92,6 +94,9 @@ fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
         status["network"]["receiver_url"],
         "https://192.168.1.20:7391"
     );
+    assert_eq!(status["paired_device_count"], 0);
+    assert_eq!(status["delivery"]["state"], "reachable");
+    assert_eq!(status["delivery"]["warning"], serde_json::Value::Null);
 
     let output = command(
         &temporary.path().join("data"),
@@ -112,6 +117,43 @@ fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
         .max()
         .expect("QR width");
     assert!(width <= lines.len() * 2 + 2);
+}
+
+#[test]
+fn status_warns_when_paired_devices_only_have_a_loopback_receiver() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let registry =
+        PairingRegistry::open(state.join("louiselm/capture/pairing")).expect("pairing registry");
+    let offer = registry
+        .issue(
+            "https://192.0.2.1:7391",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            1_000,
+            5_000,
+        )
+        .expect("offer");
+    registry
+        .consume(&offer.token, "garden-phone", 2_000)
+        .expect("paired device");
+
+    let output = command(&data, &state)
+        .arg("status")
+        .output()
+        .expect("status command");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+    assert_eq!(status["paired_device_count"], 1);
+    assert_eq!(status["delivery"]["state"], "degraded");
+    assert_eq!(
+        status["delivery"]["warning"],
+        "paired devices cannot reach the loopback-only receiver"
+    );
+    assert_eq!(
+        status["devices"][0]["last_delivery_at_ms"],
+        serde_json::Value::Null
+    );
 }
 
 fn command(data: &std::path::Path, state: &std::path::Path) -> Command {

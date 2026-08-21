@@ -18,7 +18,13 @@ internal data class PendingRecording(
     val recordedAtMs: Long,
 )
 
-internal data class QueueCounts(val waiting: Int, val attention: Int)
+internal data class QueueStatus(
+    val pending: Int,
+    val attention: Int,
+    val oldestPendingAgeMs: Long?,
+    val lastSyncAtMs: Long?,
+    val latestFailure: String?,
+)
 
 internal data class CaptureRecord(
     val id: String,
@@ -57,8 +63,15 @@ internal class CaptureStore(context: Context) {
         recording.metadata.delete()
     }
 
-    fun complete(recording: PendingRecording, durationMs: Long): CaptureRecord {
+    fun complete(
+        recording: PendingRecording,
+        durationMs: Long,
+        receiverIdentitySha256: String?,
+    ): CaptureRecord {
         require(durationMs > 0) { "recording duration must be positive" }
+        require(receiverIdentitySha256 == null || decodeSha256(receiverIdentitySha256) != null) {
+            "receiver identity is invalid"
+        }
         val incoming = File(root, ".incoming-${recording.id}")
         val destination = File(root, recording.id)
         if (destination.isDirectory) {
@@ -82,31 +95,45 @@ internal class CaptureStore(context: Context) {
         )
         val manifestFile = File(incoming, MANIFEST_NAME)
         if (!manifestFile.exists()) writeSynced(manifestFile, manifest(record).toString(2) + "\n")
+        val stateFile = File(incoming, STATE_NAME)
+        if (!stateFile.exists()) writeSynced(stateFile, initialState(receiverIdentitySha256).toString(2) + "\n")
         check(!destination.exists()) { "capture UUID already exists" }
         Files.move(incoming.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
         recording.metadata.delete()
         return record.copy(audio = File(destination, AUDIO_NAME))
     }
 
-    fun recover() {
+    fun recover(receiverIdentitySha256: String?) {
+        require(receiverIdentitySha256 == null || decodeSha256(receiverIdentitySha256) != null) {
+            "receiver identity is invalid"
+        }
         root.listFiles()
             .orEmpty()
             .filter { it.isFile && it.name.startsWith(".recording-") && it.name.endsWith(".json") }
             .sortedBy { it.name }
-            .forEach { metadata -> runCatching { recover(metadata) } }
+            .forEach { metadata -> runCatching { recover(metadata, receiverIdentitySha256) } }
     }
 
-    fun pending(): List<CaptureRecord> = root.listFiles()
-        .orEmpty()
-        .asSequence()
-        .filter { it.isDirectory && !it.name.startsWith('.') && !File(it, UPLOADED_NAME).exists() }
-        .map(::load)
-        .sortedBy { it.id }
-        .toList()
+    fun pendingFor(receiverIdentitySha256: String): List<CaptureRecord> {
+        require(decodeSha256(receiverIdentitySha256) != null) { "receiver identity is invalid" }
+        return pendingDirectories()
+            .asSequence()
+            .filter { queueBelongsToReceiver(owner(readState(it)), receiverIdentitySha256) }
+            .map(::load)
+            .sortedBy { it.id }
+            .toList()
+    }
 
-    fun markUploaded(id: String) {
-        writeState(id, JSONObject().put("status", "uploaded").put("uploaded_at_ms", System.currentTimeMillis()))
+    fun markUploaded(id: String, receiverIdentitySha256: String): Boolean {
         val directory = captureDirectory(id)
+        val state = readState(directory)
+        if (!queueBelongsToReceiver(owner(state), receiverIdentitySha256)) return false
+        state
+            .put("status", "uploaded")
+            .put("uploaded_at_ms", System.currentTimeMillis())
+            .remove("error")
+        state.remove("failed_at_ms")
+        writeState(directory, state)
         val temporary = File(directory, ".$UPLOADED_NAME")
         writeSynced(temporary, "uploaded\n")
         Files.move(
@@ -115,25 +142,70 @@ internal class CaptureStore(context: Context) {
             StandardCopyOption.ATOMIC_MOVE,
             StandardCopyOption.REPLACE_EXISTING,
         )
+        return true
     }
 
-    fun markUploadError(id: String, message: String) {
-        writeState(id, JSONObject().put("status", "operator_action").put("error", message.take(300)))
+    fun markUploadError(id: String, receiverIdentitySha256: String, message: String): Boolean {
+        val directory = captureDirectory(id)
+        val state = readState(directory)
+        if (!queueBelongsToReceiver(owner(state), receiverIdentitySha256)) return false
+        state
+            .put("status", "operator_action")
+            .put("error", message.take(300))
+            .put("failed_at_ms", System.currentTimeMillis())
+        writeState(directory, state)
+        return true
     }
 
-    fun queueCounts(): QueueCounts {
-        val waiting = root.listFiles()
-            .orEmpty()
-            .filter { it.isDirectory && !it.name.startsWith('.') && !File(it, UPLOADED_NAME).exists() }
-        val attention = waiting.count { directory ->
-            val state = File(directory, STATE_NAME)
-            state.isFile && runCatching { JSONObject(state.readText()).optString("status") == "operator_action" }
-                .getOrDefault(false)
+    fun unownedPendingCount(): Int = pendingDirectories().count { owner(readState(it)) == null }
+
+    fun pendingOwnedBy(receiverIdentitySha256: String): Int {
+        require(decodeSha256(receiverIdentitySha256) != null) { "receiver identity is invalid" }
+        return pendingDirectories().count {
+            queueBelongsToReceiver(owner(readState(it)), receiverIdentitySha256)
         }
-        return QueueCounts(waiting.size, attention)
     }
 
-    private fun recover(metadata: File) {
+    fun assignUnowned(receiverIdentitySha256: String): Int =
+        reassignPending(null, receiverIdentitySha256)
+
+    fun migratePending(fromIdentitySha256: String, toIdentitySha256: String): Int =
+        reassignPending(fromIdentitySha256, toIdentitySha256)
+
+    fun queueStatus(nowMs: Long = System.currentTimeMillis()): QueueStatus {
+        require(nowMs > 0) { "current time must be positive" }
+        val pending = pendingDirectories()
+        var oldestRecordedAtMs: Long? = null
+        var latestFailureAtMs: Long? = null
+        var latestFailure: String? = null
+        var attention = 0
+        pending.forEach { directory ->
+            val recordedAtMs = JSONObject(File(directory, MANIFEST_NAME).readText()).getLong("recorded_at_ms")
+            oldestRecordedAtMs = minOf(oldestRecordedAtMs ?: recordedAtMs, recordedAtMs)
+            val state = readState(directory)
+            if (state.optString("status") == "operator_action") {
+                attention += 1
+                val failedAtMs = state.optLong("failed_at_ms", 0)
+                if (failedAtMs > (latestFailureAtMs ?: 0)) {
+                    latestFailureAtMs = failedAtMs
+                    latestFailure = state.optString("error").takeIf(String::isNotBlank)
+                }
+            }
+        }
+        val lastSyncAtMs = captureDirectories()
+            .map { readState(it).optLong("uploaded_at_ms", 0) }
+            .filter { it > 0 }
+            .maxOrNull()
+        return QueueStatus(
+            pending = pending.size,
+            attention = attention,
+            oldestPendingAgeMs = oldestRecordedAtMs?.let { (nowMs - it).coerceAtLeast(0) },
+            lastSyncAtMs = lastSyncAtMs,
+            latestFailure = latestFailure,
+        )
+    }
+
+    private fun recover(metadata: File, receiverIdentitySha256: String?) {
         val value = JSONObject(metadata.readText())
         val id = value.getString("id")
         require(runCatching { UUID.fromString(id) }.isSuccess) { "pending capture ID is invalid" }
@@ -149,7 +221,7 @@ internal class CaptureStore(context: Context) {
         val audio = if (recording.isFile) recording else incomingAudio
         if (!audio.isFile || audio.length() == 0L) return
         val durationMs = mediaDurationMs(audio) ?: return
-        complete(PendingRecording(id, recording, metadata, recordedAtMs), durationMs)
+        complete(PendingRecording(id, recording, metadata, recordedAtMs), durationMs, receiverIdentitySha256)
     }
 
     private fun load(directory: File): CaptureRecord {
@@ -177,8 +249,48 @@ internal class CaptureStore(context: Context) {
         return record
     }
 
-    private fun writeState(id: String, value: JSONObject) {
-        val directory = captureDirectory(id)
+    private fun reassignPending(fromIdentitySha256: String?, toIdentitySha256: String): Int {
+        require(fromIdentitySha256 == null || decodeSha256(fromIdentitySha256) != null) {
+            "current receiver identity is invalid"
+        }
+        require(decodeSha256(toIdentitySha256) != null) { "new receiver identity is invalid" }
+        var changed = 0
+        pendingDirectories().forEach { directory ->
+            val state = readState(directory)
+            if (owner(state) == fromIdentitySha256) {
+                state
+                    .put("receiver_identity_sha256", toIdentitySha256)
+                    .put("status", "pending")
+                    .remove("error")
+                state.remove("failed_at_ms")
+                writeState(directory, state)
+                changed += 1
+            }
+        }
+        return changed
+    }
+
+    private fun captureDirectories(): List<File> = root.listFiles()
+        .orEmpty()
+        .filter { it.isDirectory && !it.name.startsWith('.') }
+
+    private fun pendingDirectories(): List<File> = captureDirectories()
+        .filter { !File(it, UPLOADED_NAME).exists() }
+
+    private fun readState(directory: File): JSONObject {
+        val file = File(directory, STATE_NAME)
+        if (!file.isFile) return initialState(null)
+        val state = JSONObject(file.readText())
+        require(state.getInt("schema_version") == STATE_SCHEMA_VERSION) { "upload state version is unsupported" }
+        val identity = owner(state)
+        require(identity == null || decodeSha256(identity) != null) { "upload owner identity is invalid" }
+        return state
+    }
+
+    private fun owner(state: JSONObject): String? =
+        if (state.isNull("receiver_identity_sha256")) null else state.getString("receiver_identity_sha256")
+
+    private fun writeState(directory: File, value: JSONObject) {
         val target = File(directory, STATE_NAME)
         val temporary = File(directory, ".$STATE_NAME")
         writeSynced(temporary, value.toString(2) + "\n")
@@ -205,12 +317,18 @@ internal class CaptureStore(context: Context) {
         .put("bytes", record.bytes)
         .put("sha256", record.sha256)
 
+    private fun initialState(receiverIdentitySha256: String?) = JSONObject()
+        .put("schema_version", STATE_SCHEMA_VERSION)
+        .put("status", "pending")
+        .put("receiver_identity_sha256", receiverIdentitySha256 ?: JSONObject.NULL)
+
     companion object {
         private const val MIME_TYPE = "audio/mp4"
         private const val AUDIO_NAME = "audio.m4a"
         private const val MANIFEST_NAME = "capture.json"
         private const val STATE_NAME = "upload.json"
         private const val UPLOADED_NAME = "uploaded"
+        private const val STATE_SCHEMA_VERSION = 1
 
         private fun writeSynced(file: File, value: String) {
             FileOutputStream(file).use { output ->

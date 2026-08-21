@@ -15,20 +15,24 @@ internal class UploadWorker(context: Context, parameters: WorkerParameters) : Wo
         val pairing = runCatching { PairingStore(applicationContext).load() }
             .getOrElse { return Result.failure(workDataOf("error" to "pairing credential needs attention")) }
             ?: return Result.success()
+        val store = CaptureStore(applicationContext)
         val captures = runCatching {
-            CaptureStore(applicationContext).run {
-                recover()
-                pending()
+            store.run {
+                recover(pairing.receiverIdentitySha256)
+                pendingFor(pairing.receiverIdentitySha256)
             }
         }
             .getOrElse { return Result.failure(workDataOf("error" to "capture queue needs attention")) }
-        val store = CaptureStore(applicationContext)
         for (capture in captures) {
             when (val attempt = PinnedHttps.upload(pairing, capture)) {
-                UploadAttempt.Success -> store.markUploaded(capture.id)
+                UploadAttempt.Success -> {
+                    if (!store.markUploaded(capture.id, pairing.receiverIdentitySha256)) return Result.success()
+                }
                 is UploadAttempt.Retry -> return Result.retry()
                 is UploadAttempt.OperatorAction -> {
-                    store.markUploadError(capture.id, attempt.message)
+                    if (!store.markUploadError(capture.id, pairing.receiverIdentitySha256, attempt.message)) {
+                        return Result.success()
+                    }
                     return Result.failure(workDataOf("error" to attempt.message))
                 }
             }

@@ -8,6 +8,21 @@ internal enum class UploadDisposition {
     OPERATOR_ACTION,
 }
 
+internal enum class PairingTransition {
+    FIRST_PAIR,
+    ENDPOINT_UPDATE,
+    RECEIVER_MIGRATION,
+}
+
+internal fun pairingTransition(currentIdentity: String?, offeredIdentity: String): PairingTransition = when {
+    currentIdentity == null -> PairingTransition.FIRST_PAIR
+    currentIdentity == offeredIdentity -> PairingTransition.ENDPOINT_UPDATE
+    else -> PairingTransition.RECEIVER_MIGRATION
+}
+
+internal fun queueBelongsToReceiver(ownerIdentity: String?, receiverIdentity: String): Boolean =
+    ownerIdentity != null && ownerIdentity == receiverIdentity
+
 internal fun uploadDisposition(status: Int): UploadDisposition = when {
     status == 200 || status == 201 -> UploadDisposition.SUCCESS
     status == 408 || status == 429 || status >= 500 -> UploadDisposition.RETRY
