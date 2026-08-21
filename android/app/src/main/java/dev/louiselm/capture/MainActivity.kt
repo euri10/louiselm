@@ -93,7 +93,7 @@ class MainActivity : Activity() {
         content.addView(Button(this).apply {
             text = getString(R.string.sync_now)
             setOnClickListener {
-                UploadWorker.enqueue(applicationContext)
+                UploadWorker.enqueue(applicationContext, manual = true)
                 statusView.text = getString(R.string.sync_queued)
             }
         }, matchWidth())

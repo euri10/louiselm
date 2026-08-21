@@ -39,7 +39,7 @@ internal class UploadWorker(context: Context, parameters: WorkerParameters) : Wo
     companion object {
         private const val UNIQUE_WORK = "capture-upload"
 
-        fun enqueue(context: Context) {
+        fun enqueue(context: Context, manual: Boolean = false) {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
@@ -47,7 +47,13 @@ internal class UploadWorker(context: Context, parameters: WorkerParameters) : Wo
                 .setConstraints(constraints)
                 .build()
             WorkManager.getInstance(context.applicationContext)
-                .enqueueUniqueWork(UNIQUE_WORK, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+                .enqueueUniqueWork(UNIQUE_WORK, uploadWorkPolicy(manual), request)
         }
     }
+}
+
+internal fun uploadWorkPolicy(manual: Boolean): ExistingWorkPolicy = if (manual) {
+    ExistingWorkPolicy.REPLACE
+} else {
+    ExistingWorkPolicy.APPEND_OR_REPLACE
 }
