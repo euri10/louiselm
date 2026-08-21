@@ -19,6 +19,8 @@ local Transcript = require("louiselm.session.transcript")
 ---@field window integer Window displaying the session.
 ---@field source_buffer integer Buffer that was current when the chat view was attached.
 ---@field prompt_line integer Zero-based prompt line.
+---@field prompt_mark integer Extmark tracking the prompt boundary through buffer edits.
+---@field prompt_namespace integer Extmark namespace for the prompt boundary.
 ---@field transcript_tail integer? Zero-based last rendered transcript line.
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
@@ -54,6 +56,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
 ---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
+---@field prompt_namespace integer Extmark namespace for prompt boundaries.
 ---@field header_namespace integer Highlight namespace for session diagnostics.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field winbars table<integer, string> Previous window bars by window id.
@@ -718,9 +721,29 @@ local function replace_submitted_prompt(view, text, contexts)
 end
 
 ---@param view louiselm.ui.ChatView
+---@param line integer
+local function mark_prompt(view, line)
+  view.prompt_line = line
+  view.prompt_mark = nvim.api.nvim_buf_set_extmark(view.buffer, view.prompt_namespace, line, 0, {
+    id = view.prompt_mark,
+    right_gravity = false,
+  })
+end
+
+---@param view louiselm.ui.ChatView
+---@return integer line
+local function current_prompt_line(view)
+  local position = nvim.api.nvim_buf_get_extmark_by_id(view.buffer, view.prompt_namespace, view.prompt_mark, {})
+  if #position == 2 then
+    view.prompt_line = position[1]
+  end
+  return view.prompt_line
+end
+
+---@param view louiselm.ui.ChatView
 ---@return string text
 local function prompt_text(view)
-  local lines = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, -1, false)
+  local lines = nvim.api.nvim_buf_get_lines(view.buffer, current_prompt_line(view), -1, false)
   for index, line in ipairs(lines) do
     lines[index] = line:sub(1, 2) == "> " and line:sub(3) or line
   end
@@ -731,11 +754,13 @@ end
 ---@param text string
 ---@return integer line_count
 local function replace_prompt(view, text)
+  local prompt_line = current_prompt_line(view)
   local lines = split_lines(text)
   for index, line in ipairs(lines) do
     lines[index] = "> " .. line
   end
-  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
+  nvim.api.nvim_buf_set_lines(view.buffer, prompt_line, -1, false, lines)
+  mark_prompt(view, prompt_line)
   return #lines
 end
 
@@ -1051,7 +1076,7 @@ insert_transcript = function(self, view, lines)
   local insertion_line = view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1
   nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, replacement)
   view.transcript_tail = insertion_line + #replacement - 1
-  view.prompt_line = view.prompt_line + #replacement
+  mark_prompt(view, view.prompt_line + #replacement)
 end
 
 ---Build prompt content from the current context queue and a pending native skill selection.
@@ -1149,7 +1174,7 @@ local function submit_prompt(self, view, text)
   view.response_tail = view.response_line
   view.response_started = false
   view.transcript_tail = view.response_tail
-  view.prompt_line = response_line + 1
+  mark_prompt(view, response_line + 1)
   if nvim.api.nvim_get_current_buf() == view.buffer then
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #next_prefix })
   end
@@ -1332,7 +1357,7 @@ local function handle_event(self, view, event)
       view.response_line = insertion_line
       view.response_tail = insertion_line + #lines - 1
       view.transcript_tail = view.response_tail
-      view.prompt_line = view.prompt_line + #lines
+      mark_prompt(view, view.prompt_line + #lines)
       view.response_started = true
       return
     end
@@ -1342,7 +1367,7 @@ local function handle_event(self, view, event)
     local added = #lines - 1
     view.response_tail = view.response_tail + added
     view.transcript_tail = view.response_tail
-    view.prompt_line = view.prompt_line + added
+    mark_prompt(view, view.prompt_line + added)
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
     local status = field(event.data, "status")
     local id = tool_id(event.data)
@@ -1532,6 +1557,7 @@ function M.new(api, options)
     diff = Diff.new(),
     decision_queue = {},
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
+    prompt_namespace = nvim.api.nvim_create_namespace("louiselm.chat.prompt"),
     header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
     views = {},
     winbars = {},
@@ -1604,10 +1630,12 @@ function Chat:attach(session)
     queued_prompt = nil,
     queue_mark = nil,
     queue_namespace = self.queue_namespace,
+    prompt_namespace = self.prompt_namespace,
     setup_shown = false,
     transcript = Transcript.new(),
     unsubscribe = function() end,
   }
+  mark_prompt(view, view.prompt_line)
   nvim.api.nvim_buf_attach(buffer, false, {
     on_lines = function(_, _, _, first_line, last_line)
       if view.queued_prompt ~= nil and first_line <= view.prompt_line and last_line > view.prompt_line then

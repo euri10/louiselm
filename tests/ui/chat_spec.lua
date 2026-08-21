@@ -236,6 +236,39 @@ T["chat"]["submits every line in a multiline prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["submits the visible prompt after transcript edits shift its boundary"] = function()
+  local first = fake_session("session-1", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local buffer = assert(chat:buffer())
+  local undolevels = nvim.api.nvim_get_option_value("undolevels", { buf = buffer })
+  nvim.api.nvim_set_option_value("undolevels", -1, { buf = buffer })
+  nvim.api.nvim_set_option_value("undolevels", undolevels, { buf = buffer })
+
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "first\nsecond" } },
+  })
+  nvim.wait(20)
+  nvim.api.nvim_buf_call(buffer, function()
+    nvim.cmd.undo()
+  end)
+  nvim.api.nvim_buf_set_lines(buffer, -2, -1, false, { "> recovered draft" })
+
+  local submit
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "i")) do
+    if mapping.lhs == "<CR>" then
+      submit = mapping.callback
+    end
+  end
+  assert(type(submit) == "function")
+  nvim.api.nvim_buf_call(buffer, submit)
+
+  MiniTest.expect.equality(first.prompts, { "recovered draft" })
+  chat:dispose()
+end
+
 T["chat"]["renders session events and forwards slash prompts"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

@@ -46,6 +46,11 @@ local function respond(process, id, result)
   process.options.stdout(nil, encoded .. "\n")
 end
 
+local function respond_error(process, id, rpc_error)
+  local encoded = assert(Protocol.encode({ jsonrpc = "2.0", id = id, error = rpc_error }))
+  process.options.stdout(nil, encoded .. "\n")
+end
+
 local function notification(process, method, params)
   local message = assert(Protocol.notification(method, params))
   local encoded = assert(Protocol.encode(message))
@@ -197,6 +202,56 @@ T["new"]["closes the ACP process when loading returns a malformed result"] = fun
   MiniTest.expect.equality(ready.error, "ACP session/load returned a malformed result")
   MiniTest.expect.equality(session:inspect().status, "error")
   MiniTest.expect.equality(process.closed, true)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["explains a Codex active-writer load failure without exposing its thread id"] = function()
+  local processes, original_system = fake_processes()
+  local ready
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:load_session("agent", "prior-acp", nil, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond_error(process, 2, {
+    code = -32603,
+    message = "Internal error",
+    data = { details = "thread sensitive-thread-id already has an active writer" },
+  })
+
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(
+    ready.error,
+    "ACP session/load failed: session is already open in another client; close it there before resuming"
+  )
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(process.closed, true)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["does not expose arbitrary internal ACP error details"] = function()
+  local processes, original_system = fake_processes()
+  local ready_error
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  assert(api:load_session("agent", "prior-acp", nil, function(_, err)
+    ready_error = err
+  end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond_error(process, 2, {
+    code = -32603,
+    message = "Internal error",
+    data = { details = "secret adapter context" },
+  })
+
+  MiniTest.expect.equality(ready_error, "ACP session/load failed: Internal error")
 
   api:dispose()
   restore_processes(original_system)

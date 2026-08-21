@@ -89,6 +89,15 @@ end
 ---@return string
 local function error_message(error_value)
   if type(error_value) == "table" then
+    local data = error_value.data
+    local details = type(data) == "table" and data.details or nil
+    if
+      error_value.message == "Internal error"
+      and type(details) == "string"
+      and details:match("^thread %S+ already has an active writer$") ~= nil
+    then
+      return "session is already open in another client; close it there before resuming"
+    end
     return error_value.message
   end
   return tostring(error_value or "ACP request failed")
