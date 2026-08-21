@@ -43,6 +43,30 @@ fn local_ingest_and_list_expose_the_durable_inbox() {
     );
 }
 
+#[test]
+fn pairing_outputs_a_compact_qr_without_the_raw_offer() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let output = command(
+        &temporary.path().join("data"),
+        &temporary.path().join("state"),
+    )
+    .args(["pair", "--url", "https://192.0.2.1:7391"])
+    .output()
+    .expect("pair command");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let rendered = String::from_utf8(output.stdout).expect("terminal QR");
+    assert!(!rendered.contains("receiver_url"));
+    assert!(!rendered.contains("\"token\""));
+
+    let lines = rendered.lines().collect::<Vec<_>>();
+    let width = lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .expect("QR width");
+    assert!(width <= lines.len() * 2 + 2);
+}
+
 fn command(data: &std::path::Path, state: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_louiselm-capture"));
     command

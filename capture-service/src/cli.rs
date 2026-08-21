@@ -188,12 +188,8 @@ fn pair(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     )?;
     let payload = serde_json::to_string(&offer)?;
     let code = QrCode::new(payload.as_bytes())?;
-    let rendered = code
-        .render::<unicode::Dense1x2>()
-        .quiet_zone(true)
-        .module_dimensions(2, 1)
-        .build();
-    println!("{payload}\n{rendered}");
+    let rendered = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
+    println!("{rendered}");
     Ok(())
 }
 
