@@ -6,6 +6,7 @@
     <string name="stop_capture">Stop and save</string>
     <string name="pair_receiver">Pair receiver QR</string>
     <string name="sync_now">Sync now</string>
+    <string name="receiver_controls">Receiver</string>
     <string name="status_format">%1$s\nPending: %2$d · oldest: %3$s\nLast sync: %4$s\nNeed attention: %5$d\nLatest failure: %6$s</string>
     <string name="paired_status">Paired with %1$s</string>
     <string name="unpaired_status">Not paired; recording still works offline</string>

@@ -116,6 +116,11 @@ class MainActivity : Activity() {
             setOnClickListener { toggleRecording() }
         }
         content.addView(captureButton, matchWidth())
+        content.addView(TextView(this).apply {
+            text = getString(R.string.receiver_controls)
+            textSize = 14f
+            setPadding(0, padding, 0, padding / 2)
+        }, matchWidth())
         pairButton = Button(this).apply {
             text = getString(R.string.pair_receiver)
             setOnClickListener { launchQrCamera() }
@@ -127,14 +132,14 @@ class MainActivity : Activity() {
                 UploadWorker.enqueue(applicationContext, manual = true)
                 statusView.text = getString(R.string.sync_queued)
             }
-        }, matchWidth())
+        }, matchWidth(topMargin = padding / 2))
         return ScrollView(this).apply { addView(content) }
     }
 
-    private fun matchWidth() = LinearLayout.LayoutParams(
+    private fun matchWidth(topMargin: Int = 0) = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT,
-    )
+    ).apply { setMargins(0, topMargin, 0, 0) }
 
     private fun toggleRecording() {
         if (recorder != null) {
