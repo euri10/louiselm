@@ -300,7 +300,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
     data = { toolCallId = "tool-1", status = "completed" },
   })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 10
+    return #buffer_lines(chat:buffer()) == 11
   end, 1)
 
   MiniTest.expect.equality(first.prompts, { "/compact" })
@@ -313,6 +313,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
       "hello **world**",
       "",
       "[tool] tool-1: Read file (completed)",
+      "",
       "> ",
     })
   )
@@ -981,7 +982,7 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
   })
 
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) == 12
+    return #buffer_lines(chat:buffer()) == 13
   end, 1)
 
   MiniTest.expect.equality(
@@ -995,6 +996,7 @@ T["chat"]["keeps interleaved response and tool events chronological"] = function
       "[tool] tool-1: Read file (completed)",
       "",
       "after tool",
+      "",
       "> ",
     })
   )
@@ -1177,6 +1179,7 @@ T["chat"]["schedules session events before touching buffers"] = function()
       "> hello",
       "",
       "scheduled",
+      "",
       "> ",
     })
   )
@@ -1216,6 +1219,7 @@ T["chat"]["renders replayed user and assistant chunks before a new prompt"] = fu
       "> second line",
       "",
       "replayed",
+      "",
       "> ",
     })
   )
@@ -1296,7 +1300,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer("session-2")),
-    chat_lines("codex · session-2", "status=ready · display=Your turn", { "", "replayed history", "> " })
+    chat_lines("codex · session-2", "status=ready · display=Your turn", { "", "replayed history", "", "> " })
   )
 
   nvim.schedule = original_schedule
@@ -1424,6 +1428,7 @@ T["chat"]["keeps a blank boundary before the first scheduled assistant event"] =
       "> hello",
       "",
       "scheduled",
+      "",
       "> ",
     })
   )
@@ -2531,7 +2536,7 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(prompts[1].prompt, "louiselm session: ")
-  MiniTest.expect.equality(prompts[1].format_item(first), "one/one-acp · session-1 · ready")
+  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready · one/one-acp")
   MiniTest.expect.equality(prompts[2].prompt, "close active louiselm session? ")
   MiniTest.expect.equality(second.disposed, true)
   MiniTest.expect.equality(first.disposed, false)

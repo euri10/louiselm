@@ -1378,9 +1378,13 @@ local function handle_event(self, view, event)
         insertion_line = insertion_line + 1
         separator = 1
       end
+      local response_line_count = #lines
+      if view.last_block_kind ~= "tool" then
+        lines[#lines + 1] = ""
+      end
       nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, lines)
       view.response_line = insertion_line
-      view.response_tail = insertion_line + #lines - 1
+      view.response_tail = insertion_line + response_line_count - 1
       view.transcript_tail = view.response_tail
       mark_prompt(view, view.prompt_line + separator + #lines)
       view.response_started = true
