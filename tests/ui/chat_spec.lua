@@ -2682,6 +2682,20 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   chat:dispose()
 end
 
+T["chat"]["blocks a last-window quit when multiple sessions are attached"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+
+  MiniTest.expect.equality(chat:should_block_quit(), true)
+
+  second.state.status = "disposed"
+  MiniTest.expect.equality(chat:should_block_quit(), false)
+  chat:dispose()
+end
+
 T["chat"]["renames the current session and refreshes its header"] = function()
   local first = fake_session("session-1", "claude")
   first.state.name = "First"

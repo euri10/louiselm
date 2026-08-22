@@ -75,6 +75,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
+---@field should_block_quit fun(self: louiselm.ui.Chat): boolean Whether a last-window quit would abandon multiple sessions.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
 ---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
@@ -1882,6 +1883,28 @@ function Chat:is_attached(session_id)
     return false, "session is not attached"
   end
   return true
+end
+
+---Report whether quitting Neovim from the current chat buffer would abandon
+---multiple attached sessions.
+---@param self louiselm.ui.Chat
+---@return boolean blocked Whether a last-window quit should be blocked.
+function Chat:should_block_quit()
+  if self.disposed or #nvim.api.nvim_list_wins() ~= 1 then
+    return false
+  end
+  local current_buffer = nvim.api.nvim_get_current_buf()
+  local attached = false
+  local sessions = 0
+  for _, view in pairs(self.views) do
+    if view.buffer == current_buffer then
+      attached = true
+    end
+    if view.session:inspect().status ~= "disposed" then
+      sessions = sessions + 1
+    end
+  end
+  return attached and sessions > 1
 end
 
 ---Switch focus to an attached session buffer.

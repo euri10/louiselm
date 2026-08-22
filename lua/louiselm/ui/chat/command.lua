@@ -252,6 +252,23 @@ function M.register()
     return chat
   end
 
+  nvim.api.nvim_create_autocmd("QuitPre", {
+    group = nvim.api.nvim_create_augroup("louiselm.chat.quit", { clear = true }),
+    callback = function()
+      if chat == nil or not chat:should_block_quit() then
+        return
+      end
+      nvim.notify(
+        "louiselm: multiple sessions are open; use :LouiselmSwitchSession or :LouiselmCloseSession before quitting",
+        nvim.log.levels.WARN
+      )
+      -- QuitPre has no cancellation API in Neovim; raising aborts the quit
+      -- command after the actionable warning above.
+      error("louiselm: refusing to quit with multiple chat sessions open", 0)
+    end,
+    desc = "Protect multiple louiselm sessions from accidental last-window quit",
+  })
+
   ---@return louiselm.ui.Chat? value
   local function open_chat()
     local current = ensure_chat()
