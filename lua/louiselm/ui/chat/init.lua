@@ -928,6 +928,23 @@ local function tool_id(value)
 end
 
 ---@param value unknown
+---@return boolean has_image Whether an ACP tool payload contains an image block.
+local function tool_has_image(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  if value.type == "image" then
+    return true
+  end
+  for _, nested in pairs(value) do
+    if tool_has_image(nested) then
+      return true
+    end
+  end
+  return false
+end
+
+---@param value unknown
 ---@return string? text
 local function field(value, name)
   if type(value) == "table" and type(value[name]) == "string" and value[name] ~= "" then
@@ -1550,6 +1567,9 @@ local function handle_event(self, view, event)
         detail = detail .. ": " .. title
       end
       detail = detail .. " (" .. (status or "finished") .. ")"
+      if status == "completed" and tool_has_image(event.data) then
+        detail = detail .. " · image result — use :LouiselmInspectTool"
+      end
       local line = view.tool_lines[id]
       if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
         set_line(view.buffer, line, "[tool] " .. detail)

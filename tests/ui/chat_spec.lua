@@ -508,6 +508,40 @@ T["chat"]["inspects finished and active tool payloads from their lines"] = funct
   chat:dispose()
 end
 
+T["chat"]["marks image tool results with the raw-payload fallback"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Generate image" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = {
+      toolCallId = "tool-1",
+      status = "completed",
+      content = {
+        { type = "content", content = { type = "image", data = "aGVsbG8=", mimeType = "image/png" } },
+      },
+    },
+  })
+
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[6]
+      == "[tool] tool-1: Generate image (completed) · image result — use :LouiselmInspectTool"
+  end, 1)
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer())[6],
+    "[tool] tool-1: Generate image (completed) · image result — use :LouiselmInspectTool"
+  )
+  chat:dispose()
+end
+
 T["chat"]["shows skill status and keeps slash prompts when skills are off"] = function()
   local first = fake_session("session-1", "claude")
   first.state.skills_policy = "off"
