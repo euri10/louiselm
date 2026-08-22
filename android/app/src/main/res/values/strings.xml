@@ -16,6 +16,7 @@
     <string name="recording_failed">Recording failed: %1$s</string>
     <string name="recording_retained">Recording could not be finalized. The partial file remains at %1$s.</string>
     <string name="camera_missing">No camera app is available to scan the pairing QR.</string>
+    <string name="pairing_decode">Reading the pairing QR…</string>
     <string name="qr_not_found">No LouiseLM pairing QR was found. Move closer and try again.</string>
     <string name="pairing_in_progress">Pairing with the pinned receiver…</string>
     <string name="pairing_failed">Pairing failed: %1$s</string>

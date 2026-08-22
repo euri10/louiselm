@@ -250,17 +250,18 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != QR_CAMERA_REQUEST || resultCode != RESULT_OK) return
+        statusView.text = getString(R.string.pairing_decode)
         val photo = qrPhoto
         qrPhoto = null
         if (photo == null || !photo.isFile) {
-            statusView.text = getString(R.string.qr_not_found)
+            refreshStatus(getString(R.string.qr_not_found))
             return
         }
         val scanner = BarcodeScanning.getClient()
         val image = runCatching { InputImage.fromFilePath(this, Uri.fromFile(photo)) }.getOrElse {
             photo.delete()
             scanner.close()
-            statusView.text = getString(R.string.qr_not_found)
+            refreshStatus(getString(R.string.qr_not_found))
             return
         }
         scanner.process(image)
@@ -270,7 +271,7 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@addOnSuccessListener
                 val payload = barcodes.firstNotNullOfOrNull { it.rawValue }
                 if (payload == null) {
-                    statusView.text = getString(R.string.qr_not_found)
+                    refreshStatus(getString(R.string.qr_not_found))
                 } else {
                     pair(payload)
                 }
@@ -279,7 +280,7 @@ class MainActivity : Activity() {
                 photo.delete()
                 scanner.close()
                 if (isDestroyed) return@addOnFailureListener
-                statusView.text = getString(R.string.qr_not_found)
+                refreshStatus(getString(R.string.qr_not_found))
             }
     }
 
@@ -309,7 +310,7 @@ class MainActivity : Activity() {
                     }
                 }.onFailure { error ->
                     setPairingBusy(false)
-                    statusView.text = getString(R.string.pairing_failed, error.message ?: "receiver unavailable")
+                    refreshStatus(getString(R.string.pairing_failed, error.message ?: "receiver unavailable"))
                 }
             }
         }
@@ -365,7 +366,7 @@ class MainActivity : Activity() {
                     UploadWorker.enqueue(applicationContext)
                     refreshStatus()
                 }.onFailure { error ->
-                    statusView.text = getString(R.string.pairing_failed, error.message ?: "receiver unavailable")
+                    refreshStatus(getString(R.string.pairing_failed, error.message ?: "receiver unavailable"))
                 }
             }
         }
@@ -383,7 +384,7 @@ class MainActivity : Activity() {
 
     private fun deviceName(): String = "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80)
 
-    private fun refreshStatus() {
+    private fun refreshStatus(message: String? = null) {
         networkExecutor.execute {
             val status = runCatching {
                 val pairing = pairingStore.load()
@@ -394,7 +395,7 @@ class MainActivity : Activity() {
                     getString(R.string.paired_status, pairing.receiverUrl)
                 }
                 val queue = captureStore.queueStatus()
-                getString(
+                val durableStatus = getString(
                     R.string.status_format,
                     pairingText,
                     queue.pending,
@@ -403,6 +404,7 @@ class MainActivity : Activity() {
                     queue.attention,
                     queue.latestFailure ?: getString(R.string.none_status),
                 )
+                if (message == null) durableStatus else "$durableStatus\n$message"
             }
             runOnUiThread {
                 if (isDestroyed || recorder != null) return@runOnUiThread
