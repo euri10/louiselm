@@ -1,7 +1,10 @@
 package dev.louiselm.capture
 
 import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UploadWorkerTest {
@@ -9,5 +12,15 @@ class UploadWorkerTest {
     fun manualSyncReplacesBackedOffUploadWork() {
         assertEquals(ExistingWorkPolicy.REPLACE, uploadWorkPolicy(manual = true))
         assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, uploadWorkPolicy(manual = false))
+    }
+
+    @Test
+    fun uploadStatusRefreshesOnlyAfterWorkReachesATerminalState() {
+        assertFalse(hasFinishedUploadState(emptyList()))
+        assertFalse(hasFinishedUploadState(listOf(WorkInfo.State.ENQUEUED)))
+        assertFalse(hasFinishedUploadState(listOf(WorkInfo.State.RUNNING)))
+        assertTrue(hasFinishedUploadState(listOf(WorkInfo.State.SUCCEEDED)))
+        assertTrue(hasFinishedUploadState(listOf(WorkInfo.State.FAILED)))
+        assertTrue(hasFinishedUploadState(listOf(WorkInfo.State.CANCELLED)))
     }
 }

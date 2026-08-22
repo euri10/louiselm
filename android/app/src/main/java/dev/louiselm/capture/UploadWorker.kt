@@ -41,7 +41,7 @@ internal class UploadWorker(context: Context, parameters: WorkerParameters) : Wo
     }
 
     companion object {
-        private const val UNIQUE_WORK = "capture-upload"
+        internal const val UNIQUE_WORK = "capture-upload"
 
         fun enqueue(context: Context, manual: Boolean = false) {
             val constraints = Constraints.Builder()
@@ -55,6 +55,12 @@ internal class UploadWorker(context: Context, parameters: WorkerParameters) : Wo
         }
     }
 }
+
+internal fun hasFinishedUpload(workInfos: List<androidx.work.WorkInfo>): Boolean =
+    hasFinishedUploadState(workInfos.map { it.state })
+
+internal fun hasFinishedUploadState(states: List<androidx.work.WorkInfo.State>): Boolean =
+    states.any { it.isFinished }
 
 internal fun uploadWorkPolicy(manual: Boolean): ExistingWorkPolicy = if (manual) {
     ExistingWorkPolicy.REPLACE

@@ -22,6 +22,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.Observer
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
@@ -45,6 +49,10 @@ class MainActivity : Activity() {
     private var pendingRecording: PendingRecording? = null
     private var startedAtElapsedMs = 0L
     private var qrPhoto: File? = null
+    private val uploadObserver = Observer<List<WorkInfo>> { workInfos ->
+        if (hasFinishedUpload(workInfos)) refreshStatus()
+    }
+    private var uploadWorkLiveData: LiveData<List<WorkInfo>>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,16 +67,30 @@ class MainActivity : Activity() {
         if (recorder == null) refreshStatus()
     }
 
+    override fun onStart() {
+        super.onStart()
+        uploadWorkLiveData = WorkManager.getInstance(applicationContext)
+            .getWorkInfosForUniqueWorkLiveData(UploadWorker.UNIQUE_WORK)
+            .also { it.observeForever(uploadObserver) }
+    }
+
     override fun onStop() {
+        stopObservingUpload()
         if (recorder != null) stopRecording()
         super.onStop()
     }
 
     override fun onDestroy() {
+        stopObservingUpload()
         recorder?.release()
         recorder = null
         networkExecutor.shutdown()
         super.onDestroy()
+    }
+
+    private fun stopObservingUpload() {
+        uploadWorkLiveData?.removeObserver(uploadObserver)
+        uploadWorkLiveData = null
     }
 
     private fun contentView(): ScrollView {
