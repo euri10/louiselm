@@ -34,6 +34,9 @@ local Transcript = require("louiselm.session.transcript")
 ---@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
 ---@field context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
 ---@field fold_counts table<integer, integer> Number of context folds installed in each window.
+---@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
+---@field tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
+---@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous completed tool-call lines awaiting a successor.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
@@ -673,6 +676,15 @@ end
 ---@field first integer Zero-based first folded line.
 ---@field last integer Zero-based last folded line.
 
+---@class louiselm.ui.ToolFoldRun
+---@field first integer Zero-based first completed tool line.
+---@field last integer Zero-based last completed tool line.
+---@field count integer Number of completed tool lines in the run.
+
+---@class louiselm.ui.ToolFold
+---@field first integer Zero-based first folded line.
+---@field last integer Zero-based last folded line.
+
 ---@param item louiselm.ui.ContextItem
 ---@return table block
 local function context_content(item)
@@ -698,6 +710,53 @@ local function apply_context_folds(view, win)
     end
   end)
   view.fold_counts[win] = #view.context_folds
+end
+
+---@param view louiselm.ui.ChatView
+---@param win integer
+local function apply_tool_folds(view, win)
+  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
+    return
+  end
+  nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
+  nvim.api.nvim_set_option_value("foldenable", true, { win = win })
+  local applied = view.tool_fold_counts[win] or 0
+  nvim.api.nvim_win_call(win, function()
+    for index = applied + 1, #view.tool_folds do
+      local fold = view.tool_folds[index]
+      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+    end
+  end)
+  view.tool_fold_counts[win] = #view.tool_folds
+end
+
+---@param view louiselm.ui.ChatView
+local function close_tool_fold_run(view)
+  local run = view.tool_fold_run
+  if run == nil then
+    return
+  end
+  if run.count > 1 then
+    view.tool_folds[#view.tool_folds + 1] = { first = run.first, last = run.last }
+    apply_tool_folds(view, view.window)
+  end
+  view.tool_fold_run = nil
+end
+
+---@param view louiselm.ui.ChatView
+---@param line integer Zero-based completed tool line.
+local function record_completed_tool(view, line)
+  local run = view.tool_fold_run
+  if run ~= nil and line ~= run.last + 1 then
+    close_tool_fold_run(view)
+    run = nil
+  end
+  if run == nil then
+    view.tool_fold_run = { first = line, last = line, count = 1 }
+  else
+    run.last = line
+    run.count = run.count + 1
+  end
 end
 
 ---@param view louiselm.ui.ChatView
@@ -1365,6 +1424,7 @@ local function handle_event(self, view, event)
     if text == nil then
       return
     end
+    close_tool_fold_run(view)
     if not view.response_started then
       local lines = split_lines(text)
       local insertion_line = view.response_tail
@@ -1421,6 +1481,9 @@ local function handle_event(self, view, event)
       view.tool_lines[id] = view.transcript_tail
       view.last_block_kind = "tool"
     else
+      if status ~= "completed" then
+        close_tool_fold_run(view)
+      end
       title = title or view.tool_titles[id]
       local detail = id
       if title ~= nil then
@@ -1438,8 +1501,12 @@ local function handle_event(self, view, event)
         insert_transcript(self, view, lines)
         view.last_block_kind = "tool"
       end
+      local rendered_line = view.tool_lines[id] or line or view.transcript_tail
       view.tool_lines[id] = nil
       view.tool_titles[id] = nil
+      if status == "completed" and rendered_line ~= nil then
+        record_completed_tool(view, rendered_line)
+      end
     end
     view.response_line = nil
     view.response_tail = nil
@@ -1467,6 +1534,7 @@ local function handle_event(self, view, event)
   elseif event.type == "permission_cancelled" then
     cancel_decisions(self, view, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
+    close_tool_fold_run(view)
     local line = usage_line(view.session:inspect().usage)
     if line ~= nil then
       insert_transcript(self, view, { line })
@@ -1670,6 +1738,9 @@ function Chat:attach(session)
     pending_skill = nil,
     context_folds = {},
     fold_counts = {},
+    tool_folds = {},
+    tool_fold_counts = {},
+    tool_fold_run = nil,
     queued_prompt = nil,
     queue_mark = nil,
     queue_namespace = self.queue_namespace,
@@ -1769,6 +1840,7 @@ function Chat:switch(session_id)
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
   apply_context_folds(view, view.window)
+  apply_tool_folds(view, view.window)
   render_winbar(self, view, view.window)
   return true
 end

@@ -321,6 +321,98 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
   chat:dispose()
 end
 
+T["chat"]["folds completed tool runs when superseded"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  for index = 1, 3 do
+    first:emit({
+      type = "tool_call_started",
+      session_id = "session-1",
+      data = { toolCallId = "tool-" .. index, title = "Read file" },
+    })
+    first:emit({
+      type = "tool_call_finished",
+      session_id = "session-1",
+      data = { toolCallId = "tool-" .. index, status = "completed" },
+    })
+  end
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "done" } },
+  })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) >= 10
+  end, 1)
+
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
+  MiniTest.expect.equality({ fold_range(9) }, { -1, -1 })
+  chat:dispose()
+end
+
+T["chat"]["folds a trailing completed tool run at turn end"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  for index = 1, 3 do
+    first:emit({
+      type = "tool_call_started",
+      session_id = "session-1",
+      data = { toolCallId = "tool-" .. index },
+    })
+    first:emit({
+      type = "tool_call_finished",
+      session_id = "session-1",
+      data = { toolCallId = "tool-" .. index, status = "completed" },
+    })
+  end
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) >= 9
+  end, 1)
+
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
+  chat:dispose()
+end
+
+T["chat"]["does not fold failed or active tool calls"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "failed" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "failed", status = "failed" },
+  })
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "active" },
+  })
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "done" } },
+  })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) >= 9
+  end, 1)
+
+  for line = 6, #buffer_lines(chat:buffer()) do
+    MiniTest.expect.equality({ fold_range(line) }, { -1, -1 })
+  end
+  chat:dispose()
+end
+
 T["chat"]["shows skill status and keeps slash prompts when skills are off"] = function()
   local first = fake_session("session-1", "claude")
   first.state.skills_policy = "off"
