@@ -316,6 +316,15 @@ function M.register()
     report_error(switch_error)
   end, { desc = "Switch between louiselm sessions", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmHandOff", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, hand_off_error = chat:hand_off()
+    report_error(hand_off_error)
+  end, { desc = "Hand the current session's reviewed transcript off to another agent", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmRenameSession", function()
     if chat == nil then
       report_error("no chat session is open")

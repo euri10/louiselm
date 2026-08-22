@@ -89,6 +89,7 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmResume ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmResume.bang, true)
   MiniTest.expect.equality(commands.LouiselmSwitchSession ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmHandOff ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmRenameSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCloseSession ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionId ~= nil, true)
@@ -196,7 +197,13 @@ T["command"]["reports when no chat session is open for LouiselmToMarkdown"] = fu
 end
 
 T["command"]["reports when no chat session is open for the context-picker commands"] = function()
-  for _, name in ipairs({ "LouiselmPickSkill", "LouiselmPickFile", "LouiselmMentionBuffer", "LouiselmSendSelection" }) do
+  for _, name in ipairs({
+    "LouiselmPickSkill",
+    "LouiselmPickFile",
+    "LouiselmMentionBuffer",
+    "LouiselmSendSelection",
+    "LouiselmHandOff",
+  }) do
     local original_notify = nvim.notify
     local notification
     rawset(nvim, "notify", function(message, level)

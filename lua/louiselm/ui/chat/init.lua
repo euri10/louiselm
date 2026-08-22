@@ -94,6 +94,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field pick_file fun(self: louiselm.ui.Chat, root?: string): boolean, string? Pick and queue a file context.
 ---@field pick_skill fun(self: louiselm.ui.Chat): boolean, string? Pick and queue a skill invocation.
 ---@field new_session fun(self: louiselm.ui.Chat, agent_name?: string, options?: louiselm.session.Options): louiselm.session.Session?, string? Create a session, using the picker when needed.
+---@field hand_off fun(self: louiselm.ui.Chat): boolean, string? Hand the current session's reviewed transcript off to another configured agent.
 ---@field resume_session fun(self: louiselm.ui.Chat, all_workspaces?: boolean): boolean, string? Discover and load a prior ACP session.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
@@ -2529,6 +2530,56 @@ function Chat:new_session(agent_name, options)
     end
   end
   return session
+end
+
+---Hand the current session's reviewed transcript off to another configured
+---agent: pick a target agent, create and seed its session the same way
+---`new_session` does, then open the editable transcript review buffer.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message Validation or session-state error.
+function Chat:hand_off()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if self.decision_active then
+    return false, DECISION_OPEN_ERROR
+  end
+  local source_id = self.current_id
+  local source_view = source_id and self.views[source_id]
+  if source_view == nil then
+    return false, "no chat session is attached"
+  end
+  local source_state = source_view.session:inspect()
+  if source_state.status ~= "ready" or source_view.queued_prompt ~= nil then
+    return false, "current session has an active turn; finish or cancel it before handing off"
+  end
+  if #self.agents < 2 then
+    return false, "handoff requires at least two configured agents"
+  end
+
+  local candidates = {}
+  for _, name in ipairs(self.agents) do
+    if name ~= source_state.agent then
+      candidates[#candidates + 1] = name
+    end
+  end
+
+  Picker.select(candidates, { prompt = "louiselm handoff target: " }, function(agent_name)
+    if agent_name == nil or self.disposed or self.views[source_id] ~= source_view then
+      return
+    end
+    local target_session, session_error = self:new_session(agent_name)
+    if target_session == nil then
+      nvim.notify("louiselm: " .. (session_error or "could not create handoff target session"), nvim.log.levels.ERROR)
+      return
+    end
+    local _, handoff_error = self:open_handoff(target_session, source_id)
+    if handoff_error ~= nil then
+      nvim.notify("louiselm: " .. handoff_error, nvim.log.levels.ERROR)
+    end
+  end)
+  return true
 end
 
 ---Discover and load an ACP session into a new chat buffer.

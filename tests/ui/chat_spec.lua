@@ -219,6 +219,117 @@ T["chat"]["refuses an empty handoff buffer"] = function()
   chat:dispose()
 end
 
+T["chat"]["hands off the current session to a picked agent"] = function()
+  local source = fake_session("source", "claude")
+  local created_agent
+  local target = fake_session("target", "codex")
+  local api = fake_api()
+  api.create_session = function(_, agent_name)
+    created_agent = agent_name
+    return target
+  end
+  local chat = assert(Chat.new(api, { agents = { "claude", "codex", "deepseek" } }))
+  assert(chat:attach(source))
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(items, _, callback)
+    MiniTest.expect.equality(items, { "codex", "deepseek" })
+    callback("codex")
+  end
+
+  local started, error_message = chat:hand_off()
+
+  nvim.ui.select = original_select
+  MiniTest.expect.equality({ started, error_message }, { true, nil })
+  MiniTest.expect.equality(created_agent, "codex")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "# louiselm session transcript")
+
+  -- The source stays attached and reachable through the ordinary switcher.
+  assert(chat:switch("source"))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), chat:buffer("source"))
+  chat:dispose()
+end
+
+T["chat"]["does nothing when the handoff target picker is dismissed"] = function()
+  local source = fake_session("source", "claude")
+  local api = fake_api()
+  api.create_session = function()
+    error("must not create a session when the picker is dismissed")
+  end
+  local chat = assert(Chat.new(api, { agents = { "claude", "codex" } }))
+  assert(chat:attach(source))
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    callback(nil)
+  end
+
+  local started = chat:hand_off()
+
+  nvim.ui.select = original_select
+  MiniTest.expect.equality(started, true)
+  chat:dispose()
+end
+
+T["chat"]["refuses a handoff with no chat session attached"] = function()
+  local chat = assert(Chat.new(fake_api(), { agents = { "claude", "codex" } }))
+
+  MiniTest.expect.equality({ chat:hand_off() }, { false, "no chat session is attached" })
+
+  chat:dispose()
+end
+
+T["chat"]["refuses a handoff from a non-idle source session"] = function()
+  local source = fake_session("source", "claude")
+  source.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api(), { agents = { "claude", "codex" } }))
+  assert(chat:attach(source))
+
+  local started, error_message = chat:hand_off()
+
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(error_message, "current session has an active turn; finish or cancel it before handing off")
+  chat:dispose()
+end
+
+T["chat"]["refuses a handoff with fewer than two configured agents"] = function()
+  local source = fake_session("source", "claude")
+  local chat = assert(Chat.new(fake_api(), { agents = { "claude" } }))
+  assert(chat:attach(source))
+
+  MiniTest.expect.equality({ chat:hand_off() }, { false, "handoff requires at least two configured agents" })
+  chat:dispose()
+end
+
+T["chat"]["reports a target session creation failure without disturbing the source"] = function()
+  local source = fake_session("source", "claude")
+  local api = fake_api()
+  api.create_session = function()
+    return nil, "codex-acp: executable not found on PATH"
+  end
+  local chat = assert(Chat.new(api, { agents = { "claude", "codex" } }))
+  assert(chat:attach(source))
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    callback("codex")
+  end
+  local original_notify = nvim.notify
+  local notified
+  rawset(nvim, "notify", function(message, level)
+    notified = { message = message, level = level }
+  end)
+
+  local started = chat:hand_off()
+
+  nvim.ui.select = original_select
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(started, true)
+  MiniTest.expect.equality(notified, {
+    message = "louiselm: codex-acp: executable not found on PATH",
+    level = nvim.log.levels.ERROR,
+  })
+  MiniTest.expect.equality(chat:buffer("source"), nvim.api.nvim_get_current_buf())
+  chat:dispose()
+end
+
 T["chat"]["lists and confirms revocation of remembered permission rules"] = function()
   local api = fake_api()
   local revoked
@@ -2128,6 +2239,7 @@ T["chat"]["refuses command pickers while a permission decision is open"] = funct
   MiniTest.expect.equality({ chat:manage_permissions() }, { false, busy })
   MiniTest.expect.equality({ chat:resume_session() }, { false, busy })
   MiniTest.expect.equality({ chat:new_session() }, { nil, busy })
+  MiniTest.expect.equality({ chat:hand_off() }, { false, busy })
   MiniTest.expect.equality(#pickers, 1)
 
   -- Closing the session stays reachable: it is the way out when a decision is stuck.

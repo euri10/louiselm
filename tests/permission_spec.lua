@@ -91,6 +91,21 @@ T["remembered"]["persists exact adapter and workspace command prefixes"] = funct
   nvim.fn.delete(root, "rf")
 end
 
+T["remembered"]["does not apply a rule remembered for one agent to a handoff target on another"] = function()
+  local root = nvim.fn.tempname()
+  local path = nvim.fs.joinpath(root, "permissions.json")
+  local context = permission_context(nvim.fs.joinpath(root, "workspace"))
+  local store = assert(Permission.store(path))
+
+  assert(store:remember(context, { kind = "command", command = { "git", "status" } }, "allow", "always"))
+  MiniTest.expect.equality(store:evaluate(context, { kind = "command", command = { "git", "status" } }), "allow")
+
+  local other_agent = permission_context(context.workspace)
+  other_agent.agent = "claude"
+  MiniTest.expect.equality(store:evaluate(other_agent, { kind = "command", command = { "git", "status" } }), "ask")
+  nvim.fn.delete(root, "rf")
+end
+
 T["remembered"]["keeps session rules in memory and file rules scoped to one exact path"] = function()
   local root = nvim.fn.tempname()
   local path = nvim.fs.joinpath(root, "permissions.json")

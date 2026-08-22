@@ -279,6 +279,7 @@ The interactive controls are:
 - `:LouiselmResume` — discover and load a session from the current workspace
 - `:LouiselmResume!` — discover and load a session from any workspace
 - `:LouiselmSwitchSession` — switch using compact session telemetry rows
+- `:LouiselmHandOff` — hand the current session's reviewed transcript off to another configured agent, keeping the source attached
 - `:LouiselmRenameSession` — give the current session a human-readable name
 - `:LouiselmSessionId` — copy the current agent-scoped ACP session identifier
 - `:LouiselmCloseSession` — dispose the current session and remove its buffer
