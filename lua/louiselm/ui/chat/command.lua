@@ -262,9 +262,9 @@ function M.register()
         "louiselm: multiple sessions are open; use :LouiselmSwitchSession or :LouiselmCloseSession before quitting",
         nvim.log.levels.WARN
       )
-      -- QuitPre has no cancellation API in Neovim; raising aborts the quit
-      -- command after the actionable warning above.
-      error("louiselm: refusing to quit with multiple chat sessions open", 0)
+      -- QuitPre has no cancellation API in Neovim. Make the pending :q close
+      -- a temporary duplicate window instead, leaving the chat window alive.
+      nvim.api.nvim_open_win(nvim.api.nvim_get_current_buf(), true, { split = "below" })
     end,
     desc = "Protect multiple louiselm sessions from accidental last-window quit",
   })

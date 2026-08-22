@@ -105,6 +105,34 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
 end
 
+T["command"]["keeps the chat window when QuitPre protects multiple sessions"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "first-acp" })
+  nvim.api.nvim_cmd({ cmd = "LouiselmNewSession", args = {} }, {})
+  respond(process, 3, { sessionId = "second-acp" })
+
+  local original_window = nvim.api.nvim_get_current_win()
+  pcall(nvim.api.nvim_exec_autocmds, "QuitPre", {})
+  local window_count = #nvim.api.nvim_list_wins()
+
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+  for _, window in ipairs(nvim.api.nvim_list_wins()) do
+    if window ~= original_window then
+      nvim.api.nvim_win_close(window, true)
+    end
+  end
+  delete_chat_buffers()
+
+  MiniTest.expect.equality(window_count, 2)
+  MiniTest.expect.equality(nvim.api.nvim_win_is_valid(original_window), true)
+end
+
 T["command"]["reports when no session id is available"] = function()
   local original_notify = nvim.notify
   local notification
