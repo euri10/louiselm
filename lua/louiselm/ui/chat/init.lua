@@ -68,6 +68,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field current_id string? Currently displayed session id.
+---@field handoffs table<integer, louiselm.ui.Handoff>
 ---@field disposed boolean Whether the chat UI has been disposed.
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
@@ -82,6 +83,9 @@ local Transcript = require("louiselm.session.transcript")
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
 ---@field to_markdown fun(self: louiselm.ui.Chat, session_id?: string, path?: string): string?, string? Export a session's full transcript to a markdown file.
+---@field open_handoff fun(self: louiselm.ui.Chat, target_session: louiselm.session.Session, source_session_id?: string): integer?, string? Open an editable transcript for a target session.
+---@field submit_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Submit and close a handoff buffer.
+---@field abandon_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Close a handoff buffer without sending it.
 ---@field set_config_option fun(self: louiselm.ui.Chat, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string? Change an idle session option.
 ---@field submit fun(self: louiselm.ui.Chat, text?: string): string|number|boolean?, string? Submit or queue the current prompt.
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
@@ -96,6 +100,10 @@ local Transcript = require("louiselm.session.transcript")
 local M = {}
 local Chat = {}
 Chat.__index = Chat
+
+---@class louiselm.ui.Handoff
+---@field target_session louiselm.session.Session
+---@field target_session_id string
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -255,6 +263,15 @@ local DEFAULT_HIGHLIGHTS = {
 local function setup_highlights()
   for name, link in pairs(DEFAULT_HIGHLIGHTS) do
     nvim.api.nvim_set_hl(0, name, { default = true, link = link })
+  end
+end
+
+---@param self louiselm.ui.Chat
+---@param buffer integer
+local function close_handoff(self, buffer)
+  self.handoffs[buffer] = nil
+  if nvim.api.nvim_buf_is_valid(buffer) then
+    nvim.api.nvim_buf_delete(buffer, { force = true })
   end
 end
 
@@ -1716,6 +1733,7 @@ function M.new(api, options)
     views = {},
     tool_inspect_windows = {},
     winbars = {},
+    handoffs = {},
     current_id = nil,
     disposed = false,
   }, Chat)
@@ -1841,6 +1859,100 @@ function Chat:buffer(session_id)
   local id = session_id or self.current_id
   local view = id and self.views[id]
   return view and view.buffer or nil
+end
+
+---Open a transcript review buffer for another session.
+---@param self louiselm.ui.Chat
+---@param target_session louiselm.session.Session Session that will receive the reviewed prompt.
+---@param source_session_id? string Attached source session; defaults to the current session.
+---@return integer? buffer
+---@return string? error_message Validation or session state error.
+function Chat:open_handoff(target_session, source_session_id)
+  if self.disposed then
+    return nil, "chat UI is disposed"
+  end
+  if
+    type(target_session) ~= "table"
+    or type(target_session.inspect) ~= "function"
+    or type(target_session.prompt) ~= "function"
+  then
+    return nil, "handoff requires a target session"
+  end
+  local source_id = source_session_id or self.current_id
+  local source_view = source_id and self.views[source_id]
+  if source_view == nil then
+    return nil, "no source chat session is attached"
+  end
+  local target_state = target_session:inspect()
+  if type(target_state) ~= "table" or type(target_state.id) ~= "string" then
+    return nil, "target session has invalid state"
+  end
+  if target_state.id == source_id then
+    return nil, "handoff target must differ from source session"
+  end
+
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_name(buffer, "louiselm://handoff-" .. source_id .. "-" .. target_state.id)
+  nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
+  nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
+  nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
+  nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
+  local markdown = Transcript.render(source_view.transcript:snapshot(), source_view.session:inspect())
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, nvim.split(markdown, "\n", { plain = true }))
+  self.handoffs[buffer] = { target_session = target_session, target_session_id = target_state.id }
+  nvim.api.nvim_set_current_buf(buffer)
+  nvim.keymap.set("n", "<C-s>", function()
+    self:submit_handoff(buffer)
+  end, { buffer = buffer, silent = true, desc = "Submit louiselm handoff" })
+  nvim.keymap.set("n", "q", function()
+    self:abandon_handoff(buffer)
+  end, { buffer = buffer, silent = true, desc = "Abandon louiselm handoff" })
+  nvim.keymap.set("n", "<Esc>", function()
+    self:abandon_handoff(buffer)
+  end, { buffer = buffer, silent = true, desc = "Abandon louiselm handoff" })
+  return buffer
+end
+
+---Submit the current contents of a handoff review buffer.
+---@param self louiselm.ui.Chat
+---@param buffer integer Handoff buffer returned by `open_handoff`.
+---@return boolean sent
+---@return string? error_message Validation or target-session error.
+function Chat:submit_handoff(buffer)
+  local handoff = self.handoffs[buffer]
+  if handoff == nil or not nvim.api.nvim_buf_is_valid(buffer) then
+    return false, "handoff buffer is not open"
+  end
+  local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+  if text:match("%S") == nil then
+    return false, "handoff prompt must be a non-empty string"
+  end
+  local request_id, prompt_error = handoff.target_session:prompt(text)
+  if request_id == nil then
+    return false, prompt_error or "handoff prompt could not be sent"
+  end
+  close_handoff(self, buffer)
+  if self.views[handoff.target_session_id] ~= nil then
+    self:switch(handoff.target_session_id)
+  end
+  return true
+end
+
+---Close a handoff review buffer without sending its contents.
+---@param self louiselm.ui.Chat
+---@param buffer integer Handoff buffer returned by `open_handoff`.
+---@return boolean abandoned
+---@return string? error_message Validation error.
+function Chat:abandon_handoff(buffer)
+  local handoff = self.handoffs[buffer]
+  if handoff == nil then
+    return false, "handoff buffer is not open"
+  end
+  close_handoff(self, buffer)
+  if self.views[handoff.target_session_id] ~= nil then
+    self:switch(handoff.target_session_id)
+  end
+  return true
 end
 
 ---Open the full raw payload for the tool call under the cursor.
@@ -2487,6 +2599,9 @@ function Chat:dispose()
   self.tool_inspect_windows = {}
   self.decision_active = nil
   pump_decisions(self)
+  for buffer in pairs(self.handoffs) do
+    close_handoff(self, buffer)
+  end
   for id, view in pairs(self.views) do
     clear_queued_prompt(view)
     view.unsubscribe()

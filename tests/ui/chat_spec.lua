@@ -168,6 +168,57 @@ T["chat"]["focuses the prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["opens an editable transcript handoff and submits its edits"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+  source:emit({
+    type = "chunk",
+    session_id = "source",
+    data = { content = { type = "text", text = "original answer" } },
+  })
+
+  local buffer = assert(chat:open_handoff(target))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "modifiable"), true)
+  MiniTest.expect.equality(buffer_lines(buffer)[1], "# louiselm session transcript")
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
+
+  assert(chat:submit_handoff(buffer))
+  MiniTest.expect.equality(target.prompts, { "edited transcript" })
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  chat:dispose()
+end
+
+T["chat"]["abandons a handoff without sending"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+
+  local buffer = assert(chat:open_handoff(target))
+  assert(chat:abandon_handoff(buffer))
+  MiniTest.expect.equality(target.prompts, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  chat:dispose()
+end
+
+T["chat"]["refuses an empty handoff buffer"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+
+  local buffer = assert(chat:open_handoff(target))
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "  " })
+  local sent, error_message = chat:submit_handoff(buffer)
+  MiniTest.expect.equality(sent, false)
+  MiniTest.expect.equality(error_message, "handoff prompt must be a non-empty string")
+  MiniTest.expect.equality(target.prompts, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
+  chat:dispose()
+end
+
 T["chat"]["lists and confirms revocation of remembered permission rules"] = function()
   local api = fake_api()
   local revoked
