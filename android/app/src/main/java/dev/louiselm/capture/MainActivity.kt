@@ -129,7 +129,7 @@ class MainActivity : Activity() {
         content.addView(Button(this).apply {
             text = getString(R.string.sync_now)
             setOnClickListener {
-                UploadWorker.enqueue(applicationContext, manual = true)
+                UploadWorker.enqueue(applicationContext, replaceExisting = true)
                 statusView.text = getString(R.string.sync_queued)
             }
         }, matchWidth(topMargin = padding / 2))
@@ -213,7 +213,7 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 captureButton.isEnabled = true
                 result.onSuccess { record ->
-                    UploadWorker.enqueue(applicationContext)
+                    UploadWorker.enqueue(applicationContext, replaceExisting = true)
                     refreshStatus(getString(R.string.saved_status, record.id))
                 }.onFailure { error ->
                     statusView.text = getString(R.string.recording_failed, error.message ?: "capture storage failed")

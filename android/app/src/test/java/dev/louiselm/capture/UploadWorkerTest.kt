@@ -9,9 +9,9 @@ import org.junit.Test
 
 class UploadWorkerTest {
     @Test
-    fun manualSyncReplacesBackedOffUploadWork() {
-        assertEquals(ExistingWorkPolicy.REPLACE, uploadWorkPolicy(manual = true))
-        assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, uploadWorkPolicy(manual = false))
+    fun explicitReplacementReplacesBackedOffUploadWork() {
+        assertEquals(ExistingWorkPolicy.REPLACE, uploadWorkPolicy(replaceExisting = true))
+        assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, uploadWorkPolicy(replaceExisting = false))
     }
 
     @Test
