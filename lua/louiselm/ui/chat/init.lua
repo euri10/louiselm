@@ -1342,6 +1342,7 @@ local function handle_event(self, view, event)
   end
   if event.type == "state_changed" and view.session:inspect().status == "ready" then
     open_session_options(self, view, true)
+    release_queued_prompt(self, view)
   end
 
   if event.type == "user_chunk" then

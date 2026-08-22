@@ -11,6 +11,7 @@ local function fake_session(id, agent)
   local session = {
     state = { id = id, agent = agent, status = "ready", current_turn = 0, config_options = {} },
     prompts = {},
+    prompt_sets_status = false,
     prompt_error = nil,
     config_changes = {},
     disposed = false,
@@ -37,6 +38,9 @@ local function fake_session(id, agent)
       return nil, self.prompt_error
     end
     self.prompts[#self.prompts + 1] = prompt
+    if self.prompt_sets_status then
+      self.state.status = "prompting"
+    end
     return #self.prompts
   end
 
@@ -752,6 +756,7 @@ T["chat"]["queues one prompt in every active turn state and releases it only on 
   for _, status in ipairs({ "prompting", "waiting_permission", "cancelling" }) do
     local first = fake_session("session-" .. status, "claude")
     first.state.status = status
+    first.prompt_sets_status = true
     local chat = assert(Chat.new(fake_api()))
     assert(chat:attach(first))
 
@@ -770,6 +775,7 @@ T["chat"]["queues one prompt in every active turn state and releases it only on 
     MiniTest.expect.equality(virtual_text(chat:buffer()), { "Queued for next turn" })
 
     first.state.status = "ready"
+    first:emit({ type = "state_changed", session_id = first.state.id, data = { status = "ready" } })
     first:emit({ type = "turn_done", session_id = first.state.id, data = { stopReason = "end_turn" } })
     nvim.wait(100, function()
       return #first.prompts == 1
@@ -778,7 +784,7 @@ T["chat"]["queues one prompt in every active turn state and releases it only on 
     MiniTest.expect.equality(first.prompts, { "/compact" })
     MiniTest.expect.equality(
       buffer_lines(chat:buffer()),
-      chat_lines("claude · session-" .. status, "status=" .. status .. " · display=" .. display, {
+      chat_lines("claude · session-" .. status, "status=ready · display=Your turn", {
         "",
         "> /compact",
         "",
@@ -788,6 +794,24 @@ T["chat"]["queues one prompt in every active turn state and releases it only on 
     MiniTest.expect.equality(virtual_text(chat:buffer()), {})
     chat:dispose()
   end
+end
+
+T["chat"]["releases a queued prompt when the session becomes ready without turn_done"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:submit("queued"))
+
+  first.state.status = "ready"
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
+  nvim.wait(100, function()
+    return #first.prompts == 1
+  end, 1)
+
+  MiniTest.expect.equality(first.prompts, { "queued" })
+  MiniTest.expect.equality(virtual_text(chat:buffer()), {})
+  chat:dispose()
 end
 
 T["chat"]["keeps an edited queued prompt as a draft until Enter recommits it"] = function()
