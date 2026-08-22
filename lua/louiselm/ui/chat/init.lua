@@ -65,11 +65,13 @@ local Transcript = require("louiselm.session.transcript")
 ---@field prompt_namespace integer Extmark namespace for prompt boundaries.
 ---@field header_namespace integer Highlight namespace for session diagnostics.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
+---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field current_id string? Currently displayed session id.
 ---@field disposed boolean Whether the chat UI has been disposed.
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
+---@field inspect_tool fun(self: louiselm.ui.Chat): boolean, string? Open the raw payload under the cursor.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
@@ -297,25 +299,18 @@ end
 ---@param state louiselm.session.State
 ---@return string
 local function session_identity(state)
-  local parts
-  if state.acp_session_id ~= nil then
-    local identity = report_id(state.agent, state.acp_session_id)
-    if state.name ~= nil and state.name ~= state.id then
-      parts = { identity, state.name, state.id, state.status or "unknown" }
-    else
-      parts = { identity, state.id, state.status or "unknown" }
-    end
-  elseif state.name ~= nil and state.name ~= state.id then
-    parts = { state.name, state.agent, state.id, state.status or "unknown" }
-  else
-    parts = { state.agent, state.id, state.status or "unknown" }
+  local parts = { state.id }
+  if state.name ~= nil and state.name ~= state.id then
+    parts[#parts + 1] = state.name
   end
+  parts[#parts + 1] = state.status or "unknown"
   if state.source == "loaded" then
     parts[#parts + 1] = "loaded"
   end
   if state.skills_policy ~= nil then
     parts[#parts + 1] = "skills: " .. state.skills_policy
   end
+  parts[#parts + 1] = state.acp_session_id ~= nil and report_id(state.agent, state.acp_session_id) or state.agent
   return table.concat(parts, " · ")
 end
 

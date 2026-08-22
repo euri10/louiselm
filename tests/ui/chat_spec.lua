@@ -2673,6 +2673,8 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
 
   MiniTest.expect.equality(prompts[1].prompt, "louiselm session: ")
   MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready · one/one-acp")
+  first.state.name = "First"
+  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · First · ready · one/one-acp")
   MiniTest.expect.equality(prompts[2].prompt, "close active louiselm session? ")
   MiniTest.expect.equality(second.disposed, true)
   MiniTest.expect.equality(first.disposed, false)
