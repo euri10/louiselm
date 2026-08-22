@@ -2733,6 +2733,41 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   chat:dispose()
 end
 
+T["chat"]["restores prompt input after switching sessions"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local original_list_uis = nvim.api.nvim_list_uis
+  local original_startinsert = nvim.cmd.startinsert
+  local original_win_set_cursor = nvim.api.nvim_win_set_cursor
+  local startinsert_calls = 0
+  local cursor_positions = {}
+
+  nvim.api.nvim_list_uis = function()
+    return { {} }
+  end
+  nvim.cmd.startinsert = function()
+    startinsert_calls = startinsert_calls + 1
+  end
+  nvim.api.nvim_win_set_cursor = function(_, position)
+    cursor_positions[#cursor_positions + 1] = position
+  end
+
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local calls_before_switch = startinsert_calls
+
+  assert(chat:switch("session-1"))
+
+  nvim.api.nvim_list_uis = original_list_uis
+  nvim.cmd.startinsert = original_startinsert
+  nvim.api.nvim_win_set_cursor = original_win_set_cursor
+
+  MiniTest.expect.equality(startinsert_calls, calls_before_switch + 1)
+  MiniTest.expect.equality(cursor_positions[#cursor_positions], { 6, 2 })
+  chat:dispose()
+end
+
 T["chat"]["blocks a last-window quit when multiple sessions are attached"] = function()
   local first = fake_session("session-1", "one")
   local second = fake_session("session-2", "two")

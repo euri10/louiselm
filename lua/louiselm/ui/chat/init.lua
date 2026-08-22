@@ -2039,6 +2039,11 @@ function Chat:switch(session_id)
   self.current_id = session_id
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
+  nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  if #nvim.api.nvim_list_uis() > 0 then
+    nvim.cmd.startinsert()
+    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  end
   apply_context_folds(view, view.window)
   apply_tool_folds(view, view.window)
   render_winbar(self, view, view.window)
