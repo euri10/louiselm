@@ -187,6 +187,68 @@ T["validate"]["rejects an installed-version check that is not a table"] = functi
   MiniTest.expect.equality(errors[1].type, "wrong_type")
 end
 
+T["validate"]["accepts declared capabilities and returns an owned copy"] = function()
+  local definitions = {
+    codex = { command = "codex-agent-acp", capabilities = { "image-generation" } },
+  }
+
+  local normalized, errors = Config.normalize(definitions)
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.capabilities, { "image-generation" })
+  MiniTest.expect.equality(normalized.codex.capabilities ~= definitions.codex.capabilities, true)
+end
+
+T["validate"]["leaves capabilities nil when the agent declares none"] = function()
+  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp" } })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.capabilities, nil)
+end
+
+T["validate"]["accepts an empty capabilities list"] = function()
+  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp", capabilities = {} } })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.codex.capabilities, {})
+end
+
+T["validate"]["rejects a capabilities value that is not a table"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", capabilities = "image-generation" },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.capabilities")
+  MiniTest.expect.equality(errors[1].type, "wrong_type")
+end
+
+T["validate"]["rejects a non-dense capabilities table"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", capabilities = { [1] = "image-generation", [3] = "ocr" } },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.capabilities")
+  MiniTest.expect.equality(errors[1].type, "invalid_value")
+end
+
+T["validate"]["rejects non-string and empty-string capability entries without coercion"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-agent-acp", capabilities = { "image-generation", "", 7 } },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(#errors, 2)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.capabilities[2]")
+  MiniTest.expect.equality(errors[1].type, "invalid_value")
+  MiniTest.expect.equality(errors[2].path, "agents.codex.capabilities[3]")
+  MiniTest.expect.equality(errors[2].type, "invalid_value")
+end
+
 T["validate"]["collects malformed definitions without coercion"] = function()
   local normalized, errors = Config.normalize({
     claude = {

@@ -547,7 +547,7 @@ only the policy:
 ```lua
 require("louiselm").setup({
   agents = {
-    codex = { command = "codex-acp" },
+    codex = { command = "codex-acp", capabilities = { "image-generation" } },
     claude = { command = "claude-agent-acp" },
     deepseek = {
       command = "acp-llm-adapter",
@@ -566,6 +566,12 @@ require("louiselm").setup({
   },
 })
 ```
+
+`capabilities` declares what an agent can do (e.g. `"image-generation"`); it is
+optional, defaults to none, and is never inferred. LouiseLM only stores and
+surfaces the declaration through `:checkhealth louiselm` — it does not read
+beads or route work. Matching a capability string against a `needs-capability:*`
+beads label is done by whatever is selecting work, per AGENTS.md.
 
 Policies are copied into each session when it is created and never inferred
 from the adapter name or changed by runtime events. Natural-language activation

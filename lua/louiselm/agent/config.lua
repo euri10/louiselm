@@ -13,6 +13,7 @@ local Policy = require("louiselm.skills.policy")
 ---@field args string[] Arguments passed after the command.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options.
+---@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
 ---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 ---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
@@ -32,6 +33,7 @@ local M = {}
 
 local allowed_keys = {
   args = true,
+  capabilities = true,
   command = true,
   env = true,
   latest = true,
@@ -141,6 +143,36 @@ local function copy_args(value, path, errors)
     end
   end
   return args
+end
+
+---@param value table
+---@param path string
+---@param errors louiselm.agent.ConfigError[]
+---@return string[]? capabilities
+local function copy_capabilities(value, path, errors)
+  local length, dense = sequence_length(value, path)
+  if not dense then
+    add_error(errors, path, "invalid_value", "must be a dense array of non-empty strings", "string[]", "table")
+    return nil
+  end
+
+  local capabilities = {}
+  for index = 1, length do
+    local capability = value[index]
+    if type(capability) ~= "string" or capability == "" then
+      add_error(
+        errors,
+        item_path(path, index),
+        "invalid_value",
+        string.format("expected non-empty string, got %s", value_type(capability)),
+        "string",
+        value_type(capability)
+      )
+    else
+      capabilities[index] = capability
+    end
+  end
+  return capabilities
 end
 
 ---@param value table
@@ -393,6 +425,22 @@ function M.normalize(definitions, default_skills_policy)
         end
       end
 
+      local capabilities
+      if definition.capabilities ~= nil then
+        if type(definition.capabilities) ~= "table" then
+          add_error(
+            errors,
+            child_path(path, "capabilities"),
+            "wrong_type",
+            "expected table, got " .. value_type(definition.capabilities),
+            "string[]",
+            value_type(definition.capabilities)
+          )
+        else
+          capabilities = copy_capabilities(definition.capabilities, child_path(path, "capabilities"), errors)
+        end
+      end
+
       local effective_skill_policy = skill_policy(definition.skills, child_path(path, "skills"), errors, default_policy)
       local latest
       if definition.latest ~= nil then
@@ -407,6 +455,7 @@ function M.normalize(definitions, default_skills_policy)
         args = args,
         env = env,
         options = options,
+        capabilities = capabilities,
         skills = { policy = effective_skill_policy },
         latest = latest,
         version = version,

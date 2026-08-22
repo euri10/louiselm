@@ -70,7 +70,8 @@ T["check"]["reports setup validation and agent version"] = function()
     MiniTest.expect.equality(calls.error, {})
     MiniTest.expect.equality(calls.ok[1], "configuration is valid")
     MiniTest.expect.equality(calls.ok[2], "agent — agent 1.2.3")
-    MiniTest.expect.equality(calls.info[2], "agent agent skills policy: native")
+    MiniTest.expect.equality(calls.info[1], "agent agent capabilities: none declared")
+    MiniTest.expect.equality(calls.info[3], "agent agent skills policy: native")
     MiniTest.expect.equality(calls.warn, {})
     MiniTest.expect.equality(calls.ok[3], "discovered 0 skills")
     MiniTest.expect.equality(calls.ok[4], "capture recorder is executable: pw-record")
@@ -79,6 +80,19 @@ T["check"]["reports setup validation and agent version"] = function()
 
   Health.reset()
   nvim.fn.delete(skill_path, "rf")
+end
+
+T["check"]["reports declared agent capabilities without starting the version check"] = function()
+  assert(Louiselm.setup({
+    agents = { agent = { command = "agent", capabilities = { "image-generation", "ocr" } } },
+  }))
+
+  with_health_stubs(function(calls)
+    Health.check()
+    MiniTest.expect.equality(calls.info[1], "agent agent capabilities: image-generation, ocr")
+  end)
+
+  Health.reset()
 end
 
 T["check"]["warns instead of failing when the installed agent trails the latest check"] = function()

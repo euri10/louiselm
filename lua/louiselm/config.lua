@@ -24,6 +24,10 @@ local function valid_skill_policy(value)
   return valid, "must be one of: native, inject, off"
 end
 
+local function valid_capability(value)
+  return value ~= "", "must be a non-empty string"
+end
+
 local function removed_full_content()
   return false, 'was removed; use skills.policy = "inject" for LouiseLM-managed skills'
 end
@@ -48,6 +52,12 @@ M.schema = assert(Schema.define({
           items = "string",
           default = {},
           description = "Environment variables passed to the process.",
+        },
+        capabilities = {
+          type = "array-of",
+          items = { type = "string", validator = valid_capability },
+          default = {},
+          description = 'Capability tags this agent declares support for (e.g. "image-generation"), matched against `needs-capability:*` beads labels by the agent selecting work; louiselm does not read beads or route work itself.',
         },
         skills = {
           type = "table",

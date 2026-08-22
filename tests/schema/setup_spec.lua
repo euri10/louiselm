@@ -102,6 +102,27 @@ T["setup"]["rejects a per-agent installed-version override missing its command"]
   MiniTest.expect.equality(report.errors[1].path, "agents.codex.version.command")
 end
 
+T["setup"]["accepts declared agent capabilities"] = function()
+  local ok, report = capture_setup({
+    agents = {
+      codex = { command = "codex-acp", capabilities = { "image-generation" } },
+      claude = { command = "claude-agent-acp" },
+    },
+  })
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+end
+
+T["setup"]["rejects an empty-string capability"] = function()
+  local ok, report = capture_setup({
+    agents = { codex = { command = "codex-acp", capabilities = { "image-generation", "" } } },
+  })
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(report.errors[1].path, "agents.codex.capabilities[2]")
+end
+
 T["setup"]["rejects per-agent skill paths"] = function()
   local ok, report = capture_setup({
     agents = {

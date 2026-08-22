@@ -164,6 +164,11 @@ local function check_agents(config)
 
   for _, name in ipairs(sorted_agent_names(normalized)) do
     local definition = normalized[name]
+    if definition.capabilities ~= nil and #definition.capabilities > 0 then
+      nvim().health.info("agent " .. name .. " capabilities: " .. table.concat(definition.capabilities, ", "))
+    else
+      nvim().health.info("agent " .. name .. " capabilities: none declared")
+    end
     local callback_called = false
     local handle, error_message = Agent.check(definition, function(result)
       callback_called = true
