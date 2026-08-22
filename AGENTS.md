@@ -36,6 +36,16 @@ shared record across sessions, agents, and adapters.
   log line, payload, or hung process that proves it disappears the moment it is
   repaired. A finding that survives only in a transcript is lost, and deferred
   work that is not filed becomes work that never happens.
+- Emit, don't narrate: if you could not complete the work you claimed, or you
+  noticed something outside it, file or update a beads issue before ending the
+  session. Do not leave either as a comment, a handoff summary, or a transcript
+  note — those are read by no one and no command. The test for label versus
+  blocker: does something have to change before anyone can do this? Yes is a
+  dependency; model it as one. No — a standing requirement or missing
+  capability rather than something to unblock — is a label. `needs-capability:*`
+  is the namespace for the second case (e.g. `needs-capability:image-generation`
+  for work only an agent with raster image generation can do); attach it and
+  move on, do not restate the requirement in prose.
 - Prefer finishing **your own** in-progress work to starting new work, even
   when triage ranks an unstarted issue higher. Scoring rewards unblocking
   leverage and cannot see that a claimed issue is half-done. This preference
@@ -45,7 +55,11 @@ shared record across sessions, agents, and adapters.
   belongs to its holder: pick something else. `br scheduler` already excludes
   claimed work and explains its ranking, so prefer it over hand-scanning
   `br list --status in_progress`. Take over an abandoned claim only past the
-  abandoned threshold, and say in a comment that you did and why.
+  abandoned threshold, and say in a comment that you did and why. Exception:
+  `br scheduler --json` returns empty labels (louiselm-scheduler-labels-xw1i),
+  so capability-aware selection cannot filter on its output — use
+  `br ready --label-any needs-capability:<name>` instead. Drop this carve-out
+  once that bug closes.
 - Keep durable context in the repository, never in an agent's private memory.
   Context anchored to one issue belongs in `br comments`; a standing convention
   belongs in this file. Anything an agent knows that another adapter cannot
