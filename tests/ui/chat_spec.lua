@@ -413,6 +413,50 @@ T["chat"]["does not fold failed or active tool calls"] = function()
   chat:dispose()
 end
 
+T["chat"]["inspects finished and active tool payloads from their lines"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file", rawInput = { path = "init.lua" } },
+  })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) >= 7
+  end, 1)
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  assert(chat:inspect_tool())
+  local active_buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(table.concat(buffer_lines(active_buffer), "\n"):find("init.lua", 1, true) ~= nil, true)
+  nvim.api.nvim_win_close(0, true)
+
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", status = "completed", rawOutput = { stdout = "ok" } },
+  })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[6] == "[tool] tool-1: Read file (completed)"
+  end, 1)
+  nvim.api.nvim_set_current_buf(chat:buffer())
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  assert(chat:inspect_tool())
+  local finished_buffer = nvim.api.nvim_get_current_buf()
+  local finished = table.concat(buffer_lines(finished_buffer), "\n")
+  MiniTest.expect.equality(finished:find("init.lua", 1, true) ~= nil, true)
+  MiniTest.expect.equality(finished:find("ok", 1, true) ~= nil, true)
+  nvim.api.nvim_win_close(0, true)
+
+  nvim.api.nvim_set_current_buf(chat:buffer())
+  nvim.api.nvim_win_set_cursor(0, { 1, 0 })
+  local inspected, inspect_error = chat:inspect_tool()
+  MiniTest.expect.equality(inspected, false)
+  MiniTest.expect.equality(inspect_error, "cursor is not on a tool-call line")
+  chat:dispose()
+end
+
 T["chat"]["shows skill status and keeps slash prompts when skills are off"] = function()
   local first = fake_session("session-1", "claude")
   first.state.skills_policy = "off"

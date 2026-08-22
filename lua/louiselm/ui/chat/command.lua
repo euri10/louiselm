@@ -362,6 +362,15 @@ function M.register()
     force = true,
   })
 
+  nvim.api.nvim_create_user_command("LouiselmInspectTool", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, inspect_error = chat:inspect_tool()
+    report_error(inspect_error)
+  end, { desc = "Inspect the raw payload under the cursor", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmCloseSession", function()
     if chat == nil then
       report_error("no chat session is open")

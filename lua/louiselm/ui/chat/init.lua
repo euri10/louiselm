@@ -27,6 +27,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field response_started boolean Whether the assistant has rendered response text for this turn.
 ---@field last_block_kind ("prose"|"tool")? Kind of the most recently rendered transcript block; separates adjacent prose and tool blocks with a blank line.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
+---@field tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
@@ -37,6 +38,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
 ---@field tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
 ---@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous completed tool-call lines awaiting a successor.
+---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
@@ -760,6 +762,50 @@ local function record_completed_tool(view, line)
 end
 
 ---@param view louiselm.ui.ChatView
+---@param id string
+---@return louiselm.session.TranscriptEntry? entry
+local function transcript_tool(view, id)
+  for _, entry in ipairs(view.transcript:snapshot()) do
+    if entry.kind == "tool_call" and entry.id == id then
+      return entry
+    end
+  end
+  return nil
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param id string
+---@return boolean opened
+---@return string? error_message
+local function open_tool_inspector(self, view, id)
+  local entry = transcript_tool(view, id)
+  if entry == nil then
+    return false, "tool-call payload is unavailable"
+  end
+  local lines = split_lines(nvim.inspect(entry.raw or {}))
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
+  nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
+  nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
+  nvim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
+  local width = math.min(100, math.max(1, nvim.o.columns - 4))
+  local height = math.min(#lines, math.max(1, nvim.o.lines - 4))
+  local window = nvim.api.nvim_open_win(buffer, true, {
+    relative = "editor",
+    row = 1,
+    col = 2,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = "rounded",
+  })
+  self.tool_inspect_windows[window] = true
+  return true
+end
+
+---@param view louiselm.ui.ChatView
 ---@param text string
 ---@param contexts louiselm.ui.ContextItem[]
 ---@return integer line_count
@@ -1479,6 +1525,7 @@ local function handle_event(self, view, event)
       end
       insert_transcript(self, view, lines)
       view.tool_lines[id] = view.transcript_tail
+      view.tool_ids[view.transcript_tail] = id
       view.last_block_kind = "tool"
     else
       if status ~= "completed" then
@@ -1505,6 +1552,7 @@ local function handle_event(self, view, event)
       view.tool_lines[id] = nil
       view.tool_titles[id] = nil
       if status == "completed" and rendered_line ~= nil then
+        view.tool_ids[rendered_line] = id
         record_completed_tool(view, rendered_line)
       end
     end
@@ -1670,6 +1718,7 @@ function M.new(api, options)
     prompt_namespace = nvim.api.nvim_create_namespace("louiselm.chat.prompt"),
     header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
     views = {},
+    tool_inspect_windows = {},
     winbars = {},
     current_id = nil,
     disposed = false,
@@ -1731,6 +1780,7 @@ function Chat:attach(session)
     response_started = false,
     last_block_kind = nil,
     tool_lines = {},
+    tool_ids = {},
     tool_titles = {},
     contexts = {},
     context_prefix = "",
@@ -1795,6 +1845,26 @@ function Chat:buffer(session_id)
   local id = session_id or self.current_id
   local view = id and self.views[id]
   return view and view.buffer or nil
+end
+
+---Open the full raw payload for the tool call under the cursor.
+---@param self louiselm.ui.Chat
+---@return boolean opened
+---@return string? error_message
+function Chat:inspect_tool()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil or nvim.api.nvim_get_current_buf() ~= view.buffer then
+    return false, "no chat session is open"
+  end
+  local cursor = nvim.api.nvim_win_get_cursor(0)
+  local id = view.tool_ids[cursor[1] - 1]
+  if id == nil then
+    return false, "cursor is not on a tool-call line"
+  end
+  return open_tool_inspector(self, view, id)
 end
 
 ---Report whether a session id is attached, without switching to it or
@@ -2391,6 +2461,12 @@ function Chat:dispose()
   self.disposed = true
   restore_winbars(self)
   self.diff:dispose()
+  for window in pairs(self.tool_inspect_windows) do
+    if nvim.api.nvim_win_is_valid(window) then
+      nvim.api.nvim_win_close(window, true)
+    end
+  end
+  self.tool_inspect_windows = {}
   self.decision_active = nil
   pump_decisions(self)
   for id, view in pairs(self.views) do
