@@ -214,7 +214,7 @@ class MainActivity : Activity() {
                 captureButton.isEnabled = true
                 result.onSuccess { record ->
                     UploadWorker.enqueue(applicationContext)
-                    statusView.text = getString(R.string.saved_status, record.id)
+                    refreshStatus(getString(R.string.saved_status, record.id))
                 }.onFailure { error ->
                     statusView.text = getString(R.string.recording_failed, error.message ?: "capture storage failed")
                 }
