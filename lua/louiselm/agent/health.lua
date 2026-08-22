@@ -13,14 +13,15 @@ local Config = require("louiselm.agent.config")
 
 local M = {}
 
----Extract the trailing semver-looking token from a version string, so a
----banner like "@scope/pkg 1.6.0" compares equal to a bare "1.6.0" from a
----separate latest-version check. Falls back to the whole string when no
----such token is found (e.g. an already-bare version).
+---Extract the trailing semver-looking token from a version string, ignoring
+---terminal banner punctuation, so "@scope/pkg 1.6.0." compares equal to
+---a bare "1.6.0" from a separate latest-version check. Falls back to the
+---whole string when no such token is found (e.g. an already-bare version).
 ---@param value string
 ---@return string
 local function extract_version(value)
-  return value:match("v?(%d[%d%.%-%+%w]*)%s*$") or value
+  local without_terminal_punctuation = value:gsub("[%.%,;:!?]+%s*$", "")
+  return without_terminal_punctuation:match("v?(%d[%d%.%-%+%w]*)%s*$") or value
 end
 
 ---@param value string

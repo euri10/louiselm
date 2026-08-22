@@ -270,6 +270,27 @@ T["check"]["latest version"]["reports outdated false when the installed banner c
   MiniTest.expect.equality(report.outdated, false)
 end
 
+T["check"]["latest version"]["ignores terminal punctuation after an installed version"] = function()
+  local report
+
+  with_deferred_stubs(function()
+    return 1
+  end, function(calls)
+    Health.check({
+      command = "copilot",
+      args = {},
+      latest = { command = "npm", args = { "view", "@github/copilot", "version" } },
+    }, function(result)
+      report = result
+    end)
+
+    calls[1].on_exit({ code = 0, signal = 0, stdout = "GitHub Copilot CLI 1.0.80.\n", stderr = "" })
+    calls[2].on_exit({ code = 0, signal = 0, stdout = "1.0.80\n", stderr = "" })
+  end)
+
+  MiniTest.expect.equality(report.outdated, false)
+end
+
 T["check"]["latest version"]["reports outdated false when the installed and latest versions match"] = function()
   local report
 
