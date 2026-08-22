@@ -84,8 +84,11 @@ T["skills"]["returns the selected skill and turns captured content into an exact
   local skills = { { name = "grill-me", description = "Stress test", path = path, content = "stale" } }
   local original_select = nvim.ui.select
   local selected
-  nvim.ui.select = function(items, _, callback)
-    MiniTest.expect.equality(items, skills)
+  local kind_at_select
+  nvim.ui.select = function(items, opts, callback)
+    kind_at_select = opts.kind
+    MiniTest.expect.equality(#items, 1)
+    MiniTest.expect.equality(items[1].file, path)
     callback(items[1])
   end
   assert(Context.skills.pick(skills, function(skill)
@@ -93,7 +96,9 @@ T["skills"]["returns the selected skill and turns captured content into an exact
   end))
   nvim.ui.select = original_select
 
-  MiniTest.expect.equality(selected, skills[1])
+  MiniTest.expect.equality(kind_at_select, "louiselm_skill")
+  MiniTest.expect.equality(selected.name, "grill-me")
+  MiniTest.expect.equality(selected.file, path)
   selected.content = "fresh instructions\n"
   MiniTest.expect.equality(Context.skills.context(selected), {
     label = "skill: grill-me",

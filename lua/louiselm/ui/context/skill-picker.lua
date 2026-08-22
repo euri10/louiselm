@@ -61,8 +61,16 @@ function M.pick(skills, callback)
   table.sort(choices, function(left, right)
     return left.name < right.name
   end)
-  Picker.select(choices, {
+  -- `kind` and `file` are the stable vim.ui.select extension points a picker
+  -- provider (e.g. Snacks' `picker.sources.select.kinds.louiselm_skill`) can
+  -- opt into for a SKILL.md preview; louiselm never detects the provider.
+  local items = {}
+  for index, skill in ipairs(choices) do
+    items[index] = nvim.tbl_extend("force", {}, skill, { file = skill.path })
+  end
+  Picker.select(items, {
     prompt = "louiselm skill: ",
+    kind = "louiselm_skill",
     format_item = function(skill)
       return skill.name .. " — " .. skill.description
     end,

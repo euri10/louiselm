@@ -306,6 +306,28 @@ This source-specific override can coexist with `wrap = true` for other Snacks
 picker lists. LouiseLM intentionally does not detect or reconfigure a
 `vim.ui.select` provider.
 
+`:LouiselmPickSkill` tags its call with `opts.kind = "louiselm_skill"` and
+gives each item a `file` field pointing at that skill's `SKILL.md`, both
+standard `vim.ui.select` extension points a provider may opt into. Snacks, for
+example, renders a live SKILL.md preview once a `kinds.louiselm_skill` entry
+exists for its `select` source:
+
+```lua
+require("snacks").setup({
+  picker = {
+    sources = {
+      select = {
+        kinds = {
+          -- The `select` layout hides the preview pane by default; switch to
+          -- a layout that shows one to see it.
+          louiselm_skill = { preview = "file", layout = { preset = "default" } },
+        },
+      },
+    },
+  },
+})
+```
+
 Each chat begins with a contiguous diagnostic block that stays copyable as
 plain text:
 
