@@ -1,6 +1,7 @@
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 local Agent = require("louiselm.agent")
+local Workflow = require("louiselm.workflow")
 
 local M = {}
 local configured ---@type table?
@@ -124,6 +125,14 @@ local function configured_instructions(config)
   return instructions_module().link(filename)
 end
 
+---@param definitions louiselm.agent.Definitions
+---@return louiselm.workflow.Coordinator? workflow
+---@return string? error_message
+local function configured_workflow(definitions)
+  local path = nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "routing-evidence.json")
+  return Workflow.new(definitions, path)
+end
+
 ---@return louiselm.agent.Definition definition
 local function default_agent_definition()
   local command = nvim.env.LOUISELM_AGENT_COMMAND
@@ -242,12 +251,18 @@ function M.register()
       nvim.notify("louiselm: " .. skills_error, nvim.log.levels.ERROR)
       return nil
     end
+    local workflow, workflow_error = configured_workflow(definitions)
+    if workflow == nil then
+      nvim.notify("louiselm: " .. (workflow_error or "could not initialize workflow routing"), nvim.log.levels.ERROR)
+      return nil
+    end
     chat = assert(require("louiselm.ui.chat").new(sessions, {
       agents = names,
       skills = skills,
       skill_paths = configured and configured.skills and configured.skills.paths or nil,
       skill_catalog = skill_catalog,
       instructions_context = instructions_context,
+      workflow = workflow,
     }))
     return chat
   end

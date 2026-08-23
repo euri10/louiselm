@@ -819,6 +819,81 @@ T["chat"]["sends a native picker's resolved dollar command merged with the task 
   nvim.fn.delete(workspace, "rf")
 end
 
+T["chat"]["presents phase recommendations only after a tagged turn completes"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "implementation", "Implement the task")
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local observed
+  local approved
+  local candidate = {
+    action = "continue",
+    agent = "claude",
+    score = 0.8,
+    confidence = 0.9,
+    reasons = { "current choice" },
+    label = "CONTINUE claude/- · 90% confidence · current choice",
+  }
+  local workflow = {
+    observe = function(_, phase, state, outcome)
+      observed = { phase = phase, state = state, outcome = outcome }
+      return true
+    end,
+    recommend = function(_, phase, state)
+      MiniTest.expect.equality(state.status, "ready")
+      return { phase = phase, candidates = { candidate } }
+    end,
+    approve = function(_, value)
+      approved = value
+      return value
+    end,
+    clear_pending = function()
+      return true
+    end,
+  }
+  local chat = assert(Chat.new(fake_api(), {
+    skills = {
+      {
+        name = "implementation",
+        description = "Implement the task",
+        path = nvim.fs.joinpath(workspace, "implementation", "SKILL.md"),
+        explicit_only = false,
+        phase = { primary = "implementation", secondary = {}, source = "inferred", confidence = 0.5 },
+      },
+    },
+    workflow = workflow,
+  }))
+  assert(chat:attach(first))
+
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(items, _, callback)
+    callback(items[1])
+  end
+  assert(chat:pick_skill())
+  assert(chat:submit("implement it"))
+
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return approved ~= nil
+  end, 1)
+  nvim.ui.select = original_select
+
+  MiniTest.expect.equality(observed.phase.primary, "implementation")
+  MiniTest.expect.equality(observed.outcome, "completed")
+  MiniTest.expect.equality(approved.action, "continue")
+  local recommendation_line = "[workflow] approved CONTINUE: " .. candidate.label
+  local found = false
+  for _, line in ipairs(buffer_lines(chat:buffer())) do
+    if line == recommendation_line then
+      found = true
+      break
+    end
+  end
+  MiniTest.expect.equality(found, true)
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
 T["chat"]["prefers the dollar form over a colliding bare built-in and sends it alone without a task"] = function()
   local workspace = nvim.fn.tempname()
   write_skill_file(workspace, "plan", "Draft an execution plan")

@@ -618,8 +618,35 @@ name naming no phase, such as `grill-me`, yields no phase rather than a guess. A
 declared phase outside the canonical list is an error and the skill is rejected,
 because a phase with no built-in profile would rank candidates against nothing.
 
-Phase metadata is recorded on each discovered skill and is not yet acted on;
-phase-aware Model and Agent routing consumes it.
+When a phase-tagged skill completes a turn, the Chat UI records the operational
+outcome locally and, once the Session is idle, presents a short ranked
+recommendation picker. A recommendation is never opened during an active turn.
+The picker always includes the current choice as safe `CONTINUE`, followed by
+eligible Model changes and Handoffs with their action, reasons, and confidence.
+
+Approval is explicit and phase-scoped. `CONTINUE` leaves the Session unchanged;
+a Model choice changes the advertised model option in that Session; a Handoff
+creates a new Session and opens the reviewed transcript while retaining the
+source Session. Dismissing a picker makes no decision. The coordinator also
+supports rejecting a candidate, reconsidering suppressed candidates, and
+invalidating a phase when fresh discovery changes the routing context.
+
+The built-in profiles use existing Agent capability tags:
+
+| Phase | Preferred capability | Minimum free context |
+| --- | --- | ---: |
+| design | `reasoning` | 50% |
+| planning | `reasoning` | 40% |
+| implementation | `coding` | 30% |
+| review | `reasoning`, `coding` | 30% |
+| qa | `coding` | 20% |
+| mechanical | `speed` | 10% |
+
+Skills without phase metadata do not trigger routing; LouiseLM does not guess a
+workflow phase from the prompt. Evidence contains only bounded operational
+outcomes, model/options, and optional phase-end feedback — never prompts,
+transcripts, tool payloads, or environments. The routing estimator remains a
+local pure boundary; process and UI execution happen only after approval.
 
 The dependency is loaded only when configured local skill files need parsing.
 Install it in Lua's standard search path. If LuaRocks reports it installed but

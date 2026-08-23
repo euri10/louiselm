@@ -13,6 +13,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_catalog? string Hidden catalog held for the first accepted model prompt in a new inject session.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
+---@field workflow? louiselm.workflow.Coordinator Phase-aware routing coordinator.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
@@ -35,6 +36,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field context_prefix string Visible context markers prefixed to the prompt.
 ---@field skill_catalog? string Hidden catalog pending for this new inject session.
 ---@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
+---@field workflow_phase? louiselm.workflow.PhaseMetadata Last phase-tagged skill used by this view.
 ---@field context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
 ---@field fold_counts table<integer, integer> Number of context folds installed in each window.
 ---@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
@@ -63,6 +65,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field usage louiselm.workflow.Usage Persistent measured usage ledger.
+---@field workflow? louiselm.workflow.Coordinator Phase-aware routing coordinator.
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
 ---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
@@ -165,6 +168,7 @@ local function copy_skills(value)
       description = skill.description,
       path = skill.path,
       explicit_only = skill.explicit_only == true,
+      phase = skill.phase,
     }
   end
   for key in pairs(value) do
@@ -651,6 +655,7 @@ local function queue_native_skill(self, view, skill)
     return false, render_error
   end
   view.pending_skill = skill
+  view.workflow_phase = skill.phase
   return true
 end
 
@@ -670,6 +675,7 @@ local function queue_injected_skill(self, view, skill)
     text = skill.content,
     skill_path = skill.path,
   }
+  view.workflow_phase = skill.phase
   if skill.content == nil then
     return true, "could not read selected skill: " .. skill.path
   end
@@ -1324,6 +1330,7 @@ local function submit_prompt(self, view, text)
     return nil, resolve_error
   end
   local state = view.session:inspect()
+  local phase = view.pending_skill and view.pending_skill.phase
   local request_id, prompt_error = view.session:prompt(content)
   if request_id == nil then
     local message = prompt_error or "prompt failed"
@@ -1353,6 +1360,9 @@ local function submit_prompt(self, view, text)
     view.context_prefix = ""
     view.skill_catalog = nil
     view.pending_skill = nil
+    if phase ~= nil then
+      view.workflow_phase = phase
+    end
   end
   return request_id
 end
@@ -1503,6 +1513,84 @@ local function usage_line(usage)
     return nil
   end
   return "[usage] " .. table.concat(fields, " · ")
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param candidate louiselm.workflow.ApprovalCandidate
+---@return boolean applied
+---@return string? error_message
+local function apply_recommendation(self, view, candidate)
+  if candidate.action == "continue" then
+    insert_transcript(self, view, { "[workflow] approved CONTINUE: " .. candidate.label })
+    return true
+  end
+  if candidate.action == "model" then
+    if candidate.model == nil then
+      return false, "approved Model change has no Model value"
+    end
+    local state = view.session:inspect()
+    for _, option in ipairs(state.config_options) do
+      if option.category == "model" then
+        local _, option_error = self:set_config_option(option.id, candidate.model, function(_, error_message)
+          nvim.schedule(function()
+            if self.disposed or self.views[state.id] ~= view then
+              return
+            end
+            if error_message ~= nil then
+              insert_transcript(self, view, { "Error: " .. error_message })
+            else
+              insert_transcript(self, view, { "[workflow] approved Model: " .. candidate.model })
+              render_header(self, view)
+            end
+          end)
+        end)
+        return option_error == nil, option_error
+      end
+    end
+    return false, "current Session advertises no Model option"
+  end
+  local target, session_error = self:new_session(candidate.agent)
+  if target == nil then
+    return false, session_error or "could not create Handoff target Session"
+  end
+  local _, handoff_error = self:open_handoff(target, view.session:inspect().id)
+  if handoff_error ~= nil then
+    return false, handoff_error
+  end
+  return true
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param phase louiselm.workflow.PhaseMetadata
+---@param pending louiselm.workflow.ApprovalPresentation
+local function present_recommendations(self, view, phase, pending)
+  if self.disposed or self.views[view.session:inspect().id] ~= view then
+    return
+  end
+  Picker.select(pending.candidates, {
+    prompt = "louiselm workflow recommendation: ",
+    format_item = function(candidate)
+      return candidate.label
+    end,
+  }, function(candidate)
+    if candidate == nil or self.disposed or self.views[view.session:inspect().id] ~= view then
+      if candidate == nil then
+        self.workflow:clear_pending(phase)
+      end
+      return
+    end
+    local approved, approval_error = self.workflow:approve(candidate)
+    if approved == nil then
+      insert_transcript(self, view, { "Error: " .. (approval_error or "recommendation could not be approved") })
+      return
+    end
+    local applied, apply_error = apply_recommendation(self, view, approved)
+    if not applied then
+      insert_transcript(self, view, { "Error: " .. (apply_error or "recommendation could not be applied") })
+    end
+  end)
 end
 
 ---@param self louiselm.ui.Chat
@@ -1688,6 +1776,20 @@ local function handle_event(self, view, event)
     if line ~= nil then
       insert_transcript(self, view, { line })
     end
+    if self.workflow ~= nil and view.workflow_phase ~= nil and view.queued_prompt == nil then
+      local outcome = type(event.data) == "table" and event.data.stopReason == "cancelled" and "cancelled"
+        or "completed"
+      local observed, observe_error = self.workflow:observe(view.workflow_phase, state, outcome)
+      if not observed then
+        insert_transcript(self, view, { "Error: " .. (observe_error or "could not record workflow evidence") })
+      end
+      local pending, _, recommend_error = self.workflow:recommend(view.workflow_phase, state)
+      if pending ~= nil then
+        present_recommendations(self, view, view.workflow_phase, pending)
+      elseif recommend_error ~= nil and recommend_error ~= "phase already has an approved choice" then
+        insert_transcript(self, view, { "Error: " .. recommend_error })
+      end
+    end
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
@@ -1773,6 +1875,7 @@ function M.new(api, options)
         and key ~= "initial_contexts"
         and key ~= "skill_catalog"
         and key ~= "instructions_context"
+        and key ~= "workflow"
       then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
@@ -1817,6 +1920,7 @@ function M.new(api, options)
     initial_contexts = initial_contexts,
     skill_catalog = skill_catalog,
     instructions_context = instructions_contexts[1],
+    workflow = options and options.workflow,
     usage = usage,
     diff = Diff.new(),
     decision_queue = {},
@@ -2534,6 +2638,7 @@ function Chat:pick_skill()
         path = skill.path,
         content = content,
         explicit_only = skill.explicit_only == true,
+        phase = skill.phase,
       }
       local queued, queue_error
       if state.skills_policy == "native" then
