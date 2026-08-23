@@ -28,6 +28,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field last_block_kind ("prose"|"tool")? Kind of the most recently rendered transcript block; separates adjacent prose and tool blocks with a blank line.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
+---@field tool_statuses table<string, string> Latest tool status by ID.
 ---@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
@@ -37,7 +38,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field fold_counts table<integer, integer> Number of context folds installed in each window.
 ---@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
 ---@field tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
----@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous completed tool-call lines awaiting a successor.
+---@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous rendered tool paragraph awaiting a boundary.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field queue_mark integer? Extmark showing queued prompt state.
@@ -693,9 +694,8 @@ end
 ---@field last integer Zero-based last folded line.
 
 ---@class louiselm.ui.ToolFoldRun
----@field first integer Zero-based first completed tool line.
----@field last integer Zero-based last completed tool line.
----@field count integer Number of completed tool lines in the run.
+---@field first integer Zero-based first rendered tool line.
+---@field last integer Zero-based last rendered tool line.
 
 ---@class louiselm.ui.ToolFold
 ---@field first integer Zero-based first folded line.
@@ -752,26 +752,38 @@ local function close_tool_fold_run(view)
   if run == nil then
     return
   end
-  if run.count > 1 then
-    view.tool_folds[#view.tool_folds + 1] = { first = run.first, last = run.last }
+  local fold_first
+  local added = false
+  for line = run.first, run.last + 1 do
+    local id = view.tool_ids[line]
+    if id ~= nil and view.tool_statuses[id] == "completed" then
+      fold_first = fold_first or line
+    elseif fold_first ~= nil then
+      if line - fold_first > 1 then
+        view.tool_folds[#view.tool_folds + 1] = { first = fold_first, last = line - 1 }
+        added = true
+      end
+      fold_first = nil
+    end
+  end
+  if added then
     apply_tool_folds(view, view.window)
   end
   view.tool_fold_run = nil
 end
 
 ---@param view louiselm.ui.ChatView
----@param line integer Zero-based completed tool line.
-local function record_completed_tool(view, line)
+---@param line integer Zero-based rendered tool line.
+local function record_tool_line(view, line)
   local run = view.tool_fold_run
   if run ~= nil and line ~= run.last + 1 then
     close_tool_fold_run(view)
     run = nil
   end
   if run == nil then
-    view.tool_fold_run = { first = line, last = line, count = 1 }
+    view.tool_fold_run = { first = line, last = line }
   else
     run.last = line
-    run.count = run.count + 1
   end
 end
 
@@ -1543,6 +1555,7 @@ local function handle_event(self, view, event)
       title = single_line(title)
     end
     if event.type == "tool_call_started" then
+      view.tool_statuses[id] = status or "started"
       if title ~= nil then
         view.tool_titles[id] = title
       end
@@ -1557,11 +1570,9 @@ local function handle_event(self, view, event)
       insert_transcript(self, view, lines)
       view.tool_lines[id] = view.transcript_tail
       view.tool_ids[view.transcript_tail] = id
+      record_tool_line(view, view.transcript_tail)
       view.last_block_kind = "tool"
     else
-      if status ~= "completed" then
-        close_tool_fold_run(view)
-      end
       title = title or view.tool_titles[id]
       local detail = id
       if title ~= nil then
@@ -1572,22 +1583,29 @@ local function handle_event(self, view, event)
         detail = detail .. " · image result — use :LouiselmInspectTool"
       end
       local line = view.tool_lines[id]
+      local rendered_line
       if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
         set_line(view.buffer, line, "[tool] " .. detail)
+        rendered_line = line
       else
         local lines = { "[tool] " .. detail }
         if view.last_block_kind == "prose" then
           table.insert(lines, 1, "")
         end
         insert_transcript(self, view, lines)
+        local inserted_line = view.transcript_tail
+        if inserted_line ~= nil then
+          rendered_line = inserted_line
+          view.tool_ids[inserted_line] = id
+          record_tool_line(view, inserted_line)
+        end
         view.last_block_kind = "tool"
       end
-      local rendered_line = view.tool_lines[id] or line or view.transcript_tail
       view.tool_lines[id] = nil
+      view.tool_statuses[id] = status or "finished"
       view.tool_titles[id] = nil
-      if status == "completed" and rendered_line ~= nil then
+      if rendered_line ~= nil then
         view.tool_ids[rendered_line] = id
-        record_completed_tool(view, rendered_line)
       end
     end
     view.response_line = nil
@@ -1816,6 +1834,7 @@ function Chat:attach(session)
     last_block_kind = nil,
     tool_lines = {},
     tool_ids = {},
+    tool_statuses = {},
     tool_titles = {},
     contexts = {},
     context_prefix = "",

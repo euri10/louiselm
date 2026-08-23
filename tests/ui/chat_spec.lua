@@ -483,7 +483,7 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
   chat:dispose()
 end
 
-T["chat"]["folds completed tool runs when superseded"] = function()
+T["chat"]["folds completed parallel tool runs when superseded"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -492,8 +492,15 @@ T["chat"]["folds completed tool runs when superseded"] = function()
     first:emit({
       type = "tool_call_started",
       session_id = "session-1",
-      data = { toolCallId = "tool-" .. index, title = "Read file" },
+      data = { toolCallId = "tool-" .. index, title = "Terminal" },
     })
+    first:emit({
+      type = "tool_call_started",
+      session_id = "session-1",
+      data = { toolCallId = "tool-" .. index, title = "Read file " .. index },
+    })
+  end
+  for _, index in ipairs({ 2, 3, 1 }) do
     first:emit({
       type = "tool_call_finished",
       session_id = "session-1",
@@ -509,8 +516,8 @@ T["chat"]["folds completed tool runs when superseded"] = function()
     return #buffer_lines(chat:buffer()) >= 10
   end, 1)
 
-  MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
-  MiniTest.expect.equality({ fold_range(9) }, { -1, -1 })
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 11 })
+  MiniTest.expect.equality({ fold_range(12) }, { -1, -1 })
   chat:dispose()
 end
 
