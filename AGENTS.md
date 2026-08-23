@@ -72,6 +72,36 @@ shared record across sessions, agents, and adapters.
 - Run `br sync --flush-only` before committing, and commit `.beads/` alongside
   the work it describes.
 
+### Project vocabulary
+
+The canonical project vocabulary lives in Beads as `vocabulary/reference`
+records. Definitions, usage distinctions, and provenance belong there; do not
+duplicate term definitions in this file. For any semantic work session —
+planning, implementation, review, or issue filing — load the applicable terms
+once before proposing work:
+
+```bash
+br list --type vocabulary --status all --format toon
+```
+
+Consume only records whose issue type is `vocabulary` and whose status is
+`reference`. The all-status query is intentional: a project with no vocabulary
+yet must return an empty result even though `reference` is a custom status.
+Pure housekeeping and mechanical changes may skip the load. Do not scan the
+repository, history, or backlog for missing terms, and do not treat absent
+entries as debt.
+
+Use canonical terms when harmless naming drift appears. If competing meanings
+would materially change architecture, lifecycle, protocol behavior, authority,
+or user-visible behavior, stop and ask for clarification. When vocabulary,
+code, a work item, or current user intent materially contradicts another
+source, neither source wins automatically: create or reuse a `needs-design`
+question, resolve the conflict with the user, and then promote the agreed
+definition. Re-read affected records immediately before promotion to detect
+concurrent semantic changes. Never initialize Beads implicitly, mutate
+vocabulary silently, or promote a term before the user's shared-understanding
+confirmation.
+
 The maintainer's own loop — grill-me, to-beads, sessions, qa-review — is
 described in [docs/example-workflow.md](docs/example-workflow.md). That document
 is an example, not a contract. It binds nobody, and other loops are expected.
