@@ -4,6 +4,7 @@ local Gates = require("louiselm.permission.gates")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
+local Usage = require("louiselm.workflow.usage")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -44,6 +45,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
+---@field cost_before louiselm.session.Cost? Cumulative cost before the current turn.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
 
@@ -60,6 +62,7 @@ local Transcript = require("louiselm.session.transcript")
 ---@field skill_catalog? string Hidden catalog copied only into brand-new inject sessions.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
+---@field usage louiselm.workflow.Usage Persistent measured usage ledger.
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
 ---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
@@ -1320,12 +1323,14 @@ local function submit_prompt(self, view, text)
     notify_prompt_error(resolve_error or "prompt could not be resolved")
     return nil, resolve_error
   end
+  local state = view.session:inspect()
   local request_id, prompt_error = view.session:prompt(content)
   if request_id == nil then
     local message = prompt_error or "prompt failed"
     notify_prompt_error(message)
     return nil, message
   end
+  view.cost_before = state.cost
   view.transcript:record_user(text)
 
   clear_queued_prompt(view)
@@ -1385,6 +1390,35 @@ local function config_values(option)
   return option.options or {}
 end
 
+---@param summary louiselm.workflow.UsageSummary
+---@return string
+local function usage_details(summary)
+  local details = {}
+  if summary.average_tokens ~= nil then
+    details[#details + 1] = format_number(summary.average_tokens) .. " tokens/turn"
+  end
+  for _, cost in ipairs(summary.costs) do
+    details[#details + 1] = format_number(cost.average) .. " " .. cost.currency .. "/turn"
+  end
+  if #details == 0 then
+    return ""
+  end
+  return " (observed: " .. table.concat(details, " · ") .. " · " .. summary.samples .. " samples)"
+end
+
+---@param self louiselm.ui.Chat
+---@param state louiselm.session.State
+---@param option_id string
+---@param value string|boolean
+---@return string
+local function option_usage_details(self, state, option_id, value)
+  local summary = self.usage:summary(state.agent, option_id, value)
+  if summary == nil then
+    return ""
+  end
+  return usage_details(summary)
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param initial boolean
@@ -1414,7 +1448,7 @@ open_session_options = function(self, view, initial)
     Picker.select(config_values(option), {
       prompt = option.name .. ": ",
       format_item = function(value)
-        return value.name
+        return value.name .. option_usage_details(self, state, option.id, value.value)
       end,
     }, function(choice)
       if self.disposed or self.views[state.id] ~= view then
@@ -1635,7 +1669,22 @@ local function handle_event(self, view, event)
     cancel_decisions(self, view, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
     close_tool_fold_run(view)
-    local line = usage_line(view.session:inspect().usage)
+    local state = view.session:inspect()
+    local cost
+    if
+      view.cost_before ~= nil
+      and state.cost ~= nil
+      and view.cost_before.currency == state.cost.currency
+      and state.cost.amount >= view.cost_before.amount
+    then
+      cost = { amount = state.cost.amount - view.cost_before.amount, currency = state.cost.currency }
+    end
+    view.cost_before = nil
+    local recorded, usage_error = self.usage:record(state.agent, state.config_options, state.usage, cost)
+    if not recorded then
+      insert_transcript(self, view, { "Error: " .. (usage_error or "could not record measured usage") })
+    end
+    local line = usage_line(state.usage)
     if line ~= nil then
       insert_transcript(self, view, { line })
     end
@@ -1754,6 +1803,10 @@ function M.new(api, options)
   if instructions_contexts == nil then
     return nil, instructions_context_error
   end
+  local usage, usage_error = Usage.new()
+  if usage == nil then
+    return nil, usage_error
+  end
   setup_highlights()
   local chat = setmetatable({
     api = api,
@@ -1764,6 +1817,7 @@ function M.new(api, options)
     initial_contexts = initial_contexts,
     skill_catalog = skill_catalog,
     instructions_context = instructions_contexts[1],
+    usage = usage,
     diff = Diff.new(),
     decision_queue = {},
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
@@ -1850,6 +1904,7 @@ function Chat:attach(session)
     queue_namespace = self.queue_namespace,
     prompt_namespace = self.prompt_namespace,
     setup_shown = false,
+    cost_before = nil,
     transcript = Transcript.new(),
     unsubscribe = function() end,
   }

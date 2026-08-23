@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
+local Usage = require("louiselm.workflow.usage")
 
 local T = MiniTest.new_set()
 
@@ -2808,6 +2809,10 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
     end
   end
   local chat = assert(Chat.new(fake_api()))
+  local usage_path = nvim.fn.tempname()
+  chat.usage = assert(Usage.new(usage_path))
+  assert(chat.usage:record("claude", first.state.config_options, { total_tokens = 120 }))
+  MiniTest.expect.equality(assert(chat.usage:summary("claude", "model", "small")).average_tokens, 120)
   assert(chat:attach(first))
   nvim.wait(100, function()
     return #calls == 3
@@ -2817,9 +2822,42 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
 
   MiniTest.expect.equality(calls[1].options.prompt, "louiselm session options: ")
   MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Model: Small")
+  MiniTest.expect.equality(
+    calls[2].options.format_item(calls[2].items[1]),
+    "Small (observed: 120 tokens/turn · 1 samples)"
+  )
+  MiniTest.expect.equality(calls[2].options.format_item(calls[2].items[2]), "Large")
   MiniTest.expect.equality(modes_at_select, { "n", "n", "n" })
   MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
   chat:dispose()
+  nvim.fn.delete(usage_path)
+end
+
+T["chat"]["records measured usage when a turn completes"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.config_options = {
+    { id = "model", name = "Model", type = "select", current_value = "small", options = {} },
+  }
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    callback(nil)
+  end
+  local chat = assert(Chat.new(fake_api()))
+  local usage_path = nvim.fn.tempname()
+  chat.usage = assert(Usage.new(usage_path))
+  assert(chat:attach(first))
+
+  first.state.usage = { total_tokens = 80 }
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    local summary = chat.usage:summary("claude", "model", "small")
+    return summary ~= nil
+  end, 1)
+
+  nvim.ui.select = original_select
+  MiniTest.expect.equality(assert(chat.usage:summary("claude", "model", "small")).average_tokens, 80)
+  chat:dispose()
+  nvim.fn.delete(usage_path)
 end
 
 T["chat"]["ignores a queued setup overview after disposal"] = function()
