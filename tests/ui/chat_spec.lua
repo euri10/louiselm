@@ -1608,7 +1608,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
       agent = "codex",
       session_id = "prior-acp",
       cwd = "/tmp/project",
-      title = "Previous work",
+      title = "[@AGENTS.md](file:///tmp/AGENTS.md)can you takeover this PR, it fails, fix it",
       updated_at = "2026-08-10T10:00:00Z",
     },
   }, {})
@@ -1617,11 +1617,11 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
 
   MiniTest.expect.equality(
     formatted,
-    "codex/prior-acp · Previous work · cwd=/tmp/project · updated=2026-08-10T10:00:00Z"
+    "codex/prior-acp · [@AGENTS.md](file:///tmp/AGENTS.md)can you takeover this PR, it fails, fix it · cwd=/tmp/project · updated=2026-08-10T10:00:00Z"
   )
   MiniTest.expect.equality(load_call.agent, "codex")
   MiniTest.expect.equality(load_call.session_id, "prior-acp")
-  MiniTest.expect.equality(load_call.options, { cwd = "/tmp/project", name = "Previous work" })
+  MiniTest.expect.equality(load_call.options, { cwd = "/tmp/project", name = "prior-acp" })
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(first_buffer), true)
   MiniTest.expect.equality(first.disposed, false)
   MiniTest.expect.equality(chat:buffer(), chat:buffer("session-2"))

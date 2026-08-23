@@ -2648,7 +2648,7 @@ function Chat:resume_session(all_workspaces)
         local error_reported = false
         local session, load_error = self.api:load_session(selected.agent, selected.session_id, {
           cwd = selected.cwd,
-          name = single_line(selected.title ~= nil and selected.title ~= "" and selected.title or selected.session_id),
+          name = selected.session_id,
         }, function(_, ready_error)
           if ready_error == nil then
             return
