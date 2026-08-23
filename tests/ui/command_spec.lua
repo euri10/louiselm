@@ -79,7 +79,14 @@ local function buffer_contains(buffer, needle)
   return false
 end
 
-T["command"] = MiniTest.new_set()
+T["command"] = MiniTest.new_set({
+  hooks = {
+    post_case = function()
+      -- A failing expectation skips a test's own cleanup.
+      delete_chat_buffers()
+    end,
+  },
+})
 
 T["command"]["minimal init exposes the canonical chat command"] = function()
   local commands = nvim.api.nvim_get_commands({ builtin = false })
