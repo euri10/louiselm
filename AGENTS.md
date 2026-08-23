@@ -156,6 +156,20 @@ characterization coverage.
 Documentation, formatting, generated output, and trivial mechanical changes do
 not need an artificial red test. State why when test-first work is impractical.
 
+Deleting or regenerating tests is justified only when a recorded behavior
+contract intentionally changes and the old tests primarily describe obsolete
+behavior; implementation churn alone is not enough. Before removing coverage:
+
+- Record the obsolete behavior and its replacement contract.
+- Preserve or port coverage for unchanged public APIs, protocol validation,
+  security, lifecycle/disposal, async/fast-event scheduling, UI boundaries,
+  and error paths.
+- Where practical, show that replacement tests fail against the displaced or
+  otherwise wrong behavior. Judge preserved behavior, not test count or a green
+  check alone.
+
+For all tests:
+
 - Test observable behavior through public APIs, not implementation details.
 - Cover non-trivial branches, parsers, state transitions, cancellation, and
   error paths without requiring a test per function or coverage percentage.
