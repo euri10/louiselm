@@ -3135,6 +3135,140 @@ T["chat"]["keeps the turn label visible in the window bar"] = function()
   chat:dispose()
 end
 
+T["chat"]["shows every background session in a clickable window bar strip"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2" }
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusReady#Your turn%*%=%1@v:lua.require('louiselm.ui.chat.command').winbar_click@%#LouiselmStatusReady#● one%*%X"
+  )
+  assert(chat:winbar_click(1))
+  MiniTest.expect.equality(chat.current_id, "session-1")
+  chat:dispose()
+end
+
+T["chat"]["highlights an unseen completed turn until its session is focused"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2" }
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusWarning#● one%*", 1, true)
+      ~= nil
+  end, 1)
+
+  assert(chat:switch("session-1"))
+  assert(chat:switch("session-2"))
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusReady#● one%*", 1, true) ~= nil,
+    true
+  )
+
+  first.state.status = "waiting_permission"
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "waiting_permission" } })
+  nvim.wait(100, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusWarning#! one%*", 1, true) ~= nil
+  end, 1)
+  assert(chat:switch("session-1"))
+  assert(chat:switch("session-2"))
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusWarning#! one%*", 1, true) ~= nil,
+    true
+  )
+
+  first.state.status = "prompting"
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "prompting" } })
+  nvim.wait(100, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusActive#… one%*", 1, true)
+      ~= nil
+  end, 1)
+  first.state.status = "error"
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "error" } })
+  nvim.wait(100, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusError#✗ one%*", 1, true) ~= nil
+  end, 1)
+  chat:dispose()
+end
+
+T["chat"]["defers background window bar refreshes from fast events"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local timer = assert(nvim.uv.new_timer())
+  local emitted_in_fast_event = false
+  first.state.status = "prompting"
+  timer:start(0, 0, function()
+    emitted_in_fast_event = nvim.in_fast_event()
+    first:emit({ type = "state_changed", session_id = "session-1", data = { status = "prompting" } })
+    timer:stop()
+    timer:close()
+  end)
+
+  local rendered = nvim.wait(100, function()
+    return emitted_in_fast_event
+      and nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("%#LouiselmStatusActive#… one%*", 1, true)
+        ~= nil
+  end, 1)
+
+  MiniTest.expect.equality(rendered, true)
+  chat:dispose()
+end
+
+T["chat"]["keeps attention sessions visible when quiet sessions overflow"] = function()
+  local original_columns = nvim.o.columns
+  local original_select = nvim.ui.select
+  MiniTest.finally(function()
+    nvim.o.columns = original_columns
+    nvim.ui.select = original_select
+  end)
+  nvim.o.columns = 32
+
+  local urgent = fake_session("session-1", "urgent")
+  urgent.state.status = "waiting_permission"
+  local quiet_one = fake_session("session-2", "very-long-quiet-one")
+  local quiet_two = fake_session("session-3", "very-long-quiet-two")
+  local current = fake_session("session-4", "current")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2", "session-3", "session-4" }
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(urgent))
+  assert(chat:attach(quiet_one))
+  assert(chat:attach(quiet_two))
+  assert(chat:attach(current))
+  local picker_opened = false
+  nvim.ui.select = function(_, _, callback)
+    picker_opened = true
+    callback(nil)
+  end
+  local winbar = nvim.api.nvim_get_option_value("winbar", { win = 0 })
+
+  MiniTest.expect.equality(winbar:find("! urgent", 1, true) ~= nil, true)
+  MiniTest.expect.equality(winbar:find("+2", 1, true) ~= nil, true)
+  MiniTest.expect.equality(winbar:find("very%-long", 1) == nil, true)
+  assert(chat:winbar_click(1))
+  MiniTest.expect.equality(picker_opened, true)
+  chat:dispose()
+end
+
 T["chat"]["opens the setup overview and applies a selected option"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {

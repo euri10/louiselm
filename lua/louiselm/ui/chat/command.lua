@@ -207,6 +207,13 @@ function M.configure(config)
   return true
 end
 
+---Handle a click from a LouiseLM Session winbar; clicks before registration or without an active chat are ignored.
+---@param _target integer Numeric target encoded in the winbar.
+---@param _clicks integer Number of consecutive clicks.
+---@param _button string Mouse button name.
+---@param _modifiers string Active mouse modifiers.
+function M.winbar_click(_target, _clicks, _button, _modifiers) end
+
 ---Register the interactive chat command.
 ---@return boolean registered Always true after the command is registered.
 function M.register()
@@ -218,6 +225,14 @@ function M.register()
     if message ~= nil then
       nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
     end
+  end
+
+  M.winbar_click = function(target, _, button)
+    if button ~= "l" or chat == nil then
+      return
+    end
+    local _, click_error = chat:winbar_click(target)
+    report_error(click_error)
   end
 
   ---@return louiselm.ui.Chat? value

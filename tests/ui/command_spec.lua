@@ -141,6 +141,30 @@ T["command"]["keeps the chat window when QuitPre protects multiple sessions"] = 
   MiniTest.expect.equality(nvim.api.nvim_win_is_valid(original_window), true)
 end
 
+T["command"]["routes a window bar click to its attached session"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  MiniTest.finally(function()
+    rawset(nvim, "system", original_system)
+    Command.configure(nil)
+    delete_chat_buffers()
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "first-acp" })
+  local first_buffer = nvim.api.nvim_get_current_buf()
+  nvim.api.nvim_cmd({ cmd = "LouiselmNewSession", args = {} }, {})
+  respond(process, 3, { sessionId = "second-acp" })
+  local second_buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(first_buffer ~= second_buffer, true)
+
+  Command.winbar_click(1, 1, "l", "")
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), first_buffer)
+end
+
 T["command"]["reports when no session id is available"] = function()
   local original_notify = nvim.notify
   local notification

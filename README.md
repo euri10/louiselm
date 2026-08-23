@@ -354,6 +354,12 @@ percentage `stale` until fresh usage arrives. LouiseLM does not estimate token
 counts, prices, or compaction state, and it does not display a context-pressure
 classification.
 
+With multiple attached Sessions, the right side of each Session winbar shows
+clickable status entries for the others. Permission requests, errors, and
+unseen completed responses use attention highlights; focusing a Session clears
+only its completed-response highlight. Narrow windows keep attention entries
+visible and collapse quiet Sessions into a clickable `+N` picker entry.
+
 Adapter values use the user-overridable `LouiselmAcpValue` highlight and derived
 percentage/staleness use `LouiselmDerivedValue`. Lifecycle labels use
 `LouiselmStatusReady`, `LouiselmStatusActive`, `LouiselmStatusWarning`, and

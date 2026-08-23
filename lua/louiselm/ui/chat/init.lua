@@ -48,6 +48,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
 ---@field cost_before louiselm.session.Cost? Cumulative cost before the current turn.
+---@field unread_turn boolean Whether a completed background response has not been focused.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
 
@@ -72,8 +73,10 @@ local Usage = require("louiselm.workflow.usage")
 ---@field prompt_namespace integer Extmark namespace for prompt boundaries.
 ---@field header_namespace integer Highlight namespace for session diagnostics.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
+---@field view_order string[] Attached session ids in display order.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field winbars table<integer, string> Previous window bars by window id.
+---@field winbar_targets table<integer, table<integer, string|false>> Click targets by window and minwid.
 ---@field current_id string? Currently displayed session id.
 ---@field handoffs table<integer, louiselm.ui.Handoff>
 ---@field disposed boolean Whether the chat UI has been disposed.
@@ -81,6 +84,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
 ---@field inspect_tool fun(self: louiselm.ui.Chat): boolean, string? Open the raw payload under the cursor.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
+---@field winbar_click fun(self: louiselm.ui.Chat, target: integer): boolean, string? Follow a winbar click target.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
 ---@field should_block_quit fun(self: louiselm.ui.Chat): boolean Whether a last-window quit would abandon multiple sessions.
@@ -268,6 +272,8 @@ local DEFAULT_HIGHLIGHTS = {
   LouiselmStatusWarning = "DiagnosticWarn",
   LouiselmStatusError = "DiagnosticError",
 }
+
+local WINBAR_CLICK_HANDLER = "v:lua.require('louiselm.ui.chat.command').winbar_click"
 
 local function setup_highlights()
   for name, link in pairs(DEFAULT_HIGHLIGHTS) do
@@ -542,6 +548,59 @@ local function winbar_segment(group, text)
   return "%#" .. group .. "#" .. statusline_escape(text) .. "%*"
 end
 
+---@class louiselm.ui.WinbarEntry
+---@field id string
+---@field group string
+---@field text string
+---@field attention boolean
+
+---@param view louiselm.ui.ChatView
+---@return louiselm.ui.WinbarEntry entry
+local function background_winbar_entry(view)
+  local state = view.session:inspect()
+  local label = state.name ~= nil and state.name ~= "" and state.name or state.agent
+  label = single_line(label)
+  if state.status == "waiting_permission" then
+    return { id = state.id, group = "LouiselmStatusWarning", text = "! " .. label, attention = true }
+  end
+  if state.status == "error" then
+    return { id = state.id, group = "LouiselmStatusError", text = "✗ " .. label, attention = true }
+  end
+  if view.unread_turn then
+    return { id = state.id, group = "LouiselmStatusWarning", text = "● " .. label, attention = true }
+  end
+  if state.status == "ready" then
+    return { id = state.id, group = "LouiselmStatusReady", text = "● " .. label, attention = false }
+  end
+  if state.status == "disposed" then
+    return { id = state.id, group = "LouiselmStatusWarning", text = "✗ " .. label, attention = true }
+  end
+  return {
+    id = state.id,
+    group = STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning",
+    text = "… " .. label,
+    attention = false,
+  }
+end
+
+---@param entries louiselm.ui.WinbarEntry[]
+---@return integer width
+local function winbar_entries_width(entries)
+  local width = math.max(0, #entries - 1) * 3
+  for _, entry in ipairs(entries) do
+    width = width + nvim.fn.strdisplaywidth(entry.text)
+  end
+  return width
+end
+
+---@param target integer
+---@param group string
+---@param text string
+---@return string
+local function clickable_winbar_segment(target, group, text)
+  return "%" .. target .. "@" .. WINBAR_CLICK_HANDLER .. "@" .. winbar_segment(group, text) .. "%X"
+end
+
 ---@param state louiselm.session.State
 ---@return string
 local function session_winbar(state)
@@ -565,6 +624,78 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param win integer
+---@return string
+local function chat_winbar(self, view, win)
+  local base = session_winbar(view.session:inspect())
+  local quiet = {} ---@type louiselm.ui.WinbarEntry[]
+  local attention = {} ---@type louiselm.ui.WinbarEntry[]
+  local current_id = view.session:inspect().id
+  for _, id in ipairs(self.view_order) do
+    local background = self.views[id]
+    if id ~= current_id and background ~= nil then
+      local entry = background_winbar_entry(background)
+      local entries = entry.attention and attention or quiet
+      entries[#entries + 1] = entry
+    end
+  end
+  if #quiet == 0 and #attention == 0 then
+    self.winbar_targets[win] = {}
+    return base
+  end
+
+  local available = nvim.api.nvim_win_get_width(win)
+    - nvim.api.nvim_eval_statusline(base, { winid = win, use_winbar = true }).width
+  local entries = {} ---@type louiselm.ui.WinbarEntry[]
+  for _, entry in ipairs(quiet) do
+    entries[#entries + 1] = entry
+  end
+  for _, entry in ipairs(attention) do
+    entries[#entries + 1] = entry
+  end
+  if winbar_entries_width(entries) > available then
+    entries = {}
+    local visible_quiet = 0
+    for index, entry in ipairs(quiet) do
+      local candidate = {} ---@type louiselm.ui.WinbarEntry[]
+      for _, visible in ipairs(entries) do
+        candidate[#candidate + 1] = visible
+      end
+      candidate[#candidate + 1] = entry
+      local hidden = #quiet - index
+      if hidden > 0 then
+        candidate[#candidate + 1] = { id = "", group = "Normal", text = "+" .. hidden, attention = false }
+      end
+      for _, urgent in ipairs(attention) do
+        candidate[#candidate + 1] = urgent
+      end
+      if winbar_entries_width(candidate) > available then
+        break
+      end
+      entries[#entries + 1] = entry
+      visible_quiet = index
+    end
+    local hidden = #quiet - visible_quiet
+    if hidden > 0 then
+      entries[#entries + 1] = { id = "", group = "Normal", text = "+" .. hidden, attention = false }
+    end
+    for _, entry in ipairs(attention) do
+      entries[#entries + 1] = entry
+    end
+  end
+
+  local targets = {} ---@type table<integer, string|false>
+  local segments = {}
+  for index, entry in ipairs(entries) do
+    targets[index] = entry.id ~= "" and entry.id or false
+    segments[index] = clickable_winbar_segment(index, entry.group, entry.text)
+  end
+  self.winbar_targets[win] = targets
+  return base .. "%=" .. table.concat(segments, " · ")
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param win integer
 local function render_winbar(self, view, win)
   if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
     return
@@ -572,7 +703,21 @@ local function render_winbar(self, view, win)
   if self.winbars[win] == nil then
     self.winbars[win] = nvim.api.nvim_get_option_value("winbar", { win = win })
   end
-  nvim.api.nvim_set_option_value("winbar", session_winbar(view.session:inspect()), { win = win })
+  nvim.api.nvim_set_option_value("winbar", chat_winbar(self, view, win), { win = win })
+end
+
+---@param self louiselm.ui.Chat
+local function render_winbars(self)
+  for _, win in ipairs(nvim.api.nvim_list_wins()) do
+    local buffer = nvim.api.nvim_win_get_buf(win)
+    for _, id in ipairs(self.view_order) do
+      local view = self.views[id]
+      if view ~= nil and view.buffer == buffer then
+        render_winbar(self, view, win)
+        break
+      end
+    end
+  end
 end
 
 ---@param self louiselm.ui.Chat
@@ -583,6 +728,7 @@ local function restore_winbars(self)
     end
   end
   self.winbars = {}
+  self.winbar_targets = {}
 end
 
 ---@param self louiselm.ui.Chat
@@ -1658,7 +1804,7 @@ local function handle_event(self, view, event)
 
   if event.type == "state_changed" or event.type == "config_options_changed" or event.type == "usage_updated" then
     render_header(self, view)
-    render_winbar(self, view, view.window)
+    render_winbars(self)
   end
   if event.type == "state_changed" and view.session:inspect().status == "ready" then
     open_session_options(self, view, true)
@@ -1850,6 +1996,8 @@ local function handle_event(self, view, event)
     view.response_started = false
     view.last_block_kind = nil
     release_queued_prompt(self, view)
+    view.unread_turn = state.status == "ready" and nvim.api.nvim_get_current_buf() ~= view.buffer
+    render_winbars(self)
   end
 end
 
@@ -1983,8 +2131,10 @@ function M.new(api, options)
     prompt_namespace = nvim.api.nvim_create_namespace("louiselm.chat.prompt"),
     header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
     views = {},
+    view_order = {},
     tool_inspect_windows = {},
     winbars = {},
+    winbar_targets = {},
     handoffs = {},
     current_id = nil,
     disposed = false,
@@ -2064,6 +2214,7 @@ function Chat:attach(session)
     prompt_namespace = self.prompt_namespace,
     setup_shown = false,
     cost_before = nil,
+    unread_turn = false,
     transcript = Transcript.new(),
     unsubscribe = function() end,
   }
@@ -2085,6 +2236,7 @@ function Chat:attach(session)
     end)
   end)
   self.views[state.id] = view
+  self.view_order[#self.view_order + 1] = state.id
   self.current_id = state.id
   nvim.api.nvim_set_current_buf(buffer)
   nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
@@ -2093,7 +2245,7 @@ function Chat:attach(session)
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
   end
   render_header(self, view)
-  render_winbar(self, view, window)
+  render_winbars(self)
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
   end, { buffer = buffer, silent = true, desc = "Submit louiselm prompt" })
@@ -2291,6 +2443,7 @@ function Chat:switch(session_id)
   end
   restore_winbars(self)
   self.current_id = session_id
+  view.unread_turn = false
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
   nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
@@ -2300,8 +2453,28 @@ function Chat:switch(session_id)
   end
   apply_context_folds(view, view.window)
   apply_tool_folds(view, view.window)
-  render_winbar(self, view, view.window)
+  render_winbars(self)
   return true
+end
+
+---Follow one click target from the current window bar.
+---@param self louiselm.ui.Chat
+---@param target integer Numeric minwid encoded in the window bar.
+---@return boolean followed
+---@return string? error_message Invalid target or Session picker error.
+function Chat:winbar_click(target)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local targets = self.winbar_targets[nvim.api.nvim_get_current_win()]
+  local session_id = targets and targets[target]
+  if session_id == nil then
+    return false, "window bar target is unavailable"
+  end
+  if session_id == false then
+    return self:switch_session()
+  end
+  return self:switch(session_id)
 end
 
 ---Pick one attached session using a compact state and telemetry row.
@@ -2417,6 +2590,12 @@ local function close_view(self, view)
   clear_queued_prompt(view)
   view.unsubscribe()
   self.views[id] = nil
+  for index, candidate in ipairs(self.view_order) do
+    if candidate == id then
+      table.remove(self.view_order, index)
+      break
+    end
+  end
   local _, close_error = view.session:dispose()
   if nvim.api.nvim_buf_is_valid(view.buffer) then
     nvim.api.nvim_buf_delete(view.buffer, { force = true })
@@ -2921,6 +3100,8 @@ function Chat:dispose()
     self.views[id] = nil
   end
   self.current_id = nil
+  self.view_order = {}
+  self.winbar_targets = {}
   return true
 end
 
