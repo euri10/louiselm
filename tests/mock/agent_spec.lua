@@ -148,6 +148,7 @@ end
 
 T["mock agent"]["advertises commands through session/update and delivers them on the session"] = function()
   local events = {}
+  local changed
   local ready
   local api = assert(Session.new({
     mock = mock_definition("echo", nil, {
@@ -160,6 +161,9 @@ T["mock agent"]["advertises commands through session/update and delivers them on
     cwd = project_root,
     on_event = function(event)
       events[#events + 1] = event
+      if event.type == "commands_changed" then
+        changed = event
+      end
     end,
   }, function(value, err)
     ready = { session = value, error = err }
@@ -168,14 +172,12 @@ T["mock agent"]["advertises commands through session/update and delivers them on
     return ready ~= nil
   end)
   MiniTest.expect.equality(ready.error, nil)
+
+  wait_for(function()
+    return changed ~= nil
+  end)
   MiniTest.expect.equality(session:inspect().commands, { { name = "grill-me", description = "Stress-test an idea" } })
 
-  local changed
-  for _, event in ipairs(events) do
-    if event.type == "commands_changed" then
-      changed = event
-    end
-  end
   MiniTest.expect.equality(changed.data, {
     commands = { { name = "grill-me", description = "Stress-test an idea" } },
     diagnostics = {},
