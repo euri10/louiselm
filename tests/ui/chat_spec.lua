@@ -1,6 +1,7 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
 local Usage = require("louiselm.workflow.usage")
+local Workflow = require("louiselm.workflow")
 
 local T = MiniTest.new_set()
 
@@ -142,6 +143,7 @@ end
 
 local original_schedule = nvim.schedule
 local original_select = nvim.ui.select
+local original_input = nvim.ui.input
 
 T["chat"] = MiniTest.new_set({
   hooks = {
@@ -149,6 +151,7 @@ T["chat"] = MiniTest.new_set({
       -- A failing expectation skips a test's own restore, and MiniTest itself needs these.
       nvim.schedule = original_schedule
       nvim.ui.select = original_select
+      nvim.ui.input = original_input
       nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_is_valid(buffer) and nvim.api.nvim_buf_get_name(buffer):match("^louiselm://") then
@@ -797,6 +800,47 @@ local function select_first()
   end
 end
 
+---@param session table
+---@param workflow table
+---@param api? table
+---@param agents? string[]
+---@return louiselm.ui.Chat chat
+---@return string workspace
+local function workflow_chat(session, workflow, api, agents)
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "implementation", "Implement the task")
+  local chat = assert(Chat.new(api or fake_api(), {
+    agents = agents,
+    skills = {
+      {
+        name = "implementation",
+        description = "Implement the task",
+        path = nvim.fs.joinpath(workspace, "implementation", "SKILL.md"),
+        explicit_only = false,
+        phase = { primary = "implementation", secondary = {}, source = "inferred", confidence = 0.5 },
+      },
+    },
+    workflow = workflow,
+  }))
+  assert(chat:attach(session))
+  return chat, workspace
+end
+
+---@param feedback string
+---@param action "Approve"|"Reject"
+local function select_workflow(feedback, action)
+  nvim.ui.select = function(items, options, callback)
+    if options.prompt == "louiselm workflow feedback: " then
+      callback(feedback)
+    elseif options.prompt == "louiselm workflow recommendation action: " then
+      MiniTest.expect.equality(items, { "Approve", "Reject" })
+      callback(action)
+    else
+      callback(items[1])
+    end
+  end
+end
+
 T["chat"]["sends a native picker's resolved dollar command merged with the task as one text block"] = function()
   local workspace = nvim.fn.tempname()
   write_skill_file(workspace, "grill-me", "Stress-test an idea")
@@ -820,8 +864,6 @@ T["chat"]["sends a native picker's resolved dollar command merged with the task 
 end
 
 T["chat"]["presents phase recommendations only after a tagged turn completes"] = function()
-  local workspace = nvim.fn.tempname()
-  write_skill_file(workspace, "implementation", "Implement the task")
   local first = fake_session("session-1", "claude")
   first.state.skills_policy = "inject"
   local observed
@@ -839,6 +881,9 @@ T["chat"]["presents phase recommendations only after a tagged turn completes"] =
       observed = { phase = phase, state = state, outcome = outcome }
       return true
     end,
+    feedback = function()
+      return true
+    end,
     recommend = function(_, phase, state)
       MiniTest.expect.equality(state.status, "ready")
       return { phase = phase, candidates = { candidate } }
@@ -851,6 +896,38 @@ T["chat"]["presents phase recommendations only after a tagged turn completes"] =
       return true
     end,
   }
+  local chat, workspace = workflow_chat(first, workflow)
+  select_workflow("Skip", "Approve")
+  assert(chat:pick_skill())
+  assert(chat:submit("implement it"))
+
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return approved ~= nil
+  end, 1)
+  MiniTest.expect.equality(observed.phase.primary, "implementation")
+  MiniTest.expect.equality(observed.outcome, "completed")
+  MiniTest.expect.equality(approved.action, "continue")
+  local recommendation_line = "[workflow] approved CONTINUE: " .. candidate.label
+  local found = false
+  for _, line in ipairs(buffer_lines(chat:buffer())) do
+    if line == recommendation_line then
+      found = true
+      break
+    end
+  end
+  MiniTest.expect.equality(found, true)
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["records one-click phase feedback before presenting recommendations"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "implementation", "Implement the task")
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local evidence_path = nvim.fs.joinpath(workspace, "routing-evidence.json")
+  local workflow = assert(Workflow.new({ claude = { capabilities = { "coding" } } }, evidence_path))
   local chat = assert(Chat.new(fake_api(), {
     skills = {
       {
@@ -865,31 +942,238 @@ T["chat"]["presents phase recommendations only after a tagged turn completes"] =
   }))
   assert(chat:attach(first))
 
-  local original_select = nvim.ui.select
-  nvim.ui.select = function(items, _, callback)
-    callback(items[1])
+  nvim.ui.select = function(items, options, callback)
+    if options.prompt == "louiselm workflow feedback: " then
+      MiniTest.expect.equality(items, { "Good", "Skip", "Poor" })
+      callback("Good")
+      return
+    end
+    callback(options.prompt == "louiselm skill: " and items[1] or nil)
   end
   assert(chat:pick_skill())
   assert(chat:submit("implement it"))
 
   first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
   nvim.wait(100, function()
-    return approved ~= nil
+    local evidence = workflow.evidence:evidence()
+    return evidence ~= nil and evidence[1] ~= nil and evidence[1].quality == 1
   end, 1)
-  nvim.ui.select = original_select
 
-  MiniTest.expect.equality(observed.phase.primary, "implementation")
-  MiniTest.expect.equality(observed.outcome, "completed")
-  MiniTest.expect.equality(approved.action, "continue")
-  local recommendation_line = "[workflow] approved CONTINUE: " .. candidate.label
-  local found = false
-  for _, line in ipairs(buffer_lines(chat:buffer())) do
-    if line == recommendation_line then
-      found = true
+  local reloaded = assert(Workflow.new({ claude = { capabilities = { "coding" } } }, evidence_path))
+  local persisted = assert(reloaded.evidence:evidence())
+  local phase_evidence
+  for _, record in ipairs(persisted) do
+    if record.phase == "implementation" then
+      phase_evidence = record
       break
     end
   end
-  MiniTest.expect.equality(found, true)
+  MiniTest.expect.equality(assert(phase_evidence).agent, "claude")
+  MiniTest.expect.equality(phase_evidence.quality, 1)
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["ignores late workflow feedback after disposal"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local feedback_callback
+  local workflow = {
+    observe = function()
+      return true
+    end,
+    feedback = function()
+      error("must not record feedback after disposal")
+    end,
+    recommend = function()
+      error("must not recommend after disposal")
+    end,
+  }
+  local chat, workspace = workflow_chat(first, workflow)
+
+  nvim.ui.select = function(items, options, callback)
+    if options.prompt == "louiselm workflow feedback: " then
+      feedback_callback = callback
+      return
+    end
+    callback(items[1])
+  end
+  assert(chat:pick_skill())
+  assert(chat:submit("implement it"))
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return feedback_callback ~= nil
+  end, 1)
+
+  assert(chat:dispose())
+  feedback_callback("Good")
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["lets the user reject and suppress a routing candidate"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local rejected
+  local candidate = {
+    action = "handoff",
+    agent = "codex",
+    score = 0.9,
+    confidence = 0.8,
+    reasons = { "declares coding" },
+    label = "HANDOFF codex/- · 80% confidence · declares coding",
+  }
+  local workflow = {
+    observe = function()
+      return true
+    end,
+    feedback = function()
+      return true
+    end,
+    recommend = function(_, phase)
+      return { phase = phase, candidates = { candidate } }
+    end,
+    approve = function()
+      error("must not approve a rejected recommendation")
+    end,
+    reject = function(_, value)
+      rejected = value
+      return true
+    end,
+    clear_pending = function()
+      return true
+    end,
+  }
+  local chat, workspace = workflow_chat(first, workflow)
+  select_workflow("Skip", "Reject")
+  assert(chat:pick_skill())
+  assert(chat:submit("implement it"))
+
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return rejected ~= nil
+  end, 1)
+
+  MiniTest.expect.equality(rejected, candidate)
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["records contextual poor feedback and applies an approved Model change"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.status = "starting"
+  first.state.skills_policy = "inject"
+  first.state.config_options = {
+    {
+      id = "model",
+      name = "Model",
+      category = "model",
+      type = "select",
+      current_value = "sonnet",
+      options = {
+        { value = "sonnet", name = "Sonnet" },
+        { value = "opus", name = "Opus" },
+      },
+    },
+  }
+  local feedback
+  local candidate = {
+    action = "model",
+    agent = "claude",
+    model = "opus",
+    score = 0.9,
+    confidence = 0.8,
+    reasons = { "better evidence" },
+    label = "MODEL claude/opus · 80% confidence · better evidence",
+  }
+  local workflow = {
+    observe = function()
+      return true
+    end,
+    feedback = function(_, phase, state, rating, context)
+      feedback = { phase = phase, state = state, rating = rating, context = context }
+      return true
+    end,
+    recommend = function(_, phase)
+      return { phase = phase, candidates = { candidate } }
+    end,
+    approve = function(_, value)
+      return value
+    end,
+    clear_pending = function()
+      return true
+    end,
+  }
+  local chat, workspace = workflow_chat(first, workflow)
+  first.state.status = "ready"
+
+  select_workflow("Poor", "Approve")
+  nvim.ui.input = function(options, callback)
+    MiniTest.expect.equality(options.prompt, "louiselm workflow feedback context: ")
+    callback("used an unavailable API")
+  end
+  assert(chat:pick_skill())
+  assert(chat:submit("implement it"))
+
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return first.config_changes[1] ~= nil
+  end, 1)
+
+  MiniTest.expect.equality(feedback.rating, "poor")
+  MiniTest.expect.equality(feedback.context, "used an unavailable API")
+  MiniTest.expect.equality(first.config_changes, { { id = "model", value = "opus" } })
+  chat:dispose()
+  nvim.fn.delete(workspace, "rf")
+end
+
+T["chat"]["creates a Handoff Session while retaining the source after approval"] = function()
+  local source = fake_session("source", "claude")
+  source.state.skills_policy = "inject"
+  local target = fake_session("target", "codex")
+  local created_agent
+  local api = fake_api()
+  api.create_session = function(_, agent_name)
+    created_agent = agent_name
+    return target
+  end
+  local candidate = {
+    action = "handoff",
+    agent = "codex",
+    score = 0.9,
+    confidence = 0.8,
+    reasons = { "declares coding" },
+    label = "HANDOFF codex/- · 80% confidence · declares coding",
+  }
+  local workflow = {
+    observe = function()
+      return true
+    end,
+    feedback = function()
+      return true
+    end,
+    recommend = function(_, phase)
+      return { phase = phase, candidates = { candidate } }
+    end,
+    approve = function(_, value)
+      return value
+    end,
+    clear_pending = function()
+      return true
+    end,
+  }
+  local chat, workspace = workflow_chat(source, workflow, api, { "claude", "codex" })
+  select_workflow("Skip", "Approve")
+  assert(chat:pick_skill())
+  assert(chat:submit("implement it"))
+
+  source:emit({ type = "turn_done", session_id = "source", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return nvim.api.nvim_buf_get_name(0):match("^louiselm://handoff-source-target$") ~= nil
+  end, 1)
+
+  MiniTest.expect.equality(created_agent, "codex")
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(assert(chat:buffer("source"))), true)
+  assert(chat:switch("source"))
   chat:dispose()
   nvim.fn.delete(workspace, "rf")
 end

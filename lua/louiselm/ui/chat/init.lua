@@ -1517,6 +1517,41 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
+---@param phase louiselm.workflow.PhaseMetadata
+---@param state louiselm.session.State
+---@param callback fun()
+local function present_workflow_feedback(self, view, phase, state, callback)
+  local function finish(rating, context)
+    if rating ~= nil then
+      local recorded, error_message = self.workflow:feedback(phase, state, rating, context)
+      if not recorded then
+        insert_transcript(self, view, { "Error: " .. (error_message or "could not record workflow feedback") })
+      end
+    end
+    callback()
+  end
+
+  Picker.select({ "Good", "Skip", "Poor" }, { prompt = "louiselm workflow feedback: " }, function(choice)
+    if choice == nil or self.disposed or self.views[state.id] ~= view then
+      finish(nil)
+      return
+    end
+    local rating = string.lower(choice)
+    if rating ~= "poor" then
+      finish(rating)
+      return
+    end
+    nvim.ui.input({ prompt = "louiselm workflow feedback context: " }, function(context)
+      if self.disposed or self.views[state.id] ~= view then
+        return
+      end
+      finish(context and "poor" or nil, context)
+    end)
+  end)
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
 ---@param candidate louiselm.workflow.ApprovalCandidate
 ---@return boolean applied
 ---@return string? error_message
@@ -1581,15 +1616,30 @@ local function present_recommendations(self, view, phase, pending)
       end
       return
     end
-    local approved, approval_error = self.workflow:approve(candidate)
-    if approved == nil then
-      insert_transcript(self, view, { "Error: " .. (approval_error or "recommendation could not be approved") })
-      return
-    end
-    local applied, apply_error = apply_recommendation(self, view, approved)
-    if not applied then
-      insert_transcript(self, view, { "Error: " .. (apply_error or "recommendation could not be applied") })
-    end
+    Picker.select({ "Approve", "Reject" }, { prompt = "louiselm workflow recommendation action: " }, function(action)
+      if action == nil or self.disposed or self.views[view.session:inspect().id] ~= view then
+        if action == nil then
+          self.workflow:clear_pending(phase)
+        end
+        return
+      end
+      if action == "Reject" then
+        local rejected, rejection_error = self.workflow:reject(candidate)
+        if not rejected then
+          insert_transcript(self, view, { "Error: " .. (rejection_error or "recommendation could not be rejected") })
+        end
+        return
+      end
+      local approved, approval_error = self.workflow:approve(candidate)
+      if approved == nil then
+        insert_transcript(self, view, { "Error: " .. (approval_error or "recommendation could not be approved") })
+        return
+      end
+      local applied, apply_error = apply_recommendation(self, view, approved)
+      if not applied then
+        insert_transcript(self, view, { "Error: " .. (apply_error or "recommendation could not be applied") })
+      end
+    end)
   end)
 end
 
@@ -1783,12 +1833,17 @@ local function handle_event(self, view, event)
       if not observed then
         insert_transcript(self, view, { "Error: " .. (observe_error or "could not record workflow evidence") })
       end
-      local pending, _, recommend_error = self.workflow:recommend(view.workflow_phase, state)
-      if pending ~= nil then
-        present_recommendations(self, view, view.workflow_phase, pending)
-      elseif recommend_error ~= nil and recommend_error ~= "phase already has an approved choice" then
-        insert_transcript(self, view, { "Error: " .. recommend_error })
-      end
+      present_workflow_feedback(self, view, view.workflow_phase, state, function()
+        if self.disposed or self.views[state.id] ~= view then
+          return
+        end
+        local pending, _, recommend_error = self.workflow:recommend(view.workflow_phase, state)
+        if pending ~= nil then
+          present_recommendations(self, view, view.workflow_phase, pending)
+        elseif recommend_error ~= nil and recommend_error ~= "phase already has an approved choice" then
+          insert_transcript(self, view, { "Error: " .. recommend_error })
+        end
+      end)
     end
     view.response_line = nil
     view.response_tail = nil

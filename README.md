@@ -619,17 +619,20 @@ declared phase outside the canonical list is an error and the skill is rejected,
 because a phase with no built-in profile would rank candidates against nothing.
 
 When a phase-tagged skill completes a turn, the Chat UI records the operational
-outcome locally and, once the Session is idle, presents a short ranked
-recommendation picker. A recommendation is never opened during an active turn.
-The picker always includes the current choice as safe `CONTINUE`, followed by
-eligible Model changes and Handoffs with their action, reasons, and confidence.
+outcome locally and offers `Good`, `Skip`, or `Poor` phase feedback; `Poor` asks
+for a short context note. After feedback or dismissal, the idle Session gets a
+short ranked recommendation picker. A recommendation is never opened during an
+active turn. The picker always includes the current choice as safe `CONTINUE`,
+followed by eligible Model changes and Handoffs with their action, reasons, and
+confidence.
 
 Approval is explicit and phase-scoped. `CONTINUE` leaves the Session unchanged;
 a Model choice changes the advertised model option in that Session; a Handoff
 creates a new Session and opens the reviewed transcript while retaining the
-source Session. Dismissing a picker makes no decision. The coordinator also
-supports rejecting a candidate, reconsidering suppressed candidates, and
-invalidating a phase when fresh discovery changes the routing context.
+source Session. After selecting a recommendation, approve it or reject and
+suppress it for the phase. Dismissing either picker makes no decision. The
+coordinator can reconsider suppressed candidates and invalidate a phase when
+fresh discovery changes the routing context.
 
 The built-in profiles use existing Agent capability tags:
 
