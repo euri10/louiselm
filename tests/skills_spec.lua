@@ -348,6 +348,76 @@ T["discover"]["accepts standard nested metadata"] = function()
   })
 end
 
+T["discover"]["attaches declared phase metadata to the skill"] = function()
+  local directory = nvim.fs.joinpath(temp_dir, "declared-phase")
+  write_lines(directory, {
+    "---",
+    "name: declared-phase",
+    "description: Declares its own routing phase",
+    "phase:",
+    "  primary: qa",
+    "  secondary:",
+    "    - review",
+    "---",
+    "# Declared phase",
+  })
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(skills[1].phase, {
+    primary = "qa",
+    secondary = { "review" },
+    source = "explicit",
+    confidence = 1,
+  })
+end
+
+T["discover"]["infers a phase from the skill name when none is declared"] = function()
+  write_skill(nvim.fs.joinpath(temp_dir, "qa-review"), "qa-review", "Declares no phase")
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(skills[1].phase, {
+    primary = "qa",
+    secondary = { "review" },
+    source = "inferred",
+    confidence = 0.5,
+  })
+end
+
+T["discover"]["leaves a skill without a phase when nothing declares or implies one"] = function()
+  write_skill(nvim.fs.joinpath(temp_dir, "grill-me"), "grill-me", "Declares no phase and names none")
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(skills[1].phase, nil)
+end
+
+T["discover"]["rejects a malformed phase rather than routing on a guess"] = function()
+  local directory = nvim.fs.joinpath(temp_dir, "bad-phase")
+  local path = write_lines(directory, {
+    "---",
+    "name: bad-phase",
+    "description: Declares a phase that is not canonical",
+    "phase: testing",
+    "---",
+    "# Bad phase",
+  })
+
+  local skills, errors = Skills.discover({ temp_dir })
+
+  MiniTest.expect.equality(skills, {})
+  MiniTest.expect.equality(errors, {
+    {
+      path = path,
+      message = "unknown phase 'testing'; expected one of design, planning, implementation, review, qa, mechanical",
+    },
+  })
+end
+
 T["discover"]["accepts LibYAML syntax and validates standard metadata"] = function()
   local directory = nvim.fs.joinpath(temp_dir, "yaml-features")
   local path = write_lines(directory, {

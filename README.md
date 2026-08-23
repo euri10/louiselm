@@ -596,6 +596,27 @@ plus `luarocks` with Homebrew on macOS:
 luarocks --lua-version 5.1 install lyaml
 ```
 
+A `SKILL.md` may declare which workflow phase its skill belongs to, as either a
+bare phase name or a mapping with one primary and ordered secondary phases:
+
+```yaml
+phase:
+  primary: qa
+  secondary:
+    - review
+```
+
+The canonical phases are `design`, `planning`, `implementation`, `review`, `qa`,
+and `mechanical`. A skill that declares none has its phase inferred from
+hyphen-separated segments of its own name at lower confidence, so `qa-review`
+resolves to primary `qa` with secondary `review` whether or not it says so; a
+name naming no phase, such as `grill-me`, yields no phase rather than a guess. A
+declared phase outside the canonical list is an error and the skill is rejected,
+because a phase with no built-in profile would rank candidates against nothing.
+
+Phase metadata is recorded on each discovered skill and is not yet acted on;
+phase-aware Model and Agent routing consumes it.
+
 The dependency is loaded only when configured local skill files need parsing.
 Install it in Lua's standard search path. If LuaRocks reports it installed but
 Neovim cannot find it, start Neovim from a POSIX shell with the LuaRocks paths:

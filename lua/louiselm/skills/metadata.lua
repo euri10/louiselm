@@ -6,6 +6,7 @@
 ---@class louiselm.skills.Yaml
 ---@field load fun(value: string): unknown
 
+local Phase = require("louiselm.workflow.phase")
 local M = {}
 
 ---@return table
@@ -141,6 +142,10 @@ function M.skill(lines, path, content, directory_name, yaml)
   if validation_error ~= nil then
     return nil, validation_error
   end
+  local phase, phase_error = Phase.resolve(fields.phase, fields.name)
+  if phase_error ~= nil then
+    return nil, phase_error
+  end
 
   local warnings = {}
   local disable_model_invocation = fields["disable-model-invocation"]
@@ -169,6 +174,7 @@ function M.skill(lines, path, content, directory_name, yaml)
       path = path,
       content = content,
       explicit_only = explicit_only,
+      phase = phase,
     },
     disable_model_invocation = disable_model_invocation,
     warnings = warnings,
