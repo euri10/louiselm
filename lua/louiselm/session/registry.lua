@@ -2,6 +2,7 @@ local Agent = require("louiselm.agent")
 local Acp = require("louiselm.acp")
 local Permission = require("louiselm.permission")
 local Lifecycle = require("louiselm.session.lifecycle")
+local Limits = require("louiselm.session.limits")
 local Validation = require("louiselm.session.validation")
 
 ---@class louiselm.session.DiscoveryOptions
@@ -30,6 +31,7 @@ local Validation = require("louiselm.session.validation")
 ---@field next_id integer Next local session number.
 ---@field next_discovery_id integer Next discovery operation number.
 ---@field discoveries table<integer, louiselm.session.DiscoveryState> Active adapter discovery operations.
+---@field agent_limits table<string, louiselm.session.LimitsState> Last observed account-limit state by Agent.
 ---@field permission_store louiselm.permission.Store Remembered rules owned by this registry.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
@@ -37,6 +39,9 @@ local Validation = require("louiselm.session.validation")
 ---@field discover_sessions fun(self: louiselm.session.Registry, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
 ---@field get_session fun(self: louiselm.session.Registry, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Registry): string[]
+---@field inspect_agent_limits fun(self: louiselm.session.Registry, agent_name: string): louiselm.session.LimitsState?, string?
+---@field refresh_agent_limits fun(self: louiselm.session.Registry, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)): boolean, string?
+---@field handle_agent_notification fun(self: louiselm.session.Registry, session: louiselm.session.Session, message: louiselm.acp.JsonRpcNotification)
 ---@field list_permissions fun(self: louiselm.session.Registry): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Registry, id: string): boolean, string?
 ---@field dispose fun(self: louiselm.session.Registry): boolean, string?
@@ -45,6 +50,19 @@ local Validation = require("louiselm.session.validation")
 local M = {}
 local Registry = {}
 Registry.__index = Registry
+
+---@param value unknown
+---@return unknown result
+local function copy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local result = {}
+  for key, item in pairs(value) do
+    result[key] = copy(item)
+  end
+  return result
+end
 
 ---@param definitions unknown
 ---@param default_skills_policy? unknown
@@ -120,6 +138,7 @@ function M.new(definitions, default_skills_policy, options)
     next_id = 1,
     next_discovery_id = 1,
     discoveries = {},
+    agent_limits = {},
     permission_store = permission_store,
     disposed = false,
   }, Registry),
@@ -432,6 +451,212 @@ function Registry:list_sessions()
     end
   end
   return ids
+end
+
+---@param snapshot louiselm.session.LimitsSnapshot
+---@return louiselm.session.LimitsStatus
+local function snapshot_status(snapshot)
+  if snapshot.unlimited then
+    return "unlimited"
+  end
+  if #snapshot.buckets == 0 then
+    return "empty"
+  end
+  return "fresh"
+end
+
+---@param snapshot louiselm.session.LimitsSnapshot
+---@return boolean
+local function snapshot_expired(snapshot)
+  local now = os.time()
+  for _, bucket in ipairs(snapshot.buckets) do
+    for _, window in ipairs(bucket.windows) do
+      if window.resets_at <= now then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+---@param self louiselm.session.Registry
+---@param agent_name string
+---@return louiselm.session.Session? source
+---@return louiselm.session.LimitsCapability? capability
+---@return boolean observed
+local function limits_source(self, agent_name)
+  local observed = false
+  for _, id in ipairs(self.order) do
+    local session = self.sessions[id]
+    local state = session and session:inspect() or nil
+    local client = session and session.client or nil
+    if
+      state ~= nil
+      and state.agent == agent_name
+      and state.status ~= "disposed"
+      and state.status ~= "error"
+      and client ~= nil
+      and client.initialized
+    then
+      observed = true
+      local capability = Limits.capability(client.agent_capabilities)
+      if capability ~= nil then
+        return session, capability, true
+      end
+    end
+  end
+  return nil, nil, observed
+end
+
+---@param self louiselm.session.Registry
+---@param agent_name string
+---@param message string
+---@return louiselm.session.LimitsState state
+local function limits_failure(self, agent_name, message)
+  local previous = self.agent_limits[agent_name]
+  local state = {
+    agent = agent_name,
+    status = previous ~= nil and previous.snapshot ~= nil and "stale" or "unavailable",
+    snapshot = previous and previous.snapshot or nil,
+    updated_at = previous and previous.updated_at or nil,
+    error = message,
+  }
+  self.agent_limits[agent_name] = state
+  return state
+end
+
+---@param self louiselm.session.Registry
+---@param agent_name string
+---@param value unknown
+---@return louiselm.session.LimitsState state
+---@return string? error_message
+local function accept_limits(self, agent_name, value)
+  local snapshot, validation_error = Limits.snapshot(value)
+  if snapshot == nil then
+    local message = "malformed ACP account limits snapshot: " .. (validation_error or "invalid data")
+    return limits_failure(self, agent_name, message), message
+  end
+  local state = {
+    agent = agent_name,
+    status = snapshot_status(snapshot),
+    snapshot = snapshot,
+    updated_at = os.time(),
+  }
+  self.agent_limits[agent_name] = state
+  return state
+end
+
+---Return the current Agent-level account-limit state without starting or refreshing an Agent.
+---@param self louiselm.session.Registry
+---@param agent_name string Configured Agent name.
+---@return louiselm.session.LimitsState? state
+---@return string? error_message Validation failure.
+function Registry:inspect_agent_limits(agent_name)
+  if self.disposed then
+    return nil, "session registry is disposed"
+  end
+  if type(agent_name) ~= "string" or agent_name == "" or self.definitions[agent_name] == nil then
+    return nil, "unknown agent '" .. tostring(agent_name) .. "'"
+  end
+  local source, _, observed = limits_source(self, agent_name)
+  local state = self.agent_limits[agent_name]
+  if state ~= nil and state.snapshot ~= nil and snapshot_expired(state.snapshot) then
+    state.status = "stale"
+    state.error = "account limits reset time passed without a confirmed refresh"
+  end
+  if state ~= nil then
+    if source == nil then
+      if state.snapshot ~= nil then
+        state.status = "stale"
+      elseif state.status == "loading" then
+        state.status = "unavailable"
+      end
+      state.error = state.error or "no live limits-capable Session"
+    end
+    return copy(state)
+  end
+  if source ~= nil then
+    return { agent = agent_name, status = "loading" }
+  end
+  if observed then
+    return { agent = agent_name, status = "unsupported" }
+  end
+  return { agent = agent_name, status = "not_observed" }
+end
+
+---Refresh account limits through one live capability-advertising Session for an Agent.
+---@param self louiselm.session.Registry
+---@param agent_name string Configured Agent name.
+---@param callback fun(state: louiselm.session.LimitsState, error?: string) Completion callback.
+---@return boolean started
+---@return string? error_message Validation or immediate transport failure.
+function Registry:refresh_agent_limits(agent_name, callback)
+  if type(callback) ~= "function" then
+    return false, "account limits callback must be a function"
+  end
+  local current, inspect_error = self:inspect_agent_limits(agent_name)
+  if current == nil then
+    return false, inspect_error
+  end
+  local source, capability = limits_source(self, agent_name)
+  if source == nil or capability == nil then
+    callback(current)
+    return true
+  end
+  local previous = self.agent_limits[agent_name]
+  self.agent_limits[agent_name] = {
+    agent = agent_name,
+    status = "loading",
+    snapshot = previous and previous.snapshot or nil,
+    updated_at = previous and previous.updated_at or nil,
+  }
+  local client = source.client
+  if client == nil then
+    local state = limits_failure(self, agent_name, "ACP account limits source disappeared")
+    callback(copy(state), state.error)
+    return true
+  end
+  local source_id = source:inspect().id
+  local request_id, request_error = client:request(capability.read_method, {}, function(result, rpc_error)
+    if self.disposed or self.sessions[source_id] ~= source then
+      return
+    end
+    if rpc_error ~= nil then
+      local message = "ACP account limits read failed: " .. tostring(rpc_error.message or "request failed")
+      local state = limits_failure(self, agent_name, message)
+      callback(copy(state), message)
+      return
+    end
+    local state, validation_error = accept_limits(self, agent_name, result)
+    callback(copy(state), validation_error)
+  end)
+  if request_id == nil then
+    local message = "ACP account limits read failed: " .. (request_error or "request could not be sent")
+    local state = limits_failure(self, agent_name, message)
+    callback(copy(state), message)
+    return false, message
+  end
+  return true
+end
+
+---Accept a custom account-limits notification from one owned Session.
+---@param self louiselm.session.Registry
+---@param session louiselm.session.Session Source Session.
+---@param message louiselm.acp.JsonRpcNotification Raw ACP notification.
+function Registry:handle_agent_notification(session, message)
+  if self.disposed or type(message) ~= "table" then
+    return
+  end
+  local session_state = session:inspect()
+  if session_state.status == "disposed" or self.sessions[session_state.id] ~= session then
+    return
+  end
+  local client = session.client
+  local capability = client and Limits.capability(client.agent_capabilities) or nil
+  if capability == nil or message.method ~= capability.updated_method then
+    return
+  end
+  accept_limits(self, session_state.agent, message.params)
 end
 
 ---List persistent and live remembered permission rules.

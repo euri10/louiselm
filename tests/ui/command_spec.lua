@@ -39,6 +39,22 @@ local function respond(process, id, result)
   process.options.stdout(nil, assert(Protocol.encode(Protocol.response(id, result))) .. "\n")
 end
 
+local LIMITS_READ_METHOD = "_io.github.euri10.louiselm/account_limits/read"
+
+local function limits_capabilities()
+  return {
+    _meta = {
+      ["io.github.euri10.louiselm"] = {
+        accountLimits = {
+          version = 1,
+          readMethod = LIMITS_READ_METHOD,
+          updatedMethod = "_io.github.euri10.louiselm/account_limits/updated",
+        },
+      },
+    },
+  }
+end
+
 local function mock_definition()
   return {
     command = nvim.v.progpath,
@@ -103,6 +119,8 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmToMarkdown ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInspectTool ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSessionOptions ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmLimits ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmLimits.nargs, "?")
   MiniTest.expect.equality(commands.LouiselmPermissions ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmInline ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmPickSkill ~= nil, true)
@@ -111,6 +129,78 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmSendSelection ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
+end
+
+T["command"]["shows and refreshes the active Agent account limits"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+  respond(process, 2, { sessionId = "codex-acp" })
+  nvim.api.nvim_cmd({ cmd = "LouiselmLimits", args = {} }, {})
+
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[3]:sub(1, -2))).method, LIMITS_READ_METHOD)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0), "louiselm://limits/codex")
+  respond(process, 3, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        label = "Codex",
+        windows = { { usedPercent = 82, windowDurationMins = 300, resetsAt = 4102444800 } },
+        planType = "plus",
+        credits = { balance = 7.5, unlimited = false },
+      },
+      {
+        id = "other",
+        label = "Other",
+        windows = {
+          { usedPercent = 25, windowDurationMins = 90, resetsAt = 4102444800 },
+          { usedPercent = 33, windowDurationMins = 10080, resetsAt = 4102448400 },
+        },
+      },
+    },
+    resetCredits = { availableCount = 1 },
+  })
+  local rendered = nvim.wait(1000, function()
+    return buffer_contains(nvim.api.nvim_get_current_buf(), "18% left · 82% used")
+  end)
+
+  local buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(rendered, true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Agent: codex"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Codex (codex)"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Window: 5h"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Plan: plus"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Credits: 7.5"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Other (other)"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "75% left · 25% used"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "67% left · 33% used"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Window: 90m"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Window: 7d"), true)
+  MiniTest.expect.equality(buffer_contains(buffer, "Reset credits: 1"), true)
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
+
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+end
+
+T["command"]["shows an explicitly named unobserved Agent without starting it"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmLimits", args = { "codex" } }, {})
+  local buffer = nvim.api.nvim_get_current_buf()
+
+  MiniTest.expect.equality(process.command, nil)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(buffer), "louiselm://limits/codex")
+  MiniTest.expect.equality(buffer_contains(buffer, "Status: not observed"), true)
+
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
 end
 
 T["command"]["keeps the chat window when QuitPre protects multiple sessions"] = function()

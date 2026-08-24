@@ -7,6 +7,8 @@ local Registry = require("louiselm.session.registry")
 ---@field discover_sessions fun(self: louiselm.session.Api, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
 ---@field get_session fun(self: louiselm.session.Api, id: string): louiselm.session.Session?
 ---@field list_sessions fun(self: louiselm.session.Api): string[]
+---@field inspect_agent_limits fun(self: louiselm.session.Api, agent_name: string): louiselm.session.LimitsState?, string?
+---@field refresh_agent_limits fun(self: louiselm.session.Api, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)): boolean, string?
 ---@field list_permissions fun(self: louiselm.session.Api): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
@@ -78,6 +80,25 @@ end
 ---@return string[] ids
 function Api:list_sessions()
   return self.registry:list_sessions()
+end
+
+---Return the current Agent-level account-limit state without starting or refreshing an Agent.
+---@param self louiselm.session.Api
+---@param agent_name string Configured Agent name.
+---@return louiselm.session.LimitsState? state
+---@return string? error_message Validation failure.
+function Api:inspect_agent_limits(agent_name)
+  return self.registry:inspect_agent_limits(agent_name)
+end
+
+---Refresh account limits through one live capability-advertising Session for an Agent.
+---@param self louiselm.session.Api
+---@param agent_name string Configured Agent name.
+---@param callback fun(state: louiselm.session.LimitsState, error?: string) Completion callback.
+---@return boolean started
+---@return string? error_message Validation or immediate transport failure.
+function Api:refresh_agent_limits(agent_name, callback)
+  return self.registry:refresh_agent_limits(agent_name, callback)
 end
 
 ---List remembered permission rules for inspection.

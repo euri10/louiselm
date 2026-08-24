@@ -437,6 +437,24 @@ function M.register()
     report_error(options_error)
   end, { desc = "Configure the current idle louiselm session", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmLimits", function(arguments)
+    local current = ensure_chat()
+    if current == nil then
+      return
+    end
+    local agent_name = arguments.args ~= "" and arguments.args or nil
+    local _, limits_error = current:show_limits(agent_name)
+    report_error(limits_error)
+  end, {
+    nargs = "?",
+    complete = function()
+      local definitions = configured and configured.agents
+      return type(definitions) == "table" and sorted_agent_names(definitions) or {}
+    end,
+    desc = "Inspect account limits for the active or named louiselm Agent",
+    force = true,
+  })
+
   nvim.api.nvim_create_user_command("LouiselmPermissions", function()
     local current = ensure_chat()
     if current == nil then

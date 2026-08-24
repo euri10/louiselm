@@ -57,6 +57,24 @@ local function notification(process, method, params)
   process.options.stdout(nil, encoded .. "\n")
 end
 
+local LIMITS_META_KEY = "io.github.euri10.louiselm"
+local LIMITS_READ_METHOD = "_io.github.euri10.louiselm/account_limits/read"
+local LIMITS_UPDATED_METHOD = "_io.github.euri10.louiselm/account_limits/updated"
+
+local function limits_capabilities()
+  return {
+    _meta = {
+      [LIMITS_META_KEY] = {
+        accountLimits = {
+          version = 1,
+          readMethod = LIMITS_READ_METHOD,
+          updatedMethod = LIMITS_UPDATED_METHOD,
+        },
+      },
+    },
+  }
+end
+
 local function permission_request(process, acp_session_id, id, options)
   local message = {
     jsonrpc = "2.0",
@@ -97,6 +115,237 @@ local function start_ready_session(api, processes, name, cwd)
 end
 
 T["new"] = MiniTest.new_set()
+
+T["new"]["reads and receives normalized Agent account limits through an advertised ACP extension"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local ready
+  assert(api:create_session("agent", { cwd = "/tmp/project" }, function(session)
+    ready = session
+  end))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+  respond(process, 2, { sessionId = "agent-acp" })
+  assert(ready ~= nil)
+
+  local refreshed
+  assert(api:refresh_agent_limits("agent", function(state, err)
+    refreshed = { state = state, error = err }
+  end))
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[3]:sub(1, -2))).method, LIMITS_READ_METHOD)
+  respond(process, 3, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 82, windowDurationMins = 300, resetsAt = 4102444800 } },
+        planType = "plus",
+        credits = { balance = 7.5, unlimited = false },
+      },
+    },
+    resetCredits = {
+      availableCount = 1,
+      credits = { { id = "credit-1", expiresAt = 4102448400, title = "Reset" } },
+    },
+  })
+
+  MiniTest.expect.equality(refreshed.error, nil)
+  MiniTest.expect.equality(refreshed.state.status, "fresh")
+  MiniTest.expect.equality(refreshed.state.snapshot, {
+    default_bucket_id = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { used_percent = 82, duration_mins = 300, resets_at = 4102444800 } },
+        plan_type = "plus",
+        credits = { balance = 7.5, unlimited = false },
+      },
+    },
+    reset_credits = {
+      available_count = 1,
+      credits = { { id = "credit-1", expires_at = 4102448400, title = "Reset" } },
+    },
+  })
+
+  notification(process, LIMITS_UPDATED_METHOD, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        label = "Codex",
+        windows = { { usedPercent = 91, windowDurationMins = 10080, resetsAt = 4102452000 } },
+        reachedType = "weekly",
+      },
+    },
+  })
+  local updated = assert(api:inspect_agent_limits("agent"))
+  MiniTest.expect.equality(updated.status, "fresh")
+  MiniTest.expect.equality(updated.snapshot.buckets[1].label, "Codex")
+  MiniTest.expect.equality(updated.snapshot.buckets[1].windows[1].used_percent, 91)
+
+  notification(process, LIMITS_UPDATED_METHOD, { buckets = {}, unlimited = true })
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "unlimited")
+  notification(process, LIMITS_UPDATED_METHOD, { buckets = {} })
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "empty")
+  notification(process, LIMITS_UPDATED_METHOD, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 10, windowDurationMins = 60, resetsAt = os.time() - 1 } },
+      },
+    },
+  })
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "stale")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["keeps last good account limits stale after malformed data or a refresh error"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  assert(api:create_session("agent", { cwd = "/tmp/project" }))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+  respond(process, 2, { sessionId = "agent-acp" })
+
+  assert(api:refresh_agent_limits("agent", function() end))
+  respond(process, 3, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 40, windowDurationMins = 60, resetsAt = 4102444800 } },
+      },
+    },
+  })
+  notification(process, LIMITS_UPDATED_METHOD, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 101, windowDurationMins = 60, resetsAt = 4102444800 } },
+      },
+    },
+  })
+  local malformed = assert(api:inspect_agent_limits("agent"))
+  MiniTest.expect.equality(malformed.status, "stale")
+  MiniTest.expect.equality(malformed.snapshot.buckets[1].windows[1].used_percent, 40)
+
+  local failed
+  assert(api:refresh_agent_limits("agent", function(state, err)
+    failed = { state = state, error = err }
+  end))
+  respond_error(process, 4, { code = -32603, message = "Internal error", data = { secret = "hidden" } })
+  MiniTest.expect.equality(failed.error, "ACP account limits read failed: Internal error")
+  MiniTest.expect.equality(failed.state.status, "stale")
+  MiniTest.expect.equality(failed.state.snapshot.buckets[1].windows[1].used_percent, 40)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["inspects unsupported and unobserved Agent limits without starting a process"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "not_observed")
+  MiniTest.expect.equality(#processes, 0)
+
+  assert(api:create_session("agent", { cwd = "/tmp/project" }))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "unsupported")
+  MiniTest.expect.equality(#processes, 1)
+
+  local refreshed
+  assert(api:refresh_agent_limits("agent", function(state, err)
+    refreshed = { state = state, error = err }
+  end))
+  MiniTest.expect.equality(refreshed.error, nil)
+  MiniTest.expect.equality(refreshed.state.status, "unsupported")
+  MiniTest.expect.equality(#process.writes, 2)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["ignores account-limit results arriving after their source Session is disposed"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", { cwd = "/tmp/project" }))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+  respond(process, 2, { sessionId = "agent-acp" })
+
+  local refreshed
+  assert(api:refresh_agent_limits("agent", function(state)
+    refreshed = state
+  end))
+  session:dispose()
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "unavailable")
+
+  respond(process, 3, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 10, windowDurationMins = 60, resetsAt = 4102444800 } },
+      },
+    },
+  })
+  notification(process, LIMITS_UPDATED_METHOD, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 20, windowDurationMins = 60, resetsAt = 4102444800 } },
+      },
+    },
+  })
+  MiniTest.expect.equality(refreshed, nil)
+  MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "unavailable")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["fails account-limit refresh over to another live Session for the same Agent"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local first = assert(api:create_session("agent", { cwd = "/tmp/project" }))
+  respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+  respond(processes[1], 2, { sessionId = "first-acp" })
+  assert(api:create_session("agent", { cwd = "/tmp/project" }))
+  respond(processes[2], 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+  respond(processes[2], 2, { sessionId = "second-acp" })
+
+  assert(api:refresh_agent_limits("agent", function() end))
+  MiniTest.expect.equality(#processes[1].writes, 3)
+  MiniTest.expect.equality(#processes[2].writes, 2)
+  first:dispose()
+
+  local refreshed
+  assert(api:refresh_agent_limits("agent", function(state)
+    refreshed = state
+  end))
+  MiniTest.expect.equality(#processes[2].writes, 3)
+  respond(processes[2], 3, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 30, windowDurationMins = 60, resetsAt = 4102444800 } },
+      },
+    },
+  })
+  MiniTest.expect.equality(refreshed.status, "fresh")
+
+  api:dispose()
+  restore_processes(original_system)
+end
 
 T["new"]["loads an existing ACP session and receives replayed history"] = function()
   local processes, original_system = fake_processes()

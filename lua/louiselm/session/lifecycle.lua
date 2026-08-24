@@ -181,6 +181,10 @@ end
 ---@param self louiselm.session.Session
 ---@param message louiselm.acp.JsonRpcNotification
 local function handle_notification(self, message)
+  if self.state.status == "disposed" then
+    return
+  end
+  self.owner:handle_agent_notification(self, message)
   if message.method ~= "session/update" or type(message.params) ~= "table" then
     return
   end

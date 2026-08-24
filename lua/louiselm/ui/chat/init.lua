@@ -1,6 +1,7 @@
 local Context = require("louiselm.ui.context")
 local Diff = require("louiselm.ui.diff")
 local Gates = require("louiselm.permission.gates")
+local Limits = require("louiselm.ui.limits")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
@@ -79,6 +80,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field view_order string[] Attached session ids in display order.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
+---@field limits_buffers table<string, integer> Account-limit detail buffers by Agent.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field winbar_targets table<integer, table<integer, string|false>> Click targets by window and minwid.
 ---@field current_id string? Currently displayed session id.
@@ -94,6 +96,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field should_block_quit fun(self: louiselm.ui.Chat): boolean Whether a last-window quit would abandon multiple sessions.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
+---@field show_limits fun(self: louiselm.ui.Chat, agent_name?: string): boolean, string? Inspect one configured Agent's account limits.
 ---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
@@ -2216,6 +2219,7 @@ function M.new(api, options)
     views = {},
     view_order = {},
     tool_inspect_windows = {},
+    limits_buffers = {},
     winbars = {},
     winbar_targets = {},
     handoffs = {},
@@ -2788,6 +2792,44 @@ function Chat:session_options()
   return true
 end
 
+---Open and refresh the account-limit detail view for one configured Agent.
+---@param self louiselm.ui.Chat
+---@param agent_name? string Configured Agent; defaults to the active Session's Agent.
+---@return boolean opened
+---@return string? error_message Validation or API error.
+function Chat:show_limits(agent_name)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  if agent_name == nil then
+    local view = self.current_id and self.views[self.current_id]
+    if view == nil then
+      return false, "no chat session is attached; pass an Agent name"
+    end
+    agent_name = view.session:inspect().agent
+  end
+  local state, inspect_error = self.api:inspect_agent_limits(agent_name)
+  if state == nil then
+    return false, inspect_error or "could not inspect Agent account limits"
+  end
+  local previous = self.limits_buffers[agent_name]
+  if previous ~= nil and nvim.api.nvim_buf_is_valid(previous) then
+    nvim.api.nvim_buf_delete(previous, { force = true })
+  end
+  local buffer = Limits.open(agent_name, state)
+  self.limits_buffers[agent_name] = buffer
+  self.api:refresh_agent_limits(agent_name, function(refreshed)
+    -- ACP process callbacks are fast events; buffer updates belong on the main loop.
+    nvim.schedule(function()
+      if self.disposed or self.limits_buffers[agent_name] ~= buffer then
+        return
+      end
+      Limits.update(buffer, refreshed)
+    end)
+  end)
+  return true
+end
+
 ---Change one option on the current idle session.
 ---@param self louiselm.ui.Chat
 ---@param id string Option identifier.
@@ -3187,6 +3229,12 @@ function Chat:dispose()
     end
   end
   self.tool_inspect_windows = {}
+  for _, buffer in pairs(self.limits_buffers) do
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end
+  self.limits_buffers = {}
   self.decision_active = nil
   pump_decisions(self)
   for buffer in pairs(self.handoffs) do
