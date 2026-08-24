@@ -325,15 +325,17 @@ function M.usage_update(value)
 end
 
 local USAGE_FIELDS = {
-  "total_tokens",
-  "input_tokens",
-  "output_tokens",
-  "thought_tokens",
-  "cached_read_tokens",
-  "cached_write_tokens",
+  { wire = "totalTokens", internal = "total_tokens" },
+  { wire = "inputTokens", internal = "input_tokens" },
+  { wire = "outputTokens", internal = "output_tokens" },
+  { wire = "thoughtTokens", internal = "thought_tokens" },
+  { wire = "cachedReadTokens", internal = "cached_read_tokens" },
+  { wire = "cachedWriteTokens", internal = "cached_write_tokens" },
 }
 
 ---Validate and copy optional agent-reported turn usage fields.
+---The ACP wire shape is camelCase; the internal TurnUsage shape is snake_case.
+---Unknown optional fields are ignored; malformed known fields fail.
 ---@param value unknown
 ---@return louiselm.session.TurnUsage? usage
 ---@return boolean valid
@@ -345,13 +347,13 @@ function M.turn_usage(value)
     return nil, false
   end
   local usage = {}
-  for _, name in ipairs(USAGE_FIELDS) do
-    local amount = value[name]
+  for _, field in ipairs(USAGE_FIELDS) do
+    local amount = value[field.wire]
     if amount ~= nil then
       if type(amount) ~= "number" or amount < 0 or amount % 1 ~= 0 then
         return nil, false
       end
-      usage[name] = amount
+      usage[field.internal] = amount
     end
   end
   return usage, true

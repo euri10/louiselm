@@ -660,7 +660,7 @@ T["new"]["tracks context cost and reported turn usage and rejects malformed tele
   local request_id = assert(session:prompt("hello"))
   respond(process, request_id, {
     stopReason = "end_turn",
-    usage = { total_tokens = 30, input_tokens = 20, cached_read_tokens = 7, ignored = "future" },
+    usage = { totalTokens = 30, inputTokens = 20, cachedReadTokens = 7, ignored = "future" },
   })
   MiniTest.expect.equality(session:inspect().usage, {
     total_tokens = 30,
@@ -674,6 +674,27 @@ T["new"]["tracks context cost and reported turn usage and rejects malformed tele
   })
   MiniTest.expect.equality(session:inspect().status, "error")
   MiniTest.expect.equality(events[#events].data.message, "malformed ACP usage_update notification")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["rejects malformed reported turn usage"] = function()
+  local processes, original_system = fake_processes()
+  local events = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  local request_id = assert(session:prompt("hello"))
+  respond(process, request_id, {
+    stopReason = "end_turn",
+    usage = { totalTokens = "many" },
+  })
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(events[#events].data.message, "ACP session/prompt returned malformed usage")
 
   api:dispose()
   restore_processes(original_system)
