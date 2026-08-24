@@ -5,6 +5,9 @@ local Lifecycle = require("louiselm.session.lifecycle")
 local Limits = require("louiselm.session.limits")
 local Validation = require("louiselm.session.validation")
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 ---@class louiselm.session.DiscoveryOptions
 ---@field cwd? string Exact ACP workspace filter; omit to discover every workspace.
 
@@ -617,19 +620,23 @@ function Registry:refresh_agent_limits(agent_name, callback)
     return true
   end
   local source_id = source:inspect().id
-  local request_id, request_error = client:request(capability.read_method, {}, function(result, rpc_error)
-    if self.disposed or self.sessions[source_id] ~= source then
-      return
+  local request_id, request_error = client:request(
+    capability.read_method,
+    nvim.empty_dict(),
+    function(result, rpc_error)
+      if self.disposed or self.sessions[source_id] ~= source then
+        return
+      end
+      if rpc_error ~= nil then
+        local message = "ACP account limits read failed: " .. tostring(rpc_error.message or "request failed")
+        local state = limits_failure(self, agent_name, message)
+        callback(copy(state), message)
+        return
+      end
+      local state, validation_error = accept_limits(self, agent_name, result)
+      callback(copy(state), validation_error)
     end
-    if rpc_error ~= nil then
-      local message = "ACP account limits read failed: " .. tostring(rpc_error.message or "request failed")
-      local state = limits_failure(self, agent_name, message)
-      callback(copy(state), message)
-      return
-    end
-    local state, validation_error = accept_limits(self, agent_name, result)
-    callback(copy(state), validation_error)
-  end)
+  )
   if request_id == nil then
     local message = "ACP account limits read failed: " .. (request_error or "request could not be sent")
     local state = limits_failure(self, agent_name, message)

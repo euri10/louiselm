@@ -132,6 +132,7 @@ T["new"]["reads and receives normalized Agent account limits through an advertis
   assert(api:refresh_agent_limits("agent", function(state, err)
     refreshed = { state = state, error = err }
   end))
+  MiniTest.expect.equality(process.writes[3]:find('"params":{}', 1, true) ~= nil, true)
   MiniTest.expect.equality(assert(Protocol.decode(process.writes[3]:sub(1, -2))).method, LIMITS_READ_METHOD)
   respond(process, 3, {
     defaultBucketId = "codex",
