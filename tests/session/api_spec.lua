@@ -441,6 +441,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     config_options = {},
     commands = {},
     skills_policy = "native",
+    embedded_context = false,
   })
   MiniTest.expect.equality(second:inspect(), {
     id = "session-2",
@@ -454,6 +455,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     config_options = {},
     commands = {},
     skills_policy = "native",
+    embedded_context = false,
   })
   MiniTest.expect.equality(api:list_sessions(), { "session-1", "session-2" })
   MiniTest.expect.equality(api:get_session("session-1"), first)
@@ -495,6 +497,23 @@ T["new"]["starts inject sessions without an external parser dependency"] = funct
   MiniTest.expect.equality(session ~= nil, true)
   MiniTest.expect.equality(err, nil)
   MiniTest.expect.equality(#processes, 1)
+end
+
+T["new"]["records embedded context support from agent capabilities"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent" } }))
+  local session = assert(api:create_session("agent"))
+  local process = processes[#processes]
+
+  respond(process, 1, {
+    protocolVersion = 1,
+    agentCapabilities = { promptCapabilities = { embeddedContext = true } },
+  })
+  respond(process, 2, { sessionId = "agent-acp" })
+
+  MiniTest.expect.equality(session:inspect().embedded_context, true)
+  api:dispose()
+  restore_processes(original_system)
 end
 
 T["new"]["tracks supported config options and replaces dependent options after a change"] = function()

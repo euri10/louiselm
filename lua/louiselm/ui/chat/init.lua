@@ -1470,7 +1470,18 @@ local function build_content(view, text)
   if view.skill_catalog ~= nil then
     local catalog = { label = "skill-index", text = view.skill_catalog }
     contexts[#contexts + 1] = catalog
-    content[#content + 1] = context_content(catalog)
+    if view.session:inspect().embedded_context then
+      content[#content + 1] = {
+        type = "resource",
+        resource = {
+          uri = "louiselm://skills/index",
+          mimeType = "text/plain",
+          text = view.skill_catalog,
+        },
+      }
+    else
+      content[#content + 1] = context_content(catalog)
+    end
   end
   for _, item in ipairs(view.contexts) do
     if item.text == nil and item.skill_path ~= nil then

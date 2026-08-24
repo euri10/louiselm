@@ -1307,6 +1307,36 @@ T["chat"]["keeps a new injected catalog hidden and defers it with contexts acros
   chat:dispose()
 end
 
+T["chat"]["sends the injected catalog as an embedded resource when supported"] = function()
+  local created = fake_session("session-1", "deepseek")
+  created.state.skills_policy = "inject"
+  created.state.embedded_context = true
+  local api = fake_api()
+  api.create_session = function()
+    return created
+  end
+  local chat = assert(Chat.new(api, {
+    agents = { "deepseek" },
+    skill_catalog = "<available_skills>catalog</available_skills>",
+  }))
+
+  assert(chat:new_session("deepseek"))
+  assert(chat:submit("Review this"))
+
+  MiniTest.expect.equality(created.prompts[1], {
+    {
+      type = "resource",
+      resource = {
+        uri = "louiselm://skills/index",
+        mimeType = "text/plain",
+        text = "<available_skills>catalog</available_skills>",
+      },
+    },
+    { type = "text", text = "Review this" },
+  })
+  chat:dispose()
+end
+
 T["chat"]["retains a hidden catalog and visible contexts after a local prompt failure"] = function()
   local created = fake_session("session-1", "claude")
   created.state.skills_policy = "inject"

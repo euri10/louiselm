@@ -24,6 +24,7 @@ local nvim = vim
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
 ---@field activity? string Current generic tool activity.
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
+---@field embedded_context boolean Whether the Agent accepts embedded resource prompt context.
 ---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
 
 ---@class louiselm.session.AvailableCommand
@@ -453,6 +454,8 @@ local function handle_initialized(self, result, rpc_error)
     fail(self, "ACP client disappeared during initialization")
     return
   end
+  local prompt_capabilities = client.agent_capabilities.promptCapabilities
+  self.state.embedded_context = type(prompt_capabilities) == "table" and prompt_capabilities.embeddedContext == true
   local method = self.load_session_id == nil and "new" or "load"
   local request_id, request_error
   local on_session_ready = function(session_result, session_error)
@@ -566,6 +569,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       config_options = {},
       commands = {},
       skills_policy = definition.skills.policy,
+      embedded_context = false,
     },
     emitter = Events.new(),
     owner = owner,
