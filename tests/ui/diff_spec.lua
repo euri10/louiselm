@@ -80,6 +80,8 @@ T["buffer"]["renders a nonmodifiable diff buffer"] = function()
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), {
     "louiselm diff: " .. path,
     "",
+    "Review proposed edit:  Esc then a = accept, d/q = reject",
+    "",
     "--- original",
     "+++ proposed",
     "@@ -1 +1 @@",
@@ -87,6 +89,53 @@ T["buffer"]["renders a nonmodifiable diff buffer"] = function()
     "+after",
   })
 
+  Buffer.close(buffer)
+  nvim.fn.delete(path)
+end
+
+T["buffer"]["accepts a standalone proposal into the working tree"] = function()
+  local path = temp_file({ "before" })
+  local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+  local buffer = assert(Buffer.open(preview))
+
+  nvim.api.nvim_feedkeys("a", "mx", false)
+
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "after" })
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  nvim.fn.delete(path)
+end
+
+T["buffer"]["discards a standalone proposal through d and q"] = function()
+  for _, key in ipairs({ "d", "q" }) do
+    local path = temp_file({ "before" })
+    local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+    local buffer = assert(Buffer.open(preview))
+
+    nvim.api.nvim_feedkeys(key, "mx", false)
+
+    MiniTest.expect.equality(nvim.fn.readfile(path), { "before" })
+    MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+    nvim.fn.delete(path)
+  end
+end
+
+T["buffer"]["keeps a stale standalone proposal open and reports the conflict"] = function()
+  local path = temp_file({ "before" })
+  local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+  local buffer = assert(Buffer.open(preview))
+  nvim.fn.writefile({ "changed" }, path)
+  local notification
+  local original_notify = nvim.notify
+  rawset(nvim, "notify", function(message)
+    notification = message
+  end)
+
+  nvim.api.nvim_feedkeys("a", "mx", false)
+
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "changed" })
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
+  MiniTest.expect.equality(notification, "louiselm: file changed since diff preview")
   Buffer.close(buffer)
   nvim.fn.delete(path)
 end
