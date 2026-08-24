@@ -13,8 +13,8 @@ it as a description that wants to become a specification.
 
 ## The loop
 
-Four stages. Each one hands something concrete to the next, which is what makes
-it a loop rather than four habits practised near each other.
+Five stages. Each one hands something concrete to the next, which is what makes
+it a loop rather than five habits practised near each other.
 
 ### 1. Grill
 
@@ -99,34 +99,63 @@ Three things the format has had to learn:
   in the export before diffing.
 
 **Hands off:** bugs in the graph, and confidence that the committed thing works.
-Which is usually the input to the next grill.
+
+### 5. Retrospect
+
+After the exact live reproduction passes, the work asks why the defect was
+expensive to understand. This is not a second code review and it does not turn
+every focused bug into a full grill. It separates what belongs only to this
+issue from what should improve the loop the next time a similar bug appears.
+
+For a focused defect, a one-sentence acceptance lock is often enough design:
+state what the maintainer must see and distinguish it from nearby signals that
+could look like success. Then inspect the live view first, trace one affected
+value through every boundary to its presentation, and build the regression from
+the real structural ordering rather than convenient invented state. If the
+exact reproduction remains available, automated gates support the fix but do
+not replace live confirmation.
+
+The retrospective has three destinations:
+
+- Issue-specific evidence, false starts, and engineering invariants stay in the
+  Beads issue comment thread.
+- A repeatable rule that should bind future work is promoted to `AGENTS.md`.
+- A habit worth inspecting but not enforcing stays in this document. An
+  unresolved design question becomes a `needs-design` question and gets its own
+  grill.
+
+Tracking- or diagnostic-only commits are named as such and are not presented as
+new builds to retest. That keeps movement in the record from being mistaken for
+movement in behavior.
+
+**Hands off:** a closed evidence trail for the issue, any reusable rule in its
+binding home, and any unresolved process question routed to a grill.
 
 ## Skill chaining
 
 The loop holds together because each stage is designed to trigger the next
 rather than merely precede it. A grill session ends by routing into beads. A
-defect found during review routes into a bug. The handoff is part of each
-stage's definition, not something remembered separately.
+defect found during review routes into a bug. A confirmed fix routes into a
+retrospective, which either records a local lesson, promotes a standing rule, or
+opens a design question for the next grill. The handoff is part of each stage's
+definition, not something remembered separately.
 
 This is the property most worth preserving if any of it ever becomes
 configuration. A workflow is not a list of stages; it is a set of stages plus
 the rules about what each one hands to the next, and the second half is where
 all the value is.
 
-## A known gap
+## Process findings
 
 A QA round sometimes surfaces something that is not a code defect at all, but a
 question about the process itself — how rounds should be archived, whether a
 working file is the right medium, whether a stage is doing what it claims.
 
-There is no route for that finding. `to-beads-bug` is the wrong shape, because
-nothing is broken in the code. Today such a finding survives only if the
-maintainer notices it and says "that deserves a grill" — which means it survives
-by attention, and attention is exactly the resource the loop is supposed to
-protect.
-
-This is a real hole, and it is left visible rather than papered over. Any future
-formalisation should have an answer for it.
+The retrospective routes that finding by scope. A local observation stays with
+the issue that exposed it; a settled standing convention moves to `AGENTS.md`;
+an unresolved question worth designing becomes a Beads `question` labeled
+`needs-design` and gets a dedicated grill. Process findings therefore survive
+by an explicit handoff rather than the maintainer remembering to revisit them.
 
 ## What this is not
 

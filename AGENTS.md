@@ -187,6 +187,18 @@ For all tests:
   editor operations occur only after the required scheduling boundary.
 - Run focused tests while developing and the complete suite before handoff.
 
+### Live acceptance
+
+For a defect reproducible in the maintainer's running application, state the
+acceptance in the maintainer's observable terms before implementation. Inspect
+the live instance and trace the affected value end to end, then encode the real
+structural event ordering in a regression without copying sensitive payloads.
+
+Automated gates do not close such a defect while the exact live reproduction is
+available: keep it open until the maintainer confirms the acceptance. A
+diagnostic- or tracking-only commit is not a build to retest; say so explicitly
+and do not sync it as though behavior changed.
+
 ## 6. Lua Style
 
 - Use `snake_case` for files, modules, functions, and variables; `PascalCase`
