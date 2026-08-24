@@ -3,6 +3,10 @@ local M = {}
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+---@class louiselm.ui.DiffBufferOptions
+---@field focus? boolean Whether to focus the opened buffer; defaults to true.
+---@field instruction? string Controller-owned instructions displayed above the diff.
+
 local function diff_lines(value)
   local lines = {}
   local start = 1
@@ -19,16 +23,19 @@ local function diff_lines(value)
 end
 
 ---@param preview louiselm.ui.DiffPreview
+---@param instruction? string
 ---@return string[] lines
-local function render_lines(preview)
+local function render_lines(preview, instruction)
   local lines = {
     "louiselm diff: " .. preview.path,
     "",
-    "Review proposed edit:  Esc then a = accept, d/q = reject",
-    "",
-    "--- original",
-    "+++ proposed",
   }
+  if instruction ~= nil then
+    lines[#lines + 1] = instruction
+    lines[#lines + 1] = ""
+  end
+  lines[#lines + 1] = "--- original"
+  lines[#lines + 1] = "+++ proposed"
   for _, line in ipairs(diff_lines(preview.diff)) do
     lines[#lines + 1] = line
   end
@@ -37,7 +44,7 @@ end
 
 ---Open a read-only scratch buffer containing a file diff.
 ---@param preview louiselm.ui.DiffPreview Preview returned by `louiselm.ui.diff.apply.preview`.
----@param options? table Optional buffer options; `focus` defaults to true.
+---@param options? louiselm.ui.DiffBufferOptions Optional buffer options.
 ---@return integer? buffer Buffer handle, or nil on invalid input.
 ---@return string? error_message Validation or buffer error.
 function M.open(preview, options)
@@ -54,7 +61,7 @@ function M.open(preview, options)
     nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
     nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
     nvim.api.nvim_set_option_value("modifiable", true, { buf = buffer })
-    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, render_lines(preview))
+    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, render_lines(preview, options and options.instruction))
     nvim.api.nvim_set_option_value("filetype", "diff", { buf = buffer })
     nvim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
   end)

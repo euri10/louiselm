@@ -80,8 +80,6 @@ T["buffer"]["renders a nonmodifiable diff buffer"] = function()
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), {
     "louiselm diff: " .. path,
     "",
-    "Review proposed edit:  Esc then a = accept, d/q = reject",
-    "",
     "--- original",
     "+++ proposed",
     "@@ -1 +1 @@",
@@ -108,11 +106,49 @@ T["review"]["shows an edit and sends an allow response"] = function()
     return true
   end))
 
-  MiniTest.expect.equality(nvim.api.nvim_buf_get_option(diff.buffer, "modifiable"), false)
-  assert(diff:accept())
+  local buffer = assert(diff.buffer)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "modifiable"), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 2, 3, false), {
+    "Review proposed edit:  Esc then a = accept, d/q = reject",
+  })
+  local mappings = {}
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
+    mappings[mapping.lhs] = mapping.desc
+  end
+  MiniTest.expect.equality(mappings, {
+    a = "Allow louiselm file edit",
+    d = "Reject louiselm file edit",
+    q = "Reject louiselm file edit",
+  })
+
+  nvim.api.nvim_feedkeys("a", "mx", false)
+
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
   MiniTest.expect.equality(diff.buffer, nil)
   diff:dispose()
+  nvim.fn.delete(path)
+end
+
+T["review"]["rejects through both advertised keys"] = function()
+  local path = temp_file({ "before" })
+  for _, key in ipairs({ "d", "q" }) do
+    local responses = {}
+    local diff = Diff.new()
+    assert(diff:open({
+      operation = { kind = "file_edit", path = path },
+      toolCall = { rawInput = { path = path, content = "after\n" } },
+      options = { { optionId = "allow-once", kind = "allow_once" }, { optionId = "reject", kind = "reject_once" } },
+    }, function(result)
+      responses[#responses + 1] = result
+      return true
+    end))
+
+    nvim.api.nvim_feedkeys(key, "mx", false)
+
+    MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "reject" } } })
+    MiniTest.expect.equality(diff.buffer, nil)
+    diff:dispose()
+  end
   nvim.fn.delete(path)
 end
 

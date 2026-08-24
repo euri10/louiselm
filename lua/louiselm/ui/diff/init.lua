@@ -197,7 +197,9 @@ function Diff:open(request, response)
   self:close()
   self.request = request
   self.previous_buffer = nvim.api.nvim_get_current_buf()
-  local buffer, buffer_error = Buffer.open(preview)
+  local buffer, buffer_error = Buffer.open(preview, {
+    instruction = "Review proposed edit:  Esc then a = accept, d/q = reject",
+  })
   if buffer == nil then
     self.previous_buffer = nil
     return false, buffer_error
