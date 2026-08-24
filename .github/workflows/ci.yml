@@ -1,0 +1,136 @@
+# GitHub Actions pipeline for the Neovim plugin's quality gates.
+#
+# Scope: this runs the three gates AGENTS.md section 4 declares
+# authoritative -- StyLua for formatting, lua-language-server for
+# static analysis, and mini.test for tests. It deliberately does NOT
+# build or publish blog/, which is GitLab's job (.gitlab-ci.yml runs
+# only when blog/ changes). The two pipelines are disjoint on purpose:
+# GitLab owns publishing, GitHub owns correctness.
+#
+# Every gate below was verified to fail, not merely to pass, before
+# being wired up here (louiselm-w726's lesson: a check whose failure
+# path was never exercised is indistinguishable from no check):
+#   stylua --check .                             0 clean / 1 misformatted
+#   lua-language-server --check --checklevel=Warning  0 clean / 1 on warning
+#   nvim --headless ... MiniTest.run()           0 clean / 1 on test failure
+#
+# Tool versions are pinned rather than floated so an upstream release
+# cannot silently turn this pipeline red (or, worse, green).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "blog/**"
+  pull_request:
+    paths-ignore:
+      - "blog/**"
+  workflow_dispatch:
+
+# Supersede in-flight runs for the same ref. On a private repo Actions
+# minutes are metered, so a rapid push sequence should not pay for
+# every intermediate commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Matches the locally verified StyLua exactly (stylua 2.5.2).
+  STYLUA_VERSION: 2.5.2
+  # Local development currently runs 3.18.2-dev, which is not a
+  # downloadable release; 3.19.1 is the closest published stable.
+  LUALS_VERSION: 3.19.1
+
+jobs:
+  format:
+    name: stylua
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.STYLUA_VERSION }}
+          args: --check .
+
+  typecheck:
+    name: lua-language-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache lua-language-server
+        id: cache-luals
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/lua-language-server
+          key: luals-${{ runner.os }}-${{ env.LUALS_VERSION }}
+
+      - name: Install lua-language-server
+        if: steps.cache-luals.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          dest="$HOME/.local/lua-language-server"
+          mkdir -p "$dest"
+          curl -fsSL \
+            "https://github.com/LuaLS/lua-language-server/releases/download/${LUALS_VERSION}/lua-language-server-${LUALS_VERSION}-linux-x64.tar.gz" \
+            | tar -xz -C "$dest"
+
+      - name: Add lua-language-server to PATH
+        run: echo "$HOME/.local/lua-language-server/bin" >> "$GITHUB_PATH"
+
+      # --checklevel=Warning promotes warnings to failures, matching the
+      # documented local gate. Verified to exit 1 on a single
+      # undefined-global rather than reporting diagnostics and exiting 0.
+      - name: Check
+        run: lua-language-server --check . --checklevel=Warning
+
+  test:
+    name: mini.test (nvim ${{ matrix.neovim }})
+    runs-on: ubuntu-latest
+    # AGENTS.md section 3 targets the latest stable Neovim, so stable is
+    # the contract and must block. Nightly runs for early warning of an
+    # upstream break but is advisory: it must not fail the pipeline for
+    # a change that honours the stated contract.
+    continue-on-error: ${{ matrix.neovim == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+
+      # scripts/install-test-deps pins mini.nvim to an exact revision and
+      # verifies it after checkout, so the cache key can be that revision:
+      # it stays warm until the pin is deliberately bumped.
+      - name: Resolve pinned mini.nvim revision
+        id: mini
+        run: |
+          set -eu
+          rev=$(sed -n 's/^mini_revision="\(.*\)"$/\1/p' scripts/install-test-deps)
+          test -n "$rev"
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Cache mini.nvim
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: mini-nvim-${{ steps.mini.outputs.revision }}
+
+      - name: Install test dependencies
+        run: ./scripts/install-test-deps
+
+      - name: Run tests
+        run: |
+          nvim --headless --noplugin -u ./tests/minimal_init.lua \
+            -c "lua MiniTest.run()" -c "qa!"
