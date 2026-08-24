@@ -106,6 +106,28 @@ concurrent semantic changes. Never initialize Beads implicitly, mutate
 vocabulary silently, or promote a term before the user's shared-understanding
 confirmation.
 
+### Background CI monitoring
+
+A `Monitor` loop that greps a CLI's human-readable status words to decide when
+to stop is exposed to a silent-hang failure: guess the wrong token (e.g.
+`passed` when the CLI actually emits `success`) and the loop never exits, the
+promised report never fires, and neither the agent nor the user gets any
+signal until someone gets impatient and interrupts (louiselm-w726).
+
+- Before starting a Monitor loop that greps a CLI's status output, run the
+  command once first and read the actual token vocabulary rather than
+  guessing.
+- Prefer a machine-readable check (exit code, `--json` field) over grepping
+  human-facing status words, where the CLI supports it.
+- Always emit a heartbeat line inside the loop body on every poll (e.g.
+  `echo "poll: $(date +%s) status=..."`), regardless of match, so Monitor's
+  stdout-driven notifications fire periodically even before the exit
+  condition is met — a loop that only prints after exiting produces zero
+  notifications the entire time it runs.
+- Treat "I'll report back once it finishes" as a promise that needs a
+  periodic self-check-in (re-poll via `TaskOutput`) rather than pure trust
+  that the notification will fire.
+
 The maintainer's own loop — grill-me, to-beads, sessions, qa-review — is
 described in [docs/example-workflow.md](docs/example-workflow.md). That document
 is an example, not a contract. It binds nobody, and other loops are expected.
