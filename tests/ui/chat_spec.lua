@@ -3395,7 +3395,7 @@ T["chat"]["shows clickable Agent limits in the window bar"] = function()
   assert(chat:attach(first))
   local winbar = nvim.api.nvim_get_option_value("winbar", { win = 0 })
 
-  MiniTest.expect.equality(winbar:find("limits Codex 50%%/5h↻2h", 1, true) ~= nil, true)
+  MiniTest.expect.equality(winbar:find("limits Codex 50%%/5h ↻2h", 1, true) ~= nil, true)
   assert(chat:winbar_click(99))
   MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0), "louiselm://limits/codex")
   api:emit_limits({

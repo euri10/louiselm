@@ -139,7 +139,7 @@ function M.summary(state, now)
     fields[#fields + 1] = remaining_percent(100 - window.used_percent)
       .. "/"
       .. duration(window.duration_mins)
-      .. "↻"
+      .. " ↻"
       .. relative_reset(window.resets_at, now or os.time())
   end
   if #windows > 2 then

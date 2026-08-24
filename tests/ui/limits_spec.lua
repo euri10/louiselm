@@ -35,7 +35,7 @@ T["summary"]["sorts and caps default windows with compact remaining capacity"] =
   }, "codex")
 
   local text, group = Limits.summary(value, NOW)
-  MiniTest.expect.equality(text, "limits Codex <1%/1h↻30m 18%/5h↻2h +1")
+  MiniTest.expect.equality(text, "limits Codex <1%/1h ↻30m 18%/5h ↻2h +1")
   MiniTest.expect.equality(group, "LouiselmStatusError")
 end
 
@@ -49,11 +49,11 @@ T["summary"]["lets an urgent additional bucket take precedence and marks stale d
     },
   }
   local text, group = Limits.summary(state("fresh", buckets, "default"), NOW)
-  MiniTest.expect.equality(text, "limits Fast 9%/90m↻1h")
+  MiniTest.expect.equality(text, "limits Fast 9%/90m ↻1h")
   MiniTest.expect.equality(group, "LouiselmStatusError")
 
   text, group = Limits.summary(state("stale", buckets, "default"), NOW)
-  MiniTest.expect.equality(text, "limits Fast 9%/90m↻1h stale")
+  MiniTest.expect.equality(text, "limits Fast 9%/90m ↻1h stale")
   MiniTest.expect.equality(group, "LouiselmStatusWarning")
 end
 
@@ -64,7 +64,7 @@ T["summary"]["shows loading and detail freshness age explicitly"] = function()
   value.updated_at = NOW - 3700
 
   local text = Limits.summary(value, NOW)
-  MiniTest.expect.equality(text, "limits codex 50%/5h↻2h loading")
+  MiniTest.expect.equality(text, "limits codex 50%/5h ↻2h loading")
   MiniTest.expect.equality(Limits.render(value, NOW)[5]:find("(1h ago)", 1, true) ~= nil, true)
 end
 
