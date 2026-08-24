@@ -2007,6 +2007,48 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   chat:dispose()
 end
 
+T["chat"]["hides injected skill instructions from discovered session labels"] = function()
+  local api = fake_api()
+  local discovery_callback
+  function api:discover_sessions(_, callback)
+    discovery_callback = callback
+    return true
+  end
+  function api:load_session()
+    return fake_session("skill-session", "codex")
+  end
+  local chat = assert(Chat.new(api))
+  local original_schedule = nvim.schedule
+  local original_select = nvim.ui.select
+  local scheduled = {}
+  local formatted
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+  nvim.ui.select = function(items, options, callback)
+    formatted = options.format_item(items[1])
+    callback(items[1])
+  end
+
+  assert(chat:resume_session())
+  discovery_callback({
+    {
+      agent = "codex",
+      session_id = "skill-session",
+      cwd = "/tmp/project",
+      title = "<skills_instructions> Skills are sets of instructions stored in SKILL.md files.",
+      updated_at = "2026-08-24T06:54:07.000Z",
+    },
+  }, {})
+  scheduled[1]()
+
+  MiniTest.expect.equality(formatted, "codex/skill-session · updated=2026-08-24T06:54:07.000Z · cwd=/tmp/project")
+
+  nvim.schedule = original_schedule
+  nvim.ui.select = original_select
+  chat:dispose()
+end
+
 T["chat"]["reports stable ACP identities for new and resumed sessions"] = function()
   local created = fake_session("session-1", "claude")
   created.state.acp_session_id = "created-acp"

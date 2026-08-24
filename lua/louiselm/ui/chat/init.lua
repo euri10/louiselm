@@ -382,7 +382,13 @@ local function discovered_session_summary(session)
   if session.updated_at ~= nil then
     parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
   end
-  if session.title ~= nil and session.title ~= "" and session.title ~= session.session_id then
+  if
+    session.title ~= nil
+    and session.title ~= ""
+    and session.title ~= session.session_id
+    and session.title:find("<skills_instructions>", 1, true) == nil
+    and session.title:find("<available_skills>", 1, true) == nil
+  then
     parts[#parts + 1] = single_line(session.title)
   end
   parts[#parts + 1] = "cwd=" .. single_line(session.cwd)
