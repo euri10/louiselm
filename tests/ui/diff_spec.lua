@@ -96,12 +96,19 @@ end
 T["buffer"]["accepts a standalone proposal into the working tree"] = function()
   local path = temp_file({ "before" })
   local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+  local distractor = nvim.api.nvim_create_buf(true, true)
+  local origin = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_set_current_buf(distractor)
+  nvim.api.nvim_set_current_buf(origin)
   local buffer = assert(Buffer.open(preview))
 
   nvim.api.nvim_feedkeys("a", "mx", false)
 
   MiniTest.expect.equality(nvim.fn.readfile(path), { "after" })
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), origin)
+  nvim.api.nvim_buf_delete(distractor, { force = true })
+  nvim.api.nvim_buf_delete(origin, { force = true })
   nvim.fn.delete(path)
 end
 
@@ -109,12 +116,19 @@ T["buffer"]["discards a standalone proposal through d and q"] = function()
   for _, key in ipairs({ "d", "q" }) do
     local path = temp_file({ "before" })
     local preview = assert(Apply.preview({ path = path, content = "after\n" }))
+    local distractor = nvim.api.nvim_create_buf(true, true)
+    local origin = nvim.api.nvim_create_buf(false, true)
+    nvim.api.nvim_set_current_buf(distractor)
+    nvim.api.nvim_set_current_buf(origin)
     local buffer = assert(Buffer.open(preview))
 
     nvim.api.nvim_feedkeys(key, "mx", false)
 
     MiniTest.expect.equality(nvim.fn.readfile(path), { "before" })
     MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), origin)
+    nvim.api.nvim_buf_delete(distractor, { force = true })
+    nvim.api.nvim_buf_delete(origin, { force = true })
     nvim.fn.delete(path)
   end
 end

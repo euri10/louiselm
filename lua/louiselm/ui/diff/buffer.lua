@@ -56,6 +56,7 @@ function M.open(preview, options)
   if options ~= nil and type(options) ~= "table" then
     return nil, "diff buffer options must be a table"
   end
+  local previous_buffer = nvim.api.nvim_get_current_buf()
   local instruction = options and options.instruction or "Review proposed edit:  Esc then a = accept, d/q = reject"
   local buffer = nvim.api.nvim_create_buf(false, true)
   local ok, error_message = pcall(function()
@@ -80,17 +81,23 @@ function M.open(preview, options)
       nvim.api.nvim_input("<Esc>")
     end
   end
+  local function close_review()
+    M.close(buffer)
+    if nvim.api.nvim_buf_is_valid(previous_buffer) then
+      nvim.api.nvim_set_current_buf(previous_buffer)
+    end
+  end
   nvim.keymap.set("n", "a", function()
     local applied, apply_error = Apply.apply(preview)
     if not applied then
       nvim.notify("louiselm: " .. (apply_error or "proposed edit could not be applied"), nvim.log.levels.ERROR)
       return
     end
-    M.close(buffer)
+    close_review()
   end, { buffer = buffer, silent = true, nowait = true, desc = "Apply louiselm proposed edit" })
   for _, key in ipairs({ "d", "q" }) do
     nvim.keymap.set("n", key, function()
-      M.close(buffer)
+      close_review()
     end, { buffer = buffer, silent = true, nowait = true, desc = "Discard louiselm proposed edit" })
   end
   return buffer
