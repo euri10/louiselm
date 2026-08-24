@@ -1977,7 +1977,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
 
   MiniTest.expect.equality(
     formatted,
-    "codex/prior-acp · updated=2026-08-10T10:00:00Z · [@AGENTS.md](file:///tmp/AGENTS.md)can you takeover this PR, it fails, fix it · cwd=/tmp/project"
+    "codex/prior-acp · updated=2026-08-10T10:00:00Z · cwd=/tmp/project · can you takeover this PR, it fails, fix it"
   )
   MiniTest.expect.equality(load_call.agent, "codex")
   MiniTest.expect.equality(load_call.session_id, "prior-acp")
@@ -2007,7 +2007,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   chat:dispose()
 end
 
-T["chat"]["hides injected skill instructions from discovered session labels"] = function()
+T["chat"]["normalizes discovered session subjects across agent title shapes"] = function()
   local api = fake_api()
   local discovery_callback
   function api:discover_sessions(_, callback)
@@ -2021,12 +2021,14 @@ T["chat"]["hides injected skill instructions from discovered session labels"] = 
   local original_schedule = nvim.schedule
   local original_select = nvim.ui.select
   local scheduled = {}
-  local formatted
+  local formatted = {}
   nvim.schedule = function(callback)
     scheduled[#scheduled + 1] = callback
   end
   nvim.ui.select = function(items, options, callback)
-    formatted = options.format_item(items[1])
+    for index, item in ipairs(items) do
+      formatted[index] = options.format_item(item)
+    end
     callback(items[1])
   end
 
@@ -2036,13 +2038,45 @@ T["chat"]["hides injected skill instructions from discovered session labels"] = 
       agent = "codex",
       session_id = "skill-session",
       cwd = "/tmp/project",
-      title = "<skills_instructions> Skills are sets of instructions stored in SKILL.md files.",
+      title = table.concat({
+        "<skills_instructions>",
+        "Skills are sets of instructions stored in SKILL.md files.",
+        "</skills_instructions>",
+        "<available_skills><skill>hidden</skill></available_skills>",
+        "[@AGENTS.md](file:///tmp/AGENTS.md)Fix picker labels",
+      }, "\n"),
       updated_at = "2026-08-24T06:54:07.000Z",
+    },
+    {
+      agent = "claude",
+      session_id = "native-session",
+      cwd = "/tmp/project",
+      title = "Review available agent skills",
+      updated_at = "2026-08-24T06:53:07.000Z",
+    },
+    {
+      agent = "deepseek",
+      session_id = "truncated-session",
+      cwd = "/tmp/project",
+      title = "<skills_instructions> Skills are sets of instructions stored in SKILL.md files. …",
+      updated_at = "2026-08-24T06:52:07.000Z",
+    },
+    {
+      agent = "copilot",
+      session_id = "resource-session",
+      cwd = "/tmp/project",
+      title = "[Resource link: file:///tmp/AGENTS.md]\nReview the picker",
+      updated_at = "2026-08-24T06:51:07.000Z",
     },
   }, {})
   scheduled[1]()
 
-  MiniTest.expect.equality(formatted, "codex/skill-session · updated=2026-08-24T06:54:07.000Z · cwd=/tmp/project")
+  MiniTest.expect.equality(formatted, {
+    "codex/skill-session · updated=2026-08-24T06:54:07.000Z · cwd=/tmp/project · Fix picker labels",
+    "claude/native-session · updated=2026-08-24T06:53:07.000Z · cwd=/tmp/project · Review available agent skills",
+    "deepseek/truncated-session · updated=2026-08-24T06:52:07.000Z · cwd=/tmp/project",
+    "copilot/resource-session · updated=2026-08-24T06:51:07.000Z · cwd=/tmp/project · Review the picker",
+  })
 
   nvim.schedule = original_schedule
   nvim.ui.select = original_select

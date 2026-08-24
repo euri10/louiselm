@@ -374,6 +374,41 @@ local function session_summary(state)
 end
 
 ---@param session louiselm.session.DiscoveredSession
+---@return string? subject
+local function discovered_session_subject(session)
+  local title = session.title
+  if title == nil then
+    return nil
+  end
+  title = title:match("^%s*(.-)%s*$") or ""
+  if title:sub(1, #"<skills_instructions>") == "<skills_instructions>" then
+    local closing = "</available_skills>"
+    local closing_start = title:find(closing, 1, true)
+    if closing_start == nil then
+      return nil
+    end
+    title = title:sub(closing_start + #closing)
+  end
+  title = title:match("^%s*(.-)%s*$") or ""
+  if title:sub(1, 2) == "[@" then
+    local closing = title:find(")", 3, true)
+    if closing ~= nil then
+      title = title:sub(closing + 1)
+    end
+  elseif title:sub(1, #"[Resource link:") == "[Resource link:" then
+    local closing = title:find("]", #"[Resource link:" + 1, true)
+    if closing ~= nil then
+      title = title:sub(closing + 1)
+    end
+  end
+  title = single_line(title):match("^%s*(.-)%s*$") or ""
+  if title == "" or title == session.session_id then
+    return nil
+  end
+  return title
+end
+
+---@param session louiselm.session.DiscoveredSession
 ---@return string
 local function discovered_session_summary(session)
   local parts = {
@@ -382,16 +417,11 @@ local function discovered_session_summary(session)
   if session.updated_at ~= nil then
     parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
   end
-  if
-    session.title ~= nil
-    and session.title ~= ""
-    and session.title ~= session.session_id
-    and session.title:find("<skills_instructions>", 1, true) == nil
-    and session.title:find("<available_skills>", 1, true) == nil
-  then
-    parts[#parts + 1] = single_line(session.title)
-  end
   parts[#parts + 1] = "cwd=" .. single_line(session.cwd)
+  local subject = discovered_session_subject(session)
+  if subject ~= nil then
+    parts[#parts + 1] = subject
+  end
   return table.concat(parts, " · ")
 end
 
