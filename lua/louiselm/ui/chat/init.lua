@@ -1869,7 +1869,7 @@ local function handle_event(self, view, event)
     render_header(self, view)
     render_winbars(self)
   end
-  if event.type == "state_changed" and view.session:inspect().status == "ready" then
+  if event.type == "state_changed" and event.data.status == "ready" then
     if view.replay_active then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_active = false

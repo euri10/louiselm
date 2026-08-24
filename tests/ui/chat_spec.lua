@@ -1985,6 +1985,9 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
     session_id = "session-1",
     data = { content = { type = "text", text = "first answer" } },
   })
+  -- Real replayed tool updates emit historical state changes. By the time their
+  -- scheduled UI callbacks run, the Session snapshot may already be ready.
+  restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "starting" } })
   restored:emit({
     type = "user_chunk",
     session_id = "session-1",
