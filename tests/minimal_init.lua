@@ -20,6 +20,40 @@ vim.opt.rtp:prepend(project_root)
 ---@diagnostic disable-next-line: undefined-global
 vim.opt.rtp:append(project_root .. "/tests")
 
+-- A headless machine has no clipboard tool, so Neovim registers no provider:
+-- writes to the `+` register are silently discarded and reads return "". Tests
+-- that assert on clipboard behaviour then measure whether the host has xclip
+-- installed rather than what louiselm did, and the resulting failure skips the
+-- failing test's inline cleanup -- which is how one missing provider cascaded
+-- into a second, unrelated failure in real ACP discovery (louiselm-zjct).
+--
+-- An in-process provider keeps the register readable and writable everywhere.
+-- It also makes the suite hermetic: previously a run clobbered the developer's
+-- real system clipboard, which is why callers had to save and restore it.
+local clipboard_register = {
+  ["+"] = { lines = { "" }, regtype = "v" },
+  ["*"] = { lines = { "" }, regtype = "v" },
+}
+
+local function clipboard_copy(name)
+  return function(lines, regtype)
+    clipboard_register[name] = { lines = lines, regtype = regtype }
+  end
+end
+
+local function clipboard_paste(name)
+  return function()
+    local entry = clipboard_register[name]
+    return entry.lines, entry.regtype
+  end
+end
+
+nvim.g.clipboard = {
+  name = "louiselm-test",
+  copy = { ["+"] = clipboard_copy("+"), ["*"] = clipboard_copy("*") },
+  paste = { ["+"] = clipboard_paste("+"), ["*"] = clipboard_paste("*") },
+}
+
 -- The documented headless command invokes the MiniTest runner by this name.
 require("mini.test").setup({
   collect = {
