@@ -113,6 +113,8 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   end))
   local process = processes[#processes]
 
+  MiniTest.expect.equality(session:inspect().acp_session_id, "prior-acp")
+
   respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
   MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))), {
     id = 2,

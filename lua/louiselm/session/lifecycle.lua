@@ -575,6 +575,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     owner = owner,
     definition = definition,
     options = options,
+    acp_session_id = load_session_id,
     load_session_id = load_session_id,
     permission_policy = options.permission_policy or Permission.policy(),
     permission_store = options.permission_store or Permission.store(),
