@@ -379,13 +379,13 @@ local function discovered_session_summary(session)
   local parts = {
     report_id(single_line(session.agent), single_line(session.session_id)),
   }
+  if session.updated_at ~= nil then
+    parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
+  end
   if session.title ~= nil and session.title ~= "" and session.title ~= session.session_id then
     parts[#parts + 1] = single_line(session.title)
   end
   parts[#parts + 1] = "cwd=" .. single_line(session.cwd)
-  if session.updated_at ~= nil then
-    parts[#parts + 1] = "updated=" .. single_line(session.updated_at)
-  end
   return table.concat(parts, " · ")
 end
 

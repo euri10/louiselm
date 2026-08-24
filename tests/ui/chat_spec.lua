@@ -1977,7 +1977,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
 
   MiniTest.expect.equality(
     formatted,
-    "codex/prior-acp · [@AGENTS.md](file:///tmp/AGENTS.md)can you takeover this PR, it fails, fix it · cwd=/tmp/project · updated=2026-08-10T10:00:00Z"
+    "codex/prior-acp · updated=2026-08-10T10:00:00Z · [@AGENTS.md](file:///tmp/AGENTS.md)can you takeover this PR, it fails, fix it · cwd=/tmp/project"
   )
   MiniTest.expect.equality(load_call.agent, "codex")
   MiniTest.expect.equality(load_call.session_id, "prior-acp")
