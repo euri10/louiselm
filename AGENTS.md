@@ -20,6 +20,10 @@ agent configuration.
 Work is tracked in beads (`br`). `.beads/` is committed; its JSONL export is the
 shared record across sessions, agents, and adapters.
 
+When asked to recommend or list the next best task(s), that is a read-only
+triage answer: report issue ID(s), priority, and one-line reasoning, and stop.
+Do not claim, implement, or commit work unless asked to proceed.
+
 - Run `br robot-docs guide` for command syntax. Do not restate it here.
 - Discover work with `br ready`. Triage with `bvr --robot-*` flags only; bare
   `bvr` opens a blocking TUI.
