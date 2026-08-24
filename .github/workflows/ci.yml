@@ -130,6 +130,41 @@ jobs:
       - name: Install test dependencies
         run: ./scripts/install-test-deps
 
+      # lua/louiselm/skills/discovery.lua requires lyaml to parse SKILL.md
+      # frontmatter. It degrades gracefully when absent, so a machine without
+      # it does not crash -- it silently fails 36 assertions across four spec
+      # files that expect real parsed skill data (louiselm-zpsj).
+      #
+      # scripts/install-test-deps provisions only mini.nvim, so this is
+      # installed here rather than by the documented setup path. That split is
+      # deliberate but temporary: teaching the script to do it would make a
+      # LuaRocks/LibYAML toolchain a prerequisite for running the tests, which
+      # sits awkwardly against AGENTS.md section 3 ("Lua runtime dependencies
+      # are forbidden", "mini.test is the sole test dependency"). See
+      # louiselm-zpsj before collapsing the two.
+      #
+      # Exporting LUA_PATH/LUA_CPATH is the mechanism the project already
+      # documents for this: discovery.lua's own error text tells users to eval
+      # `luarocks path` in the shell that launches Neovim.
+      - name: Install lyaml
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            lua5.1 liblua5.1-0-dev luarocks libyaml-dev
+          sudo luarocks --lua-version 5.1 install lyaml
+          eval "$(luarocks --lua-version 5.1 path --no-bin)"
+          {
+            echo "LUA_PATH=$LUA_PATH"
+            echo "LUA_CPATH=$LUA_CPATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify Neovim can load lyaml
+        run: |
+          nvim --headless --noplugin \
+            -c "lua assert(pcall(require, 'lyaml'), 'nvim cannot require lyaml')" \
+            -c "qa!"
+
       - name: Run tests
         run: |
           nvim --headless --noplugin -u ./tests/minimal_init.lua \
