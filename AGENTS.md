@@ -150,6 +150,30 @@ interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 `:lua MiniTest.run()`; starting Neovim without `--headless` intentionally keeps
 the editor open.
 
+### Live-instance introspection
+
+When your shell is a child of the Neovim instance hosting the plugin — the
+normal case here — `$NVIM` is that editor's RPC socket. Inspect live plugin
+state through it before scraping environment variables, process tables, or
+state files: those miss state owned by a running adapter and can reconstruct
+a different answer than the live one.
+
+```bash
+nvim --server "$NVIM" --remote-expr 'luaeval("...")'
+```
+
+For multi-line queries, write a temporary Lua file and run
+`luaeval("dofile('/tmp/query.lua')")` from the same remote expression.
+
+The shell-side equivalent of `:LouiselmSessionId` is to evaluate Lua in the
+live instance and ask the chat controller for `session_id()`. Today that
+controller is the `chat` upvalue of
+`require("louiselm.ui.chat.command").winbar_click`; reach it with
+`debug.getupvalue` and call `chat:session_id()`, which returns
+`<agent>/<ACP-session-id>`. This is a debugging reflection path, not a public
+API; if it becomes recurring tooling, promote it to a documented accessor
+rather than encoding the upvalue walk.
+
 ## 5. Test-Driven Development
 
 Use red-green-refactor for meaningful behavior changes: write the smallest
