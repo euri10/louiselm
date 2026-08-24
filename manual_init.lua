@@ -10,5 +10,23 @@ nvim.pack.add({
 }, { confirm = false })
 nvim.opt.rtp:prepend(project_root)
 
-require("louiselm.ui.chat.command").register()
-require("louiselm.capture.command").register()
+local deepseek_env = { ACP_LOG = "1" }
+if nvim.env.DEEPSEEK_API_KEY ~= nil and nvim.env.DEEPSEEK_API_KEY ~= "" then
+  deepseek_env.LLM_API_KEY = nvim.env.DEEPSEEK_API_KEY
+end
+
+assert(require("louiselm").setup({
+  agents = {
+    claude = {
+      command = "acp-proxy",
+      args = { "--", "claude-agent-acp" },
+      version = { command = "claude-agent-acp", args = { "--version" } },
+    },
+    deepseek = {
+      command = "acp-llm-adapter",
+      args = { "serve", "--backend", "deepseek" },
+      env = deepseek_env,
+      version = { command = "acp-llm-adapter", args = { "--version" } },
+    },
+  },
+}))

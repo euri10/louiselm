@@ -156,11 +156,23 @@ For a minimal manual session, run this from the repository root:
 nvim -u ./manual_init.lua
 ```
 
-The config installs this checkout with `vim.pack.add`. Verify it loaded with
+The config installs this checkout with `vim.pack.add`, calls `louiselm.setup()`,
+and registers `:LouiselmChat` and the other commands with two development
+Agents:
+
+- `claude` runs `acp-proxy -- claude-agent-acp`, preserving Agent-friendly ACP
+  logs while using the credentials from an installed Claude Agent.
+- `deepseek` runs `acp-llm-adapter serve --backend deepseek` with structured
+  logging enabled. When `DEEPSEEK_API_KEY` is set, the config passes it to the
+  adapter as `LLM_API_KEY`.
+
+Outside this development config, define at least one Agent explicitly in
+`require("louiselm").setup({ agents = ... })`. Agent commands warn and stop
+when none is configured.
+
+Install the commands for the Agent you want to exercise, then run
+`:checkhealth louiselm`. Verify the plugin loaded with
 `:lua print(require("louiselm.acp").PROTOCOL_VERSION)`.
-It registers `:LouiselmChat` and the other chat commands. After
-`louiselm.setup()` they use the configured agents and skills; before setup they
-fall back to the default launcher described below.
 
 ACP agents communicate over newline-delimited JSON-RPC on stdio. The client
 starts the configured process, negotiates protocol version 1, then exposes
@@ -244,19 +256,12 @@ local chat = assert(require("louiselm.ui.chat").new(sessions, {
 chat:new_session()
 ```
 
-For a quick interactive check, run `nvim -u ./tests/minimal_init.lua` and use
-`:LouiselmChat`. By default it launches the DeepSeek ACP agent with:
-
-```sh
-/home/lotso/code/acp-llm-adapter/acp-debug.sh \
-  acp-llm-adapter serve --backend deepseek
-```
-
-The wrapper preserves ACP JSON-RPC on stdout and records debug logs under
-`$XDG_STATE_HOME/acp-llm-adapter` (or `~/.local/state/acp-llm-adapter`). Set
-`DEEPSEEK_API_KEY` for the adapter; the bootstrap passes it as `LLM_API_KEY`.
-Alternatively, set `LOUISELM_AGENT_COMMAND` to use another ACP executable
-without implicit arguments.
+For a quick interactive check, run `nvim -u ./manual_init.lua` and use
+`:LouiselmChat`. Select `claude` to inspect a Claude Agent through `acp-proxy`,
+or `deepseek` to exercise `acp-llm-adapter` directly. Both write structured
+debug logs under `$XDG_STATE_HOME/acp-llm-adapter` (or
+`~/.local/state/acp-llm-adapter`); proxied Agent logs live under its `proxy`
+subdirectory.
 
 Use `chat:switch("session-1")` for another attached session. Prompts entered in
 the buffer, including slash commands, are passed to the session unchanged.
@@ -695,8 +700,9 @@ capability.
 
 ### Manual adapter smoke checks
 
-Start `nvim -u ./manual_init.lua` from the repository root and evaluate the
-setup example above with installed commands and credentials.
+Start `nvim -u ./manual_init.lua` from the repository root. Its configured
+Agents use the installed commands and credentials described in the ACP client
+quickstart.
 
 For Codex and Claude, test each adapter separately:
 

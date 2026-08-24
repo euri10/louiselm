@@ -6,8 +6,6 @@ local Workflow = require("louiselm.workflow")
 local M = {}
 local configured ---@type table?
 
-local DEFAULT_ADAPTER_DEBUG_SCRIPT = "/home/lotso/code/acp-llm-adapter/acp-debug.sh"
-
 local function session_module()
   return require("louiselm.session")
 end
@@ -31,12 +29,16 @@ local function sorted_agent_names(value)
   return names
 end
 
----@param config table
 ---@return table<string, louiselm.agent.Definition>? definitions
-local function configured_agents(config)
-  if type(config.agents) == "table" then
-    return config.agents
+local function require_configured_agents()
+  local definitions = configured and configured.agents
+  if type(definitions) == "table" and next(definitions) ~= nil then
+    return definitions
   end
+  nvim.notify(
+    "louiselm: no Agent configured; add one to require('louiselm').setup({ agents = ... })",
+    nvim.log.levels.WARN
+  )
   return nil
 end
 
@@ -133,25 +135,6 @@ local function configured_workflow(definitions)
   return Workflow.new(definitions, path)
 end
 
----@return louiselm.agent.Definition definition
-local function default_agent_definition()
-  local command = nvim.env.LOUISELM_AGENT_COMMAND
-  if command ~= nil and command ~= "" then
-    return { command = command, args = {} }
-  end
-
-  local environment
-  local api_key = nvim.env.DEEPSEEK_API_KEY
-  if api_key ~= nil and api_key ~= "" then
-    environment = { LLM_API_KEY = api_key }
-  end
-  return {
-    command = DEFAULT_ADAPTER_DEBUG_SCRIPT,
-    args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
-    env = environment,
-  }
-end
-
 ---Notify from whichever context we're called in: directly on the main loop,
 ---or scheduled when invoked from a fast event (e.g. a vim.system callback).
 ---@param message string
@@ -240,9 +223,9 @@ function M.register()
     if chat ~= nil then
       return chat
     end
-    local definitions = configured and configured_agents(configured)
+    local definitions = require_configured_agents()
     if definitions == nil then
-      definitions = { default = default_agent_definition() }
+      return nil
     end
     local names = sorted_agent_names(definitions)
     check_agent_staleness(definitions)
@@ -502,9 +485,9 @@ function M.register()
 
   nvim.api.nvim_create_user_command("LouiselmInline", function()
     if inline == nil then
-      local definitions = configured and configured_agents(configured)
+      local definitions = require_configured_agents()
       if definitions == nil then
-        definitions = { default = default_agent_definition() }
+        return
       end
       local names = sorted_agent_names(definitions)
       local default_policy, policy_error = configured_skill_policy(configured or {})

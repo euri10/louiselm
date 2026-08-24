@@ -437,14 +437,39 @@ T["command"]["still prompts for a path when an explicit session id is attached"]
   MiniTest.expect.equality(type(path), "string")
 end
 
-T["command"]["manual init exposes the canonical chat command"] = function()
+T["command"]["manual init configures current logged agents"] = function()
   local original_add = nvim.pack.add
+  local original_setup = Louiselm.setup
+  local original_api_key = nvim.env.DEEPSEEK_API_KEY
+  local configured
   nvim.pack.add = function() end
+  rawset(Louiselm, "setup", function(config)
+    configured = config
+    return true
+  end)
+  nvim.env.DEEPSEEK_API_KEY = "test-key"
   local ok, error_message = pcall(dofile, "manual_init.lua")
   nvim.pack.add = original_add
+  rawset(Louiselm, "setup", original_setup)
+  restore_environment("DEEPSEEK_API_KEY", original_api_key)
+
   MiniTest.expect.equality(ok, true)
   MiniTest.expect.equality(error_message, nil)
-  MiniTest.expect.equality(has_chat_command(), true)
+  MiniTest.expect.equality(configured, {
+    agents = {
+      claude = {
+        command = "acp-proxy",
+        args = { "--", "claude-agent-acp" },
+        version = { command = "claude-agent-acp", args = { "--version" } },
+      },
+      deepseek = {
+        command = "acp-llm-adapter",
+        args = { "serve", "--backend", "deepseek" },
+        env = { ACP_LOG = "1", LLM_API_KEY = "test-key" },
+        version = { command = "acp-llm-adapter", args = { "--version" } },
+      },
+    },
+  })
 end
 
 T["command"]["register is repeatable"] = function()
@@ -453,48 +478,50 @@ T["command"]["register is repeatable"] = function()
   MiniTest.expect.equality(has_chat_command(), true)
 end
 
-T["command"]["launches the default adapter through the debug wrapper"] = function()
-  local original_api_key = nvim.env.DEEPSEEK_API_KEY
-  local original_command = nvim.env.LOUISELM_AGENT_COMMAND
-  nvim.env.DEEPSEEK_API_KEY = "test-key"
-  nvim.env.LOUISELM_AGENT_COMMAND = nil
-  local process, original_system = fake_process()
-
-  Command.register()
-  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
-
-  rawset(nvim, "system", original_system)
-  restore_environment("DEEPSEEK_API_KEY", original_api_key)
-  restore_environment("LOUISELM_AGENT_COMMAND", original_command)
-
-  MiniTest.expect.equality(process.command, {
-    "/home/lotso/code/acp-llm-adapter/acp-debug.sh",
-    "acp-llm-adapter",
-    "serve",
-    "--backend",
-    "deepseek",
-  })
-  MiniTest.expect.equality(process.options.env, { LLM_API_KEY = "test-key" })
-  delete_chat_buffers()
-end
-
-T["command"]["keeps an explicit executable override unchanged"] = function()
+T["command"]["warns and stops when no Agent is configured"] = function()
   local original_api_key = nvim.env.DEEPSEEK_API_KEY
   local original_command = nvim.env.LOUISELM_AGENT_COMMAND
   nvim.env.DEEPSEEK_API_KEY = "test-key"
   nvim.env.LOUISELM_AGENT_COMMAND = "custom-acp-agent"
   local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+  local original_input = nvim.ui.input
+  local input_calls = 0
+  nvim.ui.input = function()
+    input_calls = input_calls + 1
+  end
 
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  nvim.api.nvim_cmd({ cmd = "LouiselmResume", args = {} }, {})
+  nvim.api.nvim_cmd({ cmd = "LouiselmInline", args = {} }, {})
 
+  nvim.ui.input = original_input
+  rawset(nvim, "notify", original_notify)
   rawset(nvim, "system", original_system)
   restore_environment("DEEPSEEK_API_KEY", original_api_key)
   restore_environment("LOUISELM_AGENT_COMMAND", original_command)
 
-  MiniTest.expect.equality(process.command, { "custom-acp-agent" })
-  MiniTest.expect.equality(process.options.env, nil)
-  delete_chat_buffers()
+  MiniTest.expect.equality(process.command, nil)
+  MiniTest.expect.equality(input_calls, 0)
+  MiniTest.expect.equality(notifications, {
+    {
+      message = "louiselm: no Agent configured; add one to require('louiselm').setup({ agents = ... })",
+      level = nvim.log.levels.WARN,
+    },
+    {
+      message = "louiselm: no Agent configured; add one to require('louiselm').setup({ agents = ... })",
+      level = nvim.log.levels.WARN,
+    },
+    {
+      message = "louiselm: no Agent configured; add one to require('louiselm').setup({ agents = ... })",
+      level = nvim.log.levels.WARN,
+    },
+  })
 end
 
 T["command"]["launches a configured named agent"] = function()
