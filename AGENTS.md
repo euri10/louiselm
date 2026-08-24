@@ -179,6 +179,20 @@ nvim --headless --noplugin -u "$PWD/tests/minimal_init.lua" \
   -c 'lua MiniTest.run()' -c 'qa!'
 ```
 
+`install-test-deps` provisions mini.nvim and nothing else. The skills specs
+additionally need `lyaml`, which the script deliberately does not install:
+
+```bash
+luarocks --lua-version 5.1 install lyaml
+eval "$(luarocks path --lua-version 5.1 --no-bin)"   # in the shell that starts Neovim
+```
+
+Without it the suite fails 36 cases across four spec files rather than
+reporting one missing dependency, because `skills/discovery.lua` degrades to a
+`missing_dependency` diagnostic and the specs compare it against parsed skill
+data. CI installs `lyaml` itself, so this gap is only ever hit locally
+(louiselm-zpsj).
+
 Run one file with `MiniTest.run_file("tests/schema/dsl_spec.lua")`. For
 interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 `:lua MiniTest.run()`; starting Neovim without `--headless` intentionally keeps
