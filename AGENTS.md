@@ -68,6 +68,18 @@ Do not claim, implement, or commit work unless asked to proceed.
   Context anchored to one issue belongs in `br comments`; a standing convention
   belongs in this file. Anything an agent knows that another adapter cannot
   read is a defect in the record.
+- Before running `br close` on a `bug`, `task`, or `feature`, route what the
+  work taught: issue-local evidence and false starts to a `br comment`, a rule
+  that should bind future work to this file, an unresolved question to a
+  `needs-design` question. Name the destination or say none is warranted;
+  silence is the failure mode, because the lesson is legible only while the
+  work is still fresh. Chores and mechanical closes are exempt, and searching
+  for prior lessons is not required at close time.
+- `br search` excludes closed issues unless passed `-a`, and lessons live on
+  closed issues almost by definition. Always search prior art with `-a`, and
+  never read a zero-result search as absence without it. `br list --json`
+  carries no comments field at all, so it cannot scan comment text however it
+  is filtered (louiselm-o2jh).
 - File a design question worth a full `grill-me` session as a beads `question`
   issue, labeled `needs-design`, titled "Grill-me needed: <question>". Open
   with a line telling the grill not to resolve the question in passing, then
