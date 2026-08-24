@@ -35,6 +35,7 @@ local nvim = vim
 ---@field next_discovery_id integer Next discovery operation number.
 ---@field discoveries table<integer, louiselm.session.DiscoveryState> Active adapter discovery operations.
 ---@field agent_limits table<string, louiselm.session.LimitsState> Last observed account-limit state by Agent.
+---@field agent_limits_listeners table<fun(state: louiselm.session.LimitsState), boolean> Agent-limit observers.
 ---@field permission_store louiselm.permission.Store Remembered rules owned by this registry.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
@@ -44,6 +45,7 @@ local nvim = vim
 ---@field list_sessions fun(self: louiselm.session.Registry): string[]
 ---@field inspect_agent_limits fun(self: louiselm.session.Registry, agent_name: string): louiselm.session.LimitsState?, string?
 ---@field refresh_agent_limits fun(self: louiselm.session.Registry, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)): boolean, string?
+---@field on_agent_limits fun(self: louiselm.session.Registry, callback: fun(state: louiselm.session.LimitsState)): fun()?, string?
 ---@field handle_agent_notification fun(self: louiselm.session.Registry, session: louiselm.session.Session, message: louiselm.acp.JsonRpcNotification)
 ---@field list_permissions fun(self: louiselm.session.Registry): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Registry, id: string): boolean, string?
@@ -65,6 +67,18 @@ local function copy(value)
     result[key] = copy(item)
   end
   return result
+end
+
+---@param self louiselm.session.Registry
+---@param agent_name string
+---@param state louiselm.session.LimitsState
+---@return louiselm.session.LimitsState state
+local function set_agent_limits(self, agent_name, state)
+  self.agent_limits[agent_name] = state
+  for listener in pairs(self.agent_limits_listeners) do
+    listener(copy(state))
+  end
+  return state
 end
 
 ---@param definitions unknown
@@ -142,6 +156,7 @@ function M.new(definitions, default_skills_policy, options)
     next_discovery_id = 1,
     discoveries = {},
     agent_limits = {},
+    agent_limits_listeners = {},
     permission_store = permission_store,
     disposed = false,
   }, Registry),
@@ -524,8 +539,7 @@ local function limits_failure(self, agent_name, message)
     updated_at = previous and previous.updated_at or nil,
     error = message,
   }
-  self.agent_limits[agent_name] = state
-  return state
+  return set_agent_limits(self, agent_name, state)
 end
 
 ---@param self louiselm.session.Registry
@@ -545,8 +559,7 @@ local function accept_limits(self, agent_name, value)
     snapshot = snapshot,
     updated_at = os.time(),
   }
-  self.agent_limits[agent_name] = state
-  return state
+  return set_agent_limits(self, agent_name, state)
 end
 
 ---Return the current Agent-level account-limit state without starting or refreshing an Agent.
@@ -607,12 +620,13 @@ function Registry:refresh_agent_limits(agent_name, callback)
     return true
   end
   local previous = self.agent_limits[agent_name]
-  self.agent_limits[agent_name] = {
+  local loading = {
     agent = agent_name,
     status = "loading",
     snapshot = previous and previous.snapshot or nil,
     updated_at = previous and previous.updated_at or nil,
   }
+  set_agent_limits(self, agent_name, loading)
   local client = source.client
   if client == nil then
     local state = limits_failure(self, agent_name, "ACP account limits source disappeared")
@@ -644,6 +658,29 @@ function Registry:refresh_agent_limits(agent_name, callback)
     return false, message
   end
   return true
+end
+
+---Subscribe to accepted Agent-level account-limit state changes.
+---@param self louiselm.session.Registry
+---@param callback fun(state: louiselm.session.LimitsState) Observer; may run in an ACP fast-event callback.
+---@return fun()? unsubscribe
+---@return string? error_message Validation or lifecycle failure.
+function Registry:on_agent_limits(callback)
+  if self.disposed then
+    return nil, "session registry is disposed"
+  end
+  if type(callback) ~= "function" then
+    return nil, "account limits listener must be a function"
+  end
+  self.agent_limits_listeners[callback] = true
+  local subscribed = true
+  return function()
+    if not subscribed then
+      return
+    end
+    subscribed = false
+    self.agent_limits_listeners[callback] = nil
+  end
 end
 
 ---Accept a custom account-limits notification from one owned Session.
@@ -692,6 +729,7 @@ function Registry:dispose()
     return true
   end
   self.disposed = true
+  self.agent_limits_listeners = {}
   local first_error
   for id, discovery in pairs(self.discoveries) do
     discovery.done = true

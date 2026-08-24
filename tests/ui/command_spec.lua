@@ -134,6 +134,11 @@ end
 T["command"]["shows and refreshes the active Agent account limits"] = function()
   Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  rawset(nvim, "notify", function() end)
+  MiniTest.finally(function()
+    rawset(nvim, "notify", original_notify)
+  end)
   Command.register()
 
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})

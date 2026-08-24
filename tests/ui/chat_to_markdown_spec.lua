@@ -74,6 +74,16 @@ local function fake_api()
     list_sessions = function()
       return {}
     end,
+    inspect_agent_limits = function(_, agent)
+      return { agent = agent, status = "not_observed" }
+    end,
+    refresh_agent_limits = function(_, agent, callback)
+      callback({ agent = agent, status = "not_observed" })
+      return true
+    end,
+    on_agent_limits = function()
+      return function() end
+    end,
     dispose = function()
       return true
     end,

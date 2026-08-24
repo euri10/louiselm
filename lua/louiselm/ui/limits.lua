@@ -25,6 +25,185 @@ local function duration(minutes)
 end
 
 ---@param timestamp integer
+---@param now integer
+---@return string
+local function relative_reset(timestamp, now)
+  local seconds = math.max(0, timestamp - now)
+  if seconds < 3600 then
+    return string.format("%dm", math.max(1, math.ceil(seconds / 60)))
+  end
+  if seconds < 86400 then
+    return string.format("%dh", math.ceil(seconds / 3600))
+  end
+  return string.format("%dd", math.ceil(seconds / 86400))
+end
+
+---@param timestamp integer
+---@param now integer
+---@return string
+local function relative_age(timestamp, now)
+  local seconds = math.max(0, now - timestamp)
+  if seconds < 60 then
+    return "just now"
+  end
+  if seconds < 3600 then
+    return string.format("%dm ago", math.floor(seconds / 60))
+  end
+  if seconds < 86400 then
+    return string.format("%dh ago", math.floor(seconds / 3600))
+  end
+  return string.format("%dd ago", math.floor(seconds / 86400))
+end
+
+---@param value number
+---@return string
+local function remaining_percent(value)
+  if value > 0 and value < 1 then
+    return "<1%"
+  end
+  return string.format("%.0f%%", math.max(0, value))
+end
+
+---@param bucket louiselm.session.LimitBucket
+---@return integer rank
+local function bucket_rank(bucket)
+  if bucket.reached_type ~= nil then
+    return 3
+  end
+  local rank = 0
+  for _, window in ipairs(bucket.windows) do
+    local remaining = 100 - window.used_percent
+    if remaining <= 10 then
+      rank = math.max(rank, 2)
+    elseif remaining <= 20 then
+      rank = math.max(rank, 1)
+    end
+  end
+  return rank
+end
+
+---@param snapshot louiselm.session.LimitsSnapshot
+---@return louiselm.session.LimitBucket?
+local function summary_bucket(snapshot)
+  local default
+  local urgent
+  local urgent_rank = 0
+  for _, bucket in ipairs(snapshot.buckets) do
+    if bucket.id == snapshot.default_bucket_id then
+      default = bucket
+    else
+      local rank = bucket_rank(bucket)
+      if rank > urgent_rank then
+        urgent = bucket
+        urgent_rank = rank
+      end
+    end
+  end
+  return urgent or default
+end
+
+---@param state louiselm.session.LimitsState
+---@param now? integer
+---@return string? text
+---@return string? highlight_group
+function M.summary(state, now)
+  if state.status == "unsupported" or state.status == "not_observed" then
+    return nil, nil
+  end
+  if state.snapshot == nil then
+    if state.status == "loading" then
+      return "limits loading", "LouiselmStatusActive"
+    end
+    return "limits unavailable", "LouiselmStatusError"
+  end
+  if state.status == "unlimited" or state.snapshot.unlimited then
+    return "limits unlimited", "LouiselmStatusReady"
+  end
+  if state.status == "empty" or #state.snapshot.buckets == 0 then
+    return "limits no data", "LouiselmStatusWarning"
+  end
+  local bucket = summary_bucket(state.snapshot)
+  if bucket == nil then
+    return nil, nil
+  end
+  local windows = {}
+  for _, window in ipairs(bucket.windows) do
+    windows[#windows + 1] = window
+  end
+  table.sort(windows, function(left, right)
+    return left.duration_mins < right.duration_mins
+  end)
+  local fields = { "limits " .. (bucket.label or bucket.id):gsub("[%c]", " ") }
+  for index = 1, math.min(2, #windows) do
+    local window = windows[index]
+    fields[#fields + 1] = remaining_percent(100 - window.used_percent)
+      .. "/"
+      .. duration(window.duration_mins)
+      .. "↻"
+      .. relative_reset(window.resets_at, now or os.time())
+  end
+  if #windows > 2 then
+    fields[#fields + 1] = "+" .. (#windows - 2)
+  end
+  if state.status == "stale" or state.status == "loading" then
+    fields[#fields + 1] = state.status
+  end
+  local rank = bucket_rank(bucket)
+  local group = rank >= 2 and "LouiselmStatusError" or rank == 1 and "LouiselmStatusWarning" or "LouiselmStatusReady"
+  if state.status == "stale" or state.status == "loading" then
+    group = "LouiselmStatusWarning"
+  end
+  return table.concat(fields, " "), group
+end
+
+---@class louiselm.ui.LimitsAlert
+---@field message string
+---@field level "warning"|"error"
+
+---@param state louiselm.session.LimitsState
+---@param seen table<string, integer> Highest emitted threshold rank by window/reset cycle.
+---@param now? integer
+---@return louiselm.ui.LimitsAlert[] alerts
+---@return table<string, integer> next_seen
+function M.threshold_alerts(state, seen, now)
+  if state.status ~= "fresh" or state.snapshot == nil then
+    return {}, seen
+  end
+  local alerts = {}
+  local next_seen = {}
+  for _, bucket in ipairs(state.snapshot.buckets) do
+    local reached_window
+    if bucket.reached_type ~= nil then
+      for _, window in ipairs(bucket.windows) do
+        if reached_window == nil or window.used_percent > reached_window.used_percent then
+          reached_window = window
+        end
+      end
+    end
+    for _, window in ipairs(bucket.windows) do
+      local key = bucket.id .. "\0" .. window.duration_mins .. "\0" .. window.resets_at
+      local previous_rank = seen[key] or 0
+      local remaining = 100 - window.used_percent
+      local rank = window == reached_window and 3 or remaining <= 10 and 2 or remaining <= 20 and 1 or 0
+      next_seen[key] = math.max(previous_rank, rank)
+      if rank > previous_rank and rank > 0 then
+        local label = (bucket.label or bucket.id):gsub("[%c]", " ")
+        local prefix = state.agent:gsub("[%c]", " ") .. " " .. label .. " " .. duration(window.duration_mins)
+        local reset = "; resets in " .. relative_reset(window.resets_at, now or os.time())
+        local message
+        if rank == 3 then
+          message = prefix .. " limit reached (" .. bucket.reached_type .. ")" .. reset
+        else
+          message = prefix .. " has " .. remaining_percent(remaining) .. " remaining" .. reset
+        end
+        alerts[#alerts + 1] = { message = message, level = rank >= 2 and "error" or "warning" }
+      end
+    end
+  end
+  return alerts, next_seen
+end
+
+---@param timestamp integer
 ---@return string
 local function reset_time(timestamp)
   local seconds = timestamp - os.time()
@@ -42,8 +221,9 @@ local function reset_time(timestamp)
 end
 
 ---@param state louiselm.session.LimitsState
+---@param now? integer Current Unix time for deterministic rendering.
 ---@return string[] lines
-function M.render(state)
+function M.render(state, now)
   local lines = {
     "# Account limits",
     "",
@@ -51,7 +231,11 @@ function M.render(state)
     "Status: " .. state.status:gsub("_", " "),
   }
   if state.updated_at ~= nil then
-    lines[#lines + 1] = "Updated: " .. os.date("%Y-%m-%d %H:%M:%S %Z", state.updated_at)
+    lines[#lines + 1] = "Updated: "
+      .. os.date("%Y-%m-%d %H:%M:%S %Z", state.updated_at)
+      .. " ("
+      .. relative_age(state.updated_at, now or os.time())
+      .. ")"
   end
   if state.error ~= nil then
     lines[#lines + 1] = "Note: " .. state.error
@@ -86,7 +270,11 @@ function M.render(state)
           .. reset_time(window.resets_at)
       end
       if bucket.reached_type ~= nil then
-        lines[#lines + 1] = "Reached: " .. bucket.reached_type
+        local reached = "Reached: " .. bucket.reached_type
+        if snapshot.reset_credits ~= nil and snapshot.reset_credits.available_count > 0 then
+          reached = reached .. " · Reset credits available: " .. snapshot.reset_credits.available_count
+        end
+        lines[#lines + 1] = reached
       end
       if bucket.plan_type ~= nil then
         lines[#lines + 1] = "Plan: " .. bucket.plan_type

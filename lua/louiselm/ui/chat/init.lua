@@ -81,8 +81,12 @@ local Usage = require("louiselm.workflow.usage")
 ---@field view_order string[] Attached session ids in display order.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field limits_buffers table<string, integer> Account-limit detail buffers by Agent.
+---@field limits_alerts table<string, table<string, integer>> Emitted threshold ranks by Agent and reset cycle.
+---@field limits_refreshing table<string, boolean> Agents with a refresh in flight.
+---@field limits_timers table<string, louiselm.ui.LimitsTimer> Pending reset-expiry timers by Agent.
+---@field limits_unsubscribe fun() Agent-limit observer removal function.
 ---@field winbars table<integer, string> Previous window bars by window id.
----@field winbar_targets table<integer, table<integer, string|false>> Click targets by window and minwid.
+---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget>> Click targets by window and minwid.
 ---@field current_id string? Currently displayed session id.
 ---@field handoffs table<integer, louiselm.ui.Handoff>
 ---@field disposed boolean Whether the chat UI has been disposed.
@@ -123,6 +127,15 @@ Chat.__index = Chat
 ---@class louiselm.ui.Handoff
 ---@field target_session louiselm.session.Session
 ---@field target_session_id string
+
+---@class louiselm.ui.LimitsTarget
+---@field agent string
+
+---@class louiselm.ui.LimitsTimer
+---@field is_closing fun(self: louiselm.ui.LimitsTimer): boolean
+---@field start fun(self: louiselm.ui.LimitsTimer, timeout: integer, repeat_interval: integer, callback: fun())
+---@field stop fun(self: louiselm.ui.LimitsTimer)
+---@field close fun(self: louiselm.ui.LimitsTimer)
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -281,6 +294,7 @@ local DEFAULT_HIGHLIGHTS = {
 }
 
 local WINBAR_CLICK_HANDLER = "v:lua.require('louiselm.ui.chat.command').winbar_click"
+local LIMITS_CLICK_TARGET = 99
 
 local function setup_highlights()
   for name, link in pairs(DEFAULT_HIGHLIGHTS) do
@@ -644,9 +658,11 @@ local function clickable_winbar_segment(target, group, text)
   return "%" .. target .. "@" .. WINBAR_CLICK_HANDLER .. "@" .. winbar_segment(group, text) .. "%X"
 end
 
+---@param self louiselm.ui.Chat
 ---@param state louiselm.session.State
----@return string
-local function session_winbar(state)
+---@return string winbar
+---@return string? limits_agent
+local function session_winbar(self, state)
   local fields = {
     winbar_segment(STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning", turn_label(state)),
   }
@@ -661,7 +677,16 @@ local function session_winbar(state)
   if cost ~= nil then
     fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, cost)
   end
-  return table.concat(fields, " · ")
+  local limits_state = self.api:inspect_agent_limits(state.agent)
+  local limits_text
+  local limits_group
+  if limits_state ~= nil then
+    limits_text, limits_group = Limits.summary(limits_state)
+  end
+  if limits_text ~= nil and limits_group ~= nil then
+    fields[#fields + 1] = clickable_winbar_segment(LIMITS_CLICK_TARGET, limits_group, limits_text)
+  end
+  return table.concat(fields, " · "), limits_text ~= nil and state.agent or nil
 end
 
 ---@param self louiselm.ui.Chat
@@ -669,7 +694,7 @@ end
 ---@param win integer
 ---@return string
 local function chat_winbar(self, view, win)
-  local base = session_winbar(view.session:inspect())
+  local base, limits_agent = session_winbar(self, view.session:inspect())
   local quiet = {} ---@type louiselm.ui.WinbarEntry[]
   local attention = {} ---@type louiselm.ui.WinbarEntry[]
   local current_id = view.session:inspect().id
@@ -681,8 +706,12 @@ local function chat_winbar(self, view, win)
       entries[#entries + 1] = entry
     end
   end
+  local targets = {} ---@type table<integer, string|false|louiselm.ui.LimitsTarget>
+  if limits_agent ~= nil then
+    targets[LIMITS_CLICK_TARGET] = { agent = limits_agent }
+  end
   if #quiet == 0 and #attention == 0 then
-    self.winbar_targets[win] = {}
+    self.winbar_targets[win] = targets
     return base
   end
 
@@ -726,7 +755,6 @@ local function chat_winbar(self, view, win)
     end
   end
 
-  local targets = {} ---@type table<integer, string|false>
   local segments = {}
   for index, entry in ipairs(entries) do
     targets[index] = entry.id ~= "" and entry.id or false
@@ -760,6 +788,101 @@ local function render_winbars(self)
         break
       end
     end
+  end
+end
+
+local schedule_limits_expiry
+
+---@param self louiselm.ui.Chat
+---@param state louiselm.session.LimitsState
+local function handle_limits_state(self, state)
+  if self.disposed then
+    return
+  end
+  local buffer = self.limits_buffers[state.agent]
+  if buffer ~= nil then
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      Limits.update(buffer, state)
+    else
+      self.limits_buffers[state.agent] = nil
+    end
+  end
+  local alerts, seen = Limits.threshold_alerts(state, self.limits_alerts[state.agent] or {})
+  self.limits_alerts[state.agent] = seen
+  for _, alert in ipairs(alerts) do
+    local level = alert.level == "error" and nvim.log.levels.ERROR or nvim.log.levels.WARN
+    nvim.notify("louiselm: " .. alert.message, level)
+  end
+  render_winbars(self)
+  schedule_limits_expiry(self, state)
+end
+
+---@param self louiselm.ui.Chat
+---@param agent_name string
+local function close_limits_timer(self, agent_name)
+  local timer = self.limits_timers[agent_name]
+  self.limits_timers[agent_name] = nil
+  if timer ~= nil and not timer:is_closing() then
+    timer:stop()
+    timer:close()
+  end
+end
+
+---@param self louiselm.ui.Chat
+---@param state louiselm.session.LimitsState
+schedule_limits_expiry = function(self, state)
+  close_limits_timer(self, state.agent)
+  if state.status ~= "fresh" or state.snapshot == nil then
+    return
+  end
+  local expires_at
+  for _, bucket in ipairs(state.snapshot.buckets) do
+    for _, window in ipairs(bucket.windows) do
+      if expires_at == nil or window.resets_at < expires_at then
+        expires_at = window.resets_at
+      end
+    end
+  end
+  if expires_at == nil then
+    return
+  end
+  ---@type louiselm.ui.LimitsTimer
+  local timer = assert(nvim.uv.new_timer())
+  self.limits_timers[state.agent] = timer
+  timer:start(math.max(1, (expires_at - os.time()) * 1000 + 10), 0, function()
+    timer:stop()
+    timer:close()
+    if self.limits_timers[state.agent] == timer then
+      self.limits_timers[state.agent] = nil
+    end
+    nvim.schedule(function()
+      if self.disposed then
+        return
+      end
+      local current = self.api:inspect_agent_limits(state.agent)
+      if current ~= nil then
+        handle_limits_state(self, current)
+      end
+    end)
+  end)
+end
+
+---@param self louiselm.ui.Chat
+---@param agent_name string
+local function refresh_limits(self, agent_name)
+  if self.limits_refreshing[agent_name] then
+    return
+  end
+  self.limits_refreshing[agent_name] = true
+  local started = self.api:refresh_agent_limits(agent_name, function(state)
+    self.limits_refreshing[agent_name] = nil
+    -- ACP process callbacks are fast events; UI work belongs on the main loop.
+    nvim.schedule(function()
+      handle_limits_state(self, state)
+    end)
+  end)
+  if not started then
+    self.limits_refreshing[agent_name] = nil
   end
 end
 
@@ -1880,6 +2003,7 @@ local function handle_event(self, view, event)
     end
     open_session_options(self, view, true)
     release_queued_prompt(self, view)
+    refresh_limits(self, view.session:inspect().agent)
   end
 
   if event.type == "user_chunk" then
@@ -2220,12 +2344,26 @@ function M.new(api, options)
     view_order = {},
     tool_inspect_windows = {},
     limits_buffers = {},
+    limits_alerts = {},
+    limits_refreshing = {},
+    limits_timers = {},
+    limits_unsubscribe = function() end,
     winbars = {},
     winbar_targets = {},
     handoffs = {},
     current_id = nil,
     disposed = false,
   }, Chat)
+  local limits_unsubscribe, limits_error = api:on_agent_limits(function(state)
+    -- ACP notifications can arrive in a fast event; UI work belongs on the main loop.
+    nvim.schedule(function()
+      handle_limits_state(chat, state)
+    end)
+  end)
+  if limits_unsubscribe == nil then
+    return nil, limits_error or "could not observe Agent account limits"
+  end
+  chat.limits_unsubscribe = limits_unsubscribe
   return chat, nil
 end
 
@@ -2348,6 +2486,9 @@ function Chat:attach(session)
   end
   render_header(self, view)
   render_winbars(self)
+  if state.status == "ready" then
+    refresh_limits(self, state.agent)
+  end
   if restore_error ~= nil then
     insert_transcript(self, view, { "Error: " .. restore_error })
   end
@@ -2572,14 +2713,20 @@ function Chat:winbar_click(target)
     return false, "chat UI is disposed"
   end
   local targets = self.winbar_targets[nvim.api.nvim_get_current_win()]
-  local session_id = targets and targets[target]
-  if session_id == nil then
+  local destination = targets and targets[target]
+  if destination == nil then
     return false, "window bar target is unavailable"
   end
-  if session_id == false then
+  if destination == false then
     return self:switch_session()
   end
-  return self:switch(session_id)
+  if type(destination) == "table" then
+    return self:show_limits(destination.agent)
+  end
+  if type(destination) ~= "string" then
+    return false, "window bar target is invalid"
+  end
+  return self:switch(destination)
 end
 
 ---Pick one attached session using a compact state and telemetry row.
@@ -2818,15 +2965,7 @@ function Chat:show_limits(agent_name)
   end
   local buffer = Limits.open(agent_name, state)
   self.limits_buffers[agent_name] = buffer
-  self.api:refresh_agent_limits(agent_name, function(refreshed)
-    -- ACP process callbacks are fast events; buffer updates belong on the main loop.
-    nvim.schedule(function()
-      if self.disposed or self.limits_buffers[agent_name] ~= buffer then
-        return
-      end
-      Limits.update(buffer, refreshed)
-    end)
-  end)
+  refresh_limits(self, agent_name)
   return true
 end
 
@@ -3221,6 +3360,10 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  self.limits_unsubscribe()
+  for agent_name in pairs(self.limits_timers) do
+    close_limits_timer(self, agent_name)
+  end
   restore_winbars(self)
   self.diff:dispose()
   for window in pairs(self.tool_inspect_windows) do

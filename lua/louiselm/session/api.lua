@@ -9,6 +9,7 @@ local Registry = require("louiselm.session.registry")
 ---@field list_sessions fun(self: louiselm.session.Api): string[]
 ---@field inspect_agent_limits fun(self: louiselm.session.Api, agent_name: string): louiselm.session.LimitsState?, string?
 ---@field refresh_agent_limits fun(self: louiselm.session.Api, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)): boolean, string?
+---@field on_agent_limits fun(self: louiselm.session.Api, callback: fun(state: louiselm.session.LimitsState)): fun()?, string?
 ---@field list_permissions fun(self: louiselm.session.Api): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
@@ -99,6 +100,15 @@ end
 ---@return string? error_message Validation or immediate transport failure.
 function Api:refresh_agent_limits(agent_name, callback)
   return self.registry:refresh_agent_limits(agent_name, callback)
+end
+
+---Subscribe to Agent-level account-limit changes without attaching to Session telemetry.
+---@param self louiselm.session.Api
+---@param callback fun(state: louiselm.session.LimitsState) Observer; may run in an ACP fast-event callback.
+---@return fun()? unsubscribe
+---@return string? error_message Validation or lifecycle failure.
+function Api:on_agent_limits(callback)
+  return self.registry:on_agent_limits(callback)
 end
 
 ---List remembered permission rules for inspection.

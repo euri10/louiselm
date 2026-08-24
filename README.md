@@ -360,6 +360,17 @@ percentage `stale` until fresh usage arrives. LouiseLM does not estimate token
 counts, prices, or compaction state, and it does not display a context-pressure
 classification.
 
+For a limits-capable Agent, the window bar also shows a clickable account-limit
+segment with remaining capacity, exact window duration, and relative reset
+time. It normally summarizes the default bucket, but an additional bucket at
+20% remaining or below takes precedence; no more than two shortest-to-longest
+windows are shown before `+N`. Loading, stale, empty, unlimited, and unavailable
+states remain explicit, while unsupported or unobserved Agents omit the segment.
+LouiseLM warns once per window/reset cycle at 20%, 10%, and an Agent-reported
+reached state. Stale observations never alert. Click the segment or use
+`:LouiselmLimits` for used capacity, local reset times, freshness, plans, and
+credit details.
+
 With multiple attached Sessions, the right side of each Session winbar shows
 clickable status entries for the others. Permission requests, errors, and
 unseen completed responses use attention highlights; focusing a Session clears

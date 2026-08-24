@@ -128,6 +128,10 @@ T["new"]["reads and receives normalized Agent account limits through an advertis
   respond(process, 2, { sessionId = "agent-acp" })
   assert(ready ~= nil)
 
+  local observed = {}
+  local unsubscribe = assert(api:on_agent_limits(function(state)
+    observed[#observed + 1] = state.status
+  end))
   local refreshed
   assert(api:refresh_agent_limits("agent", function(state, err)
     refreshed = { state = state, error = err }
@@ -152,6 +156,7 @@ T["new"]["reads and receives normalized Agent account limits through an advertis
 
   MiniTest.expect.equality(refreshed.error, nil)
   MiniTest.expect.equality(refreshed.state.status, "fresh")
+  MiniTest.expect.equality(observed, { "loading", "fresh" })
   MiniTest.expect.equality(refreshed.state.snapshot, {
     default_bucket_id = "codex",
     buckets = {
@@ -183,6 +188,19 @@ T["new"]["reads and receives normalized Agent account limits through an advertis
   MiniTest.expect.equality(updated.status, "fresh")
   MiniTest.expect.equality(updated.snapshot.buckets[1].label, "Codex")
   MiniTest.expect.equality(updated.snapshot.buckets[1].windows[1].used_percent, 91)
+  MiniTest.expect.equality(observed, { "loading", "fresh", "fresh" })
+
+  unsubscribe()
+  notification(process, LIMITS_UPDATED_METHOD, {
+    defaultBucketId = "codex",
+    buckets = {
+      {
+        id = "codex",
+        windows = { { usedPercent = 92, windowDurationMins = 10080, resetsAt = 4102452000 } },
+      },
+    },
+  })
+  MiniTest.expect.equality(observed, { "loading", "fresh", "fresh" })
 
   notification(process, LIMITS_UPDATED_METHOD, { buckets = {}, unlimited = true })
   MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "unlimited")

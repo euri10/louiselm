@@ -75,8 +75,10 @@ local function fake_session(id, agent)
 end
 
 local function fake_api()
-  return {
+  local limits_listeners = {}
+  local api = {
     registry = {},
+    limits = {},
     create_session = function()
       return nil, "not implemented in this test"
     end,
@@ -86,10 +88,40 @@ local function fake_api()
     list_sessions = function()
       return {}
     end,
+    inspect_agent_limits = function(self, agent)
+      local state = self.limits[agent]
+      if state ~= nil and state.status == "fresh" and state.snapshot ~= nil then
+        for _, bucket in ipairs(state.snapshot.buckets) do
+          for _, window in ipairs(bucket.windows) do
+            if window.resets_at <= os.time() then
+              state.status = "stale"
+            end
+          end
+        end
+      end
+      return state or { agent = agent, status = "not_observed" }
+    end,
+    refresh_agent_limits = function(self, agent, callback)
+      callback(assert(self:inspect_agent_limits(agent)))
+      return true
+    end,
+    on_agent_limits = function(_, callback)
+      limits_listeners[callback] = true
+      return function()
+        limits_listeners[callback] = nil
+      end
+    end,
     dispose = function()
       return true
     end,
   }
+  function api:emit_limits(state)
+    self.limits[state.agent] = state
+    for listener in pairs(limits_listeners) do
+      listener(state)
+    end
+  end
+  return api
 end
 
 local function buffer_lines(buffer)
@@ -3094,11 +3126,10 @@ end
 
 T["chat"]["queues configured instructions context only for a brand-new session"] = function()
   local created_session = fake_session("session-1", "claude")
-  local api = {
-    create_session = function()
-      return created_session
-    end,
-  }
+  local api = fake_api()
+  api.create_session = function()
+    return created_session
+  end
   local chat = assert(Chat.new(api, {
     agents = { "claude" },
     instructions_context = { label = "AGENTS.md", uri = "file:///repo/AGENTS.md" },
@@ -3339,6 +3370,175 @@ T["chat"]["keeps the turn label visible in the window bar"] = function()
   MiniTest.expect.equality(
     nvim.api.nvim_get_option_value("winbar", { win = 0 }),
     "%#LouiselmStatusActive#Model responding%*"
+  )
+  chat:dispose()
+end
+
+T["chat"]["shows clickable Agent limits in the window bar"] = function()
+  local first = fake_session("session-1", "codex")
+  local api = fake_api()
+  api.limits.codex = {
+    agent = "codex",
+    status = "fresh",
+    snapshot = {
+      default_bucket_id = "codex",
+      buckets = {
+        {
+          id = "codex",
+          label = "Codex",
+          windows = { { used_percent = 50, duration_mins = 300, resets_at = os.time() + 7200 } },
+        },
+      },
+    },
+  }
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  local winbar = nvim.api.nvim_get_option_value("winbar", { win = 0 })
+
+  MiniTest.expect.equality(winbar:find("limits Codex 50%%/5h↻2h", 1, true) ~= nil, true)
+  assert(chat:winbar_click(99))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0), "louiselm://limits/codex")
+  api:emit_limits({
+    agent = "codex",
+    status = "fresh",
+    snapshot = {
+      default_bucket_id = "codex",
+      buckets = {
+        {
+          id = "codex",
+          label = "Codex",
+          windows = { { used_percent = 51, duration_mins = 300, resets_at = os.time() + 7200 } },
+        },
+      },
+    },
+  })
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+          return nvim.tbl_contains(buffer_lines(0), "49% left · 51% used")
+    end, 1),
+    true
+  )
+  chat:dispose()
+end
+
+T["chat"]["schedules live limit rendering and deduplicates alerts across Sessions"] = function()
+  local first = fake_session("session-1", "codex")
+  local second = fake_session("session-2", "codex")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2" }
+  end
+  local reset = os.time() + 7200
+  api.limits.codex = {
+    agent = "codex",
+    status = "fresh",
+    snapshot = {
+      default_bucket_id = "codex",
+      buckets = {
+        { id = "codex", windows = { { used_percent = 50, duration_mins = 300, resets_at = reset } } },
+      },
+    },
+  }
+  local notifications = {}
+  local original_notify = nvim.notify
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "notify", original_notify)
+  end)
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+
+  local timer = assert(nvim.uv.new_timer())
+  local emitted_in_fast_event = false
+  timer:start(0, 0, function()
+    emitted_in_fast_event = nvim.in_fast_event()
+    api:emit_limits({
+      agent = "codex",
+      status = "fresh",
+      snapshot = {
+        default_bucket_id = "codex",
+        buckets = {
+          { id = "codex", windows = { { used_percent = 81, duration_mins = 300, resets_at = reset } } },
+        },
+      },
+    })
+    timer:stop()
+    timer:close()
+  end)
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return emitted_in_fast_event
+        and #notifications == 1
+        and nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("19%%/5h", 1, true) ~= nil
+    end, 1),
+    true
+  )
+  MiniTest.expect.equality(notifications[1].level, nvim.log.levels.WARN)
+
+  api:emit_limits(api.limits.codex)
+  api:emit_limits({
+    agent = "codex",
+    status = "fresh",
+    snapshot = {
+      default_bucket_id = "codex",
+      buckets = {
+        {
+          id = "codex",
+          reached_type = "weekly",
+          windows = { { used_percent = 91, duration_mins = 300, resets_at = reset } },
+        },
+      },
+    },
+  })
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return #notifications == 2
+    end, 1),
+    true
+  )
+  MiniTest.expect.equality(notifications[2].level, nvim.log.levels.ERROR)
+
+  api:emit_limits({
+    agent = "codex",
+    status = "stale",
+    snapshot = api.limits.codex.snapshot,
+  })
+  nvim.wait(50)
+  MiniTest.expect.equality(#notifications, 2)
+
+  chat:dispose()
+  api:emit_limits({ agent = "codex", status = "empty", snapshot = { buckets = {} } })
+  nvim.wait(50)
+  MiniTest.expect.equality(#notifications, 2)
+end
+
+T["chat"]["marks a visible limit stale when its reset passes without an update"] = function()
+  local first = fake_session("session-1", "codex")
+  local api = fake_api()
+  api.limits.codex = {
+    agent = "codex",
+    status = "fresh",
+    snapshot = {
+      default_bucket_id = "codex",
+      buckets = {
+        {
+          id = "codex",
+          windows = { { used_percent = 50, duration_mins = 60, resets_at = os.time() + 1 } },
+        },
+      },
+    },
+  }
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+
+  MiniTest.expect.equality(
+    nvim.wait(2000, function()
+      return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("stale", 1, true) ~= nil
+    end, 10),
+    true
   )
   chat:dispose()
 end
@@ -3735,12 +3935,11 @@ end
 T["chat"]["uses the agent picker for a new session"] = function()
   local created
   local session = fake_session("session-1", "two")
-  local api = {
-    create_session = function(_, agent_name)
-      created = agent_name
-      return session
-    end,
-  }
+  local api = fake_api()
+  api.create_session = function(_, agent_name)
+    created = agent_name
+    return session
+  end
   local chat = assert(Chat.new(api, { agents = { "one", "two" } }))
   local original_select = nvim.ui.select
   nvim.ui.select = function(items, _, callback)
