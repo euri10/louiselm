@@ -369,11 +369,14 @@ Adapter values use the user-overridable `LouiselmAcpValue` highlight and derived
 percentage/staleness use `LouiselmDerivedValue`. Lifecycle labels use
 `LouiselmStatusReady`, `LouiselmStatusActive`, `LouiselmStatusWarning`, and
 `LouiselmStatusError`; their text remains meaningful without color. Completed
-turns append only usage fields reported by the agent. The session-options picker
-annotates values with locally observed average tokens per turn and
-agent-reported cost when history exists; values without measurements remain
-unannotated. This history is stored under Neovim's state directory and contains
-option identity, measured counters, and timestamps, never prompts or tool data.
+turns append only usage fields reported by the agent. Exact turn usage is keyed
+locally by Agent, ACP Session, and turn so a resumed Session can place the same
+`[usage]` lines beside replayed turns. The session-options picker annotates
+values with locally observed average tokens per turn and agent-reported cost
+when history exists; values without measurements remain unannotated. This
+client-owned history is stored under Neovim's state directory and contains
+option aggregates plus exact reported counters, never prompts or tool data. It
+is not added to ACP prompts, handoffs, or transcript exports.
 
 The inline assistant uses the same headless session API. It sends the current
 buffer location and selected text as context, then replaces that selection with

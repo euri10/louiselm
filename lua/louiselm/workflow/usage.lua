@@ -27,10 +27,18 @@
 ---@field costs table<string, { samples: integer, total: number }>
 ---@field updated_at integer
 
+---@class louiselm.workflow.UsageTurnRecord
+---@field agent string
+---@field session_id string
+---@field turn integer
+---@field usage louiselm.session.TurnUsage
+
 ---@class louiselm.workflow.Usage
 ---@field path string Persistent JSON path.
 ---@field record fun(self: louiselm.workflow.Usage, agent: unknown, options: unknown, usage: unknown, cost?: unknown): boolean, string? Record one completed turn.
+---@field record_turn fun(self: louiselm.workflow.Usage, agent: unknown, session_id: unknown, turn: unknown, usage: unknown): boolean, string? Persist exact presentation usage for one Session turn.
 ---@field records fun(self: louiselm.workflow.Usage): louiselm.workflow.UsageRecord[]?, string? Return detached persistent records.
+---@field turns fun(self: louiselm.workflow.Usage, agent: unknown, session_id: unknown): louiselm.workflow.UsageTurnRecord[]?, string? Return exact presentation usage for one Session.
 ---@field summary fun(self: louiselm.workflow.Usage, agent: unknown, option: unknown, value: unknown): louiselm.workflow.UsageSummary?, string? Summarize one option value.
 
 local M = {}
@@ -39,6 +47,14 @@ Usage.__index = Usage
 
 local VERSION = 1
 local USAGE_FIELDS = {
+  "input_tokens",
+  "output_tokens",
+  "thought_tokens",
+  "cached_read_tokens",
+  "cached_write_tokens",
+}
+local ALL_USAGE_FIELDS = {
+  "total_tokens",
   "input_tokens",
   "output_tokens",
   "thought_tokens",
@@ -134,6 +150,34 @@ local function measured_tokens(value)
   return total, true
 end
 
+---@param value unknown
+---@return louiselm.session.TurnUsage? usage
+local function normalize_usage(value)
+  local _, valid = measured_tokens(value)
+  if not valid or type(value) ~= "table" then
+    return nil
+  end
+  local allowed = {}
+  for _, name in ipairs(ALL_USAGE_FIELDS) do
+    allowed[name] = true
+  end
+  for key in pairs(value) do
+    if not allowed[key] then
+      return nil
+    end
+  end
+  local usage = {}
+  for _, name in ipairs(ALL_USAGE_FIELDS) do
+    if value[name] ~= nil then
+      usage[name] = value[name]
+    end
+  end
+  if next(usage) == nil then
+    return nil
+  end
+  return usage
+end
+
 ---@param record louiselm.workflow.UsageRecord
 ---@return louiselm.workflow.UsageRecord
 local function copy_record(record)
@@ -150,6 +194,17 @@ local function copy_record(record)
     total_tokens = record.total_tokens,
     costs = costs,
     updated_at = record.updated_at,
+  }
+end
+
+---@param record louiselm.workflow.UsageTurnRecord
+---@return louiselm.workflow.UsageTurnRecord
+local function copy_turn_record(record)
+  return {
+    agent = record.agent,
+    session_id = record.session_id,
+    turn = record.turn,
+    usage = normalize_usage(record.usage),
   }
 end
 
@@ -214,72 +269,118 @@ local function validate_record(value)
   }
 end
 
+---@param value unknown
+---@return louiselm.workflow.UsageTurnRecord?
+local function validate_turn_record(value)
+  if type(value) ~= "table" then
+    return nil
+  end
+  local allowed = { agent = true, session_id = true, turn = true, usage = true }
+  for key in pairs(value) do
+    if not allowed[key] then
+      return nil
+    end
+  end
+  local usage = normalize_usage(value.usage)
+  if
+    type(value.agent) ~= "string"
+    or value.agent == ""
+    or type(value.session_id) ~= "string"
+    or value.session_id == ""
+    or not is_integer(value.turn)
+    or value.turn == 0
+    or usage == nil
+  then
+    return nil
+  end
+  return { agent = value.agent, session_id = value.session_id, turn = value.turn, usage = usage }
+end
+
 ---@param path string
 ---@return louiselm.workflow.UsageRecord[]? records
+---@return louiselm.workflow.UsageTurnRecord[]? turns
 ---@return string? error_message
-local function read_records(path)
+local function read_store(path)
   local editor = nvim()
   local stat = editor.uv.fs_stat(path)
   if stat == nil then
-    return {}, nil
+    return {}, {}, nil
   end
   if stat.type ~= "file" then
-    return nil, "usage history path is not a regular file"
+    return nil, nil, "usage history path is not a regular file"
   end
   local file, open_error = editor.uv.fs_open(path, "r", 384)
   if file == nil then
-    return nil, "could not read usage history: " .. tostring(open_error)
+    return nil, nil, "could not read usage history: " .. tostring(open_error)
   end
   local content, read_error = editor.uv.fs_read(file, stat.size, 0)
   local closed, close_error = editor.uv.fs_close(file)
   if content == nil then
-    return nil, "could not read usage history: " .. tostring(read_error)
+    return nil, nil, "could not read usage history: " .. tostring(read_error)
   end
   if not closed then
-    return nil, "could not close usage history: " .. tostring(close_error)
+    return nil, nil, "could not close usage history: " .. tostring(close_error)
   end
   local decoded_ok, decoded = pcall(editor.json.decode, content)
   if not decoded_ok then
-    return nil, "usage history is not valid JSON"
+    return nil, nil, "usage history is not valid JSON"
   end
   if type(decoded) ~= "table" then
-    return nil, "usage history has invalid schema"
+    return nil, nil, "usage history has invalid schema"
   end
   for key in pairs(decoded) do
-    if key ~= "version" and key ~= "records" then
-      return nil, "usage history has invalid schema"
+    if key ~= "version" and key ~= "records" and key ~= "turns" then
+      return nil, nil, "usage history has invalid schema"
     end
   end
-  if decoded.version ~= VERSION or type(decoded.records) ~= "table" then
-    return nil, "usage history has invalid schema"
+  if
+    decoded.version ~= VERSION
+    or type(decoded.records) ~= "table"
+    or (decoded.turns ~= nil and type(decoded.turns) ~= "table")
+  then
+    return nil, nil, "usage history has invalid schema"
   end
   local records = {}
   for index, value in ipairs(decoded.records) do
     local record = validate_record(value)
     if record == nil then
-      return nil, "usage history has invalid schema"
+      return nil, nil, "usage history has invalid schema"
     end
     records[index] = record
   end
   for key in pairs(decoded.records) do
     if type(key) ~= "number" or key < 1 or key % 1 ~= 0 or key > #records then
-      return nil, "usage history has invalid schema"
+      return nil, nil, "usage history has invalid schema"
     end
   end
-  return records, nil
+  local turns = {}
+  for index, value in ipairs(decoded.turns or {}) do
+    local record = validate_turn_record(value)
+    if record == nil then
+      return nil, nil, "usage history has invalid schema"
+    end
+    turns[index] = record
+  end
+  for key in pairs(decoded.turns or {}) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 or key > #turns then
+      return nil, nil, "usage history has invalid schema"
+    end
+  end
+  return records, turns, nil
 end
 
 ---@param path string
 ---@param records louiselm.workflow.UsageRecord[]
+---@param turns louiselm.workflow.UsageTurnRecord[]
 ---@return boolean written
 ---@return string? error_message
-local function write_records(path, records)
+local function write_store(path, records, turns)
   local editor = nvim()
   local directory = editor.fs.dirname(path)
   if editor.fn.mkdir(directory, "p", 448) == 0 and editor.fn.isdirectory(directory) ~= 1 then
     return false, "could not create usage history directory"
   end
-  local encoded_ok, content = pcall(editor.json.encode, { version = VERSION, records = records })
+  local encoded_ok, content = pcall(editor.json.encode, { version = VERSION, records = records, turns = turns })
   if not encoded_ok then
     return false, "could not encode usage history"
   end
@@ -326,6 +427,19 @@ local function before(left, right)
   return tostring(left.value) < tostring(right.value)
 end
 
+---@param left louiselm.workflow.UsageTurnRecord
+---@param right louiselm.workflow.UsageTurnRecord
+---@return boolean
+local function turn_before(left, right)
+  if left.agent ~= right.agent then
+    return left.agent < right.agent
+  end
+  if left.session_id ~= right.session_id then
+    return left.session_id < right.session_id
+  end
+  return left.turn < right.turn
+end
+
 ---@param records louiselm.workflow.UsageRecord[]
 ---@param agent string
 ---@param option string
@@ -334,6 +448,20 @@ end
 local function find_record(records, agent, option, value)
   for _, record in ipairs(records) do
     if record.agent == agent and record.option == option and record.value == value then
+      return record
+    end
+  end
+  return nil
+end
+
+---@param turns louiselm.workflow.UsageTurnRecord[]
+---@param agent string
+---@param session_id string
+---@param turn integer
+---@return louiselm.workflow.UsageTurnRecord?
+local function find_turn(turns, agent, session_id, turn)
+  for _, record in ipairs(turns) do
+    if record.agent == agent and record.session_id == session_id and record.turn == turn then
       return record
     end
   end
@@ -400,10 +528,11 @@ function Usage:record(agent, options, usage, cost)
   if tokens == nil and normalized_cost == nil then
     return true, nil
   end
-  local records, read_error = read_records(self.path)
+  local records, turns, read_error = read_store(self.path)
   if records == nil then
     return false, read_error
   end
+  ---@cast turns louiselm.workflow.UsageTurnRecord[]
   for _, option in ipairs(normalized_options) do
     local record = find_record(records, normalized_agent, option.id, option.current_value)
     if record == nil then
@@ -436,7 +565,44 @@ function Usage:record(agent, options, usage, cost)
     record.updated_at = os.time()
   end
   table.sort(records, before)
-  return write_records(self.path, records)
+  return write_store(self.path, records, turns)
+end
+
+---Persist exact usage for one Agent-scoped ACP Session turn.
+---@param self louiselm.workflow.Usage
+---@param agent unknown Configured Agent name.
+---@param session_id unknown Agent-side persistent Session identifier.
+---@param turn unknown Positive Session turn ordinal.
+---@param usage unknown Validated completed-turn usage.
+---@return boolean recorded
+---@return string? error_message
+function Usage:record_turn(agent, session_id, turn, usage)
+  if type(agent) ~= "string" or agent == "" then
+    return false, "usage agent must be a non-empty string"
+  end
+  if type(session_id) ~= "string" or session_id == "" then
+    return false, "usage Session id must be a non-empty string"
+  end
+  if not is_integer(turn) or turn == 0 then
+    return false, "usage turn must be a positive integer"
+  end
+  local normalized_usage = normalize_usage(usage)
+  if normalized_usage == nil then
+    return false, "usage measurement is malformed"
+  end
+  local records, turns, read_error = read_store(self.path)
+  if records == nil then
+    return false, read_error
+  end
+  ---@cast turns louiselm.workflow.UsageTurnRecord[]
+  local record = find_turn(turns, agent, session_id, turn)
+  if record == nil then
+    turns[#turns + 1] = { agent = agent, session_id = session_id, turn = turn, usage = normalized_usage }
+  else
+    record.usage = normalized_usage
+  end
+  table.sort(turns, turn_before)
+  return write_store(self.path, records, turns)
 end
 
 ---Return detached persistent records.
@@ -444,7 +610,7 @@ end
 ---@return louiselm.workflow.UsageRecord[]? records
 ---@return string? error_message
 function Usage:records()
-  local records, read_error = read_records(self.path)
+  local records, _, read_error = read_store(self.path)
   if records == nil then
     return nil, read_error
   end
@@ -452,6 +618,30 @@ function Usage:records()
   local copies = {}
   for index, record in ipairs(records) do
     copies[index] = copy_record(record)
+  end
+  return copies, nil
+end
+
+---Return exact completed-turn usage for one Agent-scoped ACP Session.
+---@param self louiselm.workflow.Usage
+---@param agent unknown Configured Agent name.
+---@param session_id unknown Agent-side persistent Session identifier.
+---@return louiselm.workflow.UsageTurnRecord[]? turns
+---@return string? error_message
+function Usage:turns(agent, session_id)
+  if type(agent) ~= "string" or agent == "" or type(session_id) ~= "string" or session_id == "" then
+    return nil, "usage turns require non-empty Agent and Session ids"
+  end
+  local _, turns, read_error = read_store(self.path)
+  if turns == nil then
+    return nil, read_error
+  end
+  table.sort(turns, turn_before)
+  local copies = {}
+  for _, record in ipairs(turns) do
+    if record.agent == agent and record.session_id == session_id then
+      copies[#copies + 1] = copy_turn_record(record)
+    end
   end
   return copies, nil
 end
@@ -470,7 +660,7 @@ function Usage:summary(agent, option, value)
   if type(value) ~= "string" and type(value) ~= "boolean" then
     return nil, "usage summary value must be a string or boolean"
   end
-  local records, read_error = read_records(self.path)
+  local records, _, read_error = read_store(self.path)
   if records == nil then
     return nil, read_error
   end

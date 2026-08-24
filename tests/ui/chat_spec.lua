@@ -1955,6 +1955,87 @@ T["chat"]["renders replayed user and assistant chunks before a new prompt"] = fu
   chat:dispose()
 end
 
+T["chat"]["restores client-owned usage beside its replayed Session turn"] = function()
+  local restored = fake_session("session-1", "deepseek")
+  restored.state.source = "loaded"
+  restored.state.status = "starting"
+  restored.state.acp_session_id = "prior-acp"
+  local chat = assert(Chat.new(fake_api()))
+  local usage = assert(Usage.new(nvim.fn.tempname()))
+  assert(usage:record_turn("deepseek", "prior-acp", 2, {
+    total_tokens = 30,
+    input_tokens = 20,
+    cached_read_tokens = 7,
+  }))
+  chat.usage = usage
+  assert(chat:attach(restored))
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  restored:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "first prompt" } },
+  })
+  restored:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "first answer" } },
+  })
+  restored:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "second prompt" } },
+  })
+  restored:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "second answer" } },
+  })
+  restored.state.status = "ready"
+  restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
+
+  for _, callback in ipairs(scheduled) do
+    callback()
+  end
+  nvim.schedule = original_schedule
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer()),
+    chat_lines("deepseek/prior-acp · session-1", "status=ready · display=Your turn · source=loaded", {
+      "",
+      "> first prompt",
+      "",
+      "first answer",
+      "> second prompt",
+      "",
+      "second answer",
+      "[usage] total_tokens=30 · input_tokens=20 · cached_read_tokens=7",
+      "",
+      "",
+      "> ",
+    })
+  )
+  MiniTest.expect.equality(restored.prompts, {})
+
+  restored.state.current_turn = 1
+  restored.state.usage = { total_tokens = 40, output_tokens = 10 }
+  restored:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return #assert(usage:turns("deepseek", "prior-acp")) == 2
+  end, 1)
+  MiniTest.expect.equality(assert(usage:turns("deepseek", "prior-acp"))[2], {
+    agent = "deepseek",
+    session_id = "prior-acp",
+    turn = 3,
+    usage = { total_tokens = 40, output_tokens = 10 },
+  })
+  chat:dispose()
+end
+
 T["chat"]["discovers and resumes into a separate scheduled chat view"] = function()
   local first = fake_session("session-1", "claude")
   local restored = fake_session("session-2", "codex")
@@ -3046,6 +3127,8 @@ end
 
 T["chat"]["renders state telemetry and reported-only usage"] = function()
   local first = fake_session("session-1", "claude")
+  first.state.acp_session_id = "acp-session-1"
+  first.state.current_turn = 1
   first.state.config_options = {
     { id = "model", name = "Model", category = "model", type = "select", current_value = "opus", options = {} },
     { id = "brave", name = "Brave", type = "boolean", current_value = true },
@@ -3057,6 +3140,16 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
     callback(nil)
   end
   local chat = assert(Chat.new(fake_api()))
+  local recorded_turn
+  local usage = assert(Usage.new(nvim.fn.tempname()))
+  usage.record = function()
+    return true
+  end
+  usage.record_turn = function(_, agent, session_id, turn, turn_usage)
+    recorded_turn = { agent = agent, session_id = session_id, turn = turn, usage = turn_usage }
+    return true
+  end
+  chat.usage = usage
   assert(chat:attach(first))
   first.state.usage = { input_tokens = 12, cached_read_tokens = 3 }
   first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
@@ -3068,13 +3161,19 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
     chat_lines(
-      "claude · session-1",
+      "claude/acp-session-1 · session-1",
       "status=ready · display=Your turn",
       { "", "[usage] input_tokens=12 · cached_read_tokens=3", "> " },
       "Model=opus · Brave=true",
       "context=95/100 (95%) · cost=1.5 USD"
     )
   )
+  MiniTest.expect.equality(recorded_turn, {
+    agent = "claude",
+    session_id = "acp-session-1",
+    turn = 1,
+    usage = { input_tokens = 12, cached_read_tokens = 3 },
+  })
   chat:dispose()
 end
 

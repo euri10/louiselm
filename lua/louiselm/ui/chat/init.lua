@@ -49,6 +49,10 @@ local Usage = require("louiselm.workflow.usage")
 ---@field setup_shown boolean Whether the initial options overview was offered.
 ---@field cost_before louiselm.session.Cost? Cumulative cost before the current turn.
 ---@field unread_turn boolean Whether a completed background response has not been focused.
+---@field replay_active boolean Whether session/load history is still arriving.
+---@field replay_user_open boolean Whether consecutive replayed user chunks belong to the current historical turn.
+---@field replay_turn integer Number of historical user turns replayed into this view.
+---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
 
@@ -1710,6 +1714,18 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
+---@param turn integer
+local function restore_turn_usage(self, view, turn)
+  local usage = view.restored_usage[turn]
+  view.restored_usage[turn] = nil
+  local line = usage_line(usage)
+  if line ~= nil then
+    insert_transcript(self, view, { line })
+  end
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
 ---@param phase louiselm.workflow.PhaseMetadata
 ---@param state louiselm.session.State
 ---@param callback fun()
@@ -1854,6 +1870,11 @@ local function handle_event(self, view, event)
     render_winbars(self)
   end
   if event.type == "state_changed" and view.session:inspect().status == "ready" then
+    if view.replay_active then
+      restore_turn_usage(self, view, view.replay_turn)
+      view.replay_active = false
+      view.replay_user_open = false
+    end
     open_session_options(self, view, true)
     release_queued_prompt(self, view)
   end
@@ -1862,6 +1883,11 @@ local function handle_event(self, view, event)
     local text = chunk_text(event.data)
     if text == nil then
       return
+    end
+    if view.replay_active and not view.replay_user_open then
+      restore_turn_usage(self, view, view.replay_turn)
+      view.replay_turn = view.replay_turn + 1
+      view.replay_user_open = true
     end
     local lines = split_lines(text)
     for index, line in ipairs(lines) do
@@ -1878,6 +1904,7 @@ local function handle_event(self, view, event)
     if text == nil then
       return
     end
+    view.replay_user_open = false
     close_tool_fold_run(view)
     if not view.response_started then
       local lines = split_lines(text)
@@ -1913,6 +1940,7 @@ local function handle_event(self, view, event)
     view.transcript_tail = view.response_tail
     mark_prompt(view, view.prompt_line + added)
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
+    view.replay_user_open = false
     local status = field(event.data, "status")
     local id = tool_id(event.data)
     local title = field(event.data, "title")
@@ -1977,6 +2005,7 @@ local function handle_event(self, view, event)
     view.response_tail = nil
     view.response_started = false
   elseif event.type == "error" then
+    view.replay_user_open = false
     clear_queued_prompt(view)
     local message = field(event.data, "message") or "unknown session error"
     insert_transcript(self, view, { "Error: " .. message })
@@ -2011,11 +2040,18 @@ local function handle_event(self, view, event)
       cost = { amount = state.cost.amount - view.cost_before.amount, currency = state.cost.currency }
     end
     view.cost_before = nil
+    local line = usage_line(state.usage)
+    if line ~= nil and state.acp_session_id ~= nil then
+      local recorded_turn, turn_error =
+        self.usage:record_turn(state.agent, state.acp_session_id, view.replay_turn + state.current_turn, state.usage)
+      if not recorded_turn then
+        insert_transcript(self, view, { "Error: " .. (turn_error or "could not record Session turn usage") })
+      end
+    end
     local recorded, usage_error = self.usage:record(state.agent, state.config_options, state.usage, cost)
     if not recorded then
       insert_transcript(self, view, { "Error: " .. (usage_error or "could not record measured usage") })
     end
-    local line = usage_line(state.usage)
     if line ~= nil then
       insert_transcript(self, view, { line })
     end
@@ -2210,6 +2246,17 @@ function Chat:attach(session)
     return self:switch(state.id)
   end
 
+  local restored_usage = {}
+  local restore_error
+  local replay_active = state.source == "loaded" and state.status ~= "ready"
+  if replay_active and state.acp_session_id ~= nil then
+    local turns
+    turns, restore_error = self.usage:turns(state.agent, state.acp_session_id)
+    for _, record in ipairs(turns or {}) do
+      restored_usage[record.turn] = record.usage
+    end
+  end
+
   local source_buffer = nvim.api.nvim_get_current_buf()
   local window = nvim.api.nvim_get_current_win()
   local buffer = nvim.api.nvim_create_buf(false, true)
@@ -2262,6 +2309,10 @@ function Chat:attach(session)
     setup_shown = false,
     cost_before = nil,
     unread_turn = false,
+    replay_active = replay_active,
+    replay_user_open = false,
+    replay_turn = 0,
+    restored_usage = restored_usage,
     transcript = Transcript.new(),
     unsubscribe = function() end,
   }
@@ -2293,6 +2344,9 @@ function Chat:attach(session)
   end
   render_header(self, view)
   render_winbars(self)
+  if restore_error ~= nil then
+    insert_transcript(self, view, { "Error: " .. restore_error })
+  end
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
   end, { buffer = buffer, silent = true, desc = "Submit louiselm prompt" })

@@ -110,6 +110,54 @@ T["persistence"]["survives a restart"] = function()
   MiniTest.expect.equality(summary_for(reopened, "model", "small").average_tokens, 120)
 end
 
+T["persistence"]["keeps exact turn usage by Agent, ACP Session, and turn"] = function()
+  local store = new_store()
+  assert(store:record("claude", options("small"), { total_tokens = 120 }))
+  assert(store:record_turn("deepseek", "session-1", 2, {
+    total_tokens = 30,
+    input_tokens = 20,
+    cached_read_tokens = 7,
+  }))
+
+  local reopened = assert(Usage.new(store_path()))
+  MiniTest.expect.equality(assert(reopened:turns("deepseek", "session-1")), {
+    {
+      agent = "deepseek",
+      session_id = "session-1",
+      turn = 2,
+      usage = { total_tokens = 30, input_tokens = 20, cached_read_tokens = 7 },
+    },
+  })
+  MiniTest.expect.equality(assert(reopened:turns("deepseek", "another-session")), {})
+  MiniTest.expect.equality(summary_for(reopened, "model", "small").average_tokens, 120)
+end
+
+T["persistence"]["replaces an already recorded Session turn"] = function()
+  local store = new_store()
+  assert(store:record_turn("deepseek", "session-1", 1, { total_tokens = 10 }))
+  assert(store:record_turn("deepseek", "session-1", 1, { total_tokens = 12 }))
+
+  MiniTest.expect.equality(assert(store:turns("deepseek", "session-1")), {
+    {
+      agent = "deepseek",
+      session_id = "session-1",
+      turn = 1,
+      usage = { total_tokens = 12 },
+    },
+  })
+end
+
+T["persistence"]["rejects malformed Session turn identity and usage"] = function()
+  local store = new_store()
+
+  local recorded, turn_error = store:record_turn("deepseek", "session-1", 0, { total_tokens = 1 })
+  MiniTest.expect.equality(recorded, false)
+  MiniTest.expect.equality(turn_error, "usage turn must be a positive integer")
+  local usage_recorded, usage_error = store:record_turn("deepseek", "session-1", 1, { total_tokens = "1" })
+  MiniTest.expect.equality(usage_recorded, false)
+  MiniTest.expect.equality(usage_error, "usage measurement is malformed")
+end
+
 T["persistence"]["reports corrupt state without overwriting it"] = function()
   assert(nvim.fn.writefile({ "not json" }, store_path()) == 0)
   local store = new_store()
