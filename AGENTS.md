@@ -149,7 +149,16 @@ is an example, not a contract. It binds nobody, and other loops are expected.
 - Target the latest stable Neovim at release and its embedded LuaJIT/Lua 5.1.
   Do not support standalone Lua or add Lua 5.2+ syntax, APIs, or version shims.
 - Lua runtime dependencies are forbidden; use LuaJIT and stable Neovim APIs.
-- `mini.test` is the sole test dependency.
+  One named exception: `lyaml`, which `skills/discovery.lua` uses to parse
+  SKILL.md frontmatter. Hand-rolling a YAML subset is explicitly rejected —
+  frontmatter parsing is load-bearing rather than incidental, since a
+  persisted workflow may itself be a frontmatter document discovered by the
+  same mechanism (louiselm-4gif, louiselm-uqip). This is one exception with a
+  rationale, not an open door; the bullet below still governs everything else.
+- `mini.test` is the sole *direct* test dependency. The suite additionally
+  needs `lyaml` present, reached through the skills code rather than required
+  by a test — see section 4, which gives the install commands and explains why
+  its absence surfaces as scattered assertion failures.
 - Any additional development dependency requires a demonstrated gap and
   explicit approval. Never vendor a dependency or utility for convenience.
 
