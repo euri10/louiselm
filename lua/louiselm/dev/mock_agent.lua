@@ -3,6 +3,7 @@
 ---@field response? string Static response text.
 ---@field crash_on? "initialize"|"session/new"|"session/load"|"session/prompt" Crash before handling a request.
 ---@field replay_user_message? string User text replayed as a `user_message_chunk` notification before the `session/load` response, modeling an agent launched with history replay.
+---@field replay_reasoning? string Reasoning text replayed as an `agent_thought_chunk` notification before the `session/load` response, modeling an agent whose session history includes thinking blocks.
 ---@field available_commands? table[] Commands advertised via `available_commands_update` right after the session is created or loaded.
 
 ---@class louiselm.dev.MockAgentState
@@ -183,6 +184,15 @@ local function handle_message(message, state, options)
         },
       })
     end
+    if options.replay_reasoning ~= nil then
+      write_notification("session/update", {
+        sessionId = params.sessionId,
+        update = {
+          sessionUpdate = "agent_thought_chunk",
+          content = { type = "text", text = options.replay_reasoning },
+        },
+      })
+    end
     write_response(message.id, { sessionId = params.sessionId })
     if options.available_commands ~= nil then
       write_notification("session/update", {
@@ -276,6 +286,7 @@ function M.run(options)
   end
   local crash_on = options.crash_on or nvim.env.LOUISELM_MOCK_CRASH_ON
   local replay_user_message = options.replay_user_message or nvim.env.LOUISELM_MOCK_REPLAY_USER
+  local replay_reasoning = options.replay_reasoning or nvim.env.LOUISELM_MOCK_REPLAY_REASONING
   local available_commands = options.available_commands
   if available_commands == nil and nvim.env.LOUISELM_MOCK_AVAILABLE_COMMANDS ~= nil then
     local decode_ok, decoded = pcall(nvim.json.decode, nvim.env.LOUISELM_MOCK_AVAILABLE_COMMANDS)
@@ -288,6 +299,7 @@ function M.run(options)
     response = response,
     crash_on = crash_on,
     replay_user_message = replay_user_message,
+    replay_reasoning = replay_reasoning,
     available_commands = available_commands,
   }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }

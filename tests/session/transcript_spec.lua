@@ -80,6 +80,51 @@ T["record"]["merges consecutive user_chunk events into one block, separate from 
   })
 end
 
+T["record"]["merges consecutive thought_chunk events into one reasoning block, separate from the answer"] = function()
+  local transcript = Transcript.new()
+  transcript:record(event({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "**planned** " } },
+  }))
+  transcript:record(event({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "the steps" } },
+  }))
+  transcript:record(
+    event({ type = "chunk", session_id = "session-1", data = { content = { type = "text", text = "answer" } } })
+  )
+
+  MiniTest.expect.equality(transcript:snapshot(), {
+    { kind = "reasoning", text = "**planned** the steps" },
+    { kind = "assistant", text = "answer" },
+  })
+end
+
+T["record"]["starts a new reasoning block when the answer interrupts it"] = function()
+  local transcript = Transcript.new()
+  transcript:record(event({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "before" } },
+  }))
+  transcript:record(event({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "mid-thought" } },
+  }))
+  transcript:record(
+    event({ type = "chunk", session_id = "session-1", data = { content = { type = "text", text = "after" } } })
+  )
+
+  MiniTest.expect.equality(transcript:snapshot(), {
+    { kind = "assistant", text = "before" },
+    { kind = "reasoning", text = "mid-thought" },
+    { kind = "assistant", text = "after" },
+  })
+end
+
 T["record"]["captures a live-submitted prompt via record_user"] = function()
   local transcript = Transcript.new()
   transcript:record_user("do the thing")
@@ -236,6 +281,21 @@ T["render"]["renders user, assistant, and tool blocks in order with full text"] 
   MiniTest.expect.equality(user_pos < assistant_pos, true)
   MiniTest.expect.equality(assistant_pos < tool_pos, true)
   MiniTest.expect.equality(tool_pos < last_assistant_pos, true)
+end
+
+T["render"]["renders a reasoning section between the user prompt and the answer"] = function()
+  local markdown = Transcript.render({
+    { kind = "user", text = "solve it" },
+    { kind = "reasoning", text = "**deduced** the label order" },
+    { kind = "assistant", text = "the answer" },
+  }, state())
+
+  local user_at = assert(markdown:find("## User", 1, true))
+  local reasoning_at = assert(markdown:find("## Reasoning", 1, true))
+  local assistant_at = assert(markdown:find("## Assistant", 1, true))
+  MiniTest.expect.equality(user_at < reasoning_at, true)
+  MiniTest.expect.equality(reasoning_at < assistant_at, true)
+  MiniTest.expect.equality(markdown:find("**deduced** the label order", 1, true) ~= nil, true)
 end
 
 T["render"]["identifies the session by state and reports a missing acp session id"] = function()

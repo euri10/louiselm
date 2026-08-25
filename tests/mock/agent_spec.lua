@@ -230,6 +230,63 @@ T["mock agent"]["defers and consumes a hidden catalog once across the process bo
   chat:dispose()
 end
 
+T["mock agent"]["replays agent_thought_chunk wire updates into a collapsed chat fold"] = function()
+  local api = assert(Session.new({
+    mock = mock_definition("echo", nil, {
+      LOUISELM_MOCK_REPLAY_USER = "what did we decide last time",
+      LOUISELM_MOCK_REPLAY_REASONING = "**planned** earlier",
+    }),
+  }))
+  local chat = assert(Chat.new(api, { agents = { "mock" } }))
+  local ready
+  local session = assert(api:load_session("mock", "prior-acp", { cwd = project_root }, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  assert(chat:attach(session))
+  wait_for(function()
+    return ready ~= nil and ready.error == nil
+  end)
+
+  local buffer = chat:buffer()
+  wait_for(function()
+    for _, line in ipairs(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+      if line == "[thinking]" then
+        return true
+      end
+    end
+    return false
+  end)
+  wait_for(function()
+    for index, line in ipairs(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+      if line == "[thinking]" and nvim.fn.foldclosedend(index) == index + 1 then
+        return true
+      end
+    end
+    return false
+  end)
+
+  local lines = nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+  local headers = {}
+  for index, line in ipairs(lines) do
+    if line == "[thinking]" then
+      headers[#headers + 1] = index
+    end
+  end
+  -- One fold per replay, even when the session is resumed again later.
+  MiniTest.expect.equality(#headers, 1)
+  local header = headers[1]
+  MiniTest.expect.equality(lines[header + 1], "**planned** earlier")
+  -- Neovim cannot close a single-line fold, so the header folds together with
+  -- its content; the closed fold's default foldtext renders the header line.
+  MiniTest.expect.equality({ nvim.fn.foldclosed(header), nvim.fn.foldclosedend(header) }, { header, header + 1 })
+  MiniTest.expect.equality(
+    { nvim.fn.foldclosed(header + 1), nvim.fn.foldclosedend(header + 1) },
+    { header, header + 1 }
+  )
+
+  chat:dispose()
+end
+
 T["mock agent"]["surfaces a simulated crash as a session error"] = function()
   local ready
   local completed

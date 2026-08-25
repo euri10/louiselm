@@ -206,6 +206,11 @@ local function handle_notification(self, message)
     -- Only seen on session/load replay of a resumed conversation's history: a live
     -- turn's prompt is sent by this client, not echoed back by the agent.
     emit(self, "user_chunk", update)
+  elseif update_type == "agent_thought_chunk" then
+    -- Agent reasoning text (Codex `reasoning` summary deltas, Claude thinking blocks).
+    -- Same content shape as agent_message_chunk, but it is not part of the answer
+    -- itself: consumers fold or export it separately instead of streaming it as prose.
+    emit(self, "thought_chunk", update)
   elseif update_type == "tool_call" or update_type == "tool_call_update" then
     local status = update.status
     if status == "completed" or status == "failed" or status == "cancelled" then

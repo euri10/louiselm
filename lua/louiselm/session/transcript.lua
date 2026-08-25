@@ -8,6 +8,8 @@
 ---    agent replayed as `user_chunk` events.
 ---  - "assistant": agent response text, accumulated across consecutive `chunk`
 ---    events.
+---  - "reasoning": agent reasoning text (`agent_thought_chunk` events), kept
+---    separate from the answer it precedes.
 ---  - "tool_call": one ACP tool call, with every field the agent ever sent across
 ---    its `tool_call`/`tool_call_update` notifications merged together (a later
 ---    value for the same field wins), so the exported command/result is never
@@ -16,19 +18,19 @@
 ---tool call with a different id) always starts a new block, so tool calls
 ---interleaved with assistant text render as separate, ordered blocks.
 ---
----`M.render` turns a snapshot of these blocks into markdown: one `## User` or
----`## Assistant` section per block holding the full text, or one `## Tool` section
----per tool call holding a `<sub>` line with its title/status and a `<details>`
----block (collapsed by default) with a `vim.inspect` dump of its full raw payload,
----in arrival order. This format is a dependency of later blog tooling
+---`M.render` turns a snapshot of these blocks into markdown: one `## User`,
+---`## Assistant`, or `## Reasoning` section per block holding the full text, or one
+---`## Tool` section per tool call holding a `<sub>` line with its title/status and a
+---`<details>` block (collapsed by default) with a `vim.inspect` dump of its full raw
+---payload, in arrival order. This format is a dependency of later blog tooling
 ---(louiselm-mia); keep it a plain, deterministic mapping from entries to text
 ---rather than a templating system.
 
----@alias louiselm.session.TranscriptEntryKind "user"|"assistant"|"tool_call"
+---@alias louiselm.session.TranscriptEntryKind "user"|"assistant"|"reasoning"|"tool_call"
 
 ---@class louiselm.session.TranscriptEntry
 ---@field kind louiselm.session.TranscriptEntryKind
----@field text? string Accumulated text for a "user" or "assistant" entry.
+---@field text? string Accumulated text for a "user", "assistant", or "reasoning" entry.
 ---@field handoff_source_session_id? string Source Session identity for a Handoff user entry.
 ---@field id? string ACP tool call id for a "tool_call" entry.
 ---@field raw? table Every field seen across this tool call's ACP notifications.
@@ -81,7 +83,7 @@ local function tool_call_id(value)
 end
 
 ---@param self louiselm.session.Transcript
----@param kind "user"|"assistant"
+---@param kind "user"|"assistant"|"reasoning"
 ---@param text string
 local function append_text(self, kind, text)
   local last = self.entries[#self.entries]
@@ -116,8 +118,8 @@ local function merge_tool_call(self, data)
 end
 
 ---Ingest one typed session event. Only the events a transcript export needs carry
----content here (`chunk`, `user_chunk`, `tool_call_started`, `tool_call_finished`);
----state/permission/usage events are silently ignored.
+---content here (`chunk`, `user_chunk`, `thought_chunk`, `tool_call_started`,
+---`tool_call_finished`); state/permission/usage events are silently ignored.
 ---@param self louiselm.session.Transcript
 ---@param event louiselm.session.Event
 function Transcript:record(event)
@@ -130,6 +132,11 @@ function Transcript:record(event)
     local text = chunk_text(event.data)
     if text ~= nil then
       append_text(self, "user", text)
+    end
+  elseif event.type == "thought_chunk" then
+    local text = chunk_text(event.data)
+    if text ~= nil then
+      append_text(self, "reasoning", text)
     end
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
     merge_tool_call(self, event.data)
@@ -232,6 +239,9 @@ local function render_entry(entry)
   end
   if entry.kind == "assistant" then
     return { "## Assistant", "", entry.text or "", "" }
+  end
+  if entry.kind == "reasoning" then
+    return { "## Reasoning", "", entry.text or "", "" }
   end
   local raw = entry.raw or {}
   local title = type(raw.title) == "string" and truncate(single_line(raw.title)) or entry.id

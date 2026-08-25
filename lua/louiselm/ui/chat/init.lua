@@ -28,8 +28,10 @@ local Usage = require("louiselm.workflow.usage")
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
 ---@field response_started boolean Whether the assistant has rendered response text for this turn.
----@field pending_terminal_completion? string Text from a terminal completion tool, rendered only when the turn ends without an assistant chunk.
----@field last_block_kind ("prose"|"tool")? Kind of the most recently rendered transcript block; separates adjacent prose and tool blocks with a blank line.
+---@field pending_terminal_completion? string Text from a terminal completion tool, flushed at turn end or immediately if it arrives after turn end.
+---@field turn_has_prose boolean Whether the current turn has rendered any assistant chunk text, regardless of block ordering; suppresses a redundant terminal-completion echo.
+---@field turn_done_fired boolean Whether `turn_done` already ran for the current turn; a terminal completion arriving after this flushes immediately instead of waiting for a `turn_done` that already passed.
+---@field last_block_kind ("prose"|"tool"|"reasoning")? Kind of the most recently rendered transcript block; separates adjacent prose, reasoning, and tool blocks with a blank line.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
 ---@field tool_statuses table<string, string> Latest tool status by ID.
@@ -44,6 +46,9 @@ local Usage = require("louiselm.workflow.usage")
 ---@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
 ---@field tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
 ---@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous rendered tool paragraph awaiting a boundary.
+---@field thought_folds louiselm.ui.ThoughtFold[] Reasoning fold ranges in this live buffer.
+---@field thought_fold_counts table<integer, integer> Number of reasoning folds installed in each window.
+---@field thought_run louiselm.ui.ThoughtFoldRun? Contiguous reasoning paragraph awaiting a boundary; first is its header line, last its final content line.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field queue_mark integer? Extmark showing queued prompt state.
@@ -1026,6 +1031,14 @@ end
 ---@field first integer Zero-based first folded line.
 ---@field last integer Zero-based last folded line.
 
+---@class louiselm.ui.ThoughtFoldRun
+---@field first integer Zero-based rendered reasoning header line.
+---@field last integer Zero-based last rendered reasoning content line.
+
+---@class louiselm.ui.ThoughtFold
+---@field first integer Zero-based first folded line.
+---@field last integer Zero-based last folded line.
+
 ---@param item louiselm.ui.ContextItem
 ---@return table block
 local function context_content(item)
@@ -1095,6 +1108,43 @@ local function close_tool_fold_run(view)
     apply_tool_folds(view, view.window)
   end
   view.tool_fold_run = nil
+end
+
+---@param view louiselm.ui.ChatView
+---@param win integer
+local function apply_thought_folds(view, win)
+  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
+    return
+  end
+  nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
+  nvim.api.nvim_set_option_value("foldenable", true, { win = win })
+  local applied = view.thought_fold_counts[win] or 0
+  nvim.api.nvim_win_call(win, function()
+    for index = applied + 1, #view.thought_folds do
+      local fold = view.thought_folds[index]
+      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+    end
+  end)
+  view.thought_fold_counts[win] = #view.thought_folds
+end
+
+---Close the current reasoning paragraph: fold the `[thinking]` header together
+---with its content lines. Neovim cannot close a fold spanning a single line, so
+---the header is folded along with the content rather than left outside it;
+---Neovim's default foldtext then renders the fold's first line, `[thinking]`,
+---as the closed summary. A paragraph with no content lines yet has nothing to
+---fold.
+---@param view louiselm.ui.ChatView
+local function close_thought_fold_run(view)
+  local run = view.thought_run
+  if run == nil then
+    return
+  end
+  if run.last > run.first then
+    view.thought_folds[#view.thought_folds + 1] = { first = run.first, last = run.last }
+    apply_thought_folds(view, view.window)
+  end
+  view.thought_run = nil
 end
 
 ---@param view louiselm.ui.ChatView
@@ -1605,6 +1655,26 @@ insert_transcript = function(self, view, lines)
   mark_prompt(view, view.prompt_line + #replacement)
 end
 
+---Render a terminal-completion tool's retained text inline, unless the current
+---turn already streamed real assistant prose (in which case the completion
+---would be a redundant echo of an answer the user already saw).
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param text string
+local function flush_terminal_completion(self, view, text)
+  if view.turn_has_prose then
+    return
+  end
+  local lines = {}
+  if view.last_block_kind == "tool" or view.last_block_kind == "reasoning" then
+    lines[#lines + 1] = ""
+  end
+  nvim.list_extend(lines, split_lines(text))
+  lines[#lines + 1] = ""
+  insert_transcript(self, view, lines)
+  view.last_block_kind = "prose"
+end
+
 ---Build prompt content from the current context queue and a pending native skill selection.
 ---A pending skill is resolved here, against the caller's latest advertised commands, so that
 ---both an immediate submission and a queued-prompt release each see the freshest command cache
@@ -2076,6 +2146,9 @@ local function handle_event(self, view, event)
     render_winbars(self)
   end
   if event.type == "state_changed" and event.data.status == "ready" then
+    -- Load replay can end with a reasoning paragraph and no trailing answer, so
+    -- the turn boundary only shows up here.
+    close_thought_fold_run(view)
     if view.replay_active then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_active = false
@@ -2091,6 +2164,7 @@ local function handle_event(self, view, event)
     if text == nil then
       return
     end
+    close_thought_fold_run(view)
     if view.replay_active and not view.replay_user_open then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_turn = view.replay_turn + 1
@@ -2105,6 +2179,8 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
+    view.turn_has_prose = false
+    view.turn_done_fired = false
     view.last_block_kind = nil
   elseif event.type == "chunk" then
     local text = chunk_text(event.data)
@@ -2112,8 +2188,10 @@ local function handle_event(self, view, event)
       return
     end
     view.pending_terminal_completion = nil
+    view.turn_has_prose = true
     view.replay_user_open = false
     close_tool_fold_run(view)
+    close_thought_fold_run(view)
     if not view.response_started then
       local lines = split_lines(text)
       local insertion_line = view.response_tail
@@ -2122,7 +2200,7 @@ local function handle_event(self, view, event)
         insertion_line = insertion_line + 1
       end
       local separator = 0
-      if view.last_block_kind == "tool" then
+      if view.last_block_kind == "tool" or view.last_block_kind == "reasoning" then
         nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, { "" })
         insertion_line = insertion_line + 1
         separator = 1
@@ -2147,14 +2225,59 @@ local function handle_event(self, view, event)
     view.response_tail = view.response_tail + added
     view.transcript_tail = view.response_tail
     mark_prompt(view, view.prompt_line + added)
+  elseif event.type == "thought_chunk" then
+    local text = chunk_text(event.data)
+    if text == nil or text == "" then
+      return
+    end
+    view.pending_terminal_completion = nil
+    view.replay_user_open = false
+    close_tool_fold_run(view)
+    local run = view.thought_run
+    if run == nil then
+      -- A reasoning paragraph starts with a `[thinking]` header; its content lines
+      -- are folded beneath the header once the paragraph ends (the assistant's
+      -- answer, a tool call, or the turn boundary). Until then it streams like a
+      -- response: later chunks append to the paragraph's last content line.
+      local lines = { "[thinking]" }
+      if view.last_block_kind == "prose" then
+        table.insert(lines, 1, "")
+      end
+      insert_transcript(self, view, lines)
+      run = { first = view.transcript_tail, last = view.transcript_tail }
+      view.thought_run = run
+      -- Inserting below the submitted prompt invalidates its response bookkeeping,
+      -- exactly like a tool paragraph does.
+      view.response_line = nil
+      view.response_tail = nil
+      view.response_started = false
+      view.last_block_kind = "reasoning"
+    end
+    if run.last == run.first then
+      local lines = split_lines(text)
+      nvim.api.nvim_buf_set_lines(view.buffer, run.first + 1, run.first + 1, false, lines)
+      run.last = run.first + #lines
+      view.transcript_tail = run.last
+      mark_prompt(view, view.prompt_line + #lines)
+    else
+      local current = nvim.api.nvim_buf_get_lines(view.buffer, run.last, run.last + 1, false)[1] or ""
+      local lines = split_lines(current .. text)
+      nvim.api.nvim_buf_set_lines(view.buffer, run.last, run.last + 1, false, lines)
+      local added = #lines - 1
+      run.last = run.last + added
+      view.transcript_tail = run.last
+      mark_prompt(view, view.prompt_line + added)
+    end
   elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
     view.replay_user_open = false
+    close_thought_fold_run(view)
     local status = field(event.data, "status")
     local id = tool_id(event.data)
     local title = field(event.data, "title")
     if title ~= nil then
       title = single_line(title)
     end
+    local completion_text
     if event.type == "tool_call_started" then
       view.tool_statuses[id] = status or "started"
       if title ~= nil then
@@ -2181,8 +2304,7 @@ local function handle_event(self, view, event)
       end
       detail = detail .. " (" .. (status or "finished") .. ")"
       if status == "completed" then
-        view.pending_terminal_completion = terminal_completion_text(event.data, title)
-          or view.pending_terminal_completion
+        completion_text = terminal_completion_text(event.data, title)
         if tool_has_image(event.data) then
           detail = detail .. " · image result — use :LouiselmInspectTool"
         elseif tool_has_text_result(event.data) then
@@ -2215,12 +2337,23 @@ local function handle_event(self, view, event)
         view.tool_ids[rendered_line] = id
       end
     end
+    if completion_text ~= nil then
+      -- Copilot in Autopilot can emit the completed task_complete update after
+      -- turn_done already ran (louiselm-zufj): that flush point will not fire
+      -- again for this turn, so a late completion must flush immediately here.
+      if view.turn_done_fired then
+        flush_terminal_completion(self, view, completion_text)
+      else
+        view.pending_terminal_completion = completion_text
+      end
+    end
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
   elseif event.type == "error" then
     view.replay_user_open = false
     view.pending_terminal_completion = nil
+    close_thought_fold_run(view)
     clear_queued_prompt(view)
     local message = field(event.data, "message") or "unknown session error"
     insert_transcript(self, view, { "Error: " .. message })
@@ -2244,18 +2377,13 @@ local function handle_event(self, view, event)
     cancel_decisions(self, view, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
     close_tool_fold_run(view)
+    close_thought_fold_run(view)
     local terminal_completion = view.pending_terminal_completion
     view.pending_terminal_completion = nil
     if terminal_completion ~= nil then
-      local lines = {}
-      if view.last_block_kind == "tool" then
-        lines[#lines + 1] = ""
-      end
-      nvim.list_extend(lines, split_lines(terminal_completion))
-      lines[#lines + 1] = ""
-      insert_transcript(self, view, lines)
-      view.last_block_kind = "prose"
+      flush_terminal_completion(self, view, terminal_completion)
     end
+    view.turn_done_fired = true
     local state = view.session:inspect()
     local cost
     if
@@ -2530,6 +2658,8 @@ function Chat:attach(session)
     response_line = nil,
     response_tail = nil,
     response_started = false,
+    turn_has_prose = false,
+    turn_done_fired = false,
     last_block_kind = nil,
     tool_lines = {},
     tool_ids = {},
@@ -2544,6 +2674,9 @@ function Chat:attach(session)
     tool_folds = {},
     tool_fold_counts = {},
     tool_fold_run = nil,
+    thought_folds = {},
+    thought_fold_counts = {},
+    thought_run = nil,
     queued_prompt = nil,
     queue_mark = nil,
     queue_namespace = self.queue_namespace,

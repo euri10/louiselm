@@ -22,6 +22,9 @@ local function mock_definition(overrides)
   if overrides.replay_user_message ~= nil then
     env.LOUISELM_MOCK_REPLAY_USER = overrides.replay_user_message
   end
+  if overrides.replay_reasoning ~= nil then
+    env.LOUISELM_MOCK_REPLAY_REASONING = overrides.replay_reasoning
+  end
   return {
     command = nvim.v.progpath,
     args = {
@@ -121,6 +124,32 @@ T["export"]["loads a session, captures its replayed history, and exports the ful
   MiniTest.expect.equality(content:find("acp session: prior-acp-session", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find("## User", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find("what did we decide last time", 1, true) ~= nil, true)
+
+  nvim.fn.delete(path)
+  api:dispose()
+end
+
+T["export"]["exports replayed reasoning once, between the user prompt and the answer"] = function()
+  local api = assert(Session.new({
+    mock = mock_definition({
+      replay_user_message = "what did we decide last time",
+      replay_reasoning = "**planned** a careful answer",
+    }),
+  }))
+  local path = nvim.fn.tempname() .. ".md"
+
+  local written_path, export_error = TranscriptExport.export(api, "mock", "prior-acp-session", path)
+
+  MiniTest.expect.equality(export_error, nil)
+  MiniTest.expect.equality(written_path, path)
+
+  local content = read_file(path)
+  local occurrences = select(2, content:gsub("%*%*planned%*%* a careful answer", ""))
+  MiniTest.expect.equality(occurrences, 1)
+  MiniTest.expect.equality(select(2, content:gsub("## Reasoning", "")), 1)
+  local user_at = assert(content:find("## User", 1, true))
+  local reasoning_at = assert(content:find("## Reasoning", 1, true))
+  MiniTest.expect.equality(user_at < reasoning_at, true)
 
   nvim.fn.delete(path)
   api:dispose()

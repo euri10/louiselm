@@ -494,6 +494,45 @@ T["new"]["replays the user's own prior messages as user_chunk events when loadin
   restore_processes(original_system)
 end
 
+T["new"]["emits thought_chunk events for replayed agent_thought_chunk notifications"] = function()
+  local processes, original_system = fake_processes()
+  local events = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:load_session("agent", "prior-acp", {
+    cwd = "/tmp/project",
+    on_event = function(event)
+      events[#events + 1] = event
+    end,
+  }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  notification(process, "session/update", {
+    sessionId = "prior-acp",
+    update = {
+      sessionUpdate = "agent_thought_chunk",
+      content = { type = "text", text = "**planned** the answer" },
+    },
+  })
+  respond(process, 2, {})
+
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  -- The replay's one content-bearing event is the thought chunk; any remaining
+  -- events are lifecycle notifications (e.g. the final state change).
+  local thoughts = {}
+  for _, event in ipairs(events) do
+    if event.type == "thought_chunk" or event.type == "chunk" or event.type == "user_chunk" then
+      thoughts[#thoughts + 1] = event
+    end
+  end
+  MiniTest.expect.equality(#thoughts, 1)
+  MiniTest.expect.equality(thoughts[1].type, "thought_chunk")
+  MiniTest.expect.equality(thoughts[1].data.content.text, "**planned** the answer")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["closes the ACP process when loading returns a malformed result"] = function()
   local processes, original_system = fake_processes()
   local ready

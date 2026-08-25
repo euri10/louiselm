@@ -671,6 +671,170 @@ T["chat"]["does not fold failed or active tool calls"] = function()
   chat:dispose()
 end
 
+T["chat"]["folds the reasoning header and its content between the prompt and the answer"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  chat:submit("solve")
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "**step one**" } },
+  })
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "**step two**" } },
+  })
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "answer" } },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "answer")
+  end, 1)
+
+  local lines = buffer_lines(chat:buffer())
+  local header = assert(
+    (function()
+      for index, line in ipairs(lines) do
+        if line == "[thinking]" then
+          return index
+        end
+      end
+      return nil
+    end)(),
+    "reasoning header rendered"
+  )
+  MiniTest.expect.equality(lines[header + 1], "**step one****step two**")
+  MiniTest.expect.equality(lines[header + 2], "")
+  MiniTest.expect.equality(lines[header + 3], "answer")
+  -- Neovim cannot close a single-line fold, so the header folds together with
+  -- its content; the closed fold's default foldtext renders the header line.
+  MiniTest.expect.equality({ fold_range(header) }, { header, header + 1 })
+  MiniTest.expect.equality({ fold_range(header + 1) }, { header, header + 1 })
+  chat:dispose()
+end
+
+T["chat"]["closes the reasoning fold at turn end even without an answer"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  chat:submit("solve")
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "mulling it over" } },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    local lines = buffer_lines(chat:buffer())
+    local header
+    for index, line in ipairs(lines) do
+      if line == "[thinking]" then
+        header = index
+        break
+      end
+    end
+    return header ~= nil and select(2, fold_range(header + 1)) == header + 1
+  end, 1)
+
+  local lines = buffer_lines(chat:buffer())
+  local header
+  for index, line in ipairs(lines) do
+    if line == "[thinking]" then
+      header = index
+      break
+    end
+  end
+  assert(header ~= nil, "reasoning header rendered")
+  MiniTest.expect.equality(lines[header + 1], "mulling it over")
+  MiniTest.expect.equality({ fold_range(header + 1) }, { header, header + 1 })
+  chat:dispose()
+end
+
+T["chat"]["leaves no reasoning fold for agents that never emit thought chunks"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  chat:submit("solve")
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "answer" } },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "answer")
+  end, 1)
+
+  for _, line in ipairs(buffer_lines(chat:buffer())) do
+    MiniTest.expect.equality(line == "[thinking]", false)
+  end
+  chat:dispose()
+end
+
+T["chat"]["folds each reasoning paragraph separately around tool calls"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  chat:submit("solve")
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "before the tool" } },
+  })
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", status = "completed" },
+  })
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "after the tool" } },
+  })
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "answer" } },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "answer")
+  end, 1)
+
+  local lines = buffer_lines(chat:buffer())
+  local headers = {}
+  for index, line in ipairs(lines) do
+    if line == "[thinking]" then
+      headers[#headers + 1] = index
+    end
+  end
+  MiniTest.expect.equality(#headers, 2)
+  local first_header, second_header = headers[1], headers[2]
+  MiniTest.expect.equality(lines[first_header + 1], "before the tool")
+  MiniTest.expect.equality({ fold_range(first_header) }, { first_header, first_header + 1 })
+  MiniTest.expect.equality({ fold_range(first_header + 1) }, { first_header, first_header + 1 })
+  -- The tool line sits between the two paragraphs and stays outside both folds.
+  MiniTest.expect.equality(lines[first_header + 2]:find("^%[tool%]", 1) ~= nil, true)
+  MiniTest.expect.equality({ fold_range(first_header + 2) }, { -1, -1 })
+  MiniTest.expect.equality(lines[second_header + 1], "after the tool")
+  MiniTest.expect.equality({ fold_range(second_header) }, { second_header, second_header + 1 })
+  MiniTest.expect.equality({ fold_range(second_header + 1) }, { second_header, second_header + 1 })
+  MiniTest.expect.equality(lines[second_header + 3], "answer")
+  chat:dispose()
+end
+
 T["chat"]["inspects finished and active tool payloads from their lines"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
@@ -815,6 +979,74 @@ T["chat"]["prefers a later assistant chunk over a terminal task-complete result"
   local rendered = table.concat(buffer_lines(chat:buffer()), "\n")
   MiniTest.expect.equality(rendered:find("Assistant conclusion", 1, true) ~= nil, true)
   MiniTest.expect.equality(rendered:find("Duplicate conclusion", 1, true) == nil, true)
+  chat:dispose()
+end
+
+T["chat"]["flushes a terminal task-complete result that arrives after turn_done"] = function()
+  local first = fake_session("session-1", "copilot")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "task_complete" },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = {
+      toolCallId = "tool-1",
+      status = "completed",
+      rawOutput = { content = "Late conclusion" },
+    },
+  })
+
+  nvim.wait(100, function()
+    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Late conclusion", 1, true) ~= nil
+  end, 1)
+
+  MiniTest.expect.equality(
+    table.concat(buffer_lines(chat:buffer()), "\n"):find("Late conclusion", 1, true) ~= nil,
+    true
+  )
+  chat:dispose()
+end
+
+T["chat"]["does not duplicate a terminal task-complete result arriving after turn_done when prose already streamed"] = function()
+  local first = fake_session("session-1", "copilot")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Assistant conclusion" } },
+  })
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "task_complete" },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = {
+      toolCallId = "tool-1",
+      status = "completed",
+      rawOutput = { content = "Duplicate late conclusion" },
+    },
+  })
+
+  nvim.wait(100, function()
+    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Assistant conclusion", 1, true) ~= nil
+  end, 1)
+
+  local rendered = table.concat(buffer_lines(chat:buffer()), "\n")
+  MiniTest.expect.equality(rendered:find("Assistant conclusion", 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered:find("Duplicate late conclusion", 1, true) == nil, true)
   chat:dispose()
 end
 
