@@ -139,4 +139,26 @@ T["fold integration"]["leaves buffer content untouched"] = function()
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), { raw })
 end
 
+T["fold integration"]["reuses a cached summary instead of re-rendering an unchanged line"] = function()
+  local win = nvim.api.nvim_get_current_win()
+  local buffer = nvim.api.nvim_get_current_buf()
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { line(Protocol.response(1, { ok = true })) })
+  LogView.enable(win)
+
+  local calls = 0
+  local original_render_line = LogView.render_line
+  ---@diagnostic disable-next-line: duplicate-set-field -- spying on the module's own function to count calls.
+  LogView.render_line = function(...)
+    calls = calls + 1
+    return original_render_line(...)
+  end
+
+  nvim.fn.foldtextresult(1)
+  nvim.fn.foldtextresult(1)
+  nvim.fn.foldtextresult(1)
+  LogView.render_line = original_render_line
+
+  MiniTest.expect.equality(calls, 1)
+end
+
 return T
