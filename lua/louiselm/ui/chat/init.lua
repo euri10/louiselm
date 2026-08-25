@@ -128,6 +128,7 @@ Chat.__index = Chat
 ---@class louiselm.ui.Handoff
 ---@field target_session louiselm.session.Session
 ---@field target_session_id string
+---@field source_session_id string
 
 ---@class louiselm.ui.LimitsTarget
 ---@field agent string
@@ -1729,6 +1730,24 @@ local function submit_prompt(self, view, text)
   return request_id
 end
 
+---@param view louiselm.ui.ChatView
+---@param text string
+---@param source_session_id string
+local function record_handoff_prompt(view, text, source_session_id)
+  view.transcript:record_handoff(text, source_session_id)
+  clear_queued_prompt(view)
+  local prompt_line_count = replace_submitted_prompt(view, text, {})
+  local response_line = view.prompt_line + prompt_line_count
+  nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " })
+  view.response_line = response_line
+  view.response_tail = response_line
+  view.response_started = false
+  view.pending_terminal_completion = nil
+  view.last_block_kind = nil
+  view.transcript_tail = response_line
+  mark_prompt(view, response_line + 1)
+end
+
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
@@ -2594,6 +2613,7 @@ function Chat:open_handoff(target_session, source_session_id)
   if source_view == nil then
     return nil, "no source chat session is attached"
   end
+  local source_state = source_view.session:inspect()
   local target_state = target_session:inspect()
   if type(target_state) ~= "table" or type(target_state.id) ~= "string" then
     return nil, "target session has invalid state"
@@ -2610,7 +2630,11 @@ function Chat:open_handoff(target_session, source_session_id)
   nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
   local markdown = Transcript.render(source_view.transcript:snapshot(), source_view.session:inspect())
   nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, nvim.split(markdown, "\n", { plain = true }))
-  self.handoffs[buffer] = { target_session = target_session, target_session_id = target_state.id }
+  self.handoffs[buffer] = {
+    target_session = target_session,
+    target_session_id = target_state.id,
+    source_session_id = source_state.id,
+  }
   nvim.api.nvim_set_current_buf(buffer)
   nvim.keymap.set("n", "<C-s>", function()
     self:submit_handoff(buffer)
@@ -2641,6 +2665,10 @@ function Chat:submit_handoff(buffer)
   local request_id, prompt_error = handoff.target_session:prompt(text)
   if request_id == nil then
     return false, prompt_error or "handoff prompt could not be sent"
+  end
+  local target_view = self.views[handoff.target_session_id]
+  if target_view ~= nil then
+    record_handoff_prompt(target_view, text, handoff.source_session_id)
   end
   close_handoff(self, buffer)
   if self.views[handoff.target_session_id] ~= nil then

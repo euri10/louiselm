@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
+local Transcript = require("louiselm.session.transcript")
 local Usage = require("louiselm.workflow.usage")
 local Workflow = require("louiselm.workflow")
 
@@ -209,20 +210,55 @@ T["chat"]["opens an editable transcript handoff and submits its edits"] = functi
   local target = fake_session("target", "codex")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(source))
+  assert(chat:attach(target))
   source:emit({
     type = "chunk",
     session_id = "source",
     data = { content = { type = "text", text = "original answer" } },
   })
 
-  local buffer = assert(chat:open_handoff(target))
+  local buffer = assert(chat:open_handoff(target, "source"))
   MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "modifiable"), true)
   MiniTest.expect.equality(buffer_lines(buffer)[1], "# louiselm session transcript")
   nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
 
   assert(chat:submit_handoff(buffer))
   MiniTest.expect.equality(target.prompts, { "edited transcript" })
+  local entries = chat.views.target.transcript:snapshot()
+  MiniTest.expect.equality(entries, {
+    { kind = "user", text = "edited transcript", handoff_source_session_id = "source" },
+  })
+  MiniTest.expect.equality(
+    Transcript.render(entries, target:inspect()),
+    "# louiselm session transcript\n\n"
+      .. "- session: target\n"
+      .. "- agent: codex\n"
+      .. "- acp session: none\n\n"
+      .. "## User\n\n"
+      .. "<sub>Handoff from Session: `source`</sub>\n\n"
+      .. "edited transcript\n"
+  )
+  assert(table.concat(buffer_lines(chat:buffer("target")), "\n"):find("> edited transcript", 1, true) ~= nil)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  chat:dispose()
+end
+
+T["chat"]["does not record a failed handoff in the target transcript"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  target.prompt_error = "Agent is unavailable"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+  assert(chat:attach(target))
+
+  local buffer = assert(chat:open_handoff(target, "source"))
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
+  local sent, error_message = chat:submit_handoff(buffer)
+
+  MiniTest.expect.equality(sent, false)
+  MiniTest.expect.equality(error_message, "Agent is unavailable")
+  MiniTest.expect.equality(chat.views.target.transcript:snapshot(), {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
   chat:dispose()
 end
 

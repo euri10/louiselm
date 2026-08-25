@@ -29,6 +29,7 @@
 ---@class louiselm.session.TranscriptEntry
 ---@field kind louiselm.session.TranscriptEntryKind
 ---@field text? string Accumulated text for a "user" or "assistant" entry.
+---@field handoff_source_session_id? string Source Session identity for a Handoff user entry.
 ---@field id? string ACP tool call id for a "tool_call" entry.
 ---@field raw? table Every field seen across this tool call's ACP notifications.
 
@@ -39,6 +40,7 @@
 ---@field open_tool_calls table<string, louiselm.session.TranscriptEntry> Tool calls awaiting a terminal status, by ACP tool call id.
 ---@field record fun(self: louiselm.session.Transcript, event: louiselm.session.Event) Ingest one session event.
 ---@field record_user fun(self: louiselm.session.Transcript, text: string) Record a live, client-submitted prompt.
+---@field record_handoff fun(self: louiselm.session.Transcript, text: string, source_session_id: string) Record a Handoff prompt and its source Session.
 ---@field snapshot fun(self: louiselm.session.Transcript): louiselm.session.TranscriptEntry[] Copy of recorded entries in order.
 
 local M = {}
@@ -153,6 +155,23 @@ function Transcript:record_user(text)
   append_text(self, "user", text)
 end
 
+---Record a Handoff prompt submitted by the local client. Handoff entries remain
+---separate from ordinary user prompts so their source Session provenance stays
+---attached to the exact reviewed text.
+---@param self louiselm.session.Transcript
+---@param text string Reviewed prompt text as sent to the target Session.
+---@param source_session_id string Source Session identity.
+function Transcript:record_handoff(text, source_session_id)
+  if type(text) ~= "string" or text == "" or type(source_session_id) ~= "string" or source_session_id == "" then
+    return
+  end
+  self.entries[#self.entries + 1] = {
+    kind = "user",
+    text = text,
+    handoff_source_session_id = source_session_id,
+  }
+end
+
 ---Return a deep copy of the recorded entries, in arrival order.
 ---@param self louiselm.session.Transcript
 ---@return louiselm.session.TranscriptEntry[] entries
@@ -202,7 +221,14 @@ end
 ---@return string[] lines
 local function render_entry(entry)
   if entry.kind == "user" then
-    return { "## User", "", entry.text or "", "" }
+    local lines = { "## User", "" }
+    if entry.handoff_source_session_id ~= nil then
+      lines[#lines + 1] = "<sub>Handoff from Session: `" .. entry.handoff_source_session_id .. "`</sub>"
+      lines[#lines + 1] = ""
+    end
+    lines[#lines + 1] = entry.text or ""
+    lines[#lines + 1] = ""
+    return lines
   end
   if entry.kind == "assistant" then
     return { "## Assistant", "", entry.text or "", "" }
