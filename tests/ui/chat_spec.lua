@@ -696,6 +696,42 @@ T["chat"]["marks image tool results with the raw-payload fallback"] = function()
   chat:dispose()
 end
 
+T["chat"]["marks text tool results with the raw-payload fallback"] = function()
+  local first = fake_session("session-1", "copilot")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "task_complete" },
+  })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = {
+      toolCallId = "tool-1",
+      status = "completed",
+      rawOutput = { content = "Conclusion" },
+    },
+  })
+
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[6]
+      == "[tool] tool-1: task_complete (completed) · text result — use :LouiselmInspectTool"
+  end, 1)
+
+  MiniTest.expect.equality(
+    buffer_lines(chat:buffer())[6],
+    "[tool] tool-1: task_complete (completed) · text result — use :LouiselmInspectTool"
+  )
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  assert(chat:inspect_tool())
+  MiniTest.expect.equality(table.concat(buffer_lines(0), "\n"):find("Conclusion", 1, true) ~= nil, true)
+  nvim.api.nvim_win_close(0, true)
+  chat:dispose()
+end
+
 T["chat"]["shows skill status and keeps slash prompts when skills are off"] = function()
   local first = fake_session("session-1", "claude")
   first.state.skills_policy = "off"
