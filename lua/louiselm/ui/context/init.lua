@@ -1,4 +1,5 @@
 local Buffer = require("louiselm.ui.context.buffer")
+local Diagnostics = require("louiselm.ui.context.diagnostics")
 local Files = require("louiselm.ui.context.files")
 local Selection = require("louiselm.ui.context.selection")
 local Skills = require("louiselm.ui.context.skill-picker")
@@ -8,12 +9,14 @@ local Skills = require("louiselm.ui.context.skill-picker")
 ---@field selection fun(buffer?: integer): louiselm.ui.ContextItem?, string? Visual selection context.
 ---@field files table File listing, file context, and picker functions.
 ---@field skills table Skill context and picker functions.
+---@field diagnostics fun(buffer?: integer, opts?: table): louiselm.ui.DiagnosticsSnapshot Bounded current-buffer diagnostics snapshot.
 
 local M = {
   buffer = Buffer.current,
   selection = Selection.current,
   files = Files,
   skills = Skills,
+  diagnostics = Diagnostics.snapshot,
 }
 
 return M
