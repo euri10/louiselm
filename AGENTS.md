@@ -263,6 +263,15 @@ For all tests:
   insufficient coverage for fast-event behavior.
 - Keep tests deterministic: no network, credentials, or real agent binaries.
   Use the mock ACP agent for process/protocol integration tests.
+- When a change depends on a real ACP peer, derive its fixture from a captured
+  log frame rather than inventing the payload. Cite the log path and Session ID
+  in the test or its comment so observed shapes are distinguishable from
+  assumptions.
+- Fixtures must encode observed event order as well as field shape. If the
+  order was not observed, state that explicitly in the test.
+- The mock ACP agent is a test double, not a protocol specification. If it
+  accepts input that a real Agent rejects, treat that permissiveness as a
+  defect and tighten the mock.
 - Give UI code behavioral headless smoke tests, not pixel assertions.
 - UI async tests must cover queued work arriving after disposal and prove that
   editor operations occur only after the required scheduling boundary.
