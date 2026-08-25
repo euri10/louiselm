@@ -128,7 +128,7 @@ Chat.__index = Chat
 ---@class louiselm.ui.Handoff
 ---@field target_session louiselm.session.Session
 ---@field target_session_id string
----@field source_session_id string
+---@field source_session_id? string Durable source Session identity.
 
 ---@class louiselm.ui.LimitsTarget
 ---@field agent string
@@ -2633,7 +2633,8 @@ function Chat:open_handoff(target_session, source_session_id)
   self.handoffs[buffer] = {
     target_session = target_session,
     target_session_id = target_state.id,
-    source_session_id = source_state.id,
+    source_session_id = source_state.acp_session_id and report_id(source_state.agent, source_state.acp_session_id)
+      or nil,
   }
   nvim.api.nvim_set_current_buf(buffer)
   nvim.keymap.set("n", "<C-s>", function()
@@ -2667,7 +2668,7 @@ function Chat:submit_handoff(buffer)
     return false, prompt_error or "handoff prompt could not be sent"
   end
   local target_view = self.views[handoff.target_session_id]
-  if target_view ~= nil then
+  if target_view ~= nil and handoff.source_session_id ~= nil then
     record_handoff_prompt(target_view, text, handoff.source_session_id)
   end
   close_handoff(self, buffer)

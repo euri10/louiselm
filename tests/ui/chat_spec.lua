@@ -207,6 +207,7 @@ end
 
 T["chat"]["opens an editable transcript handoff and submits its edits"] = function()
   local source = fake_session("source", "claude")
+  source.state.acp_session_id = "source-acp"
   local target = fake_session("target", "codex")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(source))
@@ -226,7 +227,7 @@ T["chat"]["opens an editable transcript handoff and submits its edits"] = functi
   MiniTest.expect.equality(target.prompts, { "edited transcript" })
   local entries = chat.views.target.transcript:snapshot()
   MiniTest.expect.equality(entries, {
-    { kind = "user", text = "edited transcript", handoff_source_session_id = "source" },
+    { kind = "user", text = "edited transcript", handoff_source_session_id = "claude/source-acp" },
   })
   MiniTest.expect.equality(
     Transcript.render(entries, target:inspect()),
@@ -235,7 +236,7 @@ T["chat"]["opens an editable transcript handoff and submits its edits"] = functi
       .. "- agent: codex\n"
       .. "- acp session: none\n\n"
       .. "## User\n\n"
-      .. "<sub>Handoff from Session: `source`</sub>\n\n"
+      .. "<sub>Handoff from Session: `claude/source-acp`</sub>\n\n"
       .. "edited transcript\n"
   )
   assert(table.concat(buffer_lines(chat:buffer("target")), "\n"):find("> edited transcript", 1, true) ~= nil)
@@ -259,6 +260,22 @@ T["chat"]["does not record a failed handoff in the target transcript"] = functio
   MiniTest.expect.equality(error_message, "Agent is unavailable")
   MiniTest.expect.equality(chat.views.target.transcript:snapshot(), {})
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
+  chat:dispose()
+end
+
+T["chat"]["does not record local provenance before the source has an ACP session id"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+  assert(chat:attach(target))
+
+  local buffer = assert(chat:open_handoff(target, "source"))
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
+
+  assert(chat:submit_handoff(buffer))
+  MiniTest.expect.equality(target.prompts, { "edited transcript" })
+  MiniTest.expect.equality(chat.views.target.transcript:snapshot(), {})
   chat:dispose()
 end
 
