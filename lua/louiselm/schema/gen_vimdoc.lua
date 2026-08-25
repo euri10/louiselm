@@ -160,13 +160,37 @@ emit_field = function(lines, field_name, node, path)
   emit_nested_fields(lines, node, path)
 end
 
+---@param lines string[]
+---@param schema louiselm.schema.Schema
+---@param tag string
+local function emit_configuration(lines, schema, tag)
+  if schema.fields == nil then
+    error("normalized table schema is missing fields")
+  end
+  lines[#lines + 1] = "=============================================================================="
+  lines[#lines + 1] = heading("Configuration", tag)
+  for _, field_name in ipairs(sorted_field_names(schema.fields)) do
+    local field = schema.fields[field_name]
+    if field == nil then
+      error("normalized table schema contains a missing field")
+    end
+    emit_field(lines, field_name, field, field_name)
+  end
+end
+
+---Generate the configuration section of a Neovim help document.
+---@param schema louiselm.schema.Schema Normalized schema returned by `Schema.define`.
+---@return string vimdoc A deterministic configuration reference section.
+function M.generate_configuration(schema)
+  local lines = {}
+  emit_configuration(lines, schema, "louiselm-configuration")
+  return table.concat(lines, "\n") .. "\n"
+end
+
 ---Generate a Neovim help document from a normalized schema.
 ---@param schema louiselm.schema.Schema Normalized schema returned by `Schema.define`.
 ---@return string vimdoc A deterministic `louiselm.txt` help document.
 function M.generate(schema)
-  if schema.fields == nil then
-    error("normalized table schema is missing fields")
-  end
   local lines = {
     "*louiselm.txt*  louiselm.nvim configuration reference",
     "",
@@ -176,17 +200,9 @@ function M.generate(schema)
     "  |louiselm|          louiselm.nvim configuration reference",
     "  Configuration options are documented below.",
     "",
-    "==============================================================================",
-    heading("Configuration", "louiselm"),
   }
 
-  for _, field_name in ipairs(sorted_field_names(schema.fields)) do
-    local field = schema.fields[field_name]
-    if field == nil then
-      error("normalized table schema contains a missing field")
-    end
-    emit_field(lines, field_name, field, field_name)
-  end
+  emit_configuration(lines, schema, "louiselm")
   lines[#lines + 1] = ""
   return table.concat(lines, "\n") .. "\n"
 end

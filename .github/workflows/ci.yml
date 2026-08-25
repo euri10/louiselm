@@ -165,6 +165,9 @@ jobs:
             -c "lua assert(pcall(require, 'lyaml'), 'nvim cannot require lyaml')" \
             -c "qa!"
 
+      - name: Verify generated Vimdoc
+        run: ./scripts/generate-vimdoc --check
+
       - name: Run tests
         run: |
           nvim --headless --noplugin -u ./tests/minimal_init.lua \
