@@ -120,6 +120,10 @@ Commands                                                      *louiselm-commands
     Replace the current selection with louiselm output
     Arguments: none
 
+:LouiselmInspectBead                                          *:LouiselmInspectBead*
+    Inspect the Beads issue under the cursor
+    Arguments: none
+
 :LouiselmInspectTool                                          *:LouiselmInspectTool*
     Inspect the raw payload under the cursor
     Arguments: none

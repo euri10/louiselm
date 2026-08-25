@@ -1,6 +1,7 @@
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 local Agent = require("louiselm.agent")
+local Beads = require("louiselm.ui.beads")
 local Workflow = require("louiselm.workflow")
 
 local M = {}
@@ -300,9 +301,42 @@ function M.register()
     return current
   end
 
+  local function inspect_bead()
+    local buffer = chat and chat:buffer() or nil
+    if buffer == nil or nvim.api.nvim_get_current_buf() ~= buffer then
+      report_error("no chat session is open")
+      return
+    end
+    local _, inspect_error = Beads.inspect(buffer, {
+      is_active = function()
+        return chat ~= nil and chat:buffer() == buffer
+      end,
+      on_error = report_error,
+    })
+    report_error(inspect_error)
+  end
+
   nvim.api.nvim_create_user_command("LouiselmChat", function()
     open_chat()
   end, { desc = "Open the louiselm chat buffer", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmInspectBead", inspect_bead, {
+    desc = "Inspect the Beads issue under the cursor",
+    force = true,
+  })
+
+  nvim.api.nvim_create_autocmd("FileType", {
+    group = nvim.api.nvim_create_augroup("louiselm.chat.beads", { clear = true }),
+    pattern = "louiselm-session",
+    callback = function(event)
+      nvim.keymap.set("n", "<leader>lB", inspect_bead, {
+        buffer = event.buf,
+        silent = true,
+        desc = "Inspect Beads issue",
+      })
+    end,
+    desc = "Map Beads inspection in louiselm session buffers",
+  })
 
   nvim.api.nvim_create_user_command("LouiselmNewSession", function()
     if chat == nil then
