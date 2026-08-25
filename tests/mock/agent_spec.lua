@@ -80,6 +80,16 @@ T["mock agent"]["supports the ACP session flow and static responses"] = function
     error = nil,
   })
 
+  local rejected
+  assert(client:list_sessions(nvim.json.decode("[]"), function(result, err)
+    rejected = { result = result, error = err }
+  end))
+  wait_for(function()
+    return rejected ~= nil
+  end)
+  MiniTest.expect.equality(rejected.result, nil)
+  MiniTest.expect.equality(rejected.error.code, -32602)
+
   local loaded
   assert(client:load_session({ sessionId = session_id }, function(result, err)
     loaded = { result = result, error = err }

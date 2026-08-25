@@ -150,6 +150,15 @@ T["connect"]["lists sessions only when the agent advertises support"] = function
   calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"sessions":[]}}\n')
   MiniTest.expect.equality(listed, { sessions = {} })
 
+  local listed_without_params
+  assert(client:list_sessions(nil, function(result)
+    listed_without_params = result
+  end))
+  MiniTest.expect.equality(calls[3]:find('"params":{}', 1, true) ~= nil, true)
+  MiniTest.expect.equality(calls[3]:find('"params":[]', 1, true), nil)
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":3,"result":{"sessions":[]}}\n')
+  MiniTest.expect.equality(listed_without_params, { sessions = {} })
+
   client.agent_capabilities = {}
   local request_id, request_error = client:list_sessions({})
   MiniTest.expect.equality(request_id, nil)

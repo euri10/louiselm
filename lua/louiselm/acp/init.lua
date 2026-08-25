@@ -270,7 +270,7 @@ function Client:list_sessions(params, callback)
   if type(session_capabilities) ~= "table" or type(session_capabilities.list) ~= "table" then
     return nil, "ACP agent does not support session/list"
   end
-  return self:request("session/list", params or {}, callback)
+  return self:request("session/list", params or nvim.empty_dict(), callback)
 end
 
 ---Submit a prompt to an ACP session.

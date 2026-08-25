@@ -759,6 +759,7 @@ T["command"]["resume discovers the current workspace and bang discovers all with
     protocolVersion = 1,
     agentCapabilities = { sessionCapabilities = { list = {} } },
   })
+  MiniTest.expect.equality(process.writes[4]:find('"params":{}', 1, true) ~= nil, true)
   local all_request = assert(Protocol.decode(process.writes[4]:sub(1, -2)))
   MiniTest.expect.equality(all_request.method, "session/list")
   MiniTest.expect.equality(all_request.params, {})

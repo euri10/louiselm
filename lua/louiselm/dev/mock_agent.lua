@@ -194,6 +194,10 @@ local function handle_message(message, state, options)
   end
 
   if method == "session/list" then
+    if type(params) ~= "table" or nvim.islist(params) then
+      write_error(message.id, -32602, "Invalid params")
+      return true
+    end
     local sessions = {}
     local ids = {}
     for session_id in pairs(state.sessions) do

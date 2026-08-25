@@ -376,7 +376,7 @@ function Registry:discover_sessions(options, callback)
         finish("ACP client disappeared during session discovery")
         return
       end
-      local params = {}
+      local params = nvim.empty_dict()
       if options.cwd ~= nil then
         params.cwd = options.cwd
       end
