@@ -105,6 +105,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field manage_permissions fun(self: louiselm.ui.Chat): boolean, string? Inspect and revoke remembered permission rules.
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
+---@field collect_forensics fun(self: louiselm.ui.Chat, callback?: fun(path: string?, error_message?: string)): boolean, string? Collect and queue a Forensics resource link.
 ---@field to_markdown fun(self: louiselm.ui.Chat, session_id?: string, path?: string): string?, string? Export a session's full transcript to a markdown file.
 ---@field open_handoff fun(self: louiselm.ui.Chat, target_session: louiselm.session.Session, source_session_id?: string): integer?, string? Open an editable transcript for a target session.
 ---@field submit_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Submit and close a handoff buffer.
@@ -2884,6 +2885,45 @@ function Chat:session_id()
     return nil, "current session has no ACP session id yet"
   end
   return report_id(state.agent, state.acp_session_id)
+end
+
+---Collect a private Forensics record and queue its path for the next prompt.
+---@param self louiselm.ui.Chat
+---@param callback? fun(path: string?, error_message?: string) Completion callback.
+---@return boolean started
+---@return string? error_message Validation or persistence failure.
+function Chat:collect_forensics(callback)
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is open"
+  end
+  local state = view.session:inspect()
+  if state.acp_session_id == nil then
+    return false, "current session has no ACP session id yet"
+  end
+  local diagnosing_session_id = report_id(state.agent, state.acp_session_id)
+  local started, start_error = self.api:collect_forensics(
+    state.agent,
+    state.acp_session_id,
+    { diagnosing_session_id = diagnosing_session_id },
+    function(path, error_message)
+      nvim.schedule(function()
+        if self.disposed or self.views[state.id] ~= view then
+          return
+        end
+        if path ~= nil then
+          queue_context(self, view, { label = "forensics: " .. path, uri = "file://" .. path })
+        end
+        if callback ~= nil then
+          callback(path, error_message)
+        end
+      end)
+    end
+  )
+  return started, start_error
 end
 
 ---@param state louiselm.session.State

@@ -4,6 +4,7 @@ local Permission = require("louiselm.permission")
 local Lifecycle = require("louiselm.session.lifecycle")
 local Limits = require("louiselm.session.limits")
 local Validation = require("louiselm.session.validation")
+local ForensicsStore = require("louiselm.forensics.store")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -37,6 +38,7 @@ local nvim = vim
 ---@field agent_limits table<string, louiselm.session.LimitsState> Last observed account-limit state by Agent.
 ---@field agent_limits_listeners table<fun(state: louiselm.session.LimitsState), boolean> Agent-limit observers.
 ---@field permission_store louiselm.permission.Store Remembered rules owned by this registry.
+---@field forensics_store louiselm.forensics.Store Immutable Session Forensics records.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
@@ -49,6 +51,7 @@ local nvim = vim
 ---@field handle_agent_notification fun(self: louiselm.session.Registry, session: louiselm.session.Session, message: louiselm.acp.JsonRpcNotification)
 ---@field list_permissions fun(self: louiselm.session.Registry): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Registry, id: string): boolean, string?
+---@field collect_forensics fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string?
 ---@field dispose fun(self: louiselm.session.Registry): boolean, string?
 ---@field remove_session fun(self: louiselm.session.Registry, id: string)
 
@@ -104,11 +107,43 @@ end
 ---@return boolean
 local function has_only_permission_store(value)
   for key in pairs(value) do
-    if key ~= "permission_store" then
+    if key ~= "permission_store" and key ~= "forensics_directory" then
       return false
     end
   end
   return true
+end
+
+---@param options louiselm.session.ConfigOption[]
+---@return table<string, string|boolean>
+local function forensics_options(options)
+  local result = {}
+  for _, option in ipairs(options) do
+    if option.type == "boolean" or option.type == "select" then
+      result[option.id] = option.current_value
+    end
+  end
+  return result
+end
+
+---@param output string
+---@return string? branch
+---@return string[] dirty_files
+local function git_status(output)
+  local branch
+  local dirty_files = {}
+  for line in output:gmatch("[^\n]+") do
+    if line:sub(1, 2) == "##" then
+      branch = line:match("^## ([^%.]+)") or line:match("^## (.+)")
+    elseif #dirty_files < 100 and #line >= 4 then
+      local path = line:sub(4)
+      if path:sub(1, 1) == '"' then
+        path = path:gsub('^"(.*)"$', "%1")
+      end
+      dirty_files[#dirty_files + 1] = path
+    end
+  end
+  return branch, dirty_files
 end
 
 ---@param value unknown
@@ -148,6 +183,12 @@ function M.new(definitions, default_skills_policy, options)
   if not valid_permission_store(permission_store) then
     return nil, { { path = "session.permission_store", message = "permission_store is malformed" } }
   end
+  local forensics_directory = options and options.forensics_directory
+    or nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "forensics")
+  local forensics_store, forensics_error = ForensicsStore.new(forensics_directory)
+  if forensics_store == nil then
+    return nil, { { path = "session.forensics_directory", message = forensics_error or "invalid directory" } }
+  end
   return setmetatable({
     definitions = normalized,
     sessions = {},
@@ -158,9 +199,113 @@ function M.new(definitions, default_skills_policy, options)
     agent_limits = {},
     agent_limits_listeners = {},
     permission_store = permission_store,
+    forensics_store = forensics_store,
     disposed = false,
   }, Registry),
     {}
+end
+
+---@param self louiselm.session.Registry
+---@param agent_name string
+---@param acp_session_id string
+---@param options? louiselm.session.ForensicsOptions
+---@param callback? louiselm.session.ForensicsCallback
+---@return boolean started
+---@return string? error_message
+function Registry:collect_forensics(agent_name, acp_session_id, options, callback)
+  if self.disposed then
+    return false, "session registry is disposed"
+  end
+  if type(agent_name) ~= "string" or agent_name == "" or self.definitions[agent_name] == nil then
+    return false, "unknown agent '" .. tostring(agent_name) .. "'"
+  end
+  if type(acp_session_id) ~= "string" or acp_session_id == "" then
+    return false, "ACP session id must be a non-empty string"
+  end
+  if options ~= nil and type(options) ~= "table" then
+    return false, "forensics options must be a table"
+  end
+  options = options or {}
+  if
+    options.diagnosing_session_id ~= nil
+    and (type(options.diagnosing_session_id) ~= "string" or options.diagnosing_session_id == "")
+  then
+    return false, "diagnosing Session ID must be a non-empty string"
+  end
+  if callback ~= nil and type(callback) ~= "function" then
+    return false, "forensics callback must be a function"
+  end
+  local subject
+  for _, id in ipairs(self.order) do
+    local session = self.sessions[id]
+    local state = session and session:inspect() or nil
+    if state ~= nil and state.agent == agent_name and state.acp_session_id == acp_session_id then
+      subject = state
+      break
+    end
+  end
+  if subject == nil then
+    return false, "ACP Session is not owned by this registry"
+  end
+  local client = self.sessions[subject.id] and self.sessions[subject.id].client or nil
+  local capabilities = client and client.agent_capabilities or {}
+  local nvim_version = nvim.version()
+  local record = {
+    id = string.format("%d-%s", os.time(), tostring(nvim.uv.hrtime())),
+    observed_at = os.time(),
+    subject = { agent = agent_name, acp_session_id = acp_session_id },
+    diagnosing_session = options.diagnosing_session_id,
+    observations = {
+      agent = agent_name,
+      cwd = subject.working_dir,
+      options = forensics_options(subject.config_options),
+      model = Validation.model_value(subject.config_options),
+      neovim_version = string.format("%d.%d.%d", nvim_version.major, nvim_version.minor, nvim_version.patch),
+      capabilities = {
+        load_session = capabilities.loadSession == true,
+        list_sessions = type(capabilities.sessionCapabilities) == "table"
+          and type(capabilities.sessionCapabilities.list) == "table",
+        embedded_context = capabilities.embeddedContext == true,
+      },
+      dirty_files = {},
+    },
+    evidence_sources = {
+      { kind = "acp_log", state = "omitted", mutable = true, reason = "ACP adapter did not advertise a log path" },
+      { kind = "git", state = "unsupported", mutable = true, reason = "Git status is unavailable" },
+    },
+  }
+  local function finish()
+    if self.disposed then
+      return
+    end
+    local path, write_error = self.forensics_store:write(record)
+    if callback ~= nil then
+      callback(path, write_error)
+    end
+  end
+  local cwd = subject.working_dir
+  if type(cwd) ~= "string" or cwd == "" then
+    nvim.schedule(finish)
+  else
+    nvim.system({ "git", "-C", cwd, "status", "--porcelain=v1", "--branch" }, { text = true }, function(result)
+      if result.code == 0 then
+        local branch, dirty_files = git_status(result.stdout or "")
+        record.observations.git_branch = branch
+        record.observations.dirty_files = dirty_files
+        record.evidence_sources[2].state = "present"
+        record.evidence_sources[2].reason = nil
+        nvim.system({ "git", "-C", cwd, "rev-parse", "HEAD" }, { text = true }, function(commit_result)
+          if commit_result.code == 0 then
+            record.observations.git_commit = (commit_result.stdout or ""):match("^%s*(.-)%s*$")
+          end
+          nvim.schedule(finish)
+        end)
+      else
+        nvim.schedule(finish)
+      end
+    end)
+  end
+  return true
 end
 
 ---@param load_id string? Existing ACP session id to load.

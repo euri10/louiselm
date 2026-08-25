@@ -30,6 +30,11 @@ local function fake_processes()
         return process.closed
       end,
     }
+    if command[1] == "git" then
+      nvim.schedule(function()
+        on_exit({ code = 128, stdout = "", stderr = "not a repository" })
+      end)
+    end
     processes[#processes + 1] = process
     return process.handle
   end)
@@ -112,6 +117,39 @@ local function start_ready_session(api, processes, name, cwd)
   MiniTest.expect.equality(ready.error, nil)
   MiniTest.expect.equality(ready.session, session)
   return session, process
+end
+
+T["forensics"] = MiniTest.new_set()
+
+T["forensics"]["collects an asynchronous private record for a live Session"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, { forensics_directory = root }))
+  local session = start_ready_session(api, processes, "agent", "/tmp/project")
+  local path, collection_error
+
+  assert(api:collect_forensics("agent", "agent-acp", { diagnosing_session_id = "agent/diagnoser" }, function(value, err)
+    path = value
+    collection_error = err
+  end))
+  MiniTest.expect.equality(path, nil)
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return path ~= nil or collection_error ~= nil
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(collection_error, nil)
+  local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+  MiniTest.expect.equality(record.subject, { agent = "agent", acp_session_id = "agent-acp" })
+  MiniTest.expect.equality(record.diagnosing_session, "agent/diagnoser")
+  MiniTest.expect.equality(record.evidence_sources[1].state, "omitted")
+  MiniTest.expect.equality(nvim.uv.fs_stat(path).mode % 512, 384)
+
+  api:dispose()
+  restore_processes(original_system)
+  nvim.fn.delete(root, "rf")
 end
 
 T["new"] = MiniTest.new_set()

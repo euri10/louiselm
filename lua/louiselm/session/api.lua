@@ -12,10 +12,17 @@ local Registry = require("louiselm.session.registry")
 ---@field on_agent_limits fun(self: louiselm.session.Api, callback: fun(state: louiselm.session.LimitsState)): fun()?, string?
 ---@field list_permissions fun(self: louiselm.session.Api): louiselm.permission.Rule[]?, string?
 ---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
+---@field collect_forensics fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string?
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
 
 ---@class louiselm.session.ApiOptions
 ---@field permission_store? louiselm.permission.Store Explicit remembered-permission store.
+---@field forensics_directory? string Override the private Session Forensics directory.
+
+---@class louiselm.session.ForensicsOptions
+---@field diagnosing_session_id? string Durable identity of the diagnosing Session.
+
+---@alias louiselm.session.ForensicsCallback fun(path: string?, error_message: string?)
 
 local M = {}
 local Api = {}
@@ -126,6 +133,18 @@ end
 ---@return string? error_message Validation or persistence failure.
 function Api:revoke_permission(id)
   return self.registry:revoke_permission(id)
+end
+
+---Collect one immutable, private Forensics record for an Agent Session.
+---@param self louiselm.session.Api
+---@param agent_name string Configured Agent name.
+---@param acp_session_id string Agent-side ACP Session ID.
+---@param options? louiselm.session.ForensicsOptions Optional diagnosing Session identity.
+---@param callback? louiselm.session.ForensicsCallback Completion callback.
+---@return boolean started
+---@return string? error_message Validation or immediate persistence failure.
+function Api:collect_forensics(agent_name, acp_session_id, options, callback)
+  return self.registry:collect_forensics(agent_name, acp_session_id, options, callback)
 end
 
 ---Dispose every session and close the headless API.

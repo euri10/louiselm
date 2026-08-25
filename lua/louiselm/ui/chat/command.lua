@@ -367,6 +367,45 @@ function M.register()
     nvim.notify("louiselm: " .. message .. session_id, nvim.log.levels.INFO)
   end, { desc = "Copy the current agent-scoped ACP session id", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmForensics", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local started, forensics_error = chat:collect_forensics(function(path, error_message)
+      if error_message ~= nil then
+        report_error(error_message)
+      elseif path ~= nil then
+        nvim.notify("louiselm: Forensics record written to " .. path, nvim.log.levels.INFO)
+      end
+    end)
+    if not started then
+      report_error(forensics_error)
+    end
+  end, { desc = "Collect private Forensics for the current Session", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmForensicsView", function(arguments)
+    local path = arguments.args
+    if path == "" then
+      report_error("Forensics record path is required")
+      return
+    end
+    local lines = nvim.fn.readfile(path)
+    if #lines == 0 then
+      report_error("could not read Forensics record")
+      return
+    end
+    local buffer = nvim.api.nvim_create_buf(false, true)
+    nvim.api.nvim_buf_set_name(buffer, "louiselm://forensics-view")
+    nvim.bo[buffer].buftype = "nofile"
+    nvim.bo[buffer].bufhidden = "wipe"
+    nvim.bo[buffer].swapfile = false
+    nvim.bo[buffer].filetype = "json"
+    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
+    nvim.bo[buffer].modifiable = false
+    nvim.api.nvim_set_current_buf(buffer)
+  end, { nargs = 1, desc = "View a Forensics record", complete = "file", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmToMarkdown", function(arguments)
     if chat == nil then
       report_error("no chat session is open")
