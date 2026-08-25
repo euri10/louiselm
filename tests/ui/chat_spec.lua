@@ -696,7 +696,7 @@ T["chat"]["marks image tool results with the raw-payload fallback"] = function()
   chat:dispose()
 end
 
-T["chat"]["marks text tool results with the raw-payload fallback"] = function()
+T["chat"]["renders a terminal task-complete result inline"] = function()
   local first = fake_session("session-1", "copilot")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -715,20 +715,53 @@ T["chat"]["marks text tool results with the raw-payload fallback"] = function()
       rawOutput = { content = "Conclusion" },
     },
   })
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
 
   nvim.wait(100, function()
-    return buffer_lines(chat:buffer())[6]
-      == "[tool] tool-1: task_complete (completed) · text result — use :LouiselmInspectTool"
+    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Conclusion", 1, true) ~= nil
   end, 1)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer())[6],
     "[tool] tool-1: task_complete (completed) · text result — use :LouiselmInspectTool"
   )
+  MiniTest.expect.equality(table.concat(buffer_lines(chat:buffer()), "\n"):find("Conclusion", 1, true) ~= nil, true)
   nvim.api.nvim_win_set_cursor(0, { 6, 0 })
   assert(chat:inspect_tool())
   MiniTest.expect.equality(table.concat(buffer_lines(0), "\n"):find("Conclusion", 1, true) ~= nil, true)
   nvim.api.nvim_win_close(0, true)
+  chat:dispose()
+end
+
+T["chat"]["prefers a later assistant chunk over a terminal task-complete result"] = function()
+  local first = fake_session("session-1", "copilot")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = {
+      toolCallId = "tool-1",
+      title = "task_complete",
+      status = "completed",
+      rawOutput = { content = "Duplicate conclusion" },
+    },
+  })
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Assistant conclusion" } },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+
+  nvim.wait(100, function()
+    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Assistant conclusion", 1, true) ~= nil
+  end, 1)
+
+  local rendered = table.concat(buffer_lines(chat:buffer()), "\n")
+  MiniTest.expect.equality(rendered:find("Assistant conclusion", 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered:find("Duplicate conclusion", 1, true) == nil, true)
   chat:dispose()
 end
 

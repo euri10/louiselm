@@ -28,6 +28,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field response_line integer? Zero-based first streamed response line.
 ---@field response_tail integer? Zero-based last streamed response line.
 ---@field response_started boolean Whether the assistant has rendered response text for this turn.
+---@field pending_terminal_completion? string Text from a terminal completion tool, rendered only when the turn ends without an assistant chunk.
 ---@field last_block_kind ("prose"|"tool")? Kind of the most recently rendered transcript block; separates adjacent prose and tool blocks with a blank line.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
@@ -1302,6 +1303,20 @@ local function tool_has_text_result(value)
 end
 
 ---@param value unknown
+---@param title string? Tool title from this update or its preceding start event.
+---@return string? text
+local function terminal_completion_text(value, title)
+  if type(value) ~= "table" or title ~= "task_complete" then
+    return nil
+  end
+  local raw_output = value.rawOutput
+  if type(raw_output) ~= "table" or type(raw_output.content) ~= "string" or raw_output.content == "" then
+    return nil
+  end
+  return raw_output.content
+end
+
+---@param value unknown
 ---@return string? text
 local function field(value, name)
   if type(value) == "table" and type(value[name]) == "string" and value[name] ~= "" then
@@ -1695,6 +1710,7 @@ local function submit_prompt(self, view, text)
   view.response_line = response_line
   view.response_tail = view.response_line
   view.response_started = false
+  view.pending_terminal_completion = nil
   view.last_block_kind = nil
   view.transcript_tail = view.response_tail
   mark_prompt(view, response_line + 1)
@@ -2054,6 +2070,7 @@ local function handle_event(self, view, event)
     if text == nil then
       return
     end
+    view.pending_terminal_completion = nil
     view.replay_user_open = false
     close_tool_fold_run(view)
     if not view.response_started then
@@ -2123,6 +2140,8 @@ local function handle_event(self, view, event)
       end
       detail = detail .. " (" .. (status or "finished") .. ")"
       if status == "completed" then
+        view.pending_terminal_completion = terminal_completion_text(event.data, title)
+          or view.pending_terminal_completion
         if tool_has_image(event.data) then
           detail = detail .. " · image result — use :LouiselmInspectTool"
         elseif tool_has_text_result(event.data) then
@@ -2160,6 +2179,7 @@ local function handle_event(self, view, event)
     view.response_started = false
   elseif event.type == "error" then
     view.replay_user_open = false
+    view.pending_terminal_completion = nil
     clear_queued_prompt(view)
     local message = field(event.data, "message") or "unknown session error"
     insert_transcript(self, view, { "Error: " .. message })
@@ -2183,6 +2203,18 @@ local function handle_event(self, view, event)
     cancel_decisions(self, view, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
     close_tool_fold_run(view)
+    local terminal_completion = view.pending_terminal_completion
+    view.pending_terminal_completion = nil
+    if terminal_completion ~= nil then
+      local lines = {}
+      if view.last_block_kind == "tool" then
+        lines[#lines + 1] = ""
+      end
+      nvim.list_extend(lines, split_lines(terminal_completion))
+      lines[#lines + 1] = ""
+      insert_transcript(self, view, lines)
+      view.last_block_kind = "prose"
+    end
     local state = view.session:inspect()
     local cost
     if
