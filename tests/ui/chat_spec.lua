@@ -3519,7 +3519,7 @@ T["chat"]["shows clickable Agent limits in the window bar"] = function()
   })
   MiniTest.expect.equality(
     nvim.wait(1000, function()
-          return nvim.tbl_contains(buffer_lines(0), "49% left · 51% used")
+      return nvim.tbl_contains(buffer_lines(0), "49% left · 51% used")
     end, 1),
     true
   )
