@@ -4,6 +4,7 @@ local Health = require("louiselm.health")
 local Schema = require("louiselm.schema")
 local CaptureCommand = require("louiselm.capture.command")
 local Command = require("louiselm.ui.chat.command")
+local ForensicsCommand = require("louiselm.forensics.command")
 
 local M = {}
 
@@ -54,6 +55,7 @@ function M.setup(config)
   end
   Command.register()
   CaptureCommand.register()
+  ForensicsCommand.register()
   return true
 end
 
