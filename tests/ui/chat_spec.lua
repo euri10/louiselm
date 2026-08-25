@@ -2170,6 +2170,7 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
       "> second prompt",
       "",
       "second answer",
+      "",
       "[usage] total_tokens=30 · input_tokens=20 · cached_read_tokens=7",
       "",
       "",
@@ -3319,7 +3320,7 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
     chat_lines(
       "claude/acp-session-1 · session-1",
       "status=ready · display=Your turn",
-      { "", "[usage] input_tokens=12 · cached_read_tokens=3", "> " },
+      { "", "[usage] input_tokens=12 · cached_read_tokens=3", "", "> " },
       "Model=opus · Brave=true",
       "context=95/100 (95%) · cost=1.5 USD"
     )

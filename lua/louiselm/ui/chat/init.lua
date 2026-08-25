@@ -1900,13 +1900,33 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
+---@param line string
+local function insert_usage(self, view, line)
+  local insertion_line = view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1
+  local before = insertion_line > 0
+      and nvim.api.nvim_buf_get_lines(view.buffer, insertion_line - 1, insertion_line, false)[1]
+    or nil
+  local after = nvim.api.nvim_buf_get_lines(view.buffer, insertion_line, insertion_line + 1, false)[1]
+  local lines = {}
+  if before ~= nil and before ~= "" then
+    lines[#lines + 1] = ""
+  end
+  lines[#lines + 1] = line
+  if after ~= nil and after ~= "" then
+    lines[#lines + 1] = ""
+  end
+  insert_transcript(self, view, lines)
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
 ---@param turn integer
 local function restore_turn_usage(self, view, turn)
   local usage = view.restored_usage[turn]
   view.restored_usage[turn] = nil
   local line = usage_line(usage)
   if line ~= nil then
-    insert_transcript(self, view, { line })
+    insert_usage(self, view, line)
   end
 end
 
@@ -2260,7 +2280,7 @@ local function handle_event(self, view, event)
       insert_transcript(self, view, { "Error: " .. (usage_error or "could not record measured usage") })
     end
     if line ~= nil then
-      insert_transcript(self, view, { line })
+      insert_usage(self, view, line)
     end
     if self.workflow ~= nil and view.workflow_phase ~= nil and view.queued_prompt == nil then
       local outcome = type(event.data) == "table" and event.data.stopReason == "cancelled" and "cancelled"
