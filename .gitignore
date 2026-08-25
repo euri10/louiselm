@@ -9,3 +9,4 @@ android/.gradle-user/
 android/local.properties
 android/**/build/
 .playwright-cli/
+nvim.log
