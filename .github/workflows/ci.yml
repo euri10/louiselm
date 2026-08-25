@@ -90,6 +90,16 @@ jobs:
       - name: Check
         run: lua-language-server --check . --checklevel=Warning
 
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      # Shares this job because it is the only one with lua-language-server
+      # on PATH; scripts/generate-api-appendix shells out to `--doc`.
+      - name: Verify generated API appendix
+        run: ./scripts/generate-api-appendix --check
+
   test:
     name: mini.test (nvim ${{ matrix.neovim }})
     runs-on: ubuntu-latest

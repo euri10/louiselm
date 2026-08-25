@@ -122,7 +122,11 @@ the foundation that exists now.
 After installing the plugin, use `:help louiselm` for the generated command
 and configuration reference. `:checkhealth louiselm` reports the active
 environment's configuration and tool status; it is troubleshooting evidence,
-not a replacement for the reference.
+not a replacement for the reference. For the headless Session API, typed
+events, permission policies, and Agent configuration used when embedding
+LouiseLM in your own tooling, see the generated
+[API appendix](doc/api.md); `AGENTS.md` remains the sole Agent-facing (AX)
+contract.
 
 ## Development
 
@@ -151,6 +155,15 @@ Regenerate the committed Vimdoc after changing configuration or user commands:
 ```sh
 ./scripts/generate-vimdoc
 ./scripts/generate-vimdoc --check
+```
+
+Regenerate the committed API appendix after changing LuaCATS annotations in
+the headless Session API, typed events, permission policies, or Agent
+configuration (requires `lua-language-server` on `PATH`):
+
+```sh
+./scripts/generate-api-appendix
+./scripts/generate-api-appendix --check
 ```
 
 For interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run

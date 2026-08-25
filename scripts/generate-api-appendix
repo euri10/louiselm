@@ -1,0 +1,2 @@
+#!/bin/sh
+exec nvim --headless --noplugin -u NONE -l scripts/generate_api_appendix.lua -- "$@"
