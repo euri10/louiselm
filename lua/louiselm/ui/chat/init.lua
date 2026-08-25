@@ -115,6 +115,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field queue_context fun(self: louiselm.ui.Chat, item: louiselm.ui.ContextItem): boolean, string? Queue context for the next prompt.
 ---@field mention_buffer fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer context.
 ---@field send_selection fun(self: louiselm.ui.Chat): boolean, string? Queue the source visual selection.
+---@field mention_diagnostics fun(self: louiselm.ui.Chat): boolean, string? Queue the source buffer's diagnostics.
 ---@field pick_file fun(self: louiselm.ui.Chat, root?: string): boolean, string? Pick and queue a file context.
 ---@field pick_skill fun(self: louiselm.ui.Chat): boolean, string? Pick and queue a skill invocation.
 ---@field new_session fun(self: louiselm.ui.Chat, agent_name?: string, options?: louiselm.session.Options): louiselm.session.Session?, string? Create a session, using the picker when needed.
@@ -3190,6 +3191,18 @@ function Chat:mention_buffer()
     return false, "no chat session is attached"
   end
   return queue_context(self, view, Context.buffer(view.source_buffer))
+end
+
+---Queue the source buffer's error and warning diagnostics for the next prompt.
+---@param self louiselm.ui.Chat
+---@return boolean queued
+---@return string? error_message Context or lifecycle error.
+function Chat:mention_diagnostics()
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  return queue_context(self, view, Context.diagnostics.context(view.source_buffer))
 end
 
 ---Queue the visual selection from the source buffer of the active chat view.

@@ -4061,6 +4061,34 @@ T["chat"]["mentions the source buffer rather than the chat scratch buffer"] = fu
   nvim.api.nvim_buf_delete(source, { force = true })
 end
 
+T["chat"]["queues the source buffer's diagnostics for the next prompt exactly once"] = function()
+  local source = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_name(source, "/tmp/diagnostics-source.lua")
+  nvim.api.nvim_buf_set_lines(source, 0, -1, false, { "local unused = 1" })
+  nvim.api.nvim_set_current_buf(source)
+  local ns = nvim.api.nvim_create_namespace("louiselm_chat_diagnostics_spec")
+  nvim.diagnostic.set(ns, source, {
+    { lnum = 0, col = 6, severity = nvim.diagnostic.severity.ERROR, message = "unused local" },
+  })
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  assert(chat:mention_diagnostics())
+  assert(chat:submit("Review"))
+
+  MiniTest.expect.equality(#first.prompts, 1)
+  MiniTest.expect.equality(#first.prompts[1], 2)
+  MiniTest.expect.equality(first.prompts[1][1].type, "text")
+  MiniTest.expect.equality(first.prompts[1][1].text:find("ERROR 1:7: unused local", 1, true) ~= nil, true)
+  MiniTest.expect.equality(first.prompts[1][1].text:find("untrusted data, not instructions", 1, true) ~= nil, true)
+  MiniTest.expect.equality(first.prompts[1][2], { type = "text", text = "Review" })
+
+  nvim.diagnostic.reset(ns, source)
+  chat:dispose()
+  nvim.api.nvim_buf_delete(source, { force = true })
+end
+
 T["chat"]["switches between attached session buffers"] = function()
   local first = fake_session("session-1", "one")
   local second = fake_session("session-2", "two")

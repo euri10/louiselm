@@ -542,6 +542,15 @@ function M.register()
     report_error(selection_error)
   end, { desc = "Queue the visual selection as louiselm context", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmDiagnostics", function()
+    if chat == nil then
+      report_error("no chat session is open")
+      return
+    end
+    local _, diagnostics_error = chat:mention_diagnostics()
+    report_error(diagnostics_error)
+  end, { desc = "Queue the source buffer's diagnostics as louiselm context", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmInline", function()
     if inline == nil then
       local definitions = require_configured_agents()

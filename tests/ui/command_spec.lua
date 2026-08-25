@@ -127,6 +127,7 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmPickFile ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmMentionBuffer ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSendSelection ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmDiagnostics ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
 end
@@ -336,6 +337,7 @@ T["command"]["reports when no chat session is open for the context-picker comman
     "LouiselmPickFile",
     "LouiselmMentionBuffer",
     "LouiselmSendSelection",
+    "LouiselmDiagnostics",
     "LouiselmHandOff",
   }) do
     local original_notify = nvim.notify

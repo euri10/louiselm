@@ -96,6 +96,10 @@ Commands                                                      *louiselm-commands
     Close the current louiselm session
     Arguments: none
 
+:LouiselmDiagnostics                                          *:LouiselmDiagnostics*
+    Queue the source buffer's diagnostics as louiselm context
+    Arguments: none
+
 :LouiselmForensics                                            *:LouiselmForensics*
     Collect private Forensics for the current Session
     Arguments: none
