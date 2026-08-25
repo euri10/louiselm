@@ -6,13 +6,6 @@
 ---into a closed, one-line Neovim fold whose foldtext is a compact human summary;
 ---opening a fold (`zo`) reveals the exact untouched raw line. The buffer is never
 ---edited: this is display-only, driven by 'foldmethod'/'foldexpr'/'foldtext'.
----
----Delegating fold *boundaries* to the jsonl/json treesitter grammar's own fold
----query was tried and does not apply here: every ACP JSON-RPC record is exactly
----one physical line, and Neovim's fold model only ever folds a node whose start
----and end line differ -- a same-line node never registers as a fold. Forcing a
----fold boundary at every line via `M.foldexpr` is the only way to get this
----one-fold-per-record shape.
 
 local Protocol = require("louiselm.acp.protocol")
 
@@ -29,11 +22,9 @@ local LINE_LIMIT = 180
 ---@param value string
 ---@return string collapsed
 local function single_line(value)
-  local lines = nvim.split(value, "\n", { plain = true })
-  for index, one_line in ipairs(lines) do
-    lines[index] = table.concat(nvim.split(one_line, "\r", { plain = true }), "")
-  end
-  return nvim.trim(table.concat(lines, " "))
+  local collapsed = (value:gsub("%s*[\r\n]+%s*", " "))
+  local without_leading = (collapsed:gsub("^%s+", ""))
+  return (without_leading:gsub("%s+$", ""))
 end
 
 ---@param value string
@@ -154,35 +145,14 @@ function M.foldexpr()
   return ">1"
 end
 
----Rendered summary per buffer per line, keyed against the exact raw line it
----was computed from. `foldtext` runs on every redraw of every visible closed
----fold -- without this, decoding and re-summarizing a large tool-call payload
----on every scroll or `za` is what makes folding feel sluggish on a real log.
----@type table<integer, table<integer, {raw: string, rendered: string}>>
-local render_cache = {}
-
 ---'foldtext' callback: render the closed fold's one line as its human summary.
 ---@return string
 function M.foldtext()
-  local buffer = nvim.api.nvim_get_current_buf()
-  local lnum = nvim.v.foldstart
-  local raw_line = nvim.fn.getline(lnum)
-
-  local buffer_cache = render_cache[buffer]
-  if buffer_cache == nil then
-    buffer_cache = {}
-    render_cache[buffer] = buffer_cache
-  end
-  local cached = buffer_cache[lnum]
-  if cached ~= nil and cached.raw == raw_line then
-    return cached.rendered
-  end
-
+  local raw_line = nvim.fn.getline(nvim.v.foldstart)
   local ok, rendered = pcall(M.render_line, raw_line)
   if not ok then
-    rendered = raw_line
+    return raw_line
   end
-  buffer_cache[lnum] = { raw = raw_line, rendered = rendered }
   return rendered
 end
 
