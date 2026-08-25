@@ -3685,6 +3685,28 @@ T["chat"]["shows every background session in a clickable window bar strip"] = fu
   chat:dispose()
 end
 
+T["chat"]["follows a window bar target in the clicked window"] = function()
+  local first = fake_session("session-1", "one")
+  local second = fake_session("session-2", "two")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2" }
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local clicked_window = nvim.api.nvim_get_current_win()
+  nvim.cmd.vsplit()
+  local other_window = nvim.api.nvim_get_current_win()
+
+  assert(chat:winbar_click(1, clicked_window))
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), clicked_window)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), chat:buffer("session-1"))
+  nvim.api.nvim_win_close(other_window, true)
+  chat:dispose()
+end
+
 T["chat"]["highlights an unseen completed turn until its session is focused"] = function()
   local first = fake_session("session-1", "one")
   local second = fake_session("session-2", "two")

@@ -236,11 +236,13 @@ T["command"]["keeps the chat window when QuitPre protects multiple sessions"] = 
   MiniTest.expect.equality(nvim.api.nvim_win_is_valid(original_window), true)
 end
 
-T["command"]["routes a window bar click to its attached session"] = function()
+T["command"]["routes a window bar click through its clicked window"] = function()
   Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
+  local original_getmousepos = nvim.fn.getmousepos
   MiniTest.finally(function()
     rawset(nvim, "system", original_system)
+    nvim.fn.getmousepos = original_getmousepos
     Command.configure(nil)
     delete_chat_buffers()
   end)
@@ -252,12 +254,18 @@ T["command"]["routes a window bar click to its attached session"] = function()
   local first_buffer = nvim.api.nvim_get_current_buf()
   nvim.api.nvim_cmd({ cmd = "LouiselmNewSession", args = {} }, {})
   respond(process, 3, { sessionId = "second-acp" })
-  local second_buffer = nvim.api.nvim_get_current_buf()
-  MiniTest.expect.equality(first_buffer ~= second_buffer, true)
+  local clicked_window = nvim.api.nvim_get_current_win()
+  nvim.cmd.vsplit()
+  local other_window = nvim.api.nvim_get_current_win()
+  nvim.fn.getmousepos = function()
+    return { winid = clicked_window }
+  end
 
   Command.winbar_click(1, 1, "l", "")
 
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), clicked_window)
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), first_buffer)
+  nvim.api.nvim_win_close(other_window, true)
 end
 
 T["command"]["reports when no session id is available"] = function()

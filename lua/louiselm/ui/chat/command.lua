@@ -214,7 +214,9 @@ function M.register()
     if button ~= "l" or chat == nil then
       return
     end
-    local _, click_error = chat:winbar_click(target)
+    local mouse_position = nvim.fn.getmousepos()
+    local clicked_window = type(mouse_position.winid) == "number" and mouse_position.winid or nil
+    local _, click_error = chat:winbar_click(target, clicked_window)
     report_error(click_error)
   end
 

@@ -95,7 +95,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
 ---@field inspect_tool fun(self: louiselm.ui.Chat): boolean, string? Open the raw payload under the cursor.
 ---@field switch fun(self: louiselm.ui.Chat, session_id: string): boolean, string? Focus an attached session.
----@field winbar_click fun(self: louiselm.ui.Chat, target: integer): boolean, string? Follow a winbar click target.
+---@field winbar_click fun(self: louiselm.ui.Chat, target: integer, clicked_window?: integer): boolean, string? Follow a winbar click target.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
 ---@field should_block_quit fun(self: louiselm.ui.Chat): boolean Whether a last-window quit would abandon multiple sessions.
@@ -2792,19 +2792,27 @@ function Chat:switch(session_id)
   return true
 end
 
----Follow one click target from the current window bar.
+---Follow one click target from a window bar.
 ---@param self louiselm.ui.Chat
 ---@param target integer Numeric minwid encoded in the window bar.
+---@param clicked_window? integer Window containing the clicked item.
 ---@return boolean followed
 ---@return string? error_message Invalid target or Session picker error.
-function Chat:winbar_click(target)
+function Chat:winbar_click(target, clicked_window)
   if self.disposed then
     return false, "chat UI is disposed"
   end
-  local targets = self.winbar_targets[nvim.api.nvim_get_current_win()]
+  local window = clicked_window or nvim.api.nvim_get_current_win()
+  if not nvim.api.nvim_win_is_valid(window) then
+    return false, "clicked window is unavailable"
+  end
+  local targets = self.winbar_targets[window]
   local destination = targets and targets[target]
   if destination == nil then
     return false, "window bar target is unavailable"
+  end
+  if window ~= nvim.api.nvim_get_current_win() then
+    nvim.api.nvim_set_current_win(window)
   end
   if destination == false then
     return self:switch_session()
