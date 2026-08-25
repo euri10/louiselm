@@ -67,4 +67,3 @@ require("mini.test").setup({
 
 require("louiselm.ui.chat.command").register()
 require("louiselm.capture.command").register()
-require("louiselm.forensics.command").register()
