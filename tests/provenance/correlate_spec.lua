@@ -63,6 +63,22 @@ T["stale references remain data rather than becoming errors"] = function()
   MiniTest.expect.equality(edges[1].target, { kind = "issue", id = "louiselm-no-longer-exists" })
 end
 
+T["resolves reaper actors without disguising the daemon"] = function()
+  local actor, error_value = Correlate.resolve_actor("reaper/codex/acp-session")
+  assert(error_value == nil)
+  MiniTest.expect.equality(actor, {
+    raw = "reaper/codex/acp-session",
+    kind = "reaper",
+    session_id = "codex/acp-session",
+  })
+end
+
+T["rejects actors without a Session identity"] = function()
+  local actor, error_value = Correlate.resolve_actor("reaper/daemon")
+  MiniTest.expect.equality(actor, nil)
+  MiniTest.expect.equality(error_value.code, "invalid_actor")
+end
+
 T["invalid collected input returns a structured error"] = function()
   local malformed = {}
   rawset(malformed, "id", "commit")

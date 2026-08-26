@@ -36,6 +36,11 @@
 ---@field message string Human-readable error description.
 ---@field index? integer Input index associated with the error.
 
+---@class louiselm.provenance.Actor
+---@field raw string Actor recorded by Beads.
+---@field kind "session"|"reaper" Actor origin.
+---@field session_id string Underlying Agent-scoped Session identity.
+
 local M = {}
 
 ---@param code string
@@ -44,6 +49,27 @@ local M = {}
 ---@return louiselm.provenance.Error
 local function make_error(code, message, index)
   return { code = code, message = message, index = index }
+end
+
+---Resolve a Beads actor without erasing whether a daemon performed the action.
+---@param actor unknown Recorded actor value.
+---@return louiselm.provenance.Actor? resolved
+---@return louiselm.provenance.Error? error_value
+function M.resolve_actor(actor)
+  if type(actor) ~= "string" or actor == "" then
+    return nil, make_error("invalid_actor", "actor must be a non-empty string")
+  end
+  local session_id = actor:match("^reaper/(.+)$")
+  if session_id ~= nil and session_id:find("/", 1, true) ~= nil then
+    return { raw = actor, kind = "reaper", session_id = session_id }, nil
+  end
+  if actor:sub(1, #"reaper/") == "reaper/" then
+    return nil, make_error("invalid_actor", "reaper actor must identify a Session")
+  end
+  if actor:find("/", 1, true) ~= nil then
+    return { raw = actor, kind = "session", session_id = actor }, nil
+  end
+  return nil, make_error("invalid_actor", "actor must identify a Session")
 end
 
 ---@param value unknown
