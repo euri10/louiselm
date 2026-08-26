@@ -313,6 +313,13 @@ context.instructions_file                                     *louiselm-config-c
     sessions; empty disables.
 
 ------------------------------------------------------------------------------
+keymaps                                                       *louiselm-config-keymaps*
+    Type: boolean
+    Default: true
+    Description: Install LouiseLM's global default keymaps; false disables
+    them.
+
+------------------------------------------------------------------------------
 skills                                                        *louiselm-config-skills*
     Type: table
     Default: {}

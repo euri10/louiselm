@@ -4,6 +4,7 @@ local Health = require("louiselm.health")
 local Schema = require("louiselm.schema")
 local CaptureCommand = require("louiselm.capture.command")
 local Command = require("louiselm.ui.chat.command")
+local Keymaps = require("louiselm.ui.keymaps")
 
 local M = {}
 
@@ -47,6 +48,10 @@ function M.setup(config)
   local command_configured, command_error = Command.configure(config)
   if not command_configured then
     error(command_error)
+  end
+  local keymaps_configured, keymaps_error = Keymaps.configure(config)
+  if not keymaps_configured then
+    error(keymaps_error)
   end
   local capture_configured, capture_error = CaptureCommand.configure(config)
   if not capture_configured then

@@ -157,6 +157,11 @@ M.schema = assert(Schema.define({
       },
     },
   },
+  keymaps = {
+    type = "boolean",
+    default = true,
+    description = "Install LouiseLM's global default keymaps; false disables them.",
+  },
   capture = {
     type = "table",
     default = {},

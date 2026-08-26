@@ -54,6 +54,14 @@ T["setup"]["starts with valid config"] = function()
   MiniTest.expect.equality(#notifications, 0)
 end
 
+T["setup"]["accepts disabling global keymaps"] = function()
+  local ok, report, notifications = capture_setup({ keymaps = false })
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+  MiniTest.expect.equality(#notifications, 0)
+end
+
 T["setup"]["accepts an optional per-agent latest-version check"] = function()
   local ok, report = capture_setup({
     agents = {

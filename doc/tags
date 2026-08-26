@@ -50,6 +50,7 @@ louiselm-config-capture-recorder	louiselm.txt	/*louiselm-config-capture-recorder
 louiselm-config-capture-service	louiselm.txt	/*louiselm-config-capture-service*
 louiselm-config-context	louiselm.txt	/*louiselm-config-context*
 louiselm-config-context-instructions-file	louiselm.txt	/*louiselm-config-context-instructions-file*
+louiselm-config-keymaps	louiselm.txt	/*louiselm-config-keymaps*
 louiselm-config-skills	louiselm.txt	/*louiselm-config-skills*
 louiselm-config-skills-full-content	louiselm.txt	/*louiselm-config-skills-full-content*
 louiselm-config-skills-paths	louiselm.txt	/*louiselm-config-skills-paths*
