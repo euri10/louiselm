@@ -53,6 +53,9 @@ end
 ---@return table[] calls
 local function fake_system()
   local calls = {}
+  nvim.fn.executable = function()
+    return 1
+  end
   rawset(nvim, "system", function(command, options, on_exit)
     calls[#calls + 1] = { command = command, options = options, on_exit = on_exit }
     return {}
