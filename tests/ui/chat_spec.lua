@@ -379,6 +379,28 @@ T["chat"]["refuses a handoff from a non-idle source session"] = function()
   chat:dispose()
 end
 
+T["chat"]["hands off a source session in error state"] = function()
+  local source = fake_session("source", "claude")
+  source.state.status = "error"
+  local target = fake_session("target", "codex")
+  local api = fake_api()
+  api.create_session = function()
+    return target
+  end
+  local chat = assert(Chat.new(api, { agents = { "claude", "codex" } }))
+  assert(chat:attach(source))
+  nvim.ui.select = function(_, _, callback)
+    callback("codex")
+  end
+
+  local started, error_message = chat:hand_off()
+
+  MiniTest.expect.equality({ started, error_message }, { true, nil })
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "# louiselm session transcript")
+  MiniTest.expect.equality(source.state.status, "error")
+  chat:dispose()
+end
+
 T["chat"]["refuses a handoff with fewer than two configured agents"] = function()
   local source = fake_session("source", "claude")
   local chat = assert(Chat.new(fake_api(), { agents = { "claude" } }))

@@ -3555,7 +3555,7 @@ function Chat:hand_off()
     return false, "no chat session is attached"
   end
   local source_state = source_view.session:inspect()
-  if source_state.status ~= "ready" or source_view.queued_prompt ~= nil then
+  if (source_state.status ~= "ready" and source_state.status ~= "error") or source_view.queued_prompt ~= nil then
     return false, "current session has an active turn; finish or cancel it before handing off"
   end
   if #self.agents < 2 then
