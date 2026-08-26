@@ -92,6 +92,11 @@ Do not claim, implement, or commit work unless asked to proceed.
   with a line telling the grill not to resolve the question in passing, then
   the question itself, the context/evidence that raised it, and the threads
   worth pulling — not a pre-baked answer.
+- When claimed work reveals multiple independently completable deliverables,
+  create child tasks instead of hiding them as serial "next slices" inside the
+  original issue. If a clean slice depends on an unresolved product or
+  architecture decision, create a blocking `needs-design` question and pause
+  implementation for a focused grill-me session.
 - Run `br sync --flush-only` before committing, and commit `.beads/` alongside
   the work it describes.
 
