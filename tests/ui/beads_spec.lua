@@ -117,6 +117,38 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
   MiniTest.expect.equality(close_mapping ~= nil, true)
 end
 
+T["beads"]["opens an issue whose JSON omits the labels key entirely"] = function()
+  -- `br show --json` omits `labels` rather than emitting `[]` when an issue
+  -- has none (louiselm-t6j2) -- a missing key must not be treated as malformed.
+  local buffer = source_buffer({ "Fix louiselm-kpod today" }, 8)
+  local calls = fake_system()
+  local scheduled = {}
+  nvim.schedule = function(callback)
+    scheduled[#scheduled + 1] = callback
+  end
+
+  assert(Beads.inspect(buffer))
+  calls[1].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '[{"id":"louiselm-kpod","title":"Usage spacing","status":"open","priority":2,"description":"Add blank lines."}]',
+    stderr = "",
+  })
+  scheduled[1]()
+
+  local popup = assert(find_buffer("louiselm://beads/louiselm-kpod"))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
+    "# Usage spacing",
+    "",
+    "ID: louiselm-kpod",
+    "Status: open",
+    "Priority: 2",
+    "Labels: none",
+    "",
+    "Add blank lines.",
+  })
+end
+
 T["beads"]["prompts for a Beads issue ID when the cursor has none"] = function()
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()

@@ -64,13 +64,13 @@ local function decode_issue(value)
     or issue.priority < 0
     or issue.priority > 4
     or issue.priority % 1 ~= 0
-    or type(issue.labels) ~= "table"
+    or (issue.labels ~= nil and type(issue.labels) ~= "table")
     or type(issue.description) ~= "string"
   then
     return nil
   end
   local labels = {}
-  for index, label in ipairs(issue.labels) do
+  for index, label in ipairs(issue.labels or {}) do
     if type(label) ~= "string" then
       return nil
     end
