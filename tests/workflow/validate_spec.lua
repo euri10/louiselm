@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Workflow = require("louiselm.workflow")
+local RawValidate = require("louiselm.workflow.validate")
 
 local T = MiniTest.new_set()
 
@@ -218,7 +219,7 @@ T["rejects"]["a stage from which no terminal outcome is reachable"] = function()
     { name = "defect-found", to = "execute", ["back-edge"] = true, resolver = "human" },
   }
 
-  local result = Workflow.validate("reference", manifest)
+  local result = RawValidate.validate("reference", manifest)
 
   MiniTest.expect.equality(rejection_of(result, "no_reachable_terminal").stage ~= nil, true)
 end

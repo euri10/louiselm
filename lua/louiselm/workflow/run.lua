@@ -22,11 +22,13 @@ local nvim = vim
 ---@field cancellation_timeout_ms integer
 ---@field schedule fun(delay_ms: integer, callback: fun())
 ---@field workers louiselm.workflow.RunWorker[] Owned Sessions.
----@field status "active"|"cancelling"|"cancelled"|"disposed"
+---@field status "active"|"cancelling"|"cancelled"|"parked"|"disposed"
 ---@field cancel fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
+---@field park fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
 ---@field create_session fun(self: louiselm.workflow.Run, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
+---@field emergency_stop fun(self: louiselm.workflow.Run): boolean, string?
 
 ---@param value unknown
 ---@return boolean
@@ -152,6 +154,9 @@ function Run:cancel(callback)
   if self.status == "disposed" then
     return false, "Run is disposed"
   end
+  if self.status == "parked" then
+    return false, "Run is parked"
+  end
   if self.status == "cancelled" or self.status == "cancelling" then
     return true
   end
@@ -178,6 +183,32 @@ function Run:cancel(callback)
   return true
 end
 
+---Park this Run without destroying its Sessions.
+---Cooperative cancellation is requested for active turns, but no acknowledgment is awaited and no
+---worker is disposed. This escape is therefore available even when an ACP Agent is wedged.
+---@param self louiselm.workflow.Run
+---@param callback? fun() Called after the local Park transition.
+---@return boolean parked
+---@return string? error_message
+function Run:park(callback)
+  if self.status == "disposed" then
+    return false, "Run is disposed"
+  end
+  if self.status == "parked" then
+    return true
+  end
+  self.status = "parked"
+  for _, worker in ipairs(self.workers) do
+    if not acknowledged(worker) then
+      worker:cancel()
+    end
+  end
+  if callback ~= nil then
+    callback()
+  end
+  return true
+end
+
 ---Dispose every owned Session and end the Run.
 ---@param self louiselm.workflow.Run
 ---@return boolean disposed
@@ -195,6 +226,14 @@ function Run:dispose()
     end
   end
   return first_error == nil, first_error
+end
+
+---Destructively stop the Run and dispose every owned Session.
+---@param self louiselm.workflow.Run
+---@return boolean stopped
+---@return string? error_message
+function Run:emergency_stop()
+  return self:dispose()
 end
 
 return M

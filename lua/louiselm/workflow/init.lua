@@ -10,10 +10,19 @@
 
 local Validate = require("louiselm.workflow.validate")
 local Run = require("louiselm.workflow.run")
+local Escape = require("louiselm.workflow.escape")
 
 local M = {}
 
-M.validate = Validate.validate
+---Validate a workflow after synthesizing its mandatory human Park escape.
+---@param workflow string Workflow name.
+---@param manifest table<string, table> Discovered stage manifest.
+---@return louiselm.workflow.Result result
+function M.validate(workflow, manifest)
+  return Validate.validate(workflow, Escape.apply(workflow, manifest))
+end
+
+M.synthesize = Escape.apply
 M.new_run = Run.new
 
 return M

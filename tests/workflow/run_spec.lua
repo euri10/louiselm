@@ -25,6 +25,32 @@ end
 
 T["ownership"] = MiniTest.new_set()
 
+T["ownership"]["synthesizes a reserved Park outcome on every stage"] = function()
+  local manifest = {
+    first = { workflow = "reference", outcomes = {} },
+    other = { workflow = "other", outcomes = {} },
+  }
+
+  local synthesized = Workflow.synthesize("reference", manifest)
+
+  MiniTest.expect.equality(#synthesized.first.outcomes, 1)
+  MiniTest.expect.equality(synthesized.first.outcomes[1], {
+    name = "__louiselm_park",
+    resolver = "human",
+    terminal = true,
+  })
+  MiniTest.expect.equality(#manifest.first.outcomes, 0)
+  MiniTest.expect.equality(synthesized.other, manifest.other)
+end
+
+T["ownership"]["validates the synthesized graph with its mandatory escape"] = function()
+  local result = Workflow.validate("reference", {
+    first = { workflow = "reference", entry = true, outcomes = {} },
+  })
+
+  MiniTest.expect.equality(result.ok, true)
+end
+
 T["ownership"]["adopts every worker and exposes its Run owner"] = function()
   local run = assert(Workflow.new_run())
   local session = worker("ready")
@@ -53,6 +79,36 @@ T["ownership"]["creates stage Sessions through the Run owner"] = function()
 end
 
 T["cancellation"] = MiniTest.new_set()
+
+T["cancellation"]["parks a wedged worker without disposing its Session"] = function()
+  local run = assert(Workflow.new_run())
+  local session = worker("prompting")
+  session.cancel = function()
+    session.cancelled = session.cancelled + 1
+    return true
+  end
+  assert(run:adopt_session(session))
+
+  assert(run:park())
+
+  MiniTest.expect.equality(run.status, "parked")
+  MiniTest.expect.equality(session.cancelled, 1)
+  MiniTest.expect.equality(session.disposed, 0)
+  MiniTest.expect.equality(#run.workers, 1)
+end
+
+T["cancellation"]["emergency stop disposes the whole Run"] = function()
+  local run = assert(Workflow.new_run())
+  local first, second = worker("ready"), worker("prompting")
+  assert(run:adopt_session(first))
+  assert(run:adopt_session(second))
+
+  assert(run:emergency_stop())
+
+  MiniTest.expect.equality(run.status, "disposed")
+  MiniTest.expect.equality(first.disposed, 1)
+  MiniTest.expect.equality(second.disposed, 1)
+end
 
 T["cancellation"]["cooperatively cancels ordinary workers without disposal"] = function()
   local scheduled
