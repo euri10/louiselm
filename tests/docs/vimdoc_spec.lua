@@ -31,6 +31,16 @@ T["vimdoc"]["renders registered commands and schema configuration into help"] = 
   MiniTest.expect.equality(output:sub(-2) ~= "\n\n", true)
 end
 
+T["vimdoc"]["accepts command descriptions from stable and nightly Neovim fields"] = function()
+  local output = Vimdoc.generate(Config.schema, {
+    LouiselmStable = { definition = "Stable command", nargs = "0", bang = false },
+    LouiselmNightly = { definition = "", desc = "Nightly command", nargs = "0", bang = false },
+  })
+
+  MiniTest.expect.equality(output:find("Stable command", 1, true) ~= nil, true)
+  MiniTest.expect.equality(output:find("Nightly command", 1, true) ~= nil, true)
+end
+
 T["vimdoc"]["matches the committed help and tags for registered commands"] = function()
   local commands = nvim.api.nvim_get_commands({ builtin = false })
   local expected = Vimdoc.generate(Config.schema, commands)

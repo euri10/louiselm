@@ -61,7 +61,10 @@ end
 local function documented_commands(commands)
   local result = {}
   for name, command in pairs(commands) do
-    local description = type(command.definition) == "string" and command.definition or command.desc
+    local description = command.desc
+    if type(description) ~= "string" or description == "" then
+      description = command.definition
+    end
     if
       name:match("^Louiselm")
       and type(description) == "string"
