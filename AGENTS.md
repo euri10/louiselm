@@ -27,12 +27,19 @@ Do not claim, implement, or commit work unless asked to proceed.
 - Run `br robot-docs guide` for command syntax. Do not restate it here.
 - Discover work with `br ready`. Triage with `bvr --robot-*` flags only; bare
   `bvr` opens a blocking TUI.
+- Pass `--actor "<your session id>"` to every mutating `br` command — `create`,
+  `update`, `close`, `delete`, `comments add`, `dep add`, `label add` — not just
+  claims. The actor is your adapter's session identifier (Claude Code exports
+  `CLAUDE_CODE_SESSION_ID`; other adapters may name their session, e.g.
+  `deepseek/session-<uuid>`). It must point at a transcript someone can actually
+  open. If your adapter exposes no session id, ask the user before mutating. Do
+  not use the OS username, `br config`'s `_computed.actor`, the br skill's
+  `BR_ACTOR:-assistant` fallback, or `robot-docs`' `$AGENT_NAME` — none of
+  those identify your session.
 - Claim work with `br update <id> --claim --actor "<your session id>"`, never
   with a bare `--status=in_progress`. `--claim` atomically sets the assignee to
   the actor, which is the only thing that makes a claim attributable, and it
-  refuses to overwrite a live claim. Take the actor from your adapter's session
-  identifier (Claude Code exports `CLAUDE_CODE_SESSION_ID`) so the claim points
-  at a transcript someone can actually open. `bvr` suggests the bare
+  refuses to overwrite a live claim. `bvr` suggests the bare
   `--status=in_progress` form in its `claim_command` field; do not copy it.
 - Read the graph through `br` and `bvr`, never by parsing `.beads/*.jsonl`.
 - File findings as beads before fixing them, including work deliberately
