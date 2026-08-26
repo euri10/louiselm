@@ -164,6 +164,10 @@ Commands                                                      *louiselm-commands
     Resume a prior louiselm session; use ! for all workspaces
     Arguments: none
 
+:LouiselmResumePark                                           *:LouiselmResumePark*
+    Resume a durable cold-Parked Run
+    Arguments: none
+
 :LouiselmSendSelection                                        *:LouiselmSendSelection*
     Queue the visual selection as louiselm context
     Arguments: none

@@ -79,6 +79,27 @@ fn cold_park_rejects_an_agent_without_load_session() {
 }
 
 #[test]
+fn resumable_listing_excludes_disposed_runs() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    store
+        .park_cold(draft("33333333-3333-4333-8333-333333333333"))
+        .expect("park");
+    store
+        .park_cold(draft("44444444-4444-4444-8444-444444444444"))
+        .expect("park");
+    let active_id = "55555555-5555-4555-8555-555555555555";
+    let mut active = draft(active_id);
+    active.park_expires_at_ms = 3_000;
+    store.park_cold(active).expect("park active");
+    store.reap_expired(2_000, |_| Ok(())).expect("reap");
+
+    let summaries = store.list_resumable().expect("list");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, active_id);
+}
+
+#[test]
 fn failed_cleanup_stays_durable_for_a_later_retry() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = RunStore::new(temporary.path()).expect("store");

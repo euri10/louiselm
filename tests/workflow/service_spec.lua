@@ -70,4 +70,54 @@ T["rejects cold Park without session/load admission"] = function()
   MiniTest.expect.equality(error_message, "Park requires an Agent that supports session/load")
 end
 
+T["lists durable Parks asynchronously"] = function()
+  local callback_value
+  local scheduled
+  local previous = vim.schedule
+  vim.schedule = function(fn)
+    scheduled = fn
+  end
+  assert(Service.list(function(runs, error_message)
+    callback_value = { runs, error_message }
+  end, function(_, _, done)
+    return done({
+      code = 0,
+      stderr = "",
+      stdout = '[{"id":"run","agent":"codex","acp_session_id":"acp","working_dir":"/tmp","state":"cold_parked","park_expires_at_ms":1}]',
+    })
+  end))
+  scheduled()
+  vim.schedule = previous
+  MiniTest.expect.equality(callback_value, {
+    {
+      {
+        id = "run",
+        agent = "codex",
+        acp_session_id = "acp",
+        cwd = "/tmp",
+        state = "cold_parked",
+        expires_at_ms = 1,
+      },
+    },
+    nil,
+  })
+end
+
+T["reports malformed durable Park data"] = function()
+  local callback_value
+  local scheduled
+  local previous = vim.schedule
+  vim.schedule = function(fn)
+    scheduled = fn
+  end
+  assert(Service.list(function(runs, error_message)
+    callback_value = { runs, error_message }
+  end, function(_, _, done)
+    return done({ code = 0, stderr = "", stdout = '[{"state":"cold_parked"}]' })
+  end))
+  scheduled()
+  vim.schedule = previous
+  MiniTest.expect.equality(callback_value, { {}, "cold Park service returned malformed data" })
+end
+
 return T

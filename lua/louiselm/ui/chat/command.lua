@@ -464,6 +464,15 @@ function M.register()
     report_error(resume_error)
   end, { bang = true, desc = "Resume a prior louiselm session; use ! for all workspaces", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmResumePark", function()
+    local current = ensure_chat()
+    if current == nil then
+      return
+    end
+    local _, resume_error = current:resume_park()
+    report_error(resume_error)
+  end, { desc = "Resume a durable cold-Parked Run", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmSwitchSession", function()
     if chat == nil then
       report_error("no chat session is open")

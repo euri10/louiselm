@@ -21,7 +21,7 @@ pub use pairing::{
     DeviceCredential, DeviceStatus, PairingError, PairingOffer, PairingRegistry, PairingStatus,
 };
 pub use receiver::Receiver;
-pub use runs::{BeadsCleanup, ReapAction, Run, RunDraft, RunStore, RunStoreError};
+pub use runs::{BeadsCleanup, ReapAction, Run, RunDraft, RunStore, RunStoreError, RunSummary};
 pub use store::{Capture, IngestOutcome, MAX_CAPTURE_BYTES, Store, StoreError};
 pub use transcription::{
     Transcriber, TranscriptRequest, TranscriptionError, TranscriptionErrorKind, TranscriptionWorker,

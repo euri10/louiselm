@@ -98,8 +98,15 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     let Some((command, options)) = arguments.split_first() else {
         return Err(CliError::Invalid("run requires a subcommand".to_owned()));
     };
+    if command == "list" {
+        let runs = RunStore::new(paths.runs())?.list_resumable()?;
+        println!("{}", serde_json::to_string(&runs)?);
+        return Ok(());
+    }
     if command != "park" {
-        return Err(CliError::Invalid("run supports only park".to_owned()));
+        return Err(CliError::Invalid(
+            "run supports only list and park".to_owned(),
+        ));
     }
     let claims = required_option(options, "--claims")?
         .split(',')
@@ -493,6 +500,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }

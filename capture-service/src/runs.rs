@@ -54,6 +54,23 @@ pub struct Run {
     cleanup: Vec<CleanupEntry>,
 }
 
+/// Public summary of a resumable durable Run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RunSummary {
+    /// Run UUID.
+    pub id: String,
+    /// Configured Agent name.
+    pub agent: String,
+    /// Agent-side ACP Session identifier.
+    pub acp_session_id: String,
+    /// Working directory used for resume.
+    pub working_dir: String,
+    /// Current durable state.
+    pub state: String,
+    /// Cold-Park expiry.
+    pub park_expires_at_ms: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 struct CleanupEntry {
     issue_id: String,
@@ -196,6 +213,37 @@ impl RunStore {
             return Err(RunStoreError::Invalid("stored Run is invalid".to_owned()));
         }
         Ok(run)
+    }
+
+    /// List active cold-Parked Runs without exposing cleanup journals.
+    pub fn list_resumable(&self) -> Result<Vec<RunSummary>, RunStoreError> {
+        let mut summaries = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let Some(id) = file_name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            if validate_id(id).is_err() {
+                continue;
+            }
+            let run = self.run(id)?;
+            if run.state == "cold_parked" {
+                summaries.push(RunSummary {
+                    id: run.id,
+                    agent: run.agent,
+                    acp_session_id: run.acp_session_id,
+                    working_dir: run.working_dir,
+                    state: run.state,
+                    park_expires_at_ms: run.park_expires_at_ms,
+                });
+            }
+        }
+        summaries.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(summaries)
     }
 
     /// Reap due cold Parks through a narrow, caller-supplied cleanup adapter.

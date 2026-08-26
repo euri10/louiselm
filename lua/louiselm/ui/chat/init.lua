@@ -6,6 +6,7 @@ local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
 local Usage = require("louiselm.routing.usage")
+local WorkflowService = require("louiselm.workflow.service")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -132,6 +133,7 @@ local Usage = require("louiselm.routing.usage")
 ---@field new_session fun(self: louiselm.ui.Chat, agent_name?: string, options?: louiselm.session.Options): louiselm.session.Session?, string? Create a session, using the picker when needed.
 ---@field hand_off fun(self: louiselm.ui.Chat): boolean, string? Hand the current session's reviewed transcript off to another configured agent.
 ---@field resume_session fun(self: louiselm.ui.Chat, all_workspaces?: boolean): boolean, string? Discover and load a prior ACP session.
+---@field resume_park fun(self: louiselm.ui.Chat): boolean, string? Discover and load a durable cold-Parked Run.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
 local M = {}
@@ -3657,6 +3659,66 @@ function Chat:resume_session(all_workspaces)
           nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
         end
       end)
+    end)
+  end)
+end
+
+---Discover and load a durable cold-Parked Run through an operator picker.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message
+function Chat:resume_park()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  return WorkflowService.list(function(runs, list_error)
+    if self.disposed then
+      return
+    end
+    if list_error ~= nil then
+      nvim.notify("louiselm: " .. list_error, nvim.log.levels.ERROR)
+      return
+    end
+    if #runs == 0 then
+      nvim.notify("louiselm: no durable cold Parks found", nvim.log.levels.INFO)
+      return
+    end
+    Picker.select(runs, {
+      prompt = "louiselm cold Park: ",
+      format_item = function(run)
+        return string.format("%s/%s · %s · cwd=%s", run.agent, run.acp_session_id, run.id, run.cwd)
+      end,
+    }, function(selected)
+      if selected == nil or self.disposed then
+        return
+      end
+      local session, load_error = self.api:load_session(selected.agent, selected.acp_session_id, {
+        cwd = selected.cwd,
+        name = selected.acp_session_id,
+      }, function(_, ready_error)
+        if ready_error == nil then
+          nvim.schedule(function()
+            if not self.disposed then
+              nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
+            end
+          end)
+          return
+        end
+        nvim.schedule(function()
+          if not self.disposed then
+            nvim.notify("louiselm: " .. ready_error, nvim.log.levels.ERROR)
+          end
+        end)
+      end)
+      if session == nil then
+        nvim.notify("louiselm: " .. (load_error or "could not load cold Park"), nvim.log.levels.ERROR)
+        return
+      end
+      local attached, attach_error = self:attach(session)
+      if not attached then
+        session:dispose()
+        nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
+      end
     end)
   end)
 end
