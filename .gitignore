@@ -10,3 +10,5 @@ android/local.properties
 android/**/build/
 .playwright-cli/
 nvim.log
+# br doctor per-run artifacts
+.doctor/

@@ -50,3 +50,4 @@ redirect
 
 # bv (beads viewer) lock file
 .bv.lock
+*.vacuum-wal-cert*
