@@ -222,9 +222,9 @@ T["connect"]["defers agent callbacks from fast events"] = function()
   nvim.in_fast_event = function()
     return true
   end
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled = callback
-  end
+  end)
 
   local client = assert(Acp.connect({ command = "agent", args = {} }, {
     on_request = function(request)
@@ -238,7 +238,7 @@ T["connect"]["defers agent callbacks from fast events"] = function()
 
   set_system(original_system)
   nvim.in_fast_event = original_in_fast_event
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   scheduled()
   MiniTest.expect.equality(received.method, "session/request_permission")
   client:close()

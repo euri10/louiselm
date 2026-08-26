@@ -120,6 +120,7 @@ string|table
 - `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))):fun()`
 - `options: louiselm.session.Options` -- Session options.
 - `owner: louiselm.session.Registry` -- Registry that owns this session.
+- `owner_run: (louiselm.workflow.Run)?` -- Run that supervised construction of this Session.
 - `permission_active: (louiselm.session.PermissionEntry)?` -- Permission request published for a decision.
 - `permission_policy: louiselm.permission.Policy` -- Policy for agent-requested operations.
 - `permission_queue: louiselm.session.PermissionEntry[]` -- Permission requests waiting for the active one.

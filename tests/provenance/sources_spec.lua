@@ -16,15 +16,15 @@ local function fake_runtime()
     processes[#processes + 1] = process
     return process
   end)
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   return {
     processes = processes,
     scheduled = scheduled,
     restore = function()
       rawset(nvim, "system", original_system)
-      nvim.schedule = original_schedule
+      rawset(nvim, "schedule", original_schedule)
     end,
   }
 end

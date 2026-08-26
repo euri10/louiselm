@@ -1,15 +1,17 @@
 local MiniTest = require("mini.test")
 local Service = require("louiselm.workflow.service")
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
 local T = MiniTest.new_set()
 
 T["starts the constrained Park command"] = function()
   local command
   local callback
   local scheduled
-  local previous = vim.schedule
-  vim.schedule = function(fn)
+  local previous = nvim.schedule
+  rawset(nvim, "schedule", function(fn)
     scheduled = fn
-  end
+  end)
   local started = assert(Service.park({
     id = "run",
     session_id = "codex/session",
@@ -23,10 +25,11 @@ T["starts the constrained Park command"] = function()
     callback = ok
   end, function(value, _, done)
     command = value
-    return done({ code = 0, stderr = "" })
+    done({ code = 0, stderr = "" })
+    return true
   end))
   scheduled()
-  vim.schedule = previous
+  rawset(nvim, "schedule", previous)
   MiniTest.expect.equality(started, true)
   MiniTest.expect.equality(command, {
     "louiselm-capture",
@@ -73,21 +76,22 @@ end
 T["lists durable Parks asynchronously"] = function()
   local callback_value
   local scheduled
-  local previous = vim.schedule
-  vim.schedule = function(fn)
+  local previous = nvim.schedule
+  rawset(nvim, "schedule", function(fn)
     scheduled = fn
-  end
+  end)
   assert(Service.list(function(runs, error_message)
     callback_value = { runs, error_message }
   end, function(_, _, done)
-    return done({
+    done({
       code = 0,
       stderr = "",
       stdout = '[{"id":"run","agent":"codex","acp_session_id":"acp","working_dir":"/tmp","state":"cold_parked","park_expires_at_ms":1}]',
     })
+    return true
   end))
   scheduled()
-  vim.schedule = previous
+  rawset(nvim, "schedule", previous)
   MiniTest.expect.equality(callback_value, {
     {
       {
@@ -106,17 +110,18 @@ end
 T["reports malformed durable Park data"] = function()
   local callback_value
   local scheduled
-  local previous = vim.schedule
-  vim.schedule = function(fn)
+  local previous = nvim.schedule
+  rawset(nvim, "schedule", function(fn)
     scheduled = fn
-  end
+  end)
   assert(Service.list(function(runs, error_message)
     callback_value = { runs, error_message }
   end, function(_, _, done)
-    return done({ code = 0, stderr = "", stdout = '[{"state":"cold_parked"}]' })
+    done({ code = 0, stderr = "", stdout = '[{"state":"cold_parked"}]' })
+    return true
   end))
   scheduled()
-  vim.schedule = previous
+  rawset(nvim, "schedule", previous)
   MiniTest.expect.equality(callback_value, { {}, "cold Park service returned malformed data" })
 end
 

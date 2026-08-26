@@ -10,7 +10,7 @@ local source_buffers = {}
 local T = MiniTest.new_set({
   hooks = {
     post_case = function()
-      nvim.schedule = original_schedule
+      rawset(nvim, "schedule", original_schedule)
       rawset(nvim, "system", original_system)
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_get_name(buffer):match("^louiselm://provenance/commit/") then
@@ -53,9 +53,9 @@ end
 ---@param message string
 local function finish(calls, message)
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   calls[1].on_exit({
     code = 0,
     stdout = "0123456789abcdef0123456789abcdef01234567" .. string.char(0) .. message .. string.char(0) .. string.char(
@@ -126,9 +126,9 @@ T["commit Provenance"]["ignores a scheduled result after the view becomes inacti
   local buffer = source_buffer("0123456789abcdef0123456789abcdef01234567", 10)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   assert(Provenance.inspect(buffer, {
     is_active = function()

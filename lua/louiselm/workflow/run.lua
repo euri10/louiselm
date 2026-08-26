@@ -9,6 +9,7 @@ local Service = require("louiselm.workflow.service")
 local nvim = vim
 
 ---@class louiselm.workflow.RunWorker
+---@field client louiselm.acp.Client? ACP client used for cold-Park admission.
 ---@field cancel fun(self: louiselm.workflow.RunWorker): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.RunWorker): boolean, string?
 ---@field inspect fun(self: louiselm.workflow.RunWorker): table

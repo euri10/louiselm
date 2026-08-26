@@ -182,7 +182,7 @@ T["chat"] = MiniTest.new_set({
   hooks = {
     post_case = function()
       -- A failing expectation skips a test's own restore, and MiniTest itself needs these.
-      nvim.schedule = original_schedule
+      rawset(nvim, "schedule", original_schedule)
       nvim.ui.select = original_select
       nvim.ui.input = original_input
       nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
@@ -2168,14 +2168,14 @@ T["chat"]["does not release queued work after session error or chat disposal"] =
   assert(chat:submit("never send"))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   late.state.status = "ready"
   late:emit({ type = "turn_done", session_id = "late", data = {} })
   chat:dispose()
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(late.prompts, {})
 end
@@ -2304,9 +2304,9 @@ T["chat"]["does not double a blank line between a replayed user chunk and a tool
   assert(chat:attach(restored))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   restored:emit({
     type = "user_chunk",
@@ -2321,7 +2321,7 @@ T["chat"]["does not double a blank line between a replayed user chunk and a tool
 
   scheduled[1]()
   scheduled[2]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -2402,9 +2402,9 @@ T["chat"]["schedules session events before touching buffers"] = function()
   assert(chat:submit("hello"))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   first:emit({
     type = "chunk",
@@ -2418,7 +2418,7 @@ T["chat"]["schedules session events before touching buffers"] = function()
     chat_lines("claude · session-1", "status=ready · display=Your turn", { "", "> hello", "", "> " })
   )
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -2440,9 +2440,9 @@ T["chat"]["renders replayed user and assistant chunks before a new prompt"] = fu
   assert(chat:attach(restored))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   restored:emit({
     type = "user_chunk",
@@ -2457,7 +2457,7 @@ T["chat"]["renders replayed user and assistant chunks before a new prompt"] = fu
 
   scheduled[1]()
   scheduled[2]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -2490,9 +2490,9 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
   assert(chat:attach(restored))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   restored:emit({
     type = "user_chunk",
@@ -2523,7 +2523,7 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
   for _, callback in ipairs(scheduled) do
     callback()
   end
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -2587,9 +2587,9 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   local original_select = nvim.ui.select
   local scheduled = {}
   local formatted
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.select = function(items, options, callback)
     formatted = options.format_item(items[1])
     callback(items[1])
@@ -2636,7 +2636,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
     chat_lines("codex · session-2", "status=ready · display=Your turn", { "", "replayed history", "", "> " })
   )
 
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
   chat:dispose()
 end
@@ -2656,9 +2656,9 @@ T["chat"]["normalizes discovered session subjects across agent title shapes"] = 
   local original_select = nvim.ui.select
   local scheduled = {}
   local formatted = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.select = function(items, options, callback)
     for index, item in ipairs(items) do
       formatted[index] = options.format_item(item)
@@ -2712,7 +2712,7 @@ T["chat"]["normalizes discovered session subjects across agent title shapes"] = 
     "copilot/resource-session · updated=2026-08-24T06:51:07.000Z · cwd=/tmp/project · Review the picker",
   })
 
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
   chat:dispose()
 end
@@ -2750,9 +2750,9 @@ T["chat"]["ignores scheduled discovery after disposal and supports all workspace
   local original_select = nvim.ui.select
   local scheduled = {}
   local selected = false
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.select = function()
     selected = true
   end
@@ -2763,7 +2763,7 @@ T["chat"]["ignores scheduled discovery after disposal and supports all workspace
   chat:dispose()
   scheduled[1]()
 
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
   MiniTest.expect.equality(selected, false)
 end
@@ -2813,9 +2813,9 @@ T["chat"]["keeps a blank boundary before the first scheduled assistant event"] =
   assert(chat:submit("hello"))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   first:emit({
     type = "chunk",
@@ -2828,7 +2828,7 @@ T["chat"]["keeps a blank boundary before the first scheduled assistant event"] =
     chat_lines("claude · session-1", "status=ready · display=Your turn", { "", "> hello", "", "> " })
   )
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -2851,9 +2851,9 @@ T["chat"]["keeps the boundary when a tool call is the first event"] = function()
   assert(chat:submit("hello"))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   first:emit({
     type = "tool_call_started",
@@ -2862,7 +2862,7 @@ T["chat"]["keeps the boundary when a tool call is the first event"] = function()
   })
   MiniTest.expect.equality(#scheduled, 1)
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -2885,9 +2885,9 @@ T["chat"]["opens file permission requests in a scheduled diff review"] = functio
   assert(chat:attach(first))
   local original_schedule = nvim.schedule
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   local response
   first:emit({
@@ -2907,7 +2907,7 @@ T["chat"]["opens file permission requests in a scheduled diff review"] = functio
   MiniTest.expect.equality(#scheduled, 1)
   MiniTest.expect.equality(chat.diff.buffer, nil)
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
 
   MiniTest.expect.equality(nvim.api.nvim_buf_get_name(chat.diff.buffer), "louiselm-diff://" .. path)
   assert(chat.diff:accept())
@@ -2926,9 +2926,9 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
   local selections = 0
   local prompts = {}
   local responses = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   first:emit({
     type = "permission_requested",
@@ -2977,7 +2977,7 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
   scheduled[1]()
   scheduled[2]()
   scheduled[3]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(responses, {
@@ -3004,9 +3004,9 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
   local option_ids
   local prompt
   local response
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled = callback
-  end
+  end)
 
   first:emit({
     type = "permission_requested",
@@ -3038,7 +3038,7 @@ T["chat"]["puts rejection options first so permission pickers fail closed"] = fu
   end
   assert(scheduled)
   scheduled()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(labels, { "Reject", "Allow Once", "Allow for Session", "Allow Commands Starting With git" })
@@ -3060,9 +3060,9 @@ T["chat"]["sends the exact permission option chosen by the select provider"] = f
   local response
   local command =
     'git add nvim/.config/nvim/nvim-pack-lock.json && git commit -m "chore(nvim): update lock" && git push'
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled = callback
-  end
+  end)
   nvim.ui.select = function(options, select_options, callback)
     prompt = select_options.prompt
     labels = {}
@@ -3091,7 +3091,7 @@ T["chat"]["sends the exact permission option chosen by the select provider"] = f
 
   assert(scheduled)
   scheduled()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(prompt, "louiselm permission (command): " .. nvim.json.encode({ command }) .. " ")
@@ -3110,9 +3110,9 @@ T["chat"]["opens permission pickers outside insert mode"] = function()
   local scheduled
   local mode = "i"
   local mode_at_select
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled = callback
-  end
+  end)
   nvim.cmd.stopinsert = function()
     mode = "n"
   end
@@ -3138,7 +3138,7 @@ T["chat"]["opens permission pickers outside insert mode"] = function()
 
   assert(scheduled)
   scheduled()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
   nvim.cmd.stopinsert = original_stopinsert
 
@@ -3156,9 +3156,9 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
   local labels
   local prompt
   local response
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   first:emit({
     type = "permission_requested",
@@ -3185,7 +3185,7 @@ T["chat"]["preserves distinct permission option names with the same kind"] = fun
     callback(options[2], 2)
   end
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(labels, { "Allow for This Session", "Allow and Don't Ask Again" })
@@ -3203,9 +3203,9 @@ local function permission_harness()
   local drained = 0
   local pickers = {}
   local responses = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.select = function(items, options, callback)
     pickers[#pickers + 1] = { items = items, prompt = options.prompt, callback = callback }
   end
@@ -3427,9 +3427,9 @@ T["chat"]["cancels a queued permission choice after disposal"] = function()
   local scheduled = {}
   local choose
   local response
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.select = function(_, _, callback)
     choose = callback
   end
@@ -3447,7 +3447,7 @@ T["chat"]["cancels a queued permission choice after disposal"] = function()
   chat:dispose()
   choose("allow", 1)
 
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
   MiniTest.expect.equality(response, { outcome = { outcome = "cancelled" } })
 end
@@ -4280,9 +4280,9 @@ T["chat"]["ignores a queued setup overview after disposal"] = function()
   local original_select = nvim.ui.select
   local scheduled = {}
   local selects = 0
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.select = function()
     selects = selects + 1
   end
@@ -4290,7 +4290,7 @@ T["chat"]["ignores a queued setup overview after disposal"] = function()
   assert(chat:attach(first))
   chat:dispose()
   scheduled[1]()
-  nvim.schedule = original_schedule
+  rawset(nvim, "schedule", original_schedule)
   nvim.ui.select = original_select
 
   MiniTest.expect.equality(selects, 0)

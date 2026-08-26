@@ -73,7 +73,7 @@ T["beads"] = MiniTest.new_set({
     post_case = function()
       nvim.fn.executable = original_executable
       nvim.ui.input = original_input
-      nvim.schedule = original_schedule
+      rawset(nvim, "schedule", original_schedule)
       rawset(nvim, "system", original_system)
       delete_test_buffers()
     end,
@@ -84,9 +84,9 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
   local buffer = source_buffer({ "Fix louiselm-kpod today" }, 8)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   assert(Beads.inspect(buffer))
 
@@ -131,9 +131,9 @@ T["beads"]["uses the Beads workspace prefix for issue lookup"] = function()
   local buffer = source_buffer({ "Fix daa-nk1l today" }, 8)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   assert(Beads.inspect(buffer, { cwd = "/home/lotso/code/acp-llm-adapter" }))
 
@@ -164,9 +164,9 @@ T["beads"]["opens an issue whose JSON omits the labels key entirely"] = function
   local buffer = source_buffer({ "Fix louiselm-kpod today" }, 8)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   assert(Beads.inspect(buffer))
   complete_where(calls, scheduled, "louiselm")
@@ -195,9 +195,9 @@ T["beads"]["prompts for a Beads issue ID when the cursor has none"] = function()
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.input = function(options, callback)
     MiniTest.expect.equality(options.prompt, "louiselm Beads issue id: ")
     callback("louiselm-zmab")
@@ -213,9 +213,9 @@ T["beads"]["prepends the workspace prefix to a bare id typed at the prompt"] = f
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.input = function(_, callback)
     callback("zmab")
   end
@@ -230,9 +230,9 @@ T["beads"]["prompts instead of guessing when one line contains multiple Beads is
   local buffer = source_buffer({ "Compare louiselm-kpod with louiselm-zmab" }, 10)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   nvim.ui.input = function(_, callback)
     callback("louiselm-zmab")
   end
@@ -247,9 +247,9 @@ T["beads"]["rejects an invalid prompted ID without starting br"] = function()
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()
   local scheduled = {}
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
   local error_message
   nvim.ui.input = function(_, callback)
     callback("codex/session-123")
@@ -291,9 +291,9 @@ T["beads"]["reports malformed br JSON without opening a popup"] = function()
   local calls = fake_system()
   local scheduled = {}
   local error_message
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   assert(Beads.inspect(buffer, {
     on_error = function(message)
@@ -313,9 +313,9 @@ T["beads"]["reports a failed br lookup without opening a popup"] = function()
   local calls = fake_system()
   local scheduled = {}
   local error_message
-  nvim.schedule = function(callback)
+  rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
-  end
+  end)
 
   assert(Beads.inspect(buffer, {
     on_error = function(message)
