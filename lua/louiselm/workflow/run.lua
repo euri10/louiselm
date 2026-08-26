@@ -27,7 +27,7 @@ local nvim = vim
 ---@field workers louiselm.workflow.RunWorker[] Owned Sessions.
 ---@field status "active"|"cancelling"|"cancelled"|"parked"|"disposed"
 ---@field cancel fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
----@field park fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
+---@field park fun(self: louiselm.workflow.Run, callback?: fun(ok: boolean, error_message?: string)): boolean, string?
 ---@field create_session fun(self: louiselm.workflow.Run, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
@@ -194,7 +194,7 @@ end
 ---Cooperative cancellation is requested for active turns, but no acknowledgment is awaited and no
 ---worker is disposed. This escape is therefore available even when an ACP Agent is wedged.
 ---@param self louiselm.workflow.Run
----@param callback? fun() Called after the local Park transition.
+---@param callback? fun(ok: boolean, error_message?: string) Called after the local Park transition.
 ---@return boolean parked
 ---@return string? error_message
 function Run:park(callback)

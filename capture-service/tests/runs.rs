@@ -4,6 +4,10 @@ fn draft(id: &str) -> RunDraft {
     RunDraft {
         id: id.to_owned(),
         session_id: "codex/session-123".to_owned(),
+        agent: "codex".to_owned(),
+        acp_session_id: "acp-session-123".to_owned(),
+        working_dir: "/tmp/project".to_owned(),
+        load_session: true,
         claimed_issue_ids: vec!["louiselm-qbr.3.3".to_owned()],
         park_expires_at_ms: 2_000,
     }
@@ -15,6 +19,11 @@ fn cold_park_survives_reopen_and_reaps_each_claim_once() {
     let run_id = "11111111-1111-4111-8111-111111111111";
     let store = RunStore::new(temporary.path()).expect("store");
     store.park_cold(draft(run_id)).expect("park");
+    let persisted = store.run(run_id).expect("persisted run");
+    assert_eq!(persisted.agent, "codex");
+    assert_eq!(persisted.acp_session_id, "acp-session-123");
+    assert_eq!(persisted.working_dir, "/tmp/project");
+    assert!(persisted.load_session);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -53,6 +62,20 @@ fn cold_park_survives_reopen_and_reaps_each_claim_once() {
         0
     );
     assert_eq!(store.run(run_id).expect("run").state, "disposed");
+}
+
+#[test]
+fn cold_park_rejects_an_agent_without_load_session() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let mut run = draft("33333333-3333-4333-8333-333333333333");
+    run.load_session = false;
+
+    assert!(
+        RunStore::new(temporary.path())
+            .expect("store")
+            .park_cold(run)
+            .is_err()
+    );
 }
 
 #[test]

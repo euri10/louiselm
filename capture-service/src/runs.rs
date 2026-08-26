@@ -16,6 +16,14 @@ pub struct RunDraft {
     pub id: String,
     /// Agent-scoped Session identity that claimed the work.
     pub session_id: String,
+    /// Configured Agent name used to reload the ACP Session.
+    pub agent: String,
+    /// Agent-side ACP Session identifier.
+    pub acp_session_id: String,
+    /// Working directory used when reloading the ACP Session.
+    pub working_dir: String,
+    /// Whether admission confirmed ACP `session/load` support.
+    pub load_session: bool,
     /// Beads claims to release if this Park expires.
     pub claimed_issue_ids: Vec<String>,
     /// Unix epoch milliseconds when the Park expires.
@@ -31,6 +39,14 @@ pub struct Run {
     pub id: String,
     /// Session identity used to form a truthful reaper actor.
     pub session_id: String,
+    /// Configured Agent name used to reload the ACP Session.
+    pub agent: String,
+    /// Agent-side ACP Session identifier.
+    pub acp_session_id: String,
+    /// Working directory used when reloading the ACP Session.
+    pub working_dir: String,
+    /// Whether admission confirmed ACP `session/load` support.
+    pub load_session: bool,
     /// One of `cold_parked` or `disposed`.
     pub state: String,
     /// Cold-Park expiry.
@@ -141,6 +157,10 @@ impl RunStore {
             schema_version: 1,
             id: draft.id,
             session_id: draft.session_id,
+            agent: draft.agent,
+            acp_session_id: draft.acp_session_id,
+            working_dir: draft.working_dir,
+            load_session: draft.load_session,
             state: "cold_parked".to_owned(),
             park_expires_at_ms: draft.park_expires_at_ms,
             cleanup: draft
@@ -233,11 +253,15 @@ impl RunStore {
 fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {
     validate_id(&draft.id)?;
     if draft.session_id.is_empty()
+        || draft.agent.is_empty()
+        || draft.acp_session_id.is_empty()
+        || draft.working_dir.is_empty()
+        || !draft.load_session
         || draft.park_expires_at_ms == 0
         || draft.claimed_issue_ids.iter().any(|id| id.is_empty())
     {
         return Err(RunStoreError::Invalid(
-            "Run fields must be non-empty and expiry positive".to_owned(),
+            "Run fields must be non-empty, reloadable, and expiry positive".to_owned(),
         ));
     }
     Ok(())

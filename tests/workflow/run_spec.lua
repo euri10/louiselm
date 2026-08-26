@@ -85,7 +85,16 @@ T["durable Park"] = MiniTest.new_set()
 T["durable Park"]["does not transition before service confirmation"] = function()
   local complete
   local run = assert(Workflow.new_run({
-    park_record = { id = "run", session_id = "codex/session", claims = { "issue" }, expires_at_ms = 1 },
+    park_record = {
+      id = "run",
+      session_id = "codex/session",
+      agent = "codex",
+      acp_session_id = "acp-session",
+      cwd = "/tmp/project",
+      load_session = true,
+      claims = { "issue" },
+      expires_at_ms = 1,
+    },
     park_service = function(_, callback)
       complete = callback
       return true
@@ -103,7 +112,16 @@ end
 T["durable Park"]["keeps Run active when service persistence fails"] = function()
   local failure
   local run = assert(Workflow.new_run({
-    park_record = { id = "run", session_id = "codex/session", claims = { "issue" }, expires_at_ms = 1 },
+    park_record = {
+      id = "run",
+      session_id = "codex/session",
+      agent = "codex",
+      acp_session_id = "acp-session",
+      cwd = "/tmp/project",
+      load_session = true,
+      claims = { "issue" },
+      expires_at_ms = 1,
+    },
     park_service = function(_, callback)
       callback(false, "service unavailable")
       return true

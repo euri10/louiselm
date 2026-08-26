@@ -8,6 +8,10 @@ local nvim = vim
 ---@class louiselm.workflow.ParkRecord
 ---@field id string
 ---@field session_id string
+---@field agent string Configured Agent name.
+---@field acp_session_id string Agent-side ACP Session identifier.
+---@field cwd string Working directory used for cold resume.
+---@field load_session boolean Admission result for ACP `session/load` support.
 ---@field claims string[]
 ---@field expires_at_ms integer
 
@@ -22,6 +26,18 @@ function M.park(record, callback, system)
   end
   if type(record.session_id) ~= "string" or record.session_id == "" then
     return false, "Park record session_id must be a non-empty string"
+  end
+  if type(record.agent) ~= "string" or record.agent == "" then
+    return false, "Park record agent must be a non-empty string"
+  end
+  if type(record.acp_session_id) ~= "string" or record.acp_session_id == "" then
+    return false, "Park record acp_session_id must be a non-empty string"
+  end
+  if type(record.cwd) ~= "string" or record.cwd == "" then
+    return false, "Park record cwd must be a non-empty string"
+  end
+  if record.load_session ~= true then
+    return false, "Park requires an Agent that supports session/load"
   end
   if type(record.claims) ~= "table" or #record.claims == 0 then
     return false, "Park record claims must be a non-empty array"
@@ -38,6 +54,14 @@ function M.park(record, callback, system)
     record.id,
     "--session-id",
     record.session_id,
+    "--agent",
+    record.agent,
+    "--acp-session-id",
+    record.acp_session_id,
+    "--cwd",
+    record.cwd,
+    "--load-session",
+    "true",
     "--claims",
     table.concat(record.claims, ","),
     "--expires-at-ms",

@@ -108,6 +108,10 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     let draft = RunDraft {
         id: required_option(options, "--id")?.to_owned(),
         session_id: required_option(options, "--session-id")?.to_owned(),
+        agent: required_option(options, "--agent")?.to_owned(),
+        acp_session_id: required_option(options, "--acp-session-id")?.to_owned(),
+        working_dir: required_option(options, "--cwd")?.to_owned(),
+        load_session: required_option(options, "--load-session")? == "true",
         claimed_issue_ids: claims,
         park_expires_at_ms: positive_integer(options, "--expires-at-ms")?,
     };
@@ -489,6 +493,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }
