@@ -3,6 +3,7 @@
 local M = {}
 local Run = {}
 Run.__index = Run
+local Service = require("louiselm.workflow.service")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -16,6 +17,8 @@ local nvim = vim
 ---@field session_api? louiselm.session.Api API used to create owned Sessions.
 ---@field cancellation_timeout_ms? integer Maximum time to wait for cooperative acknowledgment.
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
+---@field park_record? louiselm.workflow.ParkRecord Durable cold-Park record.
+---@field park_service? fun(record: louiselm.workflow.ParkRecord, callback: fun(ok: boolean, error_message?: string)): boolean, string? Async persistence boundary.
 
 ---@class louiselm.workflow.Run
 ---@field session_api? louiselm.session.Api
@@ -29,6 +32,8 @@ local nvim = vim
 ---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
 ---@field emergency_stop fun(self: louiselm.workflow.Run): boolean, string?
+---@field park_record? louiselm.workflow.ParkRecord
+---@field park_service fun(record: louiselm.workflow.ParkRecord, callback: fun(ok: boolean, error_message?: string)): boolean, string?
 
 ---@param value unknown
 ---@return boolean
@@ -74,6 +79,8 @@ function M.new(options)
     schedule = schedule,
     workers = {},
     status = "active",
+    park_record = options.park_record,
+    park_service = options.park_service or Service.park,
   }, Run)
   return run
 end
@@ -197,15 +204,31 @@ function Run:park(callback)
   if self.status == "parked" then
     return true
   end
-  self.status = "parked"
-  for _, worker in ipairs(self.workers) do
-    if not acknowledged(worker) then
-      worker:cancel()
+  local function complete(ok, error_message)
+    if not ok then
+      if callback ~= nil then
+        callback(false, error_message)
+      end
+      return
+    end
+    self.status = "parked"
+    for _, worker in ipairs(self.workers) do
+      if not acknowledged(worker) then
+        worker:cancel()
+      end
+    end
+    if callback ~= nil then
+      callback(true)
     end
   end
-  if callback ~= nil then
-    callback()
+  if self.park_record ~= nil then
+    local started, start_error = self.park_service(self.park_record, complete)
+    if not started then
+      return false, start_error
+    end
+    return true
   end
+  complete(true)
   return true
 end
 

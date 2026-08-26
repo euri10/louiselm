@@ -80,6 +80,42 @@ end
 
 T["cancellation"] = MiniTest.new_set()
 
+T["durable Park"] = MiniTest.new_set()
+
+T["durable Park"]["does not transition before service confirmation"] = function()
+  local complete
+  local run = assert(Workflow.new_run({
+    park_record = { id = "run", session_id = "codex/session", claims = { "issue" }, expires_at_ms = 1 },
+    park_service = function(_, callback)
+      complete = callback
+      return true
+    end,
+  }))
+  local result = assert(run:park(function(ok)
+    MiniTest.expect.equality(ok, true)
+  end))
+  MiniTest.expect.equality(result, true)
+  MiniTest.expect.equality(run.status, "active")
+  complete(true)
+  MiniTest.expect.equality(run.status, "parked")
+end
+
+T["durable Park"]["keeps Run active when service persistence fails"] = function()
+  local failure
+  local run = assert(Workflow.new_run({
+    park_record = { id = "run", session_id = "codex/session", claims = { "issue" }, expires_at_ms = 1 },
+    park_service = function(_, callback)
+      callback(false, "service unavailable")
+      return true
+    end,
+  }))
+  assert(run:park(function(ok, error_message)
+    failure = { ok, error_message }
+  end))
+  MiniTest.expect.equality(run.status, "active")
+  MiniTest.expect.equality(failure, { false, "service unavailable" })
+end
+
 T["cancellation"]["parks a wedged worker without disposing its Session"] = function()
   local run = assert(Workflow.new_run())
   local session = worker("prompting")
