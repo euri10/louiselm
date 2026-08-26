@@ -949,7 +949,7 @@ T["chat"]["renders a terminal task-complete result inline"] = function()
   chat:dispose()
 end
 
-T["chat"]["prefers a later assistant chunk over a terminal task-complete result"] = function()
+T["chat"]["renders a distinct terminal task-complete result before a later assistant chunk"] = function()
   local first = fake_session("session-1", "copilot")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -961,7 +961,7 @@ T["chat"]["prefers a later assistant chunk over a terminal task-complete result"
       toolCallId = "tool-1",
       title = "task_complete",
       status = "completed",
-      rawOutput = { content = "Duplicate conclusion" },
+      rawOutput = { content = "Terminal conclusion" },
     },
   })
   first:emit({
@@ -977,7 +977,7 @@ T["chat"]["prefers a later assistant chunk over a terminal task-complete result"
 
   local rendered = table.concat(buffer_lines(chat:buffer()), "\n")
   MiniTest.expect.equality(rendered:find("Assistant conclusion", 1, true) ~= nil, true)
-  MiniTest.expect.equality(rendered:find("Duplicate conclusion", 1, true) == nil, true)
+  MiniTest.expect.equality(rendered:find("Terminal conclusion", 1, true) ~= nil, true)
   chat:dispose()
 end
 
@@ -1013,7 +1013,9 @@ T["chat"]["flushes a terminal task-complete result that arrives after turn_done"
   chat:dispose()
 end
 
-T["chat"]["does not duplicate a terminal task-complete result arriving after turn_done when prose already streamed"] = function()
+T["chat"]["renders a distinct terminal task-complete result arriving after turn_done"] = function()
+  -- Observed in copilot/c16c463b-0564-4e67-bbf3-792be466dbb7: progress prose
+  -- preceded a longer, distinct task_complete answer that arrived after turn_done.
   local first = fake_session("session-1", "copilot")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -1021,7 +1023,7 @@ T["chat"]["does not duplicate a terminal task-complete result arriving after tur
   first:emit({
     type = "chunk",
     session_id = "session-1",
-    data = { content = { type = "text", text = "Assistant conclusion" } },
+    data = { content = { type = "text", text = "Progress update" } },
   })
   first:emit({
     type = "tool_call_started",
@@ -1035,17 +1037,53 @@ T["chat"]["does not duplicate a terminal task-complete result arriving after tur
     data = {
       toolCallId = "tool-1",
       status = "completed",
-      rawOutput = { content = "Duplicate late conclusion" },
+      rawOutput = { content = "Final answer" },
     },
   })
 
   nvim.wait(100, function()
-    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Assistant conclusion", 1, true) ~= nil
+    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Final answer", 1, true) ~= nil
   end, 1)
 
   local rendered = table.concat(buffer_lines(chat:buffer()), "\n")
-  MiniTest.expect.equality(rendered:find("Assistant conclusion", 1, true) ~= nil, true)
-  MiniTest.expect.equality(rendered:find("Duplicate late conclusion", 1, true) == nil, true)
+  MiniTest.expect.equality(rendered:find("Progress update", 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered:find("Final answer", 1, true) ~= nil, true)
+  chat:dispose()
+end
+
+T["chat"]["does not repeat a terminal task-complete result arriving after turn_done"] = function()
+  local first = fake_session("session-1", "copilot")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Final answer" } },
+  })
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "task_complete" },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = {
+      toolCallId = "tool-1",
+      status = "completed",
+      rawOutput = { content = "Final answer" },
+    },
+  })
+
+  nvim.wait(100, function()
+    return table.concat(buffer_lines(chat:buffer()), "\n"):find("Final answer", 1, true) ~= nil
+  end, 1)
+
+  local rendered = table.concat(buffer_lines(chat:buffer()), "\n")
+  local _, occurrences = rendered:gsub("Final answer", "")
+  MiniTest.expect.equality(occurrences, 1)
   chat:dispose()
 end
 

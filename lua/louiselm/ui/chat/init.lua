@@ -29,7 +29,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field response_tail integer? Zero-based last streamed response line.
 ---@field response_started boolean Whether the assistant has rendered response text for this turn.
 ---@field pending_terminal_completion? string Text from a terminal completion tool, flushed at turn end or immediately if it arrives after turn end.
----@field turn_has_prose boolean Whether the current turn has rendered any assistant chunk text, regardless of block ordering; suppresses a redundant terminal-completion echo.
+---@field turn_prose string Assistant chunk text rendered during the current turn; suppresses a terminal-completion echo only when that exact text was already shown.
 ---@field turn_done_fired boolean Whether `turn_done` already ran for the current turn; a terminal completion arriving after this flushes immediately instead of waiting for a `turn_done` that already passed.
 ---@field last_block_kind ("prose"|"tool"|"reasoning")? Kind of the most recently rendered transcript block; separates adjacent prose, reasoning, and tool blocks with a blank line.
 ---@field trailing_blank boolean Whether the line at `transcript_tail` is already a blank separator, counted as part of `transcript_tail` itself; meaningful only while `last_block_kind == "prose"`, since a completed prose block is the only thing that always leaves one behind.
@@ -1660,14 +1660,13 @@ insert_transcript = function(self, view, lines)
   mark_prompt(view, view.prompt_line + #replacement)
 end
 
----Render a terminal-completion tool's retained text inline, unless the current
----turn already streamed real assistant prose (in which case the completion
----would be a redundant echo of an answer the user already saw).
+---Render a terminal-completion tool's retained text inline unless that exact
+---text was already streamed during the current turn.
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
 local function flush_terminal_completion(self, view, text)
-  if view.turn_has_prose then
+  if view.turn_prose:find(text, 1, true) ~= nil then
     return
   end
   local lines = {}
@@ -2185,7 +2184,7 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
-    view.turn_has_prose = false
+    view.turn_prose = ""
     view.turn_done_fired = false
     view.last_block_kind = nil
   elseif event.type == "chunk" then
@@ -2193,8 +2192,7 @@ local function handle_event(self, view, event)
     if text == nil then
       return
     end
-    view.pending_terminal_completion = nil
-    view.turn_has_prose = true
+    view.turn_prose = view.turn_prose .. text
     view.replay_user_open = false
     close_tool_fold_run(view)
     close_thought_fold_run(view)
@@ -2663,7 +2661,7 @@ function Chat:attach(session)
     response_line = nil,
     response_tail = nil,
     response_started = false,
-    turn_has_prose = false,
+    turn_prose = "",
     turn_done_fired = false,
     last_block_kind = nil,
     trailing_blank = false,
