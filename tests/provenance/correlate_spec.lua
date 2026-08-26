@@ -35,9 +35,23 @@ T["captured git log yields explicit issue and Session edges"] = function()
     source = { kind = "commit", id = "32665fd3a1c99265496526a9a3116d0d8320182" },
     target = { kind = "issue", id = "louiselm-ce6.34" },
     relation = "refs",
+    method = "recorded",
+    confidence = 1,
   })
-  MiniTest.expect.equality(edges[2].target, { kind = "issue", id = "louiselm-dpik" })
-  MiniTest.expect.equality(edges[3].target, { kind = "session", id = "codex/01a03df9-6992-71e2-9050-1d4dd466011c" })
+  MiniTest.expect.equality(edges[2], {
+    source = { kind = "commit", id = "5be054d50e2b48d231670933d896460e7d262b7a" },
+    target = { kind = "issue", id = "louiselm-dpik" },
+    relation = "refs",
+    method = "recorded",
+    confidence = 1,
+  })
+  MiniTest.expect.equality(edges[3], {
+    source = { kind = "commit", id = "5be054d50e2b48d231670933d896460e7d262b7a" },
+    target = { kind = "session", id = "codex/01a03df9-6992-71e2-9050-1d4dd466011c" },
+    relation = "refs",
+    method = "recorded",
+    confidence = 1,
+  })
 end
 
 T["stale references remain data rather than becoming errors"] = function()
@@ -58,6 +72,70 @@ T["invalid collected input returns a structured error"] = function()
   assert(error_value ~= nil)
   MiniTest.expect.equality(error_value.code, "invalid_commit")
   MiniTest.expect.equality(error_value.index, 1)
+end
+
+T["derives Decision anchors and recorded relations from question issues"] = function()
+  local graph, error_value = Correlate.decisions({
+    {
+      id = "louiselm-old",
+      issue_type = "question",
+      title = "Old decision",
+    },
+    {
+      id = "louiselm-new",
+      issue_type = "question",
+      title = "New decision",
+      description = "Decision relation: supersedes louiselm-old",
+    },
+    { id = "louiselm-task", issue_type = "task", title = "Unrelated task" },
+  })
+
+  assert(error_value == nil)
+  assert(graph ~= nil)
+  MiniTest.expect.equality(graph.anchors, {
+    { id = "louiselm-old", title = "Old decision" },
+    { id = "louiselm-new", title = "New decision" },
+  })
+  MiniTest.expect.equality(graph.relations, {
+    {
+      source = { kind = "decision", id = "louiselm-new" },
+      target = { kind = "decision", id = "louiselm-old" },
+      relation = "supersedes",
+      method = "recorded",
+      confidence = 1,
+    },
+  })
+end
+
+T["malformed and unknown optional relations do not invent edges"] = function()
+  local graph, error_value = Correlate.decisions({
+    { id = "louiselm-known", issue_type = "question", title = "Known" },
+    {
+      id = "louiselm-current",
+      issue_type = "question",
+      description = table.concat({
+        "Decision relation: supersedes",
+        "Decision relation: reconsiders missing-id",
+        "This mentions louiselm-known but is not a relation.",
+      }, "\n"),
+    },
+  })
+
+  assert(error_value == nil)
+  assert(graph ~= nil)
+  MiniTest.expect.equality(#graph.relations, 0)
+  MiniTest.expect.equality(#graph.diagnostics, 2)
+end
+
+T["decision relations do not infer links from shared text"] = function()
+  local graph, error_value = Correlate.decisions({
+    { id = "louiselm-a", issue_type = "question", title = "Same topic" },
+    { id = "louiselm-b", issue_type = "question", title = "Same topic" },
+  })
+
+  assert(error_value == nil)
+  assert(graph ~= nil)
+  MiniTest.expect.equality(#graph.relations, 0)
 end
 
 return T

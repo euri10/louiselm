@@ -1,5 +1,5 @@
 ---@class louiselm.provenance.Node
----@field kind "commit"|"issue"|"session" Node kind.
+---@field kind "commit"|"issue"|"session"|"decision" Node kind.
 ---@field id string Stable identifier for the node.
 
 ---@class louiselm.provenance.Commit
@@ -7,9 +7,29 @@
 ---@field message string Commit message, including trailers.
 
 ---@class louiselm.provenance.Edge
----@field source louiselm.provenance.Node Commit that recorded the reference.
----@field target louiselm.provenance.Node Issue or Session named by the trailer.
----@field relation "refs" The recorded relationship.
+---@field source louiselm.provenance.Node Node that establishes the relationship.
+---@field target louiselm.provenance.Node Node named by the relationship.
+---@field relation string Relationship between the nodes.
+---@field method "recorded"|"inferred" How the relationship was established.
+---@field confidence number Confidence in the relationship, from 0 to 1.
+
+---@class louiselm.provenance.Issue
+---@field id string Stable Beads issue identifier.
+---@field issue_type string Beads issue type.
+---@field title? string Human-readable issue title.
+---@field description? string Human-authored issue description.
+---@field notes? string Human-authored issue notes.
+---@field design? string Human-authored design notes.
+---@field acceptance_criteria? string Human-authored acceptance criteria.
+
+---@class louiselm.provenance.DecisionAnchor
+---@field id string Beads issue identifier that anchors the Decision.
+---@field title? string Human-readable issue title.
+
+---@class louiselm.provenance.DecisionGraph
+---@field anchors louiselm.provenance.DecisionAnchor[] Question issues represented as Decisions.
+---@field relations louiselm.provenance.Edge[] Explicit relationships between Decisions.
+---@field diagnostics louiselm.provenance.Error[] Non-fatal malformed or unresolved relations.
 
 ---@class louiselm.provenance.Error
 ---@field code string Stable machine-readable error code.
@@ -75,6 +95,91 @@ local function references(message)
   return result
 end
 
+---@param value unknown
+---@param index integer
+---@return louiselm.provenance.Issue? issue
+---@return louiselm.provenance.Error? error_value
+local function validate_issue(value, index)
+  if type(value) ~= "table" then
+    return nil, make_error("invalid_issue", "issue must be a table", index)
+  end
+  if type(value.id) ~= "string" or value.id == "" then
+    return nil, make_error("invalid_issue", "issue id must be a non-empty string", index)
+  end
+  if type(value.issue_type) ~= "string" or value.issue_type == "" then
+    return nil, make_error("invalid_issue", "issue type must be a non-empty string", index)
+  end
+  local issue = { id = value.id, issue_type = value.issue_type }
+  for _, field in ipairs({ "title", "description", "notes", "design", "acceptance_criteria" }) do
+    if value[field] ~= nil then
+      if type(value[field]) ~= "string" then
+        return nil, make_error("invalid_issue", "issue " .. field .. " must be a string", index)
+      end
+      issue[field] = value[field]
+    end
+  end
+  return issue, nil
+end
+
+---@param issue louiselm.provenance.Issue
+---@return louiselm.provenance.DecisionAnchor anchor
+local function decision_anchor(issue)
+  local anchor = { id = issue.id }
+  if issue.title ~= nil and issue.title ~= "" then
+    anchor.title = issue.title
+  end
+  return anchor
+end
+
+---@param issue louiselm.provenance.Issue
+---@return string[] text_fields
+local function relation_text(issue)
+  local fields = {}
+  for _, field in ipairs({ "description", "notes", "design", "acceptance_criteria" }) do
+    if issue[field] ~= nil then
+      fields[#fields + 1] = issue[field]
+    end
+  end
+  return fields
+end
+
+---@param issue louiselm.provenance.Issue
+---@param decisions table<string, boolean>
+---@param diagnostics louiselm.provenance.Error[]
+---@return louiselm.provenance.Edge[] relations
+local function decision_relations(issue, decisions, diagnostics)
+  local relations = {}
+  for _, text in ipairs(relation_text(issue)) do
+    for line in text:gmatch("[^\r\n]+") do
+      local relation, target_id = line:match("^%s*Decision relation:%s*(%w+)%s*(%S*)%s*$")
+      if relation ~= nil then
+        if (relation ~= "supersedes" and relation ~= "reconsiders") or target_id == "" then
+          diagnostics[#diagnostics + 1] = make_error(
+            "malformed_decision_relation",
+            "Decision relation must name supersedes or reconsiders and a target issue",
+            nil
+          )
+        elseif not decisions[target_id] then
+          diagnostics[#diagnostics + 1] = make_error(
+            "unresolved_decision_relation",
+            "Decision relation target is not a question issue: " .. target_id,
+            nil
+          )
+        else
+          relations[#relations + 1] = {
+            source = { kind = "decision", id = issue.id },
+            target = { kind = "decision", id = target_id },
+            relation = relation,
+            method = "recorded",
+            confidence = 1,
+          }
+        end
+      end
+    end
+  end
+  return relations
+end
+
 ---Build explicit Provenance edges from already-collected git commits.
 ---This function performs no filesystem, process, or editor I/O.
 ---@param commits louiselm.provenance.Commit[] Collected commits in git order.
@@ -96,10 +201,62 @@ function M.commits(commits)
         source = { kind = "commit", id = commit.id },
         target = { kind = reference_kind(reference), id = reference },
         relation = "refs",
+        method = "recorded",
+        confidence = 1,
       }
     end
   end
   return edges, nil
+end
+
+---Derive Decision anchors and explicit relations from Beads issues.
+---Question issues become anchors; no new persistent entity is created.
+---Only explicit `Decision relation:` markers between known question issues
+---produce relations. Malformed or unresolved optional markers are diagnostics.
+---This function performs no filesystem, process, or editor I/O.
+---@param issues louiselm.provenance.Issue[] Beads issues to inspect.
+---@return louiselm.provenance.DecisionGraph? graph Derived anchors and relations.
+---@return louiselm.provenance.Error? error_value Malformed required input.
+function M.decisions(issues)
+  if type(issues) ~= "table" then
+    return nil, make_error("invalid_issues", "issues must be an array")
+  end
+
+  local valid_issues = {}
+  local by_id = {}
+  for index, value in ipairs(issues) do
+    local issue, validation_error = validate_issue(value, index)
+    if issue == nil then
+      return nil, validation_error
+    end
+    if by_id[issue.id] then
+      return nil, make_error("invalid_issue", "issue ids must be unique", index)
+    end
+    by_id[issue.id] = issue
+    valid_issues[#valid_issues + 1] = issue
+  end
+
+  local anchors = {}
+  local decisions = {}
+  for _, issue in ipairs(valid_issues) do
+    if issue.issue_type == "question" then
+      anchors[#anchors + 1] = decision_anchor(issue)
+      decisions[issue.id] = true
+    end
+  end
+
+  local relations = {}
+  local diagnostics = {}
+  for _, issue in ipairs(valid_issues) do
+    if decisions[issue.id] then
+      local issue_relations = decision_relations(issue, decisions, diagnostics)
+      for _, relation in ipairs(issue_relations) do
+        relations[#relations + 1] = relation
+      end
+    end
+  end
+
+  return { anchors = anchors, relations = relations, diagnostics = diagnostics }, nil
 end
 
 return M
