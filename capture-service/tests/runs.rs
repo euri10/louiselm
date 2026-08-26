@@ -15,6 +15,19 @@ fn cold_park_survives_reopen_and_reaps_each_claim_once() {
     let run_id = "11111111-1111-4111-8111-111111111111";
     let store = RunStore::new(temporary.path()).expect("store");
     store.park_cold(draft(run_id)).expect("park");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            std::fs::metadata(temporary.path().join(format!("{run_id}.json")))
+                .expect("record mode")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
     drop(store);
 
     let store = RunStore::new(temporary.path()).expect("reopen store");

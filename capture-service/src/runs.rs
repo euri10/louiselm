@@ -77,6 +77,7 @@ impl RunStore {
     /// Open or create the Run-record root.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, RunStoreError> {
         fs::create_dir_all(root.as_ref())?;
+        set_private_permissions(root.as_ref(), true)?;
         Ok(Self {
             root: root.as_ref().to_path_buf(),
         })
@@ -214,6 +215,7 @@ fn write_atomic(path: &Path, value: &impl Serialize) -> Result<(), RunStoreError
         writer.flush()?;
         writer.get_ref().sync_all()?;
         fs::rename(&temporary, path)?;
+        set_private_permissions(path, false)?;
         File::open(path.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "Run path has no parent")
         })?)?
@@ -224,4 +226,19 @@ fn write_atomic(path: &Path, value: &impl Serialize) -> Result<(), RunStoreError
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
+    )
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path, _directory: bool) -> io::Result<()> {
+    Ok(())
 }
