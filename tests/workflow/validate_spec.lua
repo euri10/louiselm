@@ -37,6 +37,7 @@ local function reference_manifest()
     ["grill"] = {
       workflow = "reference",
       entry = true,
+      ["generated-work"] = { max = 20 },
       outcomes = { { name = "agreed", to = "route" } },
     },
     ["route"] = {
@@ -148,6 +149,34 @@ T["rejects"]["a bound that is not a literal positive integer"] = function()
   local result = Workflow.validate("reference", manifest)
 
   MiniTest.expect.equality(rejection_of(result, "unbounded_generator").stage, "route")
+end
+
+T["rejects"]["an automatic Generator without a Run-wide ceiling"] = function()
+  local manifest = reference_manifest()
+  manifest["grill"]["generated-work"] = nil
+
+  local result = Workflow.validate("reference", manifest)
+
+  MiniTest.expect.equality(rejection_of(result, "unbounded_run").stage, "grill")
+end
+
+T["rejects"]["a Run-wide ceiling outside the entry stage"] = function()
+  local manifest = reference_manifest()
+  manifest["route"]["generated-work"] = manifest["grill"]["generated-work"]
+  manifest["grill"]["generated-work"] = nil
+
+  local result = Workflow.validate("reference", manifest)
+
+  MiniTest.expect.equality(rejection_of(result, "misplaced_run_budget").stage, "route")
+end
+
+T["rejects"]["a Run-wide ceiling that is not a literal positive integer"] = function()
+  local manifest = reference_manifest()
+  manifest["grill"]["generated-work"] = { max = 0 }
+
+  local result = Workflow.validate("reference", manifest)
+
+  MiniTest.expect.equality(rejection_of(result, "unbounded_run").stage, "grill")
 end
 
 --- Rejection 3.
@@ -336,6 +365,7 @@ T["contract"]["accepts a generating workflow that grows without forming a cycle"
     ["qa-review"] = {
       workflow = "generative",
       entry = true,
+      ["generated-work"] = { max = 5 },
       generates = { max = 5 },
       outcomes = { { name = "round-complete", terminal = true } },
     },
@@ -344,6 +374,24 @@ T["contract"]["accepts a generating workflow that grows without forming a cycle"
   local result = Workflow.validate("generative", manifest)
 
   MiniTest.expect.equality(reasons(result), {})
+end
+
+T["contract"]["prepares the authored ceiling for admission and permits narrowing"] = function()
+  local prepared = assert(Workflow.prepare_admission("reference", reference_manifest(), 12))
+
+  MiniTest.expect.equality(prepared, {
+    authored_max = 20,
+    ceiling = 12,
+    consumed = 0,
+    reserved = 0,
+  })
+end
+
+T["contract"]["refuses an admission ceiling above the authored maximum"] = function()
+  local prepared, error_message = Workflow.prepare_admission("reference", reference_manifest(), 21)
+
+  MiniTest.expect.equality(prepared, nil)
+  MiniTest.expect.equality(error_message, "generated-work ceiling cannot exceed the authored maximum")
 end
 
 return T

@@ -4,6 +4,54 @@ local Service = require("louiselm.workflow.service")
 local nvim = vim
 local T = MiniTest.new_set()
 
+T["starts the constrained Run admission command"] = function()
+  local command
+  local callback
+  local scheduled
+  local previous = nvim.schedule
+  rawset(nvim, "schedule", function(fn)
+    scheduled = fn
+  end)
+  local started = assert(Service.admit({
+    id = "run",
+    session_id = "codex/session",
+    agent = "codex",
+    acp_session_id = "acp-session",
+    cwd = "/tmp/project",
+    load_session = true,
+    generated_work_max = 5,
+  }, function(ok)
+    callback = ok
+  end, function(value, _, done)
+    command = value
+    done({ code = 0, stderr = "" })
+    return true
+  end))
+  scheduled()
+  rawset(nvim, "schedule", previous)
+  MiniTest.expect.equality(started, true)
+  MiniTest.expect.equality(command, {
+    "louiselm-capture",
+    "run",
+    "admit",
+    "--id",
+    "run",
+    "--session-id",
+    "codex/session",
+    "--agent",
+    "codex",
+    "--acp-session-id",
+    "acp-session",
+    "--cwd",
+    "/tmp/project",
+    "--load-session",
+    "true",
+    "--generated-work-max",
+    "5",
+  })
+  MiniTest.expect.equality(callback, true)
+end
+
 T["starts the constrained Park command"] = function()
   local command
   local callback
@@ -86,7 +134,7 @@ T["lists durable Parks asynchronously"] = function()
     done({
       code = 0,
       stderr = "",
-      stdout = '[{"id":"run","agent":"codex","acp_session_id":"acp","working_dir":"/tmp","state":"cold_parked","park_expires_at_ms":1}]',
+      stdout = '[{"id":"run","agent":"codex","acp_session_id":"acp","working_dir":"/tmp","state":"cold_parked","park_expires_at_ms":1,"generated_work":{"ceiling":5,"consumed":0,"reserved":0}}]',
     })
     return true
   end))
@@ -101,6 +149,7 @@ T["lists durable Parks asynchronously"] = function()
         cwd = "/tmp",
         state = "cold_parked",
         expires_at_ms = 1,
+        generated_work = { ceiling = 5, consumed = 0, reserved = 0 },
       },
     },
     nil,

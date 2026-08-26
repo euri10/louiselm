@@ -21,8 +21,8 @@ use thiserror::Error;
 use crate::{
     BeadsCleanup, CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError,
     NetworkProfile, NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError,
-    PairingRegistry, Receiver, RunDraft, RunStore, RunStoreError, Store, StoreError, TlsIdentity,
-    Transcript, TranscriptionWorker,
+    PairingRegistry, Receiver, RunAdmission, RunDraft, RunStore, RunStoreError, Store, StoreError,
+    TlsIdentity, Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -103,9 +103,34 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         println!("{}", serde_json::to_string(&runs)?);
         return Ok(());
     }
+    if command == "admit" {
+        let admission = RunAdmission {
+            id: required_option(options, "--id")?.to_owned(),
+            session_id: required_option(options, "--session-id")?.to_owned(),
+            agent: required_option(options, "--agent")?.to_owned(),
+            acp_session_id: required_option(options, "--acp-session-id")?.to_owned(),
+            working_dir: required_option(options, "--cwd")?.to_owned(),
+            load_session: required_option(options, "--load-session")? == "true",
+            generated_work_ceiling: positive_integer(options, "--generated-work-max")?,
+        };
+        RunStore::new(paths.runs())?.admit(admission.clone())?;
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "id": admission.id,
+                "state": "active",
+                "generated_work": {
+                    "ceiling": admission.generated_work_ceiling,
+                    "consumed": 0,
+                    "reserved": 0
+                }
+            }))?
+        );
+        return Ok(());
+    }
     if command != "park" {
         return Err(CliError::Invalid(
-            "run supports only list and park".to_owned(),
+            "run supports only admit, list, and park".to_owned(),
         ));
     }
     let claims = required_option(options, "--claims")?
@@ -500,6 +525,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run admit --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false --generated-work-max N\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }

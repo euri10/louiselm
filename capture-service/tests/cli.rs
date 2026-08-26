@@ -49,6 +49,51 @@ fn local_ingest_and_list_expose_the_durable_inbox() {
 }
 
 #[test]
+fn run_admission_exposes_the_approved_generated_work_ceiling() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let arguments = [
+        "run",
+        "admit",
+        "--id",
+        run_id,
+        "--session-id",
+        "codex/session-123",
+        "--agent",
+        "codex",
+        "--acp-session-id",
+        "session-123",
+        "--cwd",
+        "/tmp/project",
+        "--load-session",
+        "true",
+    ];
+
+    let admitted = command(&data, &state)
+        .args(arguments)
+        .args(["--generated-work-max", "5"])
+        .output()
+        .expect("admit Run");
+    assert!(admitted.status.success(), "{:?}", admitted.stderr);
+    let response: serde_json::Value =
+        serde_json::from_slice(&admitted.stdout).expect("admission JSON");
+    assert_eq!(response["id"], run_id);
+    assert_eq!(response["state"], "active");
+    assert_eq!(response["generated_work"]["ceiling"], 5);
+    assert_eq!(response["generated_work"]["consumed"], 0);
+    assert_eq!(response["generated_work"]["reserved"], 0);
+
+    let lowering = command(&data, &state)
+        .args(arguments)
+        .args(["--generated-work-max", "4"])
+        .output()
+        .expect("lower ceiling");
+    assert!(!lowering.status.success());
+}
+
+#[test]
 fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let refused = command(

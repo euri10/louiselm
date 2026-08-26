@@ -9,6 +9,7 @@
 ---@class louiselm.workflow.Result
 ---@field ok boolean
 ---@field rejections louiselm.workflow.Rejection[]
+---@field generated_work_max? integer Authored Run-wide ceiling when Validation succeeds.
 
 local Schema = require("louiselm.workflow.schema")
 
@@ -229,6 +230,7 @@ function M.validate(workflow, manifest)
   local names = stage_names(stages)
 
   local entries = {}
+  local has_automatic_generator = false
   for _, name in ipairs(names) do
     local block = stages[name]
     check_fields(rejections, block, Schema.STAGE_FIELDS, name)
@@ -236,6 +238,7 @@ function M.validate(workflow, manifest)
       entries[#entries + 1] = name
     end
     if type(block.generates) == "table" then
+      has_automatic_generator = true
       check_fields(rejections, block.generates, Schema.GENERATES_FIELDS, name)
       if not is_literal_count(block.generates.max) then
         reject(rejections, {
@@ -243,6 +246,26 @@ function M.validate(workflow, manifest)
           message = string.format("stage '%s' generates work and must declare a literal integer 'max'", name),
           stage = name,
         })
+      end
+    end
+    if type(block["generated-work"]) == "table" then
+      check_fields(rejections, block["generated-work"], Schema.GENERATED_WORK_FIELDS, name)
+    end
+    if block["generated-work"] ~= nil and block.entry ~= true then
+      reject(rejections, {
+        reason = "misplaced_run_budget",
+        message = string.format("stage '%s' declares the Run budget but is not the entry stage", name),
+        stage = name,
+        field = "generated-work",
+      })
+    end
+    local outcomes = is_array(block.outcomes) and block.outcomes or {}
+    for _, outcome in ipairs(outcomes) do
+      if type(outcome) == "table" and outcome["back-edge"] == true then
+        local resolver = type(outcome.resolver) == "string" and outcome.resolver or Schema.DEFAULT_RESOLVER
+        if Schema.AUTOMATIC_RESOLVERS[resolver] == true then
+          has_automatic_generator = true
+        end
       end
     end
   end
@@ -262,6 +285,24 @@ function M.validate(workflow, manifest)
         table.concat(sorted(entries), ", ")
       ),
     })
+  end
+
+  local generated_work_max
+  if #entries == 1 then
+    local budget = stages[entries[1]]["generated-work"]
+    if type(budget) == "table" and is_literal_count(budget.max) then
+      generated_work_max = budget.max
+    elseif has_automatic_generator then
+      reject(rejections, {
+        reason = "unbounded_run",
+        message = string.format(
+          "entry stage '%s' must declare a literal positive 'generated-work.max' for this workflow",
+          entries[1]
+        ),
+        stage = entries[1],
+        field = "generated-work",
+      })
+    end
   end
 
   local edges = build_edges(stages)
@@ -463,7 +504,11 @@ function M.validate(workflow, manifest)
     end
   end
 
-  return { ok = #rejections == 0, rejections = rejections }
+  return {
+    ok = #rejections == 0,
+    rejections = rejections,
+    generated_work_max = #rejections == 0 and generated_work_max or nil,
+  }
 end
 
 return M

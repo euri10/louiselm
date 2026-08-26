@@ -17,6 +17,7 @@ M.STAGE_FIELDS = {
   entry = "boolean",
   outcomes = "array",
   generates = "table",
+  ["generated-work"] = "table",
 }
 
 ---Keys an outcome may carry.
@@ -32,6 +33,11 @@ M.OUTCOME_FIELDS = {
 
 ---Keys a `generates` block may carry.
 M.GENERATES_FIELDS = {
+  max = "number",
+}
+
+---Keys the entry stage's Run-wide generated-work block may carry.
+M.GENERATED_WORK_FIELDS = {
   max = "number",
 }
 

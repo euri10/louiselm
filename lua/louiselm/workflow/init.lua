@@ -23,6 +23,36 @@ function M.validate(workflow, manifest)
   return Validate.validate(workflow, Escape.apply(workflow, manifest))
 end
 
+---Resolve the operator-visible generated-work values for one admitted Run.
+---@param workflow string Workflow name.
+---@param manifest table<string, table> Discovered stage manifest.
+---@param requested_max? integer Operator-selected narrowing of the authored ceiling.
+---@return table? admission `{ authored_max, ceiling, consumed, reserved }`.
+---@return string|louiselm.workflow.Rejection[]? error Rejections or an actionable selection error.
+function M.prepare_admission(workflow, manifest, requested_max)
+  local result = M.validate(workflow, manifest)
+  if not result.ok then
+    return nil, result.rejections
+  end
+  local authored_max = result.generated_work_max
+  if authored_max == nil then
+    return { consumed = 0, reserved = 0 }
+  end
+  local ceiling = requested_max or authored_max
+  if type(ceiling) ~= "number" or ceiling % 1 ~= 0 or ceiling < 1 then
+    return nil, "generated-work ceiling must be a positive integer"
+  end
+  if ceiling > authored_max then
+    return nil, "generated-work ceiling cannot exceed the authored maximum"
+  end
+  return {
+    authored_max = authored_max,
+    ceiling = ceiling,
+    consumed = 0,
+    reserved = 0,
+  }
+end
+
 M.synthesize = Escape.apply
 M.new_run = Run.new
 M.new_cache = Cache.new
