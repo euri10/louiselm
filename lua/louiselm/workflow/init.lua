@@ -11,6 +11,7 @@
 local Validate = require("louiselm.workflow.validate")
 local Run = require("louiselm.workflow.run")
 local Escape = require("louiselm.workflow.escape")
+local Cache = require("louiselm.workflow.cache")
 
 local M = {}
 
@@ -24,5 +25,18 @@ end
 
 M.synthesize = Escape.apply
 M.new_run = Run.new
+M.new_cache = Cache.new
+
+---Validate through a caller-owned pure result cache.
+---@param cache louiselm.workflow.Cache Cache isolated to the caller's lifecycle.
+---@param workflow string Workflow name.
+---@param document unknown Original workflow document or frontmatter value.
+---@param manifest table<string, table> Discovered stage manifest.
+---@return louiselm.workflow.Result result
+function M.validate_cached(cache, workflow, document, manifest)
+  return cache:resolve(workflow, document, manifest, function()
+    return M.validate(workflow, manifest)
+  end)
+end
 
 return M
