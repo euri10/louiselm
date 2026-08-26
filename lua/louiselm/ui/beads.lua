@@ -19,25 +19,32 @@ local M = {}
 ---@class louiselm.ui.BeadsModule
 ---@field inspect fun(buffer: integer, options?: louiselm.ui.BeadsInspectorOptions): boolean, string? Inspect the Beads issue under the cursor or prompt for one. Returns an error before the asynchronous lookup starts.
 
-local function valid_issue_id(value)
-  return value:match("^louiselm%-[a-z0-9]$") ~= nil or value:match("^louiselm%-[a-z0-9][a-z0-9%.%-]*[a-z0-9]$") ~= nil
+---@param value string
+---@param prefix string
+---@return boolean valid
+local function valid_issue_id(value, prefix)
+  local escaped_prefix = prefix:gsub("([^%w])", "%%%1")
+  local pattern = "^" .. escaped_prefix .. "%-[a-z0-9]"
+  return value:match(pattern .. "$") ~= nil or value:match(pattern .. "[a-z0-9%.%-]*[a-z0-9]$") ~= nil
 end
 
 ---@param line string
 ---@param column integer Zero-based byte column.
+---@param prefix string
 ---@return string? issue_id
-local function issue_id_at_cursor(line, column)
+local function issue_id_at_cursor(line, column, prefix)
   local found
   local count = 0
   local search_start = 1
+  local escaped_prefix = prefix:gsub("([^%w])", "%%%1")
   while true do
-    local start_index, end_index = line:find("louiselm%-[a-z0-9][a-z0-9%.%-]*", search_start)
+    local start_index, end_index = line:find(escaped_prefix .. "%-[a-z0-9][a-z0-9%.%-]*", search_start)
     if start_index == nil then
       break
     end
     local issue_id = line:sub(start_index, end_index):gsub("[%.%-]+$", "")
     end_index = start_index + #issue_id - 1
-    if valid_issue_id(issue_id) then
+    if valid_issue_id(issue_id, prefix) then
       count = count + 1
       if start_index <= column + 1 and column + 1 <= end_index then
         found = issue_id
@@ -49,15 +56,16 @@ local function issue_id_at_cursor(line, column)
 end
 
 ---@param value unknown
+---@param prefix string
 ---@return louiselm.ui.BeadsIssue? issue
-local function decode_issue(value)
+local function decode_issue(value, prefix)
   if type(value) ~= "table" or type(value[1]) ~= "table" then
     return nil
   end
   local issue = value[1]
   if
     type(issue.id) ~= "string"
-    or not valid_issue_id(issue.id)
+    or not valid_issue_id(issue.id, prefix)
     or type(issue.title) ~= "string"
     or type(issue.status) ~= "string"
     or type(issue.priority) ~= "number"
@@ -156,20 +164,18 @@ end
 
 ---@param buffer integer
 ---@return string? issue_id
-local function current_issue_id(buffer)
+local function current_issue_id(buffer, prefix)
   local cursor = nvim.api.nvim_win_get_cursor(0)
   local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
-  return type(line) == "string" and issue_id_at_cursor(line, cursor[2]) or nil
+  return type(line) == "string" and issue_id_at_cursor(line, cursor[2], prefix) or nil
 end
 
 ---@param issue_id string
+---@param prefix string
 ---@param options louiselm.ui.BeadsInspectorOptions
 ---@return boolean started
 ---@return string? error_message
-local function show_issue(issue_id, options)
-  if nvim.fn.executable("br") ~= 1 then
-    return false, "br is not available"
-  end
+local function show_issue(issue_id, prefix, options)
   local started = pcall(nvim.system, { "br", "show", issue_id, "--json" }, {
     text = true,
     cwd = options.cwd or nvim.fn.getcwd(),
@@ -183,7 +189,7 @@ local function show_issue(issue_id, options)
         return
       end
       local decoded, value_or_error = pcall(nvim.json.decode, result.stdout)
-      local issue = decoded and decode_issue(value_or_error) or nil
+      local issue = decoded and decode_issue(value_or_error, prefix) or nil
       if issue == nil or issue.id ~= issue_id then
         report_error(options, "br returned malformed issue data")
         return
@@ -198,6 +204,75 @@ local function show_issue(issue_id, options)
     return false, "could not start br"
   end
   return true
+end
+
+---@param options louiselm.ui.BeadsInspectorOptions
+---@param callback fun(prefix: string)
+---@return boolean started
+---@return string? error_message
+local function discover_prefix(options, callback)
+  if nvim.fn.executable("br") ~= 1 then
+    return false, "br is not available"
+  end
+  local started = pcall(nvim.system, { "br", "where", "--json" }, {
+    text = true,
+    cwd = options.cwd or nvim.fn.getcwd(),
+  }, function(result)
+    nvim.schedule(function()
+      if options.is_active ~= nil and not options.is_active() then
+        return
+      end
+      if result.code ~= 0 then
+        report_error(options, "could not locate Beads workspace")
+        return
+      end
+      local decoded, value_or_error = pcall(nvim.json.decode, result.stdout)
+      local prefix = decoded and type(value_or_error) == "table" and value_or_error.prefix or nil
+      if
+        type(prefix) ~= "string"
+        or not prefix:match("^[a-z0-9][a-z0-9%-]*[a-z0-9]$") and not prefix:match("^[a-z0-9]$")
+      then
+        report_error(options, "br returned malformed workspace data")
+        return
+      end
+      callback(prefix)
+    end)
+  end)
+  if not started then
+    return false, "could not start br"
+  end
+  return true
+end
+
+---@param buffer integer
+---@param prefix string
+---@param options louiselm.ui.BeadsInspectorOptions
+local function inspect_with_prefix(buffer, prefix, options)
+  local issue_id = current_issue_id(buffer, prefix)
+  if issue_id ~= nil then
+    local _, lookup_error = show_issue(issue_id, prefix, options)
+    if lookup_error ~= nil then
+      report_error(options, lookup_error)
+    end
+    return
+  end
+  nvim.ui.input({ prompt = prefix .. " Beads issue id: " }, function(value)
+    if value == nil or (options.is_active ~= nil and not options.is_active()) then
+      return
+    end
+    local prompted_id = nvim.trim(value)
+    if not prompted_id:match("^" .. prefix:gsub("([^%w])", "%%%1") .. "%-") then
+      prompted_id = prefix .. "-" .. prompted_id
+    end
+    if not valid_issue_id(prompted_id, prefix) then
+      report_error(options, "Beads issue id must start with " .. prefix .. "-")
+      return
+    end
+    local _, lookup_error = show_issue(prompted_id, prefix, options)
+    if lookup_error ~= nil then
+      report_error(options, lookup_error)
+    end
+  end)
 end
 
 ---Inspect the Beads issue under the cursor in a LouiseLM Session buffer.
@@ -225,27 +300,12 @@ function M.inspect(buffer, options)
   if options.on_error ~= nil and type(options.on_error) ~= "function" then
     return false, "Beads inspector on_error must be a function"
   end
-  local issue_id = current_issue_id(buffer)
-  if issue_id ~= nil then
-    return show_issue(issue_id, options)
-  end
-  nvim.ui.input({ prompt = "louiselm Beads issue id: " }, function(value)
-    if value == nil or (options.is_active ~= nil and not options.is_active()) then
-      return
-    end
-    local prompted_id = nvim.trim(value)
-    if not prompted_id:match("^louiselm%-") then
-      prompted_id = "louiselm-" .. prompted_id
-    end
-    if not valid_issue_id(prompted_id) then
-      report_error(options, "Beads issue id must start with louiselm-")
-      return
-    end
-    local _, lookup_error = show_issue(prompted_id, options)
-    if lookup_error ~= nil then
-      report_error(options, lookup_error)
-    end
+  local started, lookup_error = discover_prefix(options, function(prefix)
+    inspect_with_prefix(buffer, prefix, options)
   end)
+  if not started then
+    return false, lookup_error
+  end
   return true
 end
 
