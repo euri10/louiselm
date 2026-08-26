@@ -306,6 +306,7 @@ louiselm.session.LimitsStatus:
 louiselm.session.EventType:
     | "chunk"
     | "user_chunk"
+    | "thought_chunk"
     | "tool_call_started"
     | "tool_call_finished"
     | "permission_requested"
@@ -390,9 +391,9 @@ louiselm.session.EventType:
 
 ### louiselm.session.GenericEvent
 
-- `data: unknown` -- Event-specific payload. For "chunk"/"user_chunk" this is the raw ACP
+- `data: unknown` -- Event-specific payload. For "chunk"/"user_chunk"/"thought_chunk" this is
 - `session_id: string` -- Local session identifier.
-- `type: "chunk"|"error"|"tool_call_finished"|"tool_call_started"|"turn_done"...(+1)`
+- `type: "chunk"|"error"|"thought_chunk"|"tool_call_finished"|"tool_call_started"...(+2)`
 
 ### louiselm.session.Event
 
