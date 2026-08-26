@@ -21,8 +21,8 @@ use thiserror::Error;
 use crate::{
     BeadsCleanup, CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError,
     NetworkProfile, NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError,
-    PairingRegistry, Receiver, RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript,
-    TranscriptionWorker,
+    PairingRegistry, Receiver, RunDraft, RunStore, RunStoreError, Store, StoreError, TlsIdentity,
+    Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -85,12 +85,38 @@ pub async fn run() -> Result<(), CliError> {
         "status" => status(&store, &paths),
         "retry" => retry(&store, options),
         "transcribe-once" => transcribe_once(&store),
+        "run" => run_command(&paths, options),
         "configure-network" => configure_network(&paths, options),
         "pair" => pair(&paths, options),
         "revoke-device" => revoke_device(&paths, options),
         "serve" => serve(store, &paths, options).await,
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
+}
+
+fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
+    let Some((command, options)) = arguments.split_first() else {
+        return Err(CliError::Invalid("run requires a subcommand".to_owned()));
+    };
+    if command != "park" {
+        return Err(CliError::Invalid("run supports only park".to_owned()));
+    }
+    let claims = required_option(options, "--claims")?
+        .split(',')
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let draft = RunDraft {
+        id: required_option(options, "--id")?.to_owned(),
+        session_id: required_option(options, "--session-id")?.to_owned(),
+        claimed_issue_ids: claims,
+        park_expires_at_ms: positive_integer(options, "--expires-at-ms")?,
+    };
+    RunStore::new(paths.runs())?.park_cold(draft.clone())?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({"id": draft.id, "state": "cold_parked"}))?
+    );
+    Ok(())
 }
 
 fn ingest_local(store: &Store, arguments: &[String]) -> Result<(), CliError> {
