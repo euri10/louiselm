@@ -19,9 +19,10 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError, NetworkProfile,
-    NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry,
-    Receiver, Store, StoreError, TlsIdentity, Transcript, TranscriptionWorker,
+    BeadsCleanup, CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError,
+    NetworkProfile, NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError,
+    PairingRegistry, Receiver, RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript,
+    TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -39,6 +40,9 @@ pub enum CliError {
     /// Capture store operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// Durable Run-store operation failed.
+    #[error(transparent)]
+    Run(#[from] RunStoreError),
     /// Pairing operation failed.
     #[error(transparent)]
     Pairing(#[from] PairingError),
@@ -299,6 +303,18 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         paths.uploads(),
         identity.public_key_sha256(),
     )?;
+    if let Some(workspace) =
+        env::var_os("LOUISELM_BEADS_WORKSPACE").filter(|value| !value.is_empty())
+    {
+        let runs = RunStore::new(paths.runs())?;
+        let cleanup = BeadsCleanup::new(PathBuf::from(workspace))?;
+        thread::spawn(move || {
+            loop {
+                let _ = runs.reap_expired(now_ms(), |action| cleanup.release(action));
+                thread::sleep(Duration::from_secs(10));
+            }
+        });
+    }
     if let Ok(provider) = openai_provider() {
         thread::spawn(move || {
             loop {
@@ -419,6 +435,10 @@ impl Paths {
 
     fn uploads(&self) -> PathBuf {
         self.state.join("louiselm/capture/uploads")
+    }
+
+    fn runs(&self) -> PathBuf {
+        self.state.join("louiselm/workflow/runs")
     }
 }
 

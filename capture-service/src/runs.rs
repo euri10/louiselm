@@ -2,6 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,55 @@ struct CleanupEntry {
 pub struct ReapAction {
     pub issue_id: String,
     pub actor: String,
+}
+
+/// Narrow adapter that can only release a pre-recorded Beads claim.
+#[derive(Clone, Debug)]
+pub struct BeadsCleanup {
+    workspace: PathBuf,
+}
+
+impl BeadsCleanup {
+    /// Bind cleanup to one explicit Beads workspace.
+    pub fn new(workspace: impl AsRef<Path>) -> Result<Self, RunStoreError> {
+        let workspace = workspace.as_ref();
+        if !workspace.join(".beads").is_dir() {
+            return Err(RunStoreError::Invalid(
+                "Beads workspace has no .beads directory".to_owned(),
+            ));
+        }
+        Ok(Self {
+            workspace: workspace.to_path_buf(),
+        })
+    }
+
+    /// Release exactly the supplied claim; it cannot create or select work.
+    pub fn release(&self, action: &ReapAction) -> Result<(), String> {
+        let output = Command::new("br")
+            .args(self.arguments(action))
+            .current_dir(&self.workspace)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+        }
+    }
+
+    /// Exact constrained command shape used for one release.
+    #[must_use]
+    pub fn arguments<'a>(&self, action: &'a ReapAction) -> [&'a str; 7] {
+        [
+            "update",
+            &action.issue_id,
+            "--assignee",
+            "",
+            "--actor",
+            &action.actor,
+            "--json",
+        ]
+    }
 }
 
 /// Durable Run-store failure.

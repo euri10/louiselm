@@ -1,4 +1,4 @@
-use louiselm_capture::{RunDraft, RunStore};
+use louiselm_capture::{BeadsCleanup, ReapAction, RunDraft, RunStore};
 
 fn draft(id: &str) -> RunDraft {
     RunDraft {
@@ -71,4 +71,27 @@ fn failed_cleanup_stays_durable_for_a_later_retry() {
 
     assert_eq!(store.reap_expired(2_000, |_| Ok(())).expect("retry"), 1);
     assert_eq!(store.run(run_id).expect("run").state, "disposed");
+}
+
+#[test]
+fn beads_cleanup_is_bound_to_one_workspace_and_can_only_release() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    assert!(BeadsCleanup::new(temporary.path()).is_err());
+    std::fs::create_dir(temporary.path().join(".beads")).expect("beads directory");
+    let cleanup = BeadsCleanup::new(temporary.path()).expect("cleanup");
+    assert_eq!(
+        cleanup.arguments(&ReapAction {
+            issue_id: "louiselm-qbr.3.3".to_owned(),
+            actor: "reaper/codex/session-123".to_owned()
+        }),
+        [
+            "update",
+            "louiselm-qbr.3.3",
+            "--assignee",
+            "",
+            "--actor",
+            "reaper/codex/session-123",
+            "--json"
+        ]
+    );
 }
