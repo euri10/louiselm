@@ -4274,17 +4274,25 @@ T["chat"]["restores prompt input after switching sessions"] = function()
   chat:dispose()
 end
 
-T["chat"]["blocks a last-window quit when multiple sessions are attached"] = function()
+T["chat"]["reports Staged context by attached Session"] = function()
   local first = fake_session("session-1", "one")
   local second = fake_session("session-2", "two")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   assert(chat:attach(second))
+  chat.views[first.state.id].contexts = { { label = "one", text = "one" }, { label = "two", text = "two" } }
+  chat.views[first.state.id].pending_skill = {
+    name = "review",
+    description = "Review code",
+    path = "/tmp/review/SKILL.md",
+    explicit_only = false,
+  }
+  chat.views[second.state.id].queued_prompt = { text = "next" }
 
-  MiniTest.expect.equality(chat:should_block_quit(), true)
+  local staged = chat:staged_context()
 
-  second.state.status = "disposed"
-  MiniTest.expect.equality(chat:should_block_quit(), false)
+  MiniTest.expect.equality(staged[first], { contexts = 2, pending_skill = true, queued_prompt = false })
+  MiniTest.expect.equality(staged[second], { contexts = 0, pending_skill = false, queued_prompt = true })
   chat:dispose()
 end
 

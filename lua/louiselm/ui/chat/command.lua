@@ -2,13 +2,60 @@
 local nvim = vim
 local Agent = require("louiselm.agent")
 local Beads = require("louiselm.ui.beads")
+local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.workflow")
 
 local M = {}
 local configured ---@type table?
+local dispose_registered ---@type fun()?
 
 local function session_module()
   return require("louiselm.session")
+end
+
+---@return string path
+local function abandonment_path()
+  return nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "abandoned.json")
+end
+
+---@param chat louiselm.ui.Chat?
+---@return louiselm.ui.AbandonedSession[] sessions
+---@return string[] blocked
+local function exit_snapshot(chat)
+  local staged = chat and chat:staged_context() or {}
+  local sessions = {}
+  local blocked = {}
+  for _, verdict in ipairs(session_module().exit_verdict()) do
+    local session_staged = staged[verdict.session] or { contexts = 0, pending_skill = false, queued_prompt = false }
+    sessions[#sessions + 1] = {
+      agent = verdict.agent,
+      acp_session_id = verdict.acp_session_id,
+      recoverable = verdict.recoverable,
+      turn_active = verdict.turn_active,
+      staged = session_staged,
+    }
+    local reasons = {}
+    if not verdict.recoverable then
+      reasons[#reasons + 1] = "cannot resume"
+    end
+    if verdict.turn_active then
+      reasons[#reasons + 1] = "turn in flight"
+    end
+    if session_staged.contexts > 0 then
+      reasons[#reasons + 1] =
+        string.format("%d queued context%s", session_staged.contexts, session_staged.contexts == 1 and "" or "s")
+    end
+    if session_staged.pending_skill then
+      reasons[#reasons + 1] = "skill selection pending"
+    end
+    if session_staged.queued_prompt then
+      reasons[#reasons + 1] = "prompt queued"
+    end
+    if #reasons > 0 then
+      blocked[#blocked + 1] = verdict.agent .. ": " .. table.concat(reasons, ", ")
+    end
+  end
+  return sessions, blocked
 end
 
 local function skills_module()
@@ -191,6 +238,20 @@ function M.configure(config)
   return true
 end
 
+---Surface and clear recovery guidance left by the previous editor exit.
+---@return boolean surfaced True when a valid breadcrumb was reported.
+function M.surface_abandonment()
+  local breadcrumb, breadcrumb_error = Abandonment.consume(abandonment_path())
+  if breadcrumb ~= nil then
+    nvim.notify(breadcrumb, nvim.log.levels.WARN)
+    return true
+  end
+  if breadcrumb_error ~= nil then
+    nvim.notify("louiselm: " .. breadcrumb_error, nvim.log.levels.WARN)
+  end
+  return false
+end
+
 ---Handle a click from a LouiseLM Session winbar; clicks before registration or without an active chat are ignored.
 ---@param _target integer Numeric target encoded in the winbar.
 ---@param _clicks integer Number of consecutive clicks.
@@ -210,6 +271,10 @@ end
 ---Register the interactive chat command.
 ---@return boolean registered Always true after the command is registered.
 function M.register()
+  if dispose_registered ~= nil then
+    dispose_registered()
+    dispose_registered = nil
+  end
   local chat
   local inline
 
@@ -277,21 +342,40 @@ function M.register()
     return chat
   end
 
-  nvim.api.nvim_create_autocmd("QuitPre", {
-    group = nvim.api.nvim_create_augroup("louiselm.chat.quit", { clear = true }),
+  local exit_group = nvim.api.nvim_create_augroup("louiselm.exit", { clear = true })
+  nvim.api.nvim_create_autocmd("ExitPre", {
+    group = exit_group,
     callback = function()
-      if chat == nil or not chat:should_block_quit() then
+      local sessions, blocked = exit_snapshot(chat)
+      if #blocked == 0 then
         return
       end
       nvim.notify(
-        "louiselm: multiple sessions are open; use :LouiselmSwitchSession or :LouiselmCloseSession before quitting",
+        string.format(
+          "louiselm: %d live Session%s (%s). :qa to exit anyway.",
+          #sessions,
+          #sessions == 1 and "" or "s",
+          table.concat(blocked, "; ")
+        ),
         nvim.log.levels.WARN
       )
-      -- QuitPre has no cancellation API in Neovim. Make the pending :q close
+      -- ExitPre has no cancellation API in Neovim. Make the pending :q close
       -- a temporary duplicate window instead, leaving the chat window alive.
       nvim.api.nvim_open_win(nvim.api.nvim_get_current_buf(), true, { split = "below" })
     end,
-    desc = "Protect multiple louiselm sessions from accidental last-window quit",
+    desc = "Protect live louiselm Sessions from accidental abandonment",
+  })
+
+  nvim.api.nvim_create_autocmd("VimLeavePre", {
+    group = exit_group,
+    callback = function()
+      local sessions = exit_snapshot(chat)
+      if #sessions > 0 then
+        Abandonment.write(abandonment_path(), sessions)
+      end
+      session_module().dispose_all()
+    end,
+    desc = "Dispose live louiselm Sessions and record restart guidance",
   })
 
   ---@return louiselm.ui.Chat? value
@@ -621,6 +705,17 @@ function M.register()
       report_error(inline_error)
     end)
   end, { desc = "Replace the current selection with louiselm output", force = true })
+  dispose_registered = function()
+    if chat ~= nil then
+      chat:dispose()
+      chat.api:dispose()
+      chat = nil
+    end
+    if inline ~= nil then
+      inline:dispose()
+      inline = nil
+    end
+  end
   return true
 end
 

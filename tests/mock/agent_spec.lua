@@ -228,6 +228,7 @@ T["mock agent"]["defers and consumes a hidden catalog once across the process bo
 
   MiniTest.expect.equality(chunks, { "/compact", "hidden catalog", "again" })
   chat:dispose()
+  assert(api:dispose())
 end
 
 T["mock agent"]["replays agent_thought_chunk wire updates into a collapsed chat fold"] = function()
@@ -285,6 +286,7 @@ T["mock agent"]["replays agent_thought_chunk wire updates into a collapsed chat 
   )
 
   chat:dispose()
+  assert(api:dispose())
 end
 
 T["mock agent"]["surfaces a simulated crash as a session error"] = function()

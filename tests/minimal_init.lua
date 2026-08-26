@@ -2,6 +2,9 @@
 ---@diagnostic disable-next-line: undefined-global
 local nvim = vim
 local project_root = nvim.fn.getcwd()
+-- Persistent stores exercised by tests must never consume or overwrite the
+-- developer's real Neovim state (notably the one-shot abandonment breadcrumb).
+nvim.env.XDG_STATE_HOME = nvim.fn.tempname()
 ---@diagnostic disable-next-line: undefined-global
 local mini_nvim_path = vim.env.MINI_NVIM_PATH
 if mini_nvim_path == nil or mini_nvim_path == "" then

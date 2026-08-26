@@ -67,6 +67,11 @@ local Usage = require("louiselm.workflow.usage")
 ---@class louiselm.ui.QueuedPrompt
 ---@field text string User-authored prompt text without visible context markers.
 
+---@class louiselm.ui.StagedContext
+---@field contexts integer Number of queued context items.
+---@field pending_skill boolean Whether a native-mode skill selection is pending.
+---@field queued_prompt boolean Whether a prompt is queued behind the active turn.
+
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
@@ -104,7 +109,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field winbar_click fun(self: louiselm.ui.Chat, target: integer, clicked_window?: integer): boolean, string? Follow a winbar click target.
 ---@field switch_session fun(self: louiselm.ui.Chat): boolean, string? Pick an attached session and focus it.
 ---@field close_session fun(self: louiselm.ui.Chat): boolean, string? Close the current session, confirming when active.
----@field should_block_quit fun(self: louiselm.ui.Chat): boolean Whether a last-window quit would abandon multiple sessions.
+---@field staged_context fun(self: louiselm.ui.Chat): table<louiselm.session.Session, louiselm.ui.StagedContext> Report Staged context by attached Session.
 ---@field cancel fun(self: louiselm.ui.Chat): boolean, string? Cancel the current session turn.
 ---@field session_options fun(self: louiselm.ui.Chat): boolean, string? Open the current session options overview.
 ---@field show_limits fun(self: louiselm.ui.Chat, agent_name?: string): boolean, string? Inspect one configured Agent's account limits.
@@ -2896,26 +2901,24 @@ function Chat:is_attached(session_id)
   return true
 end
 
----Report whether quitting Neovim from the current chat buffer would abandon
----multiple attached sessions.
+---Report Staged context held by each attached live Session.
 ---@param self louiselm.ui.Chat
----@return boolean blocked Whether a last-window quit should be blocked.
-function Chat:should_block_quit()
-  if self.disposed or #nvim.api.nvim_list_wins() ~= 1 then
-    return false
+---@return table<louiselm.session.Session, louiselm.ui.StagedContext> staged
+function Chat:staged_context()
+  local staged = {}
+  if self.disposed then
+    return staged
   end
-  local current_buffer = nvim.api.nvim_get_current_buf()
-  local attached = false
-  local sessions = 0
   for _, view in pairs(self.views) do
-    if view.buffer == current_buffer then
-      attached = true
-    end
     if view.session:inspect().status ~= "disposed" then
-      sessions = sessions + 1
+      staged[view.session] = {
+        contexts = #view.contexts,
+        pending_skill = view.pending_skill ~= nil,
+        queued_prompt = view.queued_prompt ~= nil,
+      }
     end
   end
-  return attached and sessions > 1
+  return staged
 end
 
 ---Switch focus to an attached session buffer.

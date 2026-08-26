@@ -14,6 +14,8 @@ API reference.
 
 ### louiselm.session.Module
 
+- `dispose_all: fun():boolean, string?` -- Dispose every live Session in this Neovim process.
+- `exit_verdict: fun():louiselm.session.ExitVerdict[]` -- Inspect live Sessions across every headless API.
 - `new: fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions):(louiselm.session.Api)?, louiselm.agent.ConfigError[]` -- Create a headless session API.
 
 ### louiselm.session.Api
@@ -185,6 +187,14 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `remove_session: fun(self: louiselm.session.Registry, id: string)`
 - `revoke_permission: fun(self: louiselm.session.Registry, id: string):boolean, string?`
 - `sessions: table<string, louiselm.session.Session>` -- Live sessions by local id.
+
+### louiselm.session.ExitVerdict
+
+- `acp_session_id: string?` -- Agent-side Session identifier, once initialized.
+- `agent: string` -- Configured Agent name.
+- `recoverable: boolean` -- Whether the Agent advertises ACP session/load.
+- `session: louiselm.session.Session` -- Live Session represented by this verdict.
+- `turn_active: boolean` -- Whether a prompt turn is still in flight.
 
 ### louiselm.session.LimitsStatus
 
@@ -509,6 +519,7 @@ louiselm.permission.Lifetime:
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.
 - `options: table<string, unknown>?` -- Agent-specific options.
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
+- `transcript_layout: string?` -- On-disk transcript layout used to resolve historical Sessions.
 - `version: (louiselm.agent.CommandCheck)?` -- Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 
 ### louiselm.agent.ConfigErrorType

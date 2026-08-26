@@ -3,6 +3,7 @@ local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
 local Louiselm = require("louiselm")
+local Session = require("louiselm.session")
 
 local T = MiniTest.new_set()
 
@@ -71,6 +72,65 @@ local function mock_definition()
   }
 end
 
+---@param mode "q"|"qa"
+---@param recoverable boolean
+---@return table result
+---@return string state_root
+---@return string continued_marker
+---@return string disposed_marker
+local function run_exit_child(mode, recoverable)
+  local root = nvim.fn.tempname()
+  local state_root = nvim.fs.joinpath(root, "state")
+  local script = nvim.fs.joinpath(root, "exit.lua")
+  local continued_marker = nvim.fs.joinpath(root, "continued")
+  local disposed_marker = nvim.fs.joinpath(root, "disposed")
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  assert(nvim.fn.writefile({
+    "vim.opt.rtp:prepend(vim.env.LOUISELM_TEST_ROOT)",
+    "local Protocol = require('louiselm.acp.protocol')",
+    "local Command = require('louiselm.ui.chat.command')",
+    "local Session = require('louiselm.session')",
+    "local process",
+    "vim.system = function(_, options)",
+    "  process = { options = options, writes = {} }",
+    "  process.handle = {",
+    "    write = function(_, data) process.writes[#process.writes + 1] = data end,",
+    "    kill = function() vim.fn.writefile({ 'disposed' }, vim.env.LOUISELM_TEST_DISPOSED) end,",
+    "    is_closing = function() return false end,",
+    "  }",
+    "  return process.handle",
+    "end",
+    "Command.configure({ agents = { codex = { command = 'agent', args = {} } } })",
+    "Command.register()",
+    "vim.cmd('LouiselmChat')",
+    "local capabilities = vim.env.LOUISELM_TEST_RECOVERABLE == '1' and { loadSession = true } or {}",
+    "process.options.stdout(nil, assert(Protocol.encode(Protocol.response(1, { protocolVersion = 1, agentCapabilities = capabilities }))) .. '\\n')",
+    "process.options.stdout(nil, assert(Protocol.encode(Protocol.response(2, { sessionId = 'child-acp' }))) .. '\\n')",
+    "if vim.env.LOUISELM_TEST_EXIT == 'qa' then",
+    "  vim.cmd('LouiselmMentionBuffer')",
+    "  assert(Session.exit_verdict()[1].session:prompt('working'))",
+    "end",
+    "vim.cmd(vim.env.LOUISELM_TEST_EXIT)",
+    "vim.fn.writefile({ 'continued' }, vim.env.LOUISELM_TEST_MARKER)",
+    "vim.cmd('qa!')",
+  }, script) == 0)
+  local result = nvim
+    .system({ nvim.v.progpath, "--headless", "--clean", "-u", "NONE", "-c", "lua dofile(vim.env.LOUISELM_TEST_SCRIPT)" }, {
+      text = true,
+      env = {
+        XDG_STATE_HOME = state_root,
+        LOUISELM_TEST_ROOT = project_root,
+        LOUISELM_TEST_SCRIPT = script,
+        LOUISELM_TEST_MARKER = continued_marker,
+        LOUISELM_TEST_DISPOSED = disposed_marker,
+        LOUISELM_TEST_EXIT = mode,
+        LOUISELM_TEST_RECOVERABLE = recoverable and "1" or "0",
+      },
+    })
+    :wait(5000)
+  return result, state_root, continued_marker, disposed_marker
+end
+
 local function restore_environment(name, value)
   nvim.env[name] = value
 end
@@ -99,6 +159,7 @@ T["command"] = MiniTest.new_set({
   hooks = {
     post_case = function()
       -- A failing expectation skips a test's own cleanup.
+      Session.dispose_all()
       delete_chat_buffers()
     end,
   },
@@ -210,32 +271,140 @@ T["command"]["shows an explicitly named unobserved Agent without starting it"] =
   Command.configure(nil)
 end
 
-T["command"]["keeps the chat window when QuitPre protects multiple sessions"] = function()
+T["command"]["refuses real :q and :q! for an unrecoverable Session"] = function()
   Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
   Command.register()
 
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "first-acp" })
-  nvim.api.nvim_cmd({ cmd = "LouiselmNewSession", args = {} }, {})
-  respond(process, 3, { sessionId = "second-acp" })
 
-  local original_window = nvim.api.nvim_get_current_win()
-  pcall(nvim.api.nvim_exec_autocmds, "QuitPre", {})
-  local window_count = #nvim.api.nvim_list_wins()
+  local chat_buffer = nvim.api.nvim_get_current_buf()
+  nvim.api.nvim_cmd({ cmd = "quit" }, {})
+  nvim.api.nvim_cmd({ cmd = "quit", bang = true }, {})
 
   rawset(nvim, "system", original_system)
+  rawset(nvim, "notify", original_notify)
   Command.configure(nil)
-  for _, window in ipairs(nvim.api.nvim_list_wins()) do
-    if window ~= original_window then
-      nvim.api.nvim_win_close(window, true)
-    end
-  end
-  delete_chat_buffers()
 
-  MiniTest.expect.equality(window_count, 2)
-  MiniTest.expect.equality(nvim.api.nvim_win_is_valid(original_window), true)
+  MiniTest.expect.equality(#nvim.api.nvim_list_wins(), 1)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), chat_buffer)
+  MiniTest.expect.equality(#notifications, 2)
+  MiniTest.expect.equality(notifications[1].message:find("codex: cannot resume", 1, true) ~= nil, true)
+  MiniTest.expect.equality(notifications[1].message:find(":qa to exit anyway", 1, true) ~= nil, true)
+  MiniTest.expect.equality(notifications[2], notifications[1])
+end
+
+T["command"]["refuses real :q for a recoverable Session with a turn in flight"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(process, 2, { sessionId = "active-acp" })
+  assert(Session.exit_verdict()[1].session:prompt("working"))
+
+  nvim.api.nvim_cmd({ cmd = "quit" }, {})
+
+  rawset(nvim, "system", original_system)
+  rawset(nvim, "notify", original_notify)
+  Command.configure(nil)
+  MiniTest.expect.equality(notification.message:find("codex: turn in flight", 1, true) ~= nil, true)
+end
+
+T["command"]["refuses real :q when a recoverable Session has Staged context"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(process, 2, { sessionId = "staged-acp" })
+  nvim.api.nvim_cmd({ cmd = "LouiselmMentionBuffer", args = {} }, {})
+
+  nvim.api.nvim_cmd({ cmd = "quit" }, {})
+
+  rawset(nvim, "system", original_system)
+  rawset(nvim, "notify", original_notify)
+  Command.configure(nil)
+  MiniTest.expect.equality(notification.message:find("1 queued context", 1, true) ~= nil, true)
+end
+
+T["command"]["guards a headless API Session with no chat buffer"] = function()
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  Command.register()
+  local api = assert(Session.new({ codex = { command = "codex-agent", args = {} } }))
+  assert(api:create_session("codex"))
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "headless-acp" })
+
+  nvim.api.nvim_cmd({ cmd = "quit" }, {})
+
+  rawset(nvim, "system", original_system)
+  rawset(nvim, "notify", original_notify)
+  MiniTest.expect.equality(notification.message:find("codex: cannot resume", 1, true) ~= nil, true)
+end
+
+T["command"]["allows recoverable idle :q and surfaces its breadcrumb once at setup"] = function()
+  local result, state_root, continued_marker, disposed_marker = run_exit_child("q", true)
+  local path = nvim.fs.joinpath(state_root, "nvim", "louiselm", "abandoned.json")
+
+  MiniTest.expect.equality(result.code, 0)
+  MiniTest.expect.equality(nvim.fn.filereadable(continued_marker), 0)
+  MiniTest.expect.equality(nvim.fn.filereadable(disposed_marker), 1)
+  MiniTest.expect.equality(nvim.fn.filereadable(path), 1)
+  local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+  MiniTest.expect.equality(record.sessions[1].recoverable, true)
+
+  local original_state_home = nvim.env.XDG_STATE_HOME
+  local original_notify = nvim.notify
+  local notification
+  nvim.env.XDG_STATE_HOME = state_root
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  assert(Louiselm.setup({ agents = { codex = { command = "agent", args = {} } } }))
+  rawset(nvim, "notify", original_notify)
+  nvim.env.XDG_STATE_HOME = original_state_home
+
+  MiniTest.expect.equality(notification.message:find(":LouiselmResume", 1, true) ~= nil, true)
+  MiniTest.expect.equality(nvim.fn.filereadable(path), 0)
+  nvim.fn.delete(nvim.fs.dirname(state_root), "rf")
+end
+
+T["command"]["allows :qa past refusal clauses and records an unrecoverable Session"] = function()
+  local result, state_root, continued_marker, disposed_marker = run_exit_child("qa", false)
+  local path = nvim.fs.joinpath(state_root, "nvim", "louiselm", "abandoned.json")
+
+  MiniTest.expect.equality(result.code, 0)
+  MiniTest.expect.equality(nvim.fn.filereadable(continued_marker), 0)
+  MiniTest.expect.equality(nvim.fn.filereadable(disposed_marker), 1)
+  MiniTest.expect.equality(nvim.fn.filereadable(path), 1)
+  local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+  MiniTest.expect.equality(record.sessions[1].recoverable, false)
+  MiniTest.expect.equality(record.sessions[1].turn_active, true)
+  MiniTest.expect.equality(record.sessions[1].staged.contexts, 1)
+  nvim.fn.delete(nvim.fs.dirname(state_root), "rf")
 end
 
 T["command"]["routes a window bar click through its clicked window"] = function()

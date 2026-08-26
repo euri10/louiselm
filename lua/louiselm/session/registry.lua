@@ -58,6 +58,14 @@ local nvim = vim
 local M = {}
 local Registry = {}
 Registry.__index = Registry
+local registries = {} ---@type louiselm.session.Registry[]
+
+---@class louiselm.session.ExitVerdict
+---@field session louiselm.session.Session Live Session represented by this verdict.
+---@field agent string Configured Agent name.
+---@field acp_session_id? string Agent-side Session identifier, once initialized.
+---@field recoverable boolean Whether the Agent advertises ACP session/load.
+---@field turn_active boolean Whether a prompt turn is still in flight.
 
 ---@param value unknown
 ---@return unknown result
@@ -189,7 +197,7 @@ function M.new(definitions, default_skills_policy, options)
   if forensics_store == nil then
     return nil, { { path = "session.forensics_directory", message = forensics_error or "invalid directory" } }
   end
-  return setmetatable({
+  local registry = setmetatable({
     definitions = normalized,
     sessions = {},
     order = {},
@@ -201,8 +209,52 @@ function M.new(definitions, default_skills_policy, options)
     permission_store = permission_store,
     forensics_store = forensics_store,
     disposed = false,
-  }, Registry),
-    {}
+  }, Registry)
+  registries[#registries + 1] = registry
+  return registry, {}
+end
+
+---Return a process-wide snapshot of live Sessions relevant to editor exit.
+---@return louiselm.session.ExitVerdict[] verdict
+function M.exit_verdict()
+  local verdict = {}
+  for _, registry in ipairs(registries) do
+    for _, id in ipairs(registry.order) do
+      local session = registry.sessions[id]
+      local state = session and session:inspect() or nil
+      if state ~= nil and state.status ~= "disposed" and state.status ~= "error" then
+        local capabilities = session.client and session.client.agent_capabilities or {}
+        verdict[#verdict + 1] = {
+          session = session,
+          agent = state.agent,
+          acp_session_id = state.acp_session_id,
+          recoverable = capabilities.loadSession == true,
+          turn_active = state.status == "prompting"
+            or state.status == "waiting_permission"
+            or state.status == "cancelling",
+        }
+      end
+    end
+  end
+  return verdict
+end
+
+---Dispose every Session registry created in this Neovim process.
+---@return boolean disposed
+---@return string? error_message First disposal failure, if any.
+function M.dispose_all()
+  local first_error
+  local current = {}
+  for index, registry in ipairs(registries) do
+    current[index] = registry
+  end
+  for _, registry in ipairs(current) do
+    local _, dispose_error = registry:dispose()
+    if first_error == nil and dispose_error ~= nil then
+      first_error = dispose_error
+    end
+  end
+  return first_error == nil, first_error
 end
 
 ---@param self louiselm.session.Registry
@@ -898,6 +950,12 @@ function Registry:dispose()
       if first_error == nil and close_error ~= nil then
         first_error = close_error
       end
+    end
+  end
+  for index, registry in ipairs(registries) do
+    if registry == self then
+      table.remove(registries, index)
+      break
     end
   end
   return first_error == nil, first_error

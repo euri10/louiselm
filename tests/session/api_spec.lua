@@ -158,6 +158,36 @@ end
 
 T["new"] = MiniTest.new_set()
 
+T["new"]["reports live Sessions across headless APIs for exit safety"] = function()
+  local processes, original_system = fake_processes()
+  local first_api = assert(Session.new({ claude = { command = "claude", args = {} } }))
+  local second_api = assert(Session.new({ codex = { command = "codex", args = {} } }))
+  local first = assert(first_api:create_session("claude"))
+  respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(processes[1], 2, { sessionId = "claude-acp" })
+  local second = assert(second_api:create_session("codex"))
+  respond(processes[2], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(processes[2], 2, { sessionId = "codex-acp" })
+  assert(second:prompt("working"))
+
+  local verdict = Session.exit_verdict()
+
+  MiniTest.expect.equality(#verdict, 2)
+  MiniTest.expect.equality(verdict[1].session, first)
+  MiniTest.expect.equality(verdict[1].agent, "claude")
+  MiniTest.expect.equality(verdict[1].acp_session_id, "claude-acp")
+  MiniTest.expect.equality(verdict[1].recoverable, false)
+  MiniTest.expect.equality(verdict[1].turn_active, false)
+  MiniTest.expect.equality(verdict[2].session, second)
+  MiniTest.expect.equality(verdict[2].agent, "codex")
+  MiniTest.expect.equality(verdict[2].recoverable, true)
+  MiniTest.expect.equality(verdict[2].turn_active, true)
+
+  assert(Session.dispose_all())
+  MiniTest.expect.equality(Session.exit_verdict(), {})
+  restore_processes(original_system)
+end
+
 T["new"]["reads and receives normalized Agent account limits through an advertised ACP extension"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))

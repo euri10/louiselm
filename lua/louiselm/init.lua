@@ -57,6 +57,7 @@ function M.setup(config)
   if not capture_configured then
     error(capture_error)
   end
+  Command.surface_abandonment()
   Command.register()
   CaptureCommand.register()
   return true
