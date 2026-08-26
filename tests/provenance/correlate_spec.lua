@@ -76,6 +76,7 @@ end
 T["rejects actors without a Session identity"] = function()
   local actor, error_value = Correlate.resolve_actor("reaper/daemon")
   MiniTest.expect.equality(actor, nil)
+  assert(error_value ~= nil)
   MiniTest.expect.equality(error_value.code, "invalid_actor")
 end
 

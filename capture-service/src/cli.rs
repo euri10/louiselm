@@ -99,7 +99,7 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         return Err(CliError::Invalid("run requires a subcommand".to_owned()));
     };
     if command == "list" {
-        let runs = RunStore::new(paths.runs())?.list_resumable()?;
+        let runs = RunStore::new(paths.runs())?.list_resumable(now_ms())?;
         println!("{}", serde_json::to_string(&runs)?);
         return Ok(());
     }

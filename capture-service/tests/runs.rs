@@ -82,6 +82,8 @@ fn cold_park_rejects_an_agent_without_load_session() {
 fn resumable_listing_excludes_disposed_runs() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = RunStore::new(temporary.path()).expect("store");
+    let expired_id = "22222222-2222-4222-8222-222222222222";
+    store.park_cold(draft(expired_id)).expect("park");
     store
         .park_cold(draft("33333333-3333-4333-8333-333333333333"))
         .expect("park");
@@ -94,7 +96,11 @@ fn resumable_listing_excludes_disposed_runs() {
     store.park_cold(active).expect("park active");
     store.reap_expired(2_000, |_| Ok(())).expect("reap");
 
-    let summaries = store.list_resumable().expect("list");
+    let mut un_reaped = draft("66666666-6666-4666-8666-666666666666");
+    un_reaped.park_expires_at_ms = 1_000;
+    store.park_cold(un_reaped).expect("park expired");
+
+    let summaries = store.list_resumable(2_000).expect("list");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].id, active_id);
 }

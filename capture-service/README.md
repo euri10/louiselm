@@ -16,6 +16,8 @@ list
 status
 retry CAPTURE_UUID
 transcribe-once
+run list
+run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N
 ```
 
 The default user service binds TLS on `127.0.0.1:7391` and `pair` refuses while
@@ -105,6 +107,21 @@ Errors are sanitized before persistence and responses never include credentials,
 audio, prompts, or provider response bodies.
 
 No API key is required for recording, pairing, upload, listing, or retention.
+
+## Durable workflow Parks
+
+The service also owns cold-Parked workflow records. Configure the Beads
+workspace in `~/.config/louiselm/capture.env` so the background reaper can
+release expired claims:
+
+```text
+LOUISELM_BEADS_WORKSPACE=/absolute/path/to/louiselm
+```
+
+The systemd unit grants write access to that workspace's `.beads` directory;
+rerun `scripts/install-capture-service` after changing the unit or environment,
+then restart the user service. `run list` reports only unexpired cold Parks;
+expired records remain retained for cleanup retry and forensics.
 
 ## Operator lifecycle
 

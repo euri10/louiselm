@@ -215,8 +215,8 @@ impl RunStore {
         Ok(run)
     }
 
-    /// List active cold-Parked Runs without exposing cleanup journals.
-    pub fn list_resumable(&self) -> Result<Vec<RunSummary>, RunStoreError> {
+    /// List unexpired cold-Parked Runs without exposing cleanup journals.
+    pub fn list_resumable(&self, now_ms: u64) -> Result<Vec<RunSummary>, RunStoreError> {
         let mut summaries = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -231,7 +231,7 @@ impl RunStore {
                 continue;
             }
             let run = self.run(id)?;
-            if run.state == "cold_parked" {
+            if run.state == "cold_parked" && run.park_expires_at_ms > now_ms {
                 summaries.push(RunSummary {
                     id: run.id,
                     agent: run.agent,
