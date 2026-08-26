@@ -14,6 +14,7 @@
 :LouiselmInbox	louiselm.txt	/*:LouiselmInbox*
 :LouiselmInline	louiselm.txt	/*:LouiselmInline*
 :LouiselmInspectBead	louiselm.txt	/*:LouiselmInspectBead*
+:LouiselmInspectProvenance	louiselm.txt	/*:LouiselmInspectProvenance*
 :LouiselmInspectTool	louiselm.txt	/*:LouiselmInspectTool*
 :LouiselmLimits	louiselm.txt	/*:LouiselmLimits*
 :LouiselmMentionBuffer	louiselm.txt	/*:LouiselmMentionBuffer*

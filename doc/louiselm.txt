@@ -124,6 +124,10 @@ Commands                                                      *louiselm-commands
     Inspect the Beads issue under the cursor
     Arguments: none
 
+:LouiselmInspectProvenance                                    *:LouiselmInspectProvenance*
+    Inspect commit Provenance under the cursor
+    Arguments: none
+
 :LouiselmInspectTool                                          *:LouiselmInspectTool*
     Inspect the raw payload under the cursor
     Arguments: none

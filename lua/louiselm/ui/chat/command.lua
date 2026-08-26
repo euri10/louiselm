@@ -2,6 +2,7 @@
 local nvim = vim
 local Agent = require("louiselm.agent")
 local Beads = require("louiselm.ui.beads")
+local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
 
@@ -409,12 +410,26 @@ function M.register()
     report_error(inspect_error)
   end
 
+  local function inspect_provenance()
+    local buffer = nvim.api.nvim_get_current_buf()
+    local _, inspect_error = Provenance.inspect(buffer, {
+      definitions = configured and configured.agents or {},
+      on_error = report_error,
+    })
+    report_error(inspect_error)
+  end
+
   nvim.api.nvim_create_user_command("LouiselmChat", function()
     open_chat()
   end, { desc = "Open the louiselm chat buffer", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmInspectBead", inspect_bead, {
     desc = "Inspect the Beads issue under the cursor",
+    force = true,
+  })
+
+  nvim.api.nvim_create_user_command("LouiselmInspectProvenance", inspect_provenance, {
+    desc = "Inspect commit Provenance under the cursor",
     force = true,
   })
 
