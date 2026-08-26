@@ -54,6 +54,7 @@ local nvim = vim
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
 ---@field owner louiselm.session.Registry Registry that owns this session.
+---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
 ---@field options louiselm.session.Options Session options.
 ---@field permission_policy louiselm.permission.Policy Policy for agent-requested operations.

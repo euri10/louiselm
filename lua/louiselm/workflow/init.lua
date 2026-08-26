@@ -9,9 +9,11 @@
 ---Not to be confused with `louiselm.routing`, which ranks Agents for a phase of work.
 
 local Validate = require("louiselm.workflow.validate")
+local Run = require("louiselm.workflow.run")
 
 local M = {}
 
 M.validate = Validate.validate
+M.new_run = Run.new
 
 return M

@@ -1,0 +1,200 @@
+---Runtime ownership and bounded cancellation for one workflow Run.
+
+local M = {}
+local Run = {}
+Run.__index = Run
+
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
+---@class louiselm.workflow.RunWorker
+---@field cancel fun(self: louiselm.workflow.RunWorker): boolean, string?
+---@field dispose fun(self: louiselm.workflow.RunWorker): boolean, string?
+---@field inspect fun(self: louiselm.workflow.RunWorker): table
+
+---@class louiselm.workflow.RunOptions
+---@field session_api? louiselm.session.Api API used to create owned Sessions.
+---@field cancellation_timeout_ms? integer Maximum time to wait for cooperative acknowledgment.
+---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
+
+---@class louiselm.workflow.Run
+---@field session_api? louiselm.session.Api
+---@field cancellation_timeout_ms integer
+---@field schedule fun(delay_ms: integer, callback: fun())
+---@field workers louiselm.workflow.RunWorker[] Owned Sessions.
+---@field status "active"|"cancelling"|"cancelled"|"disposed"
+---@field cancel fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
+---@field create_session fun(self: louiselm.workflow.Run, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
+---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
+---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
+
+---@param value unknown
+---@return boolean
+local function is_worker(value)
+  return type(value) == "table"
+    and type(value.cancel) == "function"
+    and type(value.dispose) == "function"
+    and type(value.inspect) == "function"
+end
+
+---@param worker louiselm.workflow.RunWorker
+---@return boolean
+local function acknowledged(worker)
+  local state = worker.inspect(worker)
+  return state.status ~= "prompting" and state.status ~= "waiting_permission" and state.status ~= "cancelling"
+end
+
+---@param options? louiselm.workflow.RunOptions
+---@return louiselm.workflow.Run? run
+---@return string? error_message
+function M.new(options)
+  if options == nil then
+    options = {}
+  elseif type(options) ~= "table" then
+    return nil, "Run options must be a table"
+  end
+  ---@cast options louiselm.workflow.RunOptions
+  local timeout = options.cancellation_timeout_ms or 1000
+  if type(timeout) ~= "number" or timeout < 0 or timeout % 1 ~= 0 then
+    return nil, "cancellation_timeout_ms must be a non-negative integer"
+  end
+  local schedule = options.schedule
+  if schedule == nil then
+    schedule = function(delay_ms, callback)
+      nvim.defer_fn(callback, delay_ms)
+    end
+  elseif type(schedule) ~= "function" then
+    return nil, "schedule must be a function"
+  end
+  local run = setmetatable({
+    session_api = options.session_api,
+    cancellation_timeout_ms = timeout,
+    schedule = schedule,
+    workers = {},
+    status = "active",
+  }, Run)
+  return run
+end
+
+---Adopt a Session into this Run's supervision tree.
+---@param self louiselm.workflow.Run
+---@param session louiselm.session.Session
+---@return boolean adopted
+---@return string? error_message
+function Run:adopt_session(session)
+  if self.status ~= "active" then
+    return false, "Run is no longer active"
+  end
+  if not is_worker(session) then
+    return false, "Run worker must support cancel, dispose, and inspect"
+  end
+  ---@diagnostic disable-next-line: assign-type-mismatch -- Session is the production RunWorker implementation.
+  self.workers[#self.workers + 1] = session
+  ---@diagnostic disable-next-line: undefined-field -- Runtime ownership is deliberately attached at construction.
+  session.owner_run = self
+  return true
+end
+
+---Create a Session through the Run's owner API and immediately place it in the tree.
+---@param self louiselm.workflow.Run
+---@param agent_name string Configured Agent name.
+---@param options? louiselm.session.Options Session options.
+---@param ready_callback? fun(session: louiselm.session.Session?, error?: string) Startup callback.
+---@return louiselm.session.Session? session
+---@return string? error_message
+function Run:create_session(agent_name, options, ready_callback)
+  if self.session_api == nil then
+    return nil, "Run has no Session API"
+  end
+  if self.status ~= "active" then
+    return nil, "Run is no longer active"
+  end
+  local function on_ready(session, error_message)
+    if session ~= nil then
+      self:adopt_session(session)
+    end
+    if ready_callback ~= nil then
+      ready_callback(session, error_message)
+    end
+  end
+  local session, create_error = self.session_api:create_session(agent_name, options, on_ready)
+  if session == nil then
+    return nil, create_error
+  end
+  local already_owned = false
+  for _, worker in ipairs(self.workers) do
+    if worker == session then
+      already_owned = true
+      break
+    end
+  end
+  local adopted, adopt_error
+  if already_owned then
+    adopted = true
+  else
+    adopted, adopt_error = self:adopt_session(session)
+  end
+  if not adopted then
+    session:dispose()
+    return nil, adopt_error
+  end
+  return session
+end
+
+---Cancel every owned Session, then dispose workers that do not acknowledge by the deadline.
+---The guarantee covers every worker LouiseLM can address, not every process an ACP Agent may
+---spawn; an Agent ignoring both cancel and dispose remains the outer harness's responsibility.
+---@param self louiselm.workflow.Run
+---@param callback? fun() Called once after all workers acknowledge or are disposed.
+---@return boolean started
+---@return string? error_message
+function Run:cancel(callback)
+  if self.status == "disposed" then
+    return false, "Run is disposed"
+  end
+  if self.status == "cancelled" or self.status == "cancelling" then
+    return true
+  end
+  self.status = "cancelling"
+  for _, worker in ipairs(self.workers) do
+    if not acknowledged(worker) then
+      worker:cancel()
+    end
+  end
+  self.schedule(self.cancellation_timeout_ms, function()
+    if self.status ~= "cancelling" then
+      return
+    end
+    for _, worker in ipairs(self.workers) do
+      if not acknowledged(worker) then
+        worker.dispose(worker)
+      end
+    end
+    self.status = "cancelled"
+    if callback ~= nil then
+      callback()
+    end
+  end)
+  return true
+end
+
+---Dispose every owned Session and end the Run.
+---@param self louiselm.workflow.Run
+---@return boolean disposed
+---@return string? error_message
+function Run:dispose()
+  if self.status == "disposed" then
+    return true
+  end
+  self.status = "disposed"
+  local first_error
+  for _, worker in ipairs(self.workers) do
+    local disposed, dispose_error = worker.dispose(worker)
+    if not disposed and first_error == nil then
+      first_error = dispose_error or "worker disposal failed"
+    end
+  end
+  return first_error == nil, first_error
+end
+
+return M

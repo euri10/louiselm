@@ -247,6 +247,15 @@ T["rejects"]["a stage declaring a detached worker"] = function()
   MiniTest.expect.equality(rejection_of(result, "unknown_field").field, "detached")
 end
 
+T["rejects"]["a stage declaring a fire-and-forget worker"] = function()
+  local manifest = reference_manifest()
+  manifest["execute"]["fire-and-forget"] = true
+
+  local result = Workflow.validate("reference", manifest)
+
+  MiniTest.expect.equality(rejection_of(result, "unknown_field").field, "fire-and-forget")
+end
+
 T["rejects"]["a workflow with no entry stage"] = function()
   local manifest = reference_manifest()
   manifest["grill"].entry = nil
