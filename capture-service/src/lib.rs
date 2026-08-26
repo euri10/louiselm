@@ -7,6 +7,7 @@ mod network;
 mod openai;
 mod pairing;
 mod receiver;
+mod runs;
 mod store;
 mod transcription;
 
@@ -20,6 +21,7 @@ pub use pairing::{
     DeviceCredential, DeviceStatus, PairingError, PairingOffer, PairingRegistry, PairingStatus,
 };
 pub use receiver::Receiver;
+pub use runs::{ReapAction, Run, RunDraft, RunStore, RunStoreError};
 pub use store::{Capture, IngestOutcome, MAX_CAPTURE_BYTES, Store, StoreError};
 pub use transcription::{
     Transcriber, TranscriptRequest, TranscriptionError, TranscriptionErrorKind, TranscriptionWorker,
