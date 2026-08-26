@@ -3911,7 +3911,7 @@ T["chat"]["shows every background session in a clickable window bar strip"] = fu
 
   MiniTest.expect.equality(
     nvim.api.nvim_get_option_value("winbar", { win = 0 }),
-    "%#LouiselmStatusReady#Your turn%*%=%1@v:lua.require('louiselm.ui.chat.command').winbar_click@%#LouiselmStatusReady#● one%*%X"
+    "%#LouiselmStatusReady#Your turn%*%=%1@v:lua.__louiselm_winbar_click@%#LouiselmStatusReady#● one%*%X"
   )
   assert(chat:winbar_click(1))
   MiniTest.expect.equality(chat.current_id, "session-1")

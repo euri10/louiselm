@@ -302,7 +302,11 @@ local DEFAULT_HIGHLIGHTS = {
   LouiselmStatusError = "DiagnosticError",
 }
 
-local WINBAR_CLICK_HANDLER = "v:lua.require('louiselm.ui.chat.command').winbar_click"
+-- Must be a plain dotted name Vim can resolve at click-dispatch time, not a
+-- call expression: `v:lua.require('...').winbar_click` is silently never
+-- invoked on a real click (louiselm-7ios). `command.lua` registers this
+-- global as a stable forwarder to its own reassignable `M.winbar_click`.
+local WINBAR_CLICK_HANDLER = "v:lua.__louiselm_winbar_click"
 local LIMITS_CLICK_TARGET = 99
 
 local function setup_highlights()

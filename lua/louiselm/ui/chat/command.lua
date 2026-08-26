@@ -198,6 +198,15 @@ end
 ---@param _modifiers string Active mouse modifiers.
 function M.winbar_click(_target, _clicks, _button, _modifiers) end
 
+-- Winbar/statusline `%{N}@{Function}@` click syntax requires {Function} to be
+-- a plain dotted name Vim can resolve at click time -- a call expression like
+-- `v:lua.require('...').winbar_click` embedded in that field is never
+-- invoked (louiselm-7ios: silently inert, no error). A stable global forwards
+-- to the current `M.winbar_click`, which `M.register()` below reassigns.
+_G.__louiselm_winbar_click = function(...)
+  return M.winbar_click(...)
+end
+
 ---Register the interactive chat command.
 ---@return boolean registered Always true after the command is registered.
 function M.register()
