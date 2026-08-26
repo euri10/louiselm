@@ -1,18 +1,18 @@
----@class louiselm.workflow.Coordinator
----@field evidence louiselm.workflow.Evidence
----@field approval louiselm.workflow.Approval
----@field agents louiselm.workflow.RoutingAgent[] Configured Agent inventory.
----@field recommend fun(self: louiselm.workflow.Coordinator, phase: louiselm.workflow.PhaseMetadata, state: louiselm.session.State): louiselm.workflow.ApprovalPresentation?, louiselm.workflow.Ranking?, string?
----@field observe fun(self: louiselm.workflow.Coordinator, phase: louiselm.workflow.PhaseMetadata, state: louiselm.session.State, outcome: string): boolean, string?
----@field feedback fun(self: louiselm.workflow.Coordinator, phase: louiselm.workflow.PhaseMetadata, state: louiselm.session.State, rating: string, context?: string): boolean, string?
----@field approve fun(self: louiselm.workflow.Coordinator, candidate: unknown): louiselm.workflow.ApprovalCandidate?, string?
----@field reject fun(self: louiselm.workflow.Coordinator, candidate: unknown): boolean, string?
----@field clear_pending fun(self: louiselm.workflow.Coordinator, phase: louiselm.workflow.PhaseMetadata): boolean
----@field invalidate fun(self: louiselm.workflow.Coordinator, phase: louiselm.workflow.PhaseMetadata): boolean
+---@class louiselm.routing.Coordinator
+---@field evidence louiselm.routing.Evidence
+---@field approval louiselm.routing.Approval
+---@field agents louiselm.routing.RoutingAgent[] Configured Agent inventory.
+---@field recommend fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata, state: louiselm.session.State): louiselm.routing.ApprovalPresentation?, louiselm.routing.Ranking?, string?
+---@field observe fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata, state: louiselm.session.State, outcome: string): boolean, string?
+---@field feedback fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata, state: louiselm.session.State, rating: string, context?: string): boolean, string?
+---@field approve fun(self: louiselm.routing.Coordinator, candidate: unknown): louiselm.routing.ApprovalCandidate?, string?
+---@field reject fun(self: louiselm.routing.Coordinator, candidate: unknown): boolean, string?
+---@field clear_pending fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata): boolean
+---@field invalidate fun(self: louiselm.routing.Coordinator, phase: louiselm.routing.PhaseMetadata): boolean
 
-local Approval = require("louiselm.workflow.approval")
-local Evidence = require("louiselm.workflow.evidence")
-local Routing = require("louiselm.workflow.routing")
+local Approval = require("louiselm.routing.approval")
+local Evidence = require("louiselm.routing.evidence")
+local Routing = require("louiselm.routing.routing")
 
 local M = {}
 local Coordinator = {}
@@ -29,7 +29,7 @@ local function copy_strings(values)
 end
 
 ---@param definitions louiselm.agent.Definitions
----@return louiselm.workflow.RoutingAgent[] agents
+---@return louiselm.routing.RoutingAgent[] agents
 local function routing_agents(definitions)
   local agents = {}
   local names = {}
@@ -59,7 +59,7 @@ local function model_value(options)
 end
 
 ---@param options louiselm.session.ConfigOption[]
----@return louiselm.workflow.RoutingModel[] models
+---@return louiselm.routing.RoutingModel[] models
 local function model_options(options)
   local models = {}
   for _, option in ipairs(options) do
@@ -77,7 +77,7 @@ local function model_options(options)
 end
 
 ---@param state louiselm.session.State
----@return louiselm.workflow.RoutingAgent[] agents
+---@return louiselm.routing.RoutingAgent[] agents
 local function live_agents(self, state)
   local agents = {}
   local models = model_options(state.config_options)
@@ -98,9 +98,9 @@ local function live_agents(self, state)
   return agents
 end
 
----@param phase louiselm.workflow.PhaseMetadata
+---@param phase louiselm.routing.PhaseMetadata
 ---@param state louiselm.session.State
----@return louiselm.workflow.EvidenceTarget
+---@return louiselm.routing.EvidenceTarget
 local function evidence_target(phase, state)
   local options = {}
   for _, option in ipairs(state.config_options) do
@@ -117,7 +117,7 @@ end
 ---Create the first workflow coordinator from normalized configured Agent definitions.
 ---@param definitions unknown Normalized named Agent definitions.
 ---@param evidence_path string Persistent local evidence path.
----@return louiselm.workflow.Coordinator? coordinator
+---@return louiselm.routing.Coordinator? coordinator
 ---@return string? error_message
 function M.new(definitions, evidence_path)
   if type(definitions) ~= "table" then
@@ -135,11 +135,11 @@ function M.new(definitions, evidence_path)
 end
 
 ---Rank and queue recommendations for a completed, phase-tagged Session turn.
----@param self louiselm.workflow.Coordinator
----@param phase louiselm.workflow.PhaseMetadata Canonical phase for the completed work.
+---@param self louiselm.routing.Coordinator
+---@param phase louiselm.routing.PhaseMetadata Canonical phase for the completed work.
 ---@param state louiselm.session.State Current Session state.
----@return louiselm.workflow.ApprovalPresentation? pending
----@return louiselm.workflow.Ranking? ranking
+---@return louiselm.routing.ApprovalPresentation? pending
+---@return louiselm.routing.Ranking? ranking
 ---@return string? error_message
 function Coordinator:recommend(phase, state)
   if state.status ~= "ready" then
@@ -173,8 +173,8 @@ function Coordinator:recommend(phase, state)
 end
 
 ---Record operational outcome for a completed phase turn.
----@param self louiselm.workflow.Coordinator
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Coordinator
+---@param phase louiselm.routing.PhaseMetadata
 ---@param state louiselm.session.State
 ---@param outcome string `completed`, `failed`, or `cancelled`.
 ---@return boolean recorded
@@ -184,8 +184,8 @@ function Coordinator:observe(phase, state, outcome)
 end
 
 ---Record phase-end human feedback for the active Agent, Model, and options.
----@param self louiselm.workflow.Coordinator
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Coordinator
+---@param phase louiselm.routing.PhaseMetadata
 ---@param state louiselm.session.State
 ---@param rating string `good`, `skip`, or `poor`.
 ---@param context? string Required for poor feedback.
@@ -196,16 +196,16 @@ function Coordinator:feedback(phase, state, rating, context)
 end
 
 ---Approve a queued recommendation for later UI/process execution.
----@param self louiselm.workflow.Coordinator
+---@param self louiselm.routing.Coordinator
 ---@param candidate unknown
----@return louiselm.workflow.ApprovalCandidate? approved
+---@return louiselm.routing.ApprovalCandidate? approved
 ---@return string? error_message
 function Coordinator:approve(candidate)
   return self.approval:approve(candidate)
 end
 
 ---Reject a queued recommendation and suppress it for its current phase.
----@param self louiselm.workflow.Coordinator
+---@param self louiselm.routing.Coordinator
 ---@param candidate unknown
 ---@return boolean rejected
 ---@return string? error_message
@@ -214,16 +214,16 @@ function Coordinator:reject(candidate)
 end
 
 ---Dismiss a presentation without recording approval or rejection.
----@param self louiselm.workflow.Coordinator
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Coordinator
+---@param phase louiselm.routing.PhaseMetadata
 ---@return boolean cleared
 function Coordinator:clear_pending(phase)
   return self.approval:clear_pending(phase)
 end
 
 ---Invalidate phase-scoped routing decisions after the workflow enters a new phase.
----@param self louiselm.workflow.Coordinator
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Coordinator
+---@param phase louiselm.routing.PhaseMetadata
 ---@return boolean invalidated
 function Coordinator:invalidate(phase)
   return self.approval:invalidate(phase)

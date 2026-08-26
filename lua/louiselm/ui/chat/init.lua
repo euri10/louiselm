@@ -5,7 +5,7 @@ local Limits = require("louiselm.ui.limits")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
-local Usage = require("louiselm.workflow.usage")
+local Usage = require("louiselm.routing.usage")
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -14,7 +14,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field initial_contexts? louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_catalog? string Hidden catalog held for the first accepted model prompt in a new inject session.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
----@field workflow? louiselm.workflow.Coordinator Phase-aware routing coordinator.
+---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
@@ -41,7 +41,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field context_prefix string Visible context markers prefixed to the prompt.
 ---@field skill_catalog? string Hidden catalog pending for this new inject session.
 ---@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
----@field workflow_phase? louiselm.workflow.PhaseMetadata Last phase-tagged skill used by this view.
+---@field workflow_phase? louiselm.routing.PhaseMetadata Last phase-tagged skill used by this view.
 ---@field context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
 ---@field fold_counts table<integer, integer> Number of context folds installed in each window.
 ---@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
@@ -82,8 +82,8 @@ local Usage = require("louiselm.workflow.usage")
 ---@field skill_catalog? string Hidden catalog copied only into brand-new inject sessions.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field diff louiselm.ui.Diff File-edit review UI.
----@field usage louiselm.workflow.Usage Persistent measured usage ledger.
----@field workflow? louiselm.workflow.Coordinator Phase-aware routing coordinator.
+---@field usage louiselm.routing.Usage Persistent measured usage ledger.
+---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
 ---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
@@ -1863,7 +1863,7 @@ local function config_values(option)
   return option.options or {}
 end
 
----@param summary louiselm.workflow.UsageSummary
+---@param summary louiselm.routing.UsageSummary
 ---@return string
 local function usage_details(summary)
   local details = {}
@@ -2012,7 +2012,7 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
----@param phase louiselm.workflow.PhaseMetadata
+---@param phase louiselm.routing.PhaseMetadata
 ---@param state louiselm.session.State
 ---@param callback fun()
 local function present_workflow_feedback(self, view, phase, state, callback)
@@ -2047,7 +2047,7 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
----@param candidate louiselm.workflow.ApprovalCandidate
+---@param candidate louiselm.routing.ApprovalCandidate
 ---@return boolean applied
 ---@return string? error_message
 local function apply_recommendation(self, view, candidate)
@@ -2093,8 +2093,8 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
----@param phase louiselm.workflow.PhaseMetadata
----@param pending louiselm.workflow.ApprovalPresentation
+---@param phase louiselm.routing.PhaseMetadata
+---@param pending louiselm.routing.ApprovalPresentation
 local function present_recommendations(self, view, phase, pending)
   if self.disposed or self.views[view.session:inspect().id] ~= view then
     return

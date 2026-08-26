@@ -1,11 +1,11 @@
----@class louiselm.workflow.EvidenceTarget
----@field phase? louiselm.workflow.PhaseName Phase the observation belongs to; absent means global.
+---@class louiselm.routing.EvidenceTarget
+---@field phase? louiselm.routing.PhaseName Phase the observation belongs to; absent means global.
 ---@field agent string Configured Agent name.
 ---@field model? string Model selected in the Agent's Session.
 ---@field options? table<string, string|boolean> Agent configuration options used for the observation.
 
----@class louiselm.workflow.EvidenceRecord
----@field phase? louiselm.workflow.PhaseName
+---@class louiselm.routing.EvidenceRecord
+---@field phase? louiselm.routing.PhaseName
 ---@field agent string
 ---@field model? string
 ---@field options? table<string, string|boolean>
@@ -16,14 +16,14 @@
 ---@field notes? string[] Most recent feedback context, capped at five entries.
 ---@field updated_at integer Unix timestamp of the latest change.
 
----@class louiselm.workflow.Evidence
+---@class louiselm.routing.Evidence
 ---@field path string Persistent JSON path.
----@field observe fun(self: louiselm.workflow.Evidence, target: unknown, outcome: unknown): boolean, string? Record one completed or failed turn.
----@field feedback fun(self: louiselm.workflow.Evidence, target: unknown, rating: unknown, context?: unknown): boolean, string? Record optional human feedback.
----@field records fun(self: louiselm.workflow.Evidence): louiselm.workflow.EvidenceRecord[]?, string? Return detached persistent records.
----@field evidence fun(self: louiselm.workflow.Evidence): louiselm.workflow.RoutingEvidence[]?, string? Return records shaped for routing.
+---@field observe fun(self: louiselm.routing.Evidence, target: unknown, outcome: unknown): boolean, string? Record one completed or failed turn.
+---@field feedback fun(self: louiselm.routing.Evidence, target: unknown, rating: unknown, context?: unknown): boolean, string? Record optional human feedback.
+---@field records fun(self: louiselm.routing.Evidence): louiselm.routing.EvidenceRecord[]?, string? Return detached persistent records.
+---@field evidence fun(self: louiselm.routing.Evidence): louiselm.routing.RoutingEvidence[]?, string? Return records shaped for routing.
 
-local Phase = require("louiselm.workflow.phase")
+local Phase = require("louiselm.routing.phase")
 local M = {}
 local Evidence = {}
 Evidence.__index = Evidence
@@ -89,7 +89,7 @@ local function same_options(left, right)
 end
 
 ---@param value unknown
----@return louiselm.workflow.EvidenceTarget? target
+---@return louiselm.routing.EvidenceTarget? target
 ---@return string? error_message
 local function normalize_target(value)
   if type(value) ~= "table" then
@@ -119,8 +119,8 @@ local function normalize_target(value)
     nil
 end
 
----@param record louiselm.workflow.EvidenceRecord
----@return louiselm.workflow.EvidenceRecord
+---@param record louiselm.routing.EvidenceRecord
+---@return louiselm.routing.EvidenceRecord
 local function copy_record(record)
   local copy = {
     phase = record.phase,
@@ -144,7 +144,7 @@ local function is_integer(value)
 end
 
 ---@param value unknown
----@return louiselm.workflow.EvidenceRecord?
+---@return louiselm.routing.EvidenceRecord?
 local function validate_record(value)
   if type(value) ~= "table" then
     return nil
@@ -203,7 +203,7 @@ local function validate_record(value)
 end
 
 ---@param path string
----@return louiselm.workflow.EvidenceRecord[]? records
+---@return louiselm.routing.EvidenceRecord[]? records
 ---@return string? error_message
 local function read_records(path)
   local editor = nvim()
@@ -258,7 +258,7 @@ local function read_records(path)
 end
 
 ---@param path string
----@param records louiselm.workflow.EvidenceRecord[]
+---@param records louiselm.routing.EvidenceRecord[]
 ---@return boolean written
 ---@return string? error_message
 local function write_records(path, records)
@@ -301,8 +301,8 @@ local function write_records(path, records)
   return true, nil
 end
 
----@param left louiselm.workflow.EvidenceRecord
----@param right louiselm.workflow.EvidenceRecord
+---@param left louiselm.routing.EvidenceRecord
+---@param right louiselm.routing.EvidenceRecord
 ---@return boolean
 local function before(left, right)
   local left_phase = left.phase or ""
@@ -322,9 +322,9 @@ local function before(left, right)
   return left_options < nvim().json.encode(right.options or {})
 end
 
----@param records louiselm.workflow.EvidenceRecord[]
----@param target louiselm.workflow.EvidenceTarget
----@return louiselm.workflow.EvidenceRecord? record
+---@param records louiselm.routing.EvidenceRecord[]
+---@param target louiselm.routing.EvidenceTarget
+---@return louiselm.routing.EvidenceRecord? record
 local function find_record(records, target)
   for _, record in ipairs(records) do
     if
@@ -339,8 +339,8 @@ local function find_record(records, target)
   return nil
 end
 
----@param target louiselm.workflow.EvidenceTarget
----@return louiselm.workflow.EvidenceRecord
+---@param target louiselm.routing.EvidenceTarget
+---@return louiselm.routing.EvidenceRecord
 local function new_record(target)
   return {
     phase = target.phase,
@@ -355,8 +355,8 @@ local function new_record(target)
   }
 end
 
----@param target louiselm.workflow.EvidenceTarget
----@return louiselm.workflow.EvidenceTarget[] targets Phase-specific target followed by its global fallback.
+---@param target louiselm.routing.EvidenceTarget
+---@return louiselm.routing.EvidenceTarget[] targets Phase-specific target followed by its global fallback.
 local function target_variants(target)
   if target.phase == nil then
     return { target }
@@ -367,7 +367,7 @@ local function target_variants(target)
   }
 end
 
----@param self louiselm.workflow.Evidence
+---@param self louiselm.routing.Evidence
 ---@param target unknown
 ---@param outcome unknown
 ---@return boolean ok
@@ -403,7 +403,7 @@ function Evidence:observe(target, outcome)
   return write_records(self.path, records)
 end
 
----@param self louiselm.workflow.Evidence
+---@param self louiselm.routing.Evidence
 ---@param target unknown
 ---@param rating unknown
 ---@param context? unknown
@@ -452,7 +452,7 @@ end
 
 ---Create a persistent routing evidence store.
 ---@param path string JSON path used for local evidence.
----@return louiselm.workflow.Evidence? store
+---@return louiselm.routing.Evidence? store
 ---@return string? error_message
 function M.new(path)
   if type(path) ~= "string" or path == "" then
@@ -462,8 +462,8 @@ function M.new(path)
 end
 
 ---Return detached records, including operational counters and feedback notes.
----@param self louiselm.workflow.Evidence
----@return louiselm.workflow.EvidenceRecord[]? records
+---@param self louiselm.routing.Evidence
+---@return louiselm.routing.EvidenceRecord[]? records
 ---@return string? error_message
 function Evidence:records()
   local records, read_error = read_records(self.path)
@@ -479,8 +479,8 @@ function Evidence:records()
 end
 
 ---Return evidence in the flat shape consumed by workflow routing.
----@param self louiselm.workflow.Evidence
----@return louiselm.workflow.RoutingEvidence[]? evidence
+---@param self louiselm.routing.Evidence
+---@return louiselm.routing.RoutingEvidence[]? evidence
 ---@return string? error_message
 function Evidence:evidence()
   local records, read_error = read_records(self.path)

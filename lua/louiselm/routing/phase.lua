@@ -1,8 +1,8 @@
----@alias louiselm.workflow.PhaseName "design"|"planning"|"implementation"|"review"|"qa"|"mechanical"
+---@alias louiselm.routing.PhaseName "design"|"planning"|"implementation"|"review"|"qa"|"mechanical"
 
----@class louiselm.workflow.PhaseMetadata
----@field primary louiselm.workflow.PhaseName Canonical phase the unit of work mainly belongs to.
----@field secondary louiselm.workflow.PhaseName[] Further canonical phases in declared order, never repeating the primary.
+---@class louiselm.routing.PhaseMetadata
+---@field primary louiselm.routing.PhaseName Canonical phase the unit of work mainly belongs to.
+---@field secondary louiselm.routing.PhaseName[] Further canonical phases in declared order, never repeating the primary.
 ---@field source "explicit"|"inferred" Whether the metadata was declared or derived from a name.
 ---@field confidence number Confidence in the metadata, from 0 to 1.
 
@@ -86,7 +86,7 @@ local function secondary_phases(value, primary)
 end
 
 ---Canonical phases in workflow order.
----@return louiselm.workflow.PhaseName[] phases A copy; the contract is not caller-mutable.
+---@return louiselm.routing.PhaseName[] phases A copy; the contract is not caller-mutable.
 function M.canonical()
   local phases = {}
   for index, phase in ipairs(CANONICAL) do
@@ -103,7 +103,7 @@ end
 
 ---Validate declared phase metadata, either a bare phase name or a mapping.
 ---@param value unknown Declared `phase` value.
----@return louiselm.workflow.PhaseMetadata? metadata
+---@return louiselm.routing.PhaseMetadata? metadata
 ---@return string? error_message
 function M.parse(value)
   if type(value) == "string" then
@@ -138,7 +138,7 @@ end
 
 ---Derive phase metadata from a hyphenated name, for units of work that declare none.
 ---@param value unknown Skill or workflow unit name.
----@return louiselm.workflow.PhaseMetadata? metadata Nil when no segment names a phase.
+---@return louiselm.routing.PhaseMetadata? metadata Nil when no segment names a phase.
 function M.infer(value)
   if type(value) ~= "string" then
     return nil
@@ -178,7 +178,7 @@ end
 ---Resolve the phase for a unit of work, preferring a declaration over its name.
 ---@param declared unknown Declared `phase` value, or nil when none was declared.
 ---@param name unknown Name to fall back to.
----@return louiselm.workflow.PhaseMetadata? metadata Nil when nothing declares or implies a phase.
+---@return louiselm.routing.PhaseMetadata? metadata Nil when nothing declares or implies a phase.
 ---@return string? error_message Set only when a declaration is malformed.
 function M.resolve(declared, name)
   if declared ~= nil then

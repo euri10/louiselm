@@ -1,30 +1,30 @@
----@class louiselm.workflow.ApprovalCandidate: louiselm.workflow.RoutingCandidate
+---@class louiselm.routing.ApprovalCandidate: louiselm.routing.RoutingCandidate
 ---@field label? string Presentation label, present only while shown to a user.
 
----@class louiselm.workflow.ApprovalPresentation
----@field phase louiselm.workflow.PhaseMetadata Phase whose recommendations are shown.
----@field candidates louiselm.workflow.ApprovalCandidate[] Short ranked list awaiting approval.
+---@class louiselm.routing.ApprovalPresentation
+---@field phase louiselm.routing.PhaseMetadata Phase whose recommendations are shown.
+---@field candidates louiselm.routing.ApprovalCandidate[] Short ranked list awaiting approval.
 
----@class louiselm.workflow.ApprovalState
----@field phase louiselm.workflow.PhaseMetadata
----@field ranking louiselm.workflow.Ranking
----@field pending? louiselm.workflow.ApprovalPresentation
----@field approved? louiselm.workflow.ApprovalCandidate
+---@class louiselm.routing.ApprovalState
+---@field phase louiselm.routing.PhaseMetadata
+---@field ranking louiselm.routing.Ranking
+---@field pending? louiselm.routing.ApprovalPresentation
+---@field approved? louiselm.routing.ApprovalCandidate
 ---@field rejected table<string, boolean>
 
----@class louiselm.workflow.Approval
----@field states table<string, louiselm.workflow.ApprovalState>
+---@class louiselm.routing.Approval
+---@field states table<string, louiselm.routing.ApprovalState>
 ---@field state_order string[]
----@field queue fun(self: louiselm.workflow.Approval, phase: louiselm.workflow.PhaseMetadata, ranking: louiselm.workflow.Ranking, session_status: string): boolean, string?
----@field pending fun(self: louiselm.workflow.Approval, phase: louiselm.workflow.PhaseMetadata): louiselm.workflow.ApprovalPresentation?
----@field approved fun(self: louiselm.workflow.Approval, phase: louiselm.workflow.PhaseMetadata): louiselm.workflow.ApprovalCandidate?
----@field approve fun(self: louiselm.workflow.Approval, candidate: unknown): louiselm.workflow.ApprovalCandidate?, string?
----@field reject fun(self: louiselm.workflow.Approval, candidate: unknown): boolean, string?
----@field clear_pending fun(self: louiselm.workflow.Approval, phase: louiselm.workflow.PhaseMetadata): boolean
----@field invalidate fun(self: louiselm.workflow.Approval, phase: louiselm.workflow.PhaseMetadata): boolean
----@field reconsider fun(self: louiselm.workflow.Approval, phase: louiselm.workflow.PhaseMetadata, session_status: string): boolean, string?
+---@field queue fun(self: louiselm.routing.Approval, phase: louiselm.routing.PhaseMetadata, ranking: louiselm.routing.Ranking, session_status: string): boolean, string?
+---@field pending fun(self: louiselm.routing.Approval, phase: louiselm.routing.PhaseMetadata): louiselm.routing.ApprovalPresentation?
+---@field approved fun(self: louiselm.routing.Approval, phase: louiselm.routing.PhaseMetadata): louiselm.routing.ApprovalCandidate?
+---@field approve fun(self: louiselm.routing.Approval, candidate: unknown): louiselm.routing.ApprovalCandidate?, string?
+---@field reject fun(self: louiselm.routing.Approval, candidate: unknown): boolean, string?
+---@field clear_pending fun(self: louiselm.routing.Approval, phase: louiselm.routing.PhaseMetadata): boolean
+---@field invalidate fun(self: louiselm.routing.Approval, phase: louiselm.routing.PhaseMetadata): boolean
+---@field reconsider fun(self: louiselm.routing.Approval, phase: louiselm.routing.PhaseMetadata, session_status: string): boolean, string?
 
-local Phase = require("louiselm.workflow.phase")
+local Phase = require("louiselm.routing.phase")
 local M = {}
 local Approval = {}
 Approval.__index = Approval
@@ -41,9 +41,9 @@ local function copy_strings(values)
   return copy
 end
 
----@param candidate louiselm.workflow.RoutingCandidate
+---@param candidate louiselm.routing.RoutingCandidate
 ---@param with_label? boolean
----@return louiselm.workflow.ApprovalCandidate
+---@return louiselm.routing.ApprovalCandidate
 local function copy_candidate(candidate, with_label)
   local copy = {
     action = candidate.action,
@@ -66,8 +66,8 @@ local function copy_candidate(candidate, with_label)
   return copy
 end
 
----@param ranking louiselm.workflow.Ranking
----@return louiselm.workflow.Ranking
+---@param ranking louiselm.routing.Ranking
+---@return louiselm.routing.Ranking
 local function copy_ranking(ranking)
   local copy = { candidates = {}, rejected = {} }
   for index, candidate in ipairs(ranking.candidates) do
@@ -84,14 +84,14 @@ local function copy_ranking(ranking)
   return copy
 end
 
----@param phase louiselm.workflow.PhaseMetadata
+---@param phase louiselm.routing.PhaseMetadata
 ---@return string
 local function phase_key(phase)
   return phase.primary .. "|" .. table.concat(phase.secondary, ",")
 end
 
 ---@param phase unknown
----@return louiselm.workflow.PhaseMetadata? normalized
+---@return louiselm.routing.PhaseMetadata? normalized
 ---@return string? error_message
 local function normalize_phase(phase)
   if type(phase) ~= "table" or not Phase.is_canonical(phase.primary) then
@@ -119,14 +119,14 @@ local function normalize_phase(phase)
     nil
 end
 
----@param candidate louiselm.workflow.RoutingCandidate
+---@param candidate louiselm.routing.RoutingCandidate
 ---@return string
 local function candidate_key(candidate)
   return table.concat({ candidate.action, candidate.agent, candidate.model or "" }, "\0")
 end
 
----@param state louiselm.workflow.ApprovalState
----@return louiselm.workflow.ApprovalPresentation?
+---@param state louiselm.routing.ApprovalState
+---@return louiselm.routing.ApprovalPresentation?
 local function copy_pending(state)
   if state.pending == nil then
     return nil
@@ -138,8 +138,8 @@ local function copy_pending(state)
   return copy
 end
 
----@param state louiselm.workflow.ApprovalState
----@return louiselm.workflow.ApprovalPresentation?
+---@param state louiselm.routing.ApprovalState
+---@return louiselm.routing.ApprovalPresentation?
 local function presentation(state)
   local candidates = {}
   for _, candidate in ipairs(state.ranking.candidates) do
@@ -156,10 +156,10 @@ local function presentation(state)
   return { phase = state.phase, candidates = candidates }
 end
 
----@param self louiselm.workflow.Approval
+---@param self louiselm.routing.Approval
 ---@param candidate unknown
----@return louiselm.workflow.ApprovalState?
----@return louiselm.workflow.RoutingCandidate?
+---@return louiselm.routing.ApprovalState?
+---@return louiselm.routing.RoutingCandidate?
 local function find_pending(self, candidate)
   if type(candidate) ~= "table" then
     return nil, nil
@@ -179,15 +179,15 @@ local function find_pending(self, candidate)
 end
 
 ---Create an in-memory phase recommendation approval lifecycle.
----@return louiselm.workflow.Approval approval
+---@return louiselm.routing.Approval approval
 function M.new()
   return setmetatable({ states = {}, state_order = {} }, Approval)
 end
 
 ---Queue ranked recommendations for an idle session.
----@param self louiselm.workflow.Approval
----@param phase louiselm.workflow.PhaseMetadata
----@param ranking louiselm.workflow.Ranking
+---@param self louiselm.routing.Approval
+---@param phase louiselm.routing.PhaseMetadata
+---@param ranking louiselm.routing.Ranking
 ---@param session_status string Current session status; only `ready` is idle.
 ---@return boolean ok
 ---@return string? error_message
@@ -221,9 +221,9 @@ function Approval:queue(phase, ranking, session_status)
 end
 
 ---Return the detached recommendations currently awaiting approval.
----@param self louiselm.workflow.Approval
----@param phase louiselm.workflow.PhaseMetadata
----@return louiselm.workflow.ApprovalPresentation? pending
+---@param self louiselm.routing.Approval
+---@param phase louiselm.routing.PhaseMetadata
+---@return louiselm.routing.ApprovalPresentation? pending
 function Approval:pending(phase)
   local normalized = normalize_phase(phase)
   if normalized == nil then
@@ -234,9 +234,9 @@ function Approval:pending(phase)
 end
 
 ---Return the detached approved choice for a phase, if one exists.
----@param self louiselm.workflow.Approval
----@param phase louiselm.workflow.PhaseMetadata
----@return louiselm.workflow.RoutingCandidate? approved
+---@param self louiselm.routing.Approval
+---@param phase louiselm.routing.PhaseMetadata
+---@return louiselm.routing.RoutingCandidate? approved
 function Approval:approved(phase)
   local normalized = normalize_phase(phase)
   if normalized == nil then
@@ -250,9 +250,9 @@ function Approval:approved(phase)
 end
 
 ---Approve a candidate from the currently pending phase recommendation.
----@param self louiselm.workflow.Approval
+---@param self louiselm.routing.Approval
 ---@param candidate unknown
----@return louiselm.workflow.RoutingCandidate? approved
+---@return louiselm.routing.RoutingCandidate? approved
 ---@return string? error_message
 function Approval:approve(candidate)
   local state, pending_candidate = find_pending(self, candidate)
@@ -265,7 +265,7 @@ function Approval:approve(candidate)
 end
 
 ---Reject a pending candidate and suppress it for the current phase.
----@param self louiselm.workflow.Approval
+---@param self louiselm.routing.Approval
 ---@param candidate unknown
 ---@return boolean ok
 ---@return string? error_message
@@ -280,8 +280,8 @@ function Approval:reject(candidate)
 end
 
 ---Dismiss the current presentation without approving or rejecting a choice.
----@param self louiselm.workflow.Approval
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Approval
+---@param phase louiselm.routing.PhaseMetadata
 ---@return boolean ok
 function Approval:clear_pending(phase)
   local normalized = normalize_phase(phase)
@@ -297,8 +297,8 @@ function Approval:clear_pending(phase)
 end
 
 ---Clear phase-scoped decisions so fresh routing can be presented.
----@param self louiselm.workflow.Approval
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Approval
+---@param phase louiselm.routing.PhaseMetadata
 ---@return boolean ok
 function Approval:invalidate(phase)
   local normalized = normalize_phase(phase)
@@ -320,8 +320,8 @@ function Approval:invalidate(phase)
 end
 
 ---Lift rejection suppression and present the last ranking for a phase again.
----@param self louiselm.workflow.Approval
----@param phase louiselm.workflow.PhaseMetadata
+---@param self louiselm.routing.Approval
+---@param phase louiselm.routing.PhaseMetadata
 ---@param session_status string Current session status; only `ready` is idle.
 ---@return boolean ok
 ---@return string? error_message

@@ -1,5 +1,5 @@
 local MiniTest = require("mini.test")
-local Evidence = require("louiselm.workflow.evidence")
+local Evidence = require("louiselm.routing.evidence")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -33,7 +33,7 @@ local function target(overrides)
   return value
 end
 
----@return louiselm.workflow.RoutingEvidence
+---@return louiselm.routing.RoutingEvidence
 local function record_for(store, phase, agent, model)
   local records = assert(store:evidence())
   for _, record in ipairs(records) do

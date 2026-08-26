@@ -1,5 +1,5 @@
 local MiniTest = require("mini.test")
-local Phase = require("louiselm.workflow.phase")
+local Phase = require("louiselm.routing.phase")
 
 local T = MiniTest.new_set()
 

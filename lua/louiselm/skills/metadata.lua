@@ -6,7 +6,7 @@
 ---@class louiselm.skills.Yaml
 ---@field load fun(value: string): unknown
 
-local Phase = require("louiselm.workflow.phase")
+local Phase = require("louiselm.routing.phase")
 local M = {}
 
 ---@return table

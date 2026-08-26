@@ -1,5 +1,5 @@
 local MiniTest = require("mini.test")
-local Approval = require("louiselm.workflow.approval")
+local Approval = require("louiselm.routing.approval")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim

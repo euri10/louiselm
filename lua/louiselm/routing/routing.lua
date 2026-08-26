@@ -1,16 +1,16 @@
----@class louiselm.workflow.RoutingModel
+---@class louiselm.routing.RoutingModel
 ---@field value string Advertised model option value.
 ---@field name string Advertised display name.
 ---@field description? string Advertised description.
 
----@class louiselm.workflow.RoutingAgent
+---@class louiselm.routing.RoutingAgent
 ---@field name string Configured agent name.
 ---@field capabilities? string[] Traits the agent is configured to declare.
----@field models? louiselm.workflow.RoutingModel[] Models advertised in the agent's model config option.
+---@field models? louiselm.routing.RoutingModel[] Models advertised in the agent's model config option.
 ---@field context? { size: number, used: number } Context usage, known only for an agent with a live session.
 ---@field available? boolean Whether the agent can be started; absent means not checked.
 
----@class louiselm.workflow.RoutingEvidence
+---@class louiselm.routing.RoutingEvidence
 ---@field phase? string Canonical phase the record was gathered in; absent makes the record global.
 ---@field agent string Agent the record describes.
 ---@field model? string Model the record describes.
@@ -18,18 +18,18 @@
 ---@field reliability number Observed operational success, from 0 to 1.
 ---@field quality? number Reported qualitative feedback, from 0 to 1.
 
----@class louiselm.workflow.RoutingConstraints
+---@class louiselm.routing.RoutingConstraints
 ---@field require_traits? string[] Traits a candidate must declare.
 ---@field allow_handoff? boolean Whether a new session with another agent may be recommended; defaults to true.
 
----@class louiselm.workflow.RoutingRequest
----@field phase louiselm.workflow.PhaseMetadata Phase the recommendation is scoped to.
+---@class louiselm.routing.RoutingRequest
+---@field phase louiselm.routing.PhaseMetadata Phase the recommendation is scoped to.
 ---@field current { agent: string, model?: string } Choice in effect, always ranked as CONTINUE.
----@field agents louiselm.workflow.RoutingAgent[] Configured agents, in any order.
----@field evidence? louiselm.workflow.RoutingEvidence[] Local evidence, in any order.
----@field constraints? louiselm.workflow.RoutingConstraints Explicit hard constraints.
+---@field agents louiselm.routing.RoutingAgent[] Configured agents, in any order.
+---@field evidence? louiselm.routing.RoutingEvidence[] Local evidence, in any order.
+---@field constraints? louiselm.routing.RoutingConstraints Explicit hard constraints.
 
----@class louiselm.workflow.RoutingCandidate
+---@class louiselm.routing.RoutingCandidate
 ---@field action "continue"|"model"|"handoff" Keeping the choice, changing model in session, or starting a new one.
 ---@field agent string Agent the candidate would run on.
 ---@field model? string Model the candidate would run, absent when the agent advertises none.
@@ -37,17 +37,17 @@
 ---@field confidence number Confidence in the score, from 0 to 1.
 ---@field reasons string[] Human-readable explanation of the score.
 
----@class louiselm.workflow.RoutingRejection
+---@class louiselm.routing.RoutingRejection
 ---@field action "continue"|"model"|"handoff"
 ---@field agent string
 ---@field model? string
 ---@field reasons string[] Every hard constraint the candidate failed, so a near miss is legible.
 
----@class louiselm.workflow.Ranking
----@field candidates louiselm.workflow.RoutingCandidate[] Ranked survivors, empty when every candidate failed a constraint.
----@field rejected louiselm.workflow.RoutingRejection[] Near misses with the constraints they failed.
+---@class louiselm.routing.Ranking
+---@field candidates louiselm.routing.RoutingCandidate[] Ranked survivors, empty when every candidate failed a constraint.
+---@field rejected louiselm.routing.RoutingRejection[] Near misses with the constraints they failed.
 
-local Phase = require("louiselm.workflow.phase")
+local Phase = require("louiselm.routing.phase")
 local M = {}
 
 --- Built-in phase profiles. They express traits and headroom requirements rather
@@ -110,7 +110,7 @@ local function set_of(values)
 end
 
 ---Weight every trait the phase profiles prefer, primary phase first.
----@param metadata louiselm.workflow.PhaseMetadata
+---@param metadata louiselm.routing.PhaseMetadata
 ---@return string[] traits Deterministic order: primary profile order, then each secondary's.
 ---@return table<string, number> weights
 ---@return number min_headroom
@@ -142,11 +142,11 @@ local function phase_traits(metadata)
 end
 
 ---Find the evidence that best describes one candidate, preferring this phase.
----@param evidence? louiselm.workflow.RoutingEvidence[]
+---@param evidence? louiselm.routing.RoutingEvidence[]
 ---@param phase string
 ---@param agent string
 ---@param model? string
----@return louiselm.workflow.RoutingEvidence? record
+---@return louiselm.routing.RoutingEvidence? record
 ---@return boolean phase_specific
 local function evidence_for(evidence, phase, agent, model)
   local global
@@ -163,7 +163,7 @@ local function evidence_for(evidence, phase, agent, model)
   return global, false
 end
 
----@param record? louiselm.workflow.RoutingEvidence
+---@param record? louiselm.routing.RoutingEvidence
 ---@return number score
 local function evidence_score(record)
   if record == nil then
@@ -203,8 +203,8 @@ local function rejections(agent, action, constraints, metadata, min_headroom)
   return reasons
 end
 
----@param a louiselm.workflow.RoutingCandidate
----@param b louiselm.workflow.RoutingCandidate
+---@param a louiselm.routing.RoutingCandidate
+---@param b louiselm.routing.RoutingCandidate
 ---@return boolean
 local function before(a, b)
   if a.score ~= b.score then
@@ -216,8 +216,8 @@ local function before(a, b)
   return (a.model or "") < (b.model or "")
 end
 
----@param a louiselm.workflow.RoutingRejection
----@param b louiselm.workflow.RoutingRejection
+---@param a louiselm.routing.RoutingRejection
+---@param b louiselm.routing.RoutingRejection
 ---@return boolean
 local function rejected_before(a, b)
   if a.agent ~= b.agent then
@@ -267,8 +267,8 @@ end
 
 ---Rank the routing candidates for one phase. Pure: it starts no process, opens no
 ---UI, and does not mutate the request.
----@param request unknown louiselm.workflow.RoutingRequest
----@return louiselm.workflow.Ranking? ranking
+---@param request unknown louiselm.routing.RoutingRequest
+---@return louiselm.routing.Ranking? ranking
 ---@return string? error_message
 function M.rank(request)
   if type(request) ~= "table" then

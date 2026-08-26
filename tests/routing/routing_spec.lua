@@ -1,6 +1,6 @@
 local MiniTest = require("mini.test")
-local Phase = require("louiselm.workflow.phase")
-local Routing = require("louiselm.workflow.routing")
+local Phase = require("louiselm.routing.phase")
+local Routing = require("louiselm.routing.routing")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim

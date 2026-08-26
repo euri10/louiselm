@@ -1,23 +1,23 @@
----@class louiselm.workflow.UsageOption
+---@class louiselm.routing.UsageOption
 ---@field id string ACP option identifier.
 ---@field current_value string|boolean Value active for a completed turn.
 
----@class louiselm.workflow.UsageCost
+---@class louiselm.routing.UsageCost
 ---@field amount number Agent-reported cost amount.
 ---@field currency string Agent-reported ISO 4217 currency code.
 
----@class louiselm.workflow.UsageSummaryCost
+---@class louiselm.routing.UsageSummaryCost
 ---@field currency string
 ---@field samples integer
 ---@field average number
 
----@class louiselm.workflow.UsageSummary
+---@class louiselm.routing.UsageSummary
 ---@field samples integer Turns with any measured usage or cost.
 ---@field token_samples integer Turns with measured token counts.
 ---@field average_tokens? number Average measured tokens per turn.
----@field costs louiselm.workflow.UsageSummaryCost[] Average reported cost by currency.
+---@field costs louiselm.routing.UsageSummaryCost[] Average reported cost by currency.
 
----@class louiselm.workflow.UsageRecord
+---@class louiselm.routing.UsageRecord
 ---@field agent string
 ---@field option string
 ---@field value string|boolean
@@ -27,19 +27,19 @@
 ---@field costs table<string, { samples: integer, total: number }>
 ---@field updated_at integer
 
----@class louiselm.workflow.UsageTurnRecord
+---@class louiselm.routing.UsageTurnRecord
 ---@field agent string
 ---@field session_id string
 ---@field turn integer
 ---@field usage louiselm.session.TurnUsage
 
----@class louiselm.workflow.Usage
+---@class louiselm.routing.Usage
 ---@field path string Persistent JSON path.
----@field record fun(self: louiselm.workflow.Usage, agent: unknown, options: unknown, usage: unknown, cost?: unknown): boolean, string? Record one completed turn.
----@field record_turn fun(self: louiselm.workflow.Usage, agent: unknown, session_id: unknown, turn: unknown, usage: unknown): boolean, string? Persist exact presentation usage for one Session turn.
----@field records fun(self: louiselm.workflow.Usage): louiselm.workflow.UsageRecord[]?, string? Return detached persistent records.
----@field turns fun(self: louiselm.workflow.Usage, agent: unknown, session_id: unknown): louiselm.workflow.UsageTurnRecord[]?, string? Return exact presentation usage for one Session.
----@field summary fun(self: louiselm.workflow.Usage, agent: unknown, option: unknown, value: unknown): louiselm.workflow.UsageSummary?, string? Summarize one option value.
+---@field record fun(self: louiselm.routing.Usage, agent: unknown, options: unknown, usage: unknown, cost?: unknown): boolean, string? Record one completed turn.
+---@field record_turn fun(self: louiselm.routing.Usage, agent: unknown, session_id: unknown, turn: unknown, usage: unknown): boolean, string? Persist exact presentation usage for one Session turn.
+---@field records fun(self: louiselm.routing.Usage): louiselm.routing.UsageRecord[]?, string? Return detached persistent records.
+---@field turns fun(self: louiselm.routing.Usage, agent: unknown, session_id: unknown): louiselm.routing.UsageTurnRecord[]?, string? Return exact presentation usage for one Session.
+---@field summary fun(self: louiselm.routing.Usage, agent: unknown, option: unknown, value: unknown): louiselm.routing.UsageSummary?, string? Summarize one option value.
 
 local M = {}
 local Usage = {}
@@ -178,8 +178,8 @@ local function normalize_usage(value)
   return usage
 end
 
----@param record louiselm.workflow.UsageRecord
----@return louiselm.workflow.UsageRecord
+---@param record louiselm.routing.UsageRecord
+---@return louiselm.routing.UsageRecord
 local function copy_record(record)
   local costs = {}
   for currency, cost in pairs(record.costs) do
@@ -197,8 +197,8 @@ local function copy_record(record)
   }
 end
 
----@param record louiselm.workflow.UsageTurnRecord
----@return louiselm.workflow.UsageTurnRecord
+---@param record louiselm.routing.UsageTurnRecord
+---@return louiselm.routing.UsageTurnRecord
 local function copy_turn_record(record)
   return {
     agent = record.agent,
@@ -209,7 +209,7 @@ local function copy_turn_record(record)
 end
 
 ---@param value unknown
----@return louiselm.workflow.UsageRecord?
+---@return louiselm.routing.UsageRecord?
 local function validate_record(value)
   if type(value) ~= "table" then
     return nil
@@ -270,7 +270,7 @@ local function validate_record(value)
 end
 
 ---@param value unknown
----@return louiselm.workflow.UsageTurnRecord?
+---@return louiselm.routing.UsageTurnRecord?
 local function validate_turn_record(value)
   if type(value) ~= "table" then
     return nil
@@ -297,8 +297,8 @@ local function validate_turn_record(value)
 end
 
 ---@param path string
----@return louiselm.workflow.UsageRecord[]? records
----@return louiselm.workflow.UsageTurnRecord[]? turns
+---@return louiselm.routing.UsageRecord[]? records
+---@return louiselm.routing.UsageTurnRecord[]? turns
 ---@return string? error_message
 local function read_store(path)
   local editor = nvim()
@@ -370,8 +370,8 @@ local function read_store(path)
 end
 
 ---@param path string
----@param records louiselm.workflow.UsageRecord[]
----@param turns louiselm.workflow.UsageTurnRecord[]
+---@param records louiselm.routing.UsageRecord[]
+---@param turns louiselm.routing.UsageTurnRecord[]
 ---@return boolean written
 ---@return string? error_message
 local function write_store(path, records, turns)
@@ -414,8 +414,8 @@ local function write_store(path, records, turns)
   return true, nil
 end
 
----@param left louiselm.workflow.UsageRecord
----@param right louiselm.workflow.UsageRecord
+---@param left louiselm.routing.UsageRecord
+---@param right louiselm.routing.UsageRecord
 ---@return boolean
 local function before(left, right)
   if left.agent ~= right.agent then
@@ -427,8 +427,8 @@ local function before(left, right)
   return tostring(left.value) < tostring(right.value)
 end
 
----@param left louiselm.workflow.UsageTurnRecord
----@param right louiselm.workflow.UsageTurnRecord
+---@param left louiselm.routing.UsageTurnRecord
+---@param right louiselm.routing.UsageTurnRecord
 ---@return boolean
 local function turn_before(left, right)
   if left.agent ~= right.agent then
@@ -440,11 +440,11 @@ local function turn_before(left, right)
   return left.turn < right.turn
 end
 
----@param records louiselm.workflow.UsageRecord[]
+---@param records louiselm.routing.UsageRecord[]
 ---@param agent string
 ---@param option string
 ---@param value string|boolean
----@return louiselm.workflow.UsageRecord?
+---@return louiselm.routing.UsageRecord?
 local function find_record(records, agent, option, value)
   for _, record in ipairs(records) do
     if record.agent == agent and record.option == option and record.value == value then
@@ -454,11 +454,11 @@ local function find_record(records, agent, option, value)
   return nil
 end
 
----@param turns louiselm.workflow.UsageTurnRecord[]
+---@param turns louiselm.routing.UsageTurnRecord[]
 ---@param agent string
 ---@param session_id string
 ---@param turn integer
----@return louiselm.workflow.UsageTurnRecord?
+---@return louiselm.routing.UsageTurnRecord?
 local function find_turn(turns, agent, session_id, turn)
   for _, record in ipairs(turns) do
     if record.agent == agent and record.session_id == session_id and record.turn == turn then
@@ -473,9 +473,9 @@ end
 ---@param usage unknown
 ---@param cost unknown
 ---@return string? normalized_agent
----@return louiselm.workflow.UsageOption[]? normalized_options
+---@return louiselm.routing.UsageOption[]? normalized_options
 ---@return number? tokens
----@return louiselm.workflow.UsageCost? normalized_cost
+---@return louiselm.routing.UsageCost? normalized_cost
 ---@return string? error_message
 local function normalize_input(agent, options, usage, cost)
   if type(agent) ~= "string" or agent == "" then
@@ -499,7 +499,7 @@ end
 
 ---Create a persistent measured-usage store.
 ---@param path? string JSON path. Defaults to stdpath("state")/louiselm/usage.json.
----@return louiselm.workflow.Usage? store
+---@return louiselm.routing.Usage? store
 ---@return string? error_message
 function M.new(path)
   if path ~= nil and (type(path) ~= "string" or path == "") then
@@ -511,7 +511,7 @@ function M.new(path)
 end
 
 ---Record one turn for every option value active during that turn.
----@param self louiselm.workflow.Usage
+---@param self louiselm.routing.Usage
 ---@param agent unknown Configured Agent name.
 ---@param options unknown Complete active ACP options.
 ---@param usage unknown Validated turn usage, when reported.
@@ -524,7 +524,7 @@ function Usage:record(agent, options, usage, cost)
   if normalized_agent == nil then
     return false, input_error
   end
-  ---@cast normalized_options louiselm.workflow.UsageOption[]
+  ---@cast normalized_options louiselm.routing.UsageOption[]
   if tokens == nil and normalized_cost == nil then
     return true, nil
   end
@@ -532,7 +532,7 @@ function Usage:record(agent, options, usage, cost)
   if records == nil then
     return false, read_error
   end
-  ---@cast turns louiselm.workflow.UsageTurnRecord[]
+  ---@cast turns louiselm.routing.UsageTurnRecord[]
   for _, option in ipairs(normalized_options) do
     local record = find_record(records, normalized_agent, option.id, option.current_value)
     if record == nil then
@@ -569,7 +569,7 @@ function Usage:record(agent, options, usage, cost)
 end
 
 ---Persist exact usage for one Agent-scoped ACP Session turn.
----@param self louiselm.workflow.Usage
+---@param self louiselm.routing.Usage
 ---@param agent unknown Configured Agent name.
 ---@param session_id unknown Agent-side persistent Session identifier.
 ---@param turn unknown Positive Session turn ordinal.
@@ -594,7 +594,7 @@ function Usage:record_turn(agent, session_id, turn, usage)
   if records == nil then
     return false, read_error
   end
-  ---@cast turns louiselm.workflow.UsageTurnRecord[]
+  ---@cast turns louiselm.routing.UsageTurnRecord[]
   local record = find_turn(turns, agent, session_id, turn)
   if record == nil then
     turns[#turns + 1] = { agent = agent, session_id = session_id, turn = turn, usage = normalized_usage }
@@ -606,8 +606,8 @@ function Usage:record_turn(agent, session_id, turn, usage)
 end
 
 ---Return detached persistent records.
----@param self louiselm.workflow.Usage
----@return louiselm.workflow.UsageRecord[]? records
+---@param self louiselm.routing.Usage
+---@return louiselm.routing.UsageRecord[]? records
 ---@return string? error_message
 function Usage:records()
   local records, _, read_error = read_store(self.path)
@@ -623,10 +623,10 @@ function Usage:records()
 end
 
 ---Return exact completed-turn usage for one Agent-scoped ACP Session.
----@param self louiselm.workflow.Usage
+---@param self louiselm.routing.Usage
 ---@param agent unknown Configured Agent name.
 ---@param session_id unknown Agent-side persistent Session identifier.
----@return louiselm.workflow.UsageTurnRecord[]? turns
+---@return louiselm.routing.UsageTurnRecord[]? turns
 ---@return string? error_message
 function Usage:turns(agent, session_id)
   if type(agent) ~= "string" or agent == "" or type(session_id) ~= "string" or session_id == "" then
@@ -647,11 +647,11 @@ function Usage:turns(agent, session_id)
 end
 
 ---Summarize observed usage for one option value; absent data returns nil.
----@param self louiselm.workflow.Usage
+---@param self louiselm.routing.Usage
 ---@param agent unknown Configured Agent name.
 ---@param option unknown ACP option identifier.
 ---@param value unknown Active option value.
----@return louiselm.workflow.UsageSummary? summary
+---@return louiselm.routing.UsageSummary? summary
 ---@return string? error_message
 function Usage:summary(agent, option, value)
   if type(agent) ~= "string" or agent == "" or type(option) ~= "string" or option == "" then

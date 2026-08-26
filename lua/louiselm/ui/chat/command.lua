@@ -3,7 +3,7 @@ local nvim = vim
 local Agent = require("louiselm.agent")
 local Beads = require("louiselm.ui.beads")
 local Abandonment = require("louiselm.ui.abandonment")
-local Workflow = require("louiselm.workflow")
+local Workflow = require("louiselm.routing")
 
 local M = {}
 local configured ---@type table?
@@ -176,7 +176,7 @@ local function configured_instructions(config)
 end
 
 ---@param definitions louiselm.agent.Definitions
----@return louiselm.workflow.Coordinator? workflow
+---@return louiselm.routing.Coordinator? workflow
 ---@return string? error_message
 local function configured_workflow(definitions)
   local path = nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "routing-evidence.json")

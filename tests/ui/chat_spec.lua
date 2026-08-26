@@ -1,8 +1,8 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
 local Transcript = require("louiselm.session.transcript")
-local Usage = require("louiselm.workflow.usage")
-local Workflow = require("louiselm.workflow")
+local Usage = require("louiselm.routing.usage")
+local Workflow = require("louiselm.routing")
 
 local T = MiniTest.new_set()
 
