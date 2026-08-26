@@ -234,6 +234,9 @@ function M.inspect(buffer, options)
       return
     end
     local prompted_id = nvim.trim(value)
+    if not prompted_id:match("^louiselm%-") then
+      prompted_id = "louiselm-" .. prompted_id
+    end
     if not valid_issue_id(prompted_id) then
       report_error(options, "Beads issue id must start with louiselm-")
       return

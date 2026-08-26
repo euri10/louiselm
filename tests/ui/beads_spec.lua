@@ -162,6 +162,18 @@ T["beads"]["prompts for a Beads issue ID when the cursor has none"] = function()
   MiniTest.expect.equality(calls[1].command, { "br", "show", "louiselm-zmab", "--json" })
 end
 
+T["beads"]["prepends louiselm- to a bare id typed at the manual-entry prompt"] = function()
+  local buffer = source_buffer({ "No issue here" }, 0)
+  local calls = fake_system()
+  nvim.ui.input = function(_, callback)
+    callback("zmab")
+  end
+
+  assert(Beads.inspect(buffer))
+
+  MiniTest.expect.equality(calls[1].command, { "br", "show", "louiselm-zmab", "--json" })
+end
+
 T["beads"]["prompts instead of guessing when one line contains multiple Beads issue IDs"] = function()
   local buffer = source_buffer({ "Compare louiselm-kpod with louiselm-zmab" }, 10)
   local calls = fake_system()
