@@ -26,6 +26,26 @@ T["validate"]["accepts named agent definitions and returns owned copies"] = func
   MiniTest.expect.equality(normalized.claude.skills.policy, "native")
 end
 
+T["validate"]["preserves an optional transcript layout"] = function()
+  local normalized, errors = Config.normalize({
+    renamed_codex = { command = "codex-acp", transcript_layout = "codex" },
+  })
+
+  MiniTest.expect.equality(errors, {})
+  assert(normalized ~= nil)
+  MiniTest.expect.equality(normalized.renamed_codex.transcript_layout, "codex")
+end
+
+T["validate"]["rejects a malformed transcript layout without coercion"] = function()
+  local normalized, errors = Config.normalize({
+    codex = { command = "codex-acp", transcript_layout = false },
+  })
+
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.codex.transcript_layout")
+  MiniTest.expect.equality(errors[1].type, "wrong_type")
+end
+
 T["validate"]["resolves per-agent skill policy against the global default"] = function()
   local normalized, errors = Config.normalize({
     claude = { command = "claude-agent-acp" },

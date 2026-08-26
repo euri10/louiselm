@@ -163,6 +163,14 @@ T["setup"]["registers chat commands for a valid setup"] = function()
   MiniTest.expect.equality(commands.LouiselmResume.bang, true)
 end
 
+T["setup"]["accepts a per-Agent transcript layout"] = function()
+  local ok = capture_setup({
+    agents = { renamed_codex = { command = "codex-acp", transcript_layout = "codex" } },
+  })
+
+  MiniTest.expect.equality(ok, true)
+end
+
 T["setup"]["rejects invalid skills without mutating caller config"] = function()
   local config = { skills = { paths = { "/tmp/skills" }, policy = "maybe" } }
 

@@ -14,6 +14,7 @@ local Policy = require("louiselm.skills.policy")
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options.
 ---@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
+---@field transcript_layout? string On-disk transcript layout used to resolve historical Sessions.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
 ---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 ---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
@@ -39,6 +40,7 @@ local allowed_keys = {
   latest = true,
   options = true,
   skills = true,
+  transcript_layout = true,
   version = true,
 }
 
@@ -441,6 +443,22 @@ function M.normalize(definitions, default_skills_policy)
         end
       end
 
+      local transcript_layout = definition.transcript_layout
+      if transcript_layout ~= nil then
+        if type(transcript_layout) ~= "string" then
+          add_error(
+            errors,
+            child_path(path, "transcript_layout"),
+            "wrong_type",
+            "expected string, got " .. value_type(transcript_layout),
+            "string",
+            value_type(transcript_layout)
+          )
+        elseif transcript_layout == "" then
+          transcript_layout = nil
+        end
+      end
+
       local effective_skill_policy = skill_policy(definition.skills, child_path(path, "skills"), errors, default_policy)
       local latest
       if definition.latest ~= nil then
@@ -456,6 +474,7 @@ function M.normalize(definitions, default_skills_policy)
         env = env,
         options = options,
         capabilities = capabilities,
+        transcript_layout = transcript_layout,
         skills = { policy = effective_skill_policy },
         latest = latest,
         version = version,

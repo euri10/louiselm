@@ -59,6 +59,11 @@ M.schema = assert(Schema.define({
           default = {},
           description = 'Capability tags this agent declares support for (e.g. "image-generation"), matched against `needs-capability:*` beads labels by the agent selecting work; louiselm does not read beads or route work itself.',
         },
+        transcript_layout = {
+          type = "string",
+          default = "",
+          description = "On-disk transcript layout used to resolve this Agent's historical Sessions: claude, codex, openai-compatible, or copilot; empty disables resolution.",
+        },
         skills = {
           type = "table",
           default = {},
