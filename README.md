@@ -91,10 +91,10 @@ it is not trying to become a general notes application or second brain.
 
 One workflow already works manually and is beginning to move into LouiseLM:
 
-1. Use a strong deliberative model and the `grill-me` skill to interrogate an
-   idea until the user and agent share an understanding.
-2. Turn the agreement into a plan, then use the `to-beads` skills to split it
-   into epics, features, and independently executable tasks.
+1. Use a strong deliberative model and the `louiselm-grill-me` skill to
+   interrogate an idea until the user and agent share an understanding.
+2. Turn the agreement into a plan, then use the `louiselm-to-beads` skills to
+   split it into epics, features, and independently executable tasks.
 3. Use `br` and `bvr` to inspect the dependency graph, recommend the next
    useful task, or expose parallel execution tracks.
 4. Give well-specified tasks to coding agents that can implement and verify

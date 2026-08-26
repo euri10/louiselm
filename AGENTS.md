@@ -80,8 +80,8 @@ Do not claim, implement, or commit work unless asked to proceed.
   never read a zero-result search as absence without it. `br list --json`
   carries no comments field at all, so it cannot scan comment text however it
   is filtered (louiselm-o2jh).
-- File a design question worth a full `grill-me` session as a beads `question`
-  issue, labeled `needs-design`, titled "Grill-me needed: <question>". Open
+- File a design question worth a full `louiselm-grill-me` session as a beads
+  `question` issue, labeled `needs-design`, titled "Grill-me needed: <question>". Open
   with a line telling the grill not to resolve the question in passing, then
   the question itself, the context/evidence that raised it, and the threads
   worth pulling — not a pre-baked answer.
@@ -140,9 +140,10 @@ signal until someone gets impatient and interrupts (louiselm-w726).
   periodic self-check-in (re-poll via `TaskOutput`) rather than pure trust
   that the notification will fire.
 
-The maintainer's own loop — grill-me, to-beads, sessions, qa-review — is
-described in [docs/example-workflow.md](docs/example-workflow.md). That document
-is an example, not a contract. It binds nobody, and other loops are expected.
+The maintainer's own loop — louiselm-grill-me, louiselm-to-beads, sessions,
+qa-review — is described in [docs/example-workflow.md](docs/example-workflow.md).
+That document is an example, not a contract. It binds nobody, and other loops
+are expected.
 
 ## 3. Runtime and Dependencies
 
