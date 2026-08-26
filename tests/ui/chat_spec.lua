@@ -564,7 +564,6 @@ T["chat"]["renders session events and forwards slash prompts"] = function()
       "hello **world**",
       "",
       "[tool] tool-1: Read file (completed)",
-      "",
       "> ",
     })
   )
@@ -2399,12 +2398,12 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
       "> first prompt",
       "",
       "first answer",
+      "",
       "> second prompt",
       "",
       "second answer",
       "",
       "[usage] total_tokens=30 · input_tokens=20 · cached_read_tokens=7",
-      "",
       "",
       "> ",
     })

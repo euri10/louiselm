@@ -32,6 +32,7 @@ local Usage = require("louiselm.workflow.usage")
 ---@field turn_has_prose boolean Whether the current turn has rendered any assistant chunk text, regardless of block ordering; suppresses a redundant terminal-completion echo.
 ---@field turn_done_fired boolean Whether `turn_done` already ran for the current turn; a terminal completion arriving after this flushes immediately instead of waiting for a `turn_done` that already passed.
 ---@field last_block_kind ("prose"|"tool"|"reasoning")? Kind of the most recently rendered transcript block; separates adjacent prose, reasoning, and tool blocks with a blank line.
+---@field trailing_blank boolean Whether the line at `transcript_tail` is already a blank separator, counted as part of `transcript_tail` itself; meaningful only while `last_block_kind == "prose"`, since a completed prose block is the only thing that always leaves one behind.
 ---@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
 ---@field tool_statuses table<string, string> Latest tool status by ID.
@@ -1677,6 +1678,7 @@ local function flush_terminal_completion(self, view, text)
   lines[#lines + 1] = ""
   insert_transcript(self, view, lines)
   view.last_block_kind = "prose"
+  view.trailing_blank = true
 end
 
 ---Build prompt content from the current context queue and a pending native skill selection.
@@ -2210,16 +2212,15 @@ local function handle_event(self, view, event)
         separator = 1
       end
       local response_line_count = #lines
-      if view.last_block_kind ~= "tool" then
-        lines[#lines + 1] = ""
-      end
+      lines[#lines + 1] = ""
       nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, lines)
       view.response_line = insertion_line
       view.response_tail = insertion_line + response_line_count - 1
-      view.transcript_tail = view.response_tail
+      view.transcript_tail = view.response_tail + 1
       mark_prompt(view, view.prompt_line + separator + #lines)
       view.response_started = true
       view.last_block_kind = "prose"
+      view.trailing_blank = true
       return
     end
     local current = nvim.api.nvim_buf_get_lines(view.buffer, view.response_tail, view.response_tail + 1, false)[1] or ""
@@ -2227,7 +2228,7 @@ local function handle_event(self, view, event)
     nvim.api.nvim_buf_set_lines(view.buffer, view.response_tail, view.response_tail + 1, false, lines)
     local added = #lines - 1
     view.response_tail = view.response_tail + added
-    view.transcript_tail = view.response_tail
+    view.transcript_tail = view.response_tail + 1
     mark_prompt(view, view.prompt_line + added)
   elseif event.type == "thought_chunk" then
     local text = chunk_text(event.data)
@@ -2244,7 +2245,7 @@ local function handle_event(self, view, event)
       -- answer, a tool call, or the turn boundary). Until then it streams like a
       -- response: later chunks append to the paragraph's last content line.
       local lines = { "[thinking]" }
-      if view.last_block_kind == "prose" then
+      if view.last_block_kind == "prose" and not view.trailing_blank then
         table.insert(lines, 1, "")
       end
       insert_transcript(self, view, lines)
@@ -2292,7 +2293,7 @@ local function handle_event(self, view, event)
         detail = detail .. ": " .. title
       end
       local lines = { "[tool] " .. detail .. " (started)" }
-      if view.last_block_kind == "prose" then
+      if view.last_block_kind == "prose" and not view.trailing_blank then
         table.insert(lines, 1, "")
       end
       insert_transcript(self, view, lines)
@@ -2322,7 +2323,7 @@ local function handle_event(self, view, event)
         rendered_line = line
       else
         local lines = { "[tool] " .. detail }
-        if view.last_block_kind == "prose" then
+        if view.last_block_kind == "prose" and not view.trailing_blank then
           table.insert(lines, 1, "")
         end
         insert_transcript(self, view, lines)
@@ -2665,6 +2666,7 @@ function Chat:attach(session)
     turn_has_prose = false,
     turn_done_fired = false,
     last_block_kind = nil,
+    trailing_blank = false,
     tool_lines = {},
     tool_ids = {},
     tool_statuses = {},
