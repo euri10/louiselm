@@ -82,6 +82,55 @@ T["cancellation"] = MiniTest.new_set()
 
 T["durable Park"] = MiniTest.new_set()
 
+T["durable Park"]["derives cold resume metadata from the owned Session"] = function()
+  local captured
+  local session = worker("ready")
+  session.state = {
+    agent = "codex",
+    acp_session_id = "acp-session",
+    working_dir = "/tmp/project",
+  }
+  function session:inspect()
+    return self.state
+  end
+  session.client = { agent_capabilities = { loadSession = true } }
+  local run = assert(Workflow.new_run({
+    park_service = function(record, callback)
+      captured = record
+      callback(true)
+      return true
+    end,
+  }))
+  assert(run:adopt_session(session))
+
+  assert(run:park_cold({ id = "run", claims = { "issue" }, expires_at_ms = 1 }))
+  MiniTest.expect.equality(captured, {
+    id = "run",
+    session_id = "codex/acp-session",
+    agent = "codex",
+    acp_session_id = "acp-session",
+    cwd = "/tmp/project",
+    load_session = true,
+    claims = { "issue" },
+    expires_at_ms = 1,
+  })
+end
+
+T["durable Park"]["rejects cold Park when the Session is not reloadable"] = function()
+  local session = worker("ready")
+  session.state = { agent = "codex", acp_session_id = "acp-session", working_dir = "/tmp/project" }
+  function session:inspect()
+    return self.state
+  end
+  session.client = { agent_capabilities = {} }
+  local run = assert(Workflow.new_run())
+  assert(run:adopt_session(session))
+
+  local started, error_message = run:park_cold({ id = "run", claims = { "issue" }, expires_at_ms = 1 })
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(error_message, "cold Park requires an Agent that supports session/load")
+end
+
 T["durable Park"]["does not transition before service confirmation"] = function()
   local complete
   local run = assert(Workflow.new_run({

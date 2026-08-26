@@ -34,6 +34,12 @@ local nvim = vim
 ---@field emergency_stop fun(self: louiselm.workflow.Run): boolean, string?
 ---@field park_record? louiselm.workflow.ParkRecord
 ---@field park_service fun(record: louiselm.workflow.ParkRecord, callback: fun(ok: boolean, error_message?: string)): boolean, string?
+---@field park_cold fun(self: louiselm.workflow.Run, request: louiselm.workflow.ColdParkRequest, callback?: fun(ok: boolean, error_message?: string)): boolean, string?
+
+---@class louiselm.workflow.ColdParkRequest
+---@field id string Durable Run UUID.
+---@field claims string[] Beads claims owned by this Run.
+---@field expires_at_ms integer Durable Park expiry.
 
 ---@param value unknown
 ---@return boolean
@@ -49,6 +55,42 @@ end
 local function acknowledged(worker)
   local state = worker.inspect(worker)
   return state.status ~= "prompting" and state.status ~= "waiting_permission" and state.status ~= "cancelling"
+end
+
+---@param worker louiselm.workflow.RunWorker
+---@return louiselm.workflow.ParkRecord? record
+---@return string? error_message
+local function cold_park_record(worker, request)
+  local state = worker.inspect(worker)
+  local client = worker.client
+  local capabilities = client and client.agent_capabilities or nil
+  if type(state) ~= "table" or type(client) ~= "table" then
+    return nil, "cold Park requires a live ACP Session"
+  end
+  if
+    type(state.agent) ~= "string"
+    or state.agent == ""
+    or type(state.acp_session_id) ~= "string"
+    or state.acp_session_id == ""
+  then
+    return nil, "cold Park requires an initialized ACP Session"
+  end
+  if type(state.working_dir) ~= "string" or state.working_dir == "" then
+    return nil, "cold Park requires a Session working directory"
+  end
+  if type(capabilities) ~= "table" or capabilities.loadSession ~= true then
+    return nil, "cold Park requires an Agent that supports session/load"
+  end
+  return {
+    id = request.id,
+    session_id = state.agent .. "/" .. state.acp_session_id,
+    agent = state.agent,
+    acp_session_id = state.acp_session_id,
+    cwd = state.working_dir,
+    load_session = true,
+    claims = request.claims,
+    expires_at_ms = request.expires_at_ms,
+  }
 end
 
 ---@param options? louiselm.workflow.RunOptions
@@ -230,6 +272,33 @@ function Run:park(callback)
   end
   complete(true)
   return true
+end
+
+---Admit and durably Park a single-Session Run for cold resume.
+---@param self louiselm.workflow.Run
+---@param request louiselm.workflow.ColdParkRequest
+---@param callback? fun(ok: boolean, error_message?: string) Called after persistence completes.
+---@return boolean started
+---@return string? error_message
+function Run:park_cold(request, callback)
+  if self.status == "disposed" then
+    return false, "Run is disposed"
+  end
+  if type(request) ~= "table" then
+    return false, "cold Park request must be a table"
+  end
+  if #self.workers ~= 1 then
+    return false, "cold Park requires exactly one owned Session"
+  end
+  local record, record_error = cold_park_record(self.workers[1], request)
+  if record == nil then
+    return false, record_error
+  end
+  local previous_record = self.park_record
+  self.park_record = record
+  local started, start_error = self:park(callback)
+  self.park_record = previous_record
+  return started, start_error
 end
 
 ---Dispose every owned Session and end the Run.
