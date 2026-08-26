@@ -1160,6 +1160,16 @@ local function close_thought_fold_run(view)
 end
 
 ---@param view louiselm.ui.ChatView
+local function toggle_chat_fold(view)
+  local line = nvim.api.nvim_win_get_cursor(view.window)[1] - 1
+  local run = view.thought_run
+  if run ~= nil and line == run.first and nvim.fn.foldlevel(line + 1) == 0 then
+    return
+  end
+  nvim.cmd("normal! za")
+end
+
+---@param view louiselm.ui.ChatView
 ---@param line integer Zero-based rendered tool line.
 local function record_tool_line(view, line)
   local run = view.tool_fold_run
@@ -2710,6 +2720,9 @@ function Chat:attach(session)
       end
     end,
   })
+  nvim.keymap.set("n", "za", function()
+    toggle_chat_fold(view)
+  end, { buffer = buffer, silent = true, desc = "Toggle chat fold" })
   view.unsubscribe = session:on(function(event)
     -- Recording is a pure data transform, not an editor/UI operation, so it can run
     -- directly in this fast-event callback instead of waiting for the scheduled turn.

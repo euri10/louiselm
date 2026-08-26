@@ -777,6 +777,80 @@ T["chat"]["closes the reasoning fold at turn end even without an answer"] = func
   chat:dispose()
 end
 
+T["chat"]["toggles a reasoning fold repeatedly at the same cursor"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  chat:submit("solve")
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "mulling it over" } },
+  })
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[thinking]") and select(2, fold_range(6)) == 7
+  end, 1)
+
+  local header = assert(
+    (function()
+      for index, line in ipairs(buffer_lines(chat:buffer())) do
+        if line == "[thinking]" then
+          return index
+        end
+      end
+    end)(),
+    "reasoning header rendered"
+  )
+  nvim.api.nvim_win_set_cursor(0, { header, 0 })
+
+  nvim.cmd("normal! za")
+  MiniTest.expect.equality({ fold_range(header) }, { -1, -1 })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[header], "[thinking]")
+
+  local toggled, toggle_error = pcall(nvim.cmd, "normal! za")
+  MiniTest.expect.equality(toggled, true)
+  MiniTest.expect.equality(toggle_error, "")
+  MiniTest.expect.equality({ fold_range(header) }, { header, header + 1 })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[header], "[thinking]")
+  chat:dispose()
+end
+
+T["chat"]["does not error when za hits an active reasoning header"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  chat:submit("solve")
+  first:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "still thinking" } },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[thinking]")
+  end, 1)
+
+  local header = assert(
+    (function()
+      for index, line in ipairs(buffer_lines(chat:buffer())) do
+        if line == "[thinking]" then
+          return index
+        end
+      end
+    end)(),
+    "reasoning header rendered"
+  )
+  nvim.api.nvim_win_set_cursor(0, { header, 0 })
+  nvim.v.errmsg = ""
+  local toggled = pcall(nvim.cmd, "normal za")
+  MiniTest.expect.equality(toggled, true)
+  MiniTest.expect.equality(nvim.v.errmsg, "")
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[header], "[thinking]")
+  chat:dispose()
+end
+
 T["chat"]["leaves no reasoning fold for agents that never emit thought chunks"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
