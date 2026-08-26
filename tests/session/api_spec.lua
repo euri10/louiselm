@@ -146,6 +146,10 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
   MiniTest.expect.equality(record.diagnosing_session, "agent/diagnoser")
   MiniTest.expect.equality(record.evidence_sources[1].state, "omitted")
   MiniTest.expect.equality(nvim.uv.fs_stat(path).mode % 512, 384)
+  -- The hrtime() component must render as a plain integer, not scientific
+  -- notation (louiselm-ysh3): a raw `tostring()` on the double once produced
+  -- ids like "1787715628-2.0264597271177e+14".
+  MiniTest.expect.equality(record.id:match("^%d+%-%d+$") ~= nil, true)
 
   api:dispose()
   restore_processes(original_system)

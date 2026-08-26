@@ -251,7 +251,10 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
   local capabilities = client and client.agent_capabilities or {}
   local nvim_version = nvim.version()
   local record = {
-    id = string.format("%d-%s", os.time(), tostring(nvim.uv.hrtime())),
+    -- `tostring()` on the raw hrtime() double renders in scientific notation
+    -- (e.g. "2.0264597271177e+14") once it exceeds a handful of significant
+    -- digits; %d forces plain-integer formatting instead.
+    id = string.format("%d-%d", os.time(), nvim.uv.hrtime()),
     observed_at = os.time(),
     subject = { agent = agent_name, acp_session_id = acp_session_id },
     diagnosing_session = options.diagnosing_session_id,
