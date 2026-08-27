@@ -4,6 +4,27 @@ local Service = require("louiselm.workflow.service")
 local nvim = vim
 local T = MiniTest.new_set()
 
+T["builds a Run-scoped Agent environment"] = function()
+  local environment = assert(Service.agent_environment({
+    id = "11111111-1111-4111-8111-111111111111",
+    token = "secret-token",
+    database = "/tmp/project/.beads/beads.db",
+  }, {
+    shim = "/plugin/scripts/run-tools/br",
+    br = "/usr/bin/br",
+    capture = "/usr/bin/louiselm-capture",
+    path = "/usr/bin",
+  }))
+  MiniTest.expect.equality(environment, {
+    LOUISELM_RUN_ID = "11111111-1111-4111-8111-111111111111",
+    LOUISELM_RUN_TOKEN = "secret-token",
+    LOUISELM_REAL_BR = "/usr/bin/br",
+    LOUISELM_CAPTURE = "/usr/bin/louiselm-capture",
+    BEADS_DB = "/tmp/project/.beads/beads.db",
+    PATH = "/plugin/scripts/run-tools:/usr/bin",
+  })
+end
+
 T["starts the constrained Run admission command"] = function()
   local command
   local callback
@@ -14,17 +35,13 @@ T["starts the constrained Run admission command"] = function()
   end)
   local started = assert(Service.admit({
     id = "run",
-    session_id = "codex/session",
-    agent = "codex",
-    acp_session_id = "acp-session",
-    cwd = "/tmp/project",
-    load_session = true,
     generated_work_max = 5,
-  }, function(ok)
-    callback = ok
+    park_ttl_ms = 86400000,
+  }, function(token, error_message)
+    callback = { token, error_message }
   end, function(value, _, done)
     command = value
-    done({ code = 0, stderr = "" })
+    done({ code = 0, stderr = "", stdout = '{"token":"run-token"}' })
     return true
   end))
   scheduled()
@@ -34,6 +51,34 @@ T["starts the constrained Run admission command"] = function()
     "louiselm-capture",
     "run",
     "admit",
+    "--id",
+    "run",
+    "--generated-work-max",
+    "5",
+    "--park-ttl-ms",
+    "86400000",
+  })
+  MiniTest.expect.equality(callback, { "run-token", nil })
+end
+
+T["starts the constrained Session attachment command"] = function()
+  local command
+  assert(Service.attach({
+    id = "run",
+    session_id = "codex/session",
+    agent = "codex",
+    acp_session_id = "acp-session",
+    cwd = "/tmp/project",
+    load_session = true,
+  }, function() end, function(value, _, done)
+    command = value
+    done({ code = 0, stderr = "" })
+    return true
+  end))
+  MiniTest.expect.equality(command, {
+    "louiselm-capture",
+    "run",
+    "attach",
     "--id",
     "run",
     "--session-id",
@@ -46,10 +91,7 @@ T["starts the constrained Run admission command"] = function()
     "/tmp/project",
     "--load-session",
     "true",
-    "--generated-work-max",
-    "5",
   })
-  MiniTest.expect.equality(callback, true)
 end
 
 T["starts the constrained Park command"] = function()
@@ -68,7 +110,6 @@ T["starts the constrained Park command"] = function()
     cwd = "/tmp/project",
     load_session = true,
     claims = { "louiselm-qbr.3.3" },
-    expires_at_ms = 1,
   }, function(ok)
     callback = ok
   end, function(value, _, done)
@@ -97,8 +138,6 @@ T["starts the constrained Park command"] = function()
     "true",
     "--claims",
     "louiselm-qbr.3.3",
-    "--expires-at-ms",
-    "1",
   })
   MiniTest.expect.equality(callback, true)
 end
@@ -112,7 +151,6 @@ T["rejects cold Park without session/load admission"] = function()
     cwd = "/tmp/project",
     load_session = false,
     claims = { "louiselm-qbr.3.3" },
-    expires_at_ms = 1,
   }, function() end, function()
     return true
   end)

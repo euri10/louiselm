@@ -10,6 +10,7 @@
 ---@field ok boolean
 ---@field rejections louiselm.workflow.Rejection[]
 ---@field generated_work_max? integer Authored Run-wide ceiling when Validation succeeds.
+---@field park_ttl_ms? integer Authored relative Park expiry normalized to milliseconds.
 
 local Schema = require("louiselm.workflow.schema")
 
@@ -45,6 +46,25 @@ end
 ---@return boolean
 local function is_literal_count(value)
   return type(value) == "number" and value % 1 == 0 and value >= 1
+end
+
+---@param value unknown
+---@return integer? milliseconds
+local function park_ttl_ms(value)
+  if type(value) ~= "string" then
+    return nil
+  end
+  local count_text, unit = value:match("^(%d+)([smhd])$")
+  local count = tonumber(count_text)
+  if count == nil or count < 1 then
+    return nil
+  end
+  local multipliers = { s = 1000, m = 60000, h = 3600000, d = 86400000 }
+  local milliseconds = count * multipliers[unit]
+  if milliseconds > 9007199254740991 then
+    return nil
+  end
+  return milliseconds
 end
 
 ---@param value unknown
@@ -259,6 +279,14 @@ function M.validate(workflow, manifest)
         field = "generated-work",
       })
     end
+    if block["park-expiry"] ~= nil and block.entry ~= true then
+      reject(rejections, {
+        reason = "misplaced_park_expiry",
+        message = string.format("stage '%s' declares the Park expiry but is not the entry stage", name),
+        stage = name,
+        field = "park-expiry",
+      })
+    end
     local outcomes = is_array(block.outcomes) and block.outcomes or {}
     for _, outcome in ipairs(outcomes) do
       if type(outcome) == "table" and outcome["back-edge"] == true then
@@ -288,8 +316,10 @@ function M.validate(workflow, manifest)
   end
 
   local generated_work_max
+  local normalized_park_ttl_ms
   if #entries == 1 then
-    local budget = stages[entries[1]]["generated-work"]
+    local entry = stages[entries[1]]
+    local budget = entry["generated-work"]
     if type(budget) == "table" and is_literal_count(budget.max) then
       generated_work_max = budget.max
     elseif has_automatic_generator then
@@ -301,6 +331,25 @@ function M.validate(workflow, manifest)
         ),
         stage = entries[1],
         field = "generated-work",
+      })
+    end
+    normalized_park_ttl_ms = park_ttl_ms(entry["park-expiry"])
+    if entry["park-expiry"] == nil then
+      reject(rejections, {
+        reason = "missing_park_expiry",
+        message = string.format("entry stage '%s' must declare a relative 'park-expiry'", entries[1]),
+        stage = entries[1],
+        field = "park-expiry",
+      })
+    elseif normalized_park_ttl_ms == nil then
+      reject(rejections, {
+        reason = "invalid_park_expiry",
+        message = string.format(
+          "entry stage '%s' park-expiry must be a positive integer followed by s, m, h, or d",
+          entries[1]
+        ),
+        stage = entries[1],
+        field = "park-expiry",
       })
     end
   end
@@ -508,6 +557,7 @@ function M.validate(workflow, manifest)
     ok = #rejections == 0,
     rejections = rejections,
     generated_work_max = #rejections == 0 and generated_work_max or nil,
+    park_ttl_ms = #rejections == 0 and normalized_park_ttl_ms or nil,
   }
 end
 

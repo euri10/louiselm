@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+case "${1-}" in
+  create|q)
+    command=$1
+    shift
+    exec "${LOUISELM_CAPTURE:?}" run generate --command "$command" -- "$@"
+    ;;
+  *)
+    exec "${LOUISELM_REAL_BR:?}" "$@"
+    ;;
+esac

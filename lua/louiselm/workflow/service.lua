@@ -5,6 +5,51 @@ local M = {}
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+---@class louiselm.workflow.AgentEnvironmentRecord
+---@field id string Run UUID.
+---@field token string Generate capability.
+---@field database string Canonical Beads database path.
+
+---Build the reserved process environment that routes Agent issue creation through the broker.
+---@param record louiselm.workflow.AgentEnvironmentRecord
+---@param paths? { shim?: string, br?: string, capture?: string, path?: string } Testable executable paths.
+---@return table<string, string>? environment
+---@return string? error_message
+function M.agent_environment(record, paths)
+  if type(record) ~= "table" or type(record.id) ~= "string" or record.id == "" then
+    return nil, "Agent environment Run id must be a non-empty string"
+  end
+  if type(record.token) ~= "string" or record.token == "" then
+    return nil, "Agent environment token must be a non-empty string"
+  end
+  if type(record.database) ~= "string" or record.database == "" then
+    return nil, "Agent environment database must be a non-empty string"
+  end
+  paths = paths or {}
+  local shim = paths.shim or nvim.api.nvim_get_runtime_file("scripts/run-tools/br", false)[1]
+  local br = paths.br or nvim.fn.exepath("br")
+  local capture = paths.capture or nvim.fn.exepath("louiselm-capture")
+  local inherited_path = paths.path or nvim.env.PATH or ""
+  if
+    type(shim) ~= "string"
+    or shim == ""
+    or type(br) ~= "string"
+    or br == ""
+    or type(capture) ~= "string"
+    or capture == ""
+  then
+    return nil, "Run tools require the br shim, br, and louiselm-capture executables"
+  end
+  return {
+    LOUISELM_RUN_ID = record.id,
+    LOUISELM_RUN_TOKEN = record.token,
+    LOUISELM_REAL_BR = br,
+    LOUISELM_CAPTURE = capture,
+    BEADS_DB = record.database,
+    PATH = nvim.fs.dirname(shim) .. (inherited_path == "" and "" or ":" .. inherited_path),
+  }
+end
+
 ---@class louiselm.workflow.ParkRecord
 ---@field id string
 ---@field session_id string
@@ -13,7 +58,6 @@ local nvim = vim
 ---@field cwd string Working directory used for cold resume.
 ---@field load_session boolean Admission result for ACP `session/load` support.
 ---@field claims string[]
----@field expires_at_ms integer
 
 ---@class louiselm.workflow.ParkSummary
 ---@field id string
@@ -26,16 +70,20 @@ local nvim = vim
 
 ---@class louiselm.workflow.RunAdmissionRecord
 ---@field id string
+---@field generated_work_max integer
+---@field park_ttl_ms integer
+
+---@class louiselm.workflow.RunSessionRecord
+---@field id string
 ---@field session_id string
 ---@field agent string
 ---@field acp_session_id string
 ---@field cwd string
 ---@field load_session boolean
----@field generated_work_max integer
 
 ---Persist one admitted Run before any stage can generate work.
 ---@param record louiselm.workflow.RunAdmissionRecord
----@param callback fun(ok: boolean, error_message?: string)
+---@param callback fun(token: string?, error_message?: string)
 ---@param system? fun(command: string[], options: table, callback: fun(result: table)): unknown
 ---@return boolean started
 ---@return string? error_message
@@ -43,30 +91,69 @@ function M.admit(record, callback, system)
   if type(record) ~= "table" or type(record.id) ~= "string" or record.id == "" then
     return false, "Run admission id must be a non-empty string"
   end
-  if type(record.session_id) ~= "string" or record.session_id == "" then
-    return false, "Run admission session_id must be a non-empty string"
-  end
-  if type(record.agent) ~= "string" or record.agent == "" then
-    return false, "Run admission agent must be a non-empty string"
-  end
-  if type(record.acp_session_id) ~= "string" or record.acp_session_id == "" then
-    return false, "Run admission acp_session_id must be a non-empty string"
-  end
-  if type(record.cwd) ~= "string" or record.cwd == "" then
-    return false, "Run admission cwd must be a non-empty string"
-  end
-  if type(record.load_session) ~= "boolean" then
-    return false, "Run admission load_session must be a boolean"
-  end
   local maximum = record.generated_work_max
   if type(maximum) ~= "number" or maximum < 1 or maximum % 1 ~= 0 then
     return false, "Run admission generated_work_max must be a positive integer"
+  end
+  local park_ttl = record.park_ttl_ms
+  if type(park_ttl) ~= "number" or park_ttl < 1 or park_ttl % 1 ~= 0 then
+    return false, "Run admission park_ttl_ms must be a positive integer"
   end
   system = system or nvim.system
   local command = {
     "louiselm-capture",
     "run",
     "admit",
+    "--id",
+    record.id,
+    "--generated-work-max",
+    tostring(maximum),
+    "--park-ttl-ms",
+    tostring(park_ttl),
+  }
+  local started = pcall(system, command, { text = true }, function(result)
+    nvim.schedule(function()
+      if result.code == 0 then
+        local ok, response = pcall(nvim.json.decode, result.stdout)
+        if ok and type(response) == "table" and type(response.token) == "string" and response.token ~= "" then
+          callback(response.token)
+        else
+          callback(nil, "Run admission service returned invalid data")
+        end
+      else
+        callback(nil, result.stderr ~= "" and result.stderr or "could not admit Run")
+      end
+    end)
+  end)
+  if not started then
+    return false, "could not start Run admission command"
+  end
+  return true
+end
+
+---Attach one initialized ACP Session to its already-admitted Run.
+---@param record louiselm.workflow.RunSessionRecord
+---@param callback fun(ok: boolean, error_message?: string)
+---@param system? fun(command: string[], options: table, callback: fun(result: table)): unknown
+---@return boolean started
+---@return string? error_message
+function M.attach(record, callback, system)
+  if type(record) ~= "table" or type(record.id) ~= "string" or record.id == "" then
+    return false, "Run attachment id must be a non-empty string"
+  end
+  for _, field in ipairs({ "session_id", "agent", "acp_session_id", "cwd" }) do
+    if type(record[field]) ~= "string" or record[field] == "" then
+      return false, "Run attachment " .. field .. " must be a non-empty string"
+    end
+  end
+  if type(record.load_session) ~= "boolean" then
+    return false, "Run attachment load_session must be a boolean"
+  end
+  system = system or nvim.system
+  local command = {
+    "louiselm-capture",
+    "run",
+    "attach",
     "--id",
     record.id,
     "--session-id",
@@ -79,20 +166,18 @@ function M.admit(record, callback, system)
     record.cwd,
     "--load-session",
     tostring(record.load_session),
-    "--generated-work-max",
-    tostring(maximum),
   }
   local started = pcall(system, command, { text = true }, function(result)
     nvim.schedule(function()
       if result.code == 0 then
         callback(true)
       else
-        callback(false, result.stderr ~= "" and result.stderr or "could not admit Run")
+        callback(false, result.stderr ~= "" and result.stderr or "could not attach Run Session")
       end
     end)
   end)
   if not started then
-    return false, "could not start Run admission command"
+    return false, "could not start Run attachment command"
   end
   return true
 end
@@ -124,9 +209,6 @@ function M.park(record, callback, system)
   if type(record.claims) ~= "table" or #record.claims == 0 then
     return false, "Park record claims must be a non-empty array"
   end
-  if type(record.expires_at_ms) ~= "number" or record.expires_at_ms < 1 or record.expires_at_ms % 1 ~= 0 then
-    return false, "Park record expires_at_ms must be a positive integer"
-  end
   system = system or nvim.system
   local command = {
     "louiselm-capture",
@@ -146,8 +228,6 @@ function M.park(record, callback, system)
     "true",
     "--claims",
     table.concat(record.claims, ","),
-    "--expires-at-ms",
-    tostring(record.expires_at_ms),
   }
   local started = pcall(system, command, { text = true }, function(result)
     nvim.schedule(function()

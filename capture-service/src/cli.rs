@@ -19,10 +19,11 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    BeadsCleanup, CaptureDraft, CaptureRecord, CaptureSource, CaptureState, IdentityError,
-    NetworkProfile, NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError,
-    PairingRegistry, Receiver, RunAdmission, RunDraft, RunStore, RunStoreError, Store, StoreError,
-    TlsIdentity, Transcript, TranscriptionWorker,
+    BeadsCleanup, BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState,
+    GenerateRequest, GenerationError, IdentityError, NetworkProfile, NetworkProfileError,
+    NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry, Receiver, RunAdmission,
+    RunDraft, RunSession, RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript,
+    TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -43,6 +44,9 @@ pub enum CliError {
     /// Durable Run-store operation failed.
     #[error(transparent)]
     Run(#[from] RunStoreError),
+    /// Generated-work broker failed.
+    #[error(transparent)]
+    Generation(#[from] GenerationError),
     /// Pairing operation failed.
     #[error(transparent)]
     Pairing(#[from] PairingError),
@@ -104,21 +108,19 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         return Ok(());
     }
     if command == "admit" {
+        let token = uuid::Uuid::new_v4().to_string();
         let admission = RunAdmission {
             id: required_option(options, "--id")?.to_owned(),
-            session_id: required_option(options, "--session-id")?.to_owned(),
-            agent: required_option(options, "--agent")?.to_owned(),
-            acp_session_id: required_option(options, "--acp-session-id")?.to_owned(),
-            working_dir: required_option(options, "--cwd")?.to_owned(),
-            load_session: required_option(options, "--load-session")? == "true",
             generated_work_ceiling: positive_integer(options, "--generated-work-max")?,
+            park_ttl_ms: positive_integer(options, "--park-ttl-ms")?,
         };
-        RunStore::new(paths.runs())?.admit(admission.clone())?;
+        RunStore::new(paths.runs())?.admit(admission.clone(), &token)?;
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "id": admission.id,
                 "state": "active",
+                "token": token,
                 "generated_work": {
                     "ceiling": admission.generated_work_ceiling,
                     "consumed": 0,
@@ -128,9 +130,28 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         );
         return Ok(());
     }
+    if command == "attach" {
+        let session = RunSession {
+            id: required_option(options, "--id")?.to_owned(),
+            session_id: required_option(options, "--session-id")?.to_owned(),
+            agent: required_option(options, "--agent")?.to_owned(),
+            acp_session_id: required_option(options, "--acp-session-id")?.to_owned(),
+            working_dir: required_option(options, "--cwd")?.to_owned(),
+            load_session: required_option(options, "--load-session")? == "true",
+        };
+        RunStore::new(paths.runs())?.attach(session.clone())?;
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({"id": session.id, "state": "active"}))?
+        );
+        return Ok(());
+    }
+    if command == "generate" {
+        return generate(paths, options);
+    }
     if command != "park" {
         return Err(CliError::Invalid(
-            "run supports only admit, list, and park".to_owned(),
+            "run supports only admit, attach, generate, list, and park".to_owned(),
         ));
     }
     let claims = required_option(options, "--claims")?
@@ -145,14 +166,52 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         working_dir: required_option(options, "--cwd")?.to_owned(),
         load_session: required_option(options, "--load-session")? == "true",
         claimed_issue_ids: claims,
-        park_expires_at_ms: positive_integer(options, "--expires-at-ms")?,
     };
-    RunStore::new(paths.runs())?.park_cold(draft.clone())?;
+    RunStore::new(paths.runs())?.park_cold(draft.clone(), now_ms())?;
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({"id": draft.id, "state": "cold_parked"}))?
     );
     Ok(())
+}
+
+fn generate(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
+    let separator = arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .ok_or_else(|| {
+            CliError::Invalid("run generate requires '--' before br arguments".to_owned())
+        })?;
+    let options = &arguments[..separator];
+    let request = GenerateRequest {
+        run_id: required_environment("LOUISELM_RUN_ID")?,
+        token: required_environment("LOUISELM_RUN_TOKEN")?,
+        mutation_id: uuid::Uuid::new_v4().to_string(),
+        command: required_option(options, "--command")?.to_owned(),
+        arguments: arguments[separator + 1..].to_vec(),
+    };
+    let generator = BeadsGenerator::new(
+        required_environment("LOUISELM_REAL_BR")?,
+        required_environment("BEADS_DB")?,
+    );
+    let command = request.command.clone();
+    let issue = generator.generate(&RunStore::new(paths.runs())?, request, now_ms())?;
+    if command == "q" {
+        println!("{}", issue.id);
+    } else {
+        print!("{}", issue.stdout);
+        if !issue.stdout.ends_with('\n') {
+            println!();
+        }
+    }
+    Ok(())
+}
+
+fn required_environment(name: &str) -> Result<String, CliError> {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CliError::Invalid(format!("{name} must be set")))
 }
 
 fn ingest_local(store: &Store, arguments: &[String]) -> Result<(), CliError> {
@@ -525,6 +584,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run admit --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false --generated-work-max N\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run admit --id UUID --generated-work-max N --park-ttl-ms N\n  run attach --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false\n  run generate --command create|q -- BR_ARGS\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }

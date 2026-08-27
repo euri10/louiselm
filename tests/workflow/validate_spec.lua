@@ -38,6 +38,7 @@ local function reference_manifest()
       workflow = "reference",
       entry = true,
       ["generated-work"] = { max = 20 },
+      ["park-expiry"] = "24h",
       outcomes = { { name = "agreed", to = "route" } },
     },
     ["route"] = {
@@ -177,6 +178,24 @@ T["rejects"]["a Run-wide ceiling that is not a literal positive integer"] = func
   local result = Workflow.validate("reference", manifest)
 
   MiniTest.expect.equality(rejection_of(result, "unbounded_run").stage, "grill")
+end
+
+T["rejects"]["a workflow without a declared Park expiry"] = function()
+  local manifest = reference_manifest()
+  manifest["grill"]["park-expiry"] = nil
+
+  local result = Workflow.validate("reference", manifest)
+
+  MiniTest.expect.equality(rejection_of(result, "missing_park_expiry").stage, "grill")
+end
+
+T["rejects"]["a malformed Park expiry"] = function()
+  local manifest = reference_manifest()
+  manifest["grill"]["park-expiry"] = "tomorrow"
+
+  local result = Workflow.validate("reference", manifest)
+
+  MiniTest.expect.equality(rejection_of(result, "invalid_park_expiry").field, "park-expiry")
 end
 
 --- Rejection 3.
@@ -366,6 +385,7 @@ T["contract"]["accepts a generating workflow that grows without forming a cycle"
       workflow = "generative",
       entry = true,
       ["generated-work"] = { max = 5 },
+      ["park-expiry"] = "30m",
       generates = { max = 5 },
       outcomes = { { name = "round-complete", terminal = true } },
     },
@@ -383,6 +403,7 @@ T["contract"]["prepares the authored ceiling for admission and permits narrowing
     authored_max = 20,
     ceiling = 12,
     consumed = 0,
+    park_ttl_ms = 86400000,
     reserved = 0,
   })
 end

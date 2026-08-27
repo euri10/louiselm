@@ -5,7 +5,10 @@ use std::{
     process::Command,
 };
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -14,18 +17,21 @@ use uuid::Uuid;
 pub struct RunAdmission {
     /// Canonical Run UUID.
     pub id: String,
-    /// Agent-scoped Session identity used for Provenance.
-    pub session_id: String,
-    /// Configured Agent name.
-    pub agent: String,
-    /// Agent-side ACP Session identifier.
-    pub acp_session_id: String,
-    /// Working directory used by the Session.
-    pub working_dir: String,
-    /// Whether admission confirmed ACP `session/load` support.
-    pub load_session: bool,
     /// Operator-approved absolute generated-work ceiling.
     pub generated_work_ceiling: u64,
+    /// Relative Park expiry applied when this Run later Parks.
+    pub park_ttl_ms: u64,
+}
+
+/// Initialized ACP Session identity attached after Agent startup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSession {
+    pub id: String,
+    pub session_id: String,
+    pub agent: String,
+    pub acp_session_id: String,
+    pub working_dir: String,
+    pub load_session: bool,
 }
 
 /// Durable generated-work accounting owned by one Run.
@@ -37,6 +43,41 @@ pub struct GeneratedWorkBudget {
     pub consumed: u64,
     /// Capacity held by pending Generator operations.
     pub reserved: u64,
+    pending: Vec<PendingGeneration>,
+    outputs: Vec<GeneratedOutput>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+struct PendingGeneration {
+    mutation_id: String,
+    kind: String,
+    units: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+struct GeneratedOutput {
+    mutation_id: String,
+    kind: String,
+    external_id: String,
+}
+
+/// One caller request to reserve generated-work capacity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedWorkReservation {
+    pub run_id: String,
+    pub token: String,
+    pub mutation_id: String,
+    pub kind: String,
+    pub units: u64,
+}
+
+/// Idempotent result of attempting a generated-work reservation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReserveResult {
+    Reserved,
+    Pending,
+    Consumed,
+    Exhausted,
 }
 
 /// Input needed to persist a cold-Parked Run.
@@ -56,8 +97,6 @@ pub struct RunDraft {
     pub load_session: bool,
     /// Beads claims to release if this Park expires.
     pub claimed_issue_ids: Vec<String>,
-    /// Unix epoch milliseconds when the Park expires.
-    pub park_expires_at_ms: u64,
 }
 
 /// Durable Run state retained after cleanup for Forensics correlation.
@@ -68,22 +107,39 @@ pub struct Run {
     /// Run UUID.
     pub id: String,
     /// Session identity used to form a truthful reaper actor.
-    pub session_id: String,
+    pub session_id: Option<String>,
     /// Configured Agent name used to reload the ACP Session.
-    pub agent: String,
+    pub agent: Option<String>,
     /// Agent-side ACP Session identifier.
-    pub acp_session_id: String,
+    pub acp_session_id: Option<String>,
     /// Working directory used when reloading the ACP Session.
-    pub working_dir: String,
+    pub working_dir: Option<String>,
     /// Whether admission confirmed ACP `session/load` support.
-    pub load_session: bool,
-    /// One of `active`, `cold_parked`, or `disposed`.
+    pub load_session: Option<bool>,
+    /// One of `admitted`, `active`, `parked`, `cold_parked`, or `disposed`.
     pub state: String,
+    /// Relative Park expiry declared at admission.
+    pub park_ttl_ms: u64,
+    /// Time when the current Park began.
+    pub parked_at_ms: Option<u64>,
     /// Cold-Park expiry.
     pub park_expires_at_ms: u64,
     /// Run-wide generated-work accounting.
     pub generated_work: GeneratedWorkBudget,
+    generate_token_sha256: String,
     cleanup: Vec<CleanupEntry>,
+}
+
+impl Run {
+    /// Resolve a confirmed generated issue by mutation identity.
+    #[must_use]
+    pub fn generated_issue(&self, mutation_id: &str) -> Option<&str> {
+        self.generated_work
+            .outputs
+            .iter()
+            .find(|output| output.mutation_id == mutation_id)
+            .map(|output| output.external_id.as_str())
+    }
 }
 
 /// Public summary of a resumable durable Run.
@@ -201,75 +257,279 @@ impl RunStore {
     }
 
     /// Persist one admitted Run before any stage may generate work.
-    pub fn admit(&self, admission: RunAdmission) -> Result<(), RunStoreError> {
+    pub fn admit(&self, admission: RunAdmission, token: &str) -> Result<(), RunStoreError> {
         validate_admission(&admission)?;
-        let path = self.path(&admission.id);
-        let run = Run {
-            schema_version: 2,
-            id: admission.id,
-            session_id: admission.session_id,
-            agent: admission.agent,
-            acp_session_id: admission.acp_session_id,
-            working_dir: admission.working_dir,
-            load_session: admission.load_session,
-            state: "active".to_owned(),
-            park_expires_at_ms: 0,
-            generated_work: GeneratedWorkBudget {
-                ceiling: admission.generated_work_ceiling,
-                consumed: 0,
-                reserved: 0,
-            },
-            cleanup: Vec::new(),
-        };
-        if path.exists() {
-            return if self.run(&run.id)? == run {
-                Ok(())
-            } else {
-                Err(RunStoreError::Invalid(
-                    "Run UUID conflicts with existing record".to_owned(),
-                ))
+        validate_token(token)?;
+        self.locked(|| {
+            let path = self.path(&admission.id);
+            let run = Run {
+                schema_version: 3,
+                id: admission.id,
+                session_id: None,
+                agent: None,
+                acp_session_id: None,
+                working_dir: None,
+                load_session: None,
+                state: "admitted".to_owned(),
+                park_ttl_ms: admission.park_ttl_ms,
+                parked_at_ms: None,
+                park_expires_at_ms: 0,
+                generated_work: GeneratedWorkBudget {
+                    ceiling: admission.generated_work_ceiling,
+                    consumed: 0,
+                    reserved: 0,
+                    pending: Vec::new(),
+                    outputs: Vec::new(),
+                },
+                generate_token_sha256: token_sha256(token),
+                cleanup: Vec::new(),
             };
+            if path.exists() {
+                return if self.run(&run.id)? == run {
+                    Ok(())
+                } else {
+                    Err(RunStoreError::Invalid(
+                        "Run UUID conflicts with existing record".to_owned(),
+                    ))
+                };
+            }
+            write_atomic(&path, &run)
+        })
+    }
+
+    /// Attach the initialized ACP Session before the Run can generate work.
+    pub fn attach(&self, session: RunSession) -> Result<(), RunStoreError> {
+        validate_session(&session)?;
+        self.locked(|| {
+            let mut run = self.run(&session.id)?;
+            let same = run.session_id.as_deref() == Some(&session.session_id)
+                && run.agent.as_deref() == Some(&session.agent)
+                && run.acp_session_id.as_deref() == Some(&session.acp_session_id)
+                && run.working_dir.as_deref() == Some(&session.working_dir)
+                && run.load_session == Some(session.load_session);
+            if run.state == "active" && same {
+                return Ok(());
+            }
+            if run.state != "admitted" {
+                return Err(RunStoreError::Invalid(
+                    "only an admitted Run can attach a Session".to_owned(),
+                ));
+            }
+            run.session_id = Some(session.session_id);
+            run.agent = Some(session.agent);
+            run.acp_session_id = Some(session.acp_session_id);
+            run.working_dir = Some(session.working_dir);
+            run.load_session = Some(session.load_session);
+            run.state = "active".to_owned();
+            write_atomic(&self.path(&run.id), &run)
+        })
+    }
+
+    /// Reserve generated-work capacity before an external mutation begins.
+    pub fn reserve_generated_work(
+        &self,
+        reservation: GeneratedWorkReservation,
+        now_ms: u64,
+    ) -> Result<ReserveResult, RunStoreError> {
+        validate_reservation(&reservation)?;
+        self.locked(|| {
+            let mut run = self.run(&reservation.run_id)?;
+            verify_token(&run, &reservation.token)?;
+            if run
+                .generated_work
+                .outputs
+                .iter()
+                .any(|output| output.mutation_id == reservation.mutation_id)
+            {
+                return Ok(ReserveResult::Consumed);
+            }
+            if run
+                .generated_work
+                .pending
+                .iter()
+                .any(|pending| pending.mutation_id == reservation.mutation_id)
+            {
+                return Ok(ReserveResult::Pending);
+            }
+            if run.state != "active" {
+                return if run.state == "parked" {
+                    Ok(ReserveResult::Exhausted)
+                } else {
+                    Err(RunStoreError::Invalid(
+                        "generated work requires an active attached Run".to_owned(),
+                    ))
+                };
+            }
+            let occupied = run
+                .generated_work
+                .consumed
+                .checked_add(run.generated_work.reserved)
+                .and_then(|value| value.checked_add(reservation.units))
+                .ok_or_else(|| {
+                    RunStoreError::Invalid("generated-work accounting overflow".to_owned())
+                })?;
+            if occupied > run.generated_work.ceiling {
+                run.state = "parked".to_owned();
+                run.parked_at_ms = Some(now_ms);
+                run.park_expires_at_ms = now_ms.checked_add(run.park_ttl_ms).ok_or_else(|| {
+                    RunStoreError::Invalid("Park expiry overflows epoch milliseconds".to_owned())
+                })?;
+                write_atomic(&self.path(&run.id), &run)?;
+                return Ok(ReserveResult::Exhausted);
+            }
+            run.generated_work.reserved = run
+                .generated_work
+                .reserved
+                .checked_add(reservation.units)
+                .ok_or_else(|| {
+                    RunStoreError::Invalid("generated-work reservation overflow".to_owned())
+                })?;
+            run.generated_work.pending.push(PendingGeneration {
+                mutation_id: reservation.mutation_id,
+                kind: reservation.kind,
+                units: reservation.units,
+            });
+            write_atomic(&self.path(&run.id), &run)?;
+            Ok(ReserveResult::Reserved)
+        })
+    }
+
+    /// Convert one pending reservation into a durable generated issue.
+    pub fn confirm_generated_work(
+        &self,
+        run_id: &str,
+        token: &str,
+        mutation_id: &str,
+        issue_id: &str,
+    ) -> Result<(), RunStoreError> {
+        validate_id(run_id)?;
+        validate_id(mutation_id)?;
+        if issue_id.is_empty() {
+            return Err(RunStoreError::Invalid(
+                "generated issue id is empty".to_owned(),
+            ));
         }
-        write_atomic(&path, &run)
+        self.locked(|| {
+            let mut run = self.run(run_id)?;
+            verify_token(&run, token)?;
+            if run.generated_issue(mutation_id) == Some(issue_id) {
+                return Ok(());
+            }
+            let index = run
+                .generated_work
+                .pending
+                .iter()
+                .position(|pending| pending.mutation_id == mutation_id)
+                .ok_or_else(|| {
+                    RunStoreError::Invalid("generated-work reservation was not found".to_owned())
+                })?;
+            let pending = run.generated_work.pending.remove(index);
+            run.generated_work.reserved -= pending.units;
+            run.generated_work.consumed = run
+                .generated_work
+                .consumed
+                .checked_add(pending.units)
+                .ok_or_else(|| {
+                    RunStoreError::Invalid("generated-work consumption overflow".to_owned())
+                })?;
+            run.generated_work.outputs.push(GeneratedOutput {
+                mutation_id: mutation_id.to_owned(),
+                kind: pending.kind,
+                external_id: issue_id.to_owned(),
+            });
+            write_atomic(&self.path(run_id), &run)
+        })
+    }
+
+    /// Release one reservation after a mutation definitely did not start.
+    pub fn release_generated_work(
+        &self,
+        run_id: &str,
+        token: &str,
+        mutation_id: &str,
+    ) -> Result<(), RunStoreError> {
+        validate_id(run_id)?;
+        validate_id(mutation_id)?;
+        self.locked(|| {
+            let mut run = self.run(run_id)?;
+            verify_token(&run, token)?;
+            let Some(index) = run
+                .generated_work
+                .pending
+                .iter()
+                .position(|pending| pending.mutation_id == mutation_id)
+            else {
+                return Ok(());
+            };
+            let pending = run.generated_work.pending.remove(index);
+            run.generated_work.reserved -= pending.units;
+            write_atomic(&self.path(run_id), &run)
+        })
+    }
+
+    /// Resolve the attached Session actor for a generate capability.
+    pub fn generation_actor(&self, run_id: &str, token: &str) -> Result<String, RunStoreError> {
+        let run = self.run(run_id)?;
+        verify_token(&run, token)?;
+        run.session_id
+            .ok_or_else(|| RunStoreError::Invalid("Run has no attached Session".to_owned()))
+    }
+
+    /// List pending mutation identities for crash reconciliation.
+    pub fn pending_generation_ids(
+        &self,
+        run_id: &str,
+        token: &str,
+    ) -> Result<Vec<String>, RunStoreError> {
+        let run = self.run(run_id)?;
+        verify_token(&run, token)?;
+        Ok(run
+            .generated_work
+            .pending
+            .into_iter()
+            .map(|pending| pending.mutation_id)
+            .collect())
     }
 
     /// Persist one cold Park for an admitted Run. Repeating the same Park is safe.
-    pub fn park_cold(&self, draft: RunDraft) -> Result<(), RunStoreError> {
+    pub fn park_cold(&self, draft: RunDraft, now_ms: u64) -> Result<(), RunStoreError> {
         validate_draft(&draft)?;
-        let mut run = self.run(&draft.id)?;
-        if run.session_id != draft.session_id
-            || run.agent != draft.agent
-            || run.acp_session_id != draft.acp_session_id
-            || run.working_dir != draft.working_dir
-            || run.load_session != draft.load_session
-        {
-            return Err(RunStoreError::Invalid(
-                "cold Park identity differs from admitted Run".to_owned(),
-            ));
-        }
-        let cleanup = draft
-            .claimed_issue_ids
-            .into_iter()
-            .map(|issue_id| CleanupEntry {
-                issue_id,
-                completed: false,
-            })
-            .collect::<Vec<_>>();
-        if run.state == "cold_parked"
-            && run.park_expires_at_ms == draft.park_expires_at_ms
-            && run.cleanup == cleanup
-        {
-            return Ok(());
-        }
-        if run.state != "active" {
-            return Err(RunStoreError::Invalid(
-                "only an active admitted Run can be cold-Parked".to_owned(),
-            ));
-        }
-        run.state = "cold_parked".to_owned();
-        run.park_expires_at_ms = draft.park_expires_at_ms;
-        run.cleanup = cleanup;
-        write_atomic(&self.path(&run.id), &run)
+        self.locked(|| {
+            let mut run = self.run(&draft.id)?;
+            if run.session_id.as_deref() != Some(&draft.session_id)
+                || run.agent.as_deref() != Some(&draft.agent)
+                || run.acp_session_id.as_deref() != Some(&draft.acp_session_id)
+                || run.working_dir.as_deref() != Some(&draft.working_dir)
+                || run.load_session != Some(draft.load_session)
+            {
+                return Err(RunStoreError::Invalid(
+                    "cold Park identity differs from admitted Run".to_owned(),
+                ));
+            }
+            let cleanup = draft
+                .claimed_issue_ids
+                .into_iter()
+                .map(|issue_id| CleanupEntry {
+                    issue_id,
+                    completed: false,
+                })
+                .collect::<Vec<_>>();
+            if run.state == "cold_parked" && run.cleanup == cleanup {
+                return Ok(());
+            }
+            if run.state != "active" && run.state != "parked" {
+                return Err(RunStoreError::Invalid(
+                    "only an active or Parked admitted Run can be cold-Parked".to_owned(),
+                ));
+            }
+            run.state = "cold_parked".to_owned();
+            run.parked_at_ms = Some(now_ms);
+            run.park_expires_at_ms = now_ms
+                .checked_add(run.park_ttl_ms)
+                .ok_or_else(|| RunStoreError::Invalid("Park expiry overflowed".to_owned()))?;
+            run.cleanup = cleanup;
+            write_atomic(&self.path(&run.id), &run)
+        })
     }
 
     /// Load one retained Run record.
@@ -280,7 +540,11 @@ impl RunStore {
             return Err(RunStoreError::Invalid("Run was not found".to_owned()));
         }
         let run: Run = serde_json::from_reader(BufReader::new(File::open(path)?))?;
-        if run.schema_version != 2 || run.id != id || run.generated_work.ceiling == 0 {
+        if run.schema_version != 3
+            || run.id != id
+            || run.generated_work.ceiling == 0
+            || run.park_ttl_ms == 0
+        {
             return Err(RunStoreError::Invalid("stored Run is invalid".to_owned()));
         }
         Ok(run)
@@ -303,11 +567,20 @@ impl RunStore {
             }
             let run = self.run(id)?;
             if run.state == "cold_parked" && run.park_expires_at_ms > now_ms {
+                let agent = run
+                    .agent
+                    .ok_or_else(|| RunStoreError::Invalid("cold Park has no Agent".to_owned()))?;
+                let acp_session_id = run.acp_session_id.ok_or_else(|| {
+                    RunStoreError::Invalid("cold Park has no ACP Session".to_owned())
+                })?;
+                let working_dir = run.working_dir.ok_or_else(|| {
+                    RunStoreError::Invalid("cold Park has no working directory".to_owned())
+                })?;
                 summaries.push(RunSummary {
                     id: run.id,
-                    agent: run.agent,
-                    acp_session_id: run.acp_session_id,
-                    working_dir: run.working_dir,
+                    agent,
+                    acp_session_id,
+                    working_dir,
                     state: run.state,
                     park_expires_at_ms: run.park_expires_at_ms,
                     generated_work: run.generated_work,
@@ -352,7 +625,12 @@ impl RunStore {
                 }
                 let action = ReapAction {
                     issue_id: run.cleanup[index].issue_id.clone(),
-                    actor: format!("reaper/{}", run.session_id),
+                    actor: format!(
+                        "reaper/{}",
+                        run.session_id.as_deref().ok_or_else(|| {
+                            RunStoreError::Invalid("Parked Run has no Session".to_owned())
+                        })?
+                    ),
                 };
                 cleanup(&action).map_err(RunStoreError::Cleanup)?;
                 run.cleanup[index].completed = true;
@@ -368,6 +646,24 @@ impl RunStore {
     fn path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.json"))
     }
+
+    fn locked<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, RunStoreError>,
+    ) -> Result<T, RunStoreError> {
+        let lock_path = self.root.join(".lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        set_private_permissions(&self.root.join(".lock"), false)?;
+        lock.lock_exclusive()?;
+        let result = operation();
+        FileExt::unlock(&lock)?;
+        result
+    }
 }
 
 fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {
@@ -377,11 +673,10 @@ fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {
         || draft.acp_session_id.is_empty()
         || draft.working_dir.is_empty()
         || !draft.load_session
-        || draft.park_expires_at_ms == 0
         || draft.claimed_issue_ids.iter().any(|id| id.is_empty())
     {
         return Err(RunStoreError::Invalid(
-            "Run fields must be non-empty, reloadable, and expiry positive".to_owned(),
+            "Run fields must be non-empty and reloadable".to_owned(),
         ));
     }
     Ok(())
@@ -389,18 +684,65 @@ fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {
 
 fn validate_admission(admission: &RunAdmission) -> Result<(), RunStoreError> {
     validate_id(&admission.id)?;
-    if admission.session_id.is_empty()
-        || admission.agent.is_empty()
-        || admission.acp_session_id.is_empty()
-        || admission.working_dir.is_empty()
-        || admission.generated_work_ceiling == 0
-    {
+    if admission.generated_work_ceiling == 0 || admission.park_ttl_ms == 0 {
         return Err(RunStoreError::Invalid(
-            "admitted Run fields must be non-empty and its ceiling positive".to_owned(),
+            "admitted Run ceiling and Park TTL must be positive".to_owned(),
         ));
     }
     Ok(())
 }
+
+fn validate_session(session: &RunSession) -> Result<(), RunStoreError> {
+    validate_id(&session.id)?;
+    if session.session_id.is_empty()
+        || session.agent.is_empty()
+        || session.acp_session_id.is_empty()
+        || session.working_dir.is_empty()
+    {
+        return Err(RunStoreError::Invalid(
+            "Run Session fields must be non-empty".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reservation(reservation: &GeneratedWorkReservation) -> Result<(), RunStoreError> {
+    validate_id(&reservation.run_id)?;
+    validate_id(&reservation.mutation_id)?;
+    validate_token(&reservation.token)?;
+    if reservation.kind != "beads_issue" || reservation.units != 1 {
+        return Err(RunStoreError::Invalid(
+            "issue generation reserves exactly one beads_issue unit".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_token(token: &str) -> Result<(), RunStoreError> {
+    if token.len() < 16 {
+        return Err(RunStoreError::Invalid(
+            "generate token is malformed".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn token_sha256(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+fn verify_token(run: &Run, token: &str) -> Result<(), RunStoreError> {
+    validate_token(token)?;
+    let expected = run.generate_token_sha256.as_bytes();
+    let supplied = token_sha256(token);
+    if expected.len() != supplied.len() || expected.ct_eq(supplied.as_bytes()).unwrap_u8() != 1 {
+        return Err(RunStoreError::Invalid(
+            "generate capability is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_id(id: &str) -> Result<(), RunStoreError> {
     let parsed = Uuid::parse_str(id)
         .map_err(|_| RunStoreError::Invalid("Run id must be a UUID".to_owned()))?;

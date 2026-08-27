@@ -8,6 +8,7 @@ local Protocol = require("louiselm.acp.protocol")
 
 ---@class louiselm.acp.TransportOptions
 ---@field cwd? string Working directory for the agent process.
+---@field env? table<string, string> Per-Session process environment overrides.
 ---@field on_message? fun(message: louiselm.acp.JsonRpcMessage) Called for each decoded message.
 ---@field on_error? fun(message: string) Called for protocol, stream, or process errors.
 ---@field on_stderr? fun(message: string) Called for agent stderr chunks.
@@ -153,8 +154,15 @@ function M.start(definition, options)
     end,
     text = true,
   }
-  if normalized.env ~= nil then
-    process_options.env = normalized.env
+  if normalized.env ~= nil or transport.options.env ~= nil then
+    local environment = {}
+    for key, value in pairs(normalized.env or {}) do
+      environment[key] = value
+    end
+    for key, value in pairs(transport.options.env or {}) do
+      environment[key] = value
+    end
+    process_options.env = environment
   end
   if transport.options.cwd ~= nil then
     process_options.cwd = transport.options.cwd

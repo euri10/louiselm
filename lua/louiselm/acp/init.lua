@@ -6,6 +6,7 @@ local nvim = vim
 
 ---@class louiselm.acp.ClientOptions
 ---@field cwd? string Working directory for the agent process.
+---@field env? table<string, string> Per-Session process environment overrides.
 ---@field on_notification? fun(message: louiselm.acp.JsonRpcNotification) Called for agent notifications.
 ---@field on_request? fun(message: louiselm.acp.JsonRpcRequest, respond: fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?) Called for agent requests.
 ---@field on_error? fun(message: string) Called for transport or protocol errors.
@@ -103,6 +104,7 @@ end
 local function transport_options(options)
   return {
     cwd = options.cwd,
+    env = options.env,
     on_message = function(message)
       -- Assigned by connect before a process can answer a request.
     end,

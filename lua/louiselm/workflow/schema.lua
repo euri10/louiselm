@@ -18,6 +18,7 @@ M.STAGE_FIELDS = {
   outcomes = "array",
   generates = "table",
   ["generated-work"] = "table",
+  ["park-expiry"] = "string",
 }
 
 ---Keys an outcome may carry.

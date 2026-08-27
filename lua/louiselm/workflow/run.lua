@@ -40,7 +40,6 @@ local nvim = vim
 ---@class louiselm.workflow.ColdParkRequest
 ---@field id string Durable Run UUID.
 ---@field claims string[] Beads claims owned by this Run.
----@field expires_at_ms integer Durable Park expiry.
 
 ---@param value unknown
 ---@return boolean
@@ -90,7 +89,6 @@ local function cold_park_record(worker, request)
     cwd = state.working_dir,
     load_session = true,
     claims = request.claims,
-    expires_at_ms = request.expires_at_ms,
   }
 end
 

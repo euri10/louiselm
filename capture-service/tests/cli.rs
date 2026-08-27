@@ -5,6 +5,48 @@ use std::os::unix::fs::PermissionsExt;
 
 use louiselm_capture::PairingRegistry;
 
+#[cfg(unix)]
+#[test]
+fn run_br_shim_brokers_generation_and_passes_reads_through() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let recorded = temporary.path().join("arguments");
+    let fake = temporary.path().join("fake-command");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            recorded.display()
+        ),
+    )
+    .expect("fake command");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("fake mode");
+    let shim = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/run-tools/br");
+
+    let generated = Command::new(&shim)
+        .args(["q", "captured", "idea"])
+        .env("LOUISELM_CAPTURE", &fake)
+        .env("LOUISELM_REAL_BR", &fake)
+        .output()
+        .expect("shim generation");
+    assert!(generated.status.success());
+    assert_eq!(
+        fs::read_to_string(&recorded).expect("generated arguments"),
+        "run\ngenerate\n--command\nq\n--\ncaptured\nidea\n"
+    );
+
+    let read = Command::new(&shim)
+        .args(["ready", "--json"])
+        .env("LOUISELM_CAPTURE", &fake)
+        .env("LOUISELM_REAL_BR", &fake)
+        .output()
+        .expect("shim read");
+    assert!(read.status.success());
+    assert_eq!(
+        fs::read_to_string(&recorded).expect("read arguments"),
+        "ready\n--json\n"
+    );
+}
+
 #[test]
 fn local_ingest_and_list_expose_the_durable_inbox() {
     let temporary = tempfile::tempdir().expect("temporary directory");
@@ -54,26 +96,11 @@ fn run_admission_exposes_the_approved_generated_work_ceiling() {
     let data = temporary.path().join("data");
     let state = temporary.path().join("state");
     let run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let arguments = [
-        "run",
-        "admit",
-        "--id",
-        run_id,
-        "--session-id",
-        "codex/session-123",
-        "--agent",
-        "codex",
-        "--acp-session-id",
-        "session-123",
-        "--cwd",
-        "/tmp/project",
-        "--load-session",
-        "true",
-    ];
+    let arguments = ["run", "admit", "--id", run_id];
 
     let admitted = command(&data, &state)
         .args(arguments)
-        .args(["--generated-work-max", "5"])
+        .args(["--generated-work-max", "5", "--park-ttl-ms", "3600000"])
         .output()
         .expect("admit Run");
     assert!(admitted.status.success(), "{:?}", admitted.stderr);
@@ -84,10 +111,15 @@ fn run_admission_exposes_the_approved_generated_work_ceiling() {
     assert_eq!(response["generated_work"]["ceiling"], 5);
     assert_eq!(response["generated_work"]["consumed"], 0);
     assert_eq!(response["generated_work"]["reserved"], 0);
+    assert!(
+        response["token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty())
+    );
 
     let lowering = command(&data, &state)
         .args(arguments)
-        .args(["--generated-work-max", "4"])
+        .args(["--generated-work-max", "4", "--park-ttl-ms", "3600000"])
         .output()
         .expect("lower ceiling");
     assert!(!lowering.status.success());

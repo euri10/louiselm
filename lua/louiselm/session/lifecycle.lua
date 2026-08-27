@@ -33,6 +33,7 @@ local nvim = vim
 
 ---@class louiselm.session.Options
 ---@field cwd? string Working directory for the ACP session.
+---@field env? table<string, string> Per-Session Agent process environment overrides.
 ---@field name? string User-facing session name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
@@ -607,6 +608,7 @@ end
 function Session:start()
   local client, connect_error = Acp.connect(self.definition, {
     cwd = self.state.working_dir,
+    env = self.options.env,
     on_notification = function(message)
       handle_notification(self, message)
     end,

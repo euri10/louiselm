@@ -63,6 +63,24 @@ T["start"]["frames messages across stdout chunks and writes JSON lines"] = funct
   })
 end
 
+T["start"]["merges Session environment over Agent configuration"] = function()
+  local captured
+  local original_system = nvim.system
+  set_system(function(_, options)
+    captured = options.env
+    return {
+      is_closing = function()
+        return false
+      end,
+    }
+  end)
+  assert(Transport.start({ command = "agent", args = {}, env = { SHARED = "agent", AGENT = "yes" } }, {
+    env = { SHARED = "run", RUN = "yes" },
+  }))
+  set_system(original_system)
+  MiniTest.expect.equality(captured, { SHARED = "run", AGENT = "yes", RUN = "yes" })
+end
+
 T["start"]["surfaces malformed stdout and launch errors"] = function()
   local errors = {}
   local original_system = nvim.system

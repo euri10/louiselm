@@ -165,8 +165,18 @@ local function valid_options(value)
   end
   ---@cast value table
   for key in pairs(value) do
-    if key ~= "cwd" and key ~= "name" and key ~= "on_event" and key ~= "permission_policy" then
+    if key ~= "cwd" and key ~= "env" and key ~= "name" and key ~= "on_event" and key ~= "permission_policy" then
       return false
+    end
+  end
+  if value.env ~= nil then
+    if type(value.env) ~= "table" then
+      return false
+    end
+    for key, item in pairs(value.env) do
+      if type(key) ~= "string" or type(item) ~= "string" then
+        return false
+      end
     end
   end
   return (value.cwd == nil or type(value.cwd) == "string")
@@ -397,6 +407,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   end
   local session_options = {
     cwd = options.cwd,
+    env = options.env,
     name = options.name,
     on_event = options.on_event,
     permission_policy = permission_policy,

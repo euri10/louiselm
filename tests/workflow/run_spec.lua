@@ -45,7 +45,7 @@ end
 
 T["ownership"]["validates the synthesized graph with its mandatory escape"] = function()
   local result = Workflow.validate("reference", {
-    first = { workflow = "reference", entry = true, outcomes = {} },
+    first = { workflow = "reference", entry = true, ["park-expiry"] = "1h", outcomes = {} },
   })
 
   MiniTest.expect.equality(result.ok, true)
@@ -103,7 +103,7 @@ T["durable Park"]["derives cold resume metadata from the owned Session"] = funct
   }))
   assert(run:adopt_session(session))
 
-  assert(run:park_cold({ id = "run", claims = { "issue" }, expires_at_ms = 1 }))
+  assert(run:park_cold({ id = "run", claims = { "issue" } }))
   MiniTest.expect.equality(captured, {
     id = "run",
     session_id = "codex/acp-session",
@@ -112,7 +112,6 @@ T["durable Park"]["derives cold resume metadata from the owned Session"] = funct
     cwd = "/tmp/project",
     load_session = true,
     claims = { "issue" },
-    expires_at_ms = 1,
   })
 end
 
@@ -126,7 +125,7 @@ T["durable Park"]["rejects cold Park when the Session is not reloadable"] = func
   local run = assert(Workflow.new_run())
   assert(run:adopt_session(session))
 
-  local started, error_message = run:park_cold({ id = "run", claims = { "issue" }, expires_at_ms = 1 })
+  local started, error_message = run:park_cold({ id = "run", claims = { "issue" } })
   MiniTest.expect.equality(started, false)
   MiniTest.expect.equality(error_message, "cold Park requires an Agent that supports session/load")
 end
@@ -142,7 +141,6 @@ T["durable Park"]["does not transition before service confirmation"] = function(
       cwd = "/tmp/project",
       load_session = true,
       claims = { "issue" },
-      expires_at_ms = 1,
     },
     park_service = function(_, callback)
       complete = callback
@@ -169,7 +167,6 @@ T["durable Park"]["keeps Run active when service persistence fails"] = function(
       cwd = "/tmp/project",
       load_session = true,
       claims = { "issue" },
-      expires_at_ms = 1,
     },
     park_service = function(_, callback)
       callback(false, "service unavailable")

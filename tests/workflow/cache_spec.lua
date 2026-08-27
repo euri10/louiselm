@@ -8,6 +8,7 @@ local function manifest()
     first = {
       workflow = "reference",
       entry = true,
+      ["park-expiry"] = "1h",
       outcomes = { { name = "done", terminal = true } },
     },
   }
