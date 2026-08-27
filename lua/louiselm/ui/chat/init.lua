@@ -2777,7 +2777,31 @@ function Chat:buffer(session_id)
   return view and view.buffer or nil
 end
 
----Open a transcript review buffer for another session.
+---Placeholder marking an unfilled takeover task in a Handoff review buffer;
+---`submit_handoff` refuses to send while this exact text is still present.
+local HANDOFF_TASK_PLACEHOLDER = "<replace with the concrete action the target must take>"
+
+---Read the filled takeover task from a Handoff review buffer's contents, or nil
+---when the line is missing, blank, or still holds the template placeholder.
+---@param text string
+---@return string? task
+local function takeover_task(text)
+  for line in text:gmatch("[^\n]+") do
+    local value = line:match("^%s*%-%s*takeover task:%s*(.-)%s*$")
+    if value ~= nil then
+      if value == "" or value:find(HANDOFF_TASK_PLACEHOLDER, 1, true) ~= nil then
+        return nil
+      end
+      return value
+    end
+  end
+  return nil
+end
+
+---Open a Handoff review buffer for another session: an editable three-section
+---brief — a `## Handoff` takeover-task template first, the compacted source
+---transcript as `## Context`, and `## Source` metadata — that `submit_handoff`
+---validates and sends.
 ---@param self louiselm.ui.Chat
 ---@param target_session louiselm.session.Session Session that will receive the reviewed prompt.
 ---@param source_session_id? string Attached source session; defaults to the current session.
@@ -2814,8 +2838,34 @@ function Chat:open_handoff(target_session, source_session_id)
   nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
   nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
-  local markdown = Transcript.render(source_view.transcript:snapshot(), source_view.session:inspect())
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, nvim.split(markdown, "\n", { plain = true }))
+  local entries = source_view.transcript:snapshot()
+  local user_turns = 0
+  for _, entry in ipairs(entries) do
+    if entry.kind == "user" then
+      user_turns = user_turns + 1
+    end
+  end
+  local context = Transcript.render_compact(entries, source_view.session:inspect())
+  local source_ref = source_state.acp_session_id ~= nil and report_id(source_state.agent, source_state.acp_session_id)
+    or source_state.agent
+  local brief = table.concat({
+    "## Handoff",
+    "",
+    "- source: `" .. source_ref .. "`",
+    "- takeover task: " .. HANDOFF_TASK_PLACEHOLDER,
+    "- constraints: (none)",
+    "",
+    "## Context",
+    "",
+    context,
+    "## Source",
+    "",
+    "- agent: " .. source_state.agent,
+    "- acp session: " .. (source_state.acp_session_id or "none"),
+    "- user turns: " .. tostring(user_turns),
+    "",
+  }, "\n")
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, nvim.split(brief, "\n", { plain = true }))
   self.handoffs[buffer] = {
     target_session = target_session,
     target_session_id = target_state.id,
@@ -2848,6 +2898,9 @@ function Chat:submit_handoff(buffer)
   local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
   if text:match("%S") == nil then
     return false, "handoff prompt must be a non-empty string"
+  end
+  if takeover_task(text) == nil then
+    return false, "handoff takeover task must be filled in before submitting"
   end
   local request_id, prompt_error = handoff.target_session:prompt(text)
   if request_id == nil then

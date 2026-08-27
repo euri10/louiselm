@@ -15,7 +15,8 @@ Overview                                                      *louiselm*
   this reference.
 
   Sessions remain bound to their Agent. A Handoff creates a Session with
-  another Agent while retaining the source Session.
+  another Agent and seeds it with your takeover task and a compacted source
+  transcript. The source Session remains attached.
 
 ==============================================================================
 Sessions                                                      *louiselm-sessions*
@@ -24,8 +25,9 @@ Sessions                                                      *louiselm-sessions
   start another Session without stopping the current one, and
   :LouiselmSwitchSession to focus an attached Session.
 
-  A Handoff creates a Session with another Agent after you review its source
-  transcript. The source Session remains attached.
+  A Handoff creates a Session with another Agent after you fill in its
+  takeover task and review the compacted source transcript. The source Session
+  remains attached.
 
 ==============================================================================
 Workflow                                                      *louiselm-workflow*

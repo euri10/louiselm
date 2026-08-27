@@ -132,7 +132,7 @@ local function emit_overview(lines)
   lines[#lines + 1] = ""
   append_wrapped(
     lines,
-    "Sessions remain bound to their Agent. A Handoff creates a Session with another Agent while retaining the source Session.",
+    "Sessions remain bound to their Agent. A Handoff creates a Session with another Agent and seeds it with your takeover task and a compacted source transcript. The source Session remains attached.",
     "  ",
     "  "
   )
@@ -164,7 +164,7 @@ function M.generate(schema, commands)
   emit_overview(lines)
   emit_section(lines, "Sessions", "louiselm-sessions", {
     "A Session is bound to one Agent for its lifetime. Use :LouiselmNewSession to start another Session without stopping the current one, and :LouiselmSwitchSession to focus an attached Session.",
-    "A Handoff creates a Session with another Agent after you review its source transcript. The source Session remains attached.",
+    "A Handoff creates a Session with another Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
   })
   emit_section(lines, "Workflow", "louiselm-workflow", {
     "Configure an Agent, start or resume a Session, queue optional context, then submit a prompt. Respond deliberately to permission requests and cancel a current turn when the intent changes.",

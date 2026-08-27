@@ -1,6 +1,5 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
-local Transcript = require("louiselm.session.transcript")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.routing")
 
@@ -129,6 +128,20 @@ local function buffer_lines(buffer)
   return nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
 end
 
+---Replace the takeover-task line of a Handoff review buffer with a filled task.
+---@param buffer integer
+---@param task string
+local function fill_takeover_task(buffer, task)
+  local lines = buffer_lines(buffer)
+  for index, line in ipairs(lines) do
+    if line:find("^- takeover task:", 1) ~= nil then
+      nvim.api.nvim_buf_set_lines(buffer, index - 1, index, false, { "- takeover task: " .. task })
+      return
+    end
+  end
+  error("takeover task line not found in handoff buffer")
+end
+
 ---@param line integer One-based line number in the current window.
 ---@return integer first
 ---@return integer last
@@ -205,7 +218,7 @@ T["chat"]["focuses the prompt"] = function()
   chat:dispose()
 end
 
-T["chat"]["opens an editable transcript handoff and submits its edits"] = function()
+T["chat"]["opens a takeover brief and submits the reviewed edit"] = function()
   local source = fake_session("source", "claude")
   source.state.acp_session_id = "source-acp"
   local target = fake_session("target", "codex")
@@ -219,27 +232,33 @@ T["chat"]["opens an editable transcript handoff and submits its edits"] = functi
   })
 
   local buffer = assert(chat:open_handoff(target, "source"))
+  local lines = buffer_lines(buffer)
   MiniTest.expect.equality(nvim.api.nvim_buf_get_option(buffer, "modifiable"), true)
-  MiniTest.expect.equality(buffer_lines(buffer)[1], "# louiselm session transcript")
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
+  MiniTest.expect.equality(lines[1], "## Handoff")
+  MiniTest.expect.equality(lines[3], "- source: `claude/source-acp`")
+  MiniTest.expect.equality(lines[4], "- takeover task: <replace with the concrete action the target must take>")
+  local joined = table.concat(lines, "\n")
+  MiniTest.expect.equality(joined:find("## Context", 1, true) ~= nil, true)
+  MiniTest.expect.equality(joined:find("## Source", 1, true) ~= nil, true)
+  MiniTest.expect.equality(joined:find("original answer", 1, true) ~= nil, true)
 
+  -- The untouched template refuses to send and keeps the review buffer open.
+  local sent, error_message = chat:submit_handoff(buffer)
+  MiniTest.expect.equality(sent, false)
+  MiniTest.expect.equality(error_message, "handoff takeover task must be filled in before submitting")
+  MiniTest.expect.equality(target.prompts, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
+
+  fill_takeover_task(buffer, "commit and sync")
   assert(chat:submit_handoff(buffer))
-  MiniTest.expect.equality(target.prompts, { "edited transcript" })
+  MiniTest.expect.equality(#target.prompts, 1)
+  MiniTest.expect.equality(target.prompts[1]:find("- takeover task: commit and sync", 1, true) ~= nil, true)
   local entries = chat.views.target.transcript:snapshot()
   MiniTest.expect.equality(entries, {
-    { kind = "user", text = "edited transcript", handoff_source_session_id = "claude/source-acp" },
+    { kind = "user", text = target.prompts[1], handoff_source_session_id = "claude/source-acp" },
   })
-  MiniTest.expect.equality(
-    Transcript.render(entries, target:inspect()),
-    "# louiselm session transcript\n\n"
-      .. "- session: target\n"
-      .. "- agent: codex\n"
-      .. "- acp session: none\n\n"
-      .. "## User\n\n"
-      .. "<sub>Handoff from Session: `claude/source-acp`</sub>\n\n"
-      .. "edited transcript\n"
-  )
-  assert(table.concat(buffer_lines(chat:buffer("target")), "\n"):find("> edited transcript", 1, true) ~= nil)
+  local target_text = table.concat(buffer_lines(chat:buffer("target")), "\n")
+  MiniTest.expect.equality(target_text:find("- takeover task: commit and sync", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
   chat:dispose()
 end
@@ -253,7 +272,7 @@ T["chat"]["does not record a failed handoff in the target transcript"] = functio
   assert(chat:attach(target))
 
   local buffer = assert(chat:open_handoff(target, "source"))
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
+  fill_takeover_task(buffer, "commit and sync")
   local sent, error_message = chat:submit_handoff(buffer)
 
   MiniTest.expect.equality(sent, false)
@@ -271,10 +290,11 @@ T["chat"]["does not record local provenance before the source has an ACP session
   assert(chat:attach(target))
 
   local buffer = assert(chat:open_handoff(target, "source"))
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "edited transcript" })
+  fill_takeover_task(buffer, "commit and sync")
 
   assert(chat:submit_handoff(buffer))
-  MiniTest.expect.equality(target.prompts, { "edited transcript" })
+  MiniTest.expect.equality(#target.prompts, 1)
+  MiniTest.expect.equality(target.prompts[1]:find("- takeover task: commit and sync", 1, true) ~= nil, true)
   MiniTest.expect.equality(chat.views.target.transcript:snapshot(), {})
   chat:dispose()
 end
@@ -308,6 +328,57 @@ T["chat"]["refuses an empty handoff buffer"] = function()
   chat:dispose()
 end
 
+T["chat"]["refuses a handoff whose takeover task is blank"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+
+  local buffer = assert(chat:open_handoff(target))
+  fill_takeover_task(buffer, "")
+  local sent, error_message = chat:submit_handoff(buffer)
+  MiniTest.expect.equality(sent, false)
+  MiniTest.expect.equality(error_message, "handoff takeover task must be filled in before submitting")
+  MiniTest.expect.equality(target.prompts, {})
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
+  chat:dispose()
+end
+
+T["chat"]["carries the compacted source transcript in the handoff context"] = function()
+  local source = fake_session("source", "claude")
+  local target = fake_session("target", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+  source:emit({
+    type = "chunk",
+    session_id = "source",
+    data = { content = { type = "text", text = "worked on it" } },
+  })
+  source:emit({
+    type = "thought_chunk",
+    session_id = "source",
+    data = { content = { type = "text", text = "scratch reasoning" } },
+  })
+  source:emit({
+    type = "tool_call_started",
+    session_id = "source",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  source:emit({
+    type = "tool_call_finished",
+    session_id = "source",
+    data = { toolCallId = "tool-1", status = "completed" },
+  })
+
+  local buffer = assert(chat:open_handoff(target, "source"))
+  local joined = table.concat(buffer_lines(buffer), "\n")
+  MiniTest.expect.equality(joined:find("worked on it", 1, true) ~= nil, true)
+  MiniTest.expect.equality(joined:find("<sub>**Read file** — completed</sub>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(joined:find("scratch reasoning", 1, true), nil)
+  MiniTest.expect.equality(joined:find("<details>", 1, true), nil)
+  chat:dispose()
+end
+
 T["chat"]["hands off the current session to a picked agent"] = function()
   local source = fake_session("source", "claude")
   local created_agent
@@ -330,7 +401,7 @@ T["chat"]["hands off the current session to a picked agent"] = function()
   nvim.ui.select = original_select
   MiniTest.expect.equality({ started, error_message }, { true, nil })
   MiniTest.expect.equality(created_agent, "codex")
-  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "# louiselm session transcript")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "## Handoff")
 
   -- The source stays attached and reachable through the ordinary switcher.
   assert(chat:switch("source"))
@@ -396,7 +467,7 @@ T["chat"]["hands off a source session in error state"] = function()
   local started, error_message = chat:hand_off()
 
   MiniTest.expect.equality({ started, error_message }, { true, nil })
-  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "# louiselm session transcript")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "## Handoff")
   MiniTest.expect.equality(source.state.status, "error")
   chat:dispose()
 end
