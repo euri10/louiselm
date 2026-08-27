@@ -28,8 +28,17 @@ local DEFAULTS = {
   { mode = "n", lhs = "<leader>lf", rhs = "<cmd>LouiselmPickFile<cr>", desc = "LouiSelm pick file" },
   { mode = "n", lhs = "<leader>lb", rhs = "<cmd>LouiselmMentionBuffer<cr>", desc = "LouiSelm mention buffer" },
   { mode = "x", lhs = "<leader>ls", rhs = "<cmd>LouiselmSendSelection<cr>", desc = "LouiSelm send selection" },
-  { mode = "n", lhs = "<leader>ll", rhs = "<cmd>LouiselmInline<cr>", desc = "LouiSelm inline edit" },
-  { mode = "x", lhs = "<leader>ll", rhs = "<cmd>LouiselmInline<cr>", desc = "LouiSelm inline edit" },
+  { mode = "n", lhs = "<leader>le", rhs = "<cmd>LouiselmInline<cr>", desc = "LouiSelm inline edit" },
+  { mode = "x", lhs = "<leader>le", rhs = "<cmd>LouiselmInline<cr>", desc = "LouiSelm inline edit" },
+  { mode = "n", lhs = "<leader>lT", rhs = "<cmd>LouiselmInspectTool<cr>", desc = "LouiSelm inspect tool call" },
+  { mode = "n", lhs = "<leader>lP", rhs = "<cmd>LouiselmInspectProvenance<cr>", desc = "LouiSelm inspect provenance" },
+  { mode = "n", lhs = "<leader>lB", rhs = "<cmd>LouiselmInspectBead<cr>", desc = "LouiSelm inspect Beads issue" },
+  { mode = "n", lhs = "<leader>lH", rhs = "<cmd>LouiselmHandOff<cr>", desc = "LouiSelm hand off session" },
+  { mode = "n", lhs = "<leader>lF", rhs = "<cmd>LouiselmForensics<cr>", desc = "LouiSelm collect forensics" },
+  { mode = "n", lhs = "<leader>lV", rhs = "<cmd>LouiselmForensicsView<cr>", desc = "LouiSelm view forensics" },
+  { mode = "n", lhs = "<leader>lL", rhs = "<cmd>LouiselmLimits<cr>", desc = "LouiSelm inspect limits" },
+  { mode = "n", lhs = "<leader>ld", rhs = "<cmd>LouiselmDiagnostics<cr>", desc = "LouiSelm queue diagnostics" },
+  { mode = "n", lhs = "<leader>lz", rhs = "<cmd>LouiselmResumePark<cr>", desc = "LouiSelm resume parked run" },
 }
 
 ---@type louiselm.ui.KeymapDefault[]

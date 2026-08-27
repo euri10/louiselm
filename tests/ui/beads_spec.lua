@@ -1,6 +1,5 @@
 local MiniTest = require("mini.test")
 local Beads = require("louiselm.ui.beads")
-local Command = require("louiselm.ui.chat.command")
 
 local T = MiniTest.new_set()
 
@@ -328,22 +327,6 @@ T["beads"]["reports a failed br lookup without opening a popup"] = function()
 
   MiniTest.expect.equality(error_message, "could not read Beads issue louiselm-kpod")
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
-end
-
-T["beads"]["installs the inspector map for chat buffers"] = function()
-  Command.register()
-  local buffer = nvim.api.nvim_create_buf(false, true)
-  source_buffers[#source_buffers + 1] = buffer
-  nvim.api.nvim_set_option_value("filetype", "louiselm-session", { buf = buffer })
-
-  local mapping
-  for _, value in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
-    if value.desc == "Inspect Beads issue" then
-      mapping = value
-      break
-    end
-  end
-  MiniTest.expect.equality(mapping ~= nil, true)
 end
 
 return T

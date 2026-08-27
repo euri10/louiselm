@@ -26,7 +26,16 @@ T["keymaps"] = MiniTest.new_set({
         "<leader>lc",
         "<leader>ln",
         "<leader>ls",
-        "<leader>ll",
+        "<leader>le",
+        "<leader>lT",
+        "<leader>lP",
+        "<leader>lB",
+        "<leader>lH",
+        "<leader>lF",
+        "<leader>lV",
+        "<leader>lL",
+        "<leader>ld",
+        "<leader>lz",
       }) do
         delete_global("n", lhs)
         delete_global("x", lhs)
@@ -40,7 +49,9 @@ T["keymaps"]["installs defaults"] = function()
 
   MiniTest.expect.equality(mapping("n", " lc").rhs, "<Cmd>LouiselmChat<CR>")
   MiniTest.expect.equality(mapping("x", " ls").rhs, "<Cmd>LouiselmSendSelection<CR>")
-  MiniTest.expect.equality(mapping("n", " ll").rhs, "<Cmd>LouiselmInline<CR>")
+  MiniTest.expect.equality(mapping("n", " le").rhs, "<Cmd>LouiselmInline<CR>")
+  MiniTest.expect.equality(mapping("n", " lT").rhs, "<Cmd>LouiselmInspectTool<CR>")
+  MiniTest.expect.equality(mapping("n", " lB").rhs, "<Cmd>LouiselmInspectBead<CR>")
 end
 
 T["keymaps"]["can be disabled"] = function()

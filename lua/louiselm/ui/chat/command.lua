@@ -433,19 +433,6 @@ function M.register()
     force = true,
   })
 
-  nvim.api.nvim_create_autocmd("FileType", {
-    group = nvim.api.nvim_create_augroup("louiselm.chat.beads", { clear = true }),
-    pattern = "louiselm-session",
-    callback = function(event)
-      nvim.keymap.set("n", "<leader>lB", inspect_bead, {
-        buffer = event.buf,
-        silent = true,
-        desc = "Inspect Beads issue",
-      })
-    end,
-    desc = "Map Beads inspection in louiselm session buffers",
-  })
-
   nvim.api.nvim_create_user_command("LouiselmNewSession", function()
     if chat == nil then
       open_chat()
