@@ -623,11 +623,55 @@ T["chat"]["folds completed parallel tool runs when superseded"] = function()
     data = { content = { type = "text", text = "done" } },
   })
   nvim.wait(100, function()
-    return #buffer_lines(chat:buffer()) >= 10
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "done")
   end, 1)
 
-  MiniTest.expect.equality({ fold_range(6) }, { 6, 11 })
-  MiniTest.expect.equality({ fold_range(12) }, { -1, -1 })
+  -- Each toolCallId got two "tool_call_started" frames (a placeholder title,
+  -- then the real one): the second must update the same row rather than
+  -- append a duplicate, so completion still folds a clean 3-line run.
+  local lines = buffer_lines(chat:buffer())
+  MiniTest.expect.equality(lines[6], "[tool] tool-1: Read file 1 (completed)")
+  MiniTest.expect.equality(lines[7], "[tool] tool-2: Read file 2 (completed)")
+  MiniTest.expect.equality(lines[8], "[tool] tool-3: Read file 3 (completed)")
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
+  chat:dispose()
+end
+
+T["chat"]["coalesces repeated nonterminal tool_call_started frames into one row"] = function()
+  -- Live-shaped regression for louiselm-66qs: a long-running tool call emits
+  -- many nonterminal tool_call_update frames for the same toolCallId with no
+  -- title before the terminal completion. Each one used to append a fresh
+  -- row, leaving a stale "(started)" duplicate behind the completed line.
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "exec-1", title = "Run tests" },
+  })
+  for _ = 1, 17 do
+    first:emit({
+      type = "tool_call_started",
+      session_id = "session-1",
+      data = { toolCallId = "exec-1" },
+    })
+  end
+  first:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "exec-1", status = "completed" },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[tool] exec-1: Run tests (completed)")
+  end, 1)
+
+  local lines = buffer_lines(chat:buffer())
+  local tool_lines = nvim.tbl_filter(function(line)
+    return line:find("exec-1", 1, true) ~= nil
+  end, lines)
+  MiniTest.expect.equality(tool_lines, { "[tool] exec-1: Run tests (completed)" })
   chat:dispose()
 end
 

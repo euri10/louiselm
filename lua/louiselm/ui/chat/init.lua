@@ -2297,27 +2297,34 @@ local function handle_event(self, view, event)
     if title ~= nil then
       title = single_line(title)
     end
+    if title ~= nil then
+      view.tool_titles[id] = title
+    else
+      title = view.tool_titles[id]
+    end
     local completion_text
     if event.type == "tool_call_started" then
       view.tool_statuses[id] = status or "started"
-      if title ~= nil then
-        view.tool_titles[id] = title
-      end
       local detail = id
       if title ~= nil then
         detail = detail .. ": " .. title
       end
-      local lines = { "[tool] " .. detail .. " (started)" }
-      if view.last_block_kind == "prose" and not view.trailing_blank then
-        table.insert(lines, 1, "")
+      local line_text = "[tool] " .. detail .. " (started)"
+      local existing_line = view.tool_lines[id]
+      if existing_line ~= nil and existing_line < nvim.api.nvim_buf_line_count(view.buffer) then
+        set_line(view.buffer, existing_line, line_text)
+      else
+        local lines = { line_text }
+        if view.last_block_kind == "prose" and not view.trailing_blank then
+          table.insert(lines, 1, "")
+        end
+        insert_transcript(self, view, lines)
+        view.tool_lines[id] = view.transcript_tail
+        view.tool_ids[view.transcript_tail] = id
+        record_tool_line(view, view.transcript_tail)
       end
-      insert_transcript(self, view, lines)
-      view.tool_lines[id] = view.transcript_tail
-      view.tool_ids[view.transcript_tail] = id
-      record_tool_line(view, view.transcript_tail)
       view.last_block_kind = "tool"
     else
-      title = title or view.tool_titles[id]
       local detail = id
       if title ~= nil then
         detail = detail .. ": " .. title
