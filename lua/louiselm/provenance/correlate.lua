@@ -339,6 +339,65 @@ function M.issue_actors(issue)
   return edges, nil
 end
 
+---Build reverse edges for one Session from commit trailers and Beads actors.
+---This function performs no filesystem, process, or editor I/O.
+---@param session_id string Agent-scoped Session identity.
+---@param commits louiselm.provenance.Commit[] Collected git commits.
+---@param issues louiselm.provenance.BeadsIssue[] Collected Beads issues.
+---@return louiselm.provenance.Edge[]? edges Edges in source collection order.
+---@return louiselm.provenance.Error? error_value Malformed input, if any.
+function M.session(session_id, commits, issues)
+  local actor, actor_error = M.resolve_actor(session_id)
+  if actor == nil or actor.kind == "non_session" then
+    return nil,
+      make_error("invalid_session_id", actor_error and actor_error.message or "Session id must identify a Session")
+  end
+  if type(commits) ~= "table" then
+    return nil, make_error("invalid_commits", "commits must be an array")
+  end
+  if type(issues) ~= "table" then
+    return nil, make_error("invalid_issues", "issues must be an array")
+  end
+
+  local commit_edges, commit_error = M.commits(commits)
+  if commit_edges == nil then
+    return nil, commit_error
+  end
+  local edges = {}
+  for _, edge in ipairs(commit_edges) do
+    if edge.target.kind == "session" and edge.target.id == session_id then
+      edges[#edges + 1] = {
+        source = { kind = "session", id = session_id },
+        target = { kind = "commit", id = edge.source.id },
+        relation = "produced",
+        method = "recorded",
+        confidence = 1,
+      }
+    end
+  end
+
+  for index, issue in ipairs(issues) do
+    local issue_edges, issue_error = M.issue_actors(issue)
+    if issue_edges == nil then
+      return nil,
+        make_error("invalid_issues", issue_error and issue_error.message or "issue actors are malformed", index)
+    end
+    for _, edge in ipairs(issue_edges) do
+      if edge.target.kind == "session" and edge.target.id == session_id then
+        edges[#edges + 1] = {
+          source = { kind = "session", id = session_id },
+          target = { kind = "issue", id = edge.source.id },
+          relation = "worked_on",
+          method = "recorded",
+          confidence = 1,
+        }
+        break
+      end
+    end
+  end
+  return edges, nil
+end
+
 ---Merge issue actor edges without duplicating Session identities already found in trailers.
 ---@param existing louiselm.provenance.Edge[] Existing issue edges.
 ---@param additional louiselm.provenance.Edge[] Actor-derived issue edges.

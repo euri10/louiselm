@@ -148,6 +148,40 @@ T["issue history trailer edges are available for actor deduplication"] = functio
   })
 end
 
+T["Session edges reverse commits and issue actors"] = function()
+  local edges, error_value = Correlate.session("codex/session-1", {
+    { id = "commit-sha", message = "feat: work\n\nRefs codex/session-1\n" },
+    { id = "other-sha", message = "chore: other\n" },
+  }, {
+    { id = "louiselm-one", assignee = "codex/session-1", created_by = "assistant" },
+    { id = "louiselm-two", assignee = "", created_by = "lotso" },
+  })
+  assert(error_value == nil)
+  assert(edges ~= nil)
+  MiniTest.expect.equality(edges, {
+    {
+      source = { kind = "session", id = "codex/session-1" },
+      target = { kind = "commit", id = "commit-sha" },
+      relation = "produced",
+      method = "recorded",
+      confidence = 1,
+    },
+    {
+      source = { kind = "session", id = "codex/session-1" },
+      target = { kind = "issue", id = "louiselm-one" },
+      relation = "worked_on",
+      method = "recorded",
+      confidence = 1,
+    },
+  })
+end
+
+T["Session with no recorded work is empty"] = function()
+  local edges, error_value = Correlate.session("codex/session-1", {}, {})
+  assert(error_value == nil)
+  MiniTest.expect.equality(edges, {})
+end
+
 T["stale references remain data rather than becoming errors"] = function()
   local edges, error_value = Correlate.commits({
     { id = "deadbeef", message = "chore: old\n\nRefs louiselm-no-longer-exists\n" },

@@ -89,6 +89,16 @@ local function finish_br(calls, output)
   scheduled[1]()
 end
 
+local function finish_beads_issues(calls, output)
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  calls[2].on_exit({ code = 0, stdout = output, stderr = "" })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+end
+
 T["commit Provenance"] = MiniTest.new_set()
 
 T["commit Provenance"]["renders commit references and unresolved Sessions"] = function()
@@ -256,6 +266,71 @@ T["issue Provenance"]["renders an issue with no correlated commits"] = function(
     "",
     "Actors:",
     "- lotso (non-Session actor)",
+  })
+end
+
+T["Session Provenance"] = MiniTest.new_set()
+
+T["Session Provenance"]["renders reverse commit and issue edges"] = function()
+  local buffer = source_buffer("Session codex/session-1", 10)
+  local calls = fake_system()
+
+  assert(Provenance.inspect(buffer, { definitions = {} }))
+  MiniTest.expect.equality(calls[1].command, {
+    "git",
+    "log",
+    "--no-decorate",
+    "--no-color",
+    "--format=%H%x00%B%x00%x1e",
+    "--all",
+  })
+  finish(calls, "feat: work\n\nRefs codex/session-1\n")
+  MiniTest.expect.equality(calls[2].command, { "br", "list", "--status", "all", "--json" })
+  finish_beads_issues(
+    calls,
+    '{"issues":[{"id":"louiselm-kpod","assignee":"codex/session-1","created_by":"assistant"}]}'
+  )
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# Session codex/session-1",
+    "",
+    "ID: codex/session-1",
+    "",
+    "Transcript:",
+    "- unresolved (no transcript layout is configured)",
+    "",
+    "Commits:",
+    "- 0123456789abcdef0123456789abcdef01234567",
+    "",
+    "Issues:",
+    "- louiselm-kpod",
+  })
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
+    "louiselm://provenance/session/codex/session-1"
+  )
+end
+
+T["Session Provenance"]["renders empty sides for a Session with no work"] = function()
+  local buffer = source_buffer("codex/session-1", 5)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer, { definitions = {} }))
+  finish(calls, "chore: unrelated\n")
+  finish_beads_issues(calls, '{"issues":[]}')
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# Session codex/session-1",
+    "",
+    "ID: codex/session-1",
+    "",
+    "Transcript:",
+    "- unresolved (no transcript layout is configured)",
+    "",
+    "Commits:",
+    "- none recorded",
+    "",
+    "Issues:",
+    "- none recorded",
   })
 end
 

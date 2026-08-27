@@ -62,6 +62,32 @@ local function issue_id_at_cursor(line, column)
   return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
 end
 
+---@param value string
+---@return boolean
+local function valid_session_id(value)
+  local agent_name, session_id = value:match("^([^/%z%s]+)/([^/%z%s]+)$")
+  return agent_name ~= nil and agent_name ~= "." and agent_name ~= ".." and session_id ~= "." and session_id ~= ".."
+end
+
+---@param line string
+---@param column integer Zero-based byte column.
+---@return string? session_id
+local function session_id_at_cursor(line, column)
+  local matches = {}
+  for start_index, value in line:gmatch("()([^%s/]+/[^%s/]+)") do
+    value = value:gsub("[,;%.%)]+$", "")
+    if valid_session_id(value) then
+      matches[#matches + 1] = { start_index = start_index, value = value }
+    end
+  end
+  if #matches ~= 1 then
+    return nil
+  end
+  local match = matches[1]
+  local end_index = match.start_index + #match.value - 1
+  return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
+end
+
 ---@param buffer integer
 ---@return string? sha
 local function current_sha(buffer)
@@ -76,6 +102,14 @@ local function current_issue(buffer)
   local cursor = nvim.api.nvim_win_get_cursor(0)
   local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
   return type(line) == "string" and issue_id_at_cursor(line, cursor[2]) or nil
+end
+
+---@param buffer integer
+---@return string? session_id
+local function current_session(buffer)
+  local cursor = nvim.api.nvim_win_get_cursor(0)
+  local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
+  return type(line) == "string" and session_id_at_cursor(line, cursor[2]) or nil
 end
 
 ---@param options louiselm.ui.ProvenanceOptions
@@ -199,6 +233,47 @@ local function issue_lines(history, edges, options)
     end
   end
   if actor_count == 0 then
+    lines[#lines + 1] = "- none recorded"
+  end
+  return lines
+end
+
+---@param session_id string
+---@param edges louiselm.provenance.Edge[]
+---@param options louiselm.ui.ProvenanceOptions
+---@return string[] lines
+local function session_lines(session_id, edges, options)
+  local lines = { "# Session " .. session_id, "", "ID: " .. session_id, "", "Transcript:" }
+  local path, error_message = Locator.resolve(session_id, options.definitions or {}, options.locator_options)
+  if path ~= nil then
+    lines[#lines + 1] = "- " .. path
+  else
+    lines[#lines + 1] = "- unresolved (" .. (error_message or "unknown error") .. ")"
+  end
+
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Commits:"
+  local commit_count = 0
+  for _, edge in ipairs(edges) do
+    if edge.target.kind == "commit" then
+      commit_count = commit_count + 1
+      lines[#lines + 1] = "- " .. edge.target.id
+    end
+  end
+  if commit_count == 0 then
+    lines[#lines + 1] = "- none recorded"
+  end
+
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Issues:"
+  local issue_count = 0
+  for _, edge in ipairs(edges) do
+    if edge.target.kind == "issue" then
+      issue_count = issue_count + 1
+      lines[#lines + 1] = "- " .. edge.target.id
+    end
+  end
+  if issue_count == 0 then
     lines[#lines + 1] = "- none recorded"
   end
   return lines
@@ -338,7 +413,52 @@ local function show_issue(issue_id, options)
   return true
 end
 
----Inspect the commit SHA or Beads issue under the cursor or prompt for one.
+---@param session_id string
+---@param options louiselm.ui.ProvenanceOptions
+---@return boolean started
+---@return string? error_message
+local function show_session(session_id, options)
+  local started, start_error = Sources.git_log(options.cwd or nvim.fn.getcwd(), "--all", function(commits, source_error)
+    if options.is_active ~= nil and not options.is_active() then
+      return
+    end
+    if commits == nil or source_error ~= nil then
+      report_error(options, "could not read commit history")
+      return
+    end
+    local issues_started, issues_error = Sources.beads_issues(
+      options.cwd or nvim.fn.getcwd(),
+      function(issues, issue_source_error)
+        if options.is_active ~= nil and not options.is_active() then
+          return
+        end
+        if issues == nil or issue_source_error ~= nil then
+          report_error(options, "could not read Beads issues")
+          return
+        end
+        local edges, correlate_error = Correlate.session(session_id, commits, issues)
+        if edges == nil or correlate_error ~= nil then
+          report_error(options, "could not correlate Session " .. session_id)
+          return
+        end
+        local opened, open_error =
+          open_provenance("louiselm://provenance/session/" .. session_id, session_lines(session_id, edges, options))
+        if not opened then
+          report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+        end
+      end
+    )
+    if not issues_started then
+      report_error(options, issues_error and issues_error.message or "could not start br")
+    end
+  end)
+  if not started then
+    return false, start_error and start_error.message or "could not start git"
+  end
+  return true
+end
+
+---Inspect the commit SHA, Beads issue, or Session under the cursor or prompt for one.
 ---@param buffer integer Source buffer.
 ---@param options? louiselm.ui.ProvenanceOptions Lookup and lifecycle callbacks.
 ---@return boolean started Whether a lookup started or an SHA prompt was opened.
@@ -364,17 +484,28 @@ function M.inspect(buffer, options)
   if sha ~= nil then
     return show_commit(sha, options)
   end
+  local session_id = current_session(buffer)
+  if session_id ~= nil then
+    return show_session(session_id, options)
+  end
   local issue_id = current_issue(buffer)
   if issue_id ~= nil then
     return show_issue(issue_id, options)
   end
-  nvim.ui.input({ prompt = "Commit SHA or Beads issue id: " }, function(value)
+  nvim.ui.input({ prompt = "Commit SHA, Beads issue id, or Session id: " }, function(value)
     if value == nil or (options.is_active ~= nil and not options.is_active()) then
       return
     end
     local prompted_sha = nvim.trim(value)
     if valid_sha(prompted_sha) then
       local _, lookup_error = show_commit(prompted_sha, options)
+      if lookup_error ~= nil then
+        report_error(options, lookup_error)
+      end
+      return
+    end
+    if valid_session_id(prompted_sha) then
+      local _, lookup_error = show_session(prompted_sha, options)
       if lookup_error ~= nil then
         report_error(options, lookup_error)
       end

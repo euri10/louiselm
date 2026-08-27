@@ -137,6 +137,7 @@ T["bvr history"]["parses issue milestones and correlation metadata"] = function(
 end
 
 T["beads issue"] = MiniTest.new_set()
+T["beads issues"] = MiniTest.new_set()
 
 T["beads issue"]["parses actor fields from br"] = function()
   local issue, error_value = Sources.parse_beads_issue(
@@ -182,6 +183,44 @@ T["beads issue"]["uses br with an argument array and schedules completion"] = fu
     runtime.scheduled[1]()
     MiniTest.expect.equality(completed.error_value, nil)
     MiniTest.expect.equality(completed.issue.created_by, "lotso")
+  end)
+  runtime.restore()
+  assert(ok, error_message)
+end
+
+T["beads issues"]["parses actor fields from the br list response"] = function()
+  local issues, error_value = Sources.parse_beads_issues(
+    '{"issues":[{"id":"louiselm-one","assignee":"codex/session-1","created_by":"assistant"},{"id":"louiselm-two","assignee":"","created_by":"lotso"}]} '
+  )
+  assert(error_value == nil)
+  MiniTest.expect.equality(issues, {
+    { id = "louiselm-one", assignee = "codex/session-1", created_by = "assistant" },
+    { id = "louiselm-two", assignee = "", created_by = "lotso" },
+  })
+end
+
+T["beads issues"]["uses br list with an argument array and schedules completion"] = function()
+  local runtime = fake_runtime()
+  local ok, error_message = pcall(function()
+    local completed
+    local started, start_error = Sources.beads_issues("/repo", function(issues, callback_error)
+      completed = { issues = issues, error_value = callback_error }
+    end)
+    MiniTest.expect.equality(started, true)
+    MiniTest.expect.equality(start_error, nil)
+    MiniTest.expect.equality(runtime.processes[1].command, { "br", "list", "--status", "all", "--json" })
+    MiniTest.expect.equality(runtime.processes[1].options.cwd, "/repo")
+
+    runtime.processes[1].callback({
+      code = 0,
+      stdout = '{"issues":[{"id":"louiselm-one","assignee":"","created_by":"lotso"}]}',
+      stderr = "",
+    })
+    MiniTest.expect.equality(completed, nil)
+    MiniTest.expect.equality(#runtime.scheduled, 1)
+    runtime.scheduled[1]()
+    MiniTest.expect.equality(completed.error_value, nil)
+    MiniTest.expect.equality(completed.issues[1].created_by, "lotso")
   end)
   runtime.restore()
   assert(ok, error_message)
