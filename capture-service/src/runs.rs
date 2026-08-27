@@ -104,6 +104,8 @@ pub struct RunDraft {
 pub struct Run {
     /// Storage schema version.
     pub schema_version: u8,
+    /// Monotonic durable revision used by invalidation clients.
+    pub revision: u64,
     /// Run UUID.
     pub id: String,
     /// Session identity used to form a truthful reaper actor.
@@ -124,10 +126,27 @@ pub struct Run {
     pub parked_at_ms: Option<u64>,
     /// Cold-Park expiry.
     pub park_expires_at_ms: u64,
+    /// Mutation refused when generated-work exhaustion triggered this Park.
+    pub triggering_mutation_id: Option<String>,
     /// Run-wide generated-work accounting.
     pub generated_work: GeneratedWorkBudget,
     generate_token_sha256: String,
     cleanup: Vec<CleanupEntry>,
+}
+
+/// Non-sensitive authoritative Run projection for local observers.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RunView {
+    pub id: String,
+    pub revision: u64,
+    pub state: String,
+    pub session_id: Option<String>,
+    pub generated_work_ceiling: u64,
+    pub generated_work_consumed: u64,
+    pub generated_work_reserved: u64,
+    pub pending_mutation_ids: Vec<String>,
+    pub triggering_mutation_id: Option<String>,
+    pub park_expires_at_ms: u64,
 }
 
 impl Run {
@@ -263,7 +282,8 @@ impl RunStore {
         self.locked(|| {
             let path = self.path(&admission.id);
             let run = Run {
-                schema_version: 3,
+                schema_version: 4,
+                revision: 1,
                 id: admission.id,
                 session_id: None,
                 agent: None,
@@ -274,6 +294,7 @@ impl RunStore {
                 park_ttl_ms: admission.park_ttl_ms,
                 parked_at_ms: None,
                 park_expires_at_ms: 0,
+                triggering_mutation_id: None,
                 generated_work: GeneratedWorkBudget {
                     ceiling: admission.generated_work_ceiling,
                     consumed: 0,
@@ -321,6 +342,7 @@ impl RunStore {
             run.working_dir = Some(session.working_dir);
             run.load_session = Some(session.load_session);
             run.state = "active".to_owned();
+            advance_revision(&mut run)?;
             write_atomic(&self.path(&run.id), &run)
         })
     }
@@ -374,6 +396,8 @@ impl RunStore {
                 run.park_expires_at_ms = now_ms.checked_add(run.park_ttl_ms).ok_or_else(|| {
                     RunStoreError::Invalid("Park expiry overflows epoch milliseconds".to_owned())
                 })?;
+                run.triggering_mutation_id = Some(reservation.mutation_id);
+                advance_revision(&mut run)?;
                 write_atomic(&self.path(&run.id), &run)?;
                 return Ok(ReserveResult::Exhausted);
             }
@@ -389,6 +413,7 @@ impl RunStore {
                 kind: reservation.kind,
                 units: reservation.units,
             });
+            advance_revision(&mut run)?;
             write_atomic(&self.path(&run.id), &run)?;
             Ok(ReserveResult::Reserved)
         })
@@ -437,6 +462,7 @@ impl RunStore {
                 kind: pending.kind,
                 external_id: issue_id.to_owned(),
             });
+            advance_revision(&mut run)?;
             write_atomic(&self.path(run_id), &run)
         })
     }
@@ -463,6 +489,7 @@ impl RunStore {
             };
             let pending = run.generated_work.pending.remove(index);
             run.generated_work.reserved -= pending.units;
+            advance_revision(&mut run)?;
             write_atomic(&self.path(run_id), &run)
         })
     }
@@ -528,6 +555,7 @@ impl RunStore {
                 .checked_add(run.park_ttl_ms)
                 .ok_or_else(|| RunStoreError::Invalid("Park expiry overflowed".to_owned()))?;
             run.cleanup = cleanup;
+            advance_revision(&mut run)?;
             write_atomic(&self.path(&run.id), &run)
         })
     }
@@ -540,7 +568,8 @@ impl RunStore {
             return Err(RunStoreError::Invalid("Run was not found".to_owned()));
         }
         let run: Run = serde_json::from_reader(BufReader::new(File::open(path)?))?;
-        if run.schema_version != 3
+        if run.schema_version != 4
+            || run.revision == 0
             || run.id != id
             || run.generated_work.ceiling == 0
             || run.park_ttl_ms == 0
@@ -548,6 +577,45 @@ impl RunStore {
             return Err(RunStoreError::Invalid("stored Run is invalid".to_owned()));
         }
         Ok(run)
+    }
+
+    /// Return every durable Run through a non-sensitive observer projection.
+    pub fn snapshot(&self) -> Result<Vec<RunView>, RunStoreError> {
+        let mut views = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let Some(id) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_suffix(".json"))
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if validate_id(&id).is_err() {
+                continue;
+            }
+            let run = self.run(&id)?;
+            views.push(RunView {
+                id: run.id,
+                revision: run.revision,
+                state: run.state,
+                session_id: run.session_id,
+                generated_work_ceiling: run.generated_work.ceiling,
+                generated_work_consumed: run.generated_work.consumed,
+                generated_work_reserved: run.generated_work.reserved,
+                pending_mutation_ids: run
+                    .generated_work
+                    .pending
+                    .into_iter()
+                    .map(|pending| pending.mutation_id)
+                    .collect(),
+                triggering_mutation_id: run.triggering_mutation_id,
+                park_expires_at_ms: run.park_expires_at_ms,
+            });
+        }
+        views.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(views)
     }
 
     /// List unexpired cold-Parked Runs without exposing cleanup journals.
@@ -634,9 +702,11 @@ impl RunStore {
                 };
                 cleanup(&action).map_err(RunStoreError::Cleanup)?;
                 run.cleanup[index].completed = true;
+                advance_revision(&mut run)?;
                 write_atomic(&self.path(&id), &run)?;
             }
             run.state = "disposed".to_owned();
+            advance_revision(&mut run)?;
             write_atomic(&self.path(&id), &run)?;
             reaped += 1;
         }
@@ -664,6 +734,14 @@ impl RunStore {
         FileExt::unlock(&lock)?;
         result
     }
+}
+
+fn advance_revision(run: &mut Run) -> Result<(), RunStoreError> {
+    run.revision = run
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| RunStoreError::Invalid("Run revision overflowed".to_owned()))?;
+    Ok(())
 }
 
 fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {

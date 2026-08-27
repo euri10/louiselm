@@ -22,8 +22,8 @@ use crate::{
     BeadsCleanup, BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState,
     GenerateRequest, GenerationError, IdentityError, NetworkProfile, NetworkProfileError,
     NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry, Receiver, RunAdmission,
-    RunDraft, RunSession, RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript,
-    TranscriptionWorker,
+    RunDraft, RunSession, RunSocket, RunSocketError, RunStore, RunStoreError, Store, StoreError,
+    TlsIdentity, Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -44,6 +44,9 @@ pub enum CliError {
     /// Durable Run-store operation failed.
     #[error(transparent)]
     Run(#[from] RunStoreError),
+    /// Local Run observation socket failed.
+    #[error(transparent)]
+    RunSocket(#[from] RunSocketError),
     /// Generated-work broker failed.
     #[error(transparent)]
     Generation(#[from] GenerationError),
@@ -424,6 +427,7 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         paths.uploads(),
         identity.public_key_sha256(),
     )?;
+    let run_socket = RunSocket::bind(paths.run_socket(), RunStore::new(paths.runs())?).await?;
     if let Some(workspace) =
         env::var_os("LOUISELM_BEADS_WORKSPACE").filter(|value| !value.is_empty())
     {
@@ -449,9 +453,12 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         identity.private_key_path(),
     )
     .await?;
-    axum_server::bind_rustls(bind, tls)
-        .serve(receiver.router().into_make_service())
-        .await?;
+    let network_server =
+        axum_server::bind_rustls(bind, tls).serve(receiver.router().into_make_service());
+    tokio::select! {
+        result = run_socket.serve() => result?,
+        result = network_server => result?,
+    }
     Ok(())
 }
 
@@ -560,6 +567,10 @@ impl Paths {
 
     fn runs(&self) -> PathBuf {
         self.state.join("louiselm/workflow/runs")
+    }
+
+    fn run_socket(&self) -> PathBuf {
+        self.state.join("louiselm/workflow/run.sock")
     }
 }
 
