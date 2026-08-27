@@ -82,6 +82,31 @@ T["cancellation"] = MiniTest.new_set()
 
 T["durable Park"] = MiniTest.new_set()
 
+T["durable Park"]["accepts a service Park without persisting it again"] = function()
+  local persisted = 0
+  local session = worker("prompting")
+  local run = assert(Workflow.new_run({
+    park_record = {
+      id = "already-durable",
+      session_id = "codex/session",
+      agent = "codex",
+      acp_session_id = "session",
+      cwd = "/tmp/project",
+      load_session = true,
+      claims = { "issue" },
+    },
+    park_service = function()
+      persisted = persisted + 1
+      return true
+    end,
+  }))
+  assert(run:adopt_session(session))
+  assert(run:accept_park())
+  MiniTest.expect.equality(run.status, "parked")
+  MiniTest.expect.equality(session.cancelled, 1)
+  MiniTest.expect.equality(persisted, 0)
+end
+
 T["durable Park"]["derives cold resume metadata from the owned Session"] = function()
   local captured
   local session = worker("ready")

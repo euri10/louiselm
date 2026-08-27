@@ -29,6 +29,7 @@ local nvim = vim
 ---@field status "active"|"cancelling"|"cancelled"|"parked"|"disposed"
 ---@field cancel fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
 ---@field park fun(self: louiselm.workflow.Run, callback?: fun(ok: boolean, error_message?: string)): boolean, string?
+---@field accept_park fun(self: louiselm.workflow.Run): boolean, string?
 ---@field create_session fun(self: louiselm.workflow.Run, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
@@ -55,6 +56,16 @@ end
 local function acknowledged(worker)
   local state = worker.inspect(worker)
   return state.status ~= "prompting" and state.status ~= "waiting_permission" and state.status ~= "cancelling"
+end
+
+---@param self louiselm.workflow.Run
+local function transition_parked(self)
+  self.status = "parked"
+  for _, worker in ipairs(self.workers) do
+    if not acknowledged(worker) then
+      worker:cancel()
+    end
+  end
 end
 
 ---@param worker louiselm.workflow.RunWorker
@@ -252,12 +263,7 @@ function Run:park(callback)
       end
       return
     end
-    self.status = "parked"
-    for _, worker in ipairs(self.workers) do
-      if not acknowledged(worker) then
-        worker:cancel()
-      end
-    end
+    transition_parked(self)
     if callback ~= nil then
       callback(true)
     end
@@ -270,6 +276,21 @@ function Run:park(callback)
     return true
   end
   complete(true)
+  return true
+end
+
+---Accept an already-durable service-originated Park without persisting it again.
+---@param self louiselm.workflow.Run
+---@return boolean parked
+---@return string? error_message
+function Run:accept_park()
+  if self.status == "disposed" then
+    return false, "Run is disposed"
+  end
+  if self.status == "parked" then
+    return true
+  end
+  transition_parked(self)
   return true
 end
 
