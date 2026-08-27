@@ -930,6 +930,99 @@ T["chat"]["folds each reasoning paragraph separately around tool calls"] = funct
   chat:dispose()
 end
 
+T["chat"]["coalesces a four-chunk post-tool reasoning run into one header"] = function()
+  -- Characterization test for louiselm-6ze7. The filed defect rendered one
+  -- `[thinking]` header per reasoning chunk after a completed tool call, and
+  -- fragmented the following answer one word per line. It no longer reproduces,
+  -- and no code change was ever made against it, so this test does not fail
+  -- first -- it pins the wire shape that provoked it so a silent return is
+  -- caught.
+  --
+  -- Shape captured from codex/01a04106-62aa-71e1-a127-82a02a8be68f: two thought
+  -- chunks before any tool, a completed tool call, two more, a second completed
+  -- tool call, then a run of four adjacent thought chunks whose text lengths
+  -- alternate 2/43/2/40 -- the 2-length frames are bold markers split across
+  -- frames, which is what made each chunk look like a paragraph of its own.
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  local function thought(text)
+    first:emit({
+      type = "thought_chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = text } },
+    })
+  end
+
+  local function tool(id)
+    first:emit({
+      type = "tool_call_started",
+      session_id = "session-1",
+      data = { toolCallId = id, title = "Read file" },
+    })
+    first:emit({
+      type = "tool_call_finished",
+      session_id = "session-1",
+      data = { toolCallId = id, status = "completed" },
+    })
+  end
+
+  chat:submit("which rule is easiest to violate")
+  thought("**")
+  thought("Reading the contract before deciding")
+  tool("tool-1")
+  thought("**")
+  thought("Checking which rules an agent skips")
+  tool("tool-2")
+  -- The run that produced four headers in the filed report.
+  thought("**")
+  thought("Weighing the claim rule against the two rejected")
+  thought("**")
+  thought("Settling on the one that fails silently")
+  -- The answer arrived as many small chunks; the report showed them one per line.
+  for _, fragment in ipairs({ "The ", "claim ", "rule ", "is ", "the ", "one." }) do
+    first:emit({
+      type = "chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = fragment } },
+    })
+  end
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "The claim rule is the one.")
+  end, 1)
+
+  local lines = buffer_lines(chat:buffer())
+  local headers = {}
+  for index, line in ipairs(lines) do
+    if line == "[thinking]" then
+      headers[#headers + 1] = index
+    end
+  end
+  -- Three reasoning paragraphs, not one header per chunk: the defect rendered
+  -- four headers for the final run alone.
+  MiniTest.expect.equality(#headers, 3)
+
+  local last = headers[3]
+  MiniTest.expect.equality(
+    lines[last + 1],
+    "**Weighing the claim rule against the two rejected**Settling on the one that fails silently"
+  )
+
+  -- The answer is one unfragmented line, with no blank lines interleaved
+  -- between its fragments.
+  local answer
+  for index, line in ipairs(lines) do
+    if line == "The claim rule is the one." then
+      answer = index
+      break
+    end
+  end
+  MiniTest.expect.equality(answer ~= nil, true)
+  MiniTest.expect.equality(lines[answer + 1] == nil or lines[answer + 1] == "", true)
+  chat:dispose()
+end
+
 T["chat"]["inspects finished and active tool payloads from their lines"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
