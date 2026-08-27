@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
+local Staged = require("louiselm.ui.staged")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.routing")
 
@@ -191,6 +192,10 @@ local original_schedule = nvim.schedule
 local original_select = nvim.ui.select
 local original_input = nvim.ui.input
 
+local function staged_path()
+  return nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "staged.json")
+end
+
 T["chat"] = MiniTest.new_set({
   hooks = {
     post_case = function()
@@ -198,6 +203,7 @@ T["chat"] = MiniTest.new_set({
       rawset(nvim, "schedule", original_schedule)
       nvim.ui.select = original_select
       nvim.ui.input = original_input
+      nvim.fn.delete(staged_path())
       nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_is_valid(buffer) and nvim.api.nvim_buf_get_name(buffer):match("^louiselm://") then
@@ -624,6 +630,31 @@ T["chat"]["lists and confirms revocation of remembered permission rules"] = func
     notification,
     { message = "louiselm: revoked permission rule-1", level = nvim.log.levels.INFO }
   )
+  chat:dispose()
+end
+
+T["chat"]["records the latest Forensics path per session, defaulting the viewer"] = function()
+  local session = fake_session("session-1", "claude")
+  session.state.acp_session_id = "session-1-acp"
+  local api = fake_api()
+  api.collect_forensics = function(_, _, _, _, callback)
+    callback("/tmp/forensics-record.json", nil)
+    return true
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(session))
+
+  local before, before_error = chat:latest_forensics_path()
+  MiniTest.expect.equality(before, nil)
+  MiniTest.expect.equality(before_error, "no Forensics record has been collected for this session yet")
+
+  assert(chat:collect_forensics())
+  nvim.wait(100, function()
+    return chat:latest_forensics_path() ~= nil
+  end, 10)
+
+  MiniTest.expect.equality(chat:latest_forensics_path(), "/tmp/forensics-record.json")
+
   chat:dispose()
 end
 
@@ -4662,6 +4693,69 @@ T["chat"]["reports Staged context by attached Session"] = function()
 
   MiniTest.expect.equality(staged[first], { contexts = 2, pending_skill = true, queued_prompt = false })
   MiniTest.expect.equality(staged[second], { contexts = 0, pending_skill = false, queued_prompt = true })
+  chat:dispose()
+end
+
+T["chat"]["restores persisted Staged context when loading a recoverable Session"] = function()
+  local skill_path = nvim.fs.joinpath(nvim.fn.tempname(), "review", "SKILL.md")
+  assert(nvim.fn.mkdir(nvim.fs.dirname(skill_path), "p") == 1)
+  assert(nvim.fn.writefile({ "review skill" }, skill_path) == 0)
+  local store = assert(Staged.new(staged_path()))
+  assert(store:save("acp-1", {
+    contexts = { { label = "context", text = "context text" } },
+    pending_skill = {
+      name = "review",
+      description = "Review",
+      path = skill_path,
+      explicit_only = false,
+    },
+    queued_prompt = { text = "" },
+  }))
+  local session = fake_session("session-1", "claude")
+  session.state.source = "loaded"
+  session.state.status = "starting"
+  session.state.acp_session_id = "acp-1"
+  session.state.skills_policy = "native"
+  session.state.commands = { { name = "review", description = "Review" } }
+  session.client = { agent_capabilities = { loadSession = true } }
+  local chat = assert(Chat.new(fake_api()))
+
+  assert(chat:attach(session))
+  session.state.status = "ready"
+  session:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
+
+  MiniTest.expect.equality(session.prompts, {
+    {
+      { type = "text", text = "context text" },
+      { type = "text", text = "/review" },
+    },
+  })
+  chat:dispose()
+  nvim.fn.delete(nvim.fn.fnamemodify(skill_path, ":h:h"), "rf")
+end
+
+T["chat"]["drops persisted Staged context whose skill path no longer resolves"] = function()
+  local store = assert(Staged.new(staged_path()))
+  assert(store:save("acp-1", {
+    contexts = { { label = "stale skill", skill_path = "/does/not/exist/SKILL.md" } },
+  }))
+  local session = fake_session("session-1", "claude")
+  session.state.source = "loaded"
+  session.state.acp_session_id = "acp-1"
+  session.client = { agent_capabilities = { loadSession = true } }
+  local original_notify = nvim.notify
+  local notification
+  rawset(nvim, "notify", function(message, level)
+    notification = { message = message, level = level }
+  end)
+  local chat = assert(Chat.new(fake_api()))
+
+  assert(chat:attach(session))
+  assert(chat:submit("answer"))
+
+  MiniTest.expect.equality(session.prompts, { "answer" })
+  MiniTest.expect.equality(notification.message:find("discarded stale skill", 1, true) ~= nil, true)
+  rawset(nvim, "notify", original_notify)
   chat:dispose()
 end
 

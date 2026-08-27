@@ -527,8 +527,16 @@ function M.register()
   nvim.api.nvim_create_user_command("LouiselmForensicsView", function(arguments)
     local path = arguments.args
     if path == "" then
-      report_error("Forensics record path is required")
-      return
+      if chat == nil then
+        report_error("no chat session is open")
+        return
+      end
+      local latest, latest_error = chat:latest_forensics_path()
+      if latest == nil then
+        report_error(latest_error)
+        return
+      end
+      path = latest
     end
     local lines = nvim.fn.readfile(path)
     if #lines == 0 then
@@ -544,7 +552,7 @@ function M.register()
     nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
     nvim.bo[buffer].modifiable = false
     nvim.api.nvim_set_current_buf(buffer)
-  end, { nargs = 1, desc = "View a Forensics record", complete = "file", force = true })
+  end, { nargs = "?", desc = "View a Forensics record", complete = "file", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmToMarkdown", function(arguments)
     if chat == nil then

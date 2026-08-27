@@ -108,7 +108,7 @@ Commands                                                      *louiselm-commands
 
 :LouiselmForensicsView                                        *:LouiselmForensicsView*
     View a Forensics record
-    Arguments: one required
+    Arguments: optional
 
 :LouiselmHandOff                                              *:LouiselmHandOff*
     Hand the current session's reviewed transcript off to another agent

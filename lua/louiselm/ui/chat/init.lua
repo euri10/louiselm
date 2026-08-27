@@ -64,6 +64,7 @@ local WorkflowService = require("louiselm.workflow.service")
 ---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
+---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
 
 ---@class louiselm.ui.QueuedPrompt
 ---@field text string User-authored prompt text without visible context markers.
@@ -118,6 +119,7 @@ local WorkflowService = require("louiselm.workflow.service")
 ---@field rename_session fun(self: louiselm.ui.Chat, name: string): boolean, string? Rename the current session.
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
 ---@field collect_forensics fun(self: louiselm.ui.Chat, callback?: fun(path: string?, error_message?: string)): boolean, string? Collect and queue a Forensics resource link.
+---@field latest_forensics_path fun(self: louiselm.ui.Chat): string?, string? Return the most recently collected Forensics record path for the current session.
 ---@field to_markdown fun(self: louiselm.ui.Chat, session_id?: string, path?: string): string?, string? Export a session's full transcript to a markdown file.
 ---@field open_handoff fun(self: louiselm.ui.Chat, target_session: louiselm.session.Session, source_session_id?: string): integer?, string? Open an editable transcript for a target session.
 ---@field submit_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Submit and close a handoff buffer.
@@ -2718,6 +2720,7 @@ function Chat:attach(session)
     restored_usage = restored_usage,
     transcript = Transcript.new(),
     unsubscribe = function() end,
+    last_forensics_path = nil,
   }
   mark_prompt(view, view.prompt_line)
   nvim.api.nvim_buf_attach(buffer, false, {
@@ -3206,6 +3209,7 @@ function Chat:collect_forensics(callback)
           return
         end
         if path ~= nil then
+          view.last_forensics_path = path
           queue_context(self, view, { label = "forensics: " .. path, uri = "file://" .. path })
         end
         if callback ~= nil then
@@ -3215,6 +3219,24 @@ function Chat:collect_forensics(callback)
     end
   )
   return started, start_error
+end
+
+---Return the most recently collected Forensics record path for the current session.
+---@param self louiselm.ui.Chat
+---@return string? path
+---@return string? error_message
+function Chat:latest_forensics_path()
+  if self.disposed then
+    return nil, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return nil, "no chat session is open"
+  end
+  if view.last_forensics_path == nil then
+    return nil, "no Forensics record has been collected for this session yet"
+  end
+  return view.last_forensics_path, nil
 end
 
 ---@param state louiselm.session.State
