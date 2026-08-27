@@ -433,7 +433,7 @@ function M.register()
     force = true,
   })
 
-  nvim.api.nvim_create_user_command("LouiselmNewSession", function()
+  nvim.api.nvim_create_user_command("LouiselmSessionNew", function()
     if chat == nil then
       open_chat()
       return
@@ -460,7 +460,7 @@ function M.register()
     report_error(resume_error)
   end, { desc = "Resume a durable cold-Parked Run", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmSwitchSession", function()
+  nvim.api.nvim_create_user_command("LouiselmSessionSwitch", function()
     if chat == nil then
       report_error("no chat session is open")
       return
@@ -478,7 +478,7 @@ function M.register()
     report_error(hand_off_error)
   end, { desc = "Hand the current session's reviewed transcript off to another agent", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmRenameSession", function()
+  nvim.api.nvim_create_user_command("LouiselmSessionRename", function()
     if chat == nil then
       report_error("no chat session is open")
       return
@@ -597,7 +597,7 @@ function M.register()
     report_error(inspect_error)
   end, { desc = "Inspect the raw payload under the cursor", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmCloseSession", function()
+  nvim.api.nvim_create_user_command("LouiselmSessionClose", function()
     if chat == nil then
       report_error("no chat session is open")
       return

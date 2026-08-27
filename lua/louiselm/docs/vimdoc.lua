@@ -163,7 +163,7 @@ function M.generate(schema, commands)
   }
   emit_overview(lines)
   emit_section(lines, "Sessions", "louiselm-sessions", {
-    "A Session is bound to one Agent for its lifetime. Use :LouiselmNewSession to start another Session without stopping the current one, and :LouiselmSwitchSession to focus an attached Session.",
+    "A Session is bound to one Agent for its lifetime. Use :LouiselmSessionNew to start another Session without stopping the current one, and :LouiselmSessionSwitch to focus an attached Session.",
     "A Handoff creates a Session with another Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
   })
   emit_section(lines, "Workflow", "louiselm-workflow", {

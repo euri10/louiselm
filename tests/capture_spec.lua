@@ -168,7 +168,7 @@ T["commands"]["register exposes capture workflow commands"] = function()
   local commands = nvim.api.nvim_get_commands({ builtin = false })
 
   MiniTest.expect.equality(commands.LouiselmCapture ~= nil, true)
-  MiniTest.expect.equality(commands.LouiselmInbox ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmCaptureInbox ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCaptureSetup ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCapturePair ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmCaptureRevoke ~= nil, true)
@@ -181,7 +181,7 @@ T["commands"]["opens inbox when a capture transcript is null"] = function()
   local ok, error_message = pcall(function()
     assert(CaptureCommand.configure({ capture = { service = { "test-capture-service" } } }))
     assert(CaptureCommand.register())
-    nvim.cmd("LouiselmInbox")
+    nvim.cmd("LouiselmCaptureInbox")
     runtime.processes[1].callback({
       code = 0,
       signal = 0,

@@ -24,7 +24,12 @@ T["keymaps"] = MiniTest.new_set({
       Keymaps.configure({ keymaps = false })
       for _, lhs in ipairs({
         "<leader>lc",
-        "<leader>ln",
+        "<leader>lsn",
+        "<leader>lsw",
+        "<leader>lsr",
+        "<leader>lsx",
+        "<leader>lsi",
+        "<leader>lso",
         "<leader>ls",
         "<leader>le",
         "<leader>lT",
@@ -48,6 +53,7 @@ T["keymaps"]["installs defaults"] = function()
   Keymaps.configure({})
 
   MiniTest.expect.equality(mapping("n", " lc").rhs, "<Cmd>LouiselmChat<CR>")
+  MiniTest.expect.equality(mapping("n", " lsn").rhs, "<Cmd>LouiselmSessionNew<CR>")
   MiniTest.expect.equality(mapping("x", " ls").rhs, "<Cmd>LouiselmSendSelection<CR>")
   MiniTest.expect.equality(mapping("n", " le").rhs, "<Cmd>LouiselmInline<CR>")
   MiniTest.expect.equality(mapping("n", " lT").rhs, "<Cmd>LouiselmInspectTool<CR>")

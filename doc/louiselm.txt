@@ -21,9 +21,9 @@ Overview                                                      *louiselm*
 ==============================================================================
 Sessions                                                      *louiselm-sessions*
 
-  A Session is bound to one Agent for its lifetime. Use :LouiselmNewSession to
+  A Session is bound to one Agent for its lifetime. Use :LouiselmSessionNew to
   start another Session without stopping the current one, and
-  :LouiselmSwitchSession to focus an attached Session.
+  :LouiselmSessionSwitch to focus an attached Session.
 
   A Handoff creates a Session with another Agent after you fill in its
   takeover task and review the compacted source transcript. The source Session
@@ -70,6 +70,10 @@ Commands                                                      *louiselm-commands
     Start or stop a durable speech capture
     Arguments: none
 
+:LouiselmCaptureInbox                                         *:LouiselmCaptureInbox*
+    Inspect durable captures and transcripts
+    Arguments: none
+
 :LouiselmCapturePair                                          *:LouiselmCapturePair*
     Create a one-time Android pairing QR
     Arguments: none
@@ -94,10 +98,6 @@ Commands                                                      *louiselm-commands
     Open the louiselm chat buffer
     Arguments: none
 
-:LouiselmCloseSession                                         *:LouiselmCloseSession*
-    Close the current louiselm session
-    Arguments: none
-
 :LouiselmDiagnostics                                          *:LouiselmDiagnostics*
     Queue the source buffer's diagnostics as louiselm context
     Arguments: none
@@ -112,10 +112,6 @@ Commands                                                      *louiselm-commands
 
 :LouiselmHandOff                                              *:LouiselmHandOff*
     Hand the current session's reviewed transcript off to another agent
-    Arguments: none
-
-:LouiselmInbox                                                *:LouiselmInbox*
-    Inspect durable captures and transcripts
     Arguments: none
 
 :LouiselmInline                                               *:LouiselmInline*
@@ -140,10 +136,6 @@ Commands                                                      *louiselm-commands
 
 :LouiselmMentionBuffer                                        *:LouiselmMentionBuffer*
     Queue the source buffer as louiselm context
-    Arguments: none
-
-:LouiselmNewSession                                           *:LouiselmNewSession*
-    Create a separate louiselm session
     Arguments: none
 
 :LouiselmPermissions                                          *:LouiselmPermissions*
@@ -174,15 +166,27 @@ Commands                                                      *louiselm-commands
     Queue the visual selection as louiselm context
     Arguments: none
 
+:LouiselmSessionClose                                         *:LouiselmSessionClose*
+    Close the current louiselm session
+    Arguments: none
+
 :LouiselmSessionId                                            *:LouiselmSessionId*
     Copy the current agent-scoped ACP session id
+    Arguments: none
+
+:LouiselmSessionNew                                           *:LouiselmSessionNew*
+    Create a separate louiselm session
     Arguments: none
 
 :LouiselmSessionOptions                                       *:LouiselmSessionOptions*
     Configure the current idle louiselm session
     Arguments: none
 
-:LouiselmSwitchSession                                        *:LouiselmSwitchSession*
+:LouiselmSessionRename                                        *:LouiselmSessionRename*
+    Rename the current louiselm session
+    Arguments: none
+
+:LouiselmSessionSwitch                                        *:LouiselmSessionSwitch*
     Switch between louiselm sessions
     Arguments: none
 

@@ -51,7 +51,7 @@ the manual WorkManager retry path.
   capture remains queued.
 - Start recording, background the app, and confirm `onStop` saves the capture.
 - Pair from `:LouiselmCapturePair`, then inspect the same UUID in
-  `:LouiselmInbox`.
+  `:LouiselmCaptureInbox`.
 - Interrupt an upload, reconnect, and confirm the receiver contains one capture
   with that UUID rather than duplicates.
 - Reboot the phone with queued work and confirm WorkManager eventually uploads

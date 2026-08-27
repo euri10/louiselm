@@ -123,7 +123,7 @@ function M.register()
     end
   end, { desc = "Start or stop a durable speech capture", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmInbox", function()
+  nvim.api.nvim_create_user_command("LouiselmCaptureInbox", function()
     local started, error_message = configured:list(function(captures, list_error)
       if captures == nil then
         report_error(list_error)
