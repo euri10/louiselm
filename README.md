@@ -190,7 +190,7 @@ least one Agent explicitly:
 ```lua
 require("louiselm").setup({
   agents = {
-    claude = { command = "claude-agent-acp", args = {} },
+    claude = { command = "claude-agent-acp", args = {}, env = { MAX_THINKING_TOKENS = "16384" } },
   },
 })
 ```
