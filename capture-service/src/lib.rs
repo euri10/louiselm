@@ -29,8 +29,9 @@ pub use pairing::{
 pub use receiver::Receiver;
 pub use run_socket::{RunSocket, RunSocketError, RunSocketMessage};
 pub use runs::{
-    BeadsCleanup, GeneratedWorkBudget, GeneratedWorkReservation, ReapAction, ReserveResult, Run,
-    RunAdmission, RunDraft, RunSession, RunStore, RunStoreError, RunSummary, RunView,
+    BeadsCleanup, GeneratedWorkBudget, GeneratedWorkReservation, ReapAction, ReserveResult,
+    ResumeResult, Run, RunAdmission, RunDraft, RunSession, RunStore, RunStoreError, RunSummary,
+    RunView,
 };
 pub use store::{Capture, IngestOutcome, MAX_CAPTURE_BYTES, Store, StoreError};
 pub use transcription::{

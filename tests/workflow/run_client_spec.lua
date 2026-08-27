@@ -104,4 +104,75 @@ T["closes a disconnected handle so a new client can reconcile"] = function()
   MiniTest.expect.equality(pipe.closing, true)
 end
 
+T["correlates operator mutations and invokes callbacks once"] = function()
+  local pipe = fake_pipe()
+  local result
+  local client = assert(RunClient.connect("/tmp/run.sock", function() end, {
+    pipe_factory = function()
+      return pipe
+    end,
+    operator_capability = "operator-secret",
+  }))
+  pipe.connect_callback()
+  assert(client:raise("run", 3, 5, function(run, error_message)
+    result = { run, error_message }
+  end))
+  local request = nvim.json.decode(pipe.writes[1])
+  MiniTest.expect.equality(request, {
+    type = "raise",
+    id = "run",
+    expected_revision = 3,
+    ceiling = 5,
+    request_id = "1",
+    capability = "operator-secret",
+  })
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "mutation_result",
+    request_id = "1",
+    run = {
+      id = "run",
+      revision = 4,
+      state = "parked",
+      generated_work_ceiling = 5,
+      generated_work_consumed = 1,
+      generated_work_reserved = 0,
+      pending_mutation_ids = {},
+      park_expires_at_ms = 10,
+    },
+  }) .. "\n")
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return result ~= nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(result[1].revision, 4)
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "mutation_error",
+    request_id = "1",
+    message = "duplicate",
+  }) .. "\n")
+  nvim.wait(20)
+  MiniTest.expect.equality(result[2], nil)
+end
+
+T["reads a private operator capability asynchronously"] = function()
+  local path = nvim.fn.tempname()
+  local capability = "12345678-1234-4234-8234-123456789abc"
+  nvim.fn.writefile({ capability }, path, "b")
+  local observed
+  assert(RunClient.read_operator_capability(path, function(value, error_message)
+    MiniTest.expect.equality(nvim.in_fast_event(), false)
+    observed = { value, error_message }
+  end))
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return observed ~= nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(observed, { capability, nil })
+  nvim.fn.delete(path)
+end
+
 return T

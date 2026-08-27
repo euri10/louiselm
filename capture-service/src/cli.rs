@@ -427,7 +427,12 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         paths.uploads(),
         identity.public_key_sha256(),
     )?;
-    let run_socket = RunSocket::bind(paths.run_socket(), RunStore::new(paths.runs())?).await?;
+    let run_socket = RunSocket::bind(
+        paths.run_socket(),
+        paths.operator_capability(),
+        RunStore::new(paths.runs())?,
+    )
+    .await?;
     if let Some(workspace) =
         env::var_os("LOUISELM_BEADS_WORKSPACE").filter(|value| !value.is_empty())
     {
@@ -571,6 +576,10 @@ impl Paths {
 
     fn run_socket(&self) -> PathBuf {
         self.state.join("louiselm/workflow/run.sock")
+    }
+
+    fn operator_capability(&self) -> PathBuf {
+        self.state.join("louiselm/workflow/operator-capability")
     }
 }
 

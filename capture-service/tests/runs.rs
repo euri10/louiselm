@@ -1,6 +1,6 @@
 use louiselm_capture::{
-    BeadsCleanup, GeneratedWorkReservation, ReapAction, ReserveResult, RunAdmission, RunDraft,
-    RunSession, RunStore,
+    BeadsCleanup, GeneratedWorkReservation, ReapAction, ReserveResult, ResumeResult, RunAdmission,
+    RunDraft, RunSession, RunStore,
 };
 
 const TOKEN: &str = "generate-token-1234";
@@ -307,4 +307,182 @@ fn beads_cleanup_is_bound_to_one_workspace_and_can_only_release() {
             "--json"
         ]
     );
+}
+
+#[test]
+fn operator_raise_and_cold_resume_are_revisioned_and_idempotent() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let run_id = "12121212-1212-4212-8212-121212121212";
+    admit(&store, run_id);
+    store.park_cold(draft(run_id), 1_000).expect("cold Park");
+    let parked = store.run(run_id).expect("Parked");
+    assert!(
+        store
+            .raise_generated_work_ceiling(run_id, parked.revision - 1, 8)
+            .is_err()
+    );
+    let raised = store
+        .raise_generated_work_ceiling(run_id, parked.revision, 8)
+        .expect("raise");
+    assert_eq!(raised.generated_work_ceiling, 8);
+    assert_eq!(raised.revision, parked.revision + 1);
+    assert_eq!(raised.state, parked.state);
+    let after_raise = store.run(run_id).expect("raised Run");
+    assert_eq!(after_raise.session_id, parked.session_id);
+    assert_eq!(after_raise.park_ttl_ms, parked.park_ttl_ms);
+    assert_eq!(after_raise.park_expires_at_ms, parked.park_expires_at_ms);
+
+    let operation = "34343434-3434-4434-8434-343434343434";
+    assert_eq!(
+        store
+            .begin_resume(run_id, raised.revision, operation, 2_000, 300_000)
+            .expect("begin"),
+        ResumeResult::Resuming
+    );
+    let resuming = store.run(run_id).expect("resuming");
+    assert_eq!(resuming.state, "resuming");
+    assert_eq!(
+        store
+            .begin_resume(run_id, raised.revision, operation, 99_000, 300_000)
+            .expect("idempotent begin"),
+        ResumeResult::Resuming
+    );
+    assert_eq!(
+        store.run(run_id).expect("same revision").revision,
+        resuming.revision
+    );
+    assert!(
+        store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: run_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: "56565656-5656-4656-8656-565656565656".to_owned(),
+                    kind: "beads_issue".to_owned(),
+                    units: 1,
+                },
+                3_000,
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .finalize_resume(run_id, resuming.revision, operation, false)
+            .expect("failed load"),
+        ResumeResult::ColdParked
+    );
+    let failed = store.run(run_id).expect("cold Parked again");
+    assert_eq!(failed.park_expires_at_ms, 302_000);
+    assert_eq!(
+        store
+            .finalize_resume(run_id, resuming.revision, operation, false)
+            .expect("idempotent failure"),
+        ResumeResult::ColdParked
+    );
+    assert_eq!(
+        store.run(run_id).expect("same failed revision").revision,
+        failed.revision
+    );
+
+    let retry = "78787878-7878-4878-8878-787878787878";
+    assert_eq!(
+        store
+            .begin_resume(run_id, failed.revision, retry, 4_000, 300_000)
+            .expect("retry"),
+        ResumeResult::Resuming
+    );
+    let retrying = store.run(run_id).expect("retrying");
+    assert_eq!(
+        store
+            .finalize_resume(run_id, retrying.revision, retry, true)
+            .expect("complete"),
+        ResumeResult::Active
+    );
+    assert_eq!(store.run(run_id).expect("active").state, "active");
+}
+
+#[test]
+fn resume_lease_expiry_disposes_and_warm_resume_activates_directly() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let cold_id = "23232323-2323-4232-8232-232323232323";
+    admit(&store, cold_id);
+    store.park_cold(draft(cold_id), 1_000).expect("cold Park");
+    let cold = store.run(cold_id).expect("cold");
+    store
+        .begin_resume(
+            cold_id,
+            cold.revision,
+            "45454545-4545-4454-8454-454545454545",
+            2_000,
+            300_000,
+        )
+        .expect("begin");
+    let mut released = Vec::new();
+    assert_eq!(
+        store
+            .reap_expired(302_000, |action| {
+                released.push(action.issue_id.clone());
+                Ok(())
+            })
+            .expect("reap resume"),
+        1
+    );
+    assert_eq!(released, vec!["louiselm-qbr.3.3"]);
+    assert_eq!(store.run(cold_id).expect("disposed").state, "disposed");
+
+    let warm_id = "67676767-6767-4767-8767-676767676767";
+    let mut warm_admission = admission(warm_id, 1);
+    warm_admission.park_ttl_ms = 300_000;
+    store.admit(warm_admission, TOKEN).expect("admit warm");
+    store.attach(session(warm_id)).expect("attach warm");
+    let first_mutation = "89898989-8989-4989-8989-898989898989";
+    assert_eq!(
+        store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: warm_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: first_mutation.to_owned(),
+                    kind: "beads_issue".to_owned(),
+                    units: 1,
+                },
+                500,
+            )
+            .expect("reserve first"),
+        ReserveResult::Reserved
+    );
+    store
+        .confirm_generated_work(warm_id, TOKEN, first_mutation, "first")
+        .expect("confirm first");
+    assert_eq!(
+        store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: warm_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: "91919191-9191-4191-8191-919191919191".to_owned(),
+                    kind: "beads_issue".to_owned(),
+                    units: 1,
+                },
+                1_000,
+            )
+            .expect("exhaust warm"),
+        ReserveResult::Exhausted
+    );
+    let warm = store.run(warm_id).expect("warm Park");
+    assert_eq!(
+        store
+            .begin_resume(
+                warm_id,
+                warm.revision,
+                "90909090-9090-4090-8090-909090909090",
+                2_000,
+                300_000,
+            )
+            .expect("warm resume"),
+        ResumeResult::Active
+    );
+    assert_eq!(store.run(warm_id).expect("warm active").state, "active");
 }

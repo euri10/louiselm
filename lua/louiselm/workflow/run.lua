@@ -30,6 +30,7 @@ local nvim = vim
 ---@field cancel fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
 ---@field park fun(self: louiselm.workflow.Run, callback?: fun(ok: boolean, error_message?: string)): boolean, string?
 ---@field accept_park fun(self: louiselm.workflow.Run): boolean, string?
+---@field accept_resume fun(self: louiselm.workflow.Run): boolean, string?
 ---@field create_session fun(self: louiselm.workflow.Run, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
@@ -291,6 +292,24 @@ function Run:accept_park()
     return true
   end
   transition_parked(self)
+  return true
+end
+
+---Accept an already-durable operator resume without mutating the service again.
+---@param self louiselm.workflow.Run
+---@return boolean resumed
+---@return string? error_message
+function Run:accept_resume()
+  if self.status == "disposed" then
+    return false, "Run is disposed"
+  end
+  if self.status == "active" then
+    return true
+  end
+  if self.status ~= "parked" then
+    return false, "only a Parked Run can resume"
+  end
+  self.status = "active"
   return true
 end
 

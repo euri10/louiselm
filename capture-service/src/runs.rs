@@ -80,6 +80,21 @@ pub enum ReserveResult {
     Exhausted,
 }
 
+/// Idempotent result of an operator resume request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeResult {
+    Active,
+    Resuming,
+    ColdParked,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+struct ResumeAttempt {
+    operation_id: String,
+    deadline_ms: u64,
+    result: String,
+}
+
 /// Input needed to persist a cold-Parked Run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunDraft {
@@ -118,7 +133,7 @@ pub struct Run {
     pub working_dir: Option<String>,
     /// Whether admission confirmed ACP `session/load` support.
     pub load_session: Option<bool>,
-    /// One of `admitted`, `active`, `parked`, `cold_parked`, or `disposed`.
+    /// One of `admitted`, `active`, `parked`, `cold_parked`, `resuming`, or `disposed`.
     pub state: String,
     /// Relative Park expiry declared at admission.
     pub park_ttl_ms: u64,
@@ -128,6 +143,7 @@ pub struct Run {
     pub park_expires_at_ms: u64,
     /// Mutation refused when generated-work exhaustion triggered this Park.
     pub triggering_mutation_id: Option<String>,
+    resume_attempt: Option<ResumeAttempt>,
     /// Run-wide generated-work accounting.
     pub generated_work: GeneratedWorkBudget,
     generate_token_sha256: String,
@@ -147,6 +163,8 @@ pub struct RunView {
     pub pending_mutation_ids: Vec<String>,
     pub triggering_mutation_id: Option<String>,
     pub park_expires_at_ms: u64,
+    pub resume_operation_id: Option<String>,
+    pub resume_deadline_ms: Option<u64>,
 }
 
 impl Run {
@@ -295,6 +313,7 @@ impl RunStore {
                 parked_at_ms: None,
                 park_expires_at_ms: 0,
                 triggering_mutation_id: None,
+                resume_attempt: None,
                 generated_work: GeneratedWorkBudget {
                     ceiling: admission.generated_work_ceiling,
                     consumed: 0,
@@ -612,10 +631,143 @@ impl RunStore {
                     .collect(),
                 triggering_mutation_id: run.triggering_mutation_id,
                 park_expires_at_ms: run.park_expires_at_ms,
+                resume_operation_id: run
+                    .resume_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.operation_id.clone()),
+                resume_deadline_ms: run
+                    .resume_attempt
+                    .as_ref()
+                    .map(|attempt| attempt.deadline_ms),
             });
         }
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
+    }
+
+    /// Load one non-sensitive authoritative Run projection.
+    pub fn view(&self, id: &str) -> Result<RunView, RunStoreError> {
+        Ok(run_view(self.run(id)?))
+    }
+
+    /// Raise only the generated-work ceiling of a Parked Run using optimistic concurrency.
+    pub fn raise_generated_work_ceiling(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        ceiling: u64,
+    ) -> Result<RunView, RunStoreError> {
+        validate_id(id)?;
+        self.locked(|| {
+            let mut run = self.run(id)?;
+            require_revision(&run, expected_revision)?;
+            if run.state != "parked" && run.state != "cold_parked" {
+                return Err(RunStoreError::Invalid(
+                    "only a Parked Run ceiling can be raised".to_owned(),
+                ));
+            }
+            if ceiling <= run.generated_work.ceiling {
+                return Err(RunStoreError::Invalid(
+                    "generated-work ceiling must increase".to_owned(),
+                ));
+            }
+            run.generated_work.ceiling = ceiling;
+            advance_revision(&mut run)?;
+            write_atomic(&self.path(id), &run)?;
+            Ok(run_view(run))
+        })
+    }
+
+    /// Begin an idempotent operator resume attempt.
+    pub fn begin_resume(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        operation_id: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<ResumeResult, RunStoreError> {
+        validate_id(id)?;
+        validate_id(operation_id)?;
+        if lease_ms == 0 {
+            return Err(RunStoreError::Invalid(
+                "resume lease must be positive".to_owned(),
+            ));
+        }
+        self.locked(|| {
+            let mut run = self.run(id)?;
+            if let Some(attempt) = &run.resume_attempt
+                && attempt.operation_id == operation_id
+            {
+                return resume_result(&run);
+            }
+            require_revision(&run, expected_revision)?;
+            if run.state != "parked" && run.state != "cold_parked" {
+                return Err(RunStoreError::Invalid(
+                    "only a Parked Run can resume".to_owned(),
+                ));
+            }
+            let deadline_ms = now_ms
+                .checked_add(lease_ms)
+                .ok_or_else(|| RunStoreError::Invalid("resume deadline overflowed".to_owned()))?;
+            let cold = run.state == "cold_parked";
+            run.state = if cold { "resuming" } else { "active" }.to_owned();
+            run.resume_attempt = Some(ResumeAttempt {
+                operation_id: operation_id.to_owned(),
+                deadline_ms,
+                result: if cold { "resuming" } else { "active" }.to_owned(),
+            });
+            advance_revision(&mut run)?;
+            write_atomic(&self.path(id), &run)?;
+            Ok(if cold {
+                ResumeResult::Resuming
+            } else {
+                ResumeResult::Active
+            })
+        })
+    }
+
+    /// Finalize one cold reconstruction attempt without extending its lease.
+    pub fn finalize_resume(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        operation_id: &str,
+        succeeded: bool,
+    ) -> Result<ResumeResult, RunStoreError> {
+        validate_id(id)?;
+        validate_id(operation_id)?;
+        self.locked(|| {
+            let mut run = self.run(id)?;
+            let attempt = run
+                .resume_attempt
+                .as_ref()
+                .ok_or_else(|| RunStoreError::Invalid("Run has no resume attempt".to_owned()))?;
+            if attempt.operation_id != operation_id {
+                return Err(RunStoreError::Invalid(
+                    "resume operation differs".to_owned(),
+                ));
+            }
+            if attempt.result != "resuming" {
+                return resume_result(&run);
+            }
+            require_revision(&run, expected_revision)?;
+            let deadline_ms = attempt.deadline_ms;
+            run.state = if succeeded { "active" } else { "cold_parked" }.to_owned();
+            run.park_expires_at_ms = if succeeded { 0 } else { deadline_ms };
+            run.resume_attempt = Some(ResumeAttempt {
+                operation_id: operation_id.to_owned(),
+                deadline_ms,
+                result: if succeeded { "active" } else { "cold_parked" }.to_owned(),
+            });
+            advance_revision(&mut run)?;
+            write_atomic(&self.path(id), &run)?;
+            Ok(if succeeded {
+                ResumeResult::Active
+            } else {
+                ResumeResult::ColdParked
+            })
+        })
     }
 
     /// List unexpired cold-Parked Runs without exposing cleanup journals.
@@ -669,48 +821,59 @@ impl RunStore {
         now_ms: u64,
         mut cleanup: impl FnMut(&ReapAction) -> Result<(), String>,
     ) -> Result<usize, RunStoreError> {
-        let mut reaped = 0;
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let Some(id) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.strip_suffix(".json"))
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            if validate_id(&id).is_err() {
-                continue;
-            }
-            let mut run = self.run(&id)?;
-            if run.state != "cold_parked" || run.park_expires_at_ms > now_ms {
-                continue;
-            }
-            for index in 0..run.cleanup.len() {
-                if run.cleanup[index].completed {
+        self.locked(|| {
+            let mut reaped = 0;
+            for entry in fs::read_dir(&self.root)? {
+                let entry = entry?;
+                let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.strip_suffix(".json"))
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if validate_id(&id).is_err() {
                     continue;
                 }
-                let action = ReapAction {
-                    issue_id: run.cleanup[index].issue_id.clone(),
-                    actor: format!(
-                        "reaper/{}",
-                        run.session_id.as_deref().ok_or_else(|| {
-                            RunStoreError::Invalid("Parked Run has no Session".to_owned())
-                        })?
-                    ),
+                let mut run = self.run(&id)?;
+                let expires_at_ms = if run.state == "resuming" {
+                    run.resume_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.deadline_ms)
+                } else if run.state == "cold_parked" {
+                    Some(run.park_expires_at_ms)
+                } else {
+                    None
                 };
-                cleanup(&action).map_err(RunStoreError::Cleanup)?;
-                run.cleanup[index].completed = true;
+                if expires_at_ms.is_none_or(|deadline| deadline > now_ms) {
+                    continue;
+                }
+                for index in 0..run.cleanup.len() {
+                    if run.cleanup[index].completed {
+                        continue;
+                    }
+                    let action = ReapAction {
+                        issue_id: run.cleanup[index].issue_id.clone(),
+                        actor: format!(
+                            "reaper/{}",
+                            run.session_id.as_deref().ok_or_else(|| {
+                                RunStoreError::Invalid("Parked Run has no Session".to_owned())
+                            })?
+                        ),
+                    };
+                    cleanup(&action).map_err(RunStoreError::Cleanup)?;
+                    run.cleanup[index].completed = true;
+                    advance_revision(&mut run)?;
+                    write_atomic(&self.path(&id), &run)?;
+                }
+                run.state = "disposed".to_owned();
                 advance_revision(&mut run)?;
                 write_atomic(&self.path(&id), &run)?;
+                reaped += 1;
             }
-            run.state = "disposed".to_owned();
-            advance_revision(&mut run)?;
-            write_atomic(&self.path(&id), &run)?;
-            reaped += 1;
-        }
-        Ok(reaped)
+            Ok(reaped)
+        })
     }
 
     fn path(&self, id: &str) -> PathBuf {
@@ -742,6 +905,59 @@ fn advance_revision(run: &mut Run) -> Result<(), RunStoreError> {
         .checked_add(1)
         .ok_or_else(|| RunStoreError::Invalid("Run revision overflowed".to_owned()))?;
     Ok(())
+}
+
+fn require_revision(run: &Run, expected: u64) -> Result<(), RunStoreError> {
+    if run.revision != expected {
+        return Err(RunStoreError::Invalid(format!(
+            "stale Run revision: expected {expected}, found {}",
+            run.revision
+        )));
+    }
+    Ok(())
+}
+
+fn resume_result(run: &Run) -> Result<ResumeResult, RunStoreError> {
+    match run
+        .resume_attempt
+        .as_ref()
+        .map(|attempt| attempt.result.as_str())
+    {
+        Some("active") => Ok(ResumeResult::Active),
+        Some("resuming") => Ok(ResumeResult::Resuming),
+        Some("cold_parked") => Ok(ResumeResult::ColdParked),
+        _ => Err(RunStoreError::Invalid(
+            "stored resume attempt is invalid".to_owned(),
+        )),
+    }
+}
+
+fn run_view(run: Run) -> RunView {
+    RunView {
+        id: run.id,
+        revision: run.revision,
+        state: run.state,
+        session_id: run.session_id,
+        generated_work_ceiling: run.generated_work.ceiling,
+        generated_work_consumed: run.generated_work.consumed,
+        generated_work_reserved: run.generated_work.reserved,
+        pending_mutation_ids: run
+            .generated_work
+            .pending
+            .into_iter()
+            .map(|pending| pending.mutation_id)
+            .collect(),
+        triggering_mutation_id: run.triggering_mutation_id,
+        park_expires_at_ms: run.park_expires_at_ms,
+        resume_operation_id: run
+            .resume_attempt
+            .as_ref()
+            .map(|attempt| attempt.operation_id.clone()),
+        resume_deadline_ms: run
+            .resume_attempt
+            .as_ref()
+            .map(|attempt| attempt.deadline_ms),
+    }
 }
 
 fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {
