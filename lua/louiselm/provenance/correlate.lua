@@ -1,5 +1,5 @@
 ---@class louiselm.provenance.Node
----@field kind "commit"|"issue"|"session"|"decision" Node kind.
+---@field kind "commit"|"issue"|"session"|"actor"|"decision" Node kind.
 ---@field id string Stable identifier for the node.
 
 ---@class louiselm.provenance.Commit
@@ -39,8 +39,8 @@
 
 ---@class louiselm.provenance.Actor
 ---@field raw string Actor recorded by Beads.
----@field kind "session"|"reaper" Actor origin.
----@field session_id string Underlying Agent-scoped Session identity.
+---@field kind "session"|"reaper"|"non_session" Actor origin.
+---@field session_id? string Underlying Agent-scoped Session identity.
 
 local M = {}
 
@@ -70,7 +70,7 @@ function M.resolve_actor(actor)
   if actor:find("/", 1, true) ~= nil then
     return { raw = actor, kind = "session", session_id = actor }, nil
   end
-  return nil, make_error("invalid_actor", "actor must identify a Session")
+  return { raw = actor, kind = "non_session" }, nil
 end
 
 ---@param value unknown
@@ -251,6 +251,7 @@ function M.issue(history)
   end
 
   local edges = {}
+  local seen_sessions = {}
   for index, commit in ipairs(history.commits) do
     if
       type(commit) ~= "table"
@@ -271,8 +272,95 @@ function M.issue(history)
       correlation_method = commit.method,
       confidence = commit.confidence,
     }
+    if commit.message ~= nil then
+      if type(commit.message) ~= "string" then
+        return nil, make_error("invalid_issue_history", "issue history commit message is malformed", index)
+      end
+      for _, reference in ipairs(references(commit.message)) do
+        if reference_kind(reference) == "session" and not seen_sessions[reference] then
+          seen_sessions[reference] = true
+          edges[#edges + 1] = {
+            source = { kind = "issue", id = history.bead_id },
+            target = { kind = "session", id = reference },
+            relation = "worked_on",
+            method = "recorded",
+            confidence = 1,
+          }
+        end
+      end
+    end
   end
   return edges, nil
+end
+
+---Build issue-to-actor edges from Beads actor fields.
+---Session-shaped actors target Sessions; legacy bare names target actors.
+---This function performs no filesystem, process, or editor I/O.
+---@param issue louiselm.provenance.BeadsIssue Beads issue actor fields.
+---@return louiselm.provenance.Edge[]? edges Edges in actor-field order.
+---@return louiselm.provenance.Error? error_value Malformed input, if any.
+function M.issue_actors(issue)
+  if type(issue) ~= "table" or type(issue.id) ~= "string" or issue.id == "" then
+    return nil, make_error("invalid_issue_actors", "Beads issue actors must identify an issue")
+  end
+
+  local edges = {}
+  local seen = {}
+  for index, field in ipairs({ "assignee", "created_by" }) do
+    local raw_actor = issue[field]
+    if raw_actor ~= nil then
+      if type(raw_actor) ~= "string" then
+        return nil, make_error("invalid_issue_actors", "issue " .. field .. " must be a string", index)
+      end
+      if raw_actor ~= "" and not seen[raw_actor] then
+        local actor, actor_error = M.resolve_actor(raw_actor)
+        if actor == nil then
+          return nil,
+            make_error(
+              "invalid_issue_actors",
+              actor_error and actor_error.message or "actor could not be resolved",
+              index
+            )
+        end
+        seen[raw_actor] = true
+        edges[#edges + 1] = {
+          source = { kind = "issue", id = issue.id },
+          target = {
+            kind = actor.kind == "non_session" and "actor" or "session",
+            id = actor.session_id or actor.raw,
+          },
+          relation = "worked_on",
+          method = "recorded",
+          confidence = 1,
+        }
+      end
+    end
+  end
+  return edges, nil
+end
+
+---Merge issue actor edges without duplicating Session identities already found in trailers.
+---@param existing louiselm.provenance.Edge[] Existing issue edges.
+---@param additional louiselm.provenance.Edge[] Actor-derived issue edges.
+---@return louiselm.provenance.Edge[] edges Merged edges.
+function M.merge_issue_sessions(existing, additional)
+  local result = {}
+  local seen_sessions = {}
+  for _, edge in ipairs(existing) do
+    result[#result + 1] = edge
+    if edge.target.kind == "session" then
+      seen_sessions[edge.target.id] = true
+    end
+  end
+  for _, edge in ipairs(additional) do
+    if edge.target.kind ~= "session" or not seen_sessions[edge.target.id] then
+      result[#result + 1] = edge
+      if edge.target.kind == "session" then
+        seen_sessions[edge.target.id] = true
+      end
+    end
+  end
+  return result
 end
 
 ---Derive Decision anchors and explicit relations from Beads issues.

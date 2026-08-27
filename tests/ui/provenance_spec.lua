@@ -79,6 +79,16 @@ local function finish_bvr(calls, output)
   scheduled[1]()
 end
 
+local function finish_br(calls, output)
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  calls[2].on_exit({ code = 0, stdout = output, stderr = "" })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+end
+
 T["commit Provenance"] = MiniTest.new_set()
 
 T["commit Provenance"]["renders commit references and unresolved Sessions"] = function()
@@ -183,12 +193,19 @@ T["issue Provenance"]["renders bvr correlations and milestones"] = function()
             closed = { timestamp = "2026-08-24T14:55:01+02:00", commit_sha = "close-sha" },
           },
           commits = {
-            { sha = "close-sha", method = "co_committed", confidence = 0.95 },
+            {
+              sha = "close-sha",
+              method = "co_committed",
+              confidence = 0.95,
+              message = "fix: spacing\n\nRefs codex/session-1\n",
+            },
           },
         },
       },
     })
   )
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-kpod", "--json" })
+  finish_br(calls, '[{"id":"louiselm-kpod","assignee":"codex/session-1","created_by":"assistant"}]')
 
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
     "# Usage spacing",
@@ -202,6 +219,12 @@ T["issue Provenance"]["renders bvr correlations and milestones"] = function()
     "",
     "Commits:",
     "- close-sha · co_committed · 95% confidence",
+    "",
+    "Sessions:",
+    "- codex/session-1 → unresolved (no transcript layout is configured)",
+    "",
+    "Actors:",
+    "- assistant (non-Session actor)",
   })
   MiniTest.expect.equality(
     nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
@@ -214,6 +237,7 @@ T["issue Provenance"]["renders an issue with no correlated commits"] = function(
   local calls = fake_system()
   assert(Provenance.inspect(buffer))
   finish_bvr(calls, '{"histories":{}}')
+  finish_br(calls, '[{"id":"louiselm-kpod","assignee":"","created_by":"lotso"}]')
 
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
     "# louiselm-kpod",
@@ -226,6 +250,12 @@ T["issue Provenance"]["renders an issue with no correlated commits"] = function(
     "",
     "Commits:",
     "- none correlated",
+    "",
+    "Sessions:",
+    "- none recorded",
+    "",
+    "Actors:",
+    "- lotso (non-Session actor)",
   })
 end
 

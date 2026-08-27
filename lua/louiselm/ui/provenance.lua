@@ -128,8 +128,9 @@ end
 
 ---@param history louiselm.provenance.IssueHistory
 ---@param edges louiselm.provenance.Edge[]
+---@param options louiselm.ui.ProvenanceOptions
 ---@return string[] lines
-local function issue_lines(history, edges)
+local function issue_lines(history, edges, options)
   local lines = {
     "# " .. (history.title or history.bead_id),
     "",
@@ -151,16 +152,54 @@ local function issue_lines(history, edges)
   end
   lines[#lines + 1] = ""
   lines[#lines + 1] = "Commits:"
+  local commit_count = 0
   for _, edge in ipairs(edges) do
-    lines[#lines + 1] = string.format(
-      "- %s · %s · %d%% confidence",
-      edge.target.id,
-      edge.correlation_method or edge.method,
-      math.floor(edge.confidence * 100 + 0.5)
-    )
+    if edge.target.kind == "commit" then
+      commit_count = commit_count + 1
+      lines[#lines + 1] = string.format(
+        "- %s · %s · %d%% confidence",
+        edge.target.id,
+        edge.correlation_method or edge.method,
+        math.floor(edge.confidence * 100 + 0.5)
+      )
+    end
   end
-  if #edges == 0 then
+  if commit_count == 0 then
     lines[#lines + 1] = "- none correlated"
+  end
+  local session_count = 0
+  local actor_count = 0
+  for _, edge in ipairs(edges) do
+    if edge.target.kind == "session" then
+      session_count = session_count + 1
+    elseif edge.target.kind == "actor" then
+      actor_count = actor_count + 1
+    end
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Sessions:"
+  for _, edge in ipairs(edges) do
+    if edge.target.kind == "session" then
+      local path, error_message = Locator.resolve(edge.target.id, options.definitions or {}, options.locator_options)
+      if path ~= nil then
+        lines[#lines + 1] = "- " .. edge.target.id .. " → " .. path
+      else
+        lines[#lines + 1] = "- " .. edge.target.id .. " → unresolved (" .. (error_message or "unknown error") .. ")"
+      end
+    end
+  end
+  if session_count == 0 then
+    lines[#lines + 1] = "- none recorded"
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Actors:"
+  for _, edge in ipairs(edges) do
+    if edge.target.kind == "actor" then
+      lines[#lines + 1] = "- " .. edge.target.id .. " (non-Session actor)"
+    end
+  end
+  if actor_count == 0 then
+    lines[#lines + 1] = "- none recorded"
   end
   return lines
 end
@@ -264,10 +303,32 @@ local function show_issue(issue_id, options)
         report_error(options, "could not correlate issue " .. issue_id)
         return
       end
-      local opened, open_error =
-        open_provenance("louiselm://provenance/issue/" .. issue_id, issue_lines(history, edges))
-      if not opened then
-        report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+      local actors_started, actors_error = Sources.beads_issue(
+        options.cwd or nvim.fn.getcwd(),
+        issue_id,
+        function(issue, actor_source_error)
+          if options.is_active ~= nil and not options.is_active() then
+            return
+          end
+          if issue == nil or actor_source_error ~= nil then
+            report_error(options, "could not read issue actors")
+            return
+          end
+          local actor_edges, actor_error = Correlate.issue_actors(issue)
+          if actor_edges == nil or actor_error ~= nil then
+            report_error(options, "could not correlate issue actors " .. issue_id)
+            return
+          end
+          local all_edges = Correlate.merge_issue_sessions(edges, actor_edges)
+          local opened, open_error =
+            open_provenance("louiselm://provenance/issue/" .. issue_id, issue_lines(history, all_edges, options))
+          if not opened then
+            report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+          end
+        end
+      )
+      if not actors_started then
+        report_error(options, actors_error and actors_error.message or "could not start br")
       end
     end
   )

@@ -10,6 +10,7 @@
 ---@field sha string Full commit object id.
 ---@field method "explicit_id"|"co_committed" How bvr correlated the commit.
 ---@field confidence number bvr's correlation confidence, from 0 to 1.
+---@field message? string Commit message, when returned by bvr.
 
 ---@class louiselm.provenance.IssueHistory
 ---@field bead_id string Beads issue identifier.
@@ -17,6 +18,11 @@
 ---@field status? string Issue status, when the history is in range.
 ---@field milestones table<string, louiselm.provenance.HistoryMilestone>
 ---@field commits louiselm.provenance.HistoryCommit[]
+
+---@class louiselm.provenance.BeadsIssue
+---@field id string Beads issue identifier.
+---@field assignee? string Actor assigned to the issue, when present.
+---@field created_by? string Actor that created the issue, when present.
 
 local M = {}
 
@@ -97,7 +103,14 @@ local function parse_history_commit(value)
   then
     return nil
   end
-  return { sha = value.sha, method = value.method, confidence = value.confidence }
+  local commit = { sha = value.sha, method = value.method, confidence = value.confidence }
+  if value.message ~= nil then
+    if type(value.message) ~= "string" then
+      return nil
+    end
+    commit.message = value.message
+  end
+  return commit
 end
 
 ---Parse one issue's observed bvr history response.
@@ -168,6 +181,40 @@ function M.parse_bvr_history(output, bead_id)
     end
   end
   return history, nil
+end
+
+---Parse one Beads issue response from `br show --json`.
+---@param output string JSON emitted by `br show <id> --json`.
+---@param bead_id string Requested Beads issue identifier.
+---@return louiselm.provenance.BeadsIssue? issue
+---@return louiselm.provenance.SourceError? error_value
+function M.parse_beads_issue(output, bead_id)
+  if type(output) ~= "string" then
+    return nil, make_error("invalid_beads_issue", "br issue output must be a string")
+  end
+  if type(bead_id) ~= "string" or bead_id == "" then
+    return nil, make_error("invalid_bead_id", "br issue requires a non-empty Beads issue id")
+  end
+
+  local decoded_ok, decoded = pcall(nvim.json.decode, output)
+  if not decoded_ok or type(decoded) ~= "table" or type(decoded[1]) ~= "table" then
+    return nil, make_error("invalid_beads_issue", "br returned malformed issue data")
+  end
+  local raw_issue = decoded[1]
+  if raw_issue.id ~= bead_id then
+    return nil, make_error("invalid_beads_issue", "br returned a different Beads issue")
+  end
+
+  local issue = { id = bead_id }
+  for _, field in ipairs({ "assignee", "created_by" }) do
+    if raw_issue[field] ~= nil then
+      if type(raw_issue[field]) ~= "string" then
+        return nil, make_error("invalid_beads_issue", "br issue " .. field .. " must be a string")
+      end
+      issue[field] = raw_issue[field]
+    end
+  end
+  return issue, nil
 end
 
 ---@param value string
@@ -268,6 +315,50 @@ function M.bvr_history(cwd, bead_id, callback)
   end
   if handle_or_error == nil then
     return false, make_error("bvr_launch_failed", "vim.system did not return a process handle")
+  end
+  return true, nil
+end
+
+---Collect one issue's actor fields from Beads.
+---The completion callback is always scheduled out of vim.system's fast event.
+---@param cwd string Absolute repository working directory.
+---@param bead_id string Beads issue identifier.
+---@param callback fun(issue: louiselm.provenance.BeadsIssue?, error_value: louiselm.provenance.SourceError?)
+---@return boolean started True when vim.system was started.
+---@return louiselm.provenance.SourceError? error_value Launch or validation error.
+function M.beads_issue(cwd, bead_id, callback)
+  if type(cwd) ~= "string" or cwd == "" then
+    return false, make_error("invalid_cwd", "br source requires a non-empty cwd")
+  end
+  if type(bead_id) ~= "string" or bead_id == "" then
+    return false, make_error("invalid_bead_id", "br issue requires a non-empty Beads issue id")
+  end
+  if type(callback) ~= "function" then
+    return false, make_error("invalid_callback", "br source requires a callback")
+  end
+
+  local call_ok, handle_or_error = pcall(
+    nvim.system,
+    { "br", "show", bead_id, "--json" },
+    { cwd = cwd, text = true },
+    function(result)
+      local function finish()
+        if result.code ~= 0 then
+          local detail = trim(result.stderr or "")
+          callback(nil, make_error("br_failed", "br issue lookup failed", detail ~= "" and detail or nil, result.code))
+          return
+        end
+        local issue, parse_error = M.parse_beads_issue(result.stdout or "", bead_id)
+        callback(issue, parse_error)
+      end
+      nvim.schedule(finish)
+    end
+  )
+  if not call_ok then
+    return false, make_error("br_launch_failed", tostring(handle_or_error))
+  end
+  if handle_or_error == nil then
+    return false, make_error("br_launch_failed", "vim.system did not return a process handle")
   end
   return true, nil
 end

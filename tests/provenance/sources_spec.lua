@@ -136,6 +136,57 @@ T["bvr history"]["parses issue milestones and correlation metadata"] = function(
   MiniTest.expect.equality(history.commits[1].confidence, 0.95)
 end
 
+T["beads issue"] = MiniTest.new_set()
+
+T["beads issue"]["parses actor fields from br"] = function()
+  local issue, error_value = Sources.parse_beads_issue(
+    '[{"id":"louiselm-kpod","assignee":"codex/session-1","created_by":"assistant"}]',
+    "louiselm-kpod"
+  )
+  assert(error_value == nil)
+  assert(issue ~= nil)
+  MiniTest.expect.equality(issue, {
+    id = "louiselm-kpod",
+    assignee = "codex/session-1",
+    created_by = "assistant",
+  })
+end
+
+T["beads issue"]["preserves an empty assignee"] = function()
+  local issue, error_value =
+    Sources.parse_beads_issue('[{"id":"louiselm-kpod","assignee":"","created_by":"lotso"}]', "louiselm-kpod")
+  assert(error_value == nil)
+  assert(issue ~= nil)
+  MiniTest.expect.equality(issue.assignee, "")
+end
+
+T["beads issue"]["uses br with an argument array and schedules completion"] = function()
+  local runtime = fake_runtime()
+  local ok, error_message = pcall(function()
+    local completed
+    local started, start_error = Sources.beads_issue("/repo", "louiselm-kpod", function(issue, callback_error)
+      completed = { issue = issue, error_value = callback_error }
+    end)
+    MiniTest.expect.equality(started, true)
+    MiniTest.expect.equality(start_error, nil)
+    MiniTest.expect.equality(runtime.processes[1].command, { "br", "show", "louiselm-kpod", "--json" })
+    MiniTest.expect.equality(runtime.processes[1].options.cwd, "/repo")
+
+    runtime.processes[1].callback({
+      code = 0,
+      stdout = '[{"id":"louiselm-kpod","assignee":"","created_by":"lotso"}]',
+      stderr = "",
+    })
+    MiniTest.expect.equality(completed, nil)
+    MiniTest.expect.equality(#runtime.scheduled, 1)
+    runtime.scheduled[1]()
+    MiniTest.expect.equality(completed.error_value, nil)
+    MiniTest.expect.equality(completed.issue.created_by, "lotso")
+  end)
+  runtime.restore()
+  assert(ok, error_message)
+end
+
 T["bvr history"]["returns an empty history when the issue is outside the range"] = function()
   local history, error_value = Sources.parse_bvr_history('{"histories":{}}', "louiselm-kpod")
   assert(error_value == nil)

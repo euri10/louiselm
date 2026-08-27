@@ -64,6 +64,7 @@ T["bvr history yields issue-to-commit edges with method and confidence"] = funct
     },
   })
   assert(error_value == nil)
+  assert(edges ~= nil)
   MiniTest.expect.equality(edges, {
     {
       source = { kind = "issue", id = "louiselm-kpod" },
@@ -81,6 +82,69 @@ T["bvr history yields issue-to-commit edges with method and confidence"] = funct
       correlation_method = "co_committed",
       confidence = 0.95,
     },
+  })
+end
+
+T["issue actor edges classify and deduplicate Session identities"] = function()
+  local edges, error_value = Correlate.issue_actors({
+    id = "louiselm-kpod",
+    assignee = "codex/session-1",
+    created_by = "assistant",
+  })
+  assert(error_value == nil)
+  assert(edges ~= nil)
+  MiniTest.expect.equality(edges, {
+    {
+      source = { kind = "issue", id = "louiselm-kpod" },
+      target = { kind = "session", id = "codex/session-1" },
+      relation = "worked_on",
+      method = "recorded",
+      confidence = 1,
+    },
+    {
+      source = { kind = "issue", id = "louiselm-kpod" },
+      target = { kind = "actor", id = "assistant" },
+      relation = "worked_on",
+      method = "recorded",
+      confidence = 1,
+    },
+  })
+
+  local merged = Correlate.merge_issue_sessions({
+    {
+      source = { kind = "issue", id = "louiselm-kpod" },
+      target = { kind = "session", id = "codex/session-1" },
+      relation = "worked_on",
+      method = "recorded",
+      confidence = 1,
+    },
+  }, edges)
+  MiniTest.expect.equality(#merged, 2)
+  MiniTest.expect.equality(merged[1].target, { kind = "session", id = "codex/session-1" })
+  MiniTest.expect.equality(merged[2].target, { kind = "actor", id = "assistant" })
+end
+
+T["issue history trailer edges are available for actor deduplication"] = function()
+  local edges, error_value = Correlate.issue({
+    bead_id = "louiselm-kpod",
+    milestones = {},
+    commits = {
+      {
+        sha = "commit-sha",
+        method = "explicit_id",
+        confidence = 1,
+        message = "fix: work\n\nRefs codex/session-1\n",
+      },
+    },
+  })
+  assert(error_value == nil)
+  assert(edges ~= nil)
+  MiniTest.expect.equality(edges[2], {
+    source = { kind = "issue", id = "louiselm-kpod" },
+    target = { kind = "session", id = "codex/session-1" },
+    relation = "worked_on",
+    method = "recorded",
+    confidence = 1,
   })
 end
 
