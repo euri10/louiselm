@@ -96,6 +96,7 @@ string|table
 ### louiselm.session.Options
 
 - `cwd: string?` -- Working directory for the ACP session.
+- `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `name: string?` -- User-facing session name.
 - `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
