@@ -433,6 +433,11 @@ function M.register()
     force = true,
   })
 
+  nvim.api.nvim_create_user_command("LouiselmProvenanceDecisions", function()
+    local _, decisions_error = Provenance.show_decisions({ on_error = report_error })
+    report_error(decisions_error)
+  end, { desc = "Show the Provenance Decision index", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmSessionNew", function()
     if chat == nil then
       open_chat()

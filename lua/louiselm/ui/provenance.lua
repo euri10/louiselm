@@ -281,9 +281,10 @@ end
 
 ---@param name string Buffer URI.
 ---@param lines string[]
+---@param on_select? fun(line: integer) Called with the 1-based cursor line on <CR>.
 ---@return boolean opened
 ---@return string? error_message
-local function open_provenance(name, lines)
+local function open_provenance(name, lines, on_select)
   local buffer = nvim.api.nvim_create_buf(false, true)
   local opened, error_message = pcall(function()
     nvim.api.nvim_buf_set_name(buffer, name)
@@ -320,6 +321,11 @@ local function open_provenance(name, lines)
   end
   nvim.keymap.set("n", "q", close, { buffer = buffer, silent = true, nowait = true, desc = "Close Provenance" })
   nvim.keymap.set("n", "<Esc>", close, { buffer = buffer, silent = true, nowait = true, desc = "Close Provenance" })
+  if on_select ~= nil then
+    nvim.keymap.set("n", "<CR>", function()
+      on_select(nvim.api.nvim_win_get_cursor(0)[1])
+    end, { buffer = buffer, silent = true, nowait = true, desc = "Select Provenance row" })
+  end
   return true
 end
 
@@ -454,6 +460,89 @@ local function show_session(session_id, options)
   end)
   if not started then
     return false, start_error and start_error.message or "could not start git"
+  end
+  return true
+end
+
+---@param anchor louiselm.provenance.DecisionAnchor
+---@return string line
+local function decision_row(anchor)
+  local activity = anchor.updated_at ~= nil and (" · " .. anchor.updated_at) or ""
+  return string.format("- [%s] %s (%s)%s", anchor.state, anchor.title or anchor.id, anchor.id, activity)
+end
+
+---@param graph louiselm.provenance.DecisionGraph
+---@return string[] lines
+---@return table<integer, string> id_by_line 1-based line number to Beads issue id.
+local function decisions_lines(graph)
+  local lines = { "# Provenance Decisions", "" }
+  local id_by_line = {}
+  if #graph.anchors == 0 then
+    lines[#lines + 1] = "No Decision anchors found."
+    return lines, id_by_line
+  end
+  for _, anchor in ipairs(graph.anchors) do
+    lines[#lines + 1] = decision_row(anchor)
+    id_by_line[#lines] = anchor.id
+  end
+  if #graph.diagnostics > 0 then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "Diagnostics:"
+    for _, diagnostic in ipairs(graph.diagnostics) do
+      lines[#lines + 1] = "- " .. diagnostic.message
+    end
+  end
+  return lines, id_by_line
+end
+
+---Show a read-only index of browsable Decisions derived from question issues.
+---@param options? louiselm.ui.ProvenanceOptions Lookup and lifecycle callbacks.
+---@return boolean started
+---@return string? error_message
+function M.show_decisions(options)
+  if options ~= nil and type(options) ~= "table" then
+    return false, "Provenance options must be a table"
+  end
+  options = options or {}
+  if options.cwd ~= nil and (type(options.cwd) ~= "string" or options.cwd == "") then
+    return false, "Provenance cwd must be a non-empty string"
+  end
+  if options.is_active ~= nil and type(options.is_active) ~= "function" then
+    return false, "Provenance is_active must be a function"
+  end
+  if options.on_error ~= nil and type(options.on_error) ~= "function" then
+    return false, "Provenance on_error must be a function"
+  end
+  local started, start_error = Sources.beads_questions(options.cwd or nvim.fn.getcwd(), function(issues, source_error)
+    if options.is_active ~= nil and not options.is_active() then
+      return
+    end
+    if issues == nil or source_error ~= nil then
+      report_error(options, "could not read Beads question issues")
+      return
+    end
+    local graph, correlate_error = Correlate.decisions(issues)
+    if graph == nil or correlate_error ~= nil then
+      report_error(options, "could not derive Decisions")
+      return
+    end
+    local lines, id_by_line = decisions_lines(graph)
+    local opened, open_error = open_provenance("louiselm://provenance/decisions", lines, function(line)
+      local issue_id = id_by_line[line]
+      if issue_id == nil then
+        return
+      end
+      local _, lookup_error = show_issue(issue_id, options)
+      if lookup_error ~= nil then
+        report_error(options, lookup_error)
+      end
+    end)
+    if not opened then
+      report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+    end
+  end)
+  if not started then
+    return false, start_error and start_error.message or "could not start br"
   end
   return true
 end

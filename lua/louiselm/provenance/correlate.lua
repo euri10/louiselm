@@ -17,6 +17,9 @@
 ---@class louiselm.provenance.Issue
 ---@field id string Stable Beads issue identifier.
 ---@field issue_type string Beads issue type.
+---@field status? string Beads issue status.
+---@field close_reason? string Human-authored closure reason, when closed.
+---@field updated_at? string Beads last-activity timestamp, ISO 8601.
 ---@field title? string Human-readable issue title.
 ---@field description? string Human-authored issue description.
 ---@field notes? string Human-authored issue notes.
@@ -26,6 +29,8 @@
 ---@class louiselm.provenance.DecisionAnchor
 ---@field id string Beads issue identifier that anchors the Decision.
 ---@field title? string Human-readable issue title.
+---@field state "open"|"accepted"|"superseded"|"unresolved" Decision browsing state.
+---@field updated_at? string Beads last-activity timestamp, ISO 8601.
 
 ---@class louiselm.provenance.DecisionGraph
 ---@field anchors louiselm.provenance.DecisionAnchor[] Question issues represented as Decisions.
@@ -137,7 +142,16 @@ local function validate_issue(value, index)
     return nil, make_error("invalid_issue", "issue type must be a non-empty string", index)
   end
   local issue = { id = value.id, issue_type = value.issue_type }
-  for _, field in ipairs({ "title", "description", "notes", "design", "acceptance_criteria" }) do
+  for _, field in ipairs({
+    "title",
+    "status",
+    "close_reason",
+    "updated_at",
+    "description",
+    "notes",
+    "design",
+    "acceptance_criteria",
+  }) do
     if value[field] ~= nil then
       if type(value[field]) ~= "string" then
         return nil, make_error("invalid_issue", "issue " .. field .. " must be a string", index)
@@ -149,11 +163,31 @@ local function validate_issue(value, index)
 end
 
 ---@param issue louiselm.provenance.Issue
+---@param superseded boolean Whether another Decision explicitly supersedes this one.
+---@return "open"|"accepted"|"superseded"|"unresolved" state
+local function decision_state(issue, superseded)
+  if superseded then
+    return "superseded"
+  end
+  if issue.status == "open" then
+    return "open"
+  end
+  if issue.status == "closed" and issue.close_reason ~= nil and issue.close_reason ~= "" then
+    return "accepted"
+  end
+  return "unresolved"
+end
+
+---@param issue louiselm.provenance.Issue
+---@param superseded boolean Whether another Decision explicitly supersedes this one.
 ---@return louiselm.provenance.DecisionAnchor anchor
-local function decision_anchor(issue)
-  local anchor = { id = issue.id }
+local function decision_anchor(issue, superseded)
+  local anchor = { id = issue.id, state = decision_state(issue, superseded) }
   if issue.title ~= nil and issue.title ~= "" then
     anchor.title = issue.title
+  end
+  if issue.updated_at ~= nil and issue.updated_at ~= "" then
+    anchor.updated_at = issue.updated_at
   end
   return anchor
 end
@@ -449,25 +483,38 @@ function M.decisions(issues)
     valid_issues[#valid_issues + 1] = issue
   end
 
-  local anchors = {}
+  local anchor_issues = {}
   local decisions = {}
   for _, issue in ipairs(valid_issues) do
     if issue.issue_type == "question" then
-      anchors[#anchors + 1] = decision_anchor(issue)
+      anchor_issues[#anchor_issues + 1] = issue
       decisions[issue.id] = true
     end
   end
 
   local relations = {}
   local diagnostics = {}
-  for _, issue in ipairs(valid_issues) do
-    if decisions[issue.id] then
-      local issue_relations = decision_relations(issue, decisions, diagnostics)
-      for _, relation in ipairs(issue_relations) do
-        relations[#relations + 1] = relation
-      end
+  for _, issue in ipairs(anchor_issues) do
+    local issue_relations = decision_relations(issue, decisions, diagnostics)
+    for _, relation in ipairs(issue_relations) do
+      relations[#relations + 1] = relation
     end
   end
+
+  local superseded = {}
+  for _, relation in ipairs(relations) do
+    if relation.relation == "supersedes" then
+      superseded[relation.target.id] = true
+    end
+  end
+
+  local anchors = {}
+  for _, issue in ipairs(anchor_issues) do
+    anchors[#anchors + 1] = decision_anchor(issue, superseded[issue.id] == true)
+  end
+  table.sort(anchors, function(a, b)
+    return (a.updated_at or "") > (b.updated_at or "")
+  end)
 
   return { anchors = anchors, relations = relations, diagnostics = diagnostics }, nil
 end

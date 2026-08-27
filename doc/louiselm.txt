@@ -150,8 +150,8 @@ Commands                                                      *louiselm-commands
     Pick a louiselm skill to invoke
     Arguments: none
 
-:LouiselmRenameSession                                        *:LouiselmRenameSession*
-    Rename the current louiselm session
+:LouiselmProvenanceDecisions                                  *:LouiselmProvenanceDecisions*
+    Show the Provenance Decision index
     Arguments: none
 
 :LouiselmResume[!]                                            *:LouiselmResume*

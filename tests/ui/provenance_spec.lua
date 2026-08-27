@@ -334,4 +334,114 @@ T["Session Provenance"]["renders empty sides for a Session with no work"] = func
   })
 end
 
+T["Decision index"] = MiniTest.new_set()
+
+---@param calls table[]
+---@param output string
+local function finish_beads_questions(calls, output)
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  calls[1].on_exit({ code = 0, stdout = output, stderr = "" })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+end
+
+T["Decision index"]["renders Decision anchors with state, sorted by recent activity"] = function()
+  local calls = fake_system()
+  assert(Provenance.show_decisions({ cwd = "/repo" }))
+  MiniTest.expect.equality(calls[1].command, { "br", "list", "--type", "question", "--status", "all", "--json" })
+  finish_beads_questions(
+    calls,
+    nvim.json.encode({
+      issues = {
+        {
+          id = "louiselm-old",
+          issue_type = "question",
+          title = "Old decision",
+          status = "closed",
+          close_reason = "Resolved",
+          updated_at = "2026-08-20T00:00:00Z",
+        },
+        {
+          id = "louiselm-new",
+          issue_type = "question",
+          title = "New decision",
+          status = "open",
+          updated_at = "2026-08-26T00:00:00Z",
+        },
+      },
+    })
+  )
+
+  local popup = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(popup), "louiselm://provenance/decisions")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
+    "# Provenance Decisions",
+    "",
+    "- [open] New decision (louiselm-new) · 2026-08-26T00:00:00Z",
+    "- [accepted] Old decision (louiselm-old) · 2026-08-20T00:00:00Z",
+  })
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = popup }), false)
+end
+
+T["Decision index"]["renders a legible empty state with no Decision anchors"] = function()
+  local calls = fake_system()
+  assert(Provenance.show_decisions({}))
+  finish_beads_questions(calls, '{"issues":[]}')
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# Provenance Decisions",
+    "",
+    "No Decision anchors found.",
+  })
+end
+
+T["Decision index"]["navigates a selected row to its issue Provenance"] = function()
+  local calls = fake_system()
+  assert(Provenance.show_decisions({}))
+  finish_beads_questions(
+    calls,
+    nvim.json.encode({
+      issues = {
+        { id = "louiselm-old", issue_type = "question", title = "Old decision", status = "open" },
+      },
+    })
+  )
+
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+
+  MiniTest.expect.equality(calls[2].command, {
+    "bvr",
+    "--robot-history",
+    "--bead-history",
+    "louiselm-old",
+    "--history-since",
+    "2026-08-10",
+    "--history-limit",
+    "500",
+  })
+end
+
+T["Decision index"]["ignores a scheduled result after the view becomes inactive"] = function()
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  assert(Provenance.show_decisions({
+    is_active = function()
+      return false
+    end,
+  }))
+  calls[1].on_exit({ code = 0, stdout = '{"issues":[]}', stderr = "" })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+  for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
+    assert(not nvim.api.nvim_buf_get_name(buffer):match("^louiselm://provenance/decisions"))
+  end
+end
+
 return T

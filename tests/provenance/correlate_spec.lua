@@ -225,12 +225,18 @@ T["derives Decision anchors and recorded relations from question issues"] = func
       id = "louiselm-old",
       issue_type = "question",
       title = "Old decision",
+      status = "closed",
+      close_reason = "Design resolved",
+      updated_at = "2026-08-20T00:00:00Z",
     },
     {
       id = "louiselm-new",
       issue_type = "question",
       title = "New decision",
       description = "Decision relation: supersedes louiselm-old",
+      status = "closed",
+      close_reason = "Superseding the old decision",
+      updated_at = "2026-08-26T00:00:00Z",
     },
     { id = "louiselm-task", issue_type = "task", title = "Unrelated task" },
   })
@@ -238,8 +244,8 @@ T["derives Decision anchors and recorded relations from question issues"] = func
   assert(error_value == nil)
   assert(graph ~= nil)
   MiniTest.expect.equality(graph.anchors, {
-    { id = "louiselm-old", title = "Old decision" },
-    { id = "louiselm-new", title = "New decision" },
+    { id = "louiselm-new", title = "New decision", state = "accepted", updated_at = "2026-08-26T00:00:00Z" },
+    { id = "louiselm-old", title = "Old decision", state = "superseded", updated_at = "2026-08-20T00:00:00Z" },
   })
   MiniTest.expect.equality(graph.relations, {
     {
@@ -249,6 +255,52 @@ T["derives Decision anchors and recorded relations from question issues"] = func
       method = "recorded",
       confidence = 1,
     },
+  })
+end
+
+T["Decision anchors are sorted by most recent activity first"] = function()
+  local graph = assert(Correlate.decisions({
+    { id = "louiselm-a", issue_type = "question", status = "open", updated_at = "2026-08-20T00:00:00Z" },
+    { id = "louiselm-b", issue_type = "question", status = "open", updated_at = "2026-08-26T00:00:00Z" },
+    { id = "louiselm-c", issue_type = "question", status = "open", updated_at = "2026-08-23T00:00:00Z" },
+  }))
+
+  MiniTest.expect.equality(
+    { graph.anchors[1].id, graph.anchors[2].id, graph.anchors[3].id },
+    { "louiselm-b", "louiselm-c", "louiselm-a" }
+  )
+end
+
+T["Decision state distinguishes open, accepted, superseded, and unresolved"] = function()
+  local graph = assert(Correlate.decisions({
+    { id = "louiselm-open", issue_type = "question", status = "open" },
+    { id = "louiselm-accepted", issue_type = "question", status = "closed", close_reason = "Resolved by grill" },
+    {
+      id = "louiselm-superseded",
+      issue_type = "question",
+      status = "closed",
+      close_reason = "Resolved, later revisited",
+    },
+    {
+      id = "louiselm-superseding",
+      issue_type = "question",
+      status = "closed",
+      close_reason = "Supersedes the prior answer",
+      description = "Decision relation: supersedes louiselm-superseded",
+    },
+    { id = "louiselm-unresolved", issue_type = "question", status = "closed" },
+  }))
+
+  local states = {}
+  for _, anchor in ipairs(graph.anchors) do
+    states[anchor.id] = anchor.state
+  end
+  MiniTest.expect.equality(states, {
+    ["louiselm-open"] = "open",
+    ["louiselm-accepted"] = "accepted",
+    ["louiselm-superseded"] = "superseded",
+    ["louiselm-superseding"] = "accepted",
+    ["louiselm-unresolved"] = "unresolved",
   })
 end
 

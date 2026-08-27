@@ -251,6 +251,65 @@ function M.parse_beads_issues(output)
   return issues, nil
 end
 
+---@param raw_issue unknown Raw issue value from Beads JSON.
+---@return louiselm.provenance.Issue? issue
+---@return louiselm.provenance.SourceError? error_value
+local function parse_beads_question_fields(raw_issue)
+  if
+    type(raw_issue) ~= "table"
+    or type(raw_issue.id) ~= "string"
+    or raw_issue.id == ""
+    or type(raw_issue.issue_type) ~= "string"
+    or raw_issue.issue_type == ""
+  then
+    return nil, make_error("invalid_beads_question", "br returned a question issue without a valid id or type")
+  end
+  local issue = { id = raw_issue.id, issue_type = raw_issue.issue_type }
+  for _, field in ipairs({
+    "title",
+    "status",
+    "close_reason",
+    "updated_at",
+    "description",
+    "notes",
+    "design",
+    "acceptance_criteria",
+  }) do
+    if raw_issue[field] ~= nil then
+      if type(raw_issue[field]) ~= "string" then
+        return nil, make_error("invalid_beads_question", "br question issue " .. field .. " must be a string")
+      end
+      issue[field] = raw_issue[field]
+    end
+  end
+  return issue, nil
+end
+
+---Parse all question issues returned by `br list --type question --status all --json`.
+---@param output string JSON emitted by `br list --type question --status all --json`.
+---@return louiselm.provenance.Issue[]? issues
+---@return louiselm.provenance.SourceError? error_value
+function M.parse_beads_questions(output)
+  if type(output) ~= "string" then
+    return nil, make_error("invalid_beads_questions", "br question list output must be a string")
+  end
+  local decoded_ok, decoded = pcall(nvim.json.decode, output)
+  if not decoded_ok or type(decoded) ~= "table" or type(decoded.issues) ~= "table" then
+    return nil, make_error("invalid_beads_questions", "br returned malformed question list data")
+  end
+
+  local issues = {}
+  for index, raw_issue in ipairs(decoded.issues) do
+    local issue, parse_error = parse_beads_question_fields(raw_issue)
+    if issue == nil then
+      parse_error.index = index
+      return nil, parse_error
+    end
+    issues[#issues + 1] = issue
+  end
+  return issues, nil
+end
+
 ---@param value string
 ---@return string
 local function trim(value)
@@ -423,6 +482,46 @@ function M.beads_issues(cwd, callback)
           return
         end
         local issues, parse_error = M.parse_beads_issues(result.stdout or "")
+        callback(issues, parse_error)
+      end
+      nvim.schedule(finish)
+    end
+  )
+  if not call_ok then
+    return false, make_error("br_launch_failed", tostring(handle_or_error))
+  end
+  if handle_or_error == nil then
+    return false, make_error("br_launch_failed", "vim.system did not return a process handle")
+  end
+  return true, nil
+end
+
+---Collect all question issues with their Decision-relevant fields.
+---The completion callback is always scheduled out of vim.system's fast event.
+---@param cwd string Absolute repository working directory.
+---@param callback fun(issues: louiselm.provenance.Issue[]?, error_value: louiselm.provenance.SourceError?)
+---@return boolean started True when vim.system was started.
+---@return louiselm.provenance.SourceError? error_value Launch or validation error.
+function M.beads_questions(cwd, callback)
+  if type(cwd) ~= "string" or cwd == "" then
+    return false, make_error("invalid_cwd", "br source requires a non-empty cwd")
+  end
+  if type(callback) ~= "function" then
+    return false, make_error("invalid_callback", "br source requires a callback")
+  end
+
+  local call_ok, handle_or_error = pcall(
+    nvim.system,
+    { "br", "list", "--type", "question", "--status", "all", "--json" },
+    { cwd = cwd, text = true },
+    function(result)
+      local function finish()
+        if result.code ~= 0 then
+          local detail = trim(result.stderr or "")
+          callback(nil, make_error("br_failed", "br question list failed", detail ~= "" and detail or nil, result.code))
+          return
+        end
+        local issues, parse_error = M.parse_beads_questions(result.stdout or "")
         callback(issues, parse_error)
       end
       nvim.schedule(finish)
