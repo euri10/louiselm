@@ -25,6 +25,12 @@
 ---payload, in arrival order. This format is a dependency of later blog tooling
 ---(louiselm-mia); keep it a plain, deterministic mapping from entries to text
 ---rather than a templating system.
+---
+---`M.render_compact` renders the same snapshot for Handoff context (louiselm-93wl):
+---user and assistant text survive in full, tool calls reduce to their caption line
+---with no payload, reasoning blocks are dropped entirely, and `[resource]` blocks
+---injected into replayed user entries are stripped. It is the same deterministic
+---mapping constraint: never fold compaction into `M.render`.
 
 ---@alias louiselm.session.TranscriptEntryKind "user"|"assistant"|"reasoning"|"tool_call"
 
@@ -263,6 +269,86 @@ local function render_entry(entry)
   }
 end
 
+---Strip `[resource]` blocks from replayed user text. Only resumed sessions carry
+---them: ACP adapters flatten injected context into the prompt as `[resource]`
+---marker lines, so a replayed `user_chunk` entry embeds them verbatim next to the
+---text the operator actually typed. Two marker shapes exist in louiselm's own
+---pipeline:
+---  - embedded: `[resource] <uri>` on its own line, its body following on the next
+---    line -- stripped along with the body when a later `[resource]` marker bounds
+---    it. Without a later marker the boundary between body and typed prompt is not
+---    representable in the flattened string, so the body is kept: preserving typed
+---    text beats deleting content.
+---  - link: `[resource] <name> <uri>` with no body -- stripped alone, keeping
+---    whatever follows it, even when the adapter glued it directly to the typed
+---    text with no newline between.
+---@param text string? Replayed user entry text.
+---@return string text_without_resource_blocks
+local function strip_resource_blocks(text)
+  if type(text) ~= "string" or text == "" then
+    return text or ""
+  end
+  local result = text
+  while true do
+    -- Embedded form first: a link marker never starts with `[resource] <`, so the
+    -- two patterns cannot match the same span.
+    local embedded_start, embedded_end = result:find("^%s*%[resource%] <[^>]+>")
+    if embedded_start ~= nil then
+      local after = result:sub(embedded_end + 1)
+      if after:sub(1, 1) == "\n" then
+        local next_marker = after:find("[resource] ", 2, true)
+        if next_marker ~= nil then
+          result = after:sub(next_marker)
+        else
+          result = after
+        end
+      else
+        result = after
+      end
+    else
+      local link_start, link_end = result:find("^%s*%[resource%] [^<>\n]- <[^>]+>")
+      if link_start ~= nil then
+        result = result:sub(link_end + 1)
+      else
+        break
+      end
+    end
+  end
+  return result
+end
+
+---Render one entry in compact Handoff form. Returns nil for reasoning blocks,
+---which carry scratchpad, not durable knowledge.
+---@param entry louiselm.session.TranscriptEntry
+---@return string[]? lines
+local function render_compact_entry(entry)
+  if entry.kind == "user" then
+    local lines = { "## User", "" }
+    if entry.handoff_source_session_id ~= nil then
+      lines[#lines + 1] = "<sub>Handoff from Session: `" .. entry.handoff_source_session_id .. "`</sub>"
+      lines[#lines + 1] = ""
+    end
+    lines[#lines + 1] = strip_resource_blocks(entry.text)
+    lines[#lines + 1] = ""
+    return lines
+  end
+  if entry.kind == "assistant" then
+    return { "## Assistant", "", entry.text or "", "" }
+  end
+  if entry.kind == "reasoning" then
+    return nil
+  end
+  local raw = entry.raw or {}
+  local title = type(raw.title) == "string" and truncate(single_line(raw.title)) or entry.id
+  local status = type(raw.status) == "string" and single_line(raw.status) or "unknown"
+  return {
+    "## Tool",
+    "",
+    "<sub>**" .. tostring(title) .. "** — " .. status .. "</sub>",
+    "",
+  }
+end
+
 ---Render a transcript snapshot as markdown. Pure and deterministic: the same
 ---entries and session state always produce the same text. See the module doc
 ---comment above for the exact format.
@@ -280,6 +366,31 @@ function M.render(entries, state)
   }
   for _, entry in ipairs(entries) do
     nvim.list_extend(lines, render_entry(entry))
+  end
+  return table.concat(lines, "\n")
+end
+
+---Render a transcript snapshot as compact Handoff context (louiselm-93wl).
+---Pure and deterministic, like `M.render`: the same entries and session state
+---always produce the same text. Differs from `M.render` only by the compaction
+---rules documented on `render_compact_entry` and `strip_resource_blocks`.
+---@param entries louiselm.session.TranscriptEntry[] Transcript snapshot, in order.
+---@param state louiselm.session.TranscriptIdentity Session identity to label the export with; a full `louiselm.session.State` satisfies this.
+---@return string markdown
+function M.render_compact(entries, state)
+  local lines = {
+    "# louiselm session transcript",
+    "",
+    "- session: " .. state.id,
+    "- agent: " .. state.agent,
+    "- acp session: " .. (state.acp_session_id or "none"),
+    "",
+  }
+  for _, entry in ipairs(entries) do
+    local rendered = render_compact_entry(entry)
+    if rendered ~= nil then
+      nvim.list_extend(lines, rendered)
+    end
   end
   return table.concat(lines, "\n")
 end

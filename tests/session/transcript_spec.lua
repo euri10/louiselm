@@ -424,4 +424,123 @@ T["render"]["keeps the caption on one line when the tool status spans several"] 
   MiniTest.expect.equality(markdown:find("<sub>**Run tests** — failed hard</sub>", 1, true) ~= nil, true)
 end
 
+T["render_compact"] = MiniTest.new_set()
+
+local compact_entries = {
+  { kind = "user", text = "run the tests" },
+  { kind = "reasoning", text = "**deduced** the label order" },
+  {
+    kind = "tool_call",
+    id = "tool-1",
+    raw = {
+      toolCallId = "tool-1",
+      title = "Run tests",
+      status = "completed",
+      rawInput = { command = { "make", "test" } },
+      rawOutput = { stdout = string.rep("line\n", 50) },
+    },
+  },
+  { kind = "assistant", text = "All green." },
+}
+
+T["render_compact"]["keeps prose and tool captions, drops reasoning and payloads"] = function()
+  local markdown = Transcript.render_compact(compact_entries, state())
+
+  MiniTest.expect.equality(markdown:find("run the tests", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("All green.", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("<sub>**Run tests** — completed</sub>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("## Reasoning", 1, true), nil)
+  MiniTest.expect.equality(markdown:find("**deduced** the label order", 1, true), nil)
+  MiniTest.expect.equality(markdown:find("<details>", 1, true), nil)
+  MiniTest.expect.equality(markdown:find("make", 1, true), nil)
+  MiniTest.expect.equality(count_occurrences(markdown, "line"), 0)
+
+  local user_pos = assert(markdown:find("## User", 1, true))
+  local tool_pos = assert(markdown:find("## Tool", 1, true))
+  local assistant_pos = assert(markdown:find("## Assistant", 1, true))
+  MiniTest.expect.equality(user_pos < tool_pos, true)
+  MiniTest.expect.equality(tool_pos < assistant_pos, true)
+end
+
+T["render_compact"]["leaves the full renderer untouched for the same snapshot"] = function()
+  local markdown = Transcript.render(compact_entries, state())
+
+  MiniTest.expect.equality(markdown:find("## Reasoning", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("**deduced** the label order", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("<details>", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("make", 1, true) ~= nil, true)
+  MiniTest.expect.equality(count_occurrences(markdown, "line"), 50)
+end
+
+-- A resumed-session user entry carries the adapter's flattened rendering of the
+-- injected context: an embedded `[resource] <uri>` marker plus body, a link
+-- marker glued directly to the typed text (the adapter concatenates blocks with
+-- no separator), then the typed text itself.
+T["render_compact"]["strips injected resource blocks from replayed user text"] = function()
+  local markdown = Transcript.render_compact({
+    {
+      kind = "user",
+      text = "[resource] <louiselm://skills/index>\n"
+        .. "<skills_instructions>\nstep 1\n</skills_instructions>\n</available_skills>"
+        .. "[resource] AGENTS.md <file:///home/lotso/code/louiselm/AGENTS.md>commit and sync",
+    },
+  }, state())
+
+  MiniTest.expect.equality(markdown:find("commit and sync", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("skills_instructions", 1, true), nil)
+  MiniTest.expect.equality(markdown:find("louiselm://skills/index", 1, true), nil)
+  MiniTest.expect.equality(markdown:find("AGENTS.md <file://", 1, true), nil)
+end
+
+-- A link marker with nothing after it on its own line keeps the text that
+-- follows on the next line.
+T["render_compact"]["strips a link marker that ends its own line"] = function()
+  local markdown = Transcript.render_compact({
+    {
+      kind = "user",
+      text = "[resource] AGENTS.md <file:///home/lotso/code/louiselm/AGENTS.md>\ncommit and sync",
+    },
+  }, state())
+
+  MiniTest.expect.equality(markdown:find("commit and sync", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("AGENTS.md <file://", 1, true), nil)
+end
+
+-- With no later marker, the boundary between an embedded resource's body and
+-- the typed prompt is not representable in the flattened string: drop the
+-- marker, keep the body.
+T["render_compact"]["keeps the body of an unbounded trailing embedded marker"] = function()
+  local markdown = Transcript.render_compact({
+    {
+      kind = "user",
+      text = "[resource] <louiselm://skills/index>\n<skills_instructions>\nstep 1\n</skills_instructions>",
+    },
+  }, state())
+
+  MiniTest.expect.equality(markdown:find("step 1", 1, true) ~= nil, true)
+  MiniTest.expect.equality(markdown:find("louiselm://skills/index", 1, true), nil)
+end
+
+T["render_compact"]["preserves the Handoff provenance marker on user entries"] = function()
+  local markdown = Transcript.render_compact({
+    {
+      kind = "user",
+      text = "take over this",
+      handoff_source_session_id = "claude/161e0a06-dea4-471b-99de-caa1ea641212",
+    },
+  }, state())
+
+  MiniTest.expect.equality(
+    markdown:find("<sub>Handoff from Session: `claude/161e0a06-dea4-471b-99de-caa1ea641212`</sub>", 1, true) ~= nil,
+    true
+  )
+end
+
+T["render_compact"]["is deterministic for the same entries and state"] = function()
+  MiniTest.expect.equality(
+    Transcript.render_compact(compact_entries, state()),
+    Transcript.render_compact(compact_entries, state())
+  )
+end
+
 return T
