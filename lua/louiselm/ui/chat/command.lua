@@ -429,7 +429,7 @@ function M.register()
   })
 
   nvim.api.nvim_create_user_command("LouiselmInspectProvenance", inspect_provenance, {
-    desc = "Inspect commit Provenance under the cursor",
+    desc = "Inspect commit or issue Provenance under the cursor",
     force = true,
   })
 

@@ -11,6 +11,7 @@
 ---@field target louiselm.provenance.Node Node named by the relationship.
 ---@field relation string Relationship between the nodes.
 ---@field method "recorded"|"inferred" How the relationship was established.
+---@field correlation_method? "explicit_id"|"co_committed" bvr's correlation method.
 ---@field confidence number Confidence in the relationship, from 0 to 1.
 
 ---@class louiselm.provenance.Issue
@@ -231,6 +232,45 @@ function M.commits(commits)
         confidence = 1,
       }
     end
+  end
+  return edges, nil
+end
+
+---Build issue-to-commit edges from one bvr history response.
+---Explicit-id correlations remain recorded; co-committed correlations remain inferred.
+---This function performs no filesystem, process, or editor I/O.
+---@param history louiselm.provenance.IssueHistory Parsed bvr history.
+---@return louiselm.provenance.Edge[]? edges Edges in bvr commit order.
+---@return louiselm.provenance.Error? error_value Malformed input, if any.
+function M.issue(history)
+  if type(history) ~= "table" or type(history.bead_id) ~= "string" or history.bead_id == "" then
+    return nil, make_error("invalid_issue_history", "issue history must identify a Beads issue")
+  end
+  if type(history.commits) ~= "table" then
+    return nil, make_error("invalid_issue_history", "issue history commits must be an array")
+  end
+
+  local edges = {}
+  for index, commit in ipairs(history.commits) do
+    if
+      type(commit) ~= "table"
+      or type(commit.sha) ~= "string"
+      or commit.sha == ""
+      or (commit.method ~= "explicit_id" and commit.method ~= "co_committed")
+      or type(commit.confidence) ~= "number"
+      or commit.confidence < 0
+      or commit.confidence > 1
+    then
+      return nil, make_error("invalid_issue_history", "issue history commit is malformed", index)
+    end
+    edges[#edges + 1] = {
+      source = { kind = "issue", id = history.bead_id },
+      target = { kind = "commit", id = commit.sha },
+      relation = "implemented_by",
+      method = commit.method == "explicit_id" and "recorded" or "inferred",
+      correlation_method = commit.method,
+      confidence = commit.confidence,
+    }
   end
   return edges, nil
 end

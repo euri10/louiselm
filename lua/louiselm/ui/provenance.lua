@@ -38,12 +38,44 @@ local function sha_at_cursor(line, column)
   return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
 end
 
+---@param value string
+---@return boolean
+local function valid_issue_id(value)
+  return value:match("^[%a][%w%-]*%-%w[%w%.%-]*$") ~= nil
+end
+
+---@param line string
+---@param column integer Zero-based byte column.
+---@return string? issue_id
+local function issue_id_at_cursor(line, column)
+  local matches = {}
+  for start_index, value in line:gmatch("()([%a][%w%-]*%-%w[%w%.%-]*)") do
+    if valid_issue_id(value) then
+      matches[#matches + 1] = { start_index = start_index, value = value }
+    end
+  end
+  if #matches ~= 1 then
+    return nil
+  end
+  local match = matches[1]
+  local end_index = match.start_index + #match.value - 1
+  return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
+end
+
 ---@param buffer integer
 ---@return string? sha
 local function current_sha(buffer)
   local cursor = nvim.api.nvim_win_get_cursor(0)
   local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
   return type(line) == "string" and sha_at_cursor(line, cursor[2]) or nil
+end
+
+---@param buffer integer
+---@return string? issue_id
+local function current_issue(buffer)
+  local cursor = nvim.api.nvim_win_get_cursor(0)
+  local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
+  return type(line) == "string" and issue_id_at_cursor(line, cursor[2]) or nil
 end
 
 ---@param options louiselm.ui.ProvenanceOptions
@@ -94,14 +126,53 @@ local function commit_lines(commit, edges, options)
   return lines
 end
 
----@param commit louiselm.provenance.Commit
+---@param history louiselm.provenance.IssueHistory
+---@param edges louiselm.provenance.Edge[]
+---@return string[] lines
+local function issue_lines(history, edges)
+  local lines = {
+    "# " .. (history.title or history.bead_id),
+    "",
+    "ID: " .. history.bead_id,
+    "Status: " .. (history.status or "unknown"),
+    "",
+    "Milestones:",
+  }
+  local milestone_count = 0
+  for _, name in ipairs({ "created", "closed" }) do
+    local milestone = history.milestones[name]
+    if milestone ~= nil then
+      lines[#lines + 1] = string.format("- %s: %s (%s)", name, milestone.timestamp, milestone.commit_sha)
+      milestone_count = milestone_count + 1
+    end
+  end
+  if milestone_count == 0 then
+    lines[#lines + 1] = "- none recorded"
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Commits:"
+  for _, edge in ipairs(edges) do
+    lines[#lines + 1] = string.format(
+      "- %s · %s · %d%% confidence",
+      edge.target.id,
+      edge.correlation_method or edge.method,
+      math.floor(edge.confidence * 100 + 0.5)
+    )
+  end
+  if #edges == 0 then
+    lines[#lines + 1] = "- none correlated"
+  end
+  return lines
+end
+
+---@param name string Buffer URI.
 ---@param lines string[]
 ---@return boolean opened
 ---@return string? error_message
-local function open_commit(commit, lines)
+local function open_provenance(name, lines)
   local buffer = nvim.api.nvim_create_buf(false, true)
   local opened, error_message = pcall(function()
-    nvim.api.nvim_buf_set_name(buffer, "louiselm://provenance/commit/" .. commit.id)
+    nvim.api.nvim_buf_set_name(buffer, name)
     nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
     nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
     nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
@@ -160,7 +231,7 @@ local function show_commit(sha, options)
         return
       end
       local lines = commit_lines(commits[1], edges, options)
-      local opened, open_error = open_commit(commits[1], lines)
+      local opened, open_error = open_provenance("louiselm://provenance/commit/" .. commits[1].id, lines)
       if not opened then
         report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
       end
@@ -172,7 +243,41 @@ local function show_commit(sha, options)
   return true
 end
 
----Inspect the commit SHA under the cursor or prompt for one.
+---@param issue_id string
+---@param options louiselm.ui.ProvenanceOptions
+---@return boolean started
+---@return string? error_message
+local function show_issue(issue_id, options)
+  local started, start_error = Sources.bvr_history(
+    options.cwd or nvim.fn.getcwd(),
+    issue_id,
+    function(history, source_error)
+      if options.is_active ~= nil and not options.is_active() then
+        return
+      end
+      if history == nil or source_error ~= nil then
+        report_error(options, "could not read issue history")
+        return
+      end
+      local edges, correlate_error = Correlate.issue(history)
+      if edges == nil or correlate_error ~= nil then
+        report_error(options, "could not correlate issue " .. issue_id)
+        return
+      end
+      local opened, open_error =
+        open_provenance("louiselm://provenance/issue/" .. issue_id, issue_lines(history, edges))
+      if not opened then
+        report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+      end
+    end
+  )
+  if not started then
+    return false, start_error and start_error.message or "could not start bvr"
+  end
+  return true
+end
+
+---Inspect the commit SHA or Beads issue under the cursor or prompt for one.
 ---@param buffer integer Source buffer.
 ---@param options? louiselm.ui.ProvenanceOptions Lookup and lifecycle callbacks.
 ---@return boolean started Whether a lookup started or an SHA prompt was opened.
@@ -198,19 +303,30 @@ function M.inspect(buffer, options)
   if sha ~= nil then
     return show_commit(sha, options)
   end
-  nvim.ui.input({ prompt = "Commit SHA: " }, function(value)
+  local issue_id = current_issue(buffer)
+  if issue_id ~= nil then
+    return show_issue(issue_id, options)
+  end
+  nvim.ui.input({ prompt = "Commit SHA or Beads issue id: " }, function(value)
     if value == nil or (options.is_active ~= nil and not options.is_active()) then
       return
     end
     local prompted_sha = nvim.trim(value)
-    if not valid_sha(prompted_sha) then
-      report_error(options, "commit SHA must be 7 to 40 hexadecimal characters")
+    if valid_sha(prompted_sha) then
+      local _, lookup_error = show_commit(prompted_sha, options)
+      if lookup_error ~= nil then
+        report_error(options, lookup_error)
+      end
       return
     end
-    local _, lookup_error = show_commit(prompted_sha, options)
-    if lookup_error ~= nil then
-      report_error(options, lookup_error)
+    if valid_issue_id(prompted_sha) then
+      local _, lookup_error = show_issue(prompted_sha, options)
+      if lookup_error ~= nil then
+        report_error(options, lookup_error)
+      end
+      return
     end
+    report_error(options, "enter a valid commit SHA or Beads issue id")
   end)
   return true
 end

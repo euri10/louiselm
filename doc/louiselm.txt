@@ -127,7 +127,7 @@ Commands                                                      *louiselm-commands
     Arguments: none
 
 :LouiselmInspectProvenance                                    *:LouiselmInspectProvenance*
-    Inspect commit Provenance under the cursor
+    Inspect commit or issue Provenance under the cursor
     Arguments: none
 
 :LouiselmInspectTool                                          *:LouiselmInspectTool*

@@ -97,4 +97,88 @@ T["git log"]["rejects missing inputs before spawning"] = function()
   assert(ok, error_message)
 end
 
+T["bvr history"] = MiniTest.new_set()
+
+T["bvr history"]["parses issue milestones and correlation metadata"] = function()
+  local output = nvim.json.encode({
+    histories = {
+      ["louiselm-kpod"] = {
+        bead_id = "louiselm-kpod",
+        title = "Usage spacing",
+        status = "closed",
+        milestones = {
+          created = { timestamp = "2026-08-24T05:30:21+02:00", commit_sha = "create-sha" },
+          closed = { timestamp = "2026-08-24T14:55:01+02:00", commit_sha = "close-sha" },
+        },
+        commits = {
+          {
+            sha = "close-sha",
+            short_sha = "close-s",
+            message = "fix: spacing",
+            author = "euri10",
+            author_email = "benoit@example.com",
+            timestamp = "2026-08-24T14:55:01+02:00",
+            method = "co_committed",
+            confidence = 0.95,
+          },
+        },
+      },
+    },
+  })
+
+  local history, error_value = Sources.parse_bvr_history(output, "louiselm-kpod")
+  assert(error_value == nil)
+  assert(history ~= nil)
+  MiniTest.expect.equality(history.title, "Usage spacing")
+  MiniTest.expect.equality(history.status, "closed")
+  MiniTest.expect.equality(history.milestones.created.commit_sha, "create-sha")
+  MiniTest.expect.equality(history.commits[1].method, "co_committed")
+  MiniTest.expect.equality(history.commits[1].confidence, 0.95)
+end
+
+T["bvr history"]["returns an empty history when the issue is outside the range"] = function()
+  local history, error_value = Sources.parse_bvr_history('{"histories":{}}', "louiselm-kpod")
+  assert(error_value == nil)
+  MiniTest.expect.equality(history, { bead_id = "louiselm-kpod", commits = {}, milestones = {} })
+end
+
+T["bvr history"]["uses an explicit history range and schedules completion"] = function()
+  local runtime = fake_runtime()
+  local ok, error_message = pcall(function()
+    local completed
+    local started, start_error = Sources.bvr_history("/repo", "louiselm-kpod", function(history, callback_error)
+      completed = { history = history, error_value = callback_error }
+    end)
+    MiniTest.expect.equality(started, true)
+    MiniTest.expect.equality(start_error, nil)
+    MiniTest.expect.equality(runtime.processes[1].command, {
+      "bvr",
+      "--robot-history",
+      "--bead-history",
+      "louiselm-kpod",
+      "--history-since",
+      "2026-08-10",
+      "--history-limit",
+      "500",
+    })
+    MiniTest.expect.equality(runtime.processes[1].options.cwd, "/repo")
+    MiniTest.expect.equality(completed, nil)
+
+    runtime.processes[1].callback({ code = 0, stdout = '{"histories":{}}', stderr = "" })
+    MiniTest.expect.equality(#runtime.scheduled, 1)
+    runtime.scheduled[1]()
+    MiniTest.expect.equality(completed.error_value, nil)
+    MiniTest.expect.equality(completed.history.bead_id, "louiselm-kpod")
+  end)
+  runtime.restore()
+  assert(ok, error_message)
+end
+
+T["bvr history"]["rejects malformed output"] = function()
+  local history, error_value = Sources.parse_bvr_history("not json", "louiselm-kpod")
+  MiniTest.expect.equality(history, nil)
+  assert(error_value ~= nil)
+  MiniTest.expect.equality(error_value.code, "invalid_bvr_history")
+end
+
 return T

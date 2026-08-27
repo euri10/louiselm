@@ -54,6 +54,36 @@ T["captured git log yields explicit issue and Session edges"] = function()
   })
 end
 
+T["bvr history yields issue-to-commit edges with method and confidence"] = function()
+  local edges, error_value = Correlate.issue({
+    bead_id = "louiselm-kpod",
+    milestones = {},
+    commits = {
+      { sha = "explicit-sha", method = "explicit_id", confidence = 0.85 },
+      { sha = "inferred-sha", method = "co_committed", confidence = 0.95 },
+    },
+  })
+  assert(error_value == nil)
+  MiniTest.expect.equality(edges, {
+    {
+      source = { kind = "issue", id = "louiselm-kpod" },
+      target = { kind = "commit", id = "explicit-sha" },
+      relation = "implemented_by",
+      method = "recorded",
+      correlation_method = "explicit_id",
+      confidence = 0.85,
+    },
+    {
+      source = { kind = "issue", id = "louiselm-kpod" },
+      target = { kind = "commit", id = "inferred-sha" },
+      relation = "implemented_by",
+      method = "inferred",
+      correlation_method = "co_committed",
+      confidence = 0.95,
+    },
+  })
+end
+
 T["stale references remain data rather than becoming errors"] = function()
   local edges, error_value = Correlate.commits({
     { id = "deadbeef", message = "chore: old\n\nRefs louiselm-no-longer-exists\n" },

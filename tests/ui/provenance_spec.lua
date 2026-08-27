@@ -13,7 +13,7 @@ local T = MiniTest.new_set({
       rawset(nvim, "schedule", original_schedule)
       rawset(nvim, "system", original_system)
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
-        if nvim.api.nvim_buf_get_name(buffer):match("^louiselm://provenance/commit/") then
+        if nvim.api.nvim_buf_get_name(buffer):match("^louiselm://provenance/") then
           nvim.api.nvim_buf_delete(buffer, { force = true })
         end
       end
@@ -63,6 +63,18 @@ local function finish(calls, message)
     ),
     stderr = "",
   })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+end
+
+---@param calls table[]
+---@param output string
+local function finish_bvr(calls, output)
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  calls[1].on_exit({ code = 0, stdout = output, stderr = "" })
   MiniTest.expect.equality(#scheduled, 1)
   scheduled[1]()
 end
@@ -139,6 +151,82 @@ T["commit Provenance"]["ignores a scheduled result after the view becomes inacti
   MiniTest.expect.equality(#scheduled, 1)
   scheduled[1]()
   MiniTest.expect.equality(#nvim.api.nvim_list_bufs(), #source_buffers + 1)
+end
+
+T["issue Provenance"] = MiniTest.new_set()
+
+T["issue Provenance"]["renders bvr correlations and milestones"] = function()
+  local buffer = source_buffer("Inspect louiselm-kpod", 10)
+  local calls = fake_system()
+
+  assert(Provenance.inspect(buffer))
+  MiniTest.expect.equality(calls[1].command, {
+    "bvr",
+    "--robot-history",
+    "--bead-history",
+    "louiselm-kpod",
+    "--history-since",
+    "2026-08-10",
+    "--history-limit",
+    "500",
+  })
+  finish_bvr(
+    calls,
+    nvim.json.encode({
+      histories = {
+        ["louiselm-kpod"] = {
+          bead_id = "louiselm-kpod",
+          title = "Usage spacing",
+          status = "closed",
+          milestones = {
+            created = { timestamp = "2026-08-24T05:30:21+02:00", commit_sha = "create-sha" },
+            closed = { timestamp = "2026-08-24T14:55:01+02:00", commit_sha = "close-sha" },
+          },
+          commits = {
+            { sha = "close-sha", method = "co_committed", confidence = 0.95 },
+          },
+        },
+      },
+    })
+  )
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# Usage spacing",
+    "",
+    "ID: louiselm-kpod",
+    "Status: closed",
+    "",
+    "Milestones:",
+    "- created: 2026-08-24T05:30:21+02:00 (create-sha)",
+    "- closed: 2026-08-24T14:55:01+02:00 (close-sha)",
+    "",
+    "Commits:",
+    "- close-sha · co_committed · 95% confidence",
+  })
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
+    "louiselm://provenance/issue/louiselm-kpod"
+  )
+end
+
+T["issue Provenance"]["renders an issue with no correlated commits"] = function()
+  local buffer = source_buffer("louiselm-kpod", 5)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer))
+  finish_bvr(calls, '{"histories":{}}')
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# louiselm-kpod",
+    "",
+    "ID: louiselm-kpod",
+    "Status: unknown",
+    "",
+    "Milestones:",
+    "- none recorded",
+    "",
+    "Commits:",
+    "- none correlated",
+  })
 end
 
 return T

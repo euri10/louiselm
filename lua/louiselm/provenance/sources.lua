@@ -2,6 +2,22 @@
 ---@field exit_code? integer Git exit code, when available.
 ---@field detail? string Bounded stderr detail, when available.
 
+---@class louiselm.provenance.HistoryMilestone
+---@field timestamp string
+---@field commit_sha string
+
+---@class louiselm.provenance.HistoryCommit
+---@field sha string Full commit object id.
+---@field method "explicit_id"|"co_committed" How bvr correlated the commit.
+---@field confidence number bvr's correlation confidence, from 0 to 1.
+
+---@class louiselm.provenance.IssueHistory
+---@field bead_id string Beads issue identifier.
+---@field title? string Issue title, when the history is in range.
+---@field status? string Issue status, when the history is in range.
+---@field milestones table<string, louiselm.provenance.HistoryMilestone>
+---@field commits louiselm.provenance.HistoryCommit[]
+
 local M = {}
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -10,6 +26,8 @@ local nvim = vim
 local RECORD_SEPARATOR = string.char(30)
 local FIELD_SEPARATOR = string.char(0)
 local LOG_FORMAT = "%H%x00%B%x00%x1e"
+local HISTORY_SINCE = "2026-08-10"
+local HISTORY_LIMIT = "500"
 
 ---@param code string
 ---@param message string
@@ -54,6 +72,102 @@ function M.parse_git_log(output)
     end
   end
   return commits, nil
+end
+
+---@param value unknown
+---@return louiselm.provenance.HistoryMilestone? milestone
+local function parse_milestone(value)
+  if type(value) ~= "table" or type(value.timestamp) ~= "string" or type(value.commit_sha) ~= "string" then
+    return nil
+  end
+  return { timestamp = value.timestamp, commit_sha = value.commit_sha }
+end
+
+---@param value unknown
+---@return louiselm.provenance.HistoryCommit? commit
+local function parse_history_commit(value)
+  if
+    type(value) ~= "table"
+    or type(value.sha) ~= "string"
+    or value.sha == ""
+    or (value.method ~= "explicit_id" and value.method ~= "co_committed")
+    or type(value.confidence) ~= "number"
+    or value.confidence < 0
+    or value.confidence > 1
+  then
+    return nil
+  end
+  return { sha = value.sha, method = value.method, confidence = value.confidence }
+end
+
+---Parse one issue's observed bvr history response.
+---@param output string JSON emitted by `bvr --robot-history`.
+---@param bead_id string Requested Beads issue identifier.
+---@return louiselm.provenance.IssueHistory? history
+---@return louiselm.provenance.SourceError? error_value
+function M.parse_bvr_history(output, bead_id)
+  if type(output) ~= "string" then
+    return nil, make_error("invalid_bvr_history", "bvr history output must be a string")
+  end
+  if type(bead_id) ~= "string" or bead_id == "" then
+    return nil, make_error("invalid_bead_id", "bvr history requires a non-empty Beads issue id")
+  end
+
+  local decoded_ok, decoded = pcall(nvim.json.decode, output)
+  if not decoded_ok or type(decoded) ~= "table" or type(decoded.histories) ~= "table" then
+    return nil, make_error("invalid_bvr_history", "bvr returned malformed history data")
+  end
+
+  local raw_history = decoded.histories[bead_id]
+  if raw_history == nil then
+    return { bead_id = bead_id, commits = {}, milestones = {} }, nil
+  end
+  if type(raw_history) ~= "table" then
+    return nil, make_error("invalid_bvr_history", "bvr returned malformed issue history")
+  end
+
+  local history = { bead_id = bead_id, commits = {}, milestones = {} }
+  if raw_history.title ~= nil then
+    if type(raw_history.title) ~= "string" then
+      return nil, make_error("invalid_bvr_history", "bvr issue title must be a string")
+    end
+    history.title = raw_history.title
+  end
+  if raw_history.status ~= nil then
+    if type(raw_history.status) ~= "string" then
+      return nil, make_error("invalid_bvr_history", "bvr issue status must be a string")
+    end
+    history.status = raw_history.status
+  end
+
+  if raw_history.milestones ~= nil then
+    if type(raw_history.milestones) ~= "table" then
+      return nil, make_error("invalid_bvr_history", "bvr issue milestones must be an object")
+    end
+    for name, value in pairs(raw_history.milestones) do
+      if name == "created" or name == "closed" then
+        local milestone = parse_milestone(value)
+        if milestone == nil then
+          return nil, make_error("invalid_bvr_history", "bvr issue milestone is malformed")
+        end
+        history.milestones[name] = milestone
+      end
+    end
+  end
+
+  if raw_history.commits ~= nil then
+    if type(raw_history.commits) ~= "table" then
+      return nil, make_error("invalid_bvr_history", "bvr issue commits must be an array")
+    end
+    for index, value in ipairs(raw_history.commits) do
+      local commit = parse_history_commit(value)
+      if commit == nil then
+        return nil, make_error("invalid_bvr_history", "bvr issue commit is malformed")
+      end
+      history.commits[#history.commits + 1] = commit
+    end
+  end
+  return history, nil
 end
 
 ---@param value string
@@ -106,6 +220,54 @@ function M.git_log(cwd, revision_range, callback)
   end
   if handle_or_error == nil then
     return false, make_error("git_launch_failed", "vim.system did not return a process handle")
+  end
+  return true, nil
+end
+
+---Collect one issue's commit correlations from bvr.
+---The completion callback is always scheduled out of vim.system's fast event.
+---@param cwd string Absolute repository working directory.
+---@param bead_id string Beads issue identifier.
+---@param callback fun(history: louiselm.provenance.IssueHistory?, error_value: louiselm.provenance.SourceError?)
+---@return boolean started True when vim.system was started.
+---@return louiselm.provenance.SourceError? error_value Launch or validation error.
+function M.bvr_history(cwd, bead_id, callback)
+  if type(cwd) ~= "string" or cwd == "" then
+    return false, make_error("invalid_cwd", "bvr source requires a non-empty cwd")
+  end
+  if type(bead_id) ~= "string" or bead_id == "" then
+    return false, make_error("invalid_bead_id", "bvr source requires a non-empty Beads issue id")
+  end
+  if type(callback) ~= "function" then
+    return false, make_error("invalid_callback", "bvr source requires a callback")
+  end
+
+  local call_ok, handle_or_error = pcall(nvim.system, {
+    "bvr",
+    "--robot-history",
+    "--bead-history",
+    bead_id,
+    "--history-since",
+    HISTORY_SINCE,
+    "--history-limit",
+    HISTORY_LIMIT,
+  }, { cwd = cwd, text = true }, function(result)
+    local function finish()
+      if result.code ~= 0 then
+        local detail = trim(result.stderr or "")
+        callback(nil, make_error("bvr_failed", "bvr history failed", detail ~= "" and detail or nil, result.code))
+        return
+      end
+      local history, parse_error = M.parse_bvr_history(result.stdout or "", bead_id)
+      callback(history, parse_error)
+    end
+    nvim.schedule(finish)
+  end)
+  if not call_ok then
+    return false, make_error("bvr_launch_failed", tostring(handle_or_error))
+  end
+  if handle_or_error == nil then
+    return false, make_error("bvr_launch_failed", "vim.system did not return a process handle")
   end
   return true, nil
 end
