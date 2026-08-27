@@ -419,6 +419,157 @@ local function show_issue(issue_id, options)
   return true
 end
 
+---@param edge louiselm.provenance.Edge
+---@return string
+local function evidence_edge_line(edge)
+  local method = edge.correlation_method or edge.method
+  local certainty = edge.method == "inferred" and "inferred" or "recorded"
+  return string.format(
+    "- %s · %s · %s · %d%% confidence",
+    edge.target.id,
+    certainty,
+    method,
+    math.floor(edge.confidence * 100 + 0.5)
+  )
+end
+
+---@param timeline louiselm.provenance.DecisionTimeline
+---@param history louiselm.provenance.IssueHistory
+---@param issue louiselm.provenance.BeadsIssue
+---@param options louiselm.ui.ProvenanceOptions
+---@return string[] lines
+local function decision_lines(timeline, history, issue, options)
+  local lines = {
+    "# Decision " .. (timeline.anchor.title or timeline.anchor.id),
+    "",
+    "ID: " .. timeline.anchor.id,
+    "State: " .. timeline.anchor.state,
+    "Status: " .. (history.status or issue.status or "unknown"),
+    "",
+    "Implementation:",
+  }
+  if #timeline.implementation == 0 then
+    lines[#lines + 1] = "- unresolved (no correlated commits)"
+  else
+    for _, edge in ipairs(timeline.implementation) do
+      lines[#lines + 1] = evidence_edge_line(edge)
+    end
+  end
+
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Sessions:"
+  if #timeline.sessions == 0 then
+    lines[#lines + 1] = "- unresolved (no attributable Session links)"
+  else
+    for _, edge in ipairs(timeline.sessions) do
+      local path, error_message = Locator.resolve(edge.target.id, options.definitions or {}, options.locator_options)
+      if path ~= nil then
+        lines[#lines + 1] = "- " .. edge.target.id .. " → " .. path .. " · recorded · 100% confidence"
+      else
+        lines[#lines + 1] = "- "
+          .. edge.target.id
+          .. " → unresolved ("
+          .. (error_message or "unknown error")
+          .. ") · recorded · 100% confidence"
+      end
+    end
+  end
+
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "QA acceptance:"
+  if #timeline.qa == 0 then
+    lines[#lines + 1] = "- unresolved (no attributable acceptance tied to a correlated commit)"
+  else
+    for _, acceptance in ipairs(timeline.qa) do
+      local evidence = acceptance.evidence ~= nil and (" · " .. acceptance.evidence) or ""
+      lines[#lines + 1] =
+        string.format("- %s · %s · %s%s", acceptance.author, acceptance.commit_sha, acceptance.scope, evidence)
+    end
+  end
+
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Forensics:"
+  if #timeline.forensics == 0 then
+    lines[#lines + 1] = "- unresolved (no pointer recorded)"
+  else
+    for _, pointer in ipairs(timeline.forensics) do
+      lines[#lines + 1] = "- " .. pointer
+    end
+  end
+
+  if #timeline.gaps > 0 then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "Unresolved evidence:"
+    for _, gap in ipairs(timeline.gaps) do
+      lines[#lines + 1] = "- " .. gap
+    end
+  end
+  return lines
+end
+
+---@param issue_id string
+---@param options louiselm.ui.ProvenanceOptions
+---@return boolean started
+---@return string? error_message
+local function show_decision(issue_id, options)
+  local started, start_error = Sources.bvr_history(
+    options.cwd or nvim.fn.getcwd(),
+    issue_id,
+    function(history, source_error)
+      if options.is_active ~= nil and not options.is_active() then
+        return
+      end
+      if history == nil or source_error ~= nil then
+        report_error(options, "could not read Decision history")
+        return
+      end
+      local edges, correlate_error = Correlate.issue(history)
+      if edges == nil or correlate_error ~= nil then
+        report_error(options, "could not correlate Decision " .. issue_id)
+        return
+      end
+      local actors_started, actors_error = Sources.beads_issue(
+        options.cwd or nvim.fn.getcwd(),
+        issue_id,
+        function(issue, actor_source_error)
+          if options.is_active ~= nil and not options.is_active() then
+            return
+          end
+          if issue == nil or actor_source_error ~= nil or issue.issue_type == nil then
+            report_error(options, "could not read Decision anchor")
+            return
+          end
+          local actor_edges, actor_error = Correlate.issue_actors(issue)
+          if actor_edges == nil or actor_error ~= nil then
+            report_error(options, "could not correlate Decision actors " .. issue_id)
+            return
+          end
+          local timeline, timeline_error =
+            Correlate.decision_timeline(issue, history, Correlate.merge_issue_sessions(edges, actor_edges))
+          if timeline == nil or timeline_error ~= nil then
+            report_error(options, "could not derive Decision evidence " .. issue_id)
+            return
+          end
+          local opened, open_error = open_provenance(
+            "louiselm://provenance/decision/" .. issue_id,
+            decision_lines(timeline, history, issue, options)
+          )
+          if not opened then
+            report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+          end
+        end
+      )
+      if not actors_started then
+        report_error(options, actors_error and actors_error.message or "could not start br")
+      end
+    end
+  )
+  if not started then
+    return false, start_error and start_error.message or "could not start bvr"
+  end
+  return true
+end
+
 ---@param session_id string
 ---@param options louiselm.ui.ProvenanceOptions
 ---@return boolean started
@@ -532,7 +683,7 @@ function M.show_decisions(options)
       if issue_id == nil then
         return
       end
-      local _, lookup_error = show_issue(issue_id, options)
+      local _, lookup_error = show_decision(issue_id, options)
       if lookup_error ~= nil then
         report_error(options, lookup_error)
       end

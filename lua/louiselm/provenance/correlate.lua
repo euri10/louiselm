@@ -25,6 +25,11 @@
 ---@field notes? string Human-authored issue notes.
 ---@field design? string Human-authored design notes.
 ---@field acceptance_criteria? string Human-authored acceptance criteria.
+---@field comments? louiselm.provenance.Comment[] Human-authored Beads comments.
+
+---@class louiselm.provenance.Comment
+---@field author string Attributable Beads author.
+---@field text string Comment body.
 
 ---@class louiselm.provenance.DecisionAnchor
 ---@field id string Beads issue identifier that anchors the Decision.
@@ -36,6 +41,20 @@
 ---@field anchors louiselm.provenance.DecisionAnchor[] Question issues represented as Decisions.
 ---@field relations louiselm.provenance.Edge[] Explicit relationships between Decisions.
 ---@field diagnostics louiselm.provenance.Error[] Non-fatal malformed or unresolved relations.
+
+---@class louiselm.provenance.DecisionAcceptance
+---@field author string Attributable QA marker author.
+---@field commit_sha string Commit named by the marker.
+---@field scope string Decision issue named by the marker.
+---@field evidence? string Optional QA round or Forensics pointer.
+
+---@class louiselm.provenance.DecisionTimeline
+---@field anchor louiselm.provenance.DecisionAnchor Decision being inspected.
+---@field implementation louiselm.provenance.Edge[] Issue-to-commit evidence.
+---@field sessions louiselm.provenance.Edge[] Attributable issue-to-Session evidence.
+---@field qa louiselm.provenance.DecisionAcceptance[] Human QA acceptance markers tied to commits.
+---@field forensics string[] Forensics pointers supplied by QA markers.
+---@field gaps string[] Explicit unresolved evidence gaps.
 
 ---@class louiselm.provenance.Error
 ---@field code string Stable machine-readable error code.
@@ -157,6 +176,21 @@ local function validate_issue(value, index)
         return nil, make_error("invalid_issue", "issue " .. field .. " must be a string", index)
       end
       issue[field] = value[field]
+    end
+  end
+  if value.comments ~= nil then
+    if type(value.comments) ~= "table" then
+      return nil, make_error("invalid_issue", "issue comments must be an array", index)
+    end
+    issue.comments = {}
+    for comment_index, comment in ipairs(value.comments) do
+      if type(comment) ~= "table" or type(comment.author) ~= "string" or comment.author == "" then
+        return nil, make_error("invalid_issue", "issue comment author must be a non-empty string", comment_index)
+      end
+      if type(comment.text) ~= "string" then
+        return nil, make_error("invalid_issue", "issue comment text must be a string", comment_index)
+      end
+      issue.comments[#issue.comments + 1] = { author = comment.author, text = comment.text }
     end
   end
   return issue, nil
@@ -454,6 +488,127 @@ function M.merge_issue_sessions(existing, additional)
     end
   end
   return result
+end
+
+---@param text string
+---@return louiselm.provenance.DecisionAcceptance?
+local function parse_qa_marker(text)
+  local commit_sha
+  local scope
+  local evidence
+  for line in text:gmatch("[^\r\n]+") do
+    local value = line:match("^%s*QA accepted:%s*(%S+)%s*$")
+    if value ~= nil then
+      commit_sha = value
+    end
+    value = line:match("^%s*Scope:%s*(%S+)%s*$")
+    if value ~= nil then
+      scope = value
+    end
+    value = line:match("^%s*Evidence:%s*(%S+)%s*$")
+    if value ~= nil then
+      evidence = value
+    end
+  end
+  if commit_sha == nil or scope == nil then
+    return nil
+  end
+  return { commit_sha = commit_sha, scope = scope, evidence = evidence, author = "" }
+end
+
+---@param wanted string
+---@param actual string
+---@return boolean
+local function is_commit_prefix(wanted, actual)
+  local normalized_wanted = wanted:lower()
+  local normalized_actual = actual:lower()
+  return normalized_actual:sub(1, #normalized_wanted) == normalized_wanted
+end
+
+---@param issue louiselm.provenance.Issue|louiselm.provenance.BeadsIssue
+---@param history louiselm.provenance.IssueHistory
+---@param edges louiselm.provenance.Edge[] Issue edges from the collected history.
+---@return louiselm.provenance.DecisionTimeline? timeline
+---@return louiselm.provenance.Error? error_value
+function M.decision_timeline(issue, history, edges)
+  local checked_issue, issue_error = validate_issue(issue, 1)
+  if checked_issue == nil then
+    return nil, issue_error
+  end
+  if checked_issue.issue_type ~= "question" then
+    return nil, make_error("invalid_decision", "Decision timeline requires a question issue")
+  end
+  if type(history) ~= "table" or history.bead_id ~= checked_issue.id or type(history.commits) ~= "table" then
+    return nil, make_error("invalid_decision_history", "Decision timeline history must identify its issue")
+  end
+  if type(edges) ~= "table" then
+    return nil, make_error("invalid_decision_edges", "Decision timeline edges must be an array")
+  end
+
+  local implementation = {}
+  local sessions = {}
+  for _, edge in ipairs(edges) do
+    if type(edge) ~= "table" or type(edge.target) ~= "table" then
+      return nil, make_error("invalid_decision_edges", "Decision timeline edge is malformed")
+    end
+    if edge.target.kind == "commit" then
+      implementation[#implementation + 1] = edge
+    elseif edge.target.kind == "session" then
+      sessions[#sessions + 1] = edge
+    end
+  end
+
+  local timeline = {
+    anchor = decision_anchor(checked_issue, false),
+    implementation = implementation,
+    sessions = sessions,
+    qa = {},
+    forensics = {},
+    gaps = {},
+  }
+  local correlated_commits = {}
+  for _, edge in ipairs(implementation) do
+    correlated_commits[#correlated_commits + 1] = edge.target.id
+  end
+  local seen_forensics = {}
+  if checked_issue.comments ~= nil then
+    for _, comment in ipairs(checked_issue.comments) do
+      local marker = parse_qa_marker(comment.text)
+      if marker ~= nil and marker.scope == checked_issue.id then
+        local matches = 0
+        for _, commit_sha in ipairs(correlated_commits) do
+          if is_commit_prefix(marker.commit_sha, commit_sha) then
+            matches = matches + 1
+          end
+        end
+        if matches == 1 then
+          marker.author = comment.author
+          timeline.qa[#timeline.qa + 1] = marker
+          if
+            marker.evidence ~= nil
+            and (marker.evidence:lower():find("forensics", 1, true) ~= nil or marker.evidence:match("%.json$") ~= nil)
+            and not seen_forensics[marker.evidence]
+          then
+            seen_forensics[marker.evidence] = true
+            timeline.forensics[#timeline.forensics + 1] = marker.evidence
+          end
+        end
+      end
+    end
+  end
+  if #implementation == 0 then
+    timeline.gaps[#timeline.gaps + 1] = "Implementation unresolved (no correlated commits)"
+  end
+  if #sessions == 0 then
+    timeline.gaps[#timeline.gaps + 1] = "Sessions unresolved (no attributable Session links)"
+  end
+  if #timeline.qa == 0 then
+    timeline.gaps[#timeline.gaps + 1] = "QA unresolved (no attributable acceptance tied to a correlated commit)"
+  end
+  if #timeline.forensics == 0 then
+    timeline.gaps[#timeline.gaps + 1] = "Forensics unresolved (no pointer recorded)"
+  end
+  return timeline, nil
 end
 
 ---Derive Decision anchors and explicit relations from Beads issues.

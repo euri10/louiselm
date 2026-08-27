@@ -23,6 +23,16 @@
 ---@field id string Beads issue identifier.
 ---@field assignee? string Actor assigned to the issue, when present.
 ---@field created_by? string Actor that created the issue, when present.
+---@field issue_type? string Beads issue type, when present.
+---@field title? string Human-readable issue title, when present.
+---@field status? string Beads issue status, when present.
+---@field close_reason? string Human-authored closure reason, when present.
+---@field updated_at? string Beads last-activity timestamp, when present.
+---@field description? string Human-authored issue description, when present.
+---@field notes? string Human-authored issue notes, when present.
+---@field design? string Human-authored design notes, when present.
+---@field acceptance_criteria? string Human-authored acceptance criteria, when present.
+---@field comments? louiselm.provenance.Comment[] Human-authored Beads comments.
 
 local M = {}
 
@@ -197,6 +207,39 @@ local function parse_beads_issue_fields(raw_issue)
         return nil, make_error("invalid_beads_issue", "br issue " .. field .. " must be a string")
       end
       issue[field] = raw_issue[field]
+    end
+  end
+  for _, field in ipairs({
+    "issue_type",
+    "title",
+    "status",
+    "close_reason",
+    "updated_at",
+    "description",
+    "notes",
+    "design",
+    "acceptance_criteria",
+  }) do
+    if raw_issue[field] ~= nil then
+      if type(raw_issue[field]) ~= "string" then
+        return nil, make_error("invalid_beads_issue", "br issue " .. field .. " must be a string")
+      end
+      issue[field] = raw_issue[field]
+    end
+  end
+  if raw_issue.comments ~= nil then
+    if type(raw_issue.comments) ~= "table" then
+      return nil, make_error("invalid_beads_issue", "br issue comments must be an array")
+    end
+    issue.comments = {}
+    for comment_index, comment in ipairs(raw_issue.comments) do
+      if type(comment) ~= "table" or type(comment.author) ~= "string" or comment.author == "" then
+        return nil, make_error("invalid_beads_issue", "br issue comment author must be a non-empty string")
+      end
+      if type(comment.text) ~= "string" then
+        return nil, make_error("invalid_beads_issue", "br issue comment text must be a string")
+      end
+      issue.comments[#issue.comments + 1] = { author = comment.author, text = comment.text }
     end
   end
   return issue, nil

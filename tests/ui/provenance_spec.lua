@@ -99,6 +99,19 @@ local function finish_beads_issues(calls, output)
   scheduled[1]()
 end
 
+---@param calls table[]
+---@param index integer
+---@param output string
+local function finish_call(calls, index, output)
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  calls[index].on_exit({ code = 0, stdout = output, stderr = "" })
+  MiniTest.expect.equality(#scheduled, 1)
+  scheduled[1]()
+end
+
 T["commit Provenance"] = MiniTest.new_set()
 
 T["commit Provenance"]["renders commit references and unresolved Sessions"] = function()
@@ -423,6 +436,126 @@ T["Decision index"]["navigates a selected row to its issue Provenance"] = functi
     "--history-limit",
     "500",
   })
+end
+
+T["Decision index"]["opens a read-only evidence timeline with recorded and inferred paths"] = function()
+  local calls = fake_system()
+  assert(Provenance.show_decisions({ definitions = {} }))
+  finish_beads_questions(
+    calls,
+    nvim.json.encode({
+      issues = {
+        { id = "louiselm-decision", issue_type = "question", title = "Evidence boundary", status = "closed" },
+      },
+    })
+  )
+
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+  finish_call(
+    calls,
+    2,
+    nvim.json.encode({
+      histories = {
+        ["louiselm-decision"] = {
+          bead_id = "louiselm-decision",
+          status = "closed",
+          milestones = {},
+          commits = {
+            {
+              sha = "abc123456789",
+              method = "explicit_id",
+              confidence = 1,
+              message = "feat: evidence boundary\n\nRefs codex/session-1\n",
+            },
+            { sha = "def5678", method = "co_committed", confidence = 0.75 },
+          },
+        },
+      },
+    })
+  )
+  finish_call(
+    calls,
+    3,
+    nvim.json.encode({
+      {
+        id = "louiselm-decision",
+        issue_type = "question",
+        title = "Evidence boundary",
+        status = "closed",
+        close_reason = "Resolved",
+        assignee = "codex/session-1",
+        created_by = "lotso",
+        comments = {
+          {
+            author = "lotso",
+            text = "QA accepted: abc1234\nScope: louiselm-decision\nEvidence: forensics-1",
+          },
+        },
+      },
+    })
+  )
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# Decision Evidence boundary",
+    "",
+    "ID: louiselm-decision",
+    "State: accepted",
+    "Status: closed",
+    "",
+    "Implementation:",
+    "- abc123456789 · recorded · explicit_id · 100% confidence",
+    "- def5678 · inferred · co_committed · 75% confidence",
+    "",
+    "Sessions:",
+    "- codex/session-1 → unresolved (no transcript layout is configured) · recorded · 100% confidence",
+    "",
+    "QA acceptance:",
+    "- lotso · abc1234 · louiselm-decision · forensics-1",
+    "",
+    "Forensics:",
+    "- forensics-1",
+  })
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
+    "louiselm://provenance/decision/louiselm-decision"
+  )
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("modifiable", { buf = nvim.api.nvim_get_current_buf() }),
+    false
+  )
+end
+
+T["Decision index"]["keeps missing evidence explicit"] = function()
+  local calls = fake_system()
+  assert(Provenance.show_decisions({}))
+  finish_beads_questions(
+    calls,
+    nvim.json.encode({
+      issues = {
+        { id = "louiselm-decision", issue_type = "question", title = "Unresolved", status = "open" },
+      },
+    })
+  )
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+  finish_call(calls, 2, '{"histories":{}}')
+  finish_call(
+    calls,
+    3,
+    '[{"id":"louiselm-decision","issue_type":"question","title":"Unresolved","status":"open","comments":[]}]'
+  )
+
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[7], "Implementation:")
+  MiniTest.expect.equality(lines[8], "- unresolved (no correlated commits)")
+  MiniTest.expect.equality(lines[11], "- unresolved (no attributable Session links)")
+  MiniTest.expect.equality(lines[14], "- unresolved (no attributable acceptance tied to a correlated commit)")
+  MiniTest.expect.equality(lines[17], "- unresolved (no pointer recorded)")
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("modifiable", { buf = nvim.api.nvim_get_current_buf() }),
+    false
+  )
 end
 
 T["Decision index"]["ignores a scheduled result after the view becomes inactive"] = function()

@@ -304,6 +304,74 @@ T["Decision state distinguishes open, accepted, superseded, and unresolved"] = f
   })
 end
 
+T["Decision timeline keeps explicit QA acceptance tied to correlated evidence"] = function()
+  local issue = {
+    id = "louiselm-decision",
+    issue_type = "question",
+    title = "Choose the evidence boundary",
+    status = "closed",
+    close_reason = "Resolved with the maintainer",
+    comments = {
+      {
+        id = 1,
+        author = "lotso",
+        text = table.concat({
+          "QA accepted: abc1234",
+          "Scope: louiselm-decision",
+          "Evidence: forensics-1",
+        }, "\n"),
+      },
+      {
+        id = 2,
+        author = "assistant",
+        text = "QA accepted: missing-commit\nScope: louiselm-decision",
+      },
+    },
+  }
+  local history = {
+    bead_id = issue.id,
+    milestones = {},
+    commits = {
+      {
+        sha = "abc123456789",
+        method = "explicit_id",
+        confidence = 1,
+        message = "feat: evidence boundary\n\nRefs codex/session-1\n",
+      },
+      {
+        sha = "def5678",
+        method = "co_committed",
+        confidence = 0.75,
+      },
+    },
+  }
+  local edges = assert(Correlate.issue(history))
+  local timeline, error_value = Correlate.decision_timeline(issue, history, edges)
+
+  assert(error_value == nil)
+  assert(timeline ~= nil)
+  MiniTest.expect.equality(timeline.anchor, {
+    id = "louiselm-decision",
+    title = "Choose the evidence boundary",
+    state = "accepted",
+  })
+  MiniTest.expect.equality(timeline.implementation, {
+    edges[1],
+    edges[3],
+  })
+  MiniTest.expect.equality(timeline.sessions, { edges[2] })
+  MiniTest.expect.equality(timeline.qa, {
+    {
+      author = "lotso",
+      commit_sha = "abc1234",
+      scope = "louiselm-decision",
+      evidence = "forensics-1",
+    },
+  })
+  MiniTest.expect.equality(timeline.forensics, { "forensics-1" })
+  MiniTest.expect.equality(timeline.gaps, {})
+end
+
 T["malformed and unknown optional relations do not invent edges"] = function()
   local graph, error_value = Correlate.decisions({
     { id = "louiselm-known", issue_type = "question", title = "Known" },
