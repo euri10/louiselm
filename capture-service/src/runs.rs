@@ -438,7 +438,7 @@ impl RunStore {
         })
     }
 
-    /// Convert one pending reservation into a durable generated issue.
+    /// Convert one unit of a pending reservation into a durable generated output.
     pub fn confirm_generated_work(
         &self,
         run_id: &str,
@@ -467,18 +467,22 @@ impl RunStore {
                 .ok_or_else(|| {
                     RunStoreError::Invalid("generated-work reservation was not found".to_owned())
                 })?;
-            let pending = run.generated_work.pending.remove(index);
-            run.generated_work.reserved -= pending.units;
-            run.generated_work.consumed = run
-                .generated_work
-                .consumed
-                .checked_add(pending.units)
-                .ok_or_else(|| {
+            let (kind, remaining) = {
+                let pending = &mut run.generated_work.pending[index];
+                pending.units -= 1;
+                (pending.kind.clone(), pending.units)
+            };
+            if remaining == 0 {
+                run.generated_work.pending.remove(index);
+            }
+            run.generated_work.reserved -= 1;
+            run.generated_work.consumed =
+                run.generated_work.consumed.checked_add(1).ok_or_else(|| {
                     RunStoreError::Invalid("generated-work consumption overflow".to_owned())
                 })?;
             run.generated_work.outputs.push(GeneratedOutput {
                 mutation_id: mutation_id.to_owned(),
-                kind: pending.kind,
+                kind,
                 external_id: issue_id.to_owned(),
             });
             advance_revision(&mut run)?;
@@ -1004,9 +1008,9 @@ fn validate_reservation(reservation: &GeneratedWorkReservation) -> Result<(), Ru
     validate_id(&reservation.run_id)?;
     validate_id(&reservation.mutation_id)?;
     validate_token(&reservation.token)?;
-    if reservation.kind != "beads_issue" || reservation.units != 1 {
+    if reservation.kind.is_empty() || reservation.units == 0 {
         return Err(RunStoreError::Invalid(
-            "issue generation reserves exactly one beads_issue unit".to_owned(),
+            "generated-work reservation requires a kind and positive units".to_owned(),
         ));
     }
     Ok(())

@@ -186,6 +186,49 @@ fn generated_work_reservation_is_durable_and_exhaustion_parks_atomically() {
 }
 
 #[test]
+fn typed_generator_reservation_consumes_outputs_one_unit_at_a_time() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let run_id = "abababab-abab-4bab-8bab-abababababab";
+    let mutation_id = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd";
+    admit(&store, run_id);
+
+    assert_eq!(
+        store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: run_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: mutation_id.to_owned(),
+                    kind: "skill_generator".to_owned(),
+                    units: 3,
+                },
+                1_000,
+            )
+            .expect("reserve"),
+        ReserveResult::Reserved
+    );
+    store
+        .confirm_generated_work(run_id, TOKEN, mutation_id, "issue-1")
+        .expect("first output");
+    let after_first = store.run(run_id).expect("first output state");
+    assert_eq!(after_first.generated_work.consumed, 1);
+    assert_eq!(after_first.generated_work.reserved, 2);
+    store
+        .confirm_generated_work(run_id, TOKEN, mutation_id, "issue-2")
+        .expect("second output");
+    let after_second = store.run(run_id).expect("second output state");
+    assert_eq!(after_second.generated_work.consumed, 2);
+    assert_eq!(after_second.generated_work.reserved, 1);
+    store
+        .release_generated_work(run_id, TOKEN, mutation_id)
+        .expect("release unused");
+    let completed = store.run(run_id).expect("completed generator");
+    assert_eq!(completed.generated_work.consumed, 2);
+    assert_eq!(completed.generated_work.reserved, 0);
+}
+
+#[test]
 fn confirmation_consumes_and_definite_failure_releases_a_reservation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = RunStore::new(temporary.path()).expect("store");
