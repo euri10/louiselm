@@ -252,6 +252,7 @@ T["chat"]["opens a takeover brief and submits the reviewed edit"] = function()
   fill_takeover_task(buffer, "commit and sync")
   assert(chat:submit_handoff(buffer))
   MiniTest.expect.equality(#target.prompts, 1)
+  MiniTest.expect.equality(type(target.prompts[1]), "string")
   MiniTest.expect.equality(target.prompts[1]:find("- takeover task: commit and sync", 1, true) ~= nil, true)
   local entries = chat.views.target.transcript:snapshot()
   MiniTest.expect.equality(entries, {
@@ -260,6 +261,70 @@ T["chat"]["opens a takeover brief and submits the reviewed edit"] = function()
   local target_text = table.concat(buffer_lines(chat:buffer("target")), "\n")
   MiniTest.expect.equality(target_text:find("- takeover task: commit and sync", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  chat:dispose()
+end
+
+T["chat"]["sends the handoff context as a resource block to embedded-context targets"] = function()
+  local source = fake_session("source", "claude")
+  source.state.acp_session_id = "source-acp"
+  local target = fake_session("target", "codex")
+  target.state.embedded_context = true
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+  assert(chat:attach(target))
+  source:emit({
+    type = "chunk",
+    session_id = "source",
+    data = { content = { type = "text", text = "original answer" } },
+  })
+
+  local buffer = assert(chat:open_handoff(target, "source"))
+  fill_takeover_task(buffer, "commit and sync")
+
+  assert(chat:submit_handoff(buffer))
+  local prompt = target.prompts[1]
+  MiniTest.expect.equality(type(prompt), "table")
+  local text_block, resource_block = prompt[1], prompt[2]
+  MiniTest.expect.equality(#prompt, 2)
+  MiniTest.expect.equality(text_block.type, "text")
+  MiniTest.expect.equality(resource_block.type, "resource")
+  -- The takeover instruction lives in the text block, never the resource.
+  MiniTest.expect.equality(text_block.text:find("- takeover task: commit and sync", 1, true) ~= nil, true)
+  MiniTest.expect.equality(resource_block.resource.text:find("takeover task", 1, true), nil)
+  MiniTest.expect.equality(resource_block.resource.uri, "louiselm://handoff/claude/source-acp")
+  MiniTest.expect.equality(resource_block.resource.mimeType, "text/markdown")
+  MiniTest.expect.equality(resource_block.resource.text:find("## Context", 1, true) ~= nil, true)
+  MiniTest.expect.equality(resource_block.resource.text:find("## Source", 1, true) ~= nil, true)
+  MiniTest.expect.equality(resource_block.resource.text:find("original answer", 1, true) ~= nil, true)
+  -- The target transcript records the reviewed brief text, not the block table.
+  local entries = chat.views.target.transcript:snapshot()
+  MiniTest.expect.equality(#entries, 1)
+  MiniTest.expect.equality(entries[1].text:find("- takeover task: commit and sync", 1, true) ~= nil, true)
+  chat:dispose()
+end
+
+T["chat"]["falls back to a flattened prompt when the context header was edited out"] = function()
+  local source = fake_session("source", "claude")
+  source.state.acp_session_id = "source-acp"
+  local target = fake_session("target", "codex")
+  target.state.embedded_context = true
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(source))
+  assert(chat:attach(target))
+
+  local buffer = assert(chat:open_handoff(target, "source"))
+  local lines = buffer_lines(buffer)
+  for index, line in ipairs(lines) do
+    if line == "## Context" then
+      nvim.api.nvim_buf_set_lines(buffer, index - 1, index, false, {})
+      break
+    end
+  end
+  fill_takeover_task(buffer, "commit and sync")
+
+  assert(chat:submit_handoff(buffer))
+  MiniTest.expect.equality(type(target.prompts[1]), "string")
+  MiniTest.expect.equality(target.prompts[1]:find("- takeover task: commit and sync", 1, true) ~= nil, true)
   chat:dispose()
 end
 

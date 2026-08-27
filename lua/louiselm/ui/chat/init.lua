@@ -2871,6 +2871,7 @@ function Chat:open_handoff(target_session, source_session_id)
     target_session_id = target_state.id,
     source_session_id = source_state.acp_session_id and report_id(source_state.agent, source_state.acp_session_id)
       or nil,
+    source_id = source_id,
   }
   nvim.api.nvim_set_current_buf(buffer)
   nvim.keymap.set("n", "<C-s>", function()
@@ -2883,6 +2884,52 @@ function Chat:open_handoff(target_session, source_session_id)
     self:abandon_handoff(buffer)
   end, { buffer = buffer, silent = true, desc = "Abandon louiselm handoff" })
   return buffer
+end
+
+---Split a reviewed Handoff brief at its `## Context` header, or nil when the
+---header is absent (the operator edited it out). The Handoff section — the
+---takeover instruction — travels as the prompt's text block; everything from
+---`## Context` on, including `## Source`, travels as the resource block.
+---@param text string
+---@return string? handoff_section
+---@return string? context_section
+local function split_handoff_brief(text)
+  local marker = text:find("\n## Context", 1, true)
+  if marker == nil then
+    return nil, nil
+  end
+  return text:sub(1, marker - 1), text:sub(marker + 1)
+end
+
+---Build the prompt content for a reviewed Handoff brief. Targets advertising
+---`embeddedContext` receive the Handoff instruction as a text block and the
+---compacted context as a typed resource block; everyone else receives the
+---whole brief as one flattened text prompt, as before. A brief whose
+---`## Context` header was edited out degrades to the flattened form rather
+---than failing the Handoff.
+---@param handoff table Review-buffer record from `open_handoff`.
+---@param text string Reviewed brief text.
+---@return string|table content
+local function handoff_content(handoff, text)
+  if handoff.target_session:inspect().embedded_context ~= true then
+    return text
+  end
+  local handoff_section, context_section = split_handoff_brief(text)
+  if handoff_section == nil then
+    return text
+  end
+  local source_ref = handoff.source_session_id or handoff.source_id
+  return {
+    { type = "text", text = handoff_section },
+    {
+      type = "resource",
+      resource = {
+        uri = "louiselm://handoff/" .. source_ref,
+        mimeType = "text/markdown",
+        text = context_section,
+      },
+    },
+  }
 end
 
 ---Submit the current contents of a handoff review buffer.
@@ -2902,7 +2949,7 @@ function Chat:submit_handoff(buffer)
   if takeover_task(text) == nil then
     return false, "handoff takeover task must be filled in before submitting"
   end
-  local request_id, prompt_error = handoff.target_session:prompt(text)
+  local request_id, prompt_error = handoff.target_session:prompt(handoff_content(handoff, text))
   if request_id == nil then
     return false, prompt_error or "handoff prompt could not be sent"
   end
