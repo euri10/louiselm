@@ -330,7 +330,7 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
         load_session = capabilities.loadSession == true,
         list_sessions = type(capabilities.sessionCapabilities) == "table"
           and type(capabilities.sessionCapabilities.list) == "table",
-        embedded_context = capabilities.embeddedContext == true,
+        embedded_context = subject.embedded_context == true,
       },
       dirty_files = {},
     },

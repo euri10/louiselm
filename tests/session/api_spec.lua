@@ -102,13 +102,13 @@ local function permission_outcomes(process)
   return outcomes
 end
 
-local function start_ready_session(api, processes, name, cwd)
+local function start_ready_session(api, processes, name, cwd, agent_capabilities)
   local ready
   local session = assert(api:create_session(name, { cwd = cwd }, function(value, err)
     ready = { session = value, error = err }
   end))
   local process = processes[#processes]
-  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = agent_capabilities or {} })
   MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
     cwd = cwd,
     mcpServers = {},
@@ -145,11 +145,41 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
   MiniTest.expect.equality(record.subject, { agent = "agent", acp_session_id = "agent-acp" })
   MiniTest.expect.equality(record.diagnosing_session, "agent/diagnoser")
   MiniTest.expect.equality(record.evidence_sources[1].state, "omitted")
+  MiniTest.expect.equality(record.observations.capabilities.embedded_context, false)
   MiniTest.expect.equality(nvim.uv.fs_stat(path).mode % 512, 384)
   -- The hrtime() component must render as a plain integer, not scientific
   -- notation (louiselm-ysh3): a raw `tostring()` on the double once produced
   -- ids like "1787715628-2.0264597271177e+14".
   MiniTest.expect.equality(record.id:match("^%d+%-%d+$") ~= nil, true)
+
+  api:dispose()
+  restore_processes(original_system)
+  nvim.fn.delete(root, "rf")
+end
+
+T["forensics"]["records embedded_context from nested promptCapabilities, not a top-level field"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, { forensics_directory = root }))
+  local session = start_ready_session(api, processes, "agent", "/tmp/project", {
+    promptCapabilities = { embeddedContext = true },
+  })
+  local path, collection_error
+
+  assert(api:collect_forensics("agent", "agent-acp", nil, function(value, err)
+    path = value
+    collection_error = err
+  end))
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return path ~= nil or collection_error ~= nil
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(collection_error, nil)
+  local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+  MiniTest.expect.equality(record.observations.capabilities.embedded_context, true)
 
   api:dispose()
   restore_processes(original_system)
