@@ -187,7 +187,16 @@ stylua --check .
 lua-language-server --check . --checklevel=Warning
 nvim --headless --noplugin -u ./tests/minimal_init.lua \
   -c "lua MiniTest.run()" -c "qa!"
+./scripts/generate-api-appendix --check
 ```
+
+`generate-api-appendix --check` fails whenever a public LuaCATS annotation
+(`---@field`, `---@class`, exported function signature, etc.) changed without
+regenerating `doc/api.md`. Run `./scripts/generate-api-appendix` (no `--check`)
+and commit the result in the same commit as the annotation change — a doc
+regen split into a follow-up commit is the failure mode this gate exists to
+catch (commit 849fc67 added `session.Options.env` without one, breaking CI on
+main until a follow-up commit regenerated it).
 
 Use a repository wrapper if it becomes the documented entrypoint. CI must
 enforce all gates once their configuration/harness exists. Report unavailable
@@ -429,6 +438,8 @@ Before completing a code task:
 - [ ] `lua-language-server` reports zero diagnostics.
 - [ ] Public APIs/failures are documented and typed; no error is swallowed or
       sensitive value logged.
+- [ ] If a public LuaCATS annotation changed, `./scripts/generate-api-appendix`
+      was re-run and `doc/api.md` is part of this commit.
 - [ ] Async UI/process tests exercise the production callback context; a
   synchronous fake alone is not evidence that fast-event boundaries are safe.
 - [ ] No unnecessary dependency, compatibility shim, or abstraction was added.
