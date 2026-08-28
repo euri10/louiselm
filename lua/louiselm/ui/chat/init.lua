@@ -6,7 +6,11 @@ local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
 local Usage = require("louiselm.routing.usage")
+local Workflow = require("louiselm.workflow")
 local WorkflowService = require("louiselm.workflow.service")
+
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
 
 ---@class louiselm.ui.ChatOptions
 ---@field agents? string[] Agent names shown by the new-session picker.
@@ -136,11 +140,66 @@ local WorkflowService = require("louiselm.workflow.service")
 ---@field hand_off fun(self: louiselm.ui.Chat): boolean, string? Hand the current session's reviewed transcript off to another configured agent.
 ---@field resume_session fun(self: louiselm.ui.Chat, all_workspaces?: boolean): boolean, string? Discover and load a prior ACP session.
 ---@field resume_park fun(self: louiselm.ui.Chat): boolean, string? Discover and load a durable cold-Parked Run.
+---@field park fun(self: louiselm.ui.Chat): boolean, string? Cold-Park the current Session through a Run.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
 local M = {}
 local Chat = {}
 Chat.__index = Chat
+
+local PARK_GENERATED_WORK_MAX = 1
+local PARK_TTL_MS = 24 * 60 * 60 * 1000
+
+---@return string run_id
+local function park_run_id()
+  local seed = table.concat({ tostring(nvim.uv.hrtime()), tostring(nvim.fn.getpid()), nvim.fn.tempname() }, ":")
+  local hex = nvim.fn.sha256(seed)
+  local variant = string.format("%x", 8 + (tonumber(hex:sub(17, 17), 16) % 4))
+  return table.concat({
+    hex:sub(1, 8),
+    hex:sub(9, 12),
+    "4" .. hex:sub(14, 16),
+    variant .. hex:sub(18, 20),
+    hex:sub(21, 32),
+  }, "-")
+end
+
+---@param session_id string Agent-scoped Session identity.
+---@param cwd string Beads workspace directory.
+---@param callback fun(claims: string[], error_message?: string)
+---@return boolean started
+---@return string? error_message
+local function live_claims(session_id, cwd, callback)
+  local started = pcall(nvim.system, { "br", "list", "--assignee", session_id, "--status", "in_progress", "--json" }, {
+    text = true,
+    cwd = cwd,
+  }, function(result)
+    nvim.schedule(function()
+      if result.code ~= 0 then
+        callback({}, result.stderr ~= "" and result.stderr or "could not query live Beads claims")
+        return
+      end
+      local decoded_ok, decoded = pcall(nvim.json.decode, result.stdout)
+      if not decoded_ok or type(decoded) ~= "table" or type(decoded.issues) ~= "table" then
+        callback({}, "br returned malformed claim data")
+        return
+      end
+      local claims = {}
+      for _, issue in ipairs(decoded.issues) do
+        if type(issue) ~= "table" or type(issue.id) ~= "string" or issue.id == "" then
+          callback({}, "br returned malformed claim data")
+          return
+        end
+        claims[#claims + 1] = issue.id
+      end
+      callback(claims)
+    end)
+  end)
+  if not started then
+    return false, "could not start Beads claim query"
+  end
+  return true
+end
 
 ---@class louiselm.ui.Handoff
 ---@field target_session louiselm.session.Session
@@ -155,9 +214,6 @@ Chat.__index = Chat
 ---@field start fun(self: louiselm.ui.LimitsTimer, timeout: integer, repeat_interval: integer, callback: fun())
 ---@field stop fun(self: louiselm.ui.LimitsTimer)
 ---@field close fun(self: louiselm.ui.LimitsTimer)
-
----@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
-local nvim = vim
 
 ---@param value unknown
 ---@param label string
@@ -3052,6 +3108,123 @@ function Chat:staged_context()
     end
   end
   return staged
+end
+
+---Cold-Park the current Session through a newly admitted Run.
+---@param self louiselm.ui.Chat
+---@return boolean started
+---@return string? error_message
+function Chat:park()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local view = self.current_id and self.views[self.current_id]
+  if view == nil then
+    return false, "no chat session is attached"
+  end
+  local session = view.session
+  local state = session:inspect()
+  if state.acp_session_id == nil then
+    return false, "current Session has no ACP Session id yet"
+  end
+  local staged = self:staged_context()[session]
+  local staged_count = staged.contexts
+  local has_staged = staged_count > 0 or staged.pending_skill or staged.queued_prompt
+
+  local function begin()
+    local session_id = state.agent .. "/" .. state.acp_session_id
+    local claims_started, claims_error = live_claims(session_id, state.working_dir, function(claims, claim_error)
+      if self.disposed or self.views[state.id] ~= view then
+        return
+      end
+      if claim_error ~= nil then
+        nvim.notify("louiselm: " .. claim_error, nvim.log.levels.ERROR)
+        return
+      end
+
+      local run = session.owner_run
+      local run_id = run and run.park_record and run.park_record.id or park_run_id()
+      if run == nil then
+        run = assert(Workflow.new_run())
+      end
+
+      local function cold_park()
+        local started, park_error = run:park_cold({ id = run_id, claims = claims }, function(ok, error_message)
+          if not ok then
+            nvim.notify("louiselm: " .. (error_message or "could not cold-Park Session"), nvim.log.levels.ERROR)
+            return
+          end
+          nvim.notify("louiselm: Session cold-Parked", nvim.log.levels.INFO)
+        end)
+        if not started then
+          nvim.notify("louiselm: " .. (park_error or "could not cold-Park Session"), nvim.log.levels.ERROR)
+        end
+      end
+
+      if session.owner_run ~= nil then
+        cold_park()
+        return
+      end
+
+      local admitted, admission_error = WorkflowService.admit({
+        id = run_id,
+        generated_work_max = PARK_GENERATED_WORK_MAX,
+        park_ttl_ms = PARK_TTL_MS,
+      }, function()
+        local attached, attach_error = WorkflowService.attach({
+          id = run_id,
+          session_id = session_id,
+          agent = state.agent,
+          acp_session_id = state.acp_session_id,
+          cwd = state.working_dir,
+          load_session = true,
+        }, function(ok, error_message)
+          if not ok then
+            nvim.notify("louiselm: " .. (error_message or "could not attach Session to Run"), nvim.log.levels.ERROR)
+            return
+          end
+          local adopted, adopt_error = run:adopt_session(session)
+          if not adopted then
+            nvim.notify("louiselm: " .. (adopt_error or "could not attach Session to Run"), nvim.log.levels.ERROR)
+            return
+          end
+          cold_park()
+        end)
+        if not attached then
+          nvim.notify("louiselm: " .. (attach_error or "could not attach Session to Run"), nvim.log.levels.ERROR)
+        end
+      end)
+      if not admitted then
+        nvim.notify("louiselm: " .. (admission_error or "could not admit Run"), nvim.log.levels.ERROR)
+      end
+    end)
+    if not claims_started then
+      nvim.notify("louiselm: " .. (claims_error or "could not query live Beads claims"), nvim.log.levels.ERROR)
+    end
+  end
+
+  if not has_staged then
+    begin()
+    return true
+  end
+  local reasons = {}
+  if staged_count > 0 then
+    reasons[#reasons + 1] = string.format("%d queued context item%s", staged_count, staged_count == 1 and "" or "s")
+  end
+  if staged.pending_skill then
+    reasons[#reasons + 1] = "pending skill selection"
+  end
+  if staged.queued_prompt then
+    reasons[#reasons + 1] = "queued prompt"
+  end
+  Picker.select({ "Park", "Cancel" }, {
+    prompt = "louiselm: " .. table.concat(reasons, ", ") .. " will not survive cold Park; proceed? ",
+  }, function(choice)
+    if choice == "Park" and not self.disposed and self.views[state.id] == view then
+      begin()
+    end
+  end)
+  return true
 end
 
 ---Switch focus to an attached session buffer.

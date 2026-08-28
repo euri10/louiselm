@@ -159,6 +159,31 @@ T["rejects cold Park without session/load admission"] = function()
   MiniTest.expect.equality(error_message, "Park requires an Agent that supports session/load")
 end
 
+T["accepts a cold Park with no live Beads claims"] = function()
+  local command
+  local scheduled
+  local previous = nvim.schedule
+  rawset(nvim, "schedule", function(fn)
+    scheduled = fn
+  end)
+  assert(Service.park({
+    id = "run",
+    session_id = "codex/session",
+    agent = "codex",
+    acp_session_id = "acp-session",
+    cwd = "/tmp/project",
+    load_session = true,
+    claims = {},
+  }, function() end, function(value, _, done)
+    command = value
+    done({ code = 0, stderr = "" })
+    return true
+  end))
+  scheduled()
+  rawset(nvim, "schedule", previous)
+  MiniTest.expect.equality(command[#command], "")
+end
+
 T["lists durable Parks asynchronously"] = function()
   local callback_value
   local scheduled

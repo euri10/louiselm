@@ -206,8 +206,20 @@ function M.park(record, callback, system)
   if record.load_session ~= true then
     return false, "Park requires an Agent that supports session/load"
   end
-  if type(record.claims) ~= "table" or #record.claims == 0 then
-    return false, "Park record claims must be a non-empty array"
+  if type(record.claims) ~= "table" then
+    return false, "Park record claims must be an array"
+  end
+  local claim_count = 0
+  for index, claim in ipairs(record.claims) do
+    if type(claim) ~= "string" or claim == "" then
+      return false, "Park record claims must be an array of non-empty strings"
+    end
+    claim_count = index
+  end
+  for key in pairs(record.claims) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 or key > claim_count then
+      return false, "Park record claims must be a dense array"
+    end
   end
   system = system or nvim.system
   local command = {

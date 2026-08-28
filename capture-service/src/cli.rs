@@ -159,6 +159,7 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     }
     let claims = required_option(options, "--claims")?
         .split(',')
+        .filter(|claim| !claim.is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let draft = RunDraft {

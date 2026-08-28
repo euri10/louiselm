@@ -2,6 +2,7 @@ local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.routing")
+local WorkflowService = require("louiselm.workflow.service")
 
 local T = MiniTest.new_set()
 
@@ -207,6 +208,57 @@ T["chat"] = MiniTest.new_set({
     end,
   },
 })
+
+T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
+  local session = fake_session("park-session", "codex")
+  session.state.acp_session_id = "acp-session"
+  session.state.working_dir = "/tmp/project"
+  session.client = { agent_capabilities = { loadSession = true } }
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+
+  local original_system = nvim.system
+  local original_admit = WorkflowService.admit
+  local original_attach = WorkflowService.attach
+  local original_park = WorkflowService.park
+  local park_record
+  rawset(nvim, "system", function(command, _, callback)
+    MiniTest.expect.equality(
+      command,
+      { "br", "list", "--assignee", "codex/acp-session", "--status", "in_progress", "--json" }
+    )
+    callback({ code = 0, stderr = "", stdout = '{"issues":[{"id":"louiselm-test"}]}' })
+    return {}
+  end)
+  rawset(WorkflowService, "admit", function(_, callback)
+    callback("token")
+    return true
+  end)
+  rawset(WorkflowService, "attach", function(_, callback)
+    callback(true)
+    return true
+  end)
+  rawset(WorkflowService, "park", function(record, callback)
+    park_record = record
+    callback(true)
+    return true
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "system", original_system)
+    rawset(WorkflowService, "admit", original_admit)
+    rawset(WorkflowService, "attach", original_attach)
+    rawset(WorkflowService, "park", original_park)
+    chat:dispose()
+  end)
+
+  assert(chat:park())
+  nvim.wait(100, function()
+    return park_record ~= nil
+  end)
+  MiniTest.expect.equality(park_record.claims, { "louiselm-test" })
+  MiniTest.expect.equality(session.owner_run ~= nil, true)
+  MiniTest.expect.equality(session.owner_run.status, "parked")
+end
 
 T["chat"]["focuses the prompt"] = function()
   local first = fake_session("session-1", "claude")

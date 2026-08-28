@@ -475,6 +475,15 @@ function M.register()
     report_error(resume_error)
   end, { desc = "Resume a durable cold-Parked Run", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmPark", function()
+    local current = ensure_chat()
+    if current == nil then
+      return
+    end
+    local _, park_error = current:park()
+    report_error(park_error)
+  end, { desc = "Cold-Park the current louiselm Session", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmSessionSwitch", function()
     if chat == nil then
       report_error("no chat session is open")

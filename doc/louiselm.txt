@@ -138,6 +138,10 @@ Commands                                                      *louiselm-commands
     Queue the source buffer as louiselm context
     Arguments: none
 
+:LouiselmPark                                                 *:LouiselmPark*
+    Cold-Park the current louiselm Session
+    Arguments: none
+
 :LouiselmPermissions                                          *:LouiselmPermissions*
     Inspect and revoke remembered louiselm permissions
     Arguments: none
