@@ -62,6 +62,11 @@ local function fake_system()
   return calls
 end
 
+local function complete_where(calls, scheduled, prefix)
+  calls[1].on_exit({ code = 0, signal = 0, stdout = '{"prefix":"' .. prefix .. '"}', stderr = "" })
+  scheduled[1]()
+end
+
 T["beads"] = MiniTest.new_set({
   hooks = {
     post_case = function()
@@ -84,9 +89,11 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
 
   assert(Beads.inspect(buffer))
 
-  MiniTest.expect.equality(calls[1].command, { "br", "show", "louiselm-kpod", "--json" })
-  MiniTest.expect.equality(calls[1].options, { text = true, cwd = nvim.fn.getcwd() })
-  calls[1].on_exit({
+  MiniTest.expect.equality(calls[1].command, { "br", "where", "--json" })
+  complete_where(calls, scheduled, "louiselm")
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-kpod", "--json" })
+  MiniTest.expect.equality(calls[2].options, { text = true, cwd = nvim.fn.getcwd() })
+  calls[2].on_exit({
     code = 0,
     signal = 0,
     stdout = '[{"id":"louiselm-kpod","title":"Usage spacing","status":"open","priority":2,"labels":["ui"],"description":"Add blank lines."}]',
@@ -94,8 +101,8 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
   })
 
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
-  MiniTest.expect.equality(#scheduled, 1)
-  scheduled[1]()
+  MiniTest.expect.equality(#scheduled, 2)
+  scheduled[2]()
 
   local popup = assert(find_buffer("louiselm://beads/louiselm-kpod"))
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
@@ -119,7 +126,7 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
   MiniTest.expect.equality(close_mapping ~= nil, true)
 end
 
-T["beads"]["uses the configured workspace for any issue prefix"] = function()
+T["beads"]["uses the Beads workspace prefix for issue lookup"] = function()
   local buffer = source_buffer({ "Fix daa-nk1l today" }, 8)
   local calls = fake_system()
   local scheduled = {}
@@ -129,15 +136,23 @@ T["beads"]["uses the configured workspace for any issue prefix"] = function()
 
   assert(Beads.inspect(buffer, { cwd = "/home/lotso/code/acp-llm-adapter" }))
 
-  MiniTest.expect.equality(calls[1].command, { "br", "show", "daa-nk1l", "--json" })
-  MiniTest.expect.equality(calls[1].options, { text = true, cwd = "/home/lotso/code/acp-llm-adapter" })
+  MiniTest.expect.equality(calls[1].command, { "br", "where", "--json" })
   calls[1].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '{"path":"/home/lotso/code/acp-llm-adapter/.beads","prefix":"daa"}',
+    stderr = "",
+  })
+  scheduled[1]()
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "daa-nk1l", "--json" })
+  calls[2].on_exit({
     code = 0,
     signal = 0,
     stdout = '[{"id":"daa-nk1l","title":"Upgrade ACP","status":"open","priority":2,"description":"Migrate the protocol."}]',
     stderr = "",
   })
-  scheduled[1]()
+  scheduled[2]()
 
   MiniTest.expect.equality(find_buffer("louiselm://beads/daa-nk1l") ~= nil, true)
 end
@@ -153,13 +168,14 @@ T["beads"]["opens an issue whose JSON omits the labels key entirely"] = function
   end)
 
   assert(Beads.inspect(buffer))
-  calls[1].on_exit({
+  complete_where(calls, scheduled, "louiselm")
+  calls[2].on_exit({
     code = 0,
     signal = 0,
     stdout = '[{"id":"louiselm-kpod","title":"Usage spacing","status":"open","priority":2,"description":"Add blank lines."}]',
     stderr = "",
   })
-  scheduled[1]()
+  scheduled[2]()
 
   local popup = assert(find_buffer("louiselm://beads/louiselm-kpod"))
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
@@ -182,15 +198,17 @@ T["beads"]["prompts for a Beads issue ID when the cursor has none"] = function()
     scheduled[#scheduled + 1] = callback
   end)
   nvim.ui.input = function(options, callback)
-    MiniTest.expect.equality(options.prompt, "Beads issue id: ")
+    MiniTest.expect.equality(options.prompt, "louiselm Beads issue id: ")
     callback("louiselm-zmab")
   end
 
   assert(Beads.inspect(buffer))
-  MiniTest.expect.equality(calls[1].command, { "br", "show", "louiselm-zmab", "--json" })
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-zmab", "--json" })
 end
 
-T["beads"]["passes a full prompted ID unchanged"] = function()
+T["beads"]["prepends the workspace prefix to a bare id typed at the prompt"] = function()
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()
   local scheduled = {}
@@ -198,12 +216,13 @@ T["beads"]["passes a full prompted ID unchanged"] = function()
     scheduled[#scheduled + 1] = callback
   end)
   nvim.ui.input = function(_, callback)
-    callback("daa-zmab")
+    callback("zmab")
   end
 
   assert(Beads.inspect(buffer, { cwd = "/home/lotso/code/acp-llm-adapter" }))
+  complete_where(calls, scheduled, "daa")
 
-  MiniTest.expect.equality(calls[1].command, { "br", "show", "daa-zmab", "--json" })
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "daa-zmab", "--json" })
 end
 
 T["beads"]["prompts instead of guessing when one line contains multiple Beads issue IDs"] = function()
@@ -218,7 +237,32 @@ T["beads"]["prompts instead of guessing when one line contains multiple Beads is
   end
 
   assert(Beads.inspect(buffer))
-  MiniTest.expect.equality(calls[1].command, { "br", "show", "louiselm-zmab", "--json" })
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-zmab", "--json" })
+end
+
+T["beads"]["opens the cursor issue directly when the line also contains ordinary hyphenated words (louiselm-04cy)"] = function()
+  -- A prefix-agnostic matcher previously counted plain hyphenated English
+  -- compounds ("time-travel", "vocabulary-drop") as candidate issue IDs,
+  -- inflating the ambiguity count so a line with exactly one real issue ID
+  -- still fell back to the manual prompt.
+  local buffer = source_buffer({
+    "still open is louiselm-f8r1, the same time-travel vocabulary-drop bug",
+  }, 14)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  nvim.ui.input = function()
+    error("must not prompt when the cursor is on the sole real issue ID")
+  end
+
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-f8r1", "--json" })
 end
 
 T["beads"]["rejects an invalid prompted ID without starting br"] = function()
@@ -238,8 +282,10 @@ T["beads"]["rejects an invalid prompted ID without starting br"] = function()
       error_message = message
     end,
   }))
-  MiniTest.expect.equality(#calls, 0)
-  MiniTest.expect.equality(error_message, "Beads issue id must be a full id")
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(#calls, 1)
+  MiniTest.expect.equality(error_message, "Beads issue id must start with louiselm-")
 end
 
 T["beads"]["reports when br is unavailable without starting a lookup"] = function()
@@ -276,8 +322,9 @@ T["beads"]["reports malformed br JSON without opening a popup"] = function()
       error_message = message
     end,
   }))
-  calls[1].on_exit({ code = 0, signal = 0, stdout = "not json", stderr = "" })
-  scheduled[1]()
+  complete_where(calls, scheduled, "louiselm")
+  calls[2].on_exit({ code = 0, signal = 0, stdout = "not json", stderr = "" })
+  scheduled[2]()
 
   MiniTest.expect.equality(error_message, "br returned malformed issue data")
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
@@ -297,8 +344,9 @@ T["beads"]["reports a failed br lookup without opening a popup"] = function()
       error_message = message
     end,
   }))
-  calls[1].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
-  scheduled[1]()
+  complete_where(calls, scheduled, "louiselm")
+  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  scheduled[2]()
 
   MiniTest.expect.equality(error_message, "could not read Beads issue louiselm-kpod")
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
