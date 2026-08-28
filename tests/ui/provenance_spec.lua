@@ -411,6 +411,16 @@ T["Decision index"]["renders a legible empty state with no Decision anchors"] = 
   })
 end
 
+T["Decision index"]["reuses an existing named buffer"] = function()
+  local calls = fake_system()
+  local existing_buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_buf_set_name(existing_buffer, "louiselm://provenance/decisions")
+  assert(Provenance.show_decisions({}))
+  finish_beads_questions(calls, '{"issues":[]}')
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), existing_buffer)
+end
+
 T["Decision index"]["navigates a selected row to its issue Provenance"] = function()
   local calls = fake_system()
   assert(Provenance.show_decisions({}))

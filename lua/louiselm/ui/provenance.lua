@@ -285,28 +285,40 @@ end
 ---@return boolean opened
 ---@return string? error_message
 local function open_provenance(name, lines, on_select)
-  local buffer = nvim.api.nvim_create_buf(false, true)
+  local buffer = nvim.fn.bufnr(name)
+  local new_buffer = buffer <= 0
+  if new_buffer then
+    buffer = nvim.api.nvim_create_buf(false, true)
+  end
   local opened, error_message = pcall(function()
-    nvim.api.nvim_buf_set_name(buffer, name)
+    if new_buffer then
+      nvim.api.nvim_buf_set_name(buffer, name)
+    end
     nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
     nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
     nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
     nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
+    nvim.api.nvim_set_option_value("modifiable", true, { buf = buffer })
     nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
     nvim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
     local width = math.min(100, math.max(1, nvim.o.columns - 4))
     local height = math.min(#lines, math.max(1, nvim.o.lines - 4))
-    nvim.api.nvim_open_win(buffer, true, {
-      relative = "editor",
-      row = 1,
-      col = 2,
-      width = width,
-      height = height,
-      style = "minimal",
-      border = "rounded",
-      title = " Provenance ",
-      title_pos = "center",
-    })
+    local window = nvim.fn.bufwinid(buffer)
+    if window > 0 and nvim.api.nvim_win_is_valid(window) then
+      nvim.api.nvim_set_current_win(window)
+    else
+      nvim.api.nvim_open_win(buffer, true, {
+        relative = "editor",
+        row = 1,
+        col = 2,
+        width = width,
+        height = height,
+        style = "minimal",
+        border = "rounded",
+        title = " Provenance ",
+        title_pos = "center",
+      })
+    end
   end)
   if not opened then
     if nvim.api.nvim_buf_is_valid(buffer) then
