@@ -36,15 +36,44 @@ local function wait_for(predicate)
   MiniTest.expect.equality(nvim.wait(3000, predicate, 10), true)
 end
 
-T["mock agent"] = MiniTest.new_set()
+-- Disposal is normally the last line of each test body below, but a failing
+-- `assert`/`wait_for` earlier in the same test aborts the function first and
+-- skips it, leaking the spawned headless mock-agent process (louiselm-hysa).
+-- Tracking the live resource here and force-disposing it in `post_case` makes
+-- cleanup unconditional on test outcome, on top of the normal inline dispose.
+local live_resources = {}
+
+---@param resource table
+---@param method string
+---@return table resource
+local function track(resource, method)
+  live_resources[#live_resources + 1] = function()
+    pcall(resource[method], resource)
+  end
+  return resource
+end
+
+T["mock agent"] = MiniTest.new_set({
+  hooks = {
+    post_case = function()
+      for _, dispose in ipairs(live_resources) do
+        dispose()
+      end
+      live_resources = {}
+    end,
+  },
+})
 
 T["mock agent"]["supports the ACP session flow and static responses"] = function()
   local updates = {}
-  local client = assert(Acp.connect(mock_definition("static", "fixed response"), {
-    on_notification = function(message)
-      updates[#updates + 1] = message
-    end,
-  }))
+  local client = track(
+    assert(Acp.connect(mock_definition("static", "fixed response"), {
+      on_notification = function(message)
+        updates[#updates + 1] = message
+      end,
+    })),
+    "close"
+  )
 
   local initialized
   assert(client:initialize(nil, function(result, err)
@@ -117,7 +146,7 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
   local events = {}
   local ready
   local completed
-  local api = assert(Session.new({ mock = mock_definition("permission") }))
+  local api = track(assert(Session.new({ mock = mock_definition("permission") })), "dispose")
   local session = assert(api:create_session("mock", {
     cwd = project_root,
     on_event = function(event)
@@ -160,13 +189,16 @@ T["mock agent"]["advertises commands through session/update and delivers them on
   local events = {}
   local changed
   local ready
-  local api = assert(Session.new({
-    mock = mock_definition("echo", nil, {
-      LOUISELM_MOCK_AVAILABLE_COMMANDS = nvim.json.encode({
-        { name = "grill-me", description = "Stress-test an idea" },
+  local api = track(
+    assert(Session.new({
+      mock = mock_definition("echo", nil, {
+        LOUISELM_MOCK_AVAILABLE_COMMANDS = nvim.json.encode({
+          { name = "grill-me", description = "Stress-test an idea" },
+        }),
       }),
-    }),
-  }))
+    })),
+    "dispose"
+  )
   local session = assert(api:create_session("mock", {
     cwd = project_root,
     on_event = function(event)
@@ -197,7 +229,7 @@ T["mock agent"]["advertises commands through session/update and delivers them on
 end
 
 T["mock agent"]["defers and consumes a hidden catalog once across the process boundary"] = function()
-  local api = assert(Session.new({ mock = mock_definition("echo") }, "inject"))
+  local api = track(assert(Session.new({ mock = mock_definition("echo") }, "inject")), "dispose")
   local chat = assert(Chat.new(api, {
     agents = { "mock" },
     skill_catalog = "hidden catalog",
@@ -232,12 +264,15 @@ T["mock agent"]["defers and consumes a hidden catalog once across the process bo
 end
 
 T["mock agent"]["replays agent_thought_chunk wire updates into a collapsed chat fold"] = function()
-  local api = assert(Session.new({
-    mock = mock_definition("echo", nil, {
-      LOUISELM_MOCK_REPLAY_USER = "what did we decide last time",
-      LOUISELM_MOCK_REPLAY_REASONING = "**planned** earlier",
-    }),
-  }))
+  local api = track(
+    assert(Session.new({
+      mock = mock_definition("echo", nil, {
+        LOUISELM_MOCK_REPLAY_USER = "what did we decide last time",
+        LOUISELM_MOCK_REPLAY_REASONING = "**planned** earlier",
+      }),
+    })),
+    "dispose"
+  )
   local chat = assert(Chat.new(api, { agents = { "mock" } }))
   local ready
   local session = assert(api:load_session("mock", "prior-acp", { cwd = project_root }, function(value, err)
@@ -293,7 +328,7 @@ T["mock agent"]["surfaces a simulated crash as a session error"] = function()
   local ready
   local completed
   local error_event
-  local api = assert(Session.new({ mock = mock_definition("crash") }))
+  local api = track(assert(Session.new({ mock = mock_definition("crash") })), "dispose")
   local session = assert(api:create_session("mock", {
     cwd = project_root,
     on_event = function(event)
