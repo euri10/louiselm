@@ -305,6 +305,7 @@ local function open_provenance(name, lines, on_select)
     local height = math.min(#lines, math.max(1, nvim.o.lines - 4))
     local window = nvim.fn.bufwinid(buffer)
     if window > 0 and nvim.api.nvim_win_is_valid(window) then
+      nvim.api.nvim_win_set_height(window, height)
       nvim.api.nvim_set_current_win(window)
     else
       nvim.api.nvim_open_win(buffer, true, {

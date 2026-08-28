@@ -458,6 +458,58 @@ T["Decision index"]["navigates a selected row to its issue Provenance"] = functi
   })
 end
 
+T["Decision index"]["resizes an existing window after loading evidence"] = function()
+  local calls = fake_system()
+  assert(Provenance.show_decisions({}))
+  finish_beads_questions(
+    calls,
+    nvim.json.encode({
+      issues = {
+        { id = "louiselm-decision", issue_type = "question", title = "Evidence boundary", status = "closed" },
+      },
+    })
+  )
+
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+  local window = nvim.api.nvim_get_current_win()
+  local loading_height = nvim.api.nvim_win_get_height(window)
+
+  finish_call(
+    calls,
+    2,
+    nvim.json.encode({
+      histories = {
+        ["louiselm-decision"] = {
+          bead_id = "louiselm-decision",
+          status = "closed",
+          milestones = {},
+          commits = {
+            { sha = "abc123456789", method = "explicit_id", confidence = 1 },
+          },
+        },
+      },
+    })
+  )
+  finish_call(
+    calls,
+    3,
+    nvim.json.encode({
+      {
+        id = "louiselm-decision",
+        issue_type = "question",
+        title = "Evidence boundary",
+        status = "closed",
+        close_reason = "Resolved",
+        comments = {},
+      },
+    })
+  )
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), window)
+  MiniTest.expect.no_equality(nvim.api.nvim_win_get_height(window), loading_height)
+end
+
 T["Decision index"]["opens a read-only evidence timeline with recorded and inferred paths"] = function()
   local calls = fake_system()
   assert(Provenance.show_decisions({ definitions = {} }))
