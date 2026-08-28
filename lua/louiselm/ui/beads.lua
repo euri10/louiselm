@@ -163,20 +163,70 @@ local function report_error(options, message)
 end
 
 ---@param buffer integer
----@return string? issue_id
-local function current_issue_id(buffer, prefix)
+---@return string? line
+---@return integer column Zero-based byte column.
+local function cursor_line(buffer)
   local cursor = nvim.api.nvim_win_get_cursor(0)
   local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
-  return type(line) == "string" and issue_id_at_cursor(line, cursor[2], prefix) or nil
+  return type(line) == "string" and line or nil, cursor[2]
 end
 
----@param issue_id string
+---@param buffer integer
+---@return string? issue_id
+local function current_issue_id(buffer, prefix)
+  local line, column = cursor_line(buffer)
+  return line ~= nil and issue_id_at_cursor(line, column, prefix) or nil
+end
+
+---Find the raw alnum/dot/hyphen token spanning the cursor, regardless of
+---whether it already has a workspace prefix.
+---@param line string
+---@param column integer Zero-based byte column.
+---@return string? token
+local function bare_token_at_cursor(line, column)
+  local search_start = 1
+  while true do
+    local start_index, end_index = line:find("[a-z0-9][a-z0-9%.%-]*", search_start)
+    if start_index == nil then
+      return nil
+    end
+    local token = line:sub(start_index, end_index):gsub("[%.%-]+$", "")
+    end_index = start_index + #token - 1
+    if token ~= "" and start_index <= column + 1 and column + 1 <= end_index then
+      return token
+    end
+    search_start = start_index + math.max(#token, 1)
+  end
+end
+
+---A bare suffix (no workspace prefix) under the cursor, assumed to belong to
+---the local workspace. Returns nil for a token that already has a prefix --
+---that shape is either already handled by `current_issue_id` or ambiguous.
+---@param buffer integer
+---@param prefix string
+---@return string? issue_id
+local function bare_issue_id_at_cursor(buffer, prefix)
+  local line, column = cursor_line(buffer)
+  if line == nil then
+    return nil
+  end
+  local token = bare_token_at_cursor(line, column)
+  if token == nil or valid_issue_id(token, prefix) then
+    return nil
+  end
+  local candidate = prefix .. "-" .. token
+  return valid_issue_id(candidate, prefix) and candidate or nil
+end
+
+---Run `br` and decode a single-issue `show` response.
+---@param cmd string[] Full `br` invocation, e.g. `{"br", "show", id, "--json"}`.
 ---@param prefix string
 ---@param options louiselm.ui.BeadsInspectorOptions
+---@param callback fun(issue: louiselm.ui.BeadsIssue?, miss_reason: "not_found"|"malformed"|nil)
 ---@return boolean started
 ---@return string? error_message
-local function show_issue(issue_id, prefix, options)
-  local started = pcall(nvim.system, { "br", "show", issue_id, "--json" }, {
+local function run_show(cmd, prefix, options, callback)
+  local started = pcall(nvim.system, cmd, {
     text = true,
     cwd = options.cwd or nvim.fn.getcwd(),
   }, function(result)
@@ -185,25 +235,44 @@ local function show_issue(issue_id, prefix, options)
         return
       end
       if result.code ~= 0 then
-        report_error(options, "could not read Beads issue " .. issue_id)
+        callback(nil, "not_found")
         return
       end
       local decoded, value_or_error = pcall(nvim.json.decode, result.stdout)
       local issue = decoded and decode_issue(value_or_error, prefix) or nil
-      if issue == nil or issue.id ~= issue_id then
-        report_error(options, "br returned malformed issue data")
+      if issue == nil then
+        callback(nil, "malformed")
         return
       end
-      local opened, open_error = open_issue(issue)
-      if not opened then
-        report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
-      end
+      callback(issue, nil)
     end)
   end)
   if not started then
     return false, "could not start br"
   end
   return true
+end
+
+---@param issue_id string
+---@param prefix string
+---@param options louiselm.ui.BeadsInspectorOptions
+---@return boolean started
+---@return string? error_message
+local function show_issue(issue_id, prefix, options)
+  return run_show({ "br", "show", issue_id, "--json" }, prefix, options, function(issue, miss_reason)
+    if miss_reason == "not_found" then
+      report_error(options, "could not read Beads issue " .. issue_id)
+      return
+    end
+    if issue == nil or issue.id ~= issue_id then
+      report_error(options, "br returned malformed issue data")
+      return
+    end
+    local opened, open_error = open_issue(issue)
+    if not opened then
+      report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
+    end
+  end)
 end
 
 ---@param options louiselm.ui.BeadsInspectorOptions
@@ -244,18 +313,9 @@ local function discover_prefix(options, callback)
   return true
 end
 
----@param buffer integer
 ---@param prefix string
 ---@param options louiselm.ui.BeadsInspectorOptions
-local function inspect_with_prefix(buffer, prefix, options)
-  local issue_id = current_issue_id(buffer, prefix)
-  if issue_id ~= nil then
-    local _, lookup_error = show_issue(issue_id, prefix, options)
-    if lookup_error ~= nil then
-      report_error(options, lookup_error)
-    end
-    return
-  end
+local function prompt_for_issue_id(prefix, options)
   nvim.ui.input({ prompt = prefix .. " Beads issue id: " }, function(value)
     if value == nil or (options.is_active ~= nil and not options.is_active()) then
       return
@@ -273,6 +333,41 @@ local function inspect_with_prefix(buffer, prefix, options)
       report_error(options, lookup_error)
     end
   end)
+end
+
+---@param buffer integer
+---@param prefix string
+---@param options louiselm.ui.BeadsInspectorOptions
+local function inspect_with_prefix(buffer, prefix, options)
+  local issue_id = current_issue_id(buffer, prefix)
+  if issue_id ~= nil then
+    local _, lookup_error = show_issue(issue_id, prefix, options)
+    if lookup_error ~= nil then
+      report_error(options, lookup_error)
+    end
+    return
+  end
+  local bare_id = bare_issue_id_at_cursor(buffer, prefix)
+  if bare_id == nil then
+    prompt_for_issue_id(prefix, options)
+    return
+  end
+  -- Speculative: any word under the cursor is tried, so a miss (not found or
+  -- malformed) falls through to the manual prompt instead of reporting an
+  -- error -- unlike show_issue's confident exact-prefix callers.
+  local _, lookup_error = run_show({ "br", "show", bare_id, "--json" }, prefix, options, function(issue)
+    if issue == nil or issue.id ~= bare_id then
+      prompt_for_issue_id(prefix, options)
+      return
+    end
+    local opened, open_error = open_issue(issue)
+    if not opened then
+      report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
+    end
+  end)
+  if lookup_error ~= nil then
+    report_error(options, lookup_error)
+  end
 end
 
 ---Inspect the Beads issue under the cursor in a LouiseLM Session buffer.

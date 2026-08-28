@@ -265,6 +265,76 @@ T["beads"]["opens the cursor issue directly when the line also contains ordinary
   MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-f8r1", "--json" })
 end
 
+T["beads"]["opens the local issue when the cursor is on a bare suffix with no prefix"] = function()
+  local buffer = source_buffer({ "look at 04cy please" }, 9)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  nvim.ui.input = function()
+    error("must not prompt when a bare-suffix guess resolves")
+  end
+
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-04cy", "--json" })
+  calls[2].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '[{"id":"louiselm-04cy","title":"Bare suffix","status":"open","priority":2,"description":"desc"}]',
+    stderr = "",
+  })
+  scheduled[2]()
+
+  MiniTest.expect.equality(find_buffer("louiselm://beads/louiselm-04cy") ~= nil, true)
+end
+
+T["beads"]["falls back to the manual prompt when a bare-suffix guess does not resolve"] = function()
+  local buffer = source_buffer({ "look at nope please" }, 9)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  local prompted
+  nvim.ui.input = function(options, callback)
+    prompted = options.prompt
+    callback("louiselm-zmab")
+  end
+
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-nope", "--json" })
+  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  scheduled[2]()
+
+  MiniTest.expect.equality(prompted, "louiselm Beads issue id: ")
+  MiniTest.expect.equality(calls[3].command, { "br", "show", "louiselm-zmab", "--json" })
+end
+
+T["beads"]["does not guess a bare suffix for a token that is already a full prefixed ID"] = function()
+  -- Ambiguous multi-ID lines must keep prompting, not silently retry the
+  -- cursor's own full ID as if it were a bare suffix (which would double it
+  -- into "<prefix>-<prefix>-<suffix>").
+  local buffer = source_buffer({ "Compare louiselm-kpod with louiselm-zmab" }, 10)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  nvim.ui.input = function(_, callback)
+    callback("louiselm-zmab")
+  end
+
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-zmab", "--json" })
+end
+
 T["beads"]["rejects an invalid prompted ID without starting br"] = function()
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()
