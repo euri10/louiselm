@@ -153,7 +153,7 @@ signal until someone gets impatient and interrupts (louiselm-w726).
   that the notification will fire.
 
 The maintainer's own loop — louiselm-grill-me, louiselm-to-beads, sessions,
-qa-review — is described in [docs/example-workflow.md](docs/example-workflow.md).
+louiselm-qa-review — is described in [docs/example-workflow.md](docs/example-workflow.md).
 That document is an example, not a contract. It binds nobody, and other loops
 are expected.
 
