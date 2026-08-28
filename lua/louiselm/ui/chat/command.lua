@@ -415,6 +415,7 @@ function M.register()
         return chat ~= nil and chat:buffer() == buffer
       end,
       on_error = report_error,
+      sibling_roots = configured and configured.beads and configured.beads.sibling_roots or nil,
     })
     report_error(inspect_error)
   end

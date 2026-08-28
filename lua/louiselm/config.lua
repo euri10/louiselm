@@ -167,6 +167,19 @@ M.schema = assert(Schema.define({
     default = true,
     description = "Install LouiseLM's global default keymaps; false disables them.",
   },
+  beads = {
+    type = "table",
+    default = {},
+    description = "Beads issue-inspector settings.",
+    fields = {
+      sibling_roots = {
+        type = "array-of",
+        items = "string",
+        default = {},
+        description = "Directories globbed one level for a sibling `.beads/beads.db`, tried in order when the cursor is on a full issue ID belonging to a different workspace's prefix; empty disables cross-workspace lookup.",
+      },
+    },
+  },
   capture = {
     type = "table",
     default = {},

@@ -7,6 +7,7 @@ local M = {}
 ---@field cwd? string Working directory used to locate the Beads workspace.
 ---@field is_active? fun(): boolean Whether the requesting chat buffer still belongs to an active chat.
 ---@field on_error? fun(message: string) Receives expected lookup failures.
+---@field sibling_roots? string[] Directories globbed one level for a sibling `.beads/beads.db`, tried in order when a cursor token looks like a foreign workspace's issue ID.
 
 ---@class louiselm.ui.BeadsIssue
 ---@field id string
@@ -56,7 +57,7 @@ local function issue_id_at_cursor(line, column, prefix)
 end
 
 ---@param value unknown
----@param prefix string
+---@param prefix? string When given, `issue.id` must match this workspace's ID shape. Omit for a foreign workspace whose prefix is unknown; callers must verify `issue.id` themselves in that case.
 ---@return louiselm.ui.BeadsIssue? issue
 local function decode_issue(value, prefix)
   if type(value) ~= "table" or type(value[1]) ~= "table" then
@@ -65,7 +66,7 @@ local function decode_issue(value, prefix)
   local issue = value[1]
   if
     type(issue.id) ~= "string"
-    or not valid_issue_id(issue.id, prefix)
+    or (prefix ~= nil and not valid_issue_id(issue.id, prefix))
     or type(issue.title) ~= "string"
     or type(issue.status) ~= "string"
     or type(issue.priority) ~= "number"
@@ -199,13 +200,13 @@ local function bare_token_at_cursor(line, column)
   end
 end
 
----A bare suffix (no workspace prefix) under the cursor, assumed to belong to
----the local workspace. Returns nil for a token that already has a prefix --
----that shape is either already handled by `current_issue_id` or ambiguous.
+---The raw token under the cursor, excluding one that already has the local
+---workspace prefix -- that shape is either already handled by
+---`current_issue_id` or ambiguous, and must not be re-guessed here.
 ---@param buffer integer
 ---@param prefix string
----@return string? issue_id
-local function bare_issue_id_at_cursor(buffer, prefix)
+---@return string? token
+local function candidate_token_at_cursor(buffer, prefix)
   local line, column = cursor_line(buffer)
   if line == nil then
     return nil
@@ -214,13 +215,12 @@ local function bare_issue_id_at_cursor(buffer, prefix)
   if token == nil or valid_issue_id(token, prefix) then
     return nil
   end
-  local candidate = prefix .. "-" .. token
-  return valid_issue_id(candidate, prefix) and candidate or nil
+  return token
 end
 
 ---Run `br` and decode a single-issue `show` response.
 ---@param cmd string[] Full `br` invocation, e.g. `{"br", "show", id, "--json"}`.
----@param prefix string
+---@param prefix? string Omit when the workspace targeted by `cmd` (e.g. via `--db`) has an unknown prefix; the caller must verify the returned `issue.id` itself.
 ---@param options louiselm.ui.BeadsInspectorOptions
 ---@param callback fun(issue: louiselm.ui.BeadsIssue?, miss_reason: "not_found"|"malformed"|nil)
 ---@return boolean started
@@ -273,6 +273,55 @@ local function show_issue(issue_id, prefix, options)
       report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
     end
   end)
+end
+
+---One level under each root, looking for a sibling `.beads/beads.db`. No
+---caching, no recursion: recomputed fresh on every call.
+---@param roots string[]
+---@return string[] db_paths
+local function sibling_db_paths(roots)
+  local db_paths = {}
+  for _, root in ipairs(roots) do
+    local expanded = nvim.fn.expand(root)
+    for _, entry in ipairs(nvim.fn.glob(expanded .. "/*/.beads/beads.db", false, true)) do
+      db_paths[#db_paths + 1] = entry
+    end
+  end
+  return db_paths
+end
+
+---Try a full `<prefix>-<suffix>`-shaped token against each configured
+---sibling workspace's own database, in order, stopping at the first hit.
+---Cheap and speculative like the bare-suffix path: any miss (including all
+---siblings exhausted) calls `on_miss` instead of reporting an error.
+---@param token string
+---@param options louiselm.ui.BeadsInspectorOptions
+---@param on_miss fun()
+local function try_sibling_ids(token, options, on_miss)
+  local db_paths = sibling_db_paths(options.sibling_roots or {})
+  local index = 0
+  local function try_next()
+    index = index + 1
+    local db_path = db_paths[index]
+    if db_path == nil then
+      on_miss()
+      return
+    end
+    local _, lookup_error = run_show({ "br", "--db", db_path, "show", token, "--json" }, nil, options, function(issue)
+      if issue == nil or issue.id ~= token then
+        try_next()
+        return
+      end
+      local opened, open_error = open_issue(issue)
+      if not opened then
+        report_error(options, "could not display Beads issue: " .. (open_error or "unknown error"))
+      end
+    end)
+    if lookup_error ~= nil then
+      report_error(options, lookup_error)
+    end
+  end
+  try_next()
 end
 
 ---@param options louiselm.ui.BeadsInspectorOptions
@@ -347,14 +396,25 @@ local function inspect_with_prefix(buffer, prefix, options)
     end
     return
   end
-  local bare_id = bare_issue_id_at_cursor(buffer, prefix)
-  if bare_id == nil then
+
+  local token = candidate_token_at_cursor(buffer, prefix)
+  if token ~= nil and token:find("-", 1, true) ~= nil then
+    -- Already has some prefix shape, just not this workspace's -- try
+    -- configured siblings before giving up.
+    try_sibling_ids(token, options, function()
+      prompt_for_issue_id(prefix, options)
+    end)
+    return
+  end
+
+  local bare_id = token ~= nil and prefix .. "-" .. token or nil
+  if bare_id == nil or not valid_issue_id(bare_id, prefix) then
     prompt_for_issue_id(prefix, options)
     return
   end
-  -- Speculative: any word under the cursor is tried, so a miss (not found or
-  -- malformed) falls through to the manual prompt instead of reporting an
-  -- error -- unlike show_issue's confident exact-prefix callers.
+  -- Speculative: any bare word under the cursor is tried, so a miss (not
+  -- found or malformed) falls through to the manual prompt instead of
+  -- reporting an error -- unlike show_issue's confident exact-prefix callers.
   local _, lookup_error = run_show({ "br", "show", bare_id, "--json" }, prefix, options, function(issue)
     if issue == nil or issue.id ~= bare_id then
       prompt_for_issue_id(prefix, options)
@@ -394,6 +454,9 @@ function M.inspect(buffer, options)
   end
   if options.on_error ~= nil and type(options.on_error) ~= "function" then
     return false, "Beads inspector on_error must be a function"
+  end
+  if options.sibling_roots ~= nil and type(options.sibling_roots) ~= "table" then
+    return false, "Beads inspector sibling_roots must be a table"
   end
   local started, lookup_error = discover_prefix(options, function(prefix)
     inspect_with_prefix(buffer, prefix, options)

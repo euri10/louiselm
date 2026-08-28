@@ -304,6 +304,21 @@ agents.<name>.version.env                                     *louiselm-config-a
     Description: Environment variables passed to the process.
 
 ------------------------------------------------------------------------------
+beads                                                         *louiselm-config-beads*
+    Type: table
+    Default: {}
+    Description: Beads issue-inspector settings.
+
+------------------------------------------------------------------------------
+beads.sibling_roots                                           *louiselm-config-beads-sibling-roots*
+    Type: array of string
+    Default: {}
+    Description: Directories globbed one level for a sibling
+    `.beads/beads.db`, tried in order when the cursor is on a full issue ID
+    belonging to a different workspace's prefix; empty disables
+    cross-workspace lookup.
+
+------------------------------------------------------------------------------
 capture                                                       *louiselm-config-capture*
     Type: table
     Default: {}

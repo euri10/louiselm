@@ -49,6 +49,8 @@ louiselm-config-agents-name-version	louiselm.txt	/*louiselm-config-agents-name-v
 louiselm-config-agents-name-version-args	louiselm.txt	/*louiselm-config-agents-name-version-args*
 louiselm-config-agents-name-version-command	louiselm.txt	/*louiselm-config-agents-name-version-command*
 louiselm-config-agents-name-version-env	louiselm.txt	/*louiselm-config-agents-name-version-env*
+louiselm-config-beads	louiselm.txt	/*louiselm-config-beads*
+louiselm-config-beads-sibling-roots	louiselm.txt	/*louiselm-config-beads-sibling-roots*
 louiselm-config-capture	louiselm.txt	/*louiselm-config-capture*
 louiselm-config-capture-recorder	louiselm.txt	/*louiselm-config-capture-recorder*
 louiselm-config-capture-service	louiselm.txt	/*louiselm-config-capture-service*

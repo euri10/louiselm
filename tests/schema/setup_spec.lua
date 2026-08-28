@@ -204,4 +204,27 @@ T["setup"]["rejects a recorder command without an output placeholder"] = functio
   MiniTest.expect.equality(config, { capture = { recorder = { "pw-record" } } })
 end
 
+T["setup"]["accepts sibling roots for cross-workspace Beads lookup"] = function()
+  local ok, report = capture_setup({ beads = { sibling_roots = { "~/code" } } })
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+end
+
+T["setup"]["defaults sibling roots to an empty list"] = function()
+  local ok = capture_setup({})
+
+  MiniTest.expect.equality(ok, true)
+end
+
+T["setup"]["rejects a non-string sibling root without mutating caller config"] = function()
+  local config = { beads = { sibling_roots = { 42 } } }
+
+  local ok, report = capture_setup(config)
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(report.errors[1].path, "beads.sibling_roots[1]")
+  MiniTest.expect.equality(config, { beads = { sibling_roots = { 42 } } })
+end
+
 return T

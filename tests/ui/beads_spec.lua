@@ -6,6 +6,8 @@ local T = MiniTest.new_set()
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 local original_executable = nvim.fn.executable
+local original_expand = nvim.fn.expand
+local original_glob = nvim.fn.glob
 local original_input = nvim.ui.input
 local original_schedule = nvim.schedule
 local original_system = nvim.system
@@ -67,10 +69,27 @@ local function complete_where(calls, scheduled, prefix)
   scheduled[1]()
 end
 
+---Fake sibling `.beads/beads.db` discovery: `db_paths` is returned verbatim
+---for every glob call, regardless of the root pattern requested.
+---@param db_paths string[]
+local function fake_glob(db_paths)
+  nvim.fn.expand = function(value)
+    return value
+  end
+  nvim.fn.glob = function(_, _, list)
+    if list then
+      return db_paths
+    end
+    return table.concat(db_paths, "\n")
+  end
+end
+
 T["beads"] = MiniTest.new_set({
   hooks = {
     post_case = function()
       nvim.fn.executable = original_executable
+      nvim.fn.expand = original_expand
+      nvim.fn.glob = original_glob
       nvim.ui.input = original_input
       rawset(nvim, "schedule", original_schedule)
       rawset(nvim, "system", original_system)
@@ -332,6 +351,89 @@ T["beads"]["does not guess a bare suffix for a token that is already a full pref
   assert(Beads.inspect(buffer))
   complete_where(calls, scheduled, "louiselm")
 
+  MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-zmab", "--json" })
+end
+
+T["beads"]["sweeps configured sibling workspaces for a foreign-prefixed cursor ID"] = function()
+  local buffer = source_buffer({ "see codex-acp-a1b2 for details" }, 5)
+  local calls = fake_system()
+  fake_glob({ "/home/lotso/code/codex-acp/.beads/beads.db", "/home/lotso/code/other/.beads/beads.db" })
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  nvim.ui.input = function()
+    error("must not prompt when a sibling resolves the ID")
+  end
+
+  assert(Beads.inspect(buffer, { sibling_roots = { "~/code" } }))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(
+    calls[2].command,
+    { "br", "--db", "/home/lotso/code/codex-acp/.beads/beads.db", "show", "codex-acp-a1b2", "--json" }
+  )
+  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  scheduled[2]()
+
+  MiniTest.expect.equality(
+    calls[3].command,
+    { "br", "--db", "/home/lotso/code/other/.beads/beads.db", "show", "codex-acp-a1b2", "--json" }
+  )
+  calls[3].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '[{"id":"codex-acp-a1b2","title":"Cross repo","status":"open","priority":2,"description":"desc"}]',
+    stderr = "",
+  })
+  scheduled[3]()
+
+  MiniTest.expect.equality(find_buffer("louiselm://beads/codex-acp-a1b2") ~= nil, true)
+end
+
+T["beads"]["falls back to the manual prompt when no sibling resolves the foreign ID"] = function()
+  local buffer = source_buffer({ "see codex-acp-a1b2 for details" }, 5)
+  local calls = fake_system()
+  fake_glob({ "/home/lotso/code/codex-acp/.beads/beads.db" })
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  local prompted
+  nvim.ui.input = function(options, callback)
+    prompted = options.prompt
+    callback("louiselm-zmab")
+  end
+
+  assert(Beads.inspect(buffer, { sibling_roots = { "~/code" } }))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(
+    calls[2].command,
+    { "br", "--db", "/home/lotso/code/codex-acp/.beads/beads.db", "show", "codex-acp-a1b2", "--json" }
+  )
+  calls[2].on_exit({ code = 1, signal = 0, stdout = "", stderr = "not found" })
+  scheduled[2]()
+
+  MiniTest.expect.equality(prompted, "louiselm Beads issue id: ")
+  MiniTest.expect.equality(calls[3].command, { "br", "show", "louiselm-zmab", "--json" })
+end
+
+T["beads"]["does not sweep siblings when sibling_roots is unset"] = function()
+  local buffer = source_buffer({ "see codex-acp-a1b2 for details" }, 5)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  nvim.ui.input = function(_, callback)
+    callback("louiselm-zmab")
+  end
+
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+
+  MiniTest.expect.equality(#calls, 2)
   MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-zmab", "--json" })
 end
 
