@@ -4018,12 +4018,31 @@ function Chat:resume_park()
       local session, load_error = self.api:load_session(selected.agent, selected.acp_session_id, {
         cwd = selected.cwd,
         name = selected.acp_session_id,
-      }, function(_, ready_error)
+      }, function(loaded_session, ready_error)
         if ready_error == nil then
           nvim.schedule(function()
-            if not self.disposed then
-              nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
+            if self.disposed then
+              return
             end
+            local run, run_error = Workflow.new_run({
+              claims = selected.claims,
+              generated_work = selected.generated_work,
+            })
+            if run == nil then
+              nvim.notify("louiselm: " .. (run_error or "could not reconstruct resumed Run"), nvim.log.levels.ERROR)
+              return
+            end
+            local adopted, adopt_error = run:adopt_session(loaded_session)
+            if not adopted then
+              nvim.notify("louiselm: " .. (adopt_error or "could not reconstruct resumed Run"), nvim.log.levels.ERROR)
+              return
+            end
+            local resumed, resume_error = run:accept_resume()
+            if not resumed then
+              nvim.notify("louiselm: " .. (resume_error or "could not resume Run"), nvim.log.levels.ERROR)
+              return
+            end
+            nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
           end)
           return
         end

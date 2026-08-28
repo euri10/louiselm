@@ -308,6 +308,7 @@ fn resumable_listing_excludes_disposed_runs() {
     let summaries = store.list_resumable(3_602_000).expect("list");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].id, active_id);
+    assert_eq!(summaries[0].claims, vec!["louiselm-qbr.3.3"]);
 }
 
 #[test]

@@ -82,6 +82,17 @@ T["cancellation"] = MiniTest.new_set()
 
 T["durable Park"] = MiniTest.new_set()
 
+T["durable Park"]["restores claims and generated-work accounting on resume"] = function()
+  local run = assert(Workflow.new_run())
+  assert(run:accept_park())
+
+  assert(run:accept_resume({ "issue-1", "issue-2" }, { ceiling = 5, consumed = 2, reserved = 1 }))
+
+  MiniTest.expect.equality(run.status, "active")
+  MiniTest.expect.equality(run.claims, { "issue-1", "issue-2" })
+  MiniTest.expect.equality(run.generated_work, { ceiling = 5, consumed = 2, reserved = 1 })
+end
+
 T["durable Park"]["accepts a service Park without persisting it again"] = function()
   local persisted = 0
   local session = worker("prompting")

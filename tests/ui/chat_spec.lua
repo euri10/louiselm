@@ -260,6 +260,58 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   MiniTest.expect.equality(session.owner_run.status, "parked")
 end
 
+T["chat"]["reconstructs the Run budget and claims after cold resume"] = function()
+  local restored = fake_session("loaded-session", "codex")
+  local api = fake_api()
+  local ready_callback
+  function api:load_session(_, _, _, callback)
+    ready_callback = callback
+    return restored
+  end
+  local chat = assert(Chat.new(api))
+  local original_list = WorkflowService.list
+  local original_select = nvim.ui.select
+  local original_schedule = nvim.schedule
+  local scheduled = {}
+  rawset(WorkflowService, "list", function(callback)
+    callback({
+      {
+        id = "run",
+        agent = "codex",
+        acp_session_id = "acp",
+        cwd = "/tmp/project",
+        state = "cold_parked",
+        expires_at_ms = 1,
+        claims = { "issue" },
+        generated_work = { ceiling = 5, consumed = 2, reserved = 1 },
+      },
+    })
+    return true
+  end)
+  nvim.ui.select = function(items, _, callback)
+    callback(items[1])
+  end
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  MiniTest.finally(function()
+    rawset(WorkflowService, "list", original_list)
+    nvim.ui.select = original_select
+    rawset(nvim, "schedule", original_schedule)
+    chat:dispose()
+  end)
+
+  assert(chat:resume_park())
+  ready_callback(restored)
+  for _, callback in ipairs(scheduled) do
+    callback()
+  end
+
+  MiniTest.expect.equality(restored.owner_run.claims, { "issue" })
+  MiniTest.expect.equality(restored.owner_run.generated_work, { ceiling = 5, consumed = 2, reserved = 1 })
+  MiniTest.expect.equality(restored.owner_run.status, "active")
+end
+
 T["chat"]["focuses the prompt"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

@@ -196,6 +196,8 @@ pub struct RunSummary {
     pub park_expires_at_ms: u64,
     /// Run-wide generated-work accounting.
     pub generated_work: GeneratedWorkBudget,
+    /// Beads claims held by this Run.
+    pub claims: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -808,6 +810,11 @@ impl RunStore {
                     state: run.state,
                     park_expires_at_ms: run.park_expires_at_ms,
                     generated_work: run.generated_work,
+                    claims: run
+                        .cleanup
+                        .iter()
+                        .map(|entry| entry.issue_id.clone())
+                        .collect(),
                 });
             }
         }

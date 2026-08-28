@@ -20,6 +20,8 @@ local nvim = vim
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
 ---@field park_record? louiselm.workflow.ParkRecord Durable cold-Park record.
 ---@field park_service? fun(record: louiselm.workflow.ParkRecord, callback: fun(ok: boolean, error_message?: string)): boolean, string? Async persistence boundary.
+---@field claims? string[] Beads claims restored from a durable Run.
+---@field generated_work? { ceiling: integer, consumed: integer, reserved: integer } Generated-work accounting restored from a durable Run.
 
 ---@class louiselm.workflow.Run
 ---@field session_api? louiselm.session.Api
@@ -30,12 +32,14 @@ local nvim = vim
 ---@field cancel fun(self: louiselm.workflow.Run, callback?: fun()): boolean, string?
 ---@field park fun(self: louiselm.workflow.Run, callback?: fun(ok: boolean, error_message?: string)): boolean, string?
 ---@field accept_park fun(self: louiselm.workflow.Run): boolean, string?
----@field accept_resume fun(self: louiselm.workflow.Run): boolean, string?
+---@field accept_resume fun(self: louiselm.workflow.Run, claims?: string[], generated_work?: { ceiling: integer, consumed: integer, reserved: integer }): boolean, string?
 ---@field create_session fun(self: louiselm.workflow.Run, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field adopt_session fun(self: louiselm.workflow.Run, session: louiselm.session.Session): boolean, string?
 ---@field dispose fun(self: louiselm.workflow.Run): boolean, string?
 ---@field emergency_stop fun(self: louiselm.workflow.Run): boolean, string?
 ---@field park_record? louiselm.workflow.ParkRecord
+---@field claims string[] Beads claims owned by this Run.
+---@field generated_work? { ceiling: integer, consumed: integer, reserved: integer } Generated-work accounting owned by this Run.
 ---@field park_service fun(record: louiselm.workflow.ParkRecord, callback: fun(ok: boolean, error_message?: string)): boolean, string?
 ---@field park_cold fun(self: louiselm.workflow.Run, request: louiselm.workflow.ColdParkRequest, callback?: fun(ok: boolean, error_message?: string)): boolean, string?
 
@@ -50,6 +54,48 @@ local function is_worker(value)
     and type(value.cancel) == "function"
     and type(value.dispose) == "function"
     and type(value.inspect) == "function"
+end
+
+---@param claims unknown
+---@return string[]? copied
+---@return string? error_message
+local function copy_claims(claims)
+  if type(claims) ~= "table" then
+    return nil, "Run claims must be an array"
+  end
+  local copied = {}
+  local count = 0
+  for index, claim in ipairs(claims) do
+    if type(claim) ~= "string" or claim == "" then
+      return nil, "Run claims must be an array of non-empty strings"
+    end
+    copied[index] = claim
+    count = index
+  end
+  for key in pairs(claims) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 or key > count then
+      return nil, "Run claims must be a dense array"
+    end
+  end
+  return copied
+end
+
+---@param generated_work unknown
+---@return { ceiling: integer, consumed: integer, reserved: integer }? copied
+---@return string? error_message
+local function copy_generated_work(generated_work)
+  if type(generated_work) ~= "table" then
+    return nil, "Run generated_work must be a table"
+  end
+  local copied = {}
+  for _, field in ipairs({ "ceiling", "consumed", "reserved" }) do
+    local value = generated_work[field]
+    if type(value) ~= "number" or value < 0 or value % 1 ~= 0 then
+      return nil, "Run generated_work fields must be non-negative integers"
+    end
+    copied[field] = value
+  end
+  return copied
 end
 
 ---@param worker louiselm.workflow.RunWorker
@@ -126,6 +172,22 @@ function M.new(options)
   elseif type(schedule) ~= "function" then
     return nil, "schedule must be a function"
   end
+  local claims = {}
+  if options.claims ~= nil then
+    local copied, claims_error = copy_claims(options.claims)
+    if copied == nil then
+      return nil, claims_error
+    end
+    claims = copied
+  end
+  local generated_work
+  if options.generated_work ~= nil then
+    local copied, generated_work_error = copy_generated_work(options.generated_work)
+    if copied == nil then
+      return nil, generated_work_error
+    end
+    generated_work = copied
+  end
   local run = setmetatable({
     session_api = options.session_api,
     cancellation_timeout_ms = timeout,
@@ -134,6 +196,8 @@ function M.new(options)
     status = "active",
     park_record = options.park_record,
     park_service = options.park_service or Service.park,
+    claims = claims,
+    generated_work = generated_work,
   }, Run)
   return run
 end
@@ -297,11 +361,27 @@ end
 
 ---Accept an already-durable operator resume without mutating the service again.
 ---@param self louiselm.workflow.Run
+---@param claims? string[] Claims restored from the durable Run.
+---@param generated_work? { ceiling: integer, consumed: integer, reserved: integer } Generated-work accounting restored from the durable Run.
 ---@return boolean resumed
 ---@return string? error_message
-function Run:accept_resume()
+function Run:accept_resume(claims, generated_work)
   if self.status == "disposed" then
     return false, "Run is disposed"
+  end
+  if claims ~= nil then
+    local copied, claims_error = copy_claims(claims)
+    if copied == nil then
+      return false, claims_error
+    end
+    self.claims = copied
+  end
+  if generated_work ~= nil then
+    local copied, generated_work_error = copy_generated_work(generated_work)
+    if copied == nil then
+      return false, generated_work_error
+    end
+    self.generated_work = copied
   end
   if self.status == "active" then
     return true

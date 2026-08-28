@@ -67,6 +67,7 @@ end
 ---@field state "cold_parked"
 ---@field expires_at_ms integer
 ---@field generated_work { ceiling: integer, consumed: integer, reserved: integer }
+---@field claims string[] Beads claims held by the durable Run.
 
 ---@class louiselm.workflow.RunAdmissionRecord
 ---@field id string
@@ -292,6 +293,7 @@ function M.list(callback, system)
           or type(run.generated_work.ceiling) ~= "number"
           or type(run.generated_work.consumed) ~= "number"
           or type(run.generated_work.reserved) ~= "number"
+          or type(run.claims) ~= "table"
         then
           callback({}, "cold Park service returned malformed data")
           return
@@ -308,6 +310,7 @@ function M.list(callback, system)
             consumed = run.generated_work.consumed,
             reserved = run.generated_work.reserved,
           },
+          claims = run.claims,
         }
       end
       callback(runs)
