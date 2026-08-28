@@ -1272,6 +1272,36 @@ T["chat"]["inspects finished and active tool payloads from their lines"] = funct
   chat:dispose()
 end
 
+T["chat"]["closes the tool inspector with q, matching Beads' close key"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file", rawInput = { path = "init.lua" } },
+  })
+  nvim.wait(100, function()
+    return #buffer_lines(chat:buffer()) >= 7
+  end, 1)
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  assert(chat:inspect_tool())
+  local inspector_buffer = nvim.api.nvim_get_current_buf()
+
+  local close
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(inspector_buffer, "n")) do
+    if mapping.lhs == "q" then
+      close = mapping.callback
+    end
+  end
+  assert(type(close) == "function", "tool inspector has no q mapping")
+  close()
+
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(inspector_buffer), false)
+  chat:dispose()
+end
+
 T["chat"]["marks image tool results with the raw-payload fallback"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

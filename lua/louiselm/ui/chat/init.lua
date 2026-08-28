@@ -1227,6 +1227,14 @@ local function open_tool_inspector(self, view, id)
     border = "rounded",
   })
   self.tool_inspect_windows[window] = true
+  local function close()
+    self.tool_inspect_windows[window] = nil
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end
+  nvim.keymap.set("n", "q", close, { buffer = buffer, silent = true, nowait = true, desc = "Close tool inspector" })
+  nvim.keymap.set("n", "<Esc>", close, { buffer = buffer, silent = true, nowait = true, desc = "Close tool inspector" })
   return true
 end
 
