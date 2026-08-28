@@ -9,6 +9,7 @@ local Workflow = require("louiselm.routing")
 local M = {}
 local configured ---@type table?
 local dispose_registered ---@type fun()?
+local staleness_generation = 0
 
 local function session_module()
   return require("louiselm.session")
@@ -205,8 +206,13 @@ end
 ---independent checks resolve.
 ---@param definitions table<string, louiselm.agent.Definition>
 local function check_agent_staleness(definitions)
+  staleness_generation = staleness_generation + 1
+  local generation = staleness_generation
   for name, definition in pairs(definitions) do
     Agent.check(definition, function(result)
+      if generation ~= staleness_generation then
+        return
+      end
       if not result.outdated then
         return
       end

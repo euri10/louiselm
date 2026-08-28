@@ -1082,6 +1082,72 @@ T["command"]["warns without blocking chat creation when a configured agent trail
   delete_chat_buffers()
 end
 
+T["command"]["ignores a stale health result after a newer chat check starts"] = function()
+  local definition = mock_definition()
+  definition.latest = { command = "npm", args = { "view", "mock-acp", "version" } }
+  Command.configure({ agents = { mock = definition } })
+
+  local original_system = nvim.system
+  local calls = {}
+  rawset(nvim, "system", function(command, options, on_exit)
+    local entry = { command = command, options = options, on_exit = on_exit }
+    calls[#calls + 1] = entry
+    entry.handle = {
+      write = function() end,
+      kill = function() end,
+      is_closing = function()
+        return false
+      end,
+    }
+    return entry.handle
+  end)
+  local original_executable = nvim.fn.executable
+  rawset(nvim.fn, "executable", function()
+    return 1
+  end)
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+
+  local function health_calls(start)
+    local version_call, latest_call
+    for index = start, #calls do
+      local entry = calls[index]
+      if entry.command[1] == "npm" then
+        latest_call = entry
+      elseif entry.command[#entry.command] == "--version" then
+        version_call = entry
+      end
+    end
+    return assert(version_call), assert(latest_call)
+  end
+
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  local first_version, first_latest = health_calls(1)
+  Session.dispose_all()
+  delete_chat_buffers()
+
+  local second_start = #calls + 1
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  local second_version, second_latest = health_calls(second_start)
+
+  second_latest.on_exit({ code = 0, signal = 0, stdout = "1.7.0\n", stderr = "" })
+  second_version.on_exit({ code = 0, signal = 0, stdout = "mock-acp 1.7.0\n", stderr = "" })
+  first_latest.on_exit({ code = 0, signal = 0, stdout = "1.7.0\n", stderr = "" })
+  first_version.on_exit({ code = 0, signal = 0, stdout = "mock-acp 1.6.2\n", stderr = "" })
+
+  rawset(nvim, "system", original_system)
+  rawset(nvim.fn, "executable", original_executable)
+  rawset(nvim, "notify", original_notify)
+  Command.configure(nil)
+
+  MiniTest.expect.equality(notifications, {})
+end
+
 T["command"]["injects the hidden bounded catalog through the normal chat path"] = function()
   local skill_root = nvim.fn.tempname()
   local source_root = nvim.fs.joinpath(skill_root, "source")

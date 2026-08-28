@@ -37,6 +37,7 @@ T["abandonment"]["records recovery truth and consumes the breadcrumb once"] = fu
   MiniTest.expect.equality(record.sessions, sessions)
   MiniTest.expect.equality(mode, 384)
   MiniTest.expect.equality(message:find("codex", 1, true) ~= nil, true)
+  MiniTest.expect.equality(message:find("codex (codex-acp)", 1, true) ~= nil, true)
   MiniTest.expect.equality(message:find(":LouiselmResume", 1, true) ~= nil, true)
   MiniTest.expect.equality(message:find("claude", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.uv.fs_stat(path), nil)

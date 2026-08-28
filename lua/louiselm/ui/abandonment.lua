@@ -108,6 +108,15 @@ function M.write(path, sessions)
   return write_private(nvim.fs.normalize(path), encoded)
 end
 
+---@param session louiselm.ui.AbandonedSession
+---@return string label
+local function session_label(session)
+  if session.acp_session_id ~= nil and session.acp_session_id ~= "" then
+    return string.format("%s (%s)", session.agent, session.acp_session_id)
+  end
+  return session.agent
+end
+
 ---@param sessions louiselm.ui.AbandonedSession[]
 ---@return string message
 local function recovery_message(sessions)
@@ -115,7 +124,7 @@ local function recovery_message(sessions)
   local lost = {}
   for _, session in ipairs(sessions) do
     local destination = session.recoverable and recoverable or lost
-    destination[#destination + 1] = session.agent
+    destination[#destination + 1] = session_label(session)
   end
   local count = #sessions
   local message = string.format("louiselm: previous exit ended %d live Session%s", count, count == 1 and "" or "s")
