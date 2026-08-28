@@ -32,6 +32,7 @@
 :LouiselmSessionRename	louiselm.txt	/*:LouiselmSessionRename*
 :LouiselmSessionSwitch	louiselm.txt	/*:LouiselmSessionSwitch*
 :LouiselmToMarkdown	louiselm.txt	/*:LouiselmToMarkdown*
+:LouiselmTutor	louiselm.txt	/*:LouiselmTutor*
 louiselm	louiselm.txt	/*louiselm*
 louiselm-commands	louiselm.txt	/*louiselm-commands*
 louiselm-config-agents	louiselm.txt	/*louiselm-config-agents*

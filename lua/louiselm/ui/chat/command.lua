@@ -292,6 +292,24 @@ function M.register()
     end
   end
 
+  local function open_tutor()
+    local paths = nvim.api.nvim_get_runtime_file("docs/tutorial.md", false)
+    local path = paths[1]
+    if path == nil then
+      report_error("could not find the bundled Tutor")
+      return
+    end
+
+    local opened, open_error = pcall(nvim.api.nvim_cmd, { cmd = "edit", args = { path } }, {})
+    if not opened then
+      report_error(tostring(open_error))
+      return
+    end
+    local buffer = nvim.api.nvim_get_current_buf()
+    nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
+    nvim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
+  end
+
   M.winbar_click = function(target, _, button)
     if button ~= "l" or chat == nil then
       return
@@ -432,6 +450,11 @@ function M.register()
   nvim.api.nvim_create_user_command("LouiselmChat", function()
     open_chat()
   end, { desc = "Open the louiselm chat buffer", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmTutor", open_tutor, {
+    desc = "Open the LouiseLM onboarding Tutor",
+    force = true,
+  })
 
   nvim.api.nvim_create_user_command("LouiselmInspectBead", inspect_bead, {
     desc = "Inspect the Beads issue under the cursor",

@@ -199,6 +199,10 @@ Commands                                                      *louiselm-commands
     session id
     Arguments: optional
 
+:LouiselmTutor                                                *:LouiselmTutor*
+    Open the LouiseLM onboarding Tutor
+    Arguments: none
+
 ==============================================================================
 Configuration                                                 *louiselm-configuration*
 

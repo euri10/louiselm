@@ -177,26 +177,33 @@ in the health buffer.
 
 ## Quick start
 
-For a development session from the repository root:
+The fastest first run uses Codex as the default Agent. LouiseLM does not
+install the Agent or create credentials; install and authenticate `codex-acp`
+using its [official instructions](https://github.com/agentclientprotocol/codex-acp#installation),
+then download the alpha quickstart:
 
 ```sh
-nvim -u ./manual_init.lua
+curl -fL https://raw.githubusercontent.com/euri10/louiselm/main/examples/quickstart.lua \
+  -o quickstart.lua
+nvim --clean -u quickstart.lua
 ```
 
-Run `:LouiselmChat` to start a Session and `:checkhealth louiselm` to verify
-local configuration and tools. For another Neovim configuration, define at
-least one Agent explicitly:
+Inside Neovim, run the health check, read the short in-editor lesson, and open
+your first chat. The lesson is also available as
+[docs/tutorial.md](docs/tutorial.md):
 
-```lua
-require("louiselm").setup({
-  agents = {
-    claude = { command = "claude-agent-acp", args = {}, env = { MAX_THINKING_TOKENS = "16384" } },
-  },
-})
+```vim
+:checkhealth louiselm
+:LouiselmTutor
+:LouiselmChat
 ```
 
-Use `:help louiselm` for commands, Session lifecycle, permissions, queued
-context, troubleshooting, and the complete configuration reference.
+The quickstart tracks `main` because LouiseLM is alpha software. Use plain
+`nvim -u quickstart.lua` if you intentionally want your normal configuration
+loaded as well. If you need another Agent, cannot use the download path, or
+want to move the setup into your normal configuration, see
+[docs/onboarding.md](docs/onboarding.md). The complete command and
+configuration reference is available with `:help louiselm`.
 
 ## Licence
 

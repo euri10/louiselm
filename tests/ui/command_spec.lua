@@ -193,8 +193,23 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmMentionBuffer ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmSendSelection ~= nil, true)
   MiniTest.expect.equality(commands.LouiselmDiagnostics ~= nil, true)
+  MiniTest.expect.equality(commands.LouiselmTutor ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
+end
+
+T["command"]["opens the Tutor without a configured Agent"] = function()
+  nvim.api.nvim_cmd({ cmd = "LouiselmTutor", args = {} }, {})
+
+  local buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.finally(function()
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(buffer):match("docs/tutorial%.md$") ~= nil, true)
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
+  MiniTest.expect.equality(buffer_contains(buffer, ":LouiselmChat"), true)
 end
 
 T["command"]["inspects Beads from the active Session workspace"] = function()
@@ -776,6 +791,39 @@ T["command"]["manual init configures current logged agents"] = function()
       },
     },
   })
+end
+
+T["command"]["quickstart installs LouiseLM and configures Codex"] = function()
+  local original_add = nvim.pack.add
+  local original_setup = Louiselm.setup
+  local added
+  local configured
+  nvim.pack.add = function(spec, options)
+    added = { spec = spec, options = options }
+  end
+  rawset(Louiselm, "setup", function(config)
+    configured = config
+    return true
+  end)
+  MiniTest.finally(function()
+    nvim.pack.add = original_add
+    rawset(Louiselm, "setup", original_setup)
+  end)
+
+  local ok, error_message = pcall(dofile, project_root .. "/examples/quickstart.lua")
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(error_message, nil)
+  MiniTest.expect.equality(added, {
+    spec = {
+      {
+        src = "https://github.com/euri10/louiselm.git",
+        name = "louiselm.nvim",
+      },
+    },
+    options = { confirm = false },
+  })
+  MiniTest.expect.equality(configured, { agents = { codex = { command = "codex-acp" } } })
 end
 
 T["command"]["register is repeatable"] = function()
