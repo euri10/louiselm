@@ -2,6 +2,7 @@ local MiniTest = require("mini.test")
 
 local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
+local Beads = require("louiselm.ui.beads")
 local Louiselm = require("louiselm")
 local Session = require("louiselm.session")
 
@@ -193,6 +194,34 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmDiagnostics ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
+end
+
+T["command"]["inspects Beads from the active Session workspace"] = function()
+  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_inspect = Beads.inspect
+  local original_cwd = nvim.fn.getcwd()
+  local inspect_options
+  rawset(Beads, "inspect", function(_, options)
+    inspect_options = options
+    return true
+  end)
+  MiniTest.finally(function()
+    rawset(Beads, "inspect", original_inspect)
+    rawset(nvim, "system", original_system)
+    nvim.cmd("lcd " .. nvim.fn.fnameescape(original_cwd))
+    Command.configure(nil)
+  end)
+
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "beads-cwd-acp" })
+
+  nvim.cmd("lcd /tmp")
+  nvim.api.nvim_cmd({ cmd = "LouiselmInspectBead", args = {} }, {})
+
+  MiniTest.expect.equality(inspect_options.cwd, original_cwd)
 end
 
 T["command"]["shows and refreshes the active Agent account limits"] = function()

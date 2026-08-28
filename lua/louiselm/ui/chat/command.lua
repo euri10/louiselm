@@ -401,7 +401,10 @@ function M.register()
       report_error("no chat session is open")
       return
     end
+    local view = chat.current_id and chat.views[chat.current_id]
+    local state = view and view.session:inspect()
     local _, inspect_error = Beads.inspect(buffer, {
+      cwd = state and state.working_dir or nil,
       is_active = function()
         return chat ~= nil and chat:buffer() == buffer
       end,
