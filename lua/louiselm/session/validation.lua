@@ -15,7 +15,7 @@
 ---@class louiselm.session.ContextUsage
 ---@field used number Tokens currently in context.
 ---@field size number Effective context window size.
----@field percentage number Derived percentage used.
+---@field percentage number Derived percentage used, clamped to 100 when `used` exceeds `size`.
 ---@field pressure "normal"|"elevated"|"high"|"critical" Passive pressure state.
 ---@field stale boolean Whether a model change made this reading stale.
 
@@ -275,6 +275,11 @@ function M.available_commands(value)
 end
 
 ---Validate one context/cost usage update.
+---`used` above `size` is accepted rather than rejected: an over-full window is a
+---real state agents report, notably on the first mid-turn update after
+---session/load, where the agent streams its default window size until the turn
+---result corrects it to the model's real one. Such an update is reported as a
+---saturated context, not as a protocol violation.
 ---@param value unknown
 ---@return louiselm.session.ContextUsage? context
 ---@return louiselm.session.Cost? cost
@@ -286,11 +291,10 @@ function M.usage_update(value)
     or type(value.size) ~= "number"
     or value.used < 0
     or value.size <= 0
-    or value.used > value.size
   then
     return nil, nil, false
   end
-  local percentage = value.used / value.size * 100
+  local percentage = math.min(value.used / value.size * 100, 100)
   local pressure = "normal"
   if percentage >= 95 then
     pressure = "critical"

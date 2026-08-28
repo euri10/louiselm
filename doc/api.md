@@ -282,7 +282,7 @@ louiselm.session.LimitsStatus:
 
 ### louiselm.session.ContextUsage
 
-- `percentage: number` -- Derived percentage used.
+- `percentage: number` -- Derived percentage used, clamped to 100 when `used` exceeds `size`.
 - `pressure: "critical"|"elevated"|"high"|"normal"` -- Passive pressure state.
 - `size: number` -- Effective context window size.
 - `stale: boolean` -- Whether a model change made this reading stale.

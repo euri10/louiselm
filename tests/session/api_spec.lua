@@ -1090,6 +1090,40 @@ T["new"]["tracks context cost and reported turn usage and rejects malformed tele
   restore_processes(original_system)
 end
 
+T["new"]["accepts an over-full context window"] = function()
+  -- Values captured from claude/ef254b92-acbf-44c3-84fd-3eedb982f46d at
+  -- 2026-08-28T07:34:25.340Z, in
+  -- ~/.local/state/acp-llm-adapter/proxy/sessions/ef254b92-acbf-44c3-84fd-3eedb982f46d/log.jsonl:
+  -- the first mid-turn usage_update after session/load reports the agent's
+  -- default 200k window before the turn result corrects it to the model's real
+  -- 1M one, so `used` momentarily exceeds `size`.
+  local processes, original_system = fake_processes()
+  local events = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = 237031, size = 200000 },
+  })
+
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().context, {
+    used = 237031,
+    size = 200000,
+    percentage = 100,
+    pressure = "critical",
+    stale = false,
+  })
+  MiniTest.expect.equality(events[#events].type, "usage_updated")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["rejects malformed reported turn usage"] = function()
   local processes, original_system = fake_processes()
   local events = {}
