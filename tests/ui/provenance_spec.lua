@@ -436,6 +436,16 @@ T["Decision index"]["navigates a selected row to its issue Provenance"] = functi
   nvim.api.nvim_win_set_cursor(0, { 3, 0 })
   nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
 
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
+    "louiselm://provenance/decision/louiselm-old"
+  )
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
+    "# Decision louiselm-old",
+    "",
+    "Loading Provenance evidence...",
+  })
+
   MiniTest.expect.equality(calls[2].command, {
     "bvr",
     "--robot-history",

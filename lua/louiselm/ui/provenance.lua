@@ -524,6 +524,16 @@ end
 ---@return boolean started
 ---@return string? error_message
 local function show_decision(issue_id, options)
+  local name = "louiselm://provenance/decision/" .. issue_id
+  local opened, open_error = open_provenance(name, {
+    "# Decision " .. issue_id,
+    "",
+    "Loading Provenance evidence...",
+  })
+  if not opened then
+    return false, open_error
+  end
+
   local started, start_error = Sources.bvr_history(
     options.cwd or nvim.fn.getcwd(),
     issue_id,
@@ -562,12 +572,9 @@ local function show_decision(issue_id, options)
             report_error(options, "could not derive Decision evidence " .. issue_id)
             return
           end
-          local opened, open_error = open_provenance(
-            "louiselm://provenance/decision/" .. issue_id,
-            decision_lines(timeline, history, issue, options)
-          )
-          if not opened then
-            report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+          local rendered, render_error = open_provenance(name, decision_lines(timeline, history, issue, options))
+          if not rendered then
+            report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
           end
         end
       )
