@@ -3,9 +3,9 @@
 # Scope: this runs the three gates AGENTS.md section 4 declares
 # authoritative -- StyLua for formatting, lua-language-server for
 # static analysis, and mini.test for tests. It deliberately does NOT
-# build or publish blog/, which is GitLab's job (.gitlab-ci.yml runs
-# only when blog/ changes). The two pipelines are disjoint on purpose:
-# GitLab owns publishing, GitHub owns correctness.
+# build or publish blog/, which is pages.yml's job (runs only when
+# blog/ changes). The two pipelines are disjoint on purpose: pages.yml
+# owns publishing, this one owns correctness.
 #
 # Every gate below was verified to fail, not merely to pass, before
 # being wired up here (louiselm-w726's lesson: a check whose failure

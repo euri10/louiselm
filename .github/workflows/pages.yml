@@ -1,0 +1,104 @@
+# GitHub Actions pipeline for the blog/ publishing pipeline
+# (blog.bartab.fr, served via GitHub Pages).
+#
+# Scope: this ONLY builds blog/ with MyST and publishes the static output
+# via GitHub Pages. Nothing else in this repo (the Neovim plugin itself) is
+# built or tested here -- that's ci.yml's job, and the two are disjoint on
+# purpose (paths filters below vs. ci.yml's paths-ignore: blog/**).
+#
+# Ported from .gitlab-ci.yml, which this replaces. GitLab Pages publishing
+# from this project is deferred (louiselm needs self-hosted GitLab Pages
+# infra that isn't configured yet); GitHub is the public interface for now.
+#
+# Hard constraint: Neovim is NEVER installed or invoked in this pipeline.
+# The nvim-transcript excerpts embedded in posts are rendered locally, ahead
+# of time, by blog/scripts/render-post.sh (which shells out to the author's
+# real Neovim config with Catppuccin/Tree-sitter/plugins) and the resulting
+# fragment HTML/CSS is committed to the repo alongside each post. CI's only
+# job is `myst build --html --strict` against that already-rendered,
+# already-committed content -- reproducing the personal editor config
+# inside a CI runner is explicitly out of scope.
+#
+# One-time manual step (outside this repo, NOT automated here): in
+# Settings > Pages, set Source to "GitHub Actions" (not a branch) -- the
+# deploy job below needs that before actions/deploy-pages@v4 has anywhere
+# to publish to. Then, to make blog.bartab.fr actually resolve to this
+# Pages site, add a `blog` CNAME record at the DNS provider pointing at
+# this repo's github.io Pages domain, then set the custom domain in the
+# same Settings > Pages screen. GitHub issues
+# the HTTPS cert automatically once DNS resolves. See:
+# https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "blog/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Only one Pages deploy at a time, and let an in-flight deploy finish rather
+# than cancelling it -- GitHub's own guidance for the pages concurrency
+# group, since cancelling mid-deploy can leave the site in a broken state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # mystmd requires Node 20+ (even-numbered releases recommended:
+    # https://mystmd.org/guide/install-node). Node 24 is the current Active
+    # LTS line and is exactly what was used to verify this build locally,
+    # so it's pinned here rather than floating whatever setup-node's
+    # `lts/*` resolves to at run time.
+    env:
+      # `myst build --html` briefly spins up its own local Node server bound
+      # to the literal string "localhost" and fetches from it to prerender
+      # pages before writing output. Under default runner networking,
+      # "localhost" resolution can race between IPv4/IPv6 and the fetch hits
+      # ECONNREFUSED against the unreachable family. Forcing IPv4 sidesteps
+      # the race; mystmd already special-cases this exact failure mode for
+      # ReadTheDocs via the same HOST override (confirmed necessary on
+      # GitLab CI runners for this project; carried over defensively here).
+      HOST: "127.0.0.1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # Pin mystmd to the version confirmed to build this project cleanly
+      # (mystmd@1.10.1), rather than floating `latest`, so an upstream
+      # mystmd release can't silently break this pipeline.
+      - name: Install mystmd
+        run: npm install -g mystmd@1.10.1
+
+      # --strict promotes warnings (e.g. a broken literalinclude reference)
+      # to errors, so a broken build fails the job loudly instead of
+      # silently publishing a bad site.
+      - name: Build
+        working-directory: blog
+        run: myst build --html --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: blog/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
