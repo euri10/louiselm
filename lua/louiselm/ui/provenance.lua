@@ -522,17 +522,61 @@ local function decision_lines(timeline, history, issue, options)
 end
 
 ---@param lines string[]
+---@param issue_id string
+---@param ref string
 ---@param vintage louiselm.provenance.Vintage
-local function append_vintage(lines, vintage)
+local function append_vintage(lines, issue_id, ref, vintage)
   lines[#lines + 1] = ""
   lines[#lines + 1] = "Historical backlog:"
+  lines[#lines + 1] = "- ref: " .. ref
   lines[#lines + 1] = string.format("- %d issues at decision time", #vintage.issues)
+  for _, issue in ipairs(vintage.issues) do
+    if issue.id == issue_id then
+      lines[#lines + 1] = "- anchor state: " .. (issue.status or "unknown")
+      break
+    end
+  end
   lines[#lines + 1] = string.format(
     "- since then: %d added, %d removed, %d changed",
     #vintage.diff.added,
     #vintage.diff.removed,
     #vintage.diff.changed
   )
+end
+
+---@param lines string[]
+---@param issue_id string
+---@param ref string
+---@param error_message string
+local function append_missing_vintage(lines, issue_id, ref, error_message)
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Historical backlog:"
+  lines[#lines + 1] = "- ref: " .. ref
+  lines[#lines + 1] = "- unavailable: " .. error_message
+end
+
+---@param lines string[]
+---@param issue louiselm.provenance.BeadsIssue
+local function append_relations(lines, issue)
+  local relations = {}
+  for _, field in ipairs({ "description", "notes", "design", "acceptance_criteria" }) do
+    local text = issue[field]
+    if text ~= nil then
+      for relation, target_id in text:gmatch("Decision relation:%s*(%w+)%s+(%S+)") do
+        if relation == "supersedes" or relation == "reconsiders" then
+          relations[#relations + 1] = { relation = relation, target_id = target_id }
+        end
+      end
+    end
+  end
+  if #relations == 0 then
+    return
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Relations:"
+  for _, relation in ipairs(relations) do
+    lines[#lines + 1] = string.format("- %s %s · recorded", relation.relation, relation.target_id)
+  end
 end
 
 ---@param issue_id string
@@ -589,6 +633,7 @@ local function show_decision(issue_id, options)
             return
           end
           local lines = decision_lines(timeline, history, issue, options)
+          append_relations(lines, issue)
           local closed = history.milestones.closed
           if issue.status == "closed" and closed ~= nil then
             local vintage_started, vintage_error = Vintage.load(
@@ -599,14 +644,19 @@ local function show_decision(issue_id, options)
                   return
                 end
                 if vintage == nil or historical_error ~= nil then
-                  report_error(
-                    options,
-                    "could not read historical backlog: "
-                      .. (historical_error and historical_error.message or "unknown error")
+                  append_missing_vintage(
+                    lines,
+                    issue_id,
+                    closed.commit_sha,
+                    historical_error and historical_error.message or "unknown error"
                   )
+                  local rendered, render_error = open_provenance(name, lines)
+                  if not rendered then
+                    report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
+                  end
                   return
                 end
-                append_vintage(lines, vintage)
+                append_vintage(lines, issue_id, closed.commit_sha, vintage)
                 local rendered, render_error = open_provenance(name, lines)
                 if not rendered then
                   report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
@@ -614,10 +664,16 @@ local function show_decision(issue_id, options)
               end
             )
             if not vintage_started then
-              report_error(
-                options,
-                "could not read historical backlog: " .. (vintage_error and vintage_error.message or "unknown error")
+              append_missing_vintage(
+                lines,
+                issue_id,
+                closed.commit_sha,
+                vintage_error and vintage_error.message or "unknown error"
               )
+              local rendered, render_error = open_provenance(name, lines)
+              if not rendered then
+                report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
+              end
             end
             return
           end

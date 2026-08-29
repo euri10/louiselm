@@ -634,9 +634,10 @@ T["Decision index"]["shows the backlog at a closed Decision and its current drif
   local calls = fake_system()
   local root = nvim.fn.tempname()
   assert(nvim.fn.mkdir(nvim.fs.joinpath(root, ".beads"), "p") == 1)
-  assert(
-    nvim.fn.writefile({ '{"id":"current","status":"open"}' }, nvim.fs.joinpath(root, ".beads", "issues.jsonl")) == 0
-  )
+  assert(nvim.fn.writefile({
+    '{"id":"current","status":"open"}',
+    '{"id":"louiselm-decision","status":"closed"}',
+  }, nvim.fs.joinpath(root, ".beads", "issues.jsonl")) == 0)
   assert(Provenance.show_decisions({ cwd = root }))
   finish_beads_questions(
     calls,
@@ -664,11 +665,21 @@ T["Decision index"]["shows the backlog at a closed Decision and its current drif
   )
   finish_call(calls, 3, '[{"id":"louiselm-decision","issue_type":"question","status":"closed","comments":[]}]')
   MiniTest.expect.equality(calls[4].command, { "git", "show", "close-sha:.beads/issues.jsonl" })
-  finish_call(calls, 4, '{"id":"historical","status":"custom"}\n')
+  finish_call(
+    calls,
+    4,
+    table.concat({
+      '{"id":"historical","status":"custom"}',
+      '{"id":"louiselm-decision","status":"custom"}',
+      "",
+    }, "\n")
+  )
 
   local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
-  MiniTest.expect.equality(lines[#lines - 1], "- 1 issues at decision time")
-  MiniTest.expect.equality(lines[#lines], "- since then: 1 added, 1 removed, 0 changed")
+  MiniTest.expect.equality(lines[#lines - 3], "- ref: close-sha")
+  MiniTest.expect.equality(lines[#lines - 2], "- 2 issues at decision time")
+  MiniTest.expect.equality(lines[#lines - 1], "- anchor state: custom")
+  MiniTest.expect.equality(lines[#lines], "- since then: 1 added, 1 removed, 1 changed")
   nvim.fn.delete(root, "rf")
 end
 
