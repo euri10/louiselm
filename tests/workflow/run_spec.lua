@@ -78,6 +78,44 @@ T["ownership"]["creates stage Sessions through the Run owner"] = function()
   MiniTest.expect.equality(#run.workers, 1)
 end
 
+T["ownership"]["a skill invoked by a stage Agent inherits Run ownership and stops when the Run cancels"] = function()
+  -- The motivating scenario for the whole ownership contract (louiselm-qbr.3.2):
+  -- a stage's Agent invokes a work-producing skill mid-turn. The skill's own
+  -- work is not a separate, detachable concern -- it reaches the Run through
+  -- the same `create_session` every other stage worker uses, so it is owned
+  -- the moment it exists, and Cancellation reaches it exactly like any other
+  -- owned worker, with no special-casing for how it came to exist.
+  local stage_session = worker("ready")
+  local skill_session
+  local api = {
+    create_session = function(_, _, _, callback)
+      skill_session = worker("prompting")
+      callback(skill_session)
+      return skill_session
+    end,
+  }
+  local scheduled
+  local run = assert(Workflow.new_run({
+    session_api = api,
+    cancellation_timeout_ms = 25,
+    schedule = function(_, callback)
+      scheduled = callback
+    end,
+  }))
+  assert(run:adopt_session(stage_session))
+
+  local created = assert(run:create_session("skill-agent"))
+  MiniTest.expect.equality(created, skill_session)
+  MiniTest.expect.equality(skill_session.owner_run, run)
+  MiniTest.expect.equality(#run.workers, 2)
+
+  assert(run:cancel())
+  scheduled()
+
+  MiniTest.expect.equality(skill_session.cancelled, 1)
+  MiniTest.expect.equality(run.status, "cancelled")
+end
+
 T["cancellation"] = MiniTest.new_set()
 
 T["durable Park"] = MiniTest.new_set()
