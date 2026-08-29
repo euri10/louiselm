@@ -564,7 +564,7 @@ T["chat"]["hands off the current session to a picked agent"] = function()
   assert(chat:attach(source))
   local original_select = nvim.ui.select
   nvim.ui.select = function(items, _, callback)
-    MiniTest.expect.equality(items, { "codex", "deepseek" })
+    MiniTest.expect.equality(items, { "claude", "codex", "deepseek" })
     callback("codex")
   end
 
@@ -641,6 +641,31 @@ T["chat"]["hands off a source session in error state"] = function()
   MiniTest.expect.equality({ started, error_message }, { true, nil })
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, 1, false)[1], "## Handoff")
   MiniTest.expect.equality(source.state.status, "error")
+  chat:dispose()
+end
+
+T["chat"]["offers the current Agent as a Handoff target"] = function()
+  local source = fake_session("source", "codex")
+  local target = fake_session("target", "codex")
+  local api = fake_api()
+  api.create_session = function(_, agent_name)
+    MiniTest.expect.equality(agent_name, "codex")
+    return target
+  end
+  local chat = assert(Chat.new(api, { agents = { "claude", "codex" } }))
+  assert(chat:attach(source))
+  local offered
+  nvim.ui.select = function(items, _, callback)
+    offered = items
+    callback("codex")
+  end
+
+  local started, error_message = chat:hand_off()
+
+  MiniTest.expect.equality({ started, error_message }, { true, nil })
+  MiniTest.expect.equality(offered, { "claude", "codex" })
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0), "louiselm://handoff-source-target")
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(assert(chat:buffer("source"))), true)
   chat:dispose()
 end
 

@@ -14,9 +14,10 @@ Overview                                                      *louiselm*
   capture tools. Health output is operational evidence, not a substitute for
   this reference.
 
-  Sessions remain bound to their Agent. A Handoff creates a Session with
-  another Agent and seeds it with your takeover task and a compacted source
-  transcript. The source Session remains attached.
+  Sessions remain bound to their Agent. A Handoff creates a new Session with a
+  configured Agent, including the current Agent, and seeds it with your
+  takeover task and a compacted source transcript. The source Session remains
+  attached.
 
 ==============================================================================
 Sessions                                                      *louiselm-sessions*
@@ -25,9 +26,9 @@ Sessions                                                      *louiselm-sessions
   start another Session without stopping the current one, and
   :LouiselmSessionSwitch to focus an attached Session.
 
-  A Handoff creates a Session with another Agent after you fill in its
-  takeover task and review the compacted source transcript. The source Session
-  remains attached.
+  A Handoff creates a new Session with a configured Agent after you fill in
+  its takeover task and review the compacted source transcript. The source
+  Session remains attached.
 
 ==============================================================================
 Workflow                                                      *louiselm-workflow*

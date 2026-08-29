@@ -3888,8 +3888,8 @@ function Chat:new_session(agent_name, options)
   return session
 end
 
----Hand the current session's reviewed transcript off to another configured
----agent: pick a target agent, create and seed its session the same way
+---Hand the current session's reviewed transcript off to a configured Agent:
+---pick a target Agent, create and seed its session the same way
 ---`new_session` does, then open the editable transcript review buffer.
 ---@param self louiselm.ui.Chat
 ---@return boolean started
@@ -3914,12 +3914,7 @@ function Chat:hand_off()
     return false, "handoff requires at least two configured agents"
   end
 
-  local candidates = {}
-  for _, name in ipairs(self.agents) do
-    if name ~= source_state.agent then
-      candidates[#candidates + 1] = name
-    end
-  end
+  local candidates = self.agents
 
   Picker.select(candidates, { prompt = "louiselm handoff target: " }, function(agent_name)
     if agent_name == nil or self.disposed or self.views[source_id] ~= source_view then
