@@ -213,6 +213,9 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   local session = fake_session("park-session", "codex")
   session.state.acp_session_id = "acp-session"
   session.state.working_dir = "/tmp/project"
+  -- cold Park requires a Session that has already sent a prompt, since an
+  -- Agent has nothing durable to `session/load` back before that.
+  session.state.current_turn = 1
   session.client = { agent_capabilities = { loadSession = true } }
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(session))

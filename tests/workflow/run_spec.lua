@@ -125,6 +125,7 @@ T["durable Park"]["derives cold resume metadata from the owned Session"] = funct
     agent = "codex",
     acp_session_id = "acp-session",
     working_dir = "/tmp/project",
+    current_turn = 1,
   }
   function session:inspect()
     return self.state
@@ -164,6 +165,30 @@ T["durable Park"]["rejects cold Park when the Session is not reloadable"] = func
   local started, error_message = run:park_cold({ id = "run", claims = { "issue" } })
   MiniTest.expect.equality(started, false)
   MiniTest.expect.equality(error_message, "cold Park requires an Agent that supports session/load")
+end
+
+T["durable Park"]["rejects cold Park when the Session has never sent a prompt"] = function()
+  -- Regression for louiselm-aaw0.1: a freshly created ACP Session that
+  -- advertises `loadSession` still has nothing durable for the Agent to
+  -- resume from until at least one prompt has been sent. Parking it anyway
+  -- produces a Park that `:LouiselmResumePark` can never load.
+  local session = worker("ready")
+  session.state = {
+    agent = "claude",
+    acp_session_id = "acp-session",
+    working_dir = "/tmp/project",
+    current_turn = 0,
+  }
+  function session:inspect()
+    return self.state
+  end
+  session.client = { agent_capabilities = { loadSession = true } }
+  local run = assert(Workflow.new_run())
+  assert(run:adopt_session(session))
+
+  local started, error_message = run:park_cold({ id = "run", claims = { "issue" } })
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(error_message, "cold Park requires a Session that has sent at least one prompt")
 end
 
 T["durable Park"]["does not transition before service confirmation"] = function()
