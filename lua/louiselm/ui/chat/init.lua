@@ -1359,6 +1359,23 @@ local function current_prompt_line(view)
 end
 
 ---@param view louiselm.ui.ChatView
+local function reconcile_prompt_boundary(view)
+  -- Undo restores the extmark but not these Lua-side indexes.
+  if view.prompt_line < nvim.api.nvim_buf_line_count(view.buffer) then
+    return
+  end
+  local prompt_line = current_prompt_line(view)
+  view.transcript_tail = prompt_line - 1
+  view.response_line = nil
+  view.response_tail = nil
+  view.response_started = false
+  view.last_block_kind = nil
+  view.trailing_blank = false
+  view.thought_run = nil
+  view.tool_fold_run = nil
+end
+
+---@param view louiselm.ui.ChatView
 ---@return string text
 local function prompt_text(view)
   local lines = nvim.api.nvim_buf_get_lines(view.buffer, current_prompt_line(view), -1, false)
@@ -2231,6 +2248,8 @@ local function handle_event(self, view, event)
     end
     return
   end
+
+  reconcile_prompt_boundary(view)
 
   if event.type == "state_changed" or event.type == "config_options_changed" or event.type == "usage_updated" then
     render_header(self, view)

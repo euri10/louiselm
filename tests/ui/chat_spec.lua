@@ -806,7 +806,7 @@ T["chat"]["submits every line in a multiline prompt"] = function()
   chat:dispose()
 end
 
-T["chat"]["submits the visible prompt after transcript edits shift its boundary"] = function()
+T["chat"]["renders later events after undo shifts the prompt boundary"] = function()
   local first = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
@@ -825,6 +825,22 @@ T["chat"]["submits the visible prompt after transcript edits shift its boundary"
     nvim.cmd.undo()
   end)
   nvim.api.nvim_buf_set_lines(buffer, -2, -1, false, { "> recovered draft" })
+
+  first:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  nvim.wait(20)
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "[tool] tool-1: Read file (started)"), true)
+
+  first:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "after undo" } },
+  })
+  nvim.wait(20)
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "after undo"), true)
 
   local submit
   for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "i")) do
