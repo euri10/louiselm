@@ -2242,6 +2242,47 @@ T["chat"]["creates a Handoff Session while retaining the source after approval"]
   nvim.fn.delete(workspace, "rf")
 end
 
+T["chat"]["consumes first-prompt context when submitting a Handoff"] = function()
+  local source = fake_session("source", "claude")
+  source.state.acp_session_id = "source-acp"
+  local target = fake_session("target", "codex")
+  target.state.skills_policy = "inject"
+  local api = fake_api()
+  api.create_session = function()
+    return target
+  end
+  local chat = assert(Chat.new(api, {
+    agents = { "claude", "codex" },
+    skill_catalog = "hidden catalog",
+    instructions_context = { label = "AGENTS.md", uri = "file:///repo/AGENTS.md" },
+  }))
+  assert(chat:attach(source))
+  assert(chat:new_session("codex"))
+
+  local buffer = assert(chat:open_handoff(target, "source"))
+  fill_takeover_task(buffer, "continue the implementation")
+  assert(chat:submit_handoff(buffer))
+
+  local handoff_text = target.prompts[1]
+  MiniTest.expect.equality(handoff_text[1], { type = "text", text = "hidden catalog" })
+  MiniTest.expect.equality(handoff_text[2], {
+    type = "resource_link",
+    uri = "file:///repo/AGENTS.md",
+    name = "AGENTS.md",
+  })
+  MiniTest.expect.equality(type(handoff_text[3]), "table")
+  MiniTest.expect.equality(handoff_text[3].type, "text")
+  MiniTest.expect.equality(
+    handoff_text[3].text:find("- takeover task: continue the implementation", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(virtual_text(chat:buffer("target")), {})
+
+  assert(chat:submit("continue"))
+  MiniTest.expect.equality(target.prompts[2], "continue")
+  chat:dispose()
+end
+
 T["chat"]["prefers the dollar form over a colliding bare built-in and sends it alone without a task"] = function()
   local workspace = nvim.fn.tempname()
   write_skill_file(workspace, "plan", "Draft an execution plan")

@@ -1748,6 +1748,43 @@ local function flush_terminal_completion(self, view, text)
   view.trailing_blank = true
 end
 
+---@param view louiselm.ui.ChatView
+---@return table[] content
+---@return louiselm.ui.ContextItem[] contexts
+---@return string? error_message
+local function build_context_content(view)
+  local content = {}
+  local contexts = {}
+  if view.skill_catalog ~= nil then
+    local catalog = { label = "skill-index", text = view.skill_catalog }
+    contexts[#contexts + 1] = catalog
+    if view.session:inspect().embedded_context then
+      content[#content + 1] = {
+        type = "resource",
+        resource = {
+          uri = "louiselm://skills/index",
+          mimeType = "text/plain",
+          text = view.skill_catalog,
+        },
+      }
+    else
+      content[#content + 1] = context_content(catalog)
+    end
+  end
+  for _, item in ipairs(view.contexts) do
+    if item.text == nil and item.skill_path ~= nil then
+      local skill_content = Skills.read(item.skill_path)
+      if skill_content == nil then
+        return {}, {}, "could not read selected skill: " .. item.skill_path
+      end
+      item.text = skill_content
+    end
+    contexts[#contexts + 1] = item
+    content[#content + 1] = context_content(item)
+  end
+  return content, contexts, nil
+end
+
 ---Build prompt content from the current context queue and a pending native skill selection.
 ---A pending skill is resolved here, against the caller's latest advertised commands, so that
 ---both an immediate submission and a queued-prompt release each see the freshest command cache
@@ -1776,37 +1813,12 @@ local function build_content(view, text)
     end
     final_text = final_text == "" and ("/" .. command_name) or ("/" .. command_name .. " " .. final_text)
   end
-  if view.skill_catalog == nil and #view.contexts == 0 then
+  local content, contexts, context_error = build_context_content(view)
+  if context_error ~= nil then
+    return nil, context_error, {}
+  end
+  if #content == 0 then
     return final_text, nil, {}
-  end
-  local content = {}
-  local contexts = {}
-  if view.skill_catalog ~= nil then
-    local catalog = { label = "skill-index", text = view.skill_catalog }
-    contexts[#contexts + 1] = catalog
-    if view.session:inspect().embedded_context then
-      content[#content + 1] = {
-        type = "resource",
-        resource = {
-          uri = "louiselm://skills/index",
-          mimeType = "text/plain",
-          text = view.skill_catalog,
-        },
-      }
-    else
-      content[#content + 1] = context_content(catalog)
-    end
-  end
-  for _, item in ipairs(view.contexts) do
-    if item.text == nil and item.skill_path ~= nil then
-      local skill_content = Skills.read(item.skill_path)
-      if skill_content == nil then
-        return nil, "could not read selected skill: " .. item.skill_path, {}
-      end
-      item.text = skill_content
-    end
-    contexts[#contexts + 1] = item
-    content[#content + 1] = context_content(item)
   end
   if final_text ~= "" then
     content[#content + 1] = { type = "text", text = final_text }
@@ -1823,6 +1835,14 @@ end
 ---@param message string
 local function notify_prompt_error(message)
   nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
+end
+
+---@param view louiselm.ui.ChatView
+local function clear_prompt_context(view)
+  view.contexts = {}
+  view.context_prefix = ""
+  view.skill_catalog = nil
+  view.pending_skill = nil
 end
 
 ---@param self louiselm.ui.Chat
@@ -1864,10 +1884,7 @@ local function submit_prompt(self, view, text)
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #next_prefix })
   end
   if not slash_prompt then
-    view.contexts = {}
-    view.context_prefix = ""
-    view.skill_catalog = nil
-    view.pending_skill = nil
+    clear_prompt_context(view)
     if phase ~= nil then
       view.workflow_phase = phase
     end
@@ -1878,10 +1895,11 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param text string
 ---@param source_session_id string
-local function record_handoff_prompt(view, text, source_session_id)
+---@param contexts louiselm.ui.ContextItem[]
+local function record_handoff_prompt(view, text, source_session_id, contexts)
   view.transcript:record_handoff(text, source_session_id)
   clear_queued_prompt(view)
-  local prompt_line_count = replace_submitted_prompt(view, text, {})
+  local prompt_line_count = replace_submitted_prompt(view, text, contexts)
   local response_line = view.prompt_line + prompt_line_count
   nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " })
   view.response_line = response_line
@@ -2950,35 +2968,55 @@ local function split_handoff_brief(text)
   return text:sub(1, marker - 1), text:sub(marker + 1)
 end
 
----Build the prompt content for a reviewed Handoff brief. Targets advertising
----`embeddedContext` receive the Handoff instruction as a text block and the
----compacted context as a typed resource block; everyone else receives the
----whole brief as one flattened text prompt, as before. A brief whose
----`## Context` header was edited out degrades to the flattened form rather
----than failing the Handoff.
+---Build the prompt content for a reviewed Handoff brief. Any context staged
+---for the target's first prompt travels with the Handoff and is consumed.
+---Targets advertising `embeddedContext` receive the Handoff instruction as a
+---text block and the compacted context as a typed resource block; everyone
+---else receives the whole brief as one flattened text prompt when no staged
+---context is present. A brief whose `## Context` header was edited out
+---degrades to the flattened form rather than failing the Handoff.
 ---@param handoff table Review-buffer record from `open_handoff`.
 ---@param text string Reviewed brief text.
----@return string|table content
-local function handoff_content(handoff, text)
-  if handoff.target_session:inspect().embedded_context ~= true then
-    return text
+---@param target_view louiselm.ui.ChatView? Handoff target's attached view.
+---@return string|table? content
+---@return louiselm.ui.ContextItem[] contexts
+---@return string? error_message
+local function handoff_content(handoff, text, target_view)
+  ---@type string|table
+  local content = text
+  if handoff.target_session:inspect().embedded_context == true then
+    local handoff_section, context_section = split_handoff_brief(text)
+    if handoff_section ~= nil then
+      local source_ref = handoff.source_session_id or handoff.source_id
+      content = {
+        { type = "text", text = handoff_section },
+        {
+          type = "resource",
+          resource = {
+            uri = "louiselm://handoff/" .. source_ref,
+            mimeType = "text/markdown",
+            text = context_section,
+          },
+        },
+      }
+    end
   end
-  local handoff_section, context_section = split_handoff_brief(text)
-  if handoff_section == nil then
-    return text
+  if target_view == nil then
+    return content, {}, nil
   end
-  local source_ref = handoff.source_session_id or handoff.source_id
-  return {
-    { type = "text", text = handoff_section },
-    {
-      type = "resource",
-      resource = {
-        uri = "louiselm://handoff/" .. source_ref,
-        mimeType = "text/markdown",
-        text = context_section,
-      },
-    },
-  }
+  local context_blocks, contexts, context_error = build_context_content(target_view)
+  if context_error ~= nil then
+    return nil, {}, context_error
+  end
+  if #context_blocks == 0 then
+    return content, {}, nil
+  end
+  if type(content) == "string" then
+    context_blocks[#context_blocks + 1] = { type = "text", text = content }
+  else
+    nvim.list_extend(context_blocks, content)
+  end
+  return context_blocks, contexts, nil
 end
 
 ---Submit the current contents of a handoff review buffer.
@@ -2998,13 +3036,20 @@ function Chat:submit_handoff(buffer)
   if takeover_task(text) == nil then
     return false, "handoff takeover task must be filled in before submitting"
   end
-  local request_id, prompt_error = handoff.target_session:prompt(handoff_content(handoff, text))
+  local target_view = self.views[handoff.target_session_id]
+  local content, contexts, content_error = handoff_content(handoff, text, target_view)
+  if content == nil then
+    return false, content_error or "handoff prompt could not be built"
+  end
+  local request_id, prompt_error = handoff.target_session:prompt(content)
   if request_id == nil then
     return false, prompt_error or "handoff prompt could not be sent"
   end
-  local target_view = self.views[handoff.target_session_id]
-  if target_view ~= nil and handoff.source_session_id ~= nil then
-    record_handoff_prompt(target_view, text, handoff.source_session_id)
+  if target_view ~= nil then
+    if handoff.source_session_id ~= nil then
+      record_handoff_prompt(target_view, text, handoff.source_session_id, contexts)
+    end
+    clear_prompt_context(target_view)
   end
   close_handoff(self, buffer)
   if self.views[handoff.target_session_id] ~= nil then
