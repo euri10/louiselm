@@ -1023,7 +1023,7 @@ T["new"]["tracks supported config options and replaces dependent options after a
   restore_processes(original_system)
 end
 
-T["new"]["tracks context cost and reported turn usage and rejects malformed telemetry"] = function()
+T["new"]["tracks context cost and reported turn usage and ignores malformed telemetry"] = function()
   local processes, original_system = fake_processes()
   local events = {}
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
@@ -1083,8 +1083,31 @@ T["new"]["tracks context cost and reported turn usage and rejects malformed tele
     sessionId = "agent-acp",
     update = { sessionUpdate = "usage_update", used = -1, size = 0 },
   })
-  MiniTest.expect.equality(session:inspect().status, "error")
-  MiniTest.expect.equality(events[#events].data.message, "malformed ACP usage_update notification")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().context.stale, true)
+  MiniTest.expect.equality(session:inspect().context.pressure, "critical")
+  MiniTest.expect.equality(events[#events].type, "usage_updated")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["ignores malformed usage_update telemetry when no context has ever arrived"] = function()
+  local processes, original_system = fake_processes()
+  local events = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "usage_update", used = -1, size = 0 },
+  })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().context, nil)
+  MiniTest.expect.equality(#events, 0)
 
   api:dispose()
   restore_processes(original_system)

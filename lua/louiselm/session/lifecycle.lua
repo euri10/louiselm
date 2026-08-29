@@ -239,7 +239,13 @@ local function handle_notification(self, message)
   elseif update_type == "usage_update" then
     local context, cost, cost_present = Validation.usage_update(update)
     if context == nil then
-      fail(self, "malformed ACP usage_update notification")
+      -- Telemetry only: nothing in the prompt lifecycle or permission handling
+      -- depends on this frame, so an unparseable one marks the existing context
+      -- stale (if any) rather than destroying an otherwise healthy Session.
+      if self.state.context ~= nil then
+        self.state.context.stale = true
+        emit(self, "usage_updated", copy({ context = self.state.context, cost = self.state.cost }))
+      end
       return
     end
     self.state.context = context
