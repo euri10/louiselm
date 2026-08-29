@@ -1581,10 +1581,7 @@ T["chat"]["renders a terminal task-complete result inline"] = function()
     return table.concat(buffer_lines(chat:buffer()), "\n"):find("Conclusion", 1, true) ~= nil
   end, 1)
 
-  MiniTest.expect.equality(
-    buffer_lines(chat:buffer())[6],
-    "[tool] tool-1: task_complete (completed) · text result — use :LouiselmInspectTool"
-  )
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "[tool] tool-1: task_complete (completed)")
   MiniTest.expect.equality(table.concat(buffer_lines(chat:buffer()), "\n"):find("Conclusion", 1, true) ~= nil, true)
   nvim.api.nvim_win_set_cursor(0, { 6, 0 })
   assert(chat:inspect_tool())

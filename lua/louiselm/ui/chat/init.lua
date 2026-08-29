@@ -1429,29 +1429,6 @@ local function tool_has_image(value)
 end
 
 ---@param value unknown
----@return boolean has_text Whether a tool result contains non-empty text.
-local function tool_has_text(value)
-  if type(value) == "string" then
-    return value ~= ""
-  end
-  if type(value) ~= "table" then
-    return false
-  end
-  for _, nested in pairs(value) do
-    if tool_has_text(nested) then
-      return true
-    end
-  end
-  return false
-end
-
----@param value unknown
----@return boolean has_text_result Whether an ACP tool update carries textual result data.
-local function tool_has_text_result(value)
-  return type(value) == "table" and (tool_has_text(value.rawOutput) or tool_has_text(value.content))
-end
-
----@param value unknown
 ---@param title string? Tool title from this update or its preceding start event.
 ---@return string? text
 local function terminal_completion_text(value, title)
@@ -2408,8 +2385,6 @@ local function handle_event(self, view, event)
         completion_text = terminal_completion_text(event.data, title)
         if tool_has_image(event.data) then
           detail = detail .. " · image result — use :LouiselmInspectTool"
-        elseif tool_has_text_result(event.data) then
-          detail = detail .. " · text result — use :LouiselmInspectTool"
         end
       end
       local line = view.tool_lines[id]
