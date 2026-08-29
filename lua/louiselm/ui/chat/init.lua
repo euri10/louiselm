@@ -53,7 +53,6 @@ local nvim = vim
 ---@field tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
 ---@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous rendered tool paragraph awaiting a boundary.
 ---@field thought_folds louiselm.ui.ThoughtFold[] Reasoning fold ranges in this live buffer.
----@field thought_fold_counts table<integer, integer> Number of reasoning folds installed in each window.
 ---@field thought_run louiselm.ui.ThoughtFoldRun? Contiguous reasoning paragraph awaiting a boundary; first is its header line, last its final content line.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
@@ -1180,6 +1179,16 @@ local function close_tool_fold_run(view)
   view.tool_fold_run = nil
 end
 
+---Reinstall every recorded reasoning fold that is not currently a real closed
+---fold in `win`. Unlike the incremental context/tool fold appliers, this
+---rescans the full `thought_folds` history on every call instead of trusting
+---a "folds already installed" counter: something outside this module's
+---control can silently drop a manual fold (observed for replayed reasoning
+---paragraphs during `session/load`, louiselm-9wjm), and a counter that only
+---ever advances has no way to notice or recover from that. Checking
+---`foldclosed` first keeps repeated calls idempotent -- re-issuing `:fold` on
+---a range that is already folded nests a second fold inside the first rather
+---than being a no-op.
 ---@param view louiselm.ui.ChatView
 ---@param win integer
 local function apply_thought_folds(view, win)
@@ -1188,14 +1197,13 @@ local function apply_thought_folds(view, win)
   end
   nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
   nvim.api.nvim_set_option_value("foldenable", true, { win = win })
-  local applied = view.thought_fold_counts[win] or 0
   nvim.api.nvim_win_call(win, function()
-    for index = applied + 1, #view.thought_folds do
-      local fold = view.thought_folds[index]
-      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+    for _, fold in ipairs(view.thought_folds) do
+      if nvim.fn.foldclosed(fold.first + 1) == -1 then
+        nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+      end
     end
   end)
-  view.thought_fold_counts[win] = #view.thought_folds
 end
 
 ---Close the current reasoning paragraph: fold the `[thinking]` header together
@@ -2769,7 +2777,6 @@ function Chat:attach(session)
     tool_fold_counts = {},
     tool_fold_run = nil,
     thought_folds = {},
-    thought_fold_counts = {},
     thought_run = nil,
     queued_prompt = nil,
     queue_mark = nil,

@@ -1335,6 +1335,119 @@ T["chat"]["coalesces a four-chunk post-tool reasoning run into one header"] = fu
   chat:dispose()
 end
 
+T["chat"]["rebuilds a reasoning fold that something else silently dropped mid-replay"] = function()
+  -- Regression for louiselm-9wjm: live introspection of a resumed Session
+  -- found recorded fold ranges with no corresponding real Neovim fold --
+  -- something outside this module's control (observed with a global
+  -- nvim-ufo fold provider active) had dropped manual folds it did not
+  -- create. `apply_thought_folds` used to trust a monotonically increasing
+  -- "already installed" counter, which has no way to notice or recover from
+  -- that. It now rescans every recorded range on each call and reinstalls
+  -- whichever ones are not currently a real closed fold.
+  local restored = fake_session("session-1", "claude")
+  restored.state.source = "loaded"
+  restored.state.status = "starting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(restored))
+  local view = chat.views["session-1"]
+
+  local function thought(text)
+    restored:emit({
+      type = "thought_chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = text } },
+    })
+  end
+
+  local function tool(id)
+    restored:emit({
+      type = "tool_call_started",
+      session_id = "session-1",
+      data = { toolCallId = id, title = "Read file" },
+    })
+    restored:emit({
+      type = "tool_call_finished",
+      session_id = "session-1",
+      data = { toolCallId = id, status = "completed" },
+    })
+  end
+
+  restored:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "solve" } },
+  })
+  thought("replayed paragraph one")
+  tool("tool-1")
+  nvim.wait(50, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[thinking]")
+  end, 1)
+  local first_header
+  for index, line in ipairs(buffer_lines(chat:buffer())) do
+    if line == "[thinking]" then
+      first_header = index
+    end
+  end
+  assert(first_header ~= nil, "first reasoning header rendered")
+  MiniTest.expect.equality({ fold_range(first_header + 1) }, { first_header, first_header + 1 })
+  -- Simulate whatever external actor dropped the fold live: delete every
+  -- fold in the window without going through this module at all.
+  nvim.api.nvim_win_call(view.window, function()
+    nvim.cmd("normal! zE")
+  end)
+  MiniTest.expect.equality({ fold_range(first_header + 1) }, { -1, -1 })
+
+  thought("replayed paragraph two")
+  restored:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "replayed answer" } },
+  })
+  restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "replayed answer")
+  end, 1)
+
+  local lines = buffer_lines(chat:buffer())
+  local headers = {}
+  for index, line in ipairs(lines) do
+    if line == "[thinking]" then
+      headers[#headers + 1] = index
+    end
+  end
+  MiniTest.expect.equality(#headers, 2)
+  for _, header in ipairs(headers) do
+    MiniTest.expect.equality({ fold_range(header) }, { header, header + 1 })
+    MiniTest.expect.equality({ fold_range(header + 1) }, { header, header + 1 })
+    -- Idempotent, not nested: exactly one fold level at the content line.
+    MiniTest.expect.equality(nvim.fn.foldlevel(header + 1), 1)
+  end
+
+  -- Reasoning produced after resume must keep folding normally too.
+  restored:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "another question" } },
+  })
+  thought("live paragraph after resume")
+  restored:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    local refreshed = buffer_lines(chat:buffer())
+    return nvim.tbl_contains(refreshed, "live paragraph after resume")
+  end, 1)
+
+  lines = buffer_lines(chat:buffer())
+  local live_header
+  for index, line in ipairs(lines) do
+    if line == "[thinking]" and index > headers[2] then
+      live_header = index
+    end
+  end
+  assert(live_header ~= nil, "post-resume reasoning header rendered")
+  MiniTest.expect.equality({ fold_range(live_header + 1) }, { live_header, live_header + 1 })
+  chat:dispose()
+end
+
 T["chat"]["inspects finished and active tool payloads from their lines"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
