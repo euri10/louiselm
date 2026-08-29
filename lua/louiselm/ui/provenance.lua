@@ -3,6 +3,7 @@ local nvim = vim
 
 local Correlate = require("louiselm.provenance.correlate")
 local Sources = require("louiselm.provenance.sources")
+local Vintage = require("louiselm.provenance.vintage")
 local Locator = require("louiselm.session.locator")
 
 local M = {}
@@ -520,6 +521,20 @@ local function decision_lines(timeline, history, issue, options)
   return lines
 end
 
+---@param lines string[]
+---@param vintage louiselm.provenance.Vintage
+local function append_vintage(lines, vintage)
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "Historical backlog:"
+  lines[#lines + 1] = string.format("- %d issues at decision time", #vintage.issues)
+  lines[#lines + 1] = string.format(
+    "- since then: %d added, %d removed, %d changed",
+    #vintage.diff.added,
+    #vintage.diff.removed,
+    #vintage.diff.changed
+  )
+end
+
 ---@param issue_id string
 ---@param options louiselm.ui.ProvenanceOptions
 ---@return boolean started
@@ -573,7 +588,40 @@ local function show_decision(issue_id, options)
             report_error(options, "could not derive Decision evidence " .. issue_id)
             return
           end
-          local rendered, render_error = open_provenance(name, decision_lines(timeline, history, issue, options))
+          local lines = decision_lines(timeline, history, issue, options)
+          local closed = history.milestones.closed
+          if issue.status == "closed" and closed ~= nil then
+            local vintage_started, vintage_error = Vintage.load(
+              options.cwd or nvim.fn.getcwd(),
+              closed.commit_sha,
+              function(vintage, historical_error)
+                if options.is_active ~= nil and not options.is_active() then
+                  return
+                end
+                if vintage == nil or historical_error ~= nil then
+                  report_error(
+                    options,
+                    "could not read historical backlog: "
+                      .. (historical_error and historical_error.message or "unknown error")
+                  )
+                  return
+                end
+                append_vintage(lines, vintage)
+                local rendered, render_error = open_provenance(name, lines)
+                if not rendered then
+                  report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
+                end
+              end
+            )
+            if not vintage_started then
+              report_error(
+                options,
+                "could not read historical backlog: " .. (vintage_error and vintage_error.message or "unknown error")
+              )
+            end
+            return
+          end
+          local rendered, render_error = open_provenance(name, lines)
           if not rendered then
             report_error(options, "could not display Provenance: " .. (render_error or "unknown error"))
           end

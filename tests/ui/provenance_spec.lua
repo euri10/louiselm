@@ -630,6 +630,48 @@ T["Decision index"]["keeps missing evidence explicit"] = function()
   )
 end
 
+T["Decision index"]["shows the backlog at a closed Decision and its current drift"] = function()
+  local calls = fake_system()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(nvim.fs.joinpath(root, ".beads"), "p") == 1)
+  assert(
+    nvim.fn.writefile({ '{"id":"current","status":"open"}' }, nvim.fs.joinpath(root, ".beads", "issues.jsonl")) == 0
+  )
+  assert(Provenance.show_decisions({ cwd = root }))
+  finish_beads_questions(
+    calls,
+    nvim.json.encode({
+      issues = {
+        { id = "louiselm-decision", issue_type = "question", title = "Closed", status = "closed" },
+      },
+    })
+  )
+  nvim.api.nvim_win_set_cursor(0, { 3, 0 })
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx", false)
+  finish_call(
+    calls,
+    2,
+    nvim.json.encode({
+      histories = {
+        ["louiselm-decision"] = {
+          bead_id = "louiselm-decision",
+          status = "closed",
+          milestones = { closed = { timestamp = "now", commit_sha = "close-sha" } },
+          commits = {},
+        },
+      },
+    })
+  )
+  finish_call(calls, 3, '[{"id":"louiselm-decision","issue_type":"question","status":"closed","comments":[]}]')
+  MiniTest.expect.equality(calls[4].command, { "git", "show", "close-sha:.beads/issues.jsonl" })
+  finish_call(calls, 4, '{"id":"historical","status":"custom"}\n')
+
+  local lines = nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false)
+  MiniTest.expect.equality(lines[#lines - 1], "- 1 issues at decision time")
+  MiniTest.expect.equality(lines[#lines], "- since then: 1 added, 1 removed, 0 changed")
+  nvim.fn.delete(root, "rf")
+end
+
 T["Decision index"]["ignores a scheduled result after the view becomes inactive"] = function()
   local calls = fake_system()
   local scheduled = {}
