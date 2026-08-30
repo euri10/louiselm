@@ -348,6 +348,23 @@ T["durable Park"]["keeps Run active when service persistence fails"] = function(
   MiniTest.expect.equality(failure, { false, "service unavailable" })
 end
 
+T["durable Park"]["notifies the callback when Park is invoked on an already-Parked Run"] = function()
+  -- Regression for louiselm-oaib.1: a second :LouiselmPark on a Session
+  -- that is already cold-Parked took this early-return branch, and with
+  -- no callback invocation the operator saw no notification at all --
+  -- the command appeared to silently do nothing.
+  local run = assert(Workflow.new_run())
+  assert(run:accept_park())
+  MiniTest.expect.equality(run.status, "parked")
+
+  local result
+  local started = assert(run:park(function(ok, error_message)
+    result = { ok, error_message }
+  end))
+  MiniTest.expect.equality(started, true)
+  MiniTest.expect.equality(result, { true, nil })
+end
+
 T["cancellation"]["parks a wedged worker without disposing its Session"] = function()
   local run = assert(Workflow.new_run())
   local session = worker("prompting")

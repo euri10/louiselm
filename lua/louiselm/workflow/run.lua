@@ -326,6 +326,9 @@ function Run:park(callback)
     return false, "Run is disposed"
   end
   if self.status == "parked" then
+    if callback ~= nil then
+      callback(true)
+    end
     return true
   end
   local function complete(ok, error_message)
