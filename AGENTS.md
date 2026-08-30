@@ -57,6 +57,10 @@ Do not claim, implement, or commit work unless asked to proceed.
   is the namespace for the second case (e.g. `needs-capability:image-generation`
   for work only an agent with raster image generation can do); attach it and
   move on, do not restate the requirement in prose.
+- Model aggregate completion with one dependency direction. Do not combine a
+  child's `parent-child` dependency on its aggregate with the aggregate's
+  explicit dependency on that child: `br ready` treats both as blockers while
+  `br dep cycles` does not report the mixed-edge deadlock.
 - Prefer finishing **your own** in-progress work to starting new work, even
   when triage ranks an unstarted issue higher. Scoring rewards unblocking
   leverage and cannot see that a claimed issue is half-done. This preference
