@@ -299,6 +299,14 @@ For all tests:
 - Test observable behavior through public APIs, not implementation details.
 - Cover non-trivial branches, parsers, state transitions, cancellation, and
   error paths without requiring a test per function or coverage percentage.
+- A feature gated on optional configuration needs a test for the **unset**
+  case, and you must check what the maintainer's real configuration actually
+  does before reporting the feature as working. Testing both branches of a gate
+  proves only that the gate works, never that it fires: `louiselm-5tuq` shipped
+  green, with passing tests on either side of its condition, and was inert for
+  months of wall-clock because every real agent entry omitted the optional field
+  the default was keyed to. Green tests are not evidence that a conditional
+  feature is reachable.
 - Async tests must model the production callback context, not only invoke the
   callback synchronously. Directly calling a process or transport callback is
   insufficient coverage for fast-event behavior.
