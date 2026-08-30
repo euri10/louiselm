@@ -16,7 +16,7 @@ ProtectHome=read-only
 ReadWritePaths=%h/.local/share/louiselm %h/.local/state/louiselm %h/code/louiselm/.beads
 LockPersonality=true
 MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_INET AF_INET6
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=default.target
