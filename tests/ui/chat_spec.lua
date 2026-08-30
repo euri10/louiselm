@@ -5214,4 +5214,240 @@ T["chat"]["keeps markdown treesitter highlighting despite the distinct filetype"
   chat:dispose()
 end
 
+---One-based number of the first line whose text is exactly `text`.
+---@param buffer integer
+---@param text string
+---@return integer
+local function line_of(buffer, text)
+  for index, line in ipairs(buffer_lines(buffer)) do
+    if line == text then
+      return index
+    end
+  end
+  error("line not found: " .. text)
+end
+
+---@param buffer integer
+---@param lhs string
+---@return function? callback
+local function normal_map(buffer, lhs)
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
+    if mapping.lhs == lhs then
+      return mapping.callback
+    end
+  end
+  return nil
+end
+
+---Build a three-turn transcript: a context+thinking+prose turn, a plain prose
+---turn, and a tool-only turn. The live prompt line ("> ") stays at the end.
+---@return table chat
+---@return table session
+---@return integer buffer
+local function navigable_chat()
+  local session = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  local buffer = assert(chat:buffer())
+  assert(chat:queue_context({ label = "file: init.lua", text = "Referenced file: init.lua" }))
+  assert(chat:submit("Review this"))
+  session:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Reasoning paragraph" } },
+  })
+  session:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "First answer" } },
+  })
+  session.state.usage = { total_tokens = 100, input_tokens = 40, output_tokens = 60 }
+  session:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(50)
+  assert(chat:submit("Second question"))
+  session:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Second answer" } },
+  })
+  session:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(50)
+  assert(chat:submit("Tool only"))
+  session:emit({
+    type = "tool_call_started",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", title = "Read file" },
+  })
+  session:emit({
+    type = "tool_call_finished",
+    session_id = "session-1",
+    data = { toolCallId = "tool-1", status = "completed" },
+  })
+  session:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
+  nvim.wait(100, function()
+    return #buffer_lines(buffer) > 10
+  end, 5)
+  return chat, session, buffer
+end
+
+T["chat"]["maps Normal-mode navigation in session buffers"] = function()
+  local _, _, buffer = navigable_chat()
+
+  for _, lhs in ipairs({ "]u", "[u", "]r", "[r", "<CR>" }) do
+    MiniTest.expect.equality(type(normal_map(buffer, lhs)), "function")
+  end
+end
+
+T["chat"]["jumps between submitted prompts with ]u and [u"] = function()
+  local chat, _, buffer = navigable_chat()
+  local next_user = assert(normal_map(buffer, "]u"))
+  local prev_user = assert(normal_map(buffer, "[u"))
+  local contexts_header = line_of(buffer, "> [contexts: file: init.lua]")
+  local review = line_of(buffer, "> Review this")
+  local second = line_of(buffer, "> Second question")
+  local tool_only = line_of(buffer, "> Tool only")
+
+  nvim.api.nvim_win_set_cursor(0, { 1, 0 })
+  nvim.api.nvim_buf_call(buffer, next_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { review, 0 })
+  MiniTest.expect.equality(review ~= contexts_header, true)
+
+  nvim.api.nvim_buf_call(buffer, next_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { second, 0 })
+
+  nvim.api.nvim_buf_call(buffer, next_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { tool_only, 0 })
+
+  nvim.api.nvim_buf_call(buffer, prev_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { second, 0 })
+  chat:dispose()
+end
+
+T["chat"]["jumps to assistant replies with ]r and [r"] = function()
+  local chat, _, buffer = navigable_chat()
+  local next_reply = assert(normal_map(buffer, "]r"))
+  local prev_reply = assert(normal_map(buffer, "[r"))
+  local thinking = line_of(buffer, "[thinking]")
+  local first_answer = line_of(buffer, "First answer")
+  local second_answer = line_of(buffer, "Second answer")
+
+  nvim.api.nvim_win_set_cursor(0, { line_of(buffer, "> Review this"), 0 })
+  nvim.api.nvim_buf_call(buffer, next_reply)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { first_answer, 0 })
+  MiniTest.expect.equality(first_answer ~= thinking, true)
+
+  nvim.api.nvim_buf_call(buffer, next_reply)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { second_answer, 0 })
+
+  nvim.api.nvim_buf_call(buffer, prev_reply)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { first_answer, 0 })
+  chat:dispose()
+end
+
+T["chat"]["honors counts on navigation motions"] = function()
+  local chat, _, buffer = navigable_chat()
+  local tool_only = line_of(buffer, "> Tool only")
+
+  nvim.api.nvim_win_set_cursor(0, { 1, 0 })
+  nvim.api.nvim_feedkeys("3]u", "mx", false)
+  nvim.wait(100, function()
+    local cursor = nvim.api.nvim_win_get_cursor(0)
+    return cursor[1] == tool_only
+  end, 5)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { tool_only, 0 })
+  chat:dispose()
+end
+
+T["chat"]["returns to the prompt in Insert mode with Normal-mode <CR>"] = function()
+  local chat, _, buffer = navigable_chat()
+  local original_list_uis = nvim.api.nvim_list_uis
+  local original_startinsert = nvim.cmd.startinsert
+  local original_win_set_cursor = nvim.api.nvim_win_set_cursor
+  local startinsert_calls = 0
+  local cursor_positions = {}
+  -- A real headless window clamps a Normal-mode cursor to the last valid
+  -- column, so the command is observed rather than the clamped result.
+  nvim.api.nvim_list_uis = function()
+    return { {} }
+  end
+  nvim.cmd.startinsert = function()
+    startinsert_calls = startinsert_calls + 1
+  end
+  nvim.api.nvim_win_set_cursor = function(_, position)
+    cursor_positions[#cursor_positions + 1] = position
+  end
+  local enter = assert(normal_map(buffer, "<CR>"))
+  local prompt_line = line_of(buffer, "> ")
+  local before = startinsert_calls
+
+  nvim.api.nvim_buf_call(buffer, enter)
+  local calls_after_jump = startinsert_calls
+  nvim.api.nvim_buf_call(buffer, enter)
+  local calls_after_repeat = startinsert_calls
+  local jumps = { cursor_positions[#cursor_positions - 1], cursor_positions[#cursor_positions] }
+
+  nvim.api.nvim_list_uis = original_list_uis
+  nvim.cmd.startinsert = original_startinsert
+  nvim.api.nvim_win_set_cursor = original_win_set_cursor
+
+  MiniTest.expect.equality(jumps, { { prompt_line, 2 }, { prompt_line, 2 } })
+  MiniTest.expect.equality(calls_after_jump, before + 1)
+  MiniTest.expect.equality(calls_after_repeat, before + 2)
+  chat:dispose()
+end
+
+T["chat"]["silently no-ops at the transcript ends"] = function()
+  local chat, _, buffer = navigable_chat()
+  local next_user = assert(normal_map(buffer, "]u"))
+  local prev_user = assert(normal_map(buffer, "[u"))
+  local review = line_of(buffer, "> Review this")
+  local prompt_line = line_of(buffer, "> ")
+  nvim.api.nvim_set_vvar("errmsg", "")
+
+  nvim.api.nvim_win_set_cursor(0, { review, 0 })
+  nvim.api.nvim_buf_call(buffer, prev_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { review, 0 })
+
+  nvim.api.nvim_win_set_cursor(0, { prompt_line, 0 })
+  nvim.api.nvim_buf_call(buffer, next_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { prompt_line, 0 })
+  MiniTest.expect.equality(nvim.api.nvim_get_vvar("errmsg"), "")
+  chat:dispose()
+end
+
+T["chat"]["keeps a streaming turn intact while navigating"] = function()
+  local chat, session, buffer = navigable_chat()
+  local next_reply = assert(normal_map(buffer, "]r"))
+
+  assert(chat:submit("Fourth question"))
+  session:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Live reasoning" } },
+  })
+  nvim.wait(50)
+
+  nvim.api.nvim_win_set_cursor(0, { line_of(buffer, "> Second question"), 0 })
+  nvim.api.nvim_buf_call(buffer, next_reply)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { line_of(buffer, "Second answer"), 0 })
+
+  session:emit({
+    type = "thought_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = " continued" } },
+  })
+  session:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Fourth answer" } },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(buffer), "Fourth answer")
+  end, 5)
+
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "Live reasoning continued"), true)
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "Fourth answer"), true)
+  chat:dispose()
+end
+
 return T

@@ -2708,6 +2708,130 @@ function M.new(api, options)
   return chat, nil
 end
 
+---Prefix of the submitted-context block header line; the block runs from this
+---line down to the prompt's own `> `-prefixed lines.
+local CONTEXTS_HEADER_PREFIX = "> [contexts:"
+
+---@param line string
+---@return boolean is_prompt_line
+local function is_submitted_prompt_line(line)
+  return line:sub(1, 2) == "> " and line:sub(1, #CONTEXTS_HEADER_PREFIX) ~= CONTEXTS_HEADER_PREFIX
+end
+
+---Collect the Normal-mode navigation targets in the transcript history above
+---the live prompt, in document order. A `prompt` target is the first `> `
+---line of each submitted prompt block (the `> [contexts: …]` header and the
+---context content beneath it are part of the block, not targets). A `reply`
+---target is the first prose line of a turn's response: thinking content is
+---excluded via the recorded thought-fold runs (text alone cannot distinguish
+---it from prose), and so are blank lines, `[…` marker lines, and
+---`Error:`/`Warning:` lines. A tool-only turn contributes no reply target.
+---@param view louiselm.ui.ChatView
+---@param kind string "prompt" or "reply"
+---@return integer[] targets Zero-based lines in document order.
+local function navigation_targets(view, kind)
+  local lines = nvim.api.nvim_buf_get_lines(view.buffer, 0, current_prompt_line(view), false)
+  local thinking_lines = {}
+  for _, fold in ipairs(view.thought_folds) do
+    for line = fold.first, fold.last do
+      thinking_lines[line] = true
+    end
+  end
+  local run = view.thought_run
+  if run ~= nil then
+    for line = run.first, run.last do
+      thinking_lines[line] = true
+    end
+  end
+  local targets = {}
+  local in_context_block = false
+  local after_prompt = false
+  local seen_reply = false
+  local last_line_was_prompt = false
+  for index, line in ipairs(lines) do
+    local zero_based = index - 1
+    if line:sub(1, #CONTEXTS_HEADER_PREFIX) == CONTEXTS_HEADER_PREFIX then
+      in_context_block = true
+      last_line_was_prompt = false
+    elseif in_context_block then
+      if is_submitted_prompt_line(line) then
+        in_context_block = false
+        if kind == "prompt" then
+          targets[#targets + 1] = zero_based
+        end
+        after_prompt = true
+        seen_reply = false
+        last_line_was_prompt = true
+      end
+    elseif is_submitted_prompt_line(line) then
+      -- Only the first `> ` line of a multi-line prompt is a target.
+      if not last_line_was_prompt and kind == "prompt" then
+        targets[#targets + 1] = zero_based
+      end
+      after_prompt = true
+      seen_reply = false
+      last_line_was_prompt = true
+    else
+      last_line_was_prompt = false
+      if
+        kind == "reply"
+        and after_prompt
+        and not seen_reply
+        and line ~= ""
+        and line:sub(1, 1) ~= "["
+        and not thinking_lines[zero_based]
+        and line:sub(1, 6) ~= "Error:"
+        and line:sub(1, 8) ~= "Warning:"
+      then
+        targets[#targets + 1] = zero_based
+        seen_reply = true
+      end
+    end
+  end
+  return targets
+end
+
+---Move the cursor to the count-th target of `kind` in `direction` from the
+---cursor. A motion with no further target is a silent no-op; landing is on
+---the target's first non-blank column.
+---@param view louiselm.ui.ChatView
+---@param kind string "prompt" or "reply"
+---@param direction integer 1 forward, -1 backward
+---@param count integer
+local function navigate_transcript(view, kind, direction, count)
+  local targets = navigation_targets(view, kind)
+  local cursor_line = nvim.api.nvim_win_get_cursor(view.window)[1] - 1
+  local remaining = count
+  local selected
+  if direction > 0 then
+    for _, target in ipairs(targets) do
+      if target > cursor_line then
+        remaining = remaining - 1
+        if remaining == 0 then
+          selected = target
+          break
+        end
+      end
+    end
+  else
+    for index = #targets, 1, -1 do
+      local target = targets[index]
+      if target < cursor_line then
+        remaining = remaining - 1
+        if remaining == 0 then
+          selected = target
+          break
+        end
+      end
+    end
+  end
+  if selected == nil then
+    return
+  end
+  local line = nvim.api.nvim_buf_get_lines(view.buffer, selected, selected + 1, false)[1] or ""
+  nvim.api.nvim_win_set_cursor(view.window, { selected + 1, #(line:match("^%s*")) })
+end
+
 ---Attach a session to a scratch markdown buffer and focus it.
 ---@param self louiselm.ui.Chat
 ---@param session louiselm.session.Session Session to display.
@@ -2816,6 +2940,25 @@ function Chat:attach(session)
   nvim.keymap.set("n", "za", function()
     toggle_chat_fold(view)
   end, { buffer = buffer, silent = true, desc = "Toggle chat fold" })
+  nvim.keymap.set("n", "]u", function()
+    navigate_transcript(view, "prompt", 1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Next submitted prompt" })
+  nvim.keymap.set("n", "[u", function()
+    navigate_transcript(view, "prompt", -1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Previous submitted prompt" })
+  nvim.keymap.set("n", "]r", function()
+    navigate_transcript(view, "reply", 1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Next assistant reply" })
+  nvim.keymap.set("n", "[r", function()
+    navigate_transcript(view, "reply", -1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Previous assistant reply" })
+  nvim.keymap.set("n", "<CR>", function()
+    local prompt_line = current_prompt_line(view)
+    nvim.api.nvim_win_set_cursor(view.window, { prompt_line + 1, 2 + #view.context_prefix })
+    if #nvim.api.nvim_list_uis() > 0 then
+      nvim.cmd.startinsert()
+    end
+  end, { buffer = buffer, silent = true, desc = "Jump to the louiselm prompt" })
   view.unsubscribe = session:on(function(event)
     -- Recording is a pure data transform, not an editor/UI operation, so it can run
     -- directly in this fast-event callback instead of waiting for the scheduled turn.
