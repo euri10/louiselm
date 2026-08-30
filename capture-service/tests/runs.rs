@@ -231,6 +231,74 @@ fn typed_generator_reservation_consumes_outputs_one_unit_at_a_time() {
 }
 
 #[test]
+fn a_generator_reservation_larger_than_remaining_capacity_cannot_start() {
+    // AC3: a Generator may not start unless its *full* declared maximum fits.
+    // Both halves run against the same occupancy — three of five units consumed,
+    // two remaining — so the only difference between them is the requested size.
+    let reserve_after_three_consumed = |units: u64| {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let store = RunStore::new(temporary.path()).expect("store");
+        let run_id = "abababab-abab-4bab-8bab-abababababab";
+        let occupying = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd";
+        admit(&store, run_id);
+        store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: run_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: occupying.to_owned(),
+                    kind: "skill_generator".to_owned(),
+                    units: 3,
+                },
+                1_000,
+            )
+            .expect("occupy three units");
+        for issue in ["issue-1", "issue-2", "issue-3"] {
+            store
+                .confirm_generated_work(run_id, TOKEN, occupying, issue)
+                .expect("consume occupying unit");
+        }
+        let occupied = store.run(run_id).expect("occupied Run");
+        assert_eq!(occupied.generated_work.consumed, 3);
+        assert_eq!(occupied.generated_work.reserved, 0);
+        assert_eq!(occupied.generated_work.ceiling, 5);
+
+        let result = store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: run_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: "efefefef-efef-4fef-8fef-efefefefefef".to_owned(),
+                    kind: "skill_generator".to_owned(),
+                    units,
+                },
+                2_000,
+            )
+            .expect("reserve");
+        let pending = store
+            .pending_generation_ids(run_id, TOKEN)
+            .expect("pending identities");
+        (result, store.run(run_id).expect("resulting Run"), pending)
+    };
+
+    // Exactly the remaining capacity fits and starts.
+    let (fitting, active, fitting_pending) = reserve_after_three_consumed(2);
+    assert_eq!(fitting, ReserveResult::Reserved);
+    assert_eq!(active.state, "active");
+    assert_eq!(active.generated_work.reserved, 2);
+    assert_eq!(fitting_pending.len(), 1);
+
+    // One unit more than remains is refused whole: no partial reservation is
+    // taken, and the Run Parks for an operator decision instead.
+    let (oversized, parked, oversized_pending) = reserve_after_three_consumed(3);
+    assert_eq!(oversized, ReserveResult::Exhausted);
+    assert_eq!(parked.state, "parked");
+    assert_eq!(parked.generated_work.consumed, 3);
+    assert_eq!(parked.generated_work.reserved, 0);
+    assert!(oversized_pending.is_empty());
+}
+
+#[test]
 fn confirmation_consumes_and_definite_failure_releases_a_reservation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = RunStore::new(temporary.path()).expect("store");

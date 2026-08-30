@@ -313,6 +313,245 @@ fn distinct_logical_mutations_receive_distinct_identities_and_both_create() {
     assert_eq!(fs::read_to_string(counter).expect("create count"), "2");
 }
 
+/// Admit and attach a Run, returning its generate token.
+fn admitted_run(
+    data: &std::path::Path,
+    state: &std::path::Path,
+    run_id: &str,
+    max: &str,
+) -> String {
+    let admitted = command(data, state)
+        .args([
+            "run",
+            "admit",
+            "--id",
+            run_id,
+            "--generated-work-max",
+            max,
+            "--park-ttl-ms",
+            "3600000",
+        ])
+        .output()
+        .expect("admit Run");
+    assert!(admitted.status.success(), "{:?}", admitted.stderr);
+    let admission: serde_json::Value =
+        serde_json::from_slice(&admitted.stdout).expect("admission JSON");
+    let token = admission["token"]
+        .as_str()
+        .expect("generate token")
+        .to_owned();
+    let attached = command(data, state)
+        .args([
+            "run",
+            "attach",
+            "--id",
+            run_id,
+            "--session-id",
+            "codex/session-1",
+            "--agent",
+            "codex",
+            "--acp-session-id",
+            "session-1",
+            "--cwd",
+            "/tmp/project",
+            "--load-session",
+            "true",
+        ])
+        .output()
+        .expect("attach Run");
+    assert!(attached.status.success(), "{:?}", attached.stderr);
+    token
+}
+
+#[test]
+fn generator_reservations_round_trip_through_the_cli_and_replay_safely() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let mutation_id = "11111111-2222-4333-8444-555555555555";
+    let token = admitted_run(&data, &state, run_id, "5");
+    // The Run id and generate token arrive through the environment, matching
+    // `run generate`. Passing the token as an argument would expose it in the
+    // process table to every other user on the host.
+    let ledger = |arguments: &[&str]| {
+        let output = command(&data, &state)
+            .args(arguments)
+            .env("LOUISELM_RUN_ID", run_id)
+            .env("LOUISELM_RUN_TOKEN", &token)
+            .output()
+            .expect("ledger command");
+        assert!(output.status.success(), "{:?}", output);
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("ledger JSON")
+    };
+
+    let reserved = ledger(&[
+        "run",
+        "reserve",
+        "--mutation-id",
+        mutation_id,
+        "--kind",
+        "skill_generator",
+        "--units",
+        "3",
+    ]);
+    assert_eq!(reserved["state"], "reserved");
+    assert_eq!(reserved["generated_work"]["reserved"], 3);
+    assert_eq!(reserved["generated_work"]["consumed"], 0);
+    assert_eq!(reserved["generated_work"]["ceiling"], 5);
+
+    // Replaying the same reservation is idempotent rather than additive.
+    let replayed = ledger(&[
+        "run",
+        "reserve",
+        "--mutation-id",
+        mutation_id,
+        "--kind",
+        "skill_generator",
+        "--units",
+        "3",
+    ]);
+    assert_eq!(replayed["state"], "pending");
+    assert_eq!(replayed["generated_work"]["reserved"], 3);
+
+    let confirmed = ledger(&[
+        "run",
+        "confirm",
+        "--mutation-id",
+        mutation_id,
+        "--issue-id",
+        "louiselm-generated-1",
+    ]);
+    assert_eq!(confirmed["state"], "confirmed");
+    assert_eq!(confirmed["generated_work"]["consumed"], 1);
+    assert_eq!(confirmed["generated_work"]["reserved"], 2);
+
+    // Replaying one output does not consume a second unit.
+    let reconfirmed = ledger(&[
+        "run",
+        "confirm",
+        "--mutation-id",
+        mutation_id,
+        "--issue-id",
+        "louiselm-generated-1",
+    ]);
+    assert_eq!(reconfirmed["generated_work"]["consumed"], 1);
+    assert_eq!(reconfirmed["generated_work"]["reserved"], 2);
+
+    let released = ledger(&["run", "release", "--mutation-id", mutation_id]);
+    assert_eq!(released["state"], "released");
+    assert_eq!(released["generated_work"]["consumed"], 1);
+    assert_eq!(released["generated_work"]["reserved"], 0);
+
+    // Releasing an unknown reservation is a no-op, not a failure.
+    let repeated = ledger(&["run", "release", "--mutation-id", mutation_id]);
+    assert_eq!(repeated["generated_work"]["reserved"], 0);
+}
+
+#[test]
+fn a_cli_reservation_beyond_the_ceiling_reports_exhausted_and_parks() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let token = admitted_run(&data, &state, run_id, "2");
+    let reserve = |mutation_id: &str, units: &str| {
+        let output = command(&data, &state)
+            .args([
+                "run",
+                "reserve",
+                "--mutation-id",
+                mutation_id,
+                "--kind",
+                "skill_generator",
+                "--units",
+                units,
+            ])
+            .env("LOUISELM_RUN_ID", run_id)
+            .env("LOUISELM_RUN_TOKEN", &token)
+            .output()
+            .expect("reserve");
+        assert!(output.status.success(), "{:?}", output);
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("reserve JSON")
+    };
+
+    // Three units against a ceiling of two never starts, and the refusal is a
+    // Park rather than an error, so an operator can decide to raise or stop.
+    let exhausted = reserve("11111111-2222-4333-8444-555555555555", "3");
+    assert_eq!(exhausted["state"], "exhausted");
+    assert_eq!(exhausted["generated_work"]["reserved"], 0);
+    assert_eq!(exhausted["generated_work"]["consumed"], 0);
+
+    // The Run is parked, so a subsequent reservation is refused too.
+    let after_park = reserve("22222222-3333-4444-8555-666666666666", "1");
+    assert_eq!(after_park["state"], "exhausted");
+}
+
+#[test]
+fn cli_reservations_refuse_a_wrong_token_and_malformed_arguments() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let token = admitted_run(&data, &state, run_id, "5");
+    let attempt = |arguments: &[&str], run_token: &str| {
+        command(&data, &state)
+            .args(arguments)
+            .env("LOUISELM_RUN_ID", run_id)
+            .env("LOUISELM_RUN_TOKEN", run_token)
+            .output()
+            .expect("reservation attempt")
+    };
+    let reserve_arguments = [
+        "run",
+        "reserve",
+        "--mutation-id",
+        "11111111-2222-4333-8444-555555555555",
+        "--kind",
+        "skill_generator",
+        "--units",
+        "1",
+    ];
+
+    let forged = attempt(&reserve_arguments, "an-entirely-wrong-token");
+    assert!(!forged.status.success());
+    let zero_units = attempt(
+        &[
+            "run",
+            "reserve",
+            "--mutation-id",
+            "11111111-2222-4333-8444-555555555555",
+            "--kind",
+            "skill_generator",
+            "--units",
+            "0",
+        ],
+        &token,
+    );
+    assert!(!zero_units.status.success());
+    let unknown_mutation = attempt(
+        &[
+            "run",
+            "confirm",
+            "--mutation-id",
+            "not-a-uuid",
+            "--issue-id",
+            "x",
+        ],
+        &token,
+    );
+    assert!(!unknown_mutation.status.success());
+
+    // None of the refusals touched the ledger.
+    let survivor = attempt(&reserve_arguments, &token);
+    assert!(survivor.status.success(), "{survivor:?}");
+    let state_json: serde_json::Value =
+        serde_json::from_slice(&survivor.stdout).expect("reserve JSON");
+    assert_eq!(state_json["state"], "reserved");
+    assert_eq!(state_json["generated_work"]["reserved"], 1);
+    assert_eq!(state_json["generated_work"]["consumed"], 0);
+}
+
 #[test]
 fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
     let temporary = tempfile::tempdir().expect("temporary directory");

@@ -20,10 +20,10 @@ use thiserror::Error;
 
 use crate::{
     BeadsCleanup, BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState,
-    GenerateRequest, GenerationError, IdentityError, NetworkProfile, NetworkProfileError,
-    NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry, Receiver, RunAdmission,
-    RunDraft, RunSession, RunSocket, RunSocketError, RunStore, RunStoreError, Store, StoreError,
-    TlsIdentity, Transcript, TranscriptionWorker,
+    GenerateRequest, GeneratedWorkReservation, GenerationError, IdentityError, NetworkProfile,
+    NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry,
+    Receiver, ReserveResult, RunAdmission, RunDraft, RunSession, RunSocket, RunSocketError,
+    RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -158,9 +158,13 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     if command == "generate" {
         return generate(paths, options);
     }
+    if matches!(command.as_str(), "reserve" | "confirm" | "release") {
+        return reservation(paths, command, options);
+    }
     if command != "park" {
         return Err(CliError::Invalid(
-            "run supports only admit, attach, generate, list, and park".to_owned(),
+            "run supports only admit, attach, confirm, generate, list, park, release, and reserve"
+                .to_owned(),
         ));
     }
     let claims = required_option(options, "--claims")?
@@ -181,6 +185,69 @@ fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({"id": draft.id, "state": "cold_parked"}))?
+    );
+    Ok(())
+}
+
+/// Drive one generated-work reservation against the Run ledger.
+///
+/// The Run id and generate token arrive through the environment rather than as
+/// arguments, matching `run generate`: a token in argv is readable from the
+/// process table by every other user on the host. Every outcome the ledger can
+/// legitimately report — including `exhausted` — succeeds and is named in the
+/// JSON `state`, because exhaustion is a Park awaiting an operator decision and
+/// not a failure of the command. Each response carries the resulting budget so
+/// a caller never has to re-read the Run to learn what its request did.
+fn reservation(paths: &Paths, command: &str, arguments: &[String]) -> Result<(), CliError> {
+    let run_id = required_environment("LOUISELM_RUN_ID")?;
+    let token = required_environment("LOUISELM_RUN_TOKEN")?;
+    let mutation_id = required_option(arguments, "--mutation-id")?.to_owned();
+    let store = RunStore::new(paths.runs())?;
+    let state = match command {
+        "reserve" => {
+            let result = store.reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: run_id.clone(),
+                    token: token.clone(),
+                    mutation_id,
+                    kind: required_option(arguments, "--kind")?.to_owned(),
+                    units: positive_integer(arguments, "--units")?,
+                },
+                now_ms(),
+            )?;
+            match result {
+                ReserveResult::Reserved => "reserved",
+                ReserveResult::Pending => "pending",
+                ReserveResult::Consumed => "consumed",
+                ReserveResult::Exhausted => "exhausted",
+            }
+        }
+        "confirm" => {
+            store.confirm_generated_work(
+                &run_id,
+                &token,
+                &mutation_id,
+                required_option(arguments, "--issue-id")?,
+            )?;
+            "confirmed"
+        }
+        _ => {
+            store.release_generated_work(&run_id, &token, &mutation_id)?;
+            "released"
+        }
+    };
+    let budget = store.run(&run_id)?.generated_work;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "id": run_id,
+            "state": state,
+            "generated_work": {
+                "ceiling": budget.ceiling,
+                "consumed": budget.consumed,
+                "reserved": budget.reserved
+            }
+        }))?
     );
     Ok(())
 }
