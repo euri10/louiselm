@@ -252,7 +252,11 @@ local function complete_turn(self, result)
   end
   if self.turn_done_turn ~= self.state.current_turn then
     self.turn_done_turn = self.state.current_turn
-    set_status(self, "ready")
+    if self.permission_active == nil and #self.permission_queue == 0 then
+      set_status(self, "ready")
+    else
+      set_status(self, "waiting_permission")
+    end
     emit(self, "turn_done", result)
   end
   local callback = self.prompt_callback
@@ -363,7 +367,7 @@ local function send_permission(self, entry, result, rpc_error)
   end
   pump_permissions(self)
   if self.permission_active == nil and self.state.status == "waiting_permission" then
-    set_status(self, "prompting")
+    set_status(self, self.turn_done_turn == self.state.current_turn and "ready" or "prompting")
   end
   return true
 end
