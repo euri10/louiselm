@@ -71,6 +71,10 @@ local nvim = vim
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
 ---@field dispose fun(self: louiselm.session.Session): boolean, string?
 
+-- ACP `RequestError.resourceNotFound`: the agent-side session store no longer
+-- has this session id, distinct from any other session/load failure mode.
+local ACP_RESOURCE_NOT_FOUND = -32002
+
 local M = {}
 local Session = {}
 Session.__index = Session
@@ -480,6 +484,14 @@ local function handle_initialized(self, result, rpc_error)
       return
     end
     if session_error ~= nil then
+      if method == "load" and type(session_error) == "table" and session_error.code == ACP_RESOURCE_NOT_FOUND then
+        fail(
+          self,
+          "the Agent no longer has this Park's session; it may have expired, been evicted from the Agent's"
+            .. " session store, or the Agent was reinstalled or upgraded"
+        )
+        return
+      end
       fail(self, "ACP session/" .. method .. " failed: " .. error_message(session_error))
       return
     end

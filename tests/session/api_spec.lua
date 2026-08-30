@@ -646,6 +646,34 @@ T["new"]["explains a Codex active-writer load failure without exposing its threa
   restore_processes(original_system)
 end
 
+T["new"]["names a resource-not-found session/load failure instead of the raw ACP string"] = function()
+  local processes, original_system = fake_processes()
+  local ready
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:load_session("agent", "expired-park", nil, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond_error(process, 2, {
+    code = -32002,
+    message = "Resource not found: expired-park",
+  })
+
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(
+    ready.error,
+    "the Agent no longer has this Park's session; it may have expired, been evicted from the Agent's"
+      .. " session store, or the Agent was reinstalled or upgraded"
+  )
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(process.closed, true)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["does not expose arbitrary internal ACP error details"] = function()
   local processes, original_system = fake_processes()
   local ready_error

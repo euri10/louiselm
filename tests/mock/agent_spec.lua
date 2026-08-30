@@ -358,4 +358,26 @@ T["mock agent"]["surfaces a simulated crash as a session error"] = function()
   assert(api:dispose())
 end
 
+T["mock agent"]["names a resource-not-found session/load failure rather than the raw ACP string"] = function()
+  local ready
+  local api = track(
+    assert(Session.new({ mock = mock_definition("echo", nil, { LOUISELM_MOCK_FAIL_SESSION_LOAD = "1" }) })),
+    "dispose"
+  )
+  local session = assert(api:load_session("mock", "expired-park", { cwd = project_root }, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  wait_for(function()
+    return ready ~= nil
+  end)
+
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(
+    ready.error,
+    "the Agent no longer has this Park's session; it may have expired, been evicted from the Agent's"
+      .. " session store, or the Agent was reinstalled or upgraded"
+  )
+  MiniTest.expect.equality(session:inspect().status, "error")
+end
+
 return T

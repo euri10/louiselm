@@ -2,6 +2,9 @@
 ---@field mode? "echo"|"static"|"permission"|"crash" Response behavior. Defaults to echo.
 ---@field response? string Static response text.
 ---@field crash_on? "initialize"|"session/new"|"session/load"|"session/prompt" Crash before handling a request.
+---@field fail_session_load? boolean Respond to `session/load` with an ACP `RequestError.resourceNotFound`
+---(-32002) instead of succeeding, while `initialize` still advertises `loadSession: true`. Models an Agent
+---that advertises resume support but no longer has the requested session (evicted, expired, reinstalled).
 ---@field replay_user_message? string User text replayed as a `user_message_chunk` notification before the `session/load` response, modeling an agent launched with history replay.
 ---@field replay_reasoning? string Reasoning text replayed as an `agent_thought_chunk` notification before the `session/load` response, modeling an agent whose session history includes thinking blocks.
 ---@field available_commands? table[] Commands advertised via `available_commands_update` right after the session is created or loaded.
@@ -174,6 +177,10 @@ local function handle_message(message, state, options)
       write_error(message.id, -32602, "sessionId must be a non-empty string")
       return true
     end
+    if options.fail_session_load then
+      write_error(message.id, -32002, "Resource not found: " .. params.sessionId)
+      return true
+    end
     state.sessions[params.sessionId] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
     if options.replay_user_message ~= nil then
       write_notification("session/update", {
@@ -285,6 +292,10 @@ function M.run(options)
     response = nvim.env.LOUISELM_MOCK_RESPONSE
   end
   local crash_on = options.crash_on or nvim.env.LOUISELM_MOCK_CRASH_ON
+  local fail_session_load = options.fail_session_load
+  if fail_session_load == nil then
+    fail_session_load = nvim.env.LOUISELM_MOCK_FAIL_SESSION_LOAD ~= nil
+  end
   local replay_user_message = options.replay_user_message or nvim.env.LOUISELM_MOCK_REPLAY_USER
   local replay_reasoning = options.replay_reasoning or nvim.env.LOUISELM_MOCK_REPLAY_REASONING
   local available_commands = options.available_commands
@@ -298,6 +309,7 @@ function M.run(options)
     mode = mode,
     response = response,
     crash_on = crash_on,
+    fail_session_load = fail_session_load,
     replay_user_message = replay_user_message,
     replay_reasoning = replay_reasoning,
     available_commands = available_commands,
