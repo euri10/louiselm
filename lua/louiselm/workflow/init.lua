@@ -9,6 +9,7 @@
 ---Not to be confused with `louiselm.routing`, which ranks Agents for a phase of work.
 
 local Validate = require("louiselm.workflow.validate")
+local Discovery = require("louiselm.workflow.discovery")
 local Run = require("louiselm.workflow.run")
 local Escape = require("louiselm.workflow.escape")
 local Cache = require("louiselm.workflow.cache")
@@ -16,6 +17,16 @@ local Executor = require("louiselm.workflow.executor")
 local Ledger = require("louiselm.workflow.ledger")
 
 local M = {}
+
+---Discover one workflow's stage manifest from SKILL.md frontmatter.
+---@param workflow string Workflow name to select.
+---@param paths unknown Dense array of directories containing SKILL.md files.
+---@param cwd? string Base directory for relative configured paths.
+---@return table<string, table> manifest Discovered stage blocks keyed by skill name.
+---@return louiselm.skills.DiscoveryDiagnostic[] diagnostics Discovery and workflow-marker errors.
+function M.discover(workflow, paths, cwd)
+  return Discovery.discover(workflow, paths, cwd)
+end
 
 ---Validate a workflow after synthesizing its mandatory human Park escape.
 ---@param workflow string Workflow name.

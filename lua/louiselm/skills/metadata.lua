@@ -9,6 +9,17 @@
 local Phase = require("louiselm.routing.phase")
 local M = {}
 
+local STANDARD_FIELDS = {
+  name = true,
+  description = true,
+  license = true,
+  compatibility = true,
+  metadata = true,
+  ["allowed-tools"] = true,
+  phase = true,
+  ["disable-model-invocation"] = true,
+}
+
 ---@return table
 local function nvim()
   ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -56,6 +67,21 @@ local function load_mapping(yaml, source)
     end
   end
   return value
+end
+
+---@param fields table
+---@return table<string, unknown>? stage
+local function workflow_stage(fields)
+  if fields.workflow == nil then
+    return nil
+  end
+  local stage = {}
+  for key, value in pairs(fields) do
+    if not STANDARD_FIELDS[key] then
+      stage[key] = value
+    end
+  end
+  return stage
 end
 
 ---@param value unknown
@@ -175,6 +201,7 @@ function M.skill(lines, path, content, directory_name, yaml)
       content = content,
       explicit_only = explicit_only,
       phase = phase,
+      workflow = workflow_stage(fields),
     },
     disable_model_invocation = disable_model_invocation,
     warnings = warnings,

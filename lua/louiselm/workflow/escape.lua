@@ -32,19 +32,23 @@ function M.apply(workflow, manifest)
   for name, block in pairs(manifest) do
     if type(block) == "table" and block.workflow == workflow then
       local stage = copy(block)
-      local outcomes = {}
-      if type(stage.outcomes) == "table" then
-        for index, outcome in ipairs(stage.outcomes) do
-          outcomes[index] = copy(outcome)
+      if stage.outcomes ~= nil and type(stage.outcomes) ~= "table" then
+        synthesized[name] = stage
+      else
+        local outcomes = {}
+        if type(stage.outcomes) == "table" then
+          for index, outcome in ipairs(stage.outcomes) do
+            outcomes[index] = copy(outcome)
+          end
         end
+        outcomes[#outcomes + 1] = {
+          name = M.PARK_OUTCOME,
+          resolver = "human",
+          terminal = true,
+        }
+        stage.outcomes = outcomes
+        synthesized[name] = stage
       end
-      outcomes[#outcomes + 1] = {
-        name = M.PARK_OUTCOME,
-        resolver = "human",
-        terminal = true,
-      }
-      stage.outcomes = outcomes
-      synthesized[name] = stage
     else
       synthesized[name] = block
     end

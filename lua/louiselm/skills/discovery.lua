@@ -6,6 +6,7 @@
 ---@field content? string Complete original SKILL.md content captured for deliberate activation.
 ---@field explicit_only boolean Whether only deliberate picker activation may select the skill.
 ---@field phase? louiselm.routing.PhaseMetadata Routing phase, declared in frontmatter or inferred from the name.
+---@field workflow? table<string, unknown> Raw workflow stage frontmatter, when declared.
 
 ---@class louiselm.skills.DiscoveryDiagnostic
 ---@field path string File or configured directory related to the error.
