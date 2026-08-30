@@ -62,11 +62,18 @@ Do not claim, implement, or commit work unless asked to proceed.
   leverage and cannot see that a claimed issue is half-done. This preference
   covers only issues you claimed; another agent's claim is not your backlog.
 - Before working an issue that is already `in_progress`, check
-  `br coordination status` for its claim age and classification. A live claim
-  belongs to its holder: pick something else. `br scheduler` already excludes
-  claimed work and explains its ranking, so prefer it over hand-scanning
-  `br list --status in_progress`. Take over an abandoned claim only past the
-  abandoned threshold, and say in a comment that you did and why. Exception:
+  `br coordination status` with the available Agent Mail agent and reservation
+  snapshots. A live claim belongs to its holder: pick something else. A claim
+  is eligible for takeover only when its classification is `abandoned_likely`
+  and `reclaim_allowed_by_policy` is true. Age alone is not permission:
+  `no_mail_snapshot`, `ambiguous`, `fresh`, and
+  `blocked_by_active_reservation` remain protected regardless of age. Record
+  the command's evidence summary in a comment, then have the maintainer requeue
+  the issue with `br update <id> --status open --assignee "" --actor "<session id>" --json`;
+  the next Agent claims it normally with `--claim`, which refuses to overwrite
+  an intervening holder. `br scheduler` already excludes claimed work and
+  explains its ranking, so prefer it over hand-scanning
+  `br list --status in_progress`. Exception:
   `br scheduler --json` returns empty labels (louiselm-scheduler-labels-xw1i),
   so capability-aware selection cannot filter on its output — use
   `br ready --label-any needs-capability:<name>` instead. Drop this carve-out
