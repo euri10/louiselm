@@ -93,6 +93,11 @@ Do not claim, implement, or commit work unless asked to proceed.
   silence is the failure mode, because the lesson is legible only while the
   work is still fresh. Chores and mechanical closes are exempt, and searching
   for prior lessons is not required at close time.
+- Write close reasons, comments, and commit bodies in the fewest words that stay
+  greppable: cite `file:line`, name the decision, state the outcome. Do not
+  restate the work as prose or re-explain what the diff already shows. Compress,
+  never omit — the routing rule above still binds, and a lesson dropped to save
+  a line costs far more than the line saved.
 - `br search` excludes closed issues unless passed `-a`, and lessons live on
   closed issues almost by definition. Always search prior art with `-a`, and
   never read a zero-result search as absence without it. `br list --json`
