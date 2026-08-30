@@ -422,8 +422,17 @@ function Run:park_cold(request, callback)
   end
   local previous_record = self.park_record
   self.park_record = record
-  local started, start_error = self:park(callback)
-  self.park_record = previous_record
+  local started, start_error = self:park(function(ok, error_message)
+    if not ok then
+      self.park_record = previous_record
+    end
+    if callback ~= nil then
+      callback(ok, error_message)
+    end
+  end)
+  if not started then
+    self.park_record = previous_record
+  end
   return started, start_error
 end
 

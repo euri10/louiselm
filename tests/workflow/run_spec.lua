@@ -190,6 +190,75 @@ T["durable Park"]["derives cold resume metadata from the owned Session"] = funct
   })
 end
 
+T["durable Park"]["retains the cold Park record while the async service confirms persistence"] = function()
+  -- Regression for louiselm-psz9: the real park_service is an async
+  -- subprocess (`louiselm-capture run park`) that confirms well after
+  -- park_cold returns. Chat:park's reuse check
+  -- (`run.park_record and run.park_record.id`) depends on the record
+  -- surviving past that confirmation so a second `:LouiselmPark` on an
+  -- already cold-Parked Session reuses the admitted Run id instead of
+  -- minting a fresh one that was never admitted.
+  local complete
+  local session = worker("ready")
+  session.state = {
+    agent = "codex",
+    acp_session_id = "acp-session",
+    working_dir = "/tmp/project",
+    current_turn = 1,
+  }
+  function session:inspect()
+    return self.state
+  end
+  session.client = { agent_capabilities = { loadSession = true } }
+  local run = assert(Workflow.new_run({
+    park_service = function(_, callback)
+      complete = callback
+      return true
+    end,
+  }))
+  assert(run:adopt_session(session))
+
+  assert(run:park_cold({ id = "run", claims = { "issue" } }))
+  MiniTest.expect.equality(run.park_record ~= nil, true)
+  MiniTest.expect.equality(run.park_record.id, "run")
+
+  complete(true)
+  MiniTest.expect.equality(run.status, "parked")
+  MiniTest.expect.equality(run.park_record.id, "run")
+end
+
+T["durable Park"]["rolls back the cold Park record when the async service reports failure"] = function()
+  local complete
+  local session = worker("ready")
+  session.state = {
+    agent = "codex",
+    acp_session_id = "acp-session",
+    working_dir = "/tmp/project",
+    current_turn = 1,
+  }
+  function session:inspect()
+    return self.state
+  end
+  session.client = { agent_capabilities = { loadSession = true } }
+  local run = assert(Workflow.new_run({
+    park_service = function(_, callback)
+      complete = callback
+      return true
+    end,
+  }))
+  assert(run:adopt_session(session))
+
+  local failure
+  assert(run:park_cold({ id = "run", claims = { "issue" } }, function(ok, error_message)
+    failure = { ok, error_message }
+  end))
+  complete(false, "service unavailable")
+
+  MiniTest.expect.equality(run.status, "active")
+  MiniTest.expect.equality(run.park_record, nil)
+  MiniTest.expect.equality(failure, { false, "service unavailable" })
+end
+
 T["durable Park"]["rejects cold Park when the Session is not reloadable"] = function()
   local session = worker("ready")
   session.state = { agent = "codex", acp_session_id = "acp-session", working_dir = "/tmp/project" }
