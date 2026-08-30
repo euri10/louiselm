@@ -50,6 +50,12 @@ pub enum CliError {
     /// Generated-work broker failed.
     #[error(transparent)]
     Generation(#[from] GenerationError),
+    /// Ambiguous generated work can be retried with the same safe mutation identity.
+    #[error("{source}; retry with LOUISELM_MUTATION_ID={mutation_id}")]
+    GenerationRetry {
+        mutation_id: String,
+        source: GenerationError,
+    },
     /// Pairing operation failed.
     #[error(transparent)]
     Pairing(#[from] PairingError),
@@ -187,10 +193,14 @@ fn generate(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
             CliError::Invalid("run generate requires '--' before br arguments".to_owned())
         })?;
     let options = &arguments[..separator];
+    let mutation_id = env::var("LOUISELM_MUTATION_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let request = GenerateRequest {
         run_id: required_environment("LOUISELM_RUN_ID")?,
         token: required_environment("LOUISELM_RUN_TOKEN")?,
-        mutation_id: uuid::Uuid::new_v4().to_string(),
+        mutation_id: mutation_id.clone(),
         command: required_option(options, "--command")?.to_owned(),
         arguments: arguments[separator + 1..].to_vec(),
     };
@@ -199,7 +209,15 @@ fn generate(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
         required_environment("BEADS_DB")?,
     );
     let command = request.command.clone();
-    let issue = generator.generate(&RunStore::new(paths.runs())?, request, now_ms())?;
+    let issue = generator
+        .generate(&RunStore::new(paths.runs())?, request, now_ms())
+        .map_err(|source| match source {
+            GenerationError::Ambiguous(_) => CliError::GenerationRetry {
+                mutation_id,
+                source,
+            },
+            source => CliError::Generation(source),
+        })?;
     if command == "q" {
         println!("{}", issue.id);
     } else {

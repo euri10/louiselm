@@ -125,6 +125,194 @@ fn run_admission_exposes_the_approved_generated_work_ceiling() {
     assert!(!lowering.status.success());
 }
 
+#[cfg(unix)]
+#[test]
+fn ambiguous_cli_retry_reuses_the_supplied_mutation_identity() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let mutation_id = "11111111-2222-4333-8444-555555555555";
+    let admitted = command(&data, &state)
+        .args([
+            "run",
+            "admit",
+            "--id",
+            run_id,
+            "--generated-work-max",
+            "1",
+            "--park-ttl-ms",
+            "3600000",
+        ])
+        .output()
+        .expect("admit Run");
+    assert!(admitted.status.success(), "{:?}", admitted.stderr);
+    let admission: serde_json::Value =
+        serde_json::from_slice(&admitted.stdout).expect("admission JSON");
+    let token = admission["token"].as_str().expect("generate token");
+    let attached = command(&data, &state)
+        .args([
+            "run",
+            "attach",
+            "--id",
+            run_id,
+            "--session-id",
+            "codex/session-1",
+            "--agent",
+            "codex",
+            "--acp-session-id",
+            "session-1",
+            "--cwd",
+            "/tmp/project",
+            "--load-session",
+            "true",
+        ])
+        .output()
+        .expect("attach Run");
+    assert!(attached.status.success(), "{:?}", attached.stderr);
+
+    let counter = temporary.path().join("create-count");
+    let issue = temporary.path().join("issue.json");
+    let fake_br = temporary.path().join("fake-br");
+    fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nset -eu\ncase \"$1\" in\n  create)\n    external_ref=\n    shift\n    while [ \"$#\" -gt 0 ]; do\n      if [ \"$1\" = --external-ref ]; then external_ref=$2; break; fi\n      shift\n    done\n    count=0\n    if [ -f '{counter}' ]; then count=$(cat '{counter}'); fi\n    count=$((count + 1))\n    printf '%s' \"$count\" > '{counter}'\n    printf '[{{\"id\":\"qa-generated\",\"external_ref\":\"%s\"}}]\\n' \"$external_ref\" > '{issue}'\n    exit 1\n    ;;\n  list) cat '{issue}' ;;\n  *) exit 2 ;;\nesac\n",
+            counter = counter.display(),
+            issue = issue.display(),
+        ),
+    )
+    .expect("fake br");
+    fs::set_permissions(&fake_br, fs::Permissions::from_mode(0o700)).expect("fake br mode");
+    let database = temporary.path().join("beads.db");
+    let invoke = || {
+        let mut process = command(&data, &state);
+        process
+            .args([
+                "run",
+                "generate",
+                "--command",
+                "create",
+                "--",
+                "--title",
+                "Generated",
+            ])
+            .env("LOUISELM_RUN_ID", run_id)
+            .env("LOUISELM_RUN_TOKEN", token)
+            .env("LOUISELM_MUTATION_ID", mutation_id)
+            .env("LOUISELM_REAL_BR", &fake_br)
+            .env("BEADS_DB", &database);
+        process
+    };
+
+    let first = invoke().output().expect("ambiguous first attempt");
+    assert!(!first.status.success());
+    assert!(
+        String::from_utf8(first.stderr)
+            .expect("first stderr")
+            .contains(mutation_id)
+    );
+    let second = invoke().output().expect("reconciled retry");
+    assert!(second.status.success(), "{:?}", second.stderr);
+    assert_eq!(fs::read_to_string(counter).expect("create count"), "1");
+}
+
+#[cfg(unix)]
+#[test]
+fn distinct_logical_mutations_receive_distinct_identities_and_both_create() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let data = temporary.path().join("data");
+    let state = temporary.path().join("state");
+    let run_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let first_mutation_id = "11111111-2222-4333-8444-555555555555";
+    let second_mutation_id = "22222222-3333-4444-8555-666666666666";
+    let admitted = command(&data, &state)
+        .args([
+            "run",
+            "admit",
+            "--id",
+            run_id,
+            "--generated-work-max",
+            "2",
+            "--park-ttl-ms",
+            "3600000",
+        ])
+        .output()
+        .expect("admit Run");
+    assert!(admitted.status.success(), "{:?}", admitted.stderr);
+    let admission: serde_json::Value =
+        serde_json::from_slice(&admitted.stdout).expect("admission JSON");
+    let token = admission["token"].as_str().expect("generate token");
+    let attached = command(&data, &state)
+        .args([
+            "run",
+            "attach",
+            "--id",
+            run_id,
+            "--session-id",
+            "codex/session-1",
+            "--agent",
+            "codex",
+            "--acp-session-id",
+            "session-1",
+            "--cwd",
+            "/tmp/project",
+            "--load-session",
+            "true",
+        ])
+        .output()
+        .expect("attach Run");
+    assert!(attached.status.success(), "{:?}", attached.stderr);
+
+    let counter = temporary.path().join("create-count");
+    let issue = temporary.path().join("issue.json");
+    let fake_br = temporary.path().join("fake-br");
+    fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nset -eu\ncase \"$1\" in\n  create)\n    external_ref=\n    shift\n    while [ \"$#\" -gt 0 ]; do\n      if [ \"$1\" = --external-ref ]; then external_ref=$2; break; fi\n      shift\n    done\n    count=0\n    if [ -f '{counter}' ]; then count=$(cat '{counter}'); fi\n    count=$((count + 1))\n    printf '%s' \"$count\" > '{counter}'\n    printf '[{{\"id\":\"qa-generated\",\"external_ref\":\"%s\"}}]\\n' \"$external_ref\" > '{issue}'\n    exit 1\n    ;;\n  list) cat '{issue}' ;;\n  *) exit 2 ;;\nesac\n",
+            counter = counter.display(),
+            issue = issue.display(),
+        ),
+    )
+    .expect("fake br");
+    fs::set_permissions(&fake_br, fs::Permissions::from_mode(0o700)).expect("fake br mode");
+    let database = temporary.path().join("beads.db");
+    let invoke = |mutation_id: &str| {
+        let mut process = command(&data, &state);
+        process
+            .args([
+                "run",
+                "generate",
+                "--command",
+                "create",
+                "--",
+                "--title",
+                "Generated",
+            ])
+            .env("LOUISELM_RUN_ID", run_id)
+            .env("LOUISELM_RUN_TOKEN", token)
+            .env("LOUISELM_MUTATION_ID", mutation_id)
+            .env("LOUISELM_REAL_BR", &fake_br)
+            .env("BEADS_DB", &database);
+        process.output().expect("ambiguous attempt")
+    };
+
+    let first = invoke(first_mutation_id);
+    assert!(!first.status.success());
+    assert!(
+        String::from_utf8(first.stderr)
+            .expect("first stderr")
+            .contains(first_mutation_id)
+    );
+    let second = invoke(second_mutation_id);
+    assert!(!second.status.success());
+    let second_stderr = String::from_utf8(second.stderr).expect("second stderr");
+    assert!(second_stderr.contains(second_mutation_id));
+    assert!(!second_stderr.contains(first_mutation_id));
+    assert_eq!(fs::read_to_string(counter).expect("create count"), "2");
+}
+
 #[test]
 fn pairing_refuses_loopback_until_a_private_profile_is_configured() {
     let temporary = tempfile::tempdir().expect("temporary directory");
