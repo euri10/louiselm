@@ -8,6 +8,7 @@
 ---cycle detection can take no credit for the halt.
 
 local MiniTest = require("mini.test")
+local Acp = require("louiselm.acp")
 local Workflow = require("louiselm.workflow")
 local Reference = require("louiselm.dev.reference_workflow")
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -215,6 +216,94 @@ T["a generating loop Parks at its ceiling with exactly that many issues"] = func
   MiniTest.expect.equality(result, nil)
   MiniTest.expect.equality(error_message, "workflow Run budget exhausted")
   MiniTest.expect.equality(executor:inspect().status, "parked")
+  MiniTest.expect.equality(cycle_count(fixture), 0)
+end
+
+T["a real Agent generating over ACP is bounded by the same budget"] = function()
+  -- The other cases drive the shim directly. This one puts a whole Agent
+  -- process behind it — ACP session, prompt, and all — because the contract
+  -- being sold is that an *Agent* cannot outrun its Run's budget, and the
+  -- layers between the Agent and the broker are part of that claim.
+  local fixture = admitted(2)
+  local project_root = nvim.fn.getcwd()
+  local reply
+  local client = assert(Acp.connect({
+    command = nvim.v.progpath,
+    args = {
+      "--headless",
+      "--noplugin",
+      "-u",
+      project_root .. "/tests/mock/init.lua",
+      "-c",
+      "lua require('louiselm.dev.mock_agent').run()",
+    },
+    env = nvim.tbl_extend("force", {}, fixture.environment, {
+      LOUISELM_MOCK_MODE = "echo",
+      -- Ask for one more than the ceiling allows.
+      LOUISELM_MOCK_GENERATE_COUNT = "3",
+      LOUISELM_RUN_ID = RUN_ID,
+      LOUISELM_RUN_TOKEN = fixture.token,
+      LOUISELM_CAPTURE = fixture.capture,
+      LOUISELM_REAL_BR = fixture.br,
+      BEADS_DB = fixture.database,
+      PATH = project_root .. "/scripts/run-tools:" .. (nvim.env.PATH or ""),
+    }),
+  }, {
+    on_notification = function(message)
+      local update = message.params and message.params.update
+      if update ~= nil and update.sessionUpdate == "agent_message_chunk" then
+        reply = update.content.text
+      end
+    end,
+  }))
+
+  local initialized
+  assert(client:initialize(nil, function(_, err)
+    initialized = { error = err }
+  end))
+  MiniTest.expect.equality(
+    nvim.wait(5000, function()
+      return initialized ~= nil
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(initialized.error, nil)
+
+  local created
+  assert(client:new_session({ cwd = project_root, mcpServers = {} }, function(result, err)
+    created = { result = result, error = err }
+  end))
+  MiniTest.expect.equality(
+    nvim.wait(5000, function()
+      return created ~= nil
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(created.error, nil)
+
+  local completed
+  assert(client:prompt({
+    sessionId = created.result.sessionId,
+    prompt = { { type = "text", text = "review this" } },
+  }, function(result, err)
+    completed = { result = result, error = err }
+  end))
+  MiniTest.expect.equality(
+    nvim.wait(15000, function()
+      return completed ~= nil
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(completed.error, nil)
+  assert(client:close())
+
+  local summary = nvim.json.decode(assert(reply))
+
+  -- The Agent asked for three and got two. The refusal is the broker's, not a
+  -- crash, and the workspace holds exactly the approved number of issues.
+  MiniTest.expect.equality(#summary.created, 2)
+  MiniTest.expect.equality(type(summary.refused), "string")
+  MiniTest.expect.equality(issue_count(fixture), 2)
   MiniTest.expect.equality(cycle_count(fixture), 0)
 end
 
