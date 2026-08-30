@@ -38,6 +38,8 @@ local nvim = vim
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
+---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
+---@field start_timeout_ms? integer Milliseconds to wait for the ACP handshake before failing a Session stuck "starting"; defaults to 20000.
 
 ---@class louiselm.session.PermissionEntry
 ---@field data table ACP permission request parameters enriched with louiselm metadata.
@@ -60,6 +62,9 @@ local nvim = vim
 ---@field options louiselm.session.Options Session options.
 ---@field permission_policy louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store louiselm.permission.Store Remembered-permission owner.
+---@field schedule fun(delay_ms: integer, callback: fun()) Testable scheduling boundary.
+---@field start_timeout_ms integer Milliseconds to wait for the ACP handshake before failing a Session stuck "starting".
+---@field stderr_buffer string Recent stderr output from the agent process, most-recent-last.
 ---@field permission_active? louiselm.session.PermissionEntry Permission request published for a decision.
 ---@field permission_queue louiselm.session.PermissionEntry[] Permission requests waiting for the active one.
 ---@field start fun(self: louiselm.session.Session): boolean, string?
@@ -74,6 +79,16 @@ local nvim = vim
 -- ACP `RequestError.resourceNotFound`: the agent-side session store no longer
 -- has this session id, distinct from any other session/load failure mode.
 local ACP_RESOURCE_NOT_FOUND = -32002
+
+-- A hung agent process (or a proxy wrapping one) never exits and never speaks
+-- ACP: without a bound, a Session stuck "starting" stays there forever with
+-- no error (louiselm-8hau).
+local DEFAULT_START_TIMEOUT_MS = 20000
+
+-- Keep only the most recent stderr output so an agent that prints
+-- continuously cannot grow this without bound; the failure text that matters
+-- is almost always the last thing printed before exit.
+local STDERR_BUFFER_LIMIT = 4096
 
 local M = {}
 local Session = {}
@@ -151,6 +166,16 @@ local function emit(self, event_type, data, respond)
   else
     self.emitter:emit({ type = event_type, session_id = self.state.id, data = data })
   end
+end
+
+---@param self louiselm.session.Session
+---@param data string Raw stderr chunk from the agent process.
+local function buffer_stderr(self, data)
+  local combined = self.stderr_buffer .. data
+  if #combined > STDERR_BUFFER_LIMIT then
+    combined = combined:sub(#combined - STDERR_BUFFER_LIMIT + 1)
+  end
+  self.stderr_buffer = combined
 end
 
 ---@param self louiselm.session.Session
@@ -476,11 +501,17 @@ local function handle_exit(self, result)
   if self.state.status == "disposed" then
     return
   end
+  local message
   if result.signal ~= nil and result.signal ~= 0 then
-    fail(self, "agent process exited with signal " .. result.signal)
+    message = "agent process exited with signal " .. result.signal
   else
-    fail(self, "agent process exited with code " .. tostring(result.code))
+    message = "agent process exited with code " .. tostring(result.code)
   end
+  local stderr = self.stderr_buffer:match("^%s*(.-)%s*$")
+  if stderr ~= "" then
+    message = message .. ": " .. stderr
+  end
+  fail(self, message)
 end
 
 ---@param self louiselm.session.Session
@@ -646,6 +677,11 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,
+    schedule = options.schedule or function(delay_ms, callback)
+      nvim.defer_fn(callback, delay_ms)
+    end,
+    start_timeout_ms = options.start_timeout_ms or DEFAULT_START_TIMEOUT_MS,
+    stderr_buffer = "",
   }, Session)
   if options.on_event ~= nil then
     session:on(options.on_event)
@@ -673,6 +709,9 @@ function Session:start()
     on_exit = function(result)
       handle_exit(self, result)
     end,
+    on_stderr = function(data)
+      buffer_stderr(self, data)
+    end,
   })
   if client == nil then
     fail(self, connect_error or "could not connect to ACP agent")
@@ -686,6 +725,12 @@ function Session:start()
     fail(self, request_error or "ACP initialize request could not be sent")
     return false, request_error
   end
+  self.schedule(self.start_timeout_ms, function()
+    if self.state.status ~= "starting" then
+      return
+    end
+    fail(self, "agent did not respond within " .. self.start_timeout_ms .. "ms of starting")
+  end)
   return true
 end
 

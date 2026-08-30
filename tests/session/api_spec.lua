@@ -1866,6 +1866,134 @@ T["new"]["turns an unexpected agent exit into a session error event"] = function
   restore_processes(original_system)
 end
 
+T["new"]["appends buffered agent stderr to the exit error message"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local event
+  session:on(function(value)
+    if value.type == "error" then
+      event = value
+    end
+  end)
+
+  process.options.stderr(nil, "Error: opencode-ai's postinstall script was not run.\n")
+  process.on_exit({ code = 1, signal = 0 })
+
+  MiniTest.expect.equality(
+    event.data.message,
+    "agent process exited with code 1: Error: opencode-ai's postinstall script was not run."
+  )
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["caps buffered agent stderr to the most recent output"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local event
+  session:on(function(value)
+    if value.type == "error" then
+      event = value
+    end
+  end)
+
+  process.options.stderr(nil, string.rep("a", 4096))
+  process.options.stderr(nil, "TAIL")
+  process.on_exit({ code = 1, signal = 0 })
+
+  local prefix = "agent process exited with code 1: "
+  MiniTest.expect.equality(#event.data.message, #prefix + 4096)
+  MiniTest.expect.equality(event.data.message:sub(-4), "TAIL")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["fails a session that never completes the ACP handshake after the start timeout"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local scheduled
+  local ready
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    schedule = function(delay_ms, callback)
+      scheduled = { delay_ms = delay_ms, callback = callback }
+    end,
+  }, function(value, err)
+    ready = { session = value, error = err }
+  end))
+  local event
+  session:on(function(value)
+    if value.type == "error" then
+      event = value
+    end
+  end)
+
+  MiniTest.expect.equality(session:inspect().status, "starting")
+  MiniTest.expect.equality(scheduled.delay_ms, 20000)
+
+  scheduled.callback()
+
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(event.data.message, "agent did not respond within 20000ms of starting")
+  MiniTest.expect.equality(ready.session, nil)
+  MiniTest.expect.equality(ready.error, "agent did not respond within 20000ms of starting")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["ignores a stale start timeout after the Session becomes ready"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local scheduled
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    schedule = function(delay_ms, callback)
+      scheduled = { delay_ms = delay_ms, callback = callback }
+    end,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+
+  scheduled.callback()
+
+  MiniTest.expect.equality(session:inspect().status, "ready")
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["honors a custom start_timeout_ms option"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local scheduled
+  assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    start_timeout_ms = 500,
+    schedule = function(delay_ms, callback)
+      scheduled = { delay_ms = delay_ms, callback = callback }
+    end,
+  }))
+
+  MiniTest.expect.equality(scheduled.delay_ms, 500)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["rejects a negative start_timeout_ms session option"] = function()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, err = api:create_session("agent", { start_timeout_ms = -1 })
+  MiniTest.expect.equality(session, nil)
+  MiniTest.expect.equality(err, "session option start_timeout_ms must be a non-negative integer")
+end
+
 T["new"]["tracks advertised commands and replaces the cache on every update"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))

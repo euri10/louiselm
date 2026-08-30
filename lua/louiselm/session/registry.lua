@@ -165,7 +165,15 @@ local function valid_options(value)
   end
   ---@cast value table
   for key in pairs(value) do
-    if key ~= "cwd" and key ~= "env" and key ~= "name" and key ~= "on_event" and key ~= "permission_policy" then
+    if
+      key ~= "cwd"
+      and key ~= "env"
+      and key ~= "name"
+      and key ~= "on_event"
+      and key ~= "permission_policy"
+      and key ~= "schedule"
+      and key ~= "start_timeout_ms"
+    then
       return false
     end
   end
@@ -400,6 +408,15 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
   if options.on_event ~= nil and type(options.on_event) ~= "function" then
     return nil, "session option on_event must be a function"
   end
+  if options.schedule ~= nil and type(options.schedule) ~= "function" then
+    return nil, "session option schedule must be a function"
+  end
+  if options.start_timeout_ms ~= nil then
+    local value = options.start_timeout_ms
+    if type(value) ~= "number" or value < 0 or value % 1 ~= 0 then
+      return nil, "session option start_timeout_ms must be a non-negative integer"
+    end
+  end
 
   local permission_policy, policy_error = Permission.policy(options.permission_policy)
   if permission_policy == nil then
@@ -412,6 +429,8 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     on_event = options.on_event,
     permission_policy = permission_policy,
     permission_store = self.permission_store,
+    schedule = options.schedule,
+    start_timeout_ms = options.start_timeout_ms,
   }
 
   local id = "session-" .. self.next_id

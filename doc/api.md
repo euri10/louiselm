@@ -101,6 +101,8 @@ string|table
 - `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
+- `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
+- `start_timeout_ms: integer?` -- Milliseconds to wait for the ACP handshake before failing a Session stuck "starting"; defaults to 20000.
 
 ### louiselm.session.PermissionEntry
 
@@ -130,10 +132,13 @@ string|table
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
+- `schedule: fun(delay_ms: integer, callback: fun())` -- Testable scheduling boundary.
 - `set_config_option: fun(self: louiselm.session.Session, id: string, value: boolean|string, callback?: fun(options?: louiselm.session.ConfigOption[], error?: string)):(string|number)?, string?`
 - `set_name: fun(self: louiselm.session.Session, name: string):boolean, string?` -- Rename the session.
 - `start: fun(self: louiselm.session.Session):boolean, string?`
+- `start_timeout_ms: integer` -- Milliseconds to wait for the ACP handshake before failing a Session stuck "starting".
 - `state: louiselm.session.State` -- Internal mutable state.
+- `stderr_buffer: string` -- Recent stderr output from the agent process, most-recent-last.
 - `turn_done_turn: integer?` -- Turn for which the completion event was emitted.
 
 ### louiselm.session.DiscoveryOptions
