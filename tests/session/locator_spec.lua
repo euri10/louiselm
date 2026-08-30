@@ -106,6 +106,31 @@ T["resolve"]["keys resolution on layout rather than configured Agent name"] = fu
   )
 end
 
+T["resolve"]["automatically resolves a unique match across supported layouts"] = function()
+  local configured_roots = roots()
+  local path =
+    write_file(configured_roots.codex, "sessions", "2026", "08", "26", "rollout-2026-08-26T12-00-00-session-id.jsonl")
+
+  local resolved, error_message = Locator.resolve("agent/session-id", {}, { roots = configured_roots })
+
+  MiniTest.expect.equality(error_message, nil)
+  MiniTest.expect.equality(resolved, path)
+end
+
+T["resolve"]["reports ambiguity when multiple layouts contain the Session"] = function()
+  local configured_roots = roots()
+  write_file(configured_roots.claude, "projects", "-tmp-project", "session-id.jsonl")
+  write_file(configured_roots["openai-compatible"], "sessions", "session-id", "history.jsonl")
+
+  local path, error_message = Locator.resolve("agent/session-id", {}, { roots = configured_roots })
+
+  MiniTest.expect.equality(path, nil)
+  MiniTest.expect.equality(
+    error_message,
+    "ambiguous transcript for Session 'agent/session-id' found in layouts: claude, openai-compatible"
+  )
+end
+
 T["resolve"]["distinguishes malformed ids, unknown layouts, and missing transcripts"] = function()
   local configured_roots = roots()
   local path, error_message = Locator.resolve("missing-separator", {}, { roots = configured_roots })
@@ -118,13 +143,11 @@ T["resolve"]["distinguishes malformed ids, unknown layouts, and missing transcri
   MiniTest.expect.equality(path, nil)
   MiniTest.expect.equality(error_message, "unknown transcript layout 'mystery'")
 
-  path, error_message = Locator.resolve("agent/session-id", {
-    agent = { transcript_layout = "copilot" },
-  }, { roots = configured_roots })
+  path, error_message = Locator.resolve("agent/session-id", {}, { roots = configured_roots })
   MiniTest.expect.equality(path, nil)
   MiniTest.expect.equality(
     error_message,
-    "transcript not found for Session 'agent/session-id' in configured layout: copilot"
+    "transcript not found for Session 'agent/session-id' in supported layouts: claude, codex, copilot, openai-compatible"
   )
 end
 

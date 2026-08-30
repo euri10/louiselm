@@ -104,6 +104,7 @@ end
 
 ---@param definitions table<string, louiselm.session.TranscriptDefinition>
 ---@return string[]? layouts
+---@return boolean? automatic Whether all supported layouts should be searched.
 ---@return string? error_message
 local function configured_layouts(definitions)
   local seen = {}
@@ -121,23 +122,27 @@ local function configured_layouts(definitions)
     end
   end
   if invalid then
-    return nil, "configured transcript layouts must be non-empty strings"
+    return nil, nil, "configured transcript layouts must be non-empty strings"
   end
   table.sort(layouts)
   if #layouts == 0 then
-    return nil, "no transcript layout is configured"
+    for layout in pairs(resolvers) do
+      layouts[#layouts + 1] = layout
+    end
+    table.sort(layouts)
+    return layouts, true, nil
   end
   for _, layout in ipairs(layouts) do
     if resolvers[layout] == nil then
-      return nil, "unknown transcript layout '" .. layout .. "'"
+      return nil, nil, "unknown transcript layout '" .. layout .. "'"
     end
   end
-  return layouts, nil
+  return layouts, false, nil
 end
 
 ---Resolve an attributed Session id to an existing absolute transcript path.
 ---@param attributed_session_id string Session id shaped as `<agent>/<session-id>`; the Agent prefix is attribution only.
----@param definitions table<string, louiselm.session.TranscriptDefinition> Current Agent definitions; every distinct configured layout is searched.
+---@param definitions table<string, louiselm.session.TranscriptDefinition> Current Agent definitions; explicit layouts are searched, or all supported layouts when none are configured.
 ---@param options? louiselm.session.LocatorOptions Test or host-specific root overrides.
 ---@return string? path Absolute transcript path, or nil when validation or lookup fails.
 ---@return string? error_message Actionable malformed-id, layout, root, or missing-transcript failure.
@@ -155,7 +160,7 @@ function M.resolve(attributed_session_id, definitions, options)
   if type(definitions) ~= "table" then
     return nil, "transcript resolution requires configured Agent definitions"
   end
-  local layouts, layout_error = configured_layouts(definitions)
+  local layouts, automatic, layout_error = configured_layouts(definitions)
   if layouts == nil then
     return nil, layout_error
   end
@@ -180,6 +185,7 @@ function M.resolve(attributed_session_id, definitions, options)
     return nil, "transcript roots are unavailable"
   end
 
+  local matches = {}
   for _, layout in ipairs(layouts) do
     local root = roots[layout]
     if type(root) ~= "string" or root == "" or not is_absolute(root) then
@@ -187,13 +193,29 @@ function M.resolve(attributed_session_id, definitions, options)
     end
     local path = resolvers[layout](root, session_id)
     if path ~= nil then
-      return path, nil
+      matches[#matches + 1] = { layout = layout, path = path }
     end
   end
 
+  if #matches == 1 then
+    return matches[1].path, nil
+  end
+  if #matches > 1 then
+    local matching_layouts = {}
+    for _, match in ipairs(matches) do
+      matching_layouts[#matching_layouts + 1] = match.layout
+    end
+    return nil,
+      "ambiguous transcript for Session '" .. attributed_session_id .. "' found in layouts: " .. table.concat(
+        matching_layouts,
+        ", "
+      )
+  end
+
   local qualifier = #layouts == 1 and "layout: " or "layouts: "
+  local scope = automatic and "supported " or "configured "
   return nil,
-    "transcript not found for Session '" .. attributed_session_id .. "' in configured " .. qualifier .. table.concat(
+    "transcript not found for Session '" .. attributed_session_id .. "' in " .. scope .. qualifier .. table.concat(
       layouts,
       ", "
     )

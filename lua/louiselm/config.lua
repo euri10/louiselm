@@ -62,7 +62,7 @@ M.schema = assert(Schema.define({
         transcript_layout = {
           type = "string",
           default = "",
-          description = "On-disk transcript layout used to resolve this Agent's historical Sessions: claude, codex, openai-compatible, or copilot; empty disables resolution.",
+          description = "Optional Provenance layout override for this Agent's historical transcripts: claude, codex, openai-compatible, or copilot; live chat transcripts need no configuration; omission searches all supported layouts.",
         },
         skills = {
           type = "table",

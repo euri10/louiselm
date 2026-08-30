@@ -521,7 +521,7 @@ louiselm.permission.Lifetime:
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.
 - `options: table<string, unknown>?` -- Agent-specific options. `options._meta`, when present, is threaded
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
-- `transcript_layout: string?` -- On-disk transcript layout used to resolve historical Sessions.
+- `transcript_layout: string?` -- Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
 - `version: (louiselm.agent.CommandCheck)?` -- Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 
 ### louiselm.agent.ConfigErrorType

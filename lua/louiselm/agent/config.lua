@@ -16,7 +16,7 @@ local Policy = require("louiselm.skills.policy")
 ---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
 ---`{ claudeCode = { options = { thinking = { type = "adaptive" } } } }`).
 ---@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
----@field transcript_layout? string On-disk transcript layout used to resolve historical Sessions.
+---@field transcript_layout? string Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
 ---Setting this to `"claude"` also defaults the ACP session to request summarized thinking display
 ---(`_meta.claudeCode.options.thinking = { type = "adaptive", display = "summarized" }`) unless
 ---`options._meta.claudeCode.options.thinking` is already set: recent Claude models default to

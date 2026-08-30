@@ -282,9 +282,10 @@ agents.<name>.skills.policy                                   *louiselm-config-a
 agents.<name>.transcript_layout                               *louiselm-config-agents-name-transcript-layout*
     Type: string
     Default: ""
-    Description: On-disk transcript layout used to resolve this Agent's
-    historical Sessions: claude, codex, openai-compatible, or copilot; empty
-    disables resolution.
+    Description: Optional Provenance layout override for this Agent's
+    historical transcripts: claude, codex, openai-compatible, or copilot; live
+    chat transcripts need no configuration; omission searches all supported
+    layouts.
 
 ------------------------------------------------------------------------------
 agents.<name>.version                                         *louiselm-config-agents-name-version*
