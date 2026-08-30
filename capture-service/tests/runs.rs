@@ -79,7 +79,8 @@ fn cold_park_survives_reopen_and_reaps_each_claim_once() {
                 released.push((action.issue_id.clone(), action.actor.clone()));
                 Ok(())
             })
-            .expect("reap"),
+            .expect("reap")
+            .disposed,
         1
     );
     assert_eq!(
@@ -92,7 +93,8 @@ fn cold_park_survives_reopen_and_reaps_each_claim_once() {
     assert_eq!(
         store
             .reap_expired(3_602_000, |_| Ok(()))
-            .expect("repeat reap"),
+            .expect("repeat reap")
+            .disposed,
         0
     );
     assert_eq!(store.run(run_id).expect("run").state, "disposed");
@@ -319,23 +321,65 @@ fn failed_cleanup_stays_durable_for_a_later_retry() {
     admit(&store, run_id);
     store.park_cold(draft(run_id), 1_000).expect("park");
 
-    assert!(
-        store
-            .reap_expired(3_601_000, |_| Err("br unavailable".to_owned()))
-            .is_err()
+    let summary = store
+        .reap_expired(3_601_000, |_| Err("br unavailable".to_owned()))
+        .expect("reap pass itself succeeds even when a release fails");
+    assert_eq!(summary.disposed, 0);
+    assert_eq!(
+        summary.failed,
+        vec![(run_id.to_owned(), "br unavailable".to_owned())]
     );
     assert_eq!(store.run(run_id).expect("run").state, "cold_parked");
 
-    assert_eq!(store.reap_expired(3_601_000, |_| Ok(())).expect("retry"), 1);
+    let retry = store.reap_expired(3_601_000, |_| Ok(())).expect("retry");
+    assert_eq!(retry.disposed, 1);
+    assert!(retry.failed.is_empty());
     assert_eq!(store.run(run_id).expect("run").state, "disposed");
+}
+
+#[test]
+fn a_failing_release_does_not_block_reaping_other_runs() {
+    // Regression for louiselm-hvot: reap_expired used to propagate the first
+    // failing release out of the whole pass, so one permanently-broken claim
+    // (or an unresolvable `br`) silently blocked every other expired Run in
+    // the store, forever.
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let failing_id = "44444444-4444-4444-8444-444444444444";
+    let healthy_id = "55555555-5555-4555-8555-555555555555";
+    let mut failing_draft = draft(failing_id);
+    failing_draft.claimed_issue_ids = vec!["louiselm-failing".to_owned()];
+    let mut healthy_draft = draft(healthy_id);
+    healthy_draft.claimed_issue_ids = vec!["louiselm-healthy".to_owned()];
+    admit(&store, failing_id);
+    store.park_cold(failing_draft, 1_000).expect("park failing");
+    admit(&store, healthy_id);
+    store.park_cold(healthy_draft, 1_000).expect("park healthy");
+
+    let summary = store
+        .reap_expired(3_601_000, |action| {
+            if action.issue_id == "louiselm-failing" {
+                return Err("br unavailable".to_owned());
+            }
+            Ok(())
+        })
+        .expect("reap pass");
+
+    assert_eq!(summary.disposed, 1);
+    assert_eq!(
+        summary.failed,
+        vec![(failing_id.to_owned(), "br unavailable".to_owned())]
+    );
+    assert_eq!(store.run(failing_id).expect("run").state, "cold_parked");
+    assert_eq!(store.run(healthy_id).expect("run").state, "disposed");
 }
 
 #[test]
 fn beads_cleanup_is_bound_to_one_workspace_and_can_only_release() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    assert!(BeadsCleanup::new(temporary.path()).is_err());
+    assert!(BeadsCleanup::new(temporary.path(), "br").is_err());
     std::fs::create_dir(temporary.path().join(".beads")).expect("beads directory");
-    let cleanup = BeadsCleanup::new(temporary.path()).expect("cleanup");
+    let cleanup = BeadsCleanup::new(temporary.path(), "br").expect("cleanup");
     assert_eq!(
         cleanup.arguments(&ReapAction {
             issue_id: "louiselm-qbr.3.3".to_owned(),
@@ -350,6 +394,39 @@ fn beads_cleanup_is_bound_to_one_workspace_and_can_only_release() {
             "reaper/codex/session-123",
             "--json"
         ]
+    );
+}
+
+#[test]
+fn release_uses_the_configured_executable_not_a_bare_path_lookup() {
+    // Regression for louiselm-hvot: BeadsCleanup used to run `Command::new("br")`,
+    // a bare name resolved against the caller's PATH. A long-running daemon's PATH
+    // is not guaranteed to contain `br` at all, and that failure was silently
+    // discarded by every caller. Prove the configured executable is what actually
+    // runs, not a hardcoded "br" string.
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir(temporary.path().join(".beads")).expect("beads directory");
+    let script = temporary.path().join("fake-br");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho fake-br saw: \"$@\" 1>&2\nexit 1\n",
+    )
+    .expect("write fake br");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    let cleanup = BeadsCleanup::new(temporary.path(), &script).expect("cleanup");
+    let error = cleanup
+        .release(&ReapAction {
+            issue_id: "louiselm-x".to_owned(),
+            actor: "reaper/codex/s".to_owned(),
+        })
+        .expect_err("fake br exits nonzero");
+    assert!(
+        error.contains("fake-br saw:"),
+        "expected the configured executable to run, got: {error}"
     );
 }
 
@@ -470,7 +547,8 @@ fn resume_lease_expiry_disposes_and_warm_resume_activates_directly() {
                 released.push(action.issue_id.clone());
                 Ok(())
             })
-            .expect("reap resume"),
+            .expect("reap resume")
+            .disposed,
         1
     );
     assert_eq!(released, vec!["louiselm-qbr.3.3"]);

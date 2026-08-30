@@ -213,15 +213,34 @@ pub struct ReapAction {
     pub actor: String,
 }
 
+/// Outcome of one `reap_expired` pass, so a caller can log what happened instead of discarding it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReapSummary {
+    /// Runs whose claims all released and were transitioned to `disposed`.
+    pub disposed: usize,
+    /// Runs where at least one claim release failed this pass: `(run id, error message)`.
+    /// Left `cold_parked`/`resuming` with the failing claim(s) still incomplete for a later retry.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Narrow adapter that can only release a pre-recorded Beads claim.
 #[derive(Clone, Debug)]
 pub struct BeadsCleanup {
     workspace: PathBuf,
+    executable: PathBuf,
 }
 
 impl BeadsCleanup {
-    /// Bind cleanup to one explicit Beads workspace.
-    pub fn new(workspace: impl AsRef<Path>) -> Result<Self, RunStoreError> {
+    /// Bind cleanup to one explicit Beads workspace and an explicit `br` executable.
+    ///
+    /// The executable must be a resolvable path or absolute path, not a bare name relying on
+    /// the caller's `PATH`: a long-running daemon's `PATH` is not guaranteed to contain `br`
+    /// (e.g. a systemd unit's minimal default), and a bare-name lookup fails silently when the
+    /// caller discards this method's `Result` (louiselm-hvot).
+    pub fn new(
+        workspace: impl AsRef<Path>,
+        executable: impl Into<PathBuf>,
+    ) -> Result<Self, RunStoreError> {
         let workspace = workspace.as_ref();
         if !workspace.join(".beads").is_dir() {
             return Err(RunStoreError::Invalid(
@@ -230,12 +249,13 @@ impl BeadsCleanup {
         }
         Ok(Self {
             workspace: workspace.to_path_buf(),
+            executable: executable.into(),
         })
     }
 
     /// Release exactly the supplied claim; it cannot create or select work.
     pub fn release(&self, action: &ReapAction) -> Result<(), String> {
-        let output = Command::new("br")
+        let output = Command::new(&self.executable)
             .args(self.arguments(action))
             .current_dir(&self.workspace)
             .output()
@@ -274,9 +294,6 @@ pub enum RunStoreError {
     /// Persisted Run data is malformed.
     #[error("run data is malformed: {0}")]
     Json(#[from] serde_json::Error),
-    /// Cleanup adapter declined an action; the journal remains retryable.
-    #[error("run cleanup failed: {0}")]
-    Cleanup(String),
 }
 
 /// Filesystem-backed Run records and their retry-safe cleanup journals.
@@ -824,16 +841,18 @@ impl RunStore {
 
     /// Reap due cold Parks through a narrow, caller-supplied cleanup adapter.
     ///
-    /// A failed action is left incomplete and retried later. An adapter must make
-    /// releasing a claim idempotent because a crash after its external effect and
-    /// before this journal is written can replay that one action.
+    /// A failed action is left incomplete and retried later, and does not stop this pass from
+    /// reaping other, unrelated Runs: one permanently-failing release (a deleted issue, an
+    /// unreachable `br`) must not block reaping for the rest of the store forever
+    /// (louiselm-hvot). An adapter must make releasing a claim idempotent because a crash after
+    /// its external effect and before this journal is written can replay that one action.
     pub fn reap_expired(
         &self,
         now_ms: u64,
         mut cleanup: impl FnMut(&ReapAction) -> Result<(), String>,
-    ) -> Result<usize, RunStoreError> {
+    ) -> Result<ReapSummary, RunStoreError> {
         self.locked(|| {
-            let mut reaped = 0;
+            let mut summary = ReapSummary::default();
             for entry in fs::read_dir(&self.root)? {
                 let entry = entry?;
                 let Some(id) = entry
@@ -860,6 +879,7 @@ impl RunStore {
                 if expires_at_ms.is_none_or(|deadline| deadline > now_ms) {
                     continue;
                 }
+                let mut failure = None;
                 for index in 0..run.cleanup.len() {
                     if run.cleanup[index].completed {
                         continue;
@@ -873,17 +893,28 @@ impl RunStore {
                             })?
                         ),
                     };
-                    cleanup(&action).map_err(RunStoreError::Cleanup)?;
-                    run.cleanup[index].completed = true;
-                    advance_revision(&mut run)?;
-                    write_atomic(&self.path(&id), &run)?;
+                    match cleanup(&action) {
+                        Ok(()) => {
+                            run.cleanup[index].completed = true;
+                            advance_revision(&mut run)?;
+                            write_atomic(&self.path(&id), &run)?;
+                        }
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                }
+                if let Some(error) = failure {
+                    summary.failed.push((id, error));
+                    continue;
                 }
                 run.state = "disposed".to_owned();
                 advance_revision(&mut run)?;
                 write_atomic(&self.path(&id), &run)?;
-                reaped += 1;
+                summary.disposed += 1;
             }
-            Ok(reaped)
+            Ok(summary)
         })
     }
 

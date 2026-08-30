@@ -438,10 +438,25 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         env::var_os("LOUISELM_BEADS_WORKSPACE").filter(|value| !value.is_empty())
     {
         let runs = RunStore::new(paths.runs())?;
-        let cleanup = BeadsCleanup::new(PathBuf::from(workspace))?;
+        // A bare "br" would resolve against this process's own PATH, which a long-running
+        // daemon's environment (e.g. a systemd unit's minimal default) is not guaranteed to
+        // contain; require an explicit path rather than fail silently (louiselm-hvot).
+        let br_executable = required_environment("LOUISELM_REAL_BR")?;
+        let cleanup = BeadsCleanup::new(PathBuf::from(workspace), br_executable)?;
         thread::spawn(move || {
             loop {
-                let _ = runs.reap_expired(now_ms(), |action| cleanup.release(action));
+                match runs.reap_expired(now_ms(), |action| cleanup.release(action)) {
+                    Ok(summary) if summary.disposed > 0 || !summary.failed.is_empty() => {
+                        eprintln!(
+                            "louiselm-capture: reap pass disposed {} Run(s), {} release(s) still failing: {:?}",
+                            summary.disposed,
+                            summary.failed.len(),
+                            summary.failed
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("louiselm-capture: reap pass failed: {error}"),
+                }
                 thread::sleep(Duration::from_secs(10));
             }
         });
