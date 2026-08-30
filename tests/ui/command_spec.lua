@@ -530,6 +530,24 @@ T["command"]["copies and reports the current ACP session id"] = function()
   delete_chat_buffers()
 end
 
+T["command"]["copies the current OpenCode session id without an environment variable"] = function()
+  Command.configure({ agents = { opencode = { command = "opencode", args = {} } } })
+  local process, original_system = fake_process()
+  local original_clipboard = nvim.fn.getreg("+")
+  Command.register()
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "ses-current" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmSessionId", args = {} }, {})
+
+  MiniTest.expect.equality(nvim.fn.getreg("+"), "opencode/ses-current")
+  nvim.fn.setreg("+", original_clipboard)
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+  delete_chat_buffers()
+end
+
 T["command"]["reports when no chat session is open for LouiselmToMarkdown"] = function()
   local original_notify = nvim.notify
   local notification

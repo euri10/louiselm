@@ -290,6 +290,14 @@ controller is the `chat` upvalue of
 API; if it becomes recurring tooling, promote it to a documented accessor
 rather than encoding the upvalue walk.
 
+Use that returned value verbatim as the Beads actor when it is available. This
+is the authoritative identity of the current live Session and does not depend
+on an adapter environment variable; in particular, an OpenCode result shaped
+as `opencode/<ACP-session-id>` is usable even when the shell exports only
+`OPENCODE=1`. Do not substitute an ID copied from an old Beads record, a
+different Session, or a child-agent task. If the live query and current
+interaction context expose no attributable ID, ask before mutating Beads.
+
 ## 5. Test-Driven Development
 
 Use red-green-refactor for meaningful behavior changes: write the smallest
