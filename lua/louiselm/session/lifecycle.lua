@@ -56,6 +56,7 @@ local nvim = vim
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
+---@field prompt_progress integer Meaningful updates observed during the active prompt.
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
@@ -87,8 +88,8 @@ local DEFAULT_START_TIMEOUT_MS = 20000
 
 -- A provider failure can leave an ACP peer alive without resolving the
 -- session/prompt request (as OpenCode Go does when its usage limit is reached).
--- Bound the active turn so that peer defect cannot leave the Session prompting
--- forever (louiselm-5zhl).
+-- Bound inactivity without killing a long turn that is still making progress
+-- (louiselm-5zhl, louiselm-2p53).
 local DEFAULT_PROMPT_TIMEOUT_MS = 300000
 
 -- Keep only the most recent stderr output so an agent that prints
@@ -243,11 +244,16 @@ end
 ---@param self louiselm.session.Session
 local function schedule_prompt_timeout(self)
   local turn = self.state.current_turn
+  local progress = self.prompt_progress
   self.schedule(DEFAULT_PROMPT_TIMEOUT_MS, function()
     if self.state.current_turn ~= turn or not prompt_active(self) then
       return
     end
-    fail(self, "ACP session/prompt did not complete within " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms")
+    if self.prompt_progress ~= progress then
+      schedule_prompt_timeout(self)
+      return
+    end
+    fail(self, "ACP session/prompt made no progress within " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms")
   end)
 end
 
@@ -295,6 +301,17 @@ local function handle_notification(self, message)
   end
 
   local update_type = update.sessionUpdate
+  if
+    prompt_active(self)
+    and (
+      update_type == "agent_message_chunk"
+      or update_type == "agent_thought_chunk"
+      or update_type == "tool_call"
+      or update_type == "tool_call_update"
+    )
+  then
+    self.prompt_progress = self.prompt_progress + 1
+  end
   if update_type == "agent_message_chunk" then
     emit(self, "chunk", update)
   elseif update_type == "user_message_chunk" then
@@ -713,6 +730,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,
+    prompt_progress = 0,
     schedule = options.schedule or function(delay_ms, callback)
       nvim.defer_fn(callback, delay_ms)
     end,
@@ -827,6 +845,7 @@ function Session:prompt(prompt, callback)
   set_status(self, "prompting")
   self.state.current_turn = self.state.current_turn + 1
   self.turn_done_turn = nil
+  self.prompt_progress = 0
   self.prompt_callback = callback
   local request_id, request_error = client:prompt(
     { sessionId = self.acp_session_id, prompt = prompt },

@@ -130,6 +130,7 @@ string|table
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
 - `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string)):(string|number)?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
+- `prompt_progress: integer` -- Meaningful updates observed during the active prompt.
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
 - `schedule: fun(delay_ms: integer, callback: fun())` -- Testable scheduling boundary.

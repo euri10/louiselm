@@ -2080,11 +2080,48 @@ T["new"]["fails a prompt that never receives a terminal ACP response"] = functio
   scheduled[2].callback()
 
   MiniTest.expect.equality(session:inspect().status, "error")
-  MiniTest.expect.equality(event.data.message, "ACP session/prompt did not complete within 300000ms")
+  MiniTest.expect.equality(event.data.message, "ACP session/prompt made no progress within 300000ms")
   MiniTest.expect.equality(completion, {
     result = nil,
-    error = "ACP session/prompt did not complete within 300000ms",
+    error = "ACP session/prompt made no progress within 300000ms",
   })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["keeps a prompt alive when a tool completes before the timeout"] = function()
+  local processes, original_system = fake_processes()
+  local scheduled = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    schedule = function(delay_ms, callback)
+      scheduled[#scheduled + 1] = { delay_ms = delay_ms, callback = callback }
+    end,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+  local request_id = assert(session:prompt("hello"))
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "tool_call_update",
+      toolCallId = "exec-8cc6a77c-9d77-4c32-9cc6-6b543d12e1bb",
+      status = "completed",
+    },
+  })
+  scheduled[2].callback()
+
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(#scheduled, 3)
+  MiniTest.expect.equality(scheduled[3].delay_ms, 300000)
+
+  respond(process, request_id, { stopReason = "end_turn" })
+  scheduled[3].callback()
+  MiniTest.expect.equality(session:inspect().status, "ready")
 
   api:dispose()
   restore_processes(original_system)
