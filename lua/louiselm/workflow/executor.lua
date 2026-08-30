@@ -4,17 +4,23 @@ local Escape = require("louiselm.workflow.escape")
 local Schema = require("louiselm.workflow.schema")
 local Validate = require("louiselm.workflow.validate")
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 local M = {}
 local Executor = {}
 Executor.__index = Executor
 
 ---@alias louiselm.workflow.LedgerResult "consumed"|"reserved"|"pending"|"exhausted"
 
+--- The ledger is a Run-owned generated-work broker reached over a subprocess, so
+--- every operation is asynchronous. A synchronous verdict would require blocking
+--- the main loop, which this project forbids outright.
 ---@class louiselm.workflow.ExecutorLedger
----@field consume? fun(mutation_id: string, kind: string, units: integer): louiselm.workflow.LedgerResult, string?
----@field reserve? fun(mutation_id: string, kind: string, units: integer): louiselm.workflow.LedgerResult, string?
----@field confirm? fun(mutation_id: string, output_id: string): boolean, string?
----@field release? fun(mutation_id: string): boolean, string?
+---@field consume? fun(mutation_id: string, kind: string, units: integer, callback: fun(result: louiselm.workflow.LedgerResult?, error_message?: string))
+---@field reserve? fun(mutation_id: string, kind: string, units: integer, callback: fun(result: louiselm.workflow.LedgerResult?, error_message?: string))
+---@field confirm? fun(mutation_id: string, output_id: string, callback: fun(confirmed: boolean, error_message?: string))
+---@field release? fun(mutation_id: string, callback: fun(released: boolean, error_message?: string))
 
 ---@class louiselm.workflow.ExecutorOptions
 ---@field ledger? louiselm.workflow.ExecutorLedger Run-owned generated-work ledger.
@@ -36,16 +42,17 @@ Executor.__index = Executor
 ---@field history louiselm.workflow.TransitionResult[]
 ---@field generator { mutation_id: string, maximum: integer, outputs: integer }?
 ---@field ledger louiselm.workflow.ExecutorLedger
+---@field pending boolean Whether a ledger operation is in flight.
 ---@field current_stage fun(self: louiselm.workflow.WorkflowExecutor): string?
 ---@field inspect fun(self: louiselm.workflow.WorkflowExecutor): table
----@field advance fun(self: louiselm.workflow.WorkflowExecutor, outcome_name: string, mutation_id?: string): louiselm.workflow.TransitionResult?, string?
----@field begin_generator fun(self: louiselm.workflow.WorkflowExecutor, mutation_id: string): boolean, string?
----@field record_generator_output fun(self: louiselm.workflow.WorkflowExecutor, output_id: string): boolean, string?
----@field end_generator fun(self: louiselm.workflow.WorkflowExecutor): boolean, string?
+---@field advance fun(self: louiselm.workflow.WorkflowExecutor, outcome_name: string, mutation_id: string?, callback: fun(result: louiselm.workflow.TransitionResult?, error_message?: string)): boolean, string?
+---@field begin_generator fun(self: louiselm.workflow.WorkflowExecutor, mutation_id: string, callback: fun(started: boolean, error_message?: string)): boolean, string?
+---@field record_generator_output fun(self: louiselm.workflow.WorkflowExecutor, output_id: string, callback: fun(confirmed: boolean, error_message?: string)): boolean, string?
+---@field end_generator fun(self: louiselm.workflow.WorkflowExecutor, callback: fun(completed: boolean, error_message?: string)): boolean, string?
 ---@field park fun(self: louiselm.workflow.WorkflowExecutor): boolean, string?
 ---@field cancel fun(self: louiselm.workflow.WorkflowExecutor): boolean, string?
 ---@field resume fun(self: louiselm.workflow.WorkflowExecutor): boolean, string?
----@field dispose fun(self: louiselm.workflow.WorkflowExecutor): boolean, string?
+---@field dispose fun(self: louiselm.workflow.WorkflowExecutor, callback: fun(disposed: boolean, error_message?: string)): boolean, string?
 
 ---@param value unknown
 ---@return boolean
@@ -115,6 +122,50 @@ local function active(executor)
   return true
 end
 
+---Finish one executor operation on the main loop and release the in-flight guard.
+---
+---Every operation settles here, including the ones that never reach the ledger,
+---so a caller's callback is always asynchronous. A callback that is sometimes
+---synchronous and sometimes deferred makes ordering unreasonable at every call
+---site, which is a worse defect than the extra loop turn costs.
+---@param executor louiselm.workflow.WorkflowExecutor
+---@param callback fun(first: unknown, second: string?)
+---@param first unknown
+---@param second? string
+local function settle(executor, callback, first, second)
+  nvim.schedule(function()
+    executor.pending = false
+    callback(first, second)
+  end)
+end
+
+---@param executor louiselm.workflow.WorkflowExecutor
+---@param callback unknown
+---@return boolean ready
+---@return string? error_message
+local function ready(executor, callback)
+  if type(callback) ~= "function" then
+    return false, "executor operation requires a callback"
+  end
+  if executor.pending then
+    return false, "a ledger operation is already in flight"
+  end
+  return true
+end
+
+---Release a Generator's outstanding reservation, normalizing the ledger's reply.
+---@param release fun(mutation_id: string, callback: fun(released: boolean, error_message?: string))
+---@param mutation_id string
+---@param callback fun(released: boolean, error_message?: string)
+local function release_reservation(release, mutation_id, callback)
+  release(mutation_id, function(released, release_error)
+    if released == true then
+      return callback(true)
+    end
+    return callback(false, release_error or "Generator reservation could not be released")
+  end)
+end
+
 ---@param executor louiselm.workflow.WorkflowExecutor
 ---@param outcome table
 ---@param from string
@@ -152,14 +203,15 @@ end
 ---@param outcome_name string
 ---@param mutation_id? string
 ---@return louiselm.workflow.TransitionResult?, string?
-local function apply_automatic_back_edge(executor, stage_name, outcome, outcome_name, mutation_id)
+---@param callback fun(result: louiselm.workflow.TransitionResult?, error_message?: string)
+local function apply_automatic_back_edge(executor, stage_name, outcome, outcome_name, mutation_id, callback)
   local resolver = type(outcome.resolver) == "string" and outcome.resolver or Schema.DEFAULT_RESOLVER
   if outcome["back-edge"] ~= true or Schema.AUTOMATIC_RESOLVERS[resolver] ~= true then
-    return apply_transition(executor, outcome, stage_name, outcome_name, false)
+    return settle(executor, callback, apply_transition(executor, outcome, stage_name, outcome_name, false))
   end
 
   if type(mutation_id) ~= "string" or mutation_id == "" then
-    return nil, "automatic back-edge requires a mutation id"
+    return settle(executor, callback, nil, "automatic back-edge requires a mutation id")
   end
   local maximum = outcome["max-iterations"]
   local edge_key = stage_name .. "\0" .. outcome_name
@@ -169,24 +221,33 @@ local function apply_automatic_back_edge(executor, stage_name, outcome, outcome_
     local exhaustion_name = outcome["on-exhausted"]
     local exhaustion = find_outcome(stage, exhaustion_name)
     if exhaustion == nil then
-      return nil, "automatic back-edge exhaustion outcome is not declared"
+      return settle(executor, callback, nil, "automatic back-edge exhaustion outcome is not declared")
     end
-    return apply_transition(executor, exhaustion, stage_name, exhaustion_name, true, outcome_name)
+    local routed = apply_transition(executor, exhaustion, stage_name, exhaustion_name, true, outcome_name)
+    return settle(executor, callback, routed)
   end
 
   if type(executor.ledger.consume) ~= "function" then
-    return nil, "workflow Run has no generated-work ledger"
+    return settle(executor, callback, nil, "workflow Run has no generated-work ledger")
   end
-  local charge, charge_error = executor.ledger.consume(mutation_id, "back_edge", 1)
-  if charge == "exhausted" then
-    executor.status = "parked"
-    return nil, charge_error or "workflow Run budget exhausted"
-  end
-  if charge ~= "consumed" then
-    return nil, charge_error or "back-edge budget charge is pending"
-  end
-  executor.iterations[edge_key] = used + 1
-  return apply_transition(executor, outcome, stage_name, outcome_name, false)
+  -- The unit is charged before the traversal, never after: a crash between the
+  -- charge and the move costs one unit of budget, while the reverse order would
+  -- let an unbounded loop run for free.
+  executor.pending = true
+  executor.ledger.consume(mutation_id, "back_edge", 1, function(charge, charge_error)
+    if executor.status == "disposed" then
+      return settle(executor, callback, nil, "workflow Run is disposed")
+    end
+    if charge == "exhausted" then
+      executor.status = "parked"
+      return settle(executor, callback, nil, charge_error or "workflow Run budget exhausted")
+    end
+    if charge ~= "consumed" then
+      return settle(executor, callback, nil, charge_error or "back-edge budget charge is pending")
+    end
+    executor.iterations[edge_key] = used + 1
+    return settle(executor, callback, apply_transition(executor, outcome, stage_name, outcome_name, false))
+  end)
 end
 
 ---Create an executor from a workflow's discovered stage manifest.
@@ -227,6 +288,7 @@ function M.new(workflow, manifest, options)
     iterations = {},
     history = {},
     generator = nil,
+    pending = false,
     ledger = ledger,
   }, Executor)
 end
@@ -269,37 +331,48 @@ end
 ---@param self louiselm.workflow.WorkflowExecutor
 ---@param outcome_name string Named outcome selected by the current stage.
 ---@param mutation_id? string Idempotency identity for an automatic back-edge charge.
----@return louiselm.workflow.TransitionResult? result
----@return string? error_message
-function Executor:advance(outcome_name, mutation_id)
+---@param callback fun(result: louiselm.workflow.TransitionResult?, error_message?: string)
+---@return boolean started Whether the transition was accepted for evaluation.
+---@return string? error_message Reason the transition was refused outright.
+function Executor:advance(outcome_name, mutation_id, callback)
+  local is_ready, ready_error = ready(self, callback)
+  if not is_ready then
+    return false, ready_error
+  end
   local is_active, active_error = active(self)
   if not is_active then
-    return nil, active_error
+    return false, active_error
   end
   if self.generator ~= nil then
-    return nil, "finish the active Generator before advancing the workflow"
+    return false, "finish the active Generator before advancing the workflow"
   end
   if not non_empty_string(outcome_name) then
-    return nil, "outcome name must be a non-empty string"
+    return false, "outcome name must be a non-empty string"
   end
   local stage_name = self.current_stage_name
   if stage_name == nil then
-    return nil, "workflow Run has no current stage"
+    return false, "workflow Run has no current stage"
   end
   local stage = self.manifest[stage_name]
   local outcome = find_outcome(stage, outcome_name)
   if outcome == nil then
-    return nil, string.format("outcome '%s' is not declared by stage '%s'", outcome_name, stage_name)
+    return false, string.format("outcome '%s' is not declared by stage '%s'", outcome_name, stage_name)
   end
-  return apply_automatic_back_edge(self, stage_name, outcome, outcome_name, mutation_id)
+  apply_automatic_back_edge(self, stage_name, outcome, outcome_name, mutation_id, callback)
+  return true
 end
 
 ---Reserve the declared maximum for a work-producing stage Generator.
 ---@param self louiselm.workflow.WorkflowExecutor
 ---@param mutation_id string Idempotency identity for the reservation.
----@return boolean started
+---@param callback fun(started: boolean, error_message?: string)
+---@return boolean accepted
 ---@return string? error_message
-function Executor:begin_generator(mutation_id)
+function Executor:begin_generator(mutation_id, callback)
+  local is_ready, ready_error = ready(self, callback)
+  if not is_ready then
+    return false, ready_error
+  end
   local is_active, active_error = active(self)
   if not is_active then
     return false, active_error
@@ -318,68 +391,98 @@ function Executor:begin_generator(mutation_id)
   if type(self.ledger.reserve) ~= "function" then
     return false, "workflow Run has no generated-work ledger"
   end
-  local reservation, reserve_error = self.ledger.reserve(mutation_id, "skill_generator", maximum)
-  if reservation == "exhausted" then
-    self.status = "parked"
-    return false, reserve_error or "workflow Run budget exhausted"
-  end
-  if reservation ~= "reserved" then
-    return false, reserve_error or "Generator budget reservation is pending"
-  end
-  self.generator = { mutation_id = mutation_id, maximum = maximum, outputs = 0 }
+  self.pending = true
+  self.ledger.reserve(mutation_id, "skill_generator", maximum, function(reservation, reserve_error)
+    if self.status == "disposed" then
+      return settle(self, callback, false, "workflow Run is disposed")
+    end
+    if reservation == "exhausted" then
+      self.status = "parked"
+      return settle(self, callback, false, reserve_error or "workflow Run budget exhausted")
+    end
+    if reservation ~= "reserved" then
+      return settle(self, callback, false, reserve_error or "Generator budget reservation is pending")
+    end
+    -- Only a granted reservation opens the Generator, so a refused one leaves
+    -- no generator for record_generator_output to charge against.
+    self.generator = { mutation_id = mutation_id, maximum = maximum, outputs = 0 }
+    return settle(self, callback, true)
+  end)
   return true
 end
 
 ---Confirm one output from the active Generator.
 ---@param self louiselm.workflow.WorkflowExecutor
 ---@param output_id string External identity of the generated output.
----@return boolean confirmed
+---@param callback fun(confirmed: boolean, error_message?: string)
+---@return boolean accepted
 ---@return string? error_message
-function Executor:record_generator_output(output_id)
+function Executor:record_generator_output(output_id, callback)
+  local is_ready, ready_error = ready(self, callback)
+  if not is_ready then
+    return false, ready_error
+  end
   local is_active, active_error = active(self)
   if not is_active then
     return false, active_error
   end
-  if self.generator == nil then
+  local generator = self.generator
+  if generator == nil then
     return false, "no Generator is active"
   end
   if not non_empty_string(output_id) then
     return false, "Generator output id must be a non-empty string"
   end
-  if self.generator.outputs >= self.generator.maximum then
+  if generator.outputs >= generator.maximum then
     return false, "Generator output exceeds its declared maximum"
   end
-  if type(self.ledger.confirm) ~= "function" then
+  local confirm = self.ledger.confirm
+  if type(confirm) ~= "function" then
     return false, "workflow Run has no generated-work ledger"
   end
-  local confirmed, confirm_error = self.ledger.confirm(self.generator.mutation_id, output_id)
-  if not confirmed then
-    return false, confirm_error or "Generator output could not be confirmed"
-  end
-  self.generator.outputs = self.generator.outputs + 1
+  self.pending = true
+  confirm(generator.mutation_id, output_id, function(confirmed, confirm_error)
+    if self.status == "disposed" or self.generator ~= generator then
+      return settle(self, callback, false, "workflow Run is disposed")
+    end
+    if not confirmed then
+      return settle(self, callback, false, confirm_error or "Generator output could not be confirmed")
+    end
+    generator.outputs = generator.outputs + 1
+    return settle(self, callback, true)
+  end)
   return true
 end
 
 ---Release unused capacity and finish the active Generator.
 ---@param self louiselm.workflow.WorkflowExecutor
----@return boolean completed
+---@param callback fun(completed: boolean, error_message?: string)
+---@return boolean accepted
 ---@return string? error_message
-function Executor:end_generator()
+function Executor:end_generator(callback)
+  local is_ready, ready_error = ready(self, callback)
+  if not is_ready then
+    return false, ready_error
+  end
   local is_active, active_error = active(self)
   if not is_active then
     return false, active_error
   end
-  if self.generator == nil then
+  local generator = self.generator
+  if generator == nil then
     return false, "no Generator is active"
   end
-  if type(self.ledger.release) ~= "function" then
+  local release = self.ledger.release
+  if type(release) ~= "function" then
     return false, "workflow Run has no generated-work ledger"
   end
-  local released, release_error = self.ledger.release(self.generator.mutation_id)
-  if not released then
-    return false, release_error or "Generator reservation could not be released"
-  end
-  self.generator = nil
+  self.pending = true
+  release_reservation(release, generator.mutation_id, function(released, release_error)
+    if released then
+      self.generator = nil
+    end
+    return settle(self, callback, released, release_error)
+  end)
   return true
 end
 
@@ -434,25 +537,40 @@ function Executor:resume()
   return true
 end
 
----Dispose the workflow and release a pending Generator reservation.
+---Dispose the workflow and release any outstanding Generator reservation.
+---
+---Disposal is final regardless of what the ledger says: the status is set before
+---the release is attempted, so a ledger that is already unreachable cannot hold
+---a workflow open. A failed release is reported to the caller and leaves the
+---capacity for the service-side reaper, which is the component that owns
+---reclaiming a reservation nobody is coming back for.
 ---@param self louiselm.workflow.WorkflowExecutor
----@return boolean disposed
+---@param callback fun(disposed: boolean, error_message?: string)
+---@return boolean accepted
 ---@return string? error_message
-function Executor:dispose()
+function Executor:dispose(callback)
+  if type(callback) ~= "function" then
+    return false, "executor operation requires a callback"
+  end
   if self.status == "disposed" then
+    settle(self, callback, true)
     return true
   end
-  if self.generator ~= nil then
-    if type(self.ledger.release) ~= "function" then
-      return false, "workflow Run has no generated-work ledger"
-    end
-    local released, release_error = self.ledger.release(self.generator.mutation_id)
-    if not released then
-      return false, release_error or "Generator reservation could not be released"
-    end
-    self.generator = nil
-  end
+  local generator = self.generator
   self.status = "disposed"
+  self.generator = nil
+  if generator == nil then
+    settle(self, callback, true)
+    return true
+  end
+  local release = self.ledger.release
+  if type(release) ~= "function" then
+    settle(self, callback, false, "workflow Run has no generated-work ledger")
+    return true
+  end
+  release_reservation(release, generator.mutation_id, function(released, release_error)
+    return settle(self, callback, released, release_error)
+  end)
   return true
 end
 

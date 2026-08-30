@@ -13,6 +13,7 @@ local Run = require("louiselm.workflow.run")
 local Escape = require("louiselm.workflow.escape")
 local Cache = require("louiselm.workflow.cache")
 local Executor = require("louiselm.workflow.executor")
+local Ledger = require("louiselm.workflow.ledger")
 
 local M = {}
 
@@ -59,6 +60,7 @@ M.synthesize = Escape.apply
 M.new_run = Run.new
 M.new_executor = Executor.new
 M.new_cache = Cache.new
+M.new_ledger = Ledger.new
 
 ---Validate through a caller-owned pure result cache.
 ---@param cache louiselm.workflow.Cache Cache isolated to the caller's lifecycle.

@@ -374,6 +374,16 @@ a comment explaining why.
 - Repeated setup/dispose cycles must not leak handlers, buffers, or processes.
 - Avoid circular module dependencies. Split modules when responsibilities
   diverge, not in anticipation of future growth.
+- A seam that will eventually be backed by process, socket, or filesystem I/O
+  takes an asynchronous signature from the start, even while its only
+  implementation is an in-memory double. A double that answers synchronously
+  freezes a synchronous contract into the interface, and nothing surfaces the
+  mistake until the real backend arrives and the signature cannot express it —
+  at which point every caller written against it has to change too. Give the
+  double the production callback shape as well, per section 5.
+  `louiselm-qbr.3.2.6.5.2` rewrote `workflow/executor.lua`'s just-merged ledger
+  API for exactly this reason; it was cheap only because the seam still had zero
+  production callers.
 
 Core modules never notify, print, open UI, or choose presentation. They return
 structured errors and typed events; setup, health, and UI modules display them.
