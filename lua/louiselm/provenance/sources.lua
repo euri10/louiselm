@@ -71,6 +71,12 @@ function M.parse_git_log(output)
     end
     local record = output:sub(cursor, separator - 1)
     cursor = separator + 1
+    -- git appends its own newline after every formatted record (including the
+    -- last), independent of the trailing %x1e in LOG_FORMAT; skip it so it is
+    -- not mistaken for the start of a new, incomplete record.
+    if output:sub(cursor, cursor) == "\n" then
+      cursor = cursor + 1
+    end
     if record ~= "" then
       local field_separator = record:find(FIELD_SEPARATOR, 1, true)
       if field_separator == nil then

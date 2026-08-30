@@ -84,6 +84,47 @@ T["git log"]["reports process failure as structured callback error"] = function(
   assert(ok, error_message)
 end
 
+-- Captured from `git log -s --format=fuller` and `git log --format=%H%x00%B%x00%x1e`
+-- against 097bcd6d2f5c6cb021a0ff31f78280d9c02a3d5e in this repository
+-- (louiselm-wi0y). Git appends its own newline after every formatted record,
+-- including the final one, so the record separator is followed by `\n` here.
+T["git log"]["parses a single commit whose record separator is followed by git's trailing newline"] = function()
+  local output = "097bcd6d2f5c6cb021a0ff31f78280d9c02a3d5e"
+    .. string.char(0)
+    .. "fix(provenance): example commit\n"
+    .. string.char(0)
+    .. string.char(30)
+    .. "\n"
+  local commits, parse_error = Sources.parse_git_log(output)
+  MiniTest.expect.equality(parse_error, nil)
+  MiniTest.expect.equality(commits, {
+    { id = "097bcd6d2f5c6cb021a0ff31f78280d9c02a3d5e", message = "fix(provenance): example commit\n" },
+  })
+end
+
+T["git log"]["parses multiple commits when every record separator is followed by git's trailing newline"] = function()
+  local output = table.concat({
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      .. string.char(0)
+      .. "first\n"
+      .. string.char(0)
+      .. string.char(30)
+      .. "\n",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      .. string.char(0)
+      .. "second\n"
+      .. string.char(0)
+      .. string.char(30)
+      .. "\n",
+  })
+  local commits, parse_error = Sources.parse_git_log(output)
+  MiniTest.expect.equality(parse_error, nil)
+  MiniTest.expect.equality(commits, {
+    { id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", message = "first\n" },
+    { id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", message = "second\n" },
+  })
+end
+
 T["git log"]["rejects missing inputs before spawning"] = function()
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
