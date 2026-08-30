@@ -110,6 +110,14 @@ Do not claim, implement, or commit work unless asked to proceed.
   implementation for a focused grill-me session.
 - Run `br sync --flush-only` before committing, and commit `.beads/` alongside
   the work it describes.
+- Stage the paths you changed by name. Never `git add -A`/`git add .`. Other
+  sessions work this tree at the same time, and a blanket stage silently sweeps
+  their in-flight edits into your commit — the work is not lost, but it lands
+  under someone else's message and their own commit then looks incomplete. This
+  happened in commit `7b7dd90`, which absorbed a `tests/session/api_spec.lua`
+  case belonging to the fix committed separately as `c5a7046`. Run
+  `git status --short` before staging and account for every path you did not
+  write.
 
 ### Project vocabulary
 
