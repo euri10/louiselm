@@ -1,4 +1,3 @@
-local Deprecate = require("louiselm.schema.deprecate")
 local Config = require("louiselm.config")
 local Health = require("louiselm.health")
 local Schema = require("louiselm.schema")
@@ -35,12 +34,6 @@ function M.setup(config)
     return false, report
   end
 
-  for _, warning in ipairs(Deprecate.find(schema, config)) do
-    -- Neovim provides the severity constants used by its notification API.
-    ---@diagnostic disable-next-line: undefined-global
-    local warning_level = vim.log.levels.WARN
-    notify(warning.message, warning_level)
-  end
   local registered, registration_error = Health.configure(config, schema)
   if not registered then
     error(registration_error)

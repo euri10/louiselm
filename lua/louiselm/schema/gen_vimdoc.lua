@@ -149,14 +149,6 @@ emit_field = function(lines, field_name, node, path)
     local description = node.description:gsub("[\r\n]+", " ")
     append_wrapped(lines, description, "    Description: ", "    ")
   end
-  if node.deprecated ~= nil then
-    append_wrapped(
-      lines,
-      string.format("%s; migrate to '%s'", node.deprecated.message, node.deprecated.migration),
-      "    Deprecated: ",
-      "    "
-    )
-  end
   emit_nested_fields(lines, node, path)
 end
 

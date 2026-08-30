@@ -7,10 +7,6 @@ local T = MiniTest.new_set()
 T["generate"] = MiniTest.new_set()
 
 T["generate"]["emits standard help structure and all fields"] = function()
-  local deprecation = assert(Schema.deprecated("old_name", {
-    message = "Use name instead.",
-    migration = "name",
-  }))
   local schema = assert(Schema.define({
     agent = {
       type = "table",
@@ -20,7 +16,6 @@ T["generate"]["emits standard help structure and all fields"] = function()
       },
     },
     name = { type = "string", default = "louiselm", description = "Display name." },
-    old_name = { type = "string", deprecated = deprecation },
   }))
 
   local output = Generator.generate(schema)
@@ -31,7 +26,6 @@ T["generate"]["emits standard help structure and all fields"] = function()
   MiniTest.expect.equality(output:find("*louiselm-config-agent-command*", 1, true) ~= nil, true)
   MiniTest.expect.equality(output:find("Type: table", 1, true) ~= nil, true)
   MiniTest.expect.equality(output:find('Default: "louiselm"', 1, true) ~= nil, true)
-  MiniTest.expect.equality(output:find("Deprecated: Use name instead.; migrate to 'name'", 1, true) ~= nil, true)
   MiniTest.expect.equality(output:find("Display name.", 1, true) ~= nil, true)
   MiniTest.expect.equality(output:sub(-1), "\n")
 end
