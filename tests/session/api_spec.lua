@@ -1969,6 +1969,45 @@ T["new"]["ignores a stale start timeout after the Session becomes ready"] = func
   restore_processes(original_system)
 end
 
+T["new"]["fails a prompt that never receives a terminal ACP response"] = function()
+  local processes, original_system = fake_processes()
+  local scheduled = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    schedule = function(delay_ms, callback)
+      scheduled[#scheduled + 1] = { delay_ms = delay_ms, callback = callback }
+    end,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+
+  local completion
+  local event
+  session:on(function(value)
+    if value.type == "error" then
+      event = value
+    end
+  end)
+  assert(session:prompt("hello", function(result, err)
+    completion = { result = result, error = err }
+  end))
+
+  MiniTest.expect.equality(#scheduled, 2)
+  scheduled[2].callback()
+
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(event.data.message, "ACP session/prompt did not complete within 300000ms")
+  MiniTest.expect.equality(completion, {
+    result = nil,
+    error = "ACP session/prompt did not complete within 300000ms",
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["honors a custom start_timeout_ms option"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))

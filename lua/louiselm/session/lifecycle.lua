@@ -85,6 +85,12 @@ local ACP_RESOURCE_NOT_FOUND = -32002
 -- no error (louiselm-8hau).
 local DEFAULT_START_TIMEOUT_MS = 20000
 
+-- A provider failure can leave an ACP peer alive without resolving the
+-- session/prompt request (as OpenCode Go does when its usage limit is reached).
+-- Bound the active turn so that peer defect cannot leave the Session prompting
+-- forever (louiselm-5zhl).
+local DEFAULT_PROMPT_TIMEOUT_MS = 300000
+
 -- Keep only the most recent stderr output so an agent that prints
 -- continuously cannot grow this without bound; the failure text that matters
 -- is almost always the last thing printed before exit.
@@ -217,6 +223,25 @@ local function fail(self, message)
       callback(nil, message)
     end
   end
+end
+
+---@param self louiselm.session.Session
+---@return boolean active
+local function prompt_active(self)
+  return self.state.status == "prompting"
+    or self.state.status == "waiting_permission"
+    or self.state.status == "cancelling"
+end
+
+---@param self louiselm.session.Session
+local function schedule_prompt_timeout(self)
+  local turn = self.state.current_turn
+  self.schedule(DEFAULT_PROMPT_TIMEOUT_MS, function()
+    if self.state.current_turn ~= turn or not prompt_active(self) then
+      return
+    end
+    fail(self, "ACP session/prompt did not complete within " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms")
+  end)
 end
 
 ---@param self louiselm.session.Session
@@ -803,6 +828,7 @@ function Session:prompt(prompt, callback)
     fail(self, message)
     return nil, message
   end
+  schedule_prompt_timeout(self)
   return request_id
 end
 
