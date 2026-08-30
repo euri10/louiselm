@@ -3189,9 +3189,9 @@ function Chat:park()
       end
 
       local run = session.owner_run
-      local run_id = run and run.park_record and run.park_record.id or park_run_id()
+      local run_id = run and run.id or park_run_id()
       if run == nil then
-        run = assert(Workflow.new_run())
+        run = assert(Workflow.new_run({ id = run_id }))
       end
 
       local function cold_park()
@@ -4066,6 +4066,7 @@ function Chat:resume_park()
               return
             end
             local run, run_error = Workflow.new_run({
+              id = selected.id,
               claims = selected.claims,
               generated_work = selected.generated_work,
             })

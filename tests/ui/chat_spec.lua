@@ -263,6 +263,69 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   MiniTest.expect.equality(session.owner_run.status, "parked")
 end
 
+T["chat"]["reuses the admitted Run id after a cold Park attempt fails validation"] = function()
+  -- Regression for louiselm-psz9: park_cold's own validation (a Session
+  -- that has not sent a prompt yet) can reject the first Park attempt
+  -- after the Run was already admitted and attached. Chat:park had no
+  -- way to recall that admitted id on retry, so it minted a fresh one
+  -- the capture-service had never admitted -- "Run was not found".
+  local session = fake_session("park-session", "codex")
+  session.state.acp_session_id = "acp-session"
+  session.state.working_dir = "/tmp/project"
+  session.state.current_turn = 0
+  session.client = { agent_capabilities = { loadSession = true } }
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+
+  local original_system = nvim.system
+  local original_admit = WorkflowService.admit
+  local original_attach = WorkflowService.attach
+  local original_park = WorkflowService.park
+  local admitted_ids = {}
+  local parked_record
+  rawset(nvim, "system", function(_, _, callback)
+    callback({ code = 0, stderr = "", stdout = '{"issues":[]}' })
+    return {}
+  end)
+  rawset(WorkflowService, "admit", function(options, callback)
+    admitted_ids[#admitted_ids + 1] = options.id
+    callback("token")
+    return true
+  end)
+  rawset(WorkflowService, "attach", function(_, callback)
+    callback(true)
+    return true
+  end)
+  rawset(WorkflowService, "park", function(record, callback)
+    parked_record = record
+    callback(true)
+    return true
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "system", original_system)
+    rawset(WorkflowService, "admit", original_admit)
+    rawset(WorkflowService, "attach", original_attach)
+    rawset(WorkflowService, "park", original_park)
+    chat:dispose()
+  end)
+
+  assert(chat:park())
+  nvim.wait(50, function()
+    return #admitted_ids > 0
+  end)
+  MiniTest.expect.equality(#admitted_ids, 1)
+  MiniTest.expect.equality(session.owner_run ~= nil, true)
+  MiniTest.expect.equality(parked_record, nil)
+
+  session.state.current_turn = 1
+  assert(chat:park())
+  nvim.wait(50, function()
+    return parked_record ~= nil
+  end)
+  MiniTest.expect.equality(#admitted_ids, 1)
+  MiniTest.expect.equality(parked_record.id, admitted_ids[1])
+end
+
 T["chat"]["reconstructs the Run budget and claims after cold resume"] = function()
   local restored = fake_session("loaded-session", "codex")
   local api = fake_api()

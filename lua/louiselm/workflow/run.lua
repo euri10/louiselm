@@ -15,6 +15,7 @@ local nvim = vim
 ---@field inspect fun(self: louiselm.workflow.RunWorker): table
 
 ---@class louiselm.workflow.RunOptions
+---@field id? string Durable Run UUID this Run was admitted (or resumed) under.
 ---@field session_api? louiselm.session.Api API used to create owned Sessions.
 ---@field cancellation_timeout_ms? integer Maximum time to wait for cooperative acknowledgment.
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -24,6 +25,7 @@ local nvim = vim
 ---@field generated_work? { ceiling: integer, consumed: integer, reserved: integer } Generated-work accounting restored from a durable Run.
 
 ---@class louiselm.workflow.Run
+---@field id? string Durable Run UUID this Run was admitted (or resumed) under.
 ---@field session_api? louiselm.session.Api
 ---@field cancellation_timeout_ms integer
 ---@field schedule fun(delay_ms: integer, callback: fun())
@@ -167,6 +169,9 @@ function M.new(options)
     return nil, "Run options must be a table"
   end
   ---@cast options louiselm.workflow.RunOptions
+  if options.id ~= nil and (type(options.id) ~= "string" or options.id == "") then
+    return nil, "id must be a non-empty string"
+  end
   local timeout = options.cancellation_timeout_ms or 1000
   if type(timeout) ~= "number" or timeout < 0 or timeout % 1 ~= 0 then
     return nil, "cancellation_timeout_ms must be a non-negative integer"
@@ -196,6 +201,7 @@ function M.new(options)
     generated_work = copied
   end
   local run = setmetatable({
+    id = options.id,
     session_api = options.session_api,
     cancellation_timeout_ms = timeout,
     schedule = schedule,
