@@ -92,6 +92,34 @@ local function copy(value)
   return result
 end
 
+-- Claude's SDK default for recent models streams signature-only "thinking"
+-- blocks (`display = "omitted"`, empty text), so a Claude Session never shows
+-- a `[thinking]` fold unless something requests summarized display. Default
+-- it on for the claude transcript layout, not the agent name, per the
+-- layout-keyed convention `session/locator.lua` established: the user's
+-- config key for an agent is an arbitrary label, not a stable identity.
+local CLAUDE_THINKING_DEFAULT = { type = "adaptive", display = "summarized" }
+
+---@param definition louiselm.agent.Definition
+---@return table? meta
+local function session_meta(definition)
+  local options = definition.options
+  local meta = type(options) == "table" and options._meta or nil
+  if definition.transcript_layout ~= "claude" then
+    return meta
+  end
+  local claude_code = type(meta) == "table" and meta.claudeCode or nil
+  local claude_options = type(claude_code) == "table" and claude_code.options or nil
+  if type(claude_options) == "table" and claude_options.thinking ~= nil then
+    return meta
+  end
+  local result = copy(meta) or {}
+  result.claudeCode = result.claudeCode or {}
+  result.claudeCode.options = result.claudeCode.options or {}
+  result.claudeCode.options.thinking = CLAUDE_THINKING_DEFAULT
+  return result
+end
+
 ---@param error_value louiselm.acp.JsonRpcError|string|nil
 ---@return string
 local function error_message(error_value)
@@ -536,7 +564,7 @@ local function handle_initialized(self, result, rpc_error)
       end
     end
   end
-  local meta = type(self.definition.options) == "table" and self.definition.options._meta or nil
+  local meta = session_meta(self.definition)
   if self.load_session_id == nil then
     local params = { cwd = self.state.working_dir, mcpServers = {} }
     if meta ~= nil then

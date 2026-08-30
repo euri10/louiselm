@@ -584,6 +584,81 @@ T["new"]["sends no _meta key when the agent definition has no options._meta"] = 
   restore_processes(original_system)
 end
 
+T["new"]["defaults Claude's thinking display to summarized for a claude-layout agent"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    claude = { command = "agent", args = {}, transcript_layout = "claude" },
+  }))
+  assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params._meta, {
+    claudeCode = { options = { thinking = { type = "adaptive", display = "summarized" } } },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["does not default thinking display for a non-claude-layout agent"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    codex = { command = "agent", args = {}, transcript_layout = "codex" },
+  }))
+  assert(api:create_session("codex", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params._meta, nil)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["respects an explicit user thinking config instead of overriding it"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    claude = {
+      command = "agent",
+      args = {},
+      transcript_layout = "claude",
+      options = { _meta = { claudeCode = { options = { thinking = { type = "disabled" } } } } },
+    },
+  }))
+  assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params._meta, {
+    claudeCode = { options = { thinking = { type = "disabled" } } },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["does not mutate the shared agent definition when defaulting Claude's thinking display"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    claude = { command = "agent", args = {}, transcript_layout = "claude" },
+  }))
+  assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "first-acp" })
+
+  assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
+  local second_process = processes[#processes]
+  respond(second_process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(second_process.writes[2]:sub(1, -2))).params._meta, {
+    claudeCode = { options = { thinking = { type = "adaptive", display = "summarized" } } },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["replays the user's own prior messages as user_chunk events when loading a session"] = function()
   local processes, original_system = fake_processes()
   local events = {}

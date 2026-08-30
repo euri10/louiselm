@@ -17,6 +17,11 @@ local Policy = require("louiselm.skills.policy")
 ---`{ claudeCode = { options = { thinking = { type = "adaptive" } } } }`).
 ---@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
 ---@field transcript_layout? string On-disk transcript layout used to resolve historical Sessions.
+---Setting this to `"claude"` also defaults the ACP session to request summarized thinking display
+---(`_meta.claudeCode.options.thinking = { type = "adaptive", display = "summarized" }`) unless
+---`options._meta.claudeCode.options.thinking` is already set: recent Claude models default to
+---`display = "omitted"`, which streams signature-only reasoning with no visible `[thinking]` text.
+---Summarized display trades a small amount of extra streaming latency for a visible reasoning trace.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
 ---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 ---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
