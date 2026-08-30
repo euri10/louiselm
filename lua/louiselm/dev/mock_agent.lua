@@ -8,6 +8,11 @@
 ---@field replay_user_message? string User text replayed as a `user_message_chunk` notification before the `session/load` response, modeling an agent launched with history replay.
 ---@field replay_reasoning? string Reasoning text replayed as an `agent_thought_chunk` notification before the `session/load` response, modeling an agent whose session history includes thinking blocks.
 ---@field available_commands? table[] Commands advertised via `available_commands_update` right after the session is created or loaded.
+---@field generate_count? integer Number of `br create` invocations to attempt per prompt, through the Run's
+---`br` shim on `PATH`. Composes with any mode: it models an Agent that produces work while answering, which is
+---the only way a Run's generated-work budget is ever actually spent. The reply becomes a JSON summary of what
+---was created and what refused it, so a caller can observe the budget stopping the loop.
+---@field generate_title? string Title prefix for generated work. Defaults to `Generated`.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
@@ -102,6 +107,34 @@ local function should_crash(options, method)
     return true
   end
   return options.crash_on == method
+end
+
+---Create bounded generated work through the Run's `br` shim.
+---
+---The shim is reached by name so the Run environment's `PATH` decides which
+---broker answers, exactly as it does for a real Agent. Generation stops at the
+---first refusal: a Run that has hit its ceiling must not keep trying, and the
+---refusal is reported rather than swallowed so the caller can tell a budget
+---Park from a broken broker.
+---@param options louiselm.dev.MockAgentOptions
+---@return string? summary JSON `{ created = string[], refused = string? }`.
+local function generate_work(options)
+  local count = options.generate_count
+  if type(count) ~= "number" or count < 1 then
+    return nil
+  end
+  local created = {}
+  local refused
+  for index = 1, count do
+    local title = string.format("%s %d", options.generate_title or "Generated", index)
+    local result = nvim.system({ "br", "create", "--title", title }, { text = true }):wait()
+    if result.code ~= 0 then
+      refused = nvim.trim(result.stderr)
+      break
+    end
+    created[#created + 1] = nvim.trim(result.stdout)
+  end
+  return nvim.json.encode({ created = created, refused = refused })
 end
 
 ---@param options louiselm.dev.MockAgentOptions
@@ -266,8 +299,9 @@ local function handle_message(message, state, options)
         },
       })
     else
+      local generated = generate_work(options)
       local response = configured_response(options)
-      finish_prompt(state, prompt, response ~= "" and response or prompt.text)
+      finish_prompt(state, prompt, generated or (response ~= "" and response or prompt.text))
     end
     return true
   end
@@ -305,6 +339,10 @@ function M.run(options)
       available_commands = decoded
     end
   end
+  local generate_count = options.generate_count
+  if generate_count == nil then
+    generate_count = tonumber(nvim.env.LOUISELM_MOCK_GENERATE_COUNT)
+  end
   local configured = {
     mode = mode,
     response = response,
@@ -313,6 +351,8 @@ function M.run(options)
     replay_user_message = replay_user_message,
     replay_reasoning = replay_reasoning,
     available_commands = available_commands,
+    generate_count = generate_count,
+    generate_title = options.generate_title or nvim.env.LOUISELM_MOCK_GENERATE_TITLE,
   }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
 

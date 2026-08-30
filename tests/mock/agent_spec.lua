@@ -380,4 +380,108 @@ T["mock agent"]["names a resource-not-found session/load failure rather than the
   MiniTest.expect.equality(session:inspect().status, "error")
 end
 
+---Write an executable fake `br` and return the directory to put on `PATH`.
+---@param behaviour string Shell body for the `create` branch.
+---@return string directory
+---@return string counter Path of the invocation counter file.
+local function fake_br(behaviour)
+  local directory = nvim.fn.tempname()
+  nvim.fn.mkdir(directory, "p")
+  local counter = directory .. "/count"
+  local path = directory .. "/br"
+  local handle = assert(io.open(path, "w"))
+  handle:write(table.concat({
+    "#!/bin/sh",
+    "count=0",
+    "if [ -f '" .. counter .. "' ]; then count=$(cat '" .. counter .. "'); fi",
+    "count=$((count + 1))",
+    "printf '%s' \"$count\" > '" .. counter .. "'",
+    behaviour,
+  }, "\n"))
+  handle:close()
+  nvim.fn.setfperm(path, "rwx------")
+  return directory, counter
+end
+
+---Drive one prompt through a generating mock Agent and return its reply text.
+---@param directory string Directory holding the fake `br`.
+---@param count integer Generated-work attempts to request.
+---@return table summary Decoded `{ created, refused }` reply.
+local function generating_prompt(directory, count)
+  local updates = {}
+  local definition = mock_definition("echo", nil, {
+    LOUISELM_MOCK_GENERATE_COUNT = tostring(count),
+    PATH = directory .. ":" .. (nvim.env.PATH or ""),
+  })
+  local client = track(
+    assert(Acp.connect(definition, {
+      on_notification = function(message)
+        updates[#updates + 1] = message
+      end,
+    })),
+    "close"
+  )
+  local initialized
+  assert(client:initialize(nil, function(_, err)
+    initialized = { error = err }
+  end))
+  wait_for(function()
+    return initialized ~= nil
+  end)
+  local created
+  assert(client:new_session({ cwd = project_root, mcpServers = {} }, function(result, err)
+    created = { result = result, error = err }
+  end))
+  wait_for(function()
+    return created ~= nil
+  end)
+  local completed
+  assert(client:prompt({
+    sessionId = created.result.sessionId,
+    prompt = { { type = "text", text = "review" } },
+  }, function(result, err)
+    completed = { result = result, error = err }
+  end))
+  wait_for(function()
+    return completed ~= nil
+  end)
+  MiniTest.expect.equality(completed.error, nil)
+  assert(client:close())
+  return nvim.json.decode(updates[1].params.update.content.text)
+end
+
+T["mock agent"]["generates bounded work through the Run br shim"] = function()
+  local directory, counter = fake_br('printf \'{"id":"generated-%s"}\\n\' "$count"')
+
+  local summary = generating_prompt(directory, 3)
+
+  MiniTest.expect.equality(summary.created, {
+    '{"id":"generated-1"}',
+    '{"id":"generated-2"}',
+    '{"id":"generated-3"}',
+  })
+  MiniTest.expect.equality(summary.refused, nil)
+  MiniTest.expect.equality(nvim.fn.readfile(counter)[1], "3")
+end
+
+T["mock agent"]["stops generating at the first refusal and reports it"] = function()
+  -- The second create is refused the way an exhausted Run budget refuses one.
+  local directory, counter = fake_br(table.concat({
+    'if [ "$count" -gt 1 ]; then',
+    "  echo 'Run generated-work budget is exhausted' >&2",
+    "  exit 1",
+    "fi",
+    'printf \'{"id":"generated-%s"}\\n\' "$count"',
+  }, "\n"))
+
+  local summary = generating_prompt(directory, 4)
+
+  -- A Run that has hit its ceiling must not keep hammering the broker: one
+  -- refusal ends the round, and the reason survives to the caller so a budget
+  -- Park is distinguishable from a broken broker.
+  MiniTest.expect.equality(summary.created, { '{"id":"generated-1"}' })
+  MiniTest.expect.equality(summary.refused, "Run generated-work budget is exhausted")
+  MiniTest.expect.equality(nvim.fn.readfile(counter)[1], "2")
+end
+
 return T

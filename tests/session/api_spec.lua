@@ -1440,6 +1440,52 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   restore_processes(original_system)
 end
 
+T["new"]["does not reopen a completed turn for late permission responses"] = function()
+  -- This ordering is captured from the ACP proxy trace for
+  -- `opencode/ses_fad1ec8d3ffeTYD4TzGM755ney` in
+  -- ~/.local/state/acp-llm-adapter/proxy/sessions/ses_fad1ec8d3ffeTYD4TzGM755ney/log.jsonl:
+  -- the session/prompt response arrives after permission request 9 and before request 10.
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local permissions = {}
+  local completed
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+
+  local request_id = assert(session:prompt("hello", function(result, err)
+    completed = { result = result, error = err }
+  end))
+  local options = { "once", "always", "reject" }
+  permission_request(process, "agent-acp", 7, options)
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+  permission_request(process, "agent-acp", 8, options)
+  assert(permissions[2].respond({ outcome = { outcome = "cancelled" } }))
+  permission_request(process, "agent-acp", 9, options)
+
+  respond(process, request_id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  MiniTest.expect.equality(completed, { result = { stopReason = "end_turn" }, error = nil })
+
+  permission_request(process, "agent-acp", 10, options)
+  assert(permissions[3].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+  assert(permissions[4].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(permission_outcomes(process), {
+    { id = 7, outcome = "selected" },
+    { id = 8, outcome = "cancelled" },
+    { id = 9, outcome = "selected" },
+    { id = 10, outcome = "selected" },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["cancels and disposes without allowing late process results"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
