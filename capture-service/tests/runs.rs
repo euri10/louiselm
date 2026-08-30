@@ -299,6 +299,154 @@ fn a_generator_reservation_larger_than_remaining_capacity_cannot_start() {
 }
 
 #[test]
+fn concurrent_runs_do_not_pool_generated_work_capacity() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let first = "abababab-abab-4bab-8bab-abababababab";
+    let second = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd";
+    for id in [first, second] {
+        store.admit(admission(id, 1), TOKEN).expect("admit");
+        store.attach(session(id)).expect("attach");
+    }
+    let reserve = |run_id: &str, mutation_id: &str| {
+        store
+            .reserve_generated_work(
+                GeneratedWorkReservation {
+                    run_id: run_id.to_owned(),
+                    token: TOKEN.to_owned(),
+                    mutation_id: mutation_id.to_owned(),
+                    kind: "beads_issue".to_owned(),
+                    units: 1,
+                },
+                1_000,
+            )
+            .expect("reserve")
+    };
+
+    // Spend the first Run's single unit, then push it past its ceiling.
+    assert_eq!(
+        reserve(first, "11111111-1111-4111-8111-111111111111"),
+        ReserveResult::Reserved
+    );
+    assert_eq!(
+        reserve(first, "22222222-2222-4222-8222-222222222222"),
+        ReserveResult::Exhausted
+    );
+    assert_eq!(store.run(first).expect("first Run").state, "parked");
+
+    // The second Run is untouched: exhaustion is not contagious, and its own
+    // unit is still there to spend. Pooled capacity would show up here as
+    // either a Park it never earned or a reservation it cannot afford.
+    let unaffected = store.run(second).expect("second Run");
+    assert_eq!(unaffected.state, "active");
+    assert_eq!(unaffected.generated_work.consumed, 0);
+    assert_eq!(unaffected.generated_work.reserved, 0);
+    assert_eq!(
+        reserve(second, "33333333-3333-4333-8333-333333333333"),
+        ReserveResult::Reserved
+    );
+    assert_eq!(
+        store
+            .run(second)
+            .expect("second Run")
+            .generated_work
+            .reserved,
+        1
+    );
+    assert_eq!(
+        store.run(first).expect("first Run").generated_work.reserved,
+        1
+    );
+}
+
+#[test]
+fn raising_a_ceiling_widens_that_axis_and_no_other() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let run_id = "abababab-abab-4bab-8bab-abababababab";
+    store.admit(admission(run_id, 1), TOKEN).expect("admit");
+    store.attach(session(run_id)).expect("attach");
+    store
+        .reserve_generated_work(
+            GeneratedWorkReservation {
+                run_id: run_id.to_owned(),
+                token: TOKEN.to_owned(),
+                mutation_id: "11111111-1111-4111-8111-111111111111".to_owned(),
+                kind: "beads_issue".to_owned(),
+                units: 1,
+            },
+            1_000,
+        )
+        .expect("reserve");
+    store
+        .confirm_generated_work(
+            run_id,
+            TOKEN,
+            "11111111-1111-4111-8111-111111111111",
+            "issue-1",
+        )
+        .expect("consume the only unit");
+    store
+        .reserve_generated_work(
+            GeneratedWorkReservation {
+                run_id: run_id.to_owned(),
+                token: TOKEN.to_owned(),
+                mutation_id: "22222222-2222-4222-8222-222222222222".to_owned(),
+                kind: "beads_issue".to_owned(),
+                units: 1,
+            },
+            2_000,
+        )
+        .expect("exhaust");
+    let parked = store.run(run_id).expect("parked Run");
+    assert_eq!(parked.state, "parked");
+
+    let raised = store
+        .raise_generated_work_ceiling(run_id, parked.revision, 3)
+        .expect("raise the ceiling");
+
+    // The operator widened exactly one axis. Park expiry, consumption, and the
+    // Session identity are not the operator's to move here, and a resume that
+    // quietly reset any of them would hand back more than was approved.
+    assert_eq!(raised.generated_work_ceiling, 3);
+    assert_eq!(raised.generated_work_consumed, 1);
+    assert_eq!(raised.generated_work_reserved, 0);
+    let after_raise = store.run(run_id).expect("raised Run");
+    assert_eq!(after_raise.park_ttl_ms, parked.park_ttl_ms);
+    assert_eq!(after_raise.park_expires_at_ms, parked.park_expires_at_ms);
+    assert_eq!(after_raise.session_id, parked.session_id);
+
+    // Resuming restores availability without widening anything at all.
+    assert_eq!(
+        store
+            .begin_resume(
+                run_id,
+                after_raise.revision,
+                "33333333-3333-4333-8333-333333333333",
+                3_000,
+                60_000,
+            )
+            .expect("resume"),
+        ResumeResult::Active
+    );
+    let resumed = store.run(run_id).expect("resumed Run");
+    assert_eq!(resumed.state, "active");
+    assert_eq!(resumed.generated_work.ceiling, 3);
+    assert_eq!(resumed.generated_work.consumed, 1);
+    assert_eq!(resumed.park_ttl_ms, parked.park_ttl_ms);
+
+    // Narrowing or restating the ceiling is refused rather than silently
+    // accepted, so "raise" cannot be used to take capacity away either.
+    for attempt in [3, 2] {
+        assert!(
+            store
+                .raise_generated_work_ceiling(run_id, resumed.revision, attempt)
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn confirmation_consumes_and_definite_failure_releases_a_reservation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = RunStore::new(temporary.path()).expect("store");
