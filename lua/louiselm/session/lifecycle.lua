@@ -115,10 +115,20 @@ end
 
 -- Claude's SDK default for recent models streams signature-only "thinking"
 -- blocks (`display = "omitted"`, empty text), so a Claude Session never shows
--- a `[thinking]` fold unless something requests summarized display. Default
--- it on for the claude transcript layout, not the agent name, per the
--- layout-keyed convention `session/locator.lua` established: the user's
--- config key for an agent is an arbitrary label, not a stable identity.
+-- a `[thinking]` fold unless something requests summarized display.
+--
+-- Sent to every Agent, not just a Claude-shaped one. `_meta` is ACP's
+-- extensibility namespace: the schema types it as an open record of arbitrary
+-- keys and the protocol requires that "implementations MUST NOT make
+-- assumptions about values at these keys", so a vendor-namespaced
+-- `claudeCode` entry is exactly what a non-Claude Agent is obliged to ignore.
+--
+-- Gating this on `transcript_layout == "claude"` was tried first and shipped
+-- inert (louiselm-5tuq): that field is an optional Provenance hint whose
+-- absence `session/locator.lua` treats as "search every layout", so the
+-- ordinary configuration that omits it silently lost the feature with no
+-- diagnostic. Keying off the agent's config name is worse still, since those
+-- are arbitrary user labels rather than identity (louiselm-h00g).
 local CLAUDE_THINKING_DEFAULT = { type = "adaptive", display = "summarized" }
 
 ---@param definition louiselm.agent.Definition
@@ -126,9 +136,6 @@ local CLAUDE_THINKING_DEFAULT = { type = "adaptive", display = "summarized" }
 local function session_meta(definition)
   local options = definition.options
   local meta = type(options) == "table" and options._meta or nil
-  if definition.transcript_layout ~= "claude" then
-    return meta
-  end
   local claude_code = type(meta) == "table" and meta.claudeCode or nil
   local claude_options = type(claude_code) == "table" and claude_code.options or nil
   if type(claude_options) == "table" and claude_options.thinking ~= nil then

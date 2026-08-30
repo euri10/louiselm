@@ -109,10 +109,11 @@ local function start_ready_session(api, processes, name, cwd, agent_capabilities
   end))
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = agent_capabilities or {} })
-  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
-    cwd = cwd,
-    mcpServers = {},
-  })
+  -- Assert only what this helper is about. Session metadata rides in `_meta`
+  -- and belongs to the tests that are actually about it.
+  local params = assert(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params)
+  MiniTest.expect.equality(params.cwd, cwd)
+  MiniTest.expect.equality(params.mcpServers, {})
   respond(process, 2, { sessionId = name .. "-acp" })
   MiniTest.expect.equality(ready.error, nil)
   MiniTest.expect.equality(ready.session, session)
@@ -490,7 +491,13 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
     id = 2,
     jsonrpc = "2.0",
     method = "session/load",
-    params = { sessionId = "prior-acp", cwd = "/tmp/project", mcpServers = {} },
+    params = {
+      sessionId = "prior-acp",
+      cwd = "/tmp/project",
+      mcpServers = {},
+      -- A resumed Session needs the thinking default as much as a new one.
+      _meta = { claudeCode = { options = { thinking = { type = "adaptive", display = "summarized" } } } },
+    },
   })
   notification(process, "session/update", {
     sessionId = "prior-acp",
@@ -568,7 +575,11 @@ T["new"]["threads agent Definition.options._meta into session/load params"] = fu
   restore_processes(original_system)
 end
 
-T["new"]["sends no _meta key when the agent definition has no options._meta"] = function()
+T["new"]["invents no _meta beyond the thinking default when the definition has none"] = function()
+  -- Replaces an earlier contract that sent no `_meta` at all for a definition
+  -- without `options._meta`. That became obsolete when the thinking default
+  -- stopped being gated (louiselm-5tuq); what still matters, and is asserted
+  -- here, is that nothing else is fabricated alongside it.
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
   assert(api:create_session("agent", { cwd = "/tmp/project" }, function() end))
@@ -578,13 +589,14 @@ T["new"]["sends no _meta key when the agent definition has no options._meta"] = 
   MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
     cwd = "/tmp/project",
     mcpServers = {},
+    _meta = { claudeCode = { options = { thinking = { type = "adaptive", display = "summarized" } } } },
   })
 
   api:dispose()
   restore_processes(original_system)
 end
 
-T["new"]["defaults Claude's thinking display to summarized for a claude-layout agent"] = function()
+T["new"]["defaults Claude's thinking display to summarized"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
     claude = { command = "agent", args = {}, transcript_layout = "claude" },
@@ -601,7 +613,29 @@ T["new"]["defaults Claude's thinking display to summarized for a claude-layout a
   restore_processes(original_system)
 end
 
-T["new"]["does not default thinking display for a non-claude-layout agent"] = function()
+T["new"]["defaults thinking display without any configured transcript layout"] = function()
+  -- The ordinary configuration. `transcript_layout` is an optional Provenance
+  -- hint, so gating the default on it shipped the feature inert for every user
+  -- who left it unset, which is the documented-as-fine case (louiselm-5tuq).
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ claude = { command = "agent", args = {} } }))
+  assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params._meta, {
+    claudeCode = { options = { thinking = { type = "adaptive", display = "summarized" } } },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["sends the vendor-namespaced default to a non-Claude agent too"] = function()
+  -- `_meta` is ACP's extensibility namespace and the protocol requires that
+  -- implementations make no assumptions about keys they do not own, so a
+  -- `claudeCode` entry is precisely what a Codex Agent must ignore. Sending it
+  -- unconditionally is what makes the default work without configuration.
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
     codex = { command = "agent", args = {}, transcript_layout = "codex" },
@@ -610,7 +644,9 @@ T["new"]["does not default thinking display for a non-claude-layout agent"] = fu
   local process = processes[#processes]
 
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
-  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params._meta, nil)
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params._meta, {
+    claudeCode = { options = { thinking = { type = "adaptive", display = "summarized" } } },
+  })
 
   api:dispose()
   restore_processes(original_system)
