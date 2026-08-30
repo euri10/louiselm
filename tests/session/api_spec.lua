@@ -521,6 +521,69 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   restore_processes(original_system)
 end
 
+T["new"]["threads agent Definition.options._meta into session/new params"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    agent = {
+      command = "agent",
+      args = {},
+      options = { _meta = { claudeCode = { options = { thinking = { type = "adaptive" } } } } },
+    },
+  }))
+  assert(api:create_session("agent", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
+    cwd = "/tmp/project",
+    mcpServers = {},
+    _meta = { claudeCode = { options = { thinking = { type = "adaptive" } } } },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["threads agent Definition.options._meta into session/load params"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    agent = {
+      command = "agent",
+      args = {},
+      options = { _meta = { claudeCode = { options = { thinking = { type = "adaptive" } } } } },
+    },
+  }))
+  assert(api:load_session("agent", "prior-acp", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
+    sessionId = "prior-acp",
+    cwd = "/tmp/project",
+    mcpServers = {},
+    _meta = { claudeCode = { options = { thinking = { type = "adaptive" } } } },
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["sends no _meta key when the agent definition has no options._meta"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  assert(api:create_session("agent", { cwd = "/tmp/project" }, function() end))
+  local process = processes[#processes]
+
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[2]:sub(1, -2))).params, {
+    cwd = "/tmp/project",
+    mcpServers = {},
+  })
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["replays the user's own prior messages as user_chunk events when loading a session"] = function()
   local processes, original_system = fake_processes()
   local events = {}

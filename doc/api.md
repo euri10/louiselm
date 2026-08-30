@@ -519,7 +519,7 @@ louiselm.permission.Lifetime:
 - `command: string` -- Executable to start.
 - `env: table<string, string>?` -- Environment variables for the process.
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.
-- `options: table<string, unknown>?` -- Agent-specific options.
+- `options: table<string, unknown>?` -- Agent-specific options. `options._meta`, when present, is threaded
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
 - `transcript_layout: string?` -- On-disk transcript layout used to resolve historical Sessions.
 - `version: (louiselm.agent.CommandCheck)?` -- Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).

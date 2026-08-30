@@ -12,7 +12,9 @@ local Policy = require("louiselm.skills.policy")
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
 ---@field env? table<string, string> Environment variables for the process.
----@field options? table<string, unknown> Agent-specific options.
+---@field options? table<string, unknown> Agent-specific options. `options._meta`, when present, is threaded
+---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
+---`{ claudeCode = { options = { thinking = { type = "adaptive" } } } }`).
 ---@field capabilities? string[] Capability tags this agent declares support for (e.g. "image-generation"). Matched against `needs-capability:*` beads labels by the agent selecting work; louiselm neither reads beads nor routes work itself.
 ---@field transcript_layout? string On-disk transcript layout used to resolve historical Sessions.
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.

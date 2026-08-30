@@ -536,14 +536,20 @@ local function handle_initialized(self, result, rpc_error)
       end
     end
   end
+  local meta = type(self.definition.options) == "table" and self.definition.options._meta or nil
   if self.load_session_id == nil then
-    request_id, request_error = client:new_session({ cwd = self.state.working_dir, mcpServers = {} }, on_session_ready)
+    local params = { cwd = self.state.working_dir, mcpServers = {} }
+    if meta ~= nil then
+      params._meta = meta
+    end
+    request_id, request_error = client:new_session(params, on_session_ready)
   else
     self.acp_session_id = self.load_session_id
-    request_id, request_error = client:load_session(
-      { sessionId = self.load_session_id, cwd = self.state.working_dir, mcpServers = {} },
-      on_session_ready
-    )
+    local params = { sessionId = self.load_session_id, cwd = self.state.working_dir, mcpServers = {} }
+    if meta ~= nil then
+      params._meta = meta
+    end
+    request_id, request_error = client:load_session(params, on_session_ready)
   end
   if request_id == nil then
     fail(self, "ACP session/" .. method .. " failed: " .. (request_error or "request could not be sent"))
