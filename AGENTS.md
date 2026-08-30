@@ -36,6 +36,32 @@ Do not claim, implement, or commit work unless asked to proceed.
   not use the OS username, `br config`'s `_computed.actor`, the br skill's
   `BR_ACTOR:-assistant` fallback, or `robot-docs`' `$AGENT_NAME` — none of
   those identify your session.
+
+Adapter lookup recipes:
+
+- Claude Code: use `claude/<CLAUDE_CODE_SESSION_ID>` when that variable is
+  present. Claude's `--resume` and `--continue` options refer to persisted
+  sessions, but do not replace the current session ID with one copied from a
+  session picker.
+- LouiseLM ACP sessions (including OpenCode, Codex, DeepSeek, and Copilot):
+  query the live Chat controller described in Live-instance introspection and
+  use its exact `<agent>/<ACP-session-id>` result. This is the current-session
+  source even when the adapter exports only process markers.
+- OpenCode outside LouiseLM: `OPENCODE=1`, `OPENCODE_PID`, and
+  `OPENCODE_CLIENT=acp` identify the process, not the current session.
+  `opencode session list --format json` is an inventory, not proof of which
+  session is current; use an ID from the current interaction or ask.
+- Codex outside LouiseLM: `codex agents` lists persisted local sessions, but
+  a listed ID is not current-session attribution by itself. Use the current
+  interaction's `codex/<id>` or ask when it is not exposed.
+- DeepSeek, Copilot, and any other adapter: a historical `deepseek/<id>` or
+  `copilot/<id>` actor proves only the stored shape. Use the exact ID exposed
+  by the current interaction or live ACP Chat; never synthesize one from a
+  process name, PID, or old Beads record.
+
+Bare UUIDs and `assistant` actors are legacy records, not valid sources for a
+new mutation. If no recipe yields an attributable current ID, stop and ask the
+maintainer rather than falling back to one.
 - Claim work with `br update <id> --claim --actor "<your session id>"`, never
   with a bare `--status=in_progress`. `--claim` atomically sets the assignee to
   the actor, which is the only thing that makes a claim attributable, and it
