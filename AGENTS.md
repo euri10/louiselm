@@ -263,6 +263,19 @@ nvim --server "$NVIM" --remote-expr 'luaeval("...")'
 For multi-line queries, write a temporary Lua file and run
 `luaeval("dofile('/tmp/query.lua')")` from the same remote expression.
 
+`acp-proxy` splits one conversation across two log files. Everything sent
+before the Agent returns a session id — `session/new` and its `_meta`, which is
+where session construction is decided — lands in
+`~/.local/state/acp-llm-adapter/proxy/{connections/<connection-id>.jsonl}`, not
+in `sessions/<session-id>/log.jsonl`. Searching only the session directory
+makes construction-time configuration look like it was never sent
+(`louiselm-wh2l` was filed on exactly that mistake). Resolve a session back to
+its connection with `grep -l <session-id> .../proxy/connections/*.jsonl`, which
+works because the bind is recorded there. When checking whether a value reached
+the Agent, match its structure (`'"thinking":{'`) rather than a word from it:
+bare terms like `summarized` also appear in ordinary session prose and read as
+false confirmation.
+
 The shell-side equivalent of `:LouiselmSessionId` is to evaluate Lua in the
 live instance and ask the chat controller for `session_id()`. Today that
 controller is the `chat` upvalue of
