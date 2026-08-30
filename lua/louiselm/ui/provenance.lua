@@ -70,6 +70,13 @@ local function valid_session_id(value)
   return agent_name ~= nil and agent_name ~= "." and agent_name ~= ".." and session_id ~= "." and session_id ~= ".."
 end
 
+---@param value string
+---@return string normalized
+local function normalize_session_id(value)
+  local inner = value:match("^`(.+)`$")
+  return inner or value
+end
+
 ---@param line string
 ---@param column integer Zero-based byte column.
 ---@return string? session_id
@@ -77,15 +84,16 @@ local function session_id_at_cursor(line, column)
   local matches = {}
   for start_index, value in line:gmatch("()([^%s/]+/[^%s/]+)") do
     value = value:gsub("[,;%.%)]+$", "")
-    if valid_session_id(value) then
-      matches[#matches + 1] = { start_index = start_index, value = value }
+    local normalized = normalize_session_id(value)
+    if valid_session_id(normalized) then
+      matches[#matches + 1] = { start_index = start_index, value = normalized, raw_value = value }
     end
   end
   if #matches ~= 1 then
     return nil
   end
   local match = matches[1]
-  local end_index = match.start_index + #match.value - 1
+  local end_index = match.start_index + #match.raw_value - 1
   return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
 end
 
@@ -860,7 +868,7 @@ function M.inspect(buffer, options)
     if value == nil or (options.is_active ~= nil and not options.is_active()) then
       return
     end
-    local prompted_sha = nvim.trim(value)
+    local prompted_sha = normalize_session_id(nvim.trim(value))
     if valid_sha(prompted_sha) then
       local _, lookup_error = show_commit(prompted_sha, options)
       if lookup_error ~= nil then

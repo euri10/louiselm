@@ -5,6 +5,7 @@ local Provenance = require("louiselm.ui.provenance")
 local nvim = vim
 local original_schedule = nvim.schedule
 local original_system = nvim.system
+local original_ui_input = nvim.ui.input
 local source_buffers = {}
 
 local T = MiniTest.new_set({
@@ -12,6 +13,7 @@ local T = MiniTest.new_set({
     post_case = function()
       rawset(nvim, "schedule", original_schedule)
       rawset(nvim, "system", original_system)
+      rawset(nvim.ui, "input", original_ui_input)
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_get_name(buffer):match("^louiselm://provenance/") then
           nvim.api.nvim_buf_delete(buffer, { force = true })
@@ -283,6 +285,51 @@ T["issue Provenance"]["renders an issue with no correlated commits"] = function(
 end
 
 T["Session Provenance"] = MiniTest.new_set()
+
+T["Session Provenance"]["accepts a Markdown-formatted Session id under the cursor"] = function()
+  local buffer = source_buffer("`codex/session-1`", 8)
+  local calls = fake_system()
+
+  assert(Provenance.inspect(buffer, { definitions = {} }))
+  MiniTest.expect.equality(calls[1].command, {
+    "git",
+    "log",
+    "--no-decorate",
+    "--no-color",
+    "--format=%H%x00%B%x00%x1e",
+    "--all",
+  })
+  finish(calls, "chore: unrelated\n")
+  finish_beads_issues(calls, '{"issues":[]}')
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
+    "louiselm://provenance/session/codex/session-1"
+  )
+end
+
+T["Session Provenance"]["accepts a Markdown-formatted Session id from the prompt"] = function()
+  local buffer = source_buffer("no identifier", 5)
+  local calls = fake_system()
+  rawset(nvim.ui, "input", function(_, callback)
+    callback("`codex/session-1`")
+  end)
+
+  assert(Provenance.inspect(buffer, { definitions = {} }))
+  MiniTest.expect.equality(calls[1].command, {
+    "git",
+    "log",
+    "--no-decorate",
+    "--no-color",
+    "--format=%H%x00%B%x00%x1e",
+    "--all",
+  })
+  finish(calls, "chore: unrelated\n")
+  finish_beads_issues(calls, '{"issues":[]}')
+  MiniTest.expect.equality(
+    nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()),
+    "louiselm://provenance/session/codex/session-1"
+  )
+end
 
 T["Session Provenance"]["renders reverse commit and issue edges"] = function()
   local buffer = source_buffer("Session codex/session-1", 10)
