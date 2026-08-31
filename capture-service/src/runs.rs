@@ -12,6 +12,8 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::permissions::set_private_permissions;
+
 /// Input needed to durably admit a Run before it generates work.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunAdmission {
@@ -1123,19 +1125,4 @@ fn write_atomic(path: &Path, value: &impl Serialize) -> Result<(), RunStoreError
         let _ = fs::remove_file(temporary);
     }
     result
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _directory: bool) -> io::Result<()> {
-    Ok(())
 }

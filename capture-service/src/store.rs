@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::permissions::set_private_permissions;
+
 use crate::{CaptureDraft, CaptureRecord, CaptureState, Transcript};
 
 /// Maximum accepted original audio size: 20 MiB.
@@ -398,21 +400,6 @@ fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), StoreErr
     writer.write_all(b"\n")?;
     writer.flush()?;
     writer.get_ref().sync_all()?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _directory: bool) -> io::Result<()> {
     Ok(())
 }
 

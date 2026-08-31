@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use crate::permissions::set_private_permissions;
 use crate::{
     CaptureDraft, CaptureSource, IngestOutcome, MAX_CAPTURE_BYTES, PairingRegistry, Store,
     StoreError,
@@ -275,21 +276,6 @@ async fn stream_body(mut body: Body, path: &Path) -> Result<(u64, String), ApiEr
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
     Ok((bytes, format!("{:x}", hasher.finalize())))
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, directory: bool) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _directory: bool) -> std::io::Result<()> {
-    Ok(())
 }
 
 fn now_ms() -> u64 {

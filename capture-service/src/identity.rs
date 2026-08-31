@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::permissions::set_private_permissions;
+
 /// TLS identity generation or persistence failure.
 #[derive(Debug, Error)]
 pub enum IdentityError {
@@ -120,19 +122,4 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(temporary);
     }
     result
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _directory: bool) -> io::Result<()> {
-    Ok(())
 }

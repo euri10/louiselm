@@ -7,6 +7,7 @@ mod model;
 mod network;
 mod openai;
 mod pairing;
+mod permissions;
 mod receiver;
 mod run_socket;
 mod runs;

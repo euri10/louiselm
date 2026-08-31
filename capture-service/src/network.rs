@@ -11,6 +11,8 @@ use thiserror::Error;
 use url::{Host, Url};
 use uuid::Uuid;
 
+use crate::permissions::set_private_permissions;
+
 const SCHEMA_VERSION: u8 = 1;
 
 /// Supported private receiver exposure profiles.
@@ -239,19 +241,4 @@ fn private_ip(ip: IpAddr) -> bool {
 fn shared_overlay_ipv4(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     octets[0] == 100 && (64..=127).contains(&octets[1])
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _directory: bool) -> io::Result<()> {
-    Ok(())
 }

@@ -13,6 +13,8 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
+use crate::permissions::set_private_permissions;
+
 /// One-time pairing material intended for a QR payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PairingOffer {
@@ -405,19 +407,4 @@ fn secret() -> String {
 
 fn hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
-}
-
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(
-        path,
-        fs::Permissions::from_mode(if directory { 0o700 } else { 0o600 }),
-    )
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _directory: bool) -> io::Result<()> {
-    Ok(())
 }
