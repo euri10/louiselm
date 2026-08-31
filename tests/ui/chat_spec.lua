@@ -5004,6 +5004,15 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
   nvim.fn.delete(usage_path)
 end
 
+T["chat"]["explains when the Agent exposes no standard ACP options"] = function()
+  local first = fake_session("session-1", "grok")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  MiniTest.expect.equality({ chat:session_options() }, { false, "session has no standard ACP options" })
+  chat:dispose()
+end
+
 T["chat"]["records measured usage when a turn completes"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {

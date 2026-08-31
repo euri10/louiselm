@@ -3779,7 +3779,7 @@ function Chat:session_options()
     return false, "session is not idle; cancel the active turn first"
   end
   if #state.config_options == 0 then
-    return false, "session has no supported options"
+    return false, "session has no standard ACP options"
   end
   open_session_options(self, view, false)
   return true
