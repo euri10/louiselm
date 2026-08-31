@@ -1476,6 +1476,36 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   restore_processes(original_system)
 end
 
+T["new"]["does not emit live user message echoes as replay events"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local events = {}
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  assert(session:prompt("hello"))
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "user_message_chunk",
+      content = { type = "text", text = "hello" },
+    },
+  })
+
+  local user_chunks = {}
+  for _, event in ipairs(events) do
+    if event.type == "user_chunk" then
+      user_chunks[#user_chunks + 1] = event
+    end
+  end
+  MiniTest.expect.equality(#user_chunks, 0)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["does not reopen a completed turn for late permission responses"] = function()
   -- This ordering is captured from the ACP proxy trace for
   -- `opencode/ses_fad1ec8d3ffeTYD4TzGM755ney` in

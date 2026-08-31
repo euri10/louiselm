@@ -315,9 +315,12 @@ local function handle_notification(self, message)
   if update_type == "agent_message_chunk" then
     emit(self, "chunk", update)
   elseif update_type == "user_message_chunk" then
-    -- Only seen on session/load replay of a resumed conversation's history: a live
-    -- turn's prompt is sent by this client, not echoed back by the agent.
-    emit(self, "user_chunk", update)
+    -- A few Agents echo the live prompt as a user message. The local client
+    -- already records it; only forward user messages outside an active turn,
+    -- where they represent session/load replay history.
+    if not prompt_active(self) then
+      emit(self, "user_chunk", update)
+    end
   elseif update_type == "agent_thought_chunk" then
     -- Agent reasoning text (Codex `reasoning` summary deltas, Claude thinking blocks).
     -- Same content shape as agent_message_chunk, but it is not part of the answer
