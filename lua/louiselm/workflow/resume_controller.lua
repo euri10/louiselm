@@ -24,7 +24,7 @@ local nvim = vim
 ---@field dispose fun(self: louiselm.workflow.ResumeController): boolean
 
 local function random_operation_id(callback)
-  nvim.uv.random(16, function(error_message, bytes)
+  nvim.uv.random(16, nil, function(error_message, bytes)
     nvim.schedule(function()
       if error_message ~= nil or type(bytes) ~= "string" or #bytes ~= 16 then
         callback(nil, "could not create resume operation id")

@@ -414,7 +414,7 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
     end)
     return fake_client
   end)
-  rawset(nvim.uv, "random", function(_, callback)
+  rawset(nvim.uv, "random", function(_, _, callback)
     callback(nil, string.rep("a", 16))
   end)
   nvim.ui.select = function(items, _, callback)
