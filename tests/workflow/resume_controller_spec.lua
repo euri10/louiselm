@@ -146,6 +146,38 @@ T["finalizes a failed cold load without reporting the Run active"] = function()
   MiniTest.expect.equality(failure, "session/load failed")
 end
 
+T["disposes the loaded Session when finalization fails"] = function()
+  local session = worker("ready")
+  local client = {}
+  function client:resume(_, _, _, callback)
+    callback(view(6, "resuming"))
+    return true
+  end
+  function client:finalize_resume(_, _, _, _, callback)
+    callback(nil, "Run changed while loading")
+    return true
+  end
+  local controller = assert(ResumeController.new({
+    client = client,
+    find_run = function()
+      return nil
+    end,
+    load_cold = function(_, callback)
+      callback(session)
+    end,
+    operation_id = function(callback)
+      callback("operation")
+    end,
+  }))
+  local failure
+  assert(controller:resume(view(5, "cold_parked"), function(result, error_message)
+    MiniTest.expect.equality(result, nil)
+    failure = error_message
+  end))
+  MiniTest.expect.equality(session.disposed, 1)
+  MiniTest.expect.equality(failure, "Run changed while loading")
+end
+
 T["disposes reconstruction delivered after controller disposal"] = function()
   local complete_load
   local session = worker("ready")

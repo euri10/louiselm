@@ -142,6 +142,9 @@ function Controller:resume(run, callback)
               return
             end
             if final == nil then
+              if worker ~= nil then
+                worker:dispose()
+              end
               callback(nil, service_error)
               return
             end

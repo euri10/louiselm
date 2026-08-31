@@ -2,6 +2,8 @@ local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.routing")
+local ResumeController = require("louiselm.workflow.resume_controller")
+local RunClient = require("louiselm.workflow.run_client")
 local WorkflowService = require("louiselm.workflow.service")
 
 local T = MiniTest.new_set()
@@ -336,9 +338,46 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
   end
   local chat = assert(Chat.new(api))
   local original_list = WorkflowService.list
+  local original_read_capability = RunClient.read_operator_capability
+  local original_connect = RunClient.connect
+  local original_random = nvim.uv.random
   local original_select = nvim.ui.select
   local original_schedule = nvim.schedule
   local scheduled = {}
+  local resume_call
+  local finalize_call
+  local fake_client = {}
+  function fake_client:resume(id, revision, operation_id, callback)
+    resume_call = { id, revision, operation_id }
+    callback({
+      id = id,
+      revision = revision + 1,
+      state = "resuming",
+      generated_work_ceiling = 5,
+      generated_work_consumed = 2,
+      generated_work_reserved = 1,
+      pending_mutation_ids = {},
+      park_expires_at_ms = 1,
+    })
+    return true
+  end
+  function fake_client:finalize_resume(id, revision, operation_id, succeeded, callback)
+    finalize_call = { id, revision, operation_id, succeeded }
+    callback({
+      id = id,
+      revision = revision + 1,
+      state = succeeded and "active" or "cold_parked",
+      generated_work_ceiling = 5,
+      generated_work_consumed = 2,
+      generated_work_reserved = 1,
+      pending_mutation_ids = {},
+      park_expires_at_ms = succeeded and 0 or 1,
+    })
+    return true
+  end
+  function fake_client:dispose()
+    return true
+  end
   rawset(WorkflowService, "list", function(callback)
     callback({
       {
@@ -354,6 +393,30 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
     })
     return true
   end)
+  rawset(RunClient, "read_operator_capability", function(_, callback)
+    callback("operator-capability")
+    return true
+  end)
+  rawset(RunClient, "connect", function(_, on_snapshot)
+    nvim.schedule(function()
+      on_snapshot({
+        {
+          id = "run",
+          revision = 5,
+          state = "cold_parked",
+          generated_work_ceiling = 5,
+          generated_work_consumed = 2,
+          generated_work_reserved = 1,
+          pending_mutation_ids = {},
+          park_expires_at_ms = 1,
+        },
+      })
+    end)
+    return fake_client
+  end)
+  rawset(nvim.uv, "random", function(_, callback)
+    callback(nil, string.rep("a", 16))
+  end)
   nvim.ui.select = function(items, _, callback)
     callback(items[1])
   end
@@ -362,17 +425,24 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
   end)
   MiniTest.finally(function()
     rawset(WorkflowService, "list", original_list)
+    rawset(RunClient, "read_operator_capability", original_read_capability)
+    rawset(RunClient, "connect", original_connect)
+    rawset(nvim.uv, "random", original_random)
     nvim.ui.select = original_select
     rawset(nvim, "schedule", original_schedule)
     chat:dispose()
   end)
 
   assert(chat:resume_park())
-  ready_callback(restored)
-  for _, callback in ipairs(scheduled) do
-    callback()
+  local next_callback = 1
+  while next_callback <= #scheduled do
+    scheduled[next_callback]()
+    next_callback = next_callback + 1
   end
+  ready_callback(restored)
 
+  MiniTest.expect.equality(resume_call, { "run", 5, "61616161-6161-6161-6161-616161616161" })
+  MiniTest.expect.equality(finalize_call, { "run", 6, "61616161-6161-6161-6161-616161616161", true })
   MiniTest.expect.equality(restored.owner_run.claims, { "issue" })
   MiniTest.expect.equality(restored.owner_run.generated_work, { ceiling = 5, consumed = 2, reserved = 1 })
   MiniTest.expect.equality(restored.owner_run.status, "active")
