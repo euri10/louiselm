@@ -1,8 +1,9 @@
 # GitHub Actions pipeline for the Neovim plugin's quality gates.
 #
-# Scope: this runs the three gates AGENTS.md section 4 declares
-# authoritative -- StyLua for formatting, lua-language-server for
-# static analysis, and mini.test for tests. It deliberately does NOT
+# Scope: this runs the gates AGENTS.md section 4 declares authoritative --
+# StyLua for formatting, lua-language-server for static analysis, and
+# mini.test for tests on the Lua side, plus cargo fmt/clippy/test for the
+# capture-service crate. It deliberately does NOT
 # build or publish blog/, which is pages.yml's job (runs only when
 # blog/ changes). The two pipelines are disjoint on purpose: pages.yml
 # owns publishing, this one owns correctness.
@@ -13,6 +14,16 @@
 #   stylua --check .                             0 clean / 1 misformatted
 #   lua-language-server --check --checklevel=Warning  0 clean / 1 on warning
 #   nvim --headless ... MiniTest.run()           0 clean / 1 on test failure
+#   cargo fmt --check                            0 clean / 1 misformatted
+#   cargo clippy --all-targets -- -D warnings    0 clean / 101 on a lint
+#   cargo test                                   0 clean / 101 on test failure
+#
+# The Rust gates cover capture-service/, whose 56 tests were previously
+# enforced nowhere (louiselm-ci-missing-rust-gates-5o5h). The cargo test
+# failure path was exercised by reverting the loopback status warning that
+# fixes louiselm-capture-receiver-reachability-rnjc, which is precisely the
+# defect these tests exist to keep fixed. android/ is out of scope: it needs
+# Gradle and the Android SDK, and is not wired here.
 #
 # Tool versions are pinned rather than floated so an upstream release
 # cannot silently turn this pipeline red (or, worse, green).
@@ -45,6 +56,9 @@ env:
   # Local development currently runs 3.18.2-dev, which is not a
   # downloadable release; 3.19.1 is the closest published stable.
   LUALS_VERSION: 3.19.1
+  # Matches the locally verified toolchain (rustc/cargo 1.97.1). capture-service
+  # is edition 2024, so an older toolchain cannot build it at all.
+  RUST_VERSION: 1.97.1
 
 jobs:
   format:
@@ -187,3 +201,37 @@ jobs:
         run: |
           nvim --headless --noplugin -u ./tests/minimal_init.lua \
             -c "lua MiniTest.run()" -c "qa!"
+
+  capture-service:
+    name: cargo (capture-service)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: capture-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          set -eu
+          rustup toolchain install "${RUST_VERSION}" --profile minimal \
+            --component rustfmt,clippy
+          rustup default "${RUST_VERSION}"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            capture-service/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('capture-service/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test

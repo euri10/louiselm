@@ -241,6 +241,22 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
 ./scripts/generate-luacats --check
 ```
 
+`capture-service/` is a Rust crate, not Lua, and carries its own gates. Run them
+from that directory when you touch it:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+These went unenforced for the crate's whole life until
+`louiselm-ci-missing-rust-gates-5o5h`: the 56 tests included the three
+regressions guarding `louiselm-capture-receiver-reachability-rnjc`, a defect that
+cost a multi-hour physical Android QA round to verify, and CI would have stayed
+green through a reintroduction. `android/` still has no gate here; it needs
+Gradle and the Android SDK.
+
 `generate-luacats --check` fails whenever `config.lua`'s schema changed without
 regenerating `lua/louiselm/types.lua`, the `louiselm.Config` class that gives
 users completion inside `setup({...})`. Run `./scripts/generate-luacats` (no
