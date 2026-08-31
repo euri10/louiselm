@@ -2962,6 +2962,28 @@ T["chat"]["warns that closing an active session discards its queued prompt"] = f
   chat:dispose()
 end
 
+T["chat"]["clears Session Attention when closing an active session"] = function()
+  local first = fake_session("session-1", "claude")
+  first.state.status = "waiting_permission"
+  first.state.acp_session_id = "acp-session"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local seen_session_id
+  chat.attention.session_disposed = function(_, session_id)
+    seen_session_id = session_id
+  end
+  local original_select = nvim.ui.select
+  nvim.ui.select = function(_, _, callback)
+    callback("Close")
+  end
+
+  assert(chat:close_session())
+
+  nvim.ui.select = original_select
+  MiniTest.expect.equality(seen_session_id, "acp-session")
+  chat:dispose()
+end
+
 T["chat"]["keeps interleaved response and tool events chronological"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))

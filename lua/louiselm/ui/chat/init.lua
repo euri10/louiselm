@@ -3721,6 +3721,10 @@ end
 ---@param view louiselm.ui.ChatView
 local function close_view(self, view)
   local id = view.session:inspect().id
+  local state = view.session:inspect()
+  if state.acp_session_id ~= nil then
+    self.attention:session_disposed(state.acp_session_id)
+  end
   restore_winbars(self)
   clear_queued_prompt(view)
   view.unsubscribe()
