@@ -2890,6 +2890,15 @@ local function navigate_transcript(view, kind, direction, count)
   nvim.api.nvim_win_set_cursor(view.window, { selected + 1, #(line:match("^%s*")) })
 end
 
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+local function mark_view_seen(self, view)
+  local state = view.session:inspect()
+  if state.acp_session_id ~= nil then
+    self.attention:seen(state.acp_session_id)
+  end
+end
+
 ---Attach a session to a scratch markdown buffer and focus it.
 ---@param self louiselm.ui.Chat
 ---@param session louiselm.session.Session Session to display.
@@ -3028,6 +3037,15 @@ function Chat:attach(session)
   end)
   self.views[state.id] = view
   self.view_order[#self.view_order + 1] = state.id
+  nvim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
+    buffer = buffer,
+    callback = function()
+      if not self.disposed and self.views[state.id] == view then
+        mark_view_seen(self, view)
+      end
+    end,
+    desc = "Mark viewed LouiseLM Session Attention as seen",
+  })
   render_header(self, view)
   self:switch(state.id)
   if state.status == "ready" then
@@ -3488,9 +3506,7 @@ function Chat:switch(session_id)
   self.current_id = session_id
   view.unread_turn = false
   local state = view.session:inspect()
-  if state.acp_session_id ~= nil then
-    self.attention:seen(state.acp_session_id)
-  end
+  mark_view_seen(self, view)
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
   nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })

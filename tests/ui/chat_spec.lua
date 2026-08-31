@@ -5247,6 +5247,26 @@ T["chat"]["switches between attached session buffers"] = function()
   chat:dispose()
 end
 
+T["chat"]["marks a directly focused session buffer as seen"] = function()
+  local session = fake_session("session-1", "claude")
+  session.state.acp_session_id = "acp-session"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+
+  local seen = {}
+  chat.attention.seen = function(_, session_id)
+    seen[#seen + 1] = session_id
+  end
+  local other = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_set_current_buf(other)
+  seen = {}
+  nvim.api.nvim_set_current_buf(chat:buffer("session-1"))
+
+  MiniTest.expect.equality(seen, { "acp-session" })
+  chat:dispose()
+  nvim.api.nvim_buf_delete(other, { force = true })
+end
+
 T["chat"]["uses the agent picker for a new session"] = function()
   local created
   local session = fake_session("session-1", "two")
