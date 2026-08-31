@@ -86,6 +86,46 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
   })
 end
 
+T["connect"]["ignores an unsolicited response after a completed request"] = function()
+  local calls = {}
+  local errors = {}
+  local fake_handle = {
+    is_closing = function()
+      return false
+    end,
+    write = function(_, data)
+      calls[#calls + 1] = data
+    end,
+  }
+  local original_system = nvim.system
+  set_system(function(_, options)
+    calls.stdout = options.stdout
+    return fake_handle
+  end)
+
+  local client = assert(Acp.connect({ command = "agent", args = {} }, {
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+  }))
+  assert(client:initialize())
+  set_system(original_system)
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n')
+
+  local completed = false
+  assert(client:prompt({ sessionId = "grok-session", prompt = {} }, function()
+    completed = true
+  end))
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}\n')
+
+  -- Captured immediately before Grok Session 01a05644-1efe-7d11-92f5-482a60f7f624
+  -- entered Error: proxy/sessions/<id>/log.jsonl emitted this unsolicited response.
+  calls.stdout(nil, '{"jsonrpc":"2.0","id":"skills-reload","result":{"result":{"reloaded":1}}}\n')
+
+  MiniTest.expect.equality(completed, true)
+  MiniTest.expect.equality(errors, {})
+end
+
 T["connect"]["rejects loading when the agent lacks loadSession capability"] = function()
   local calls = {}
   local fake_handle = {

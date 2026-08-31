@@ -72,10 +72,6 @@ local function receive_message(client, message)
 
   local callback = client.pending[message.id]
   if callback == nil then
-    local on_error = client.options.on_error
-    if on_error ~= nil then
-      on_error("received response for unknown request id")
-    end
     return
   end
   client.pending[message.id] = nil
