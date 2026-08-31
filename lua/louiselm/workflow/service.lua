@@ -65,6 +65,7 @@ end
 ---@field acp_session_id string
 ---@field cwd string
 ---@field state "cold_parked"
+---@field parked_at_ms integer Time when the current Park began.
 ---@field expires_at_ms integer
 ---@field generated_work { ceiling: integer, consumed: integer, reserved: integer }
 ---@field claims string[] Beads claims held by the durable Run.
@@ -288,6 +289,7 @@ function M.list(callback, system)
           or type(run.agent) ~= "string"
           or type(run.acp_session_id) ~= "string"
           or type(run.working_dir) ~= "string"
+          or type(run.parked_at_ms) ~= "number"
           or type(run.park_expires_at_ms) ~= "number"
           or type(run.generated_work) ~= "table"
           or type(run.generated_work.ceiling) ~= "number"
@@ -304,6 +306,7 @@ function M.list(callback, system)
           acp_session_id = run.acp_session_id,
           cwd = run.working_dir,
           state = run.state,
+          parked_at_ms = run.parked_at_ms,
           expires_at_ms = run.park_expires_at_ms,
           generated_work = {
             ceiling = run.generated_work.ceiling,

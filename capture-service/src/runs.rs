@@ -192,6 +192,8 @@ pub struct RunSummary {
     pub working_dir: String,
     /// Current durable state.
     pub state: String,
+    /// Time when the current Park began.
+    pub parked_at_ms: u64,
     /// Cold-Park expiry.
     pub park_expires_at_ms: u64,
     /// Run-wide generated-work accounting.
@@ -825,6 +827,9 @@ impl RunStore {
                     acp_session_id,
                     working_dir,
                     state: run.state,
+                    parked_at_ms: run.parked_at_ms.ok_or_else(|| {
+                        RunStoreError::Invalid("cold Park has no Park timestamp".to_owned())
+                    })?,
                     park_expires_at_ms: run.park_expires_at_ms,
                     generated_work: run.generated_work,
                     claims: run
@@ -835,7 +840,12 @@ impl RunStore {
                 });
             }
         }
-        summaries.sort_by(|left, right| left.id.cmp(&right.id));
+        summaries.sort_by(|left, right| {
+            right
+                .parked_at_ms
+                .cmp(&left.parked_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         Ok(summaries)
     }
 

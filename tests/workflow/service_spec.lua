@@ -199,7 +199,7 @@ T["lists durable Parks asynchronously"] = function()
       stderr = "",
       stdout = table.concat({
         '[{"id":"run","agent":"codex","acp_session_id":"acp","working_dir":"/tmp",',
-        '"state":"cold_parked","park_expires_at_ms":1,"generated_work":{"ceiling":5,',
+        '"state":"cold_parked","parked_at_ms":0,"park_expires_at_ms":1,"generated_work":{"ceiling":5,',
         '"consumed":0,"reserved":0},"claims":["issue"]}]',
       }),
     })
@@ -215,6 +215,7 @@ T["lists durable Parks asynchronously"] = function()
         acp_session_id = "acp",
         cwd = "/tmp",
         state = "cold_parked",
+        parked_at_ms = 0,
         expires_at_ms = 1,
         generated_work = { ceiling = 5, consumed = 0, reserved = 0 },
         claims = { "issue" },

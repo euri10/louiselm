@@ -516,6 +516,11 @@ fn resumable_listing_excludes_disposed_runs() {
     store
         .park_cold(draft(active_id), 3_000)
         .expect("park active");
+    let newest_id = "11111111-1111-4111-8111-111111111111";
+    admit(&store, newest_id);
+    store
+        .park_cold(draft(newest_id), 4_000)
+        .expect("park newest");
     store.reap_expired(3_602_000, |_| Ok(())).expect("reap");
 
     admit(&store, "66666666-6666-4666-8666-666666666666");
@@ -524,9 +529,35 @@ fn resumable_listing_excludes_disposed_runs() {
         .expect("park expired");
 
     let summaries = store.list_resumable(3_602_000).expect("list");
-    assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].id, active_id);
-    assert_eq!(summaries[0].claims, vec!["louiselm-qbr.3.3"]);
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].id, newest_id);
+    assert_eq!(summaries[0].parked_at_ms, 4_000);
+    assert_eq!(summaries[1].id, active_id);
+    assert_eq!(summaries[1].parked_at_ms, 3_000);
+    assert_eq!(summaries[1].claims, vec!["louiselm-qbr.3.3"]);
+}
+
+#[test]
+fn resumable_listing_ties_sort_by_run_id() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = RunStore::new(temporary.path()).expect("store");
+    let first_id = "11111111-1111-4111-8111-111111111111";
+    let second_id = "22222222-2222-4222-8222-222222222222";
+    admit(&store, first_id);
+    store.park_cold(draft(first_id), 1_000).expect("park first");
+    admit(&store, second_id);
+    store
+        .park_cold(draft(second_id), 1_000)
+        .expect("park second");
+
+    let summaries = store.list_resumable(0).expect("list");
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|summary| summary.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![first_id, second_id]
+    );
 }
 
 #[test]
