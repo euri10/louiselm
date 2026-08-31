@@ -166,6 +166,15 @@ configuration (requires `lua-language-server` on `PATH`):
 ./scripts/generate-api-appendix --check
 ```
 
+`lua/louiselm/types.lua` is generated from the configuration schema and ships
+with the plugin, so `lua-language-server` completes and type-checks the table
+you pass to `setup({...})`. Regenerate it after any change to `config.lua`:
+
+```sh
+./scripts/generate-luacats
+./scripts/generate-luacats --check
+```
+
 For interactive debugging, start `nvim -u ./tests/minimal_init.lua` and run
 `:lua MiniTest.run()`. Without `--headless`, Neovim intentionally stays open.
 

@@ -238,7 +238,15 @@ lua-language-server --check . --checklevel=Warning
 nvim --headless --noplugin -u ./tests/minimal_init.lua \
   -c "lua MiniTest.run()" -c "qa!"
 ./scripts/generate-api-appendix --check
+./scripts/generate-luacats --check
 ```
+
+`generate-luacats --check` fails whenever `config.lua`'s schema changed without
+regenerating `lua/louiselm/types.lua`, the `louiselm.Config` class that gives
+users completion inside `setup({...})`. Run `./scripts/generate-luacats` (no
+`--check`) and commit the result alongside the schema change. Note the direction:
+this generator reads the schema and writes annotations, the opposite of
+`generate-api-appendix`, which reads annotations and writes `doc/api.md`.
 
 `generate-api-appendix --check` fails whenever a public LuaCATS annotation
 (`---@field`, `---@class`, exported function signature, etc.) changed without
@@ -359,6 +367,15 @@ For all tests:
   months of wall-clock because every real agent entry omitted the optional field
   the default was keyed to. Green tests are not evidence that a conditional
   feature is reachable.
+- A generator is not done when its output function is tested; it is done when
+  its artifact is committed, consumed by something, and held current by a
+  `--check` gate. `gen_luacats.lua` passed its unit tests from 2026-08-06 while
+  writing no file and being referenced by nothing, so users got no `setup()`
+  completion for eight months
+  (`louiselm-luacats-generator-inert-5y8i`). Prove the artifact reaches its
+  consumer: for a type file that means running `lua-language-server --check`
+  against a scratch workspace that requires the plugin the way a user does, not
+  asserting on the generator's return value.
 - Async tests must model the production callback context, not only invoke the
   callback synchronously. Directly calling a process or transport callback is
   insufficient coverage for fast-event behavior.
@@ -527,6 +544,8 @@ Before completing a code task:
 - [ ] `lua-language-server` reports zero diagnostics.
 - [ ] Public APIs/failures are documented and typed; no error is swallowed or
       sensitive value logged.
+- [ ] If `config.lua`'s schema changed, `./scripts/generate-luacats` was re-run
+      and `lua/louiselm/types.lua` is part of this commit.
 - [ ] If a public LuaCATS annotation changed, `./scripts/generate-api-appendix`
       was re-run and `doc/api.md` is part of this commit.
 - [ ] Async UI/process tests exercise the production callback context; a

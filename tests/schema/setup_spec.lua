@@ -8,6 +8,11 @@ local T = MiniTest.new_set()
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+-- Deliberately `unknown`: these cases feed setup() unknown keys and missing required
+-- fields to prove the runtime validator rejects them. Typing this parameter would let
+-- the static type reject them first, at the call site, and the militant-validator
+-- coverage would never reach the code it exists to test.
+---@param config unknown
 local function capture_setup(config)
   local notifications = {}
   ---@diagnostic disable-next-line: undefined-global

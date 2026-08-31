@@ -178,6 +178,11 @@ jobs:
       - name: Verify generated Vimdoc
         run: ./scripts/generate-vimdoc --check
 
+      # Verified to fail, not merely to pass: 0 clean / 1 when the committed
+      # lua/louiselm/types.lua diverges from the config schema.
+      - name: Verify generated config types
+        run: ./scripts/generate-luacats --check
+
       - name: Run tests
         run: |
           nvim --headless --noplugin -u ./tests/minimal_init.lua \

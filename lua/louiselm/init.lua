@@ -16,7 +16,10 @@ local function notify(message, level)
 end
 
 ---Validate configuration and allow startup only when it is valid.
----@param config unknown User configuration to validate.
+---The annotated type is `lua/louiselm/types.lua`, generated from the schema by
+---`./scripts/generate-luacats`; it drives editor completion here, while the runtime
+---still validates the untouched user table and rejects anything the type misses.
+---@param config louiselm.Config? User configuration to validate.
 ---@return boolean ok False and a report when validation fails; true when startup may continue.
 ---@return louiselm.schema.Report? report Full validation report on failure.
 function M.setup(config)
