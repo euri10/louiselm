@@ -141,7 +141,9 @@ local function recorder_exited(entry, result)
     return
   end
   self.recording = nil
-  local succeeded = result.code == 0 or (entry.stopping and result.signal == 2)
+  -- `pw-record` exits with code 1, rather than signal 2, after SIGINT.
+  local stopped_normally = entry.stopping and result.signal == 0 and result.code == 1 and result.stderr == ""
+  local succeeded = result.code == 0 or (entry.stopping and result.signal == 2) or stopped_normally
   if not succeeded then
     complete(entry.callback, nil, "recorder failed: " .. process_error(result.stderr))
     return

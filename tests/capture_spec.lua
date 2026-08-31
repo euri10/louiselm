@@ -133,6 +133,40 @@ T["recorder"]["reports recorder failure without invoking ingestion"] = function(
   assert(ok, error_message)
 end
 
+T["recorder"]["accepts a stopped recorder with an audio file"] = function()
+  local runtime = fake_runtime()
+  local ok, error_message = pcall(function()
+    local capture = assert(Capture.new({
+      recorder = { "pw-record", "{output}" },
+      service = { "test-capture-service" },
+    }))
+    local id = assert(capture:start())
+    local output = runtime.processes[1].command[2]
+    nvim.fn.writefile({ "audio" }, output, "b")
+    local completed
+    assert(capture:stop(function(result, completion_error)
+      completed = { result = result, error_message = completion_error }
+    end))
+
+    runtime.processes[1].callback({ code = 1, signal = 0, stdout = "", stderr = "" })
+    runtime.scheduled[1]()
+
+    MiniTest.expect.equality(runtime.processes[2].command[2], "ingest-local")
+    runtime.processes[2].callback({
+      code = 0,
+      signal = 0,
+      stdout = nvim.json.encode({ id = id, outcome = "created" }),
+      stderr = "",
+    })
+    runtime.scheduled[2]()
+
+    MiniTest.expect.equality(completed.result.id, id)
+    MiniTest.expect.equality(completed.error_message, nil)
+  end)
+  runtime.restore()
+  assert(ok, error_message)
+end
+
 T["service"] = MiniTest.new_set()
 
 T["service"]["decodes capture listings after scheduling"] = function()
