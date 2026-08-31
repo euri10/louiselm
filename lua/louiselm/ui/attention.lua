@@ -203,14 +203,21 @@ enqueue = function(self, action)
   ensure_connection(self)
 end
 
-local function clear_entry(self, entry)
+local function forget_entry(self, entry)
   local id = entry_id(entry.key)
   if self.entries[id] ~= entry then
-    return
+    return false
   end
   self.entries[id] = nil
   if entry.session_id ~= nil and self.pending[entry.session_id] == entry then
     self.pending[entry.session_id] = nil
+  end
+  return true
+end
+
+local function clear_entry(self, entry)
+  if not forget_entry(self, entry) then
+    return
   end
   enqueue(self, {
     send = function(client, callback)
@@ -341,9 +348,20 @@ end
 ---@param self louiselm.ui.Attention
 ---@param session_id string Agent-side Session identifier.
 function Attention:seen(session_id)
-  clear_entries(self, function(entry)
-    return entry.session_id == session_id
-  end)
+  local entries = {}
+  for _, entry in pairs(self.entries) do
+    if entry.session_id == session_id then
+      entries[#entries + 1] = entry
+    end
+  end
+  for _, entry in ipairs(entries) do
+    forget_entry(self, entry)
+  end
+  enqueue(self, {
+    send = function(client, callback)
+      return client:clear_session(session_id, callback)
+    end,
+  })
 end
 
 ---Clear a ready condition when a new prompt starts.

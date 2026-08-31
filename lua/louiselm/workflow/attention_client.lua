@@ -28,6 +28,7 @@ Client.__index = Client
 ---@field upsert fun(self: louiselm.workflow.AttentionClient, attention: table, callback: fun(snapshot: table?, error_message?: string)): boolean, string?
 ---@field set_eligible fun(self: louiselm.workflow.AttentionClient, key: table, eligible: boolean, callback: fun(snapshot: table?, error_message?: string)): boolean, string?
 ---@field clear fun(self: louiselm.workflow.AttentionClient, key: table, callback: fun(snapshot: table?, error_message?: string)): boolean, string?
+---@field clear_session fun(self: louiselm.workflow.AttentionClient, session_id: string, callback: fun(snapshot: table?, error_message?: string)): boolean, string?
 
 local function close_pipe(pipe)
   if pipe ~= nil and not pipe:is_closing() then
@@ -249,6 +250,16 @@ end
 ---@return string? error_message
 function Client:clear(key, callback)
   return send(self, { type = "clear", key = key }, callback)
+end
+
+---Clear every Attention condition belonging to one Session.
+---@param self louiselm.workflow.AttentionClient
+---@param session_id string Agent-side Session identifier.
+---@param callback fun(snapshot: table?, error_message?: string)
+---@return boolean sent
+---@return string? error_message
+function Client:clear_session(session_id, callback)
+  return send(self, { type = "clear_session", session_id = session_id }, callback)
 end
 
 ---Dispose the transport and make queued or late callbacks inert.

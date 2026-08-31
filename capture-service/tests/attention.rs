@@ -66,9 +66,42 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
     let persisted = reopened.snapshot().expect("persisted");
     assert_eq!(persisted.generation, 2);
     assert!(persisted.items[0].eligible);
-    assert_eq!(reopened.clear(key()).expect("clear").generation, 3);
+    let older = AttentionDraft {
+        source_operation_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
+        ..draft()
+    };
+    assert_eq!(
+        reopened
+            .upsert(older)
+            .expect("second condition")
+            .items
+            .len(),
+        2
+    );
+    assert_eq!(
+        reopened
+            .clear_session(SESSION_ID)
+            .expect("clear session")
+            .generation,
+        4
+    );
+    assert!(
+        reopened
+            .snapshot()
+            .expect("session cleared")
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        reopened
+            .clear_session(SESSION_ID)
+            .expect("replay clear session")
+            .generation,
+        4
+    );
+    assert_eq!(reopened.clear(key()).expect("clear").generation, 4);
     assert!(reopened.snapshot().expect("cleared").items.is_empty());
-    assert_eq!(reopened.clear(key()).expect("replay clear").generation, 3);
+    assert_eq!(reopened.clear(key()).expect("replay clear").generation, 4);
 }
 
 #[test]
@@ -174,6 +207,31 @@ async fn attention_socket_requires_capability_and_retries_without_new_generation
         .expect("read")
         .expect("replay result");
     assert_eq!(store.snapshot().expect("replay").generation, 1);
+
+    let clear_session = serde_json::json!({
+        "type": "clear_session",
+        "request_id": "request-3",
+        "session_id": SESSION_ID,
+        "capability": capability
+    });
+    lines
+        .get_mut()
+        .write_all(format!("{clear_session}\n").as_bytes())
+        .await
+        .expect("clear session request");
+    let cleared: AttentionSocketMessage = serde_json::from_str(
+        &lines
+            .next_line()
+            .await
+            .expect("read")
+            .expect("clear result"),
+    )
+    .expect("clear result JSON");
+    assert!(matches!(
+        cleared,
+        AttentionSocketMessage::MutationResult { .. }
+    ));
+    assert!(store.snapshot().expect("session cleared").items.is_empty());
     server.abort();
     let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
 }

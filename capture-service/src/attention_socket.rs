@@ -69,6 +69,11 @@ enum ClientMessage {
         key: AttentionKey,
         capability: String,
     },
+    ClearSession {
+        request_id: String,
+        session_id: String,
+        capability: String,
+    },
 }
 
 /// Single owner of the local Attention listener and operator capability.
@@ -199,6 +204,11 @@ async fn handle_mutation(
             request_id,
             capability,
             ..
+        }
+        | ClientMessage::ClearSession {
+            request_id,
+            capability,
+            ..
         } => (request_id.clone(), capability),
         ClientMessage::Snapshot => unreachable!("snapshot handled separately"),
     };
@@ -219,6 +229,7 @@ async fn handle_mutation(
         ClientMessage::Upsert { attention, .. } => store.upsert(attention),
         ClientMessage::SetEligible { key, eligible, .. } => store.set_eligible(key, eligible),
         ClientMessage::Clear { key, .. } => store.clear(key),
+        ClientMessage::ClearSession { session_id, .. } => store.clear_session(&session_id),
         ClientMessage::Snapshot => unreachable!("snapshot handled separately"),
     };
     let message = match result {

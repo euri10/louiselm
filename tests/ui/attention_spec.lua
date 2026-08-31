@@ -13,6 +13,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
     disposed = false,
     upserts = {},
     clears = {},
+    clear_sessions = {},
     eligibilities = {},
   }
   function fake:upsert(value, callback)
@@ -30,6 +31,11 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
     callback({ generation = 3, items = {} })
     return true
   end
+  function fake:clear_session(session_id, callback)
+    self.clear_sessions[#self.clear_sessions + 1] = session_id
+    callback({ generation = 3, items = {} })
+    return true
+  end
   function fake:dispose()
     self.disposed = true
     return true
@@ -43,6 +49,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   ---@diagnostic disable-next-line: duplicate-set-field
   AttentionClient.connect = function(_, on_snapshot)
     connected = on_snapshot
+    fake.ready = false
     return fake
   end
 
@@ -68,6 +75,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   }
   attention:turn_done(state, false)
   MiniTest.expect.equality(fake.upserts, {})
+  fake.ready = true
   connected({ generation = 0, items = {} })
   MiniTest.expect.equality(#fake.upserts, 1)
   MiniTest.expect.equality(fake.upserts[1].subject_id, "session-1")
@@ -77,7 +85,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   MiniTest.expect.equality(#fake.eligibilities, 1)
   MiniTest.expect.equality(fake.eligibilities[1].value, true)
   attention:seen("session-1")
-  MiniTest.expect.equality(#fake.clears, 1)
+  MiniTest.expect.equality(fake.clear_sessions, { "session-1", "session-1" })
 
   attention:dispose()
   MiniTest.expect.equality(fake.disposed, true)
@@ -88,7 +96,7 @@ end
 T["deduplicates typed conditions and clears their authoritative transitions"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
-  local fake = { ready = true, disposed = false, upserts = {}, clears = {} }
+  local fake = { ready = true, disposed = false, upserts = {}, clears = {}, clear_sessions = {} }
   function fake:upsert(value, callback)
     self.upserts[#self.upserts + 1] = value
     callback({ generation = #self.upserts, items = {} })
@@ -101,6 +109,11 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   function fake:clear(key, callback)
     self.clears[#self.clears + 1] = key
     callback({ generation = #self.clears, items = {} })
+    return true
+  end
+  function fake:clear_session(session_id, callback)
+    self.clear_sessions[#self.clear_sessions + 1] = session_id
+    callback({ generation = #self.clear_sessions, items = {} })
     return true
   end
   function fake:dispose()
@@ -146,12 +159,12 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   MiniTest.expect.equality(#fake.upserts, 2)
   MiniTest.expect.equality(fake.upserts[2].linked_run_id, "11111111-2222-4333-8444-555555555555")
   attention:prompt_started("session-1")
-  MiniTest.expect.equality(#fake.clears, 2)
+  MiniTest.expect.equality(fake.clear_sessions, { "session-1" })
 
   attention:run_parked("11111111-2222-4333-8444-555555555555")
   MiniTest.expect.equality(#fake.upserts, 3)
   attention:run_resumed("11111111-2222-4333-8444-555555555555")
-  MiniTest.expect.equality(#fake.clears, 3)
+  MiniTest.expect.equality(#fake.clears, 2)
 
   attention:dispose()
   RunClient.read_operator_capability = original_read

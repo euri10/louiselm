@@ -330,6 +330,27 @@ impl AttentionStore {
         })
     }
 
+    /// Clear every condition belonging to one Session; repeating a clear is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid Session identifier and reports persistence failures.
+    pub fn clear_session(&self, session_id: &str) -> Result<AttentionSnapshot, AttentionError> {
+        validate_subject_id(session_id)?;
+        self.with_lock(|store| {
+            let mut state = store.load()?;
+            let previous = state.items.len();
+            state.items.retain(|item| {
+                item.subject_kind != AttentionSubjectKind::Session || item.subject_id != session_id
+            });
+            if state.items.len() != previous {
+                advance_generation(&mut state)?;
+                store.persist(&state)?;
+            }
+            Ok(snapshot(state))
+        })
+    }
+
     fn state_path(&self) -> PathBuf {
         self.root.join("attention.json")
     }
@@ -460,10 +481,17 @@ fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
 }
 
 fn validate_key(key: &AttentionKey) -> Result<(), AttentionError> {
-    if key.subject_id.is_empty()
-        || key.subject_id.len() > MAX_SESSION_ID_BYTES
-        || key
-            .subject_id
+    validate_subject_id(&key.subject_id)?;
+    if key.subject_kind == AttentionSubjectKind::Run {
+        validate_uuid(&key.subject_id, "Run subject_id")?;
+    }
+    validate_uuid(&key.source_operation_id, "source_operation_id")
+}
+
+fn validate_subject_id(subject_id: &str) -> Result<(), AttentionError> {
+    if subject_id.is_empty()
+        || subject_id.len() > MAX_SESSION_ID_BYTES
+        || subject_id
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
     {
@@ -471,10 +499,7 @@ fn validate_key(key: &AttentionKey) -> Result<(), AttentionError> {
             "subject_id is empty, too long, or contains whitespace".to_owned(),
         ));
     }
-    if key.subject_kind == AttentionSubjectKind::Run {
-        validate_uuid(&key.subject_id, "Run subject_id")?;
-    }
-    validate_uuid(&key.source_operation_id, "source_operation_id")
+    Ok(())
 }
 
 fn validate_linked_run(value: Option<&str>) -> Result<(), AttentionError> {
