@@ -28,10 +28,6 @@ local function valid_capability(value)
   return value ~= "", "must be a non-empty string"
 end
 
-local function removed_full_content()
-  return false, 'was removed; use skills.policy = "inject" for LouiseLM-managed skills'
-end
-
 M.schema = assert(Schema.define({
   agents = {
     type = "map-of",
@@ -141,12 +137,6 @@ M.schema = assert(Schema.define({
         default = "native",
         validator = valid_skill_policy,
         description = "Default Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation.",
-      },
-      full_content = {
-        type = "boolean",
-        default = false,
-        validator = removed_full_content,
-        description = 'Removed legacy full-content injection switch; migrate to skills.policy = "inject".',
       },
     },
   },

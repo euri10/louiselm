@@ -147,14 +147,16 @@ T["setup"]["rejects per-agent skill paths"] = function()
   MiniTest.expect.equality(report.errors[1].path, "agents.codex.skills.paths")
 end
 
-T["setup"]["rejects removed full-content injection with migration guidance"] = function()
+-- Replaces "rejects removed full-content injection with migration guidance", which
+-- asserted the retained migration message. The key stayed in the schema only to
+-- carry that message, which made it a settable field in generated completion and
+-- vimdoc (louiselm-types-advertise-full-content-naz6). Rejection is preserved; the
+-- closed schema supplies it now, so the field no longer has to exist to say no.
+T["setup"]["rejects removed full-content injection as an unknown key"] = function()
   local ok, report = capture_setup({ skills = { full_content = true } })
 
   MiniTest.expect.equality(ok, false)
-  MiniTest.expect.equality(
-    report.errors[1].message,
-    'skills.full_content: validation failed (was removed; use skills.policy = "inject" for LouiseLM-managed skills)'
-  )
+  MiniTest.expect.equality(report.errors[1].message, "skills.full_content: unknown key")
 end
 
 T["setup"]["registers chat commands for a valid setup"] = function()

@@ -40,6 +40,5 @@
 ---@field instructions_file? string Project-root filename attached as a resource_link on new sessions; empty disables.
 
 ---@class louiselm.ConfigSkills
----@field full_content? boolean Removed legacy full-content injection switch; migrate to skills.policy = "inject".
 ---@field paths? string[] Global directories searched for Agent Skills; relative paths resolve against each session workspace.
 ---@field policy? string Default Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation.

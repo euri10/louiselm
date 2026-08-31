@@ -373,13 +373,6 @@ skills                                                        *louiselm-config-s
     Description: Agent Skill discovery and injection settings.
 
 ------------------------------------------------------------------------------
-skills.full_content                                           *louiselm-config-skills-full-content*
-    Type: boolean
-    Default: false
-    Description: Removed legacy full-content injection switch; migrate to
-    skills.policy = "inject".
-
-------------------------------------------------------------------------------
 skills.paths                                                  *louiselm-config-skills-paths*
     Type: array of string
     Default: {}

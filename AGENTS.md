@@ -489,7 +489,12 @@ Configuration uses a closed schema:
 - Never hide invalid input with permissive deep merging or mutate user config.
   Apply defaults only after validation succeeds.
 - Deprecations warn with an exact replacement path; do not silently translate
-  old keys.
+  old keys. Do not keep a removed key in the schema merely to carry that
+  message: a declared field is emitted into `lua/louiselm/types.lua` and
+  `doc/louiselm.txt`, so the migration note becomes a completion entry
+  advertising a key `setup()` always rejects
+  (`louiselm-types-advertise-full-content-naz6`). Delete the field and let the
+  closed schema reject it as an unknown key, which section 1 already prefers.
 
 For ACP/JSON-RPC, validate consumed fields and reject malformed/contradictory
 messages, but ignore unknown optional fields from newer peers.
