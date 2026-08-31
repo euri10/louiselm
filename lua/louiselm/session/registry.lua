@@ -67,19 +67,6 @@ local registries = {} ---@type louiselm.session.Registry[]
 ---@field recoverable boolean Whether the Agent advertises ACP session/load.
 ---@field turn_active boolean Whether a prompt turn is still in flight.
 
----@param value unknown
----@return unknown result
-local function copy(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local result = {}
-  for key, item in pairs(value) do
-    result[key] = copy(item)
-  end
-  return result
-end
-
 ---@param self louiselm.session.Registry
 ---@param agent_name string
 ---@param state louiselm.session.LimitsState
@@ -87,7 +74,7 @@ end
 local function set_agent_limits(self, agent_name, state)
   self.agent_limits[agent_name] = state
   for listener in pairs(self.agent_limits_listeners) do
-    listener(copy(state))
+    listener(nvim.deepcopy(state))
   end
   return state
 end
@@ -819,7 +806,7 @@ function Registry:inspect_agent_limits(agent_name)
       end
       state.error = state.error or "no live limits-capable Session"
     end
-    return copy(state)
+    return nvim.deepcopy(state)
   end
   if source ~= nil then
     return { agent = agent_name, status = "loading" }
@@ -860,7 +847,7 @@ function Registry:refresh_agent_limits(agent_name, callback)
   local client = source.client
   if client == nil then
     local state = limits_failure(self, agent_name, "ACP account limits source disappeared")
-    callback(copy(state), state.error)
+    callback(nvim.deepcopy(state), state.error)
     return true
   end
   local source_id = source:inspect().id
@@ -874,17 +861,17 @@ function Registry:refresh_agent_limits(agent_name, callback)
       if rpc_error ~= nil then
         local message = "ACP account limits read failed: " .. tostring(rpc_error.message or "request failed")
         local state = limits_failure(self, agent_name, message)
-        callback(copy(state), message)
+        callback(nvim.deepcopy(state), message)
         return
       end
       local state, validation_error = accept_limits(self, agent_name, result)
-      callback(copy(state), validation_error)
+      callback(nvim.deepcopy(state), validation_error)
     end
   )
   if request_id == nil then
     local message = "ACP account limits read failed: " .. (request_error or "request could not be sent")
     local state = limits_failure(self, agent_name, message)
-    callback(copy(state), message)
+    callback(nvim.deepcopy(state), message)
     return false, message
   end
   return true

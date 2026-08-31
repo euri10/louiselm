@@ -1,8 +1,8 @@
 local SchemaVimdoc = require("louiselm.schema.gen_vimdoc")
 
-local M = {}
+local append_wrapped = SchemaVimdoc.append_wrapped
 
-local MAX_WIDTH = 78
+local M = {}
 
 ---@param title string
 ---@param tag string
@@ -10,29 +10,6 @@ local MAX_WIDTH = 78
 local function heading(title, tag)
   local padding = math.max(1, 62 - #title)
   return title .. string.rep(" ", padding) .. "*" .. tag .. "*"
-end
-
----@param lines string[]
----@param text string
----@param first_prefix string
----@param continuation_prefix string
-local function append_wrapped(lines, text, first_prefix, continuation_prefix)
-  local words = {}
-  for word in text:gmatch("%S+") do
-    words[#words + 1] = word
-  end
-
-  local current = first_prefix
-  for _, word in ipairs(words) do
-    local separator = current == first_prefix and "" or " "
-    if #current + #separator + #word <= MAX_WIDTH then
-      current = current .. separator .. word
-    else
-      lines[#lines + 1] = current
-      current = continuation_prefix .. word
-    end
-  end
-  lines[#lines + 1] = current
 end
 
 ---@param value string

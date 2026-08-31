@@ -359,14 +359,6 @@ function M.parse_beads_questions(output)
   return issues, nil
 end
 
----@param value string
----@return string
-local function trim(value)
-  local without_leading = value:gsub("^%s+", "")
-  local without_trailing = without_leading:gsub("%s+$", "")
-  return without_trailing
-end
-
 ---Collect commits from git and parse their commit messages.
 ---The completion callback is always scheduled out of vim.system's fast event.
 ---@param cwd string Absolute repository working directory.
@@ -395,7 +387,7 @@ function M.git_log(cwd, revision_range, callback)
   }, { cwd = cwd, text = true }, function(result)
     local function finish()
       if result.code ~= 0 then
-        local detail = trim(result.stderr or "")
+        local detail = nvim.trim(result.stderr or "")
         callback(nil, make_error("git_failed", "git log failed", detail ~= "" and detail or nil, result.code))
         return
       end
@@ -443,7 +435,7 @@ function M.bvr_history(cwd, bead_id, callback)
   }, { cwd = cwd, text = true }, function(result)
     local function finish()
       if result.code ~= 0 then
-        local detail = trim(result.stderr or "")
+        local detail = nvim.trim(result.stderr or "")
         callback(nil, make_error("bvr_failed", "bvr history failed", detail ~= "" and detail or nil, result.code))
         return
       end
@@ -486,7 +478,7 @@ function M.beads_issue(cwd, bead_id, callback)
     function(result)
       local function finish()
         if result.code ~= 0 then
-          local detail = trim(result.stderr or "")
+          local detail = nvim.trim(result.stderr or "")
           callback(nil, make_error("br_failed", "br issue lookup failed", detail ~= "" and detail or nil, result.code))
           return
         end
@@ -526,7 +518,7 @@ function M.beads_issues(cwd, callback)
     function(result)
       local function finish()
         if result.code ~= 0 then
-          local detail = trim(result.stderr or "")
+          local detail = nvim.trim(result.stderr or "")
           callback(nil, make_error("br_failed", "br issue list failed", detail ~= "" and detail or nil, result.code))
           return
         end
@@ -566,7 +558,7 @@ function M.beads_questions(cwd, callback)
     function(result)
       local function finish()
         if result.code ~= 0 then
-          local detail = trim(result.stderr or "")
+          local detail = nvim.trim(result.stderr or "")
           callback(nil, make_error("br_failed", "br question list failed", detail ~= "" and detail or nil, result.code))
           return
         end

@@ -101,19 +101,6 @@ local M = {}
 local Session = {}
 Session.__index = Session
 
----@param value unknown
----@return unknown copy
-local function copy(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local result = {}
-  for key, item in pairs(value) do
-    result[key] = copy(item)
-  end
-  return result
-end
-
 -- Claude's SDK default for recent models streams signature-only "thinking"
 -- blocks (`display = "omitted"`, empty text), so a Claude Session never shows
 -- a `[thinking]` fold unless something requests summarized display.
@@ -142,7 +129,7 @@ local function session_meta(definition)
   if type(claude_options) == "table" and claude_options.thinking ~= nil then
     return meta
   end
-  local result = copy(meta) or {}
+  local result = nvim.deepcopy(meta) or {}
   result.claudeCode = result.claudeCode or {}
   result.claudeCode.options = result.claudeCode.options or {}
   result.claudeCode.options.thinking = CLAUDE_THINKING_DEFAULT
@@ -348,7 +335,7 @@ local function handle_notification(self, message)
     if self.state.context ~= nil and previous_model ~= nil and previous_model ~= current_model then
       self.state.context.stale = true
     end
-    emit(self, "config_options_changed", copy(options))
+    emit(self, "config_options_changed", nvim.deepcopy(options))
   elseif update_type == "usage_update" then
     local context, cost, cost_present = Validation.usage_update(update)
     if context == nil then
@@ -357,7 +344,7 @@ local function handle_notification(self, message)
       -- stale (if any) rather than destroying an otherwise healthy Session.
       if self.state.context ~= nil then
         self.state.context.stale = true
-        emit(self, "usage_updated", copy({ context = self.state.context, cost = self.state.cost }))
+        emit(self, "usage_updated", nvim.deepcopy({ context = self.state.context, cost = self.state.cost }))
       end
       return
     end
@@ -365,11 +352,11 @@ local function handle_notification(self, message)
     if cost_present then
       self.state.cost = cost
     end
-    emit(self, "usage_updated", copy({ context = context, cost = self.state.cost }))
+    emit(self, "usage_updated", nvim.deepcopy({ context = context, cost = self.state.cost }))
   elseif update_type == "available_commands_update" then
     local commands, diagnostics = Validation.available_commands(update.availableCommands)
     self.state.commands = commands
-    emit(self, "commands_changed", { commands = copy(commands), diagnostics = diagnostics })
+    emit(self, "commands_changed", { commands = nvim.deepcopy(commands), diagnostics = diagnostics })
   end
 end
 
@@ -626,7 +613,7 @@ local function handle_initialized(self, result, rpc_error)
     end
     local options, options_error
     if self.load_session_id ~= nil and session_result.configOptions == nil then
-      options = copy(self.state.config_options)
+      options = nvim.deepcopy(self.state.config_options)
     else
       local config_options
       if type(session_result) == "table" and session_result ~= nvim.NIL then
@@ -803,7 +790,7 @@ end
 ---@param self louiselm.session.Session
 ---@return louiselm.session.State state Copy of current state.
 function Session:inspect()
-  local state = copy(self.state)
+  local state = nvim.deepcopy(self.state)
   state.acp_session_id = self.acp_session_id
   ---@cast state louiselm.session.State
   return state
@@ -966,9 +953,9 @@ function Session:set_config_option(id, value, callback)
       self.state.context.stale = true
     end
     set_status(self, "ready")
-    emit(self, "config_options_changed", copy(options))
+    emit(self, "config_options_changed", nvim.deepcopy(options))
     if callback ~= nil then
-      callback(copy(options))
+      callback(nvim.deepcopy(options))
     end
   end)
   if request_id == nil then

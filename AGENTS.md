@@ -511,6 +511,14 @@ Prefer APIs in this order:
 Never use private `vim._*` APIs. Do not monkey-patch globals or Neovim APIs,
 mutate `package.path` at runtime, or depend on deprecated APIs.
 
+- Around 44 modules reference Neovim nowhere — the schema, workflow-definition,
+  routing, permission, skills, and doc-generator layers. That is what lets them
+  be tested as pure logic. Do not introduce the first `vim.*` call into such a
+  module to replace a local helper: swapping a six-line `trim` for `vim.trim`
+  buys nothing and costs the module its independence. Check with
+  `grep -L 'local nvim = vim' <file>` before reaching for the stdlib in an
+  unfamiliar file. Where a module already uses Neovim, prefer `vim.*` over a
+  hand-rolled equivalent (`louiselm-stdlib-helper-cleanup-kw5m`).
 - Never block Neovim's main loop with waits, polling, sleeps, or heavy work.
 - Spawn processes with `vim.system()` and argument arrays, never shell-built
   command strings, `os.execute`, or `io.popen`.

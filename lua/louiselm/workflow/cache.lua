@@ -96,8 +96,6 @@ local function copy(value)
   return cloned
 end
 
-M.copy = copy
-
 ---@class louiselm.workflow.Cache
 ---@field entries table<string, louiselm.workflow.Result>
 ---@field hits integer

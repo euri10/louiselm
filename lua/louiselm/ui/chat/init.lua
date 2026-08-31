@@ -241,67 +241,80 @@ end
 ---@field stop fun(self: louiselm.ui.LimitsTimer)
 ---@field close fun(self: louiselm.ui.LimitsTimer)
 
+---Copy a caller-owned array, rejecting a sparse table and any item `build` refuses.
+---The density check is not pedantry: these values cross the headless session API, and a
+---hole would silently truncate every later read that trusts `#value`.
+---@generic T
 ---@param value unknown
----@param label string
----@return string[]? values
+---@param invalid string Error when the value is not a table.
+---@param sparse string Error when the table has holes or non-sequential keys.
+---@param build fun(item: unknown, index: integer): T?, string? Copy one item, or reject it.
+---@return T[]? values
 ---@return string? error_message
-local function copy_string_array(value, label)
+local function copy_dense(value, invalid, sparse, build)
   if value == nil then
     return {}
   end
   if type(value) ~= "table" then
-    return nil, "chat " .. label .. " must be a string[]"
+    return nil, invalid
   end
   local values = {}
-  for index = 1, #value do
-    if type(value[index]) ~= "string" or value[index] == "" then
-      return nil, "chat " .. label .. " must be a string[]"
+  for index, item in ipairs(value) do
+    local built, build_error = build(item, index)
+    if built == nil then
+      return nil, build_error
     end
-    values[index] = value[index]
+    values[index] = built
   end
   for key in pairs(value) do
     if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
-      return nil, "chat " .. label .. " must be a dense string[]"
+      return nil, sparse
     end
   end
   return values
 end
 
 ---@param value unknown
+---@param label string
+---@return string[]? values
+---@return string? error_message
+local function copy_string_array(value, label)
+  local invalid = "chat " .. label .. " must be a string[]"
+  return copy_dense(value, invalid, "chat " .. label .. " must be a dense string[]", function(item)
+    if type(item) ~= "string" or item == "" then
+      return nil, invalid
+    end
+    return item
+  end)
+end
+
+---@param value unknown
 ---@return louiselm.skills.Skill[]? skills
 ---@return string? error_message
 local function copy_skills(value)
-  if value == nil then
-    return {}
-  end
-  if type(value) ~= "table" then
-    return nil, "chat skills must be a skill[]"
-  end
-  local skills = {}
-  for index, skill in ipairs(value) do
-    if
-      type(skill) ~= "table"
-      or type(skill.name) ~= "string"
-      or skill.name == ""
-      or type(skill.description) ~= "string"
-      or type(skill.path) ~= "string"
-    then
-      return nil, string.format("chat skill at index %d is malformed", index)
+  return copy_dense(
+    value,
+    "chat skills must be a skill[]",
+    "chat skills must be a dense skill[]",
+    function(skill, index)
+      if
+        type(skill) ~= "table"
+        or type(skill.name) ~= "string"
+        or skill.name == ""
+        or type(skill.description) ~= "string"
+        or type(skill.path) ~= "string"
+      then
+        return nil, string.format("chat skill at index %d is malformed", index)
+      end
+      return {
+        name = skill.name,
+        description = skill.description,
+        path = skill.path,
+        explicit_only = skill.explicit_only == true,
+        phase = skill.phase,
+      }
     end
-    skills[index] = {
-      name = skill.name,
-      description = skill.description,
-      path = skill.path,
-      explicit_only = skill.explicit_only == true,
-      phase = skill.phase,
-    }
-  end
-  for key in pairs(value) do
-    if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
-      return nil, "chat skills must be a dense skill[]"
-    end
-  end
-  return skills
+  )
 end
 
 ---@param item unknown
@@ -316,25 +329,17 @@ end
 ---@return louiselm.ui.ContextItem[]? contexts
 ---@return string? error_message
 local function copy_initial_contexts(value)
-  if value == nil then
-    return {}
-  end
-  if type(value) ~= "table" then
-    return nil, "chat initial contexts must be a context[]"
-  end
-  local contexts = {}
-  for index, item in ipairs(value) do
-    if not is_context_item(item) then
-      return nil, string.format("chat initial context at index %d is malformed", index)
+  return copy_dense(
+    value,
+    "chat initial contexts must be a context[]",
+    "chat initial contexts must be a dense context[]",
+    function(item, index)
+      if not is_context_item(item) then
+        return nil, string.format("chat initial context at index %d is malformed", index)
+      end
+      return { label = item.label, text = item.text, uri = item.uri }
     end
-    contexts[index] = { label = item.label, text = item.text, uri = item.uri }
-  end
-  for key in pairs(value) do
-    if type(key) ~= "number" or key < 1 or key > #value or key % 1 ~= 0 then
-      return nil, "chat initial contexts must be a dense context[]"
-    end
-  end
-  return contexts
+  )
 end
 
 ---@param buffer integer
@@ -1099,22 +1104,6 @@ local function queue_injected_skill(self, view, skill)
   return true
 end
 
----@param value string
----@return string[] lines Split text while preserving a trailing empty line.
-local function split_lines(value)
-  local lines = {}
-  local start = 1
-  while true do
-    local newline = string.find(value, "\n", start, true)
-    if newline == nil then
-      lines[#lines + 1] = string.sub(value, start)
-      return lines
-    end
-    lines[#lines + 1] = string.sub(value, start, newline - 1)
-    start = newline + 1
-  end
-end
-
 ---@class louiselm.ui.ContextFold
 ---@field first integer Zero-based first folded line.
 ---@field last integer Zero-based last folded line.
@@ -1299,7 +1288,7 @@ local function open_tool_inspector(self, view, id)
   if entry == nil then
     return false, "tool-call payload is unavailable"
   end
-  local lines = split_lines(nvim.inspect(entry.raw or {}))
+  local lines = nvim.split(nvim.inspect(entry.raw or {}), "\n", { plain = true })
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
   nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
@@ -1344,7 +1333,7 @@ local function replace_submitted_prompt(view, text, contexts)
     for _, item in ipairs(contexts) do
       lines[#lines + 1] = "[context: " .. single_line(item.label) .. "]"
       if item.text ~= nil then
-        nvim.list_extend(lines, split_lines(item.text))
+        nvim.list_extend(lines, nvim.split(item.text, "\n", { plain = true }))
       else
         local block = context_content(item)
         lines[#lines + 1] = "type: " .. block.type
@@ -1357,7 +1346,7 @@ local function replace_submitted_prompt(view, text, contexts)
       last = view.prompt_line + #lines - 1,
     }
   end
-  for _, line in ipairs(split_lines(text)) do
+  for _, line in ipairs(nvim.split(text, "\n", { plain = true })) do
     lines[#lines + 1] = "> " .. line
   end
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
@@ -1417,7 +1406,7 @@ end
 ---@return integer line_count
 local function replace_prompt(view, text)
   local prompt_line = current_prompt_line(view)
-  local lines = split_lines(text)
+  local lines = nvim.split(text, "\n", { plain = true })
   for index, line in ipairs(lines) do
     lines[index] = "> " .. line
   end
@@ -1762,7 +1751,7 @@ end
 insert_transcript = function(self, view, lines)
   local replacement = {}
   for _, line in ipairs(lines) do
-    for _, part in ipairs(split_lines(line)) do
+    for _, part in ipairs(nvim.split(line, "\n", { plain = true })) do
       replacement[#replacement + 1] = part
     end
   end
@@ -1785,7 +1774,7 @@ local function flush_terminal_completion(self, view, text)
   if view.last_block_kind == "tool" or view.last_block_kind == "reasoning" then
     lines[#lines + 1] = ""
   end
-  nvim.list_extend(lines, split_lines(text))
+  nvim.list_extend(lines, nvim.split(text, "\n", { plain = true }))
   lines[#lines + 1] = ""
   insert_transcript(self, view, lines)
   view.last_block_kind = "prose"
@@ -2307,7 +2296,7 @@ local function handle_event(self, view, event)
       view.replay_turn = view.replay_turn + 1
       view.replay_user_open = true
     end
-    local lines = split_lines(text)
+    local lines = nvim.split(text, "\n", { plain = true })
     for index, line in ipairs(lines) do
       lines[index] = "> " .. line
     end
@@ -2329,7 +2318,7 @@ local function handle_event(self, view, event)
     close_tool_fold_run(view)
     close_thought_fold_run(view)
     if not view.response_started then
-      local lines = split_lines(text)
+      local lines = nvim.split(text, "\n", { plain = true })
       local insertion_line = view.response_tail
         or (view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1)
       if view.response_tail ~= nil then
@@ -2354,7 +2343,7 @@ local function handle_event(self, view, event)
       return
     end
     local current = nvim.api.nvim_buf_get_lines(view.buffer, view.response_tail, view.response_tail + 1, false)[1] or ""
-    local lines = split_lines(current .. text)
+    local lines = nvim.split(current .. text, "\n", { plain = true })
     nvim.api.nvim_buf_set_lines(view.buffer, view.response_tail, view.response_tail + 1, false, lines)
     local added = #lines - 1
     view.response_tail = view.response_tail + added
@@ -2389,14 +2378,14 @@ local function handle_event(self, view, event)
       view.last_block_kind = "reasoning"
     end
     if run.last == run.first then
-      local lines = split_lines(text)
+      local lines = nvim.split(text, "\n", { plain = true })
       nvim.api.nvim_buf_set_lines(view.buffer, run.first + 1, run.first + 1, false, lines)
       run.last = run.first + #lines
       view.transcript_tail = run.last
       mark_prompt(view, view.prompt_line + #lines)
     else
       local current = nvim.api.nvim_buf_get_lines(view.buffer, run.last, run.last + 1, false)[1] or ""
-      local lines = split_lines(current .. text)
+      local lines = nvim.split(current .. text, "\n", { plain = true })
       nvim.api.nvim_buf_set_lines(view.buffer, run.last, run.last + 1, false, lines)
       local added = #lines - 1
       run.last = run.last + added
@@ -3666,7 +3655,7 @@ function Chat:to_markdown(session_id, path)
   local state = view.session:inspect()
   local destination = path or default_markdown_path(state)
   local markdown = Transcript.render(view.transcript:snapshot(), state)
-  local ok, result = pcall(nvim.fn.writefile, split_lines(markdown), destination)
+  local ok, result = pcall(nvim.fn.writefile, nvim.split(markdown, "\n", { plain = true }), destination)
   if not ok or result ~= 0 then
     return nil, "could not write markdown file: " .. destination
   end

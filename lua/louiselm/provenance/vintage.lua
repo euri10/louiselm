@@ -30,12 +30,6 @@ local function make_error(code, message, detail, exit_code)
   return { code = code, message = message, detail = detail, exit_code = exit_code }
 end
 
----@param value string
----@return string
-local function trim(value)
-  return (value:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
 ---Parse a Beads JSONL snapshot without filtering issue statuses.
 ---@param output string JSON object per line.
 ---@return louiselm.provenance.VintageIssue[]? issues
@@ -47,7 +41,7 @@ function M.parse_issues(output)
   local issues = {}
   local by_id = {}
   for line in (output .. "\n"):gmatch("(.-)\n") do
-    line = trim(line)
+    line = nvim.trim(line)
     if line ~= "" then
       local decoded_ok, value = pcall(nvim.json.decode, line)
       if not decoded_ok or type(value) ~= "table" or type(value.id) ~= "string" or value.id == "" then
@@ -136,7 +130,7 @@ function M.load(cwd, ref, callback)
     function(result)
       nvim.schedule(function()
         if result.code ~= 0 then
-          local detail = trim(result.stderr or "")
+          local detail = nvim.trim(result.stderr or "")
           callback(
             nil,
             make_error(

@@ -52,16 +52,6 @@ local function validate_command(value, label, require_output)
   return value
 end
 
----@param value string[]
----@return string[]
-local function copy(value)
-  local result = {}
-  for index, item in ipairs(value) do
-    result[index] = item
-  end
-  return result
-end
-
 ---@param value unknown
 ---@return string
 local function process_error(value)
@@ -115,7 +105,7 @@ end
 ---@return boolean started
 ---@return string? error_message
 function Capture:run_service(arguments, decode_json, callback)
-  local command = copy(self.service)
+  local command = nvim.deepcopy(self.service)
   for _, argument in ipairs(arguments) do
     command[#command + 1] = argument
   end
@@ -209,8 +199,8 @@ function M.new(config)
     return nil, service_error
   end
   local capture = setmetatable({
-    recorder = copy(recorder),
-    service = copy(service),
+    recorder = nvim.deepcopy(recorder),
+    service = nvim.deepcopy(service),
   }, Capture)
   return capture, nil
 end

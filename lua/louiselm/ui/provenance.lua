@@ -15,6 +15,21 @@ local M = {}
 ---@field is_active? fun(): boolean Whether the requesting view still exists.
 ---@field on_error? fun(message: string) Receives expected lookup or display failures.
 
+---Yield the single candidate the cursor sits inside. Ambiguity is not resolved by
+---proximity: two candidates on one line means no answer, so an inspect keymap never
+---guesses which id the user meant.
+---@param matches { start_index: integer, value: string, length: integer }[]
+---@param column integer Zero-based byte column.
+---@return string?
+local function only_match_at(matches, column)
+  if #matches ~= 1 then
+    return nil
+  end
+  local match = matches[1]
+  local end_index = match.start_index + match.length - 1
+  return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
+end
+
 ---@param value string
 ---@return boolean
 local function valid_sha(value)
@@ -28,15 +43,10 @@ local function sha_at_cursor(line, column)
   local matches = {}
   for start_index, value in line:gmatch("()([0-9a-fA-F]+)") do
     if #value >= 7 and #value <= 40 then
-      matches[#matches + 1] = { start_index = start_index, value = value }
+      matches[#matches + 1] = { start_index = start_index, value = value, length = #value }
     end
   end
-  if #matches ~= 1 then
-    return nil
-  end
-  local match = matches[1]
-  local end_index = match.start_index + #match.value - 1
-  return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
+  return only_match_at(matches, column)
 end
 
 ---@param value string
@@ -52,15 +62,10 @@ local function issue_id_at_cursor(line, column)
   local matches = {}
   for start_index, value in line:gmatch("()([%a][%w%-]*%-%w[%w%.%-]*)") do
     if valid_issue_id(value) then
-      matches[#matches + 1] = { start_index = start_index, value = value }
+      matches[#matches + 1] = { start_index = start_index, value = value, length = #value }
     end
   end
-  if #matches ~= 1 then
-    return nil
-  end
-  local match = matches[1]
-  local end_index = match.start_index + #match.value - 1
-  return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
+  return only_match_at(matches, column)
 end
 
 ---@param value string
@@ -86,39 +91,37 @@ local function session_id_at_cursor(line, column)
     value = value:gsub("[,;%.%)]+$", "")
     local normalized = normalize_session_id(value)
     if valid_session_id(normalized) then
-      matches[#matches + 1] = { start_index = start_index, value = normalized, raw_value = value }
+      matches[#matches + 1] = { start_index = start_index, value = normalized, length = #value }
     end
   end
-  if #matches ~= 1 then
-    return nil
-  end
-  local match = matches[1]
-  local end_index = match.start_index + #match.raw_value - 1
-  return match.start_index <= column + 1 and column + 1 <= end_index and match.value or nil
+  return only_match_at(matches, column)
+end
+
+---@param buffer integer
+---@param extract fun(line: string, column: integer): string?
+---@return string?
+local function current_token(buffer, extract)
+  local cursor = nvim.api.nvim_win_get_cursor(0)
+  local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
+  return type(line) == "string" and extract(line, cursor[2]) or nil
 end
 
 ---@param buffer integer
 ---@return string? sha
 local function current_sha(buffer)
-  local cursor = nvim.api.nvim_win_get_cursor(0)
-  local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
-  return type(line) == "string" and sha_at_cursor(line, cursor[2]) or nil
+  return current_token(buffer, sha_at_cursor)
 end
 
 ---@param buffer integer
 ---@return string? issue_id
 local function current_issue(buffer)
-  local cursor = nvim.api.nvim_win_get_cursor(0)
-  local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
-  return type(line) == "string" and issue_id_at_cursor(line, cursor[2]) or nil
+  return current_token(buffer, issue_id_at_cursor)
 end
 
 ---@param buffer integer
 ---@return string? session_id
 local function current_session(buffer)
-  local cursor = nvim.api.nvim_win_get_cursor(0)
-  local line = nvim.api.nvim_buf_get_lines(buffer, cursor[1] - 1, cursor[1], false)[1]
-  return type(line) == "string" and session_id_at_cursor(line, cursor[2]) or nil
+  return current_token(buffer, session_id_at_cursor)
 end
 
 ---@param options louiselm.ui.ProvenanceOptions

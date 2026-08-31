@@ -61,6 +61,7 @@ end
 ---@param text string
 ---@param first_prefix string
 ---@param continuation_prefix string
+---Shared with `louiselm.docs.vimdoc`, which wraps the same 78-column Vimdoc body.
 local function append_wrapped(lines, text, first_prefix, continuation_prefix)
   local words = {}
   for word in text:gmatch("%S+") do
@@ -198,5 +199,7 @@ function M.generate(schema)
   lines[#lines + 1] = ""
   return table.concat(lines, "\n") .. "\n"
 end
+
+M.append_wrapped = append_wrapped
 
 return M

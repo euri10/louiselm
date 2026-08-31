@@ -27,20 +27,6 @@ Inline.__index = Inline
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
-local function split_lines(value)
-  local lines = {}
-  local start = 1
-  while true do
-    local newline = value:find("\n", start, true)
-    if newline == nil then
-      lines[#lines + 1] = value:sub(start)
-      return lines
-    end
-    lines[#lines + 1] = value:sub(start, newline - 1)
-    start = newline + 1
-  end
-end
-
 ---@param value unknown
 ---@return string[]? agents
 ---@return string? error_message
@@ -89,9 +75,9 @@ local function handle_event(self, event)
       assert(self.start_col),
       assert(self.end_row),
       assert(self.end_col),
-      split_lines(self.response)
+      nvim.split(self.response, "\n", { plain = true })
     )
-    local lines = split_lines(self.response)
+    local lines = nvim.split(self.response, "\n", { plain = true })
     self.end_row = assert(self.start_row) + #lines - 1
     self.end_col = #lines == 1 and assert(self.start_col) + #lines[1] or #lines[#lines]
   elseif event.type == "turn_done" or event.type == "error" then
