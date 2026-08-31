@@ -17,5 +17,6 @@ if [ ! -e "$config_root/louiselm/capture.env" ]; then
 fi
 
 systemctl --user daemon-reload
-systemctl --user enable --now louiselm-capture.service
+systemctl --user enable louiselm-capture.service
+systemctl --user restart louiselm-capture.service
 systemctl --user --no-pager status louiselm-capture.service
