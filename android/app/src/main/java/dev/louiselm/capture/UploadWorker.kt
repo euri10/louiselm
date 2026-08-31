@@ -67,3 +67,6 @@ internal fun uploadWorkPolicy(replaceExisting: Boolean): ExistingWorkPolicy = if
 } else {
     ExistingWorkPolicy.APPEND_OR_REPLACE
 }
+
+internal fun shouldReplaceUploadWorkAfterPairing(transition: PairingTransition): Boolean =
+    transition == PairingTransition.RECEIVER_MIGRATION

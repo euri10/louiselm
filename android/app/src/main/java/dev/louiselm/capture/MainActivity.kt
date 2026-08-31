@@ -368,7 +368,10 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 setPairingBusy(false)
                 result.onSuccess {
-                    UploadWorker.enqueue(applicationContext)
+                    UploadWorker.enqueue(
+                        applicationContext,
+                        replaceExisting = shouldReplaceUploadWorkAfterPairing(plan.transition),
+                    )
                     refreshStatus()
                 }.onFailure { error ->
                     refreshStatus(getString(R.string.pairing_failed, error.message ?: "receiver unavailable"))

@@ -9,6 +9,13 @@ import org.junit.Test
 
 class UploadWorkerTest {
     @Test
+    fun receiverMigrationReplacesExistingUploadWork() {
+        assertTrue(shouldReplaceUploadWorkAfterPairing(PairingTransition.RECEIVER_MIGRATION))
+        assertFalse(shouldReplaceUploadWorkAfterPairing(PairingTransition.FIRST_PAIR))
+        assertFalse(shouldReplaceUploadWorkAfterPairing(PairingTransition.ENDPOINT_UPDATE))
+    }
+
+    @Test
     fun explicitReplacementReplacesBackedOffUploadWork() {
         assertEquals(ExistingWorkPolicy.REPLACE, uploadWorkPolicy(replaceExisting = true))
         assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, uploadWorkPolicy(replaceExisting = false))
