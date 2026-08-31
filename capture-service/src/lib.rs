@@ -1,11 +1,14 @@
 //! Durable, local-first capture records and filesystem storage.
 
+mod attention;
+mod attention_socket;
 pub mod cli;
 mod generation;
 mod identity;
 mod model;
 mod network;
 mod openai;
+mod operator_socket;
 mod pairing;
 mod permissions;
 mod receiver;
@@ -15,6 +18,11 @@ mod store;
 mod time;
 mod transcription;
 
+pub use attention::{
+    AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind, AttentionSnapshot,
+    AttentionStore, AttentionSubjectKind, AttentionSummary,
+};
+pub use attention_socket::{AttentionSocket, AttentionSocketError, AttentionSocketMessage};
 pub use generation::{
     BeadsGenerator, CommandOutput, GenerateRequest, GeneratedIssue, GenerationError,
     mutation_external_ref,

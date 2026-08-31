@@ -7,7 +7,10 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use louiselm_capture::{CaptureDraft, CaptureSource, PairingRegistry, Receiver, Store};
+use louiselm_capture::{
+    AttentionDraft, AttentionKind, AttentionStore, AttentionSubjectKind, CaptureDraft,
+    CaptureSource, PairingRegistry, Receiver, Store,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -255,5 +258,108 @@ async fn pairing_json_is_bounded_before_deserialization() {
     assert_eq!(
         app.oneshot(request).await.expect("response").status(),
         StatusCode::PAYLOAD_TOO_LARGE
+    );
+}
+
+#[tokio::test]
+async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = Store::new(temporary.path().join("captures")).expect("store");
+    let attention = AttentionStore::new(temporary.path().join("attention")).expect("attention");
+    attention
+        .upsert(AttentionDraft {
+            subject_kind: AttentionSubjectKind::Run,
+            subject_id: "11111111-2222-4333-8444-555555555555".to_owned(),
+            kind: AttentionKind::RunParked,
+            source_operation_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
+            created_at_ms: 1765000000000,
+            linked_run_id: None,
+            stage: Some("review".to_owned()),
+        })
+        .expect("attention");
+    let pairing = Arc::new(PairingRegistry::open(temporary.path().join("state")).expect("pairing"));
+    let offer = pairing
+        .issue(
+            "https://192.0.2.1:7391",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            now_ms(),
+            60_000,
+        )
+        .expect("offer");
+    let credential = pairing
+        .consume(&offer.token, "phone", now_ms())
+        .expect("pair")
+        .credential;
+    let receiver = Receiver::with_attention(
+        store,
+        attention,
+        pairing.clone(),
+        temporary.path().join("uploads"),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("receiver");
+    let app = receiver.router();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/attention")
+                .header("authorization", format!("Bearer {credential}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 8 * 1024)
+            .await
+            .expect("body"),
+    )
+    .expect("snapshot JSON");
+    assert_eq!(snapshot["generation"], 1);
+    assert_eq!(snapshot["items"][0]["reason"], "Run is Parked");
+    assert!(snapshot["items"][0].get("arbitrary_text").is_none());
+
+    assert_eq!(
+        app.clone()
+            .oneshot(
+                Request::get("/v1/attention")
+                    .body(Body::empty())
+                    .expect("unauthorized request"),
+            )
+            .await
+            .expect("unauthorized response")
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(
+                Request::post("/v1/attention")
+                    .header("authorization", format!("Bearer {credential}"))
+                    .body(Body::empty())
+                    .expect("write request"),
+            )
+            .await
+            .expect("write response")
+            .status(),
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    let device_id = pairing.status().expect("status").devices[0]
+        .device_id
+        .clone();
+    pairing.revoke(&device_id).expect("revoke");
+    assert_eq!(
+        app.oneshot(
+            Request::get("/v1/attention")
+                .header("authorization", format!("Bearer {credential}"))
+                .body(Body::empty())
+                .expect("revoked request"),
+        )
+        .await
+        .expect("revoked response")
+        .status(),
+        StatusCode::UNAUTHORIZED
     );
 }

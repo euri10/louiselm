@@ -32,4 +32,16 @@
     <string name="less_than_minute">less than a minute</string>
     <string name="minutes_age">%1$d min</string>
     <string name="hours_age">%1$d h</string>
+    <string name="attention_title">Attention inbox</string>
+    <string name="attention_unpaired">Pair a receiver to view Attention.</string>
+    <string name="attention_empty">Nothing needs attention.</string>
+    <string name="attention_count">%1$d item(s) need attention.</string>
+    <string name="attention_session">Session: %1$s</string>
+    <string name="attention_run">Run: %1$s</string>
+    <string name="attention_linked_run">Linked Run: %1$s</string>
+    <string name="attention_stage">Stage: %1$s</string>
+    <string name="attention_age">Age: %1$s</string>
+    <string name="attention_retry">Refresh inbox</string>
+    <string name="attention_retry_state">Inbox unavailable: %1$s The last safe screen is retained.</string>
+    <string name="attention_operator_state">Inbox requires operator action: %1$s</string>
 </resources>

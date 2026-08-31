@@ -1,0 +1,75 @@
+include:
+  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform@9.4.0
+    inputs:
+      image: ghcr.io/opentofu/opentofu:1.12.3
+      project-dir: infra/firebase
+      gitlab-backend-disabled: false
+      fmt-enabled: true
+      validate-enabled: true
+      prod-enabled: true
+      prod-plan-enabled: true
+  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform-gcp@9.4.0
+    inputs:
+      gcp-oidc-aud: $CI_SERVER_URL
+      gcp-prod-oidc-provider: $GCP_OIDC_PROVIDER
+      gcp-prod-oidc-account: $GCP_OIDC_ACCOUNT
+
+variables:
+  # Public validation does not receive backend credentials or an ID token.
+  TF_PROD_ENABLED: "true"
+  TF_PROD_PLAN_ENABLED: "true"
+  TF_PROD_APPLY_OPTS: "-refresh=false"
+  TF_VAR_gitlab_project_id: $CI_PROJECT_ID
+  TF_VAR_gitlab_default_branch: $CI_DEFAULT_BRANCH
+
+# The GCP variant adds an ID token to .tf-base. Remove it from public jobs;
+# only the protected production plan/apply jobs re-add it below.
+.tf-base:
+  id_tokens: null
+
+tf-fmt:
+  id_tokens: null
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+tf-validate:
+  id_tokens: null
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+tf-plan-production:
+  id_tokens:
+    GCP_JWT:
+      aud: "$CI_SERVER_URL"
+  rules:
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      when: never
+    - if: '$CI_COMMIT_REF_PROTECTED != "true"'
+      when: never
+    - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
+      when: never
+    - when: on_success
+  artifacts:
+    name: "Reviewed OpenTofu production plan $CI_COMMIT_SHA"
+    expire_in: 1 day
+    access: developer
+    paths:
+      - $TF_PROJECT_DIR/production.tfplan
+      - $TF_PROJECT_DIR/production-plan.json
+    reports:
+      terraform: $TF_PROJECT_DIR/production-plan.json
+
+tf-production:
+  id_tokens:
+    GCP_JWT:
+      aud: "$CI_SERVER_URL"
+  dependencies:
+    - tf-plan-production
+  rules:
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      when: never
+    - if: '$CI_COMMIT_REF_PROTECTED != "true"'
+      when: never
+    - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
+      when: never
+    - when: manual

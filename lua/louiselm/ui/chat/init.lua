@@ -1,4 +1,5 @@
 local Context = require("louiselm.ui.context")
+local Attention = require("louiselm.ui.attention")
 local Diff = require("louiselm.ui.diff")
 local Gates = require("louiselm.permission.gates")
 local Limits = require("louiselm.ui.limits")
@@ -88,6 +89,7 @@ local nvim = vim
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_catalog? string Hidden catalog copied only into brand-new inject sessions.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
+---@field attention louiselm.ui.Attention Shared durable Attention controller.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
@@ -1643,6 +1645,12 @@ local function decision_responder(self, decision)
     end
     decision.answered = true
     local sent, send_error = decision.respond(result, rpc_error)
+    if sent then
+      local state = decision.view.session:inspect()
+      if state.acp_session_id ~= nil then
+        self.attention:permission_resolved(state.acp_session_id, decision.data.request_id)
+      end
+    end
     if self.decision_active == decision then
       self.decision_active = nil
       pump_decisions(self)
@@ -1896,6 +1904,9 @@ local function submit_prompt(self, view, text)
     local message = prompt_error or "prompt failed"
     notify_prompt_error(message)
     return nil, message
+  end
+  if state.acp_session_id ~= nil then
+    self.attention:prompt_started(state.acp_session_id)
   end
   view.cost_before = state.cost
   view.transcript:record_user(text)
@@ -2271,6 +2282,16 @@ local function handle_event(self, view, event)
     render_header(self, view)
     render_winbars(self)
   end
+  if event.type == "state_changed" then
+    if event.data.status == "prompting" and view.session:inspect().acp_session_id ~= nil then
+      self.attention:prompt_started(view.session:inspect().acp_session_id)
+    elseif event.data.status == "disposed" then
+      local state = view.session:inspect()
+      if state.acp_session_id ~= nil then
+        self.attention:session_disposed(state.acp_session_id)
+      end
+    end
+  end
   if event.type == "state_changed" and event.data.status == "ready" then
     -- Load replay can end with a reasoning paragraph and no trailing answer, so
     -- the turn boundary only shows up here.
@@ -2490,8 +2511,15 @@ local function handle_event(self, view, event)
     view.response_tail = nil
     view.response_started = false
     view.last_block_kind = nil
+    local state = view.session:inspect()
+    local run = view.session.owner_run
+    self.attention:session_failed(state, run and run.id or nil)
   elseif event.type == "permission_requested" then
     local data = event.data
+    local state = view.session:inspect()
+    if type(data) == "table" then
+      self.attention:permission_required(state, data)
+    end
     if type(data) == "table" and type(data.permission_error) == "string" then
       insert_transcript(self, view, { "Warning: " .. data.permission_error })
     elseif type(data) == "table" and data.remembered_decision ~= nil then
@@ -2503,6 +2531,10 @@ local function handle_event(self, view, event)
       cancel_permission(self, view, event.respond)
     end
   elseif event.type == "permission_cancelled" then
+    local state = view.session:inspect()
+    if state.acp_session_id ~= nil and type(event.data) == "table" then
+      self.attention:permission_cancelled(state.acp_session_id, event.data.request_ids)
+    end
     cancel_decisions(self, view, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
     close_tool_fold_run(view)
@@ -2514,6 +2546,7 @@ local function handle_event(self, view, event)
     end
     view.turn_done_fired = true
     local state = view.session:inspect()
+    self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.buffer)
     local cost
     if
       view.cost_before ~= nil
@@ -2691,6 +2724,7 @@ function M.new(api, options)
     skill_catalog = skill_catalog,
     instructions_context = instructions_contexts[1],
     workflow = options and options.workflow,
+    attention = Attention.new(),
     usage = usage,
     diff = Diff.new(),
     decision_queue = {},
@@ -3360,6 +3394,7 @@ function Chat:park()
             nvim.notify("louiselm: " .. (error_message or "could not cold-Park Session"), nvim.log.levels.ERROR)
             return
           end
+          self.attention:run_parked(run_id)
           nvim.notify("louiselm: Session cold-Parked", nvim.log.levels.INFO)
         end)
         if not started then
@@ -3452,6 +3487,10 @@ function Chat:switch(session_id)
   restore_winbars(self)
   self.current_id = session_id
   view.unread_turn = false
+  local state = view.session:inspect()
+  if state.acp_session_id ~= nil then
+    self.attention:seen(state.acp_session_id)
+  end
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
   nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
@@ -4412,6 +4451,7 @@ function Chat:resume_park()
             nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
             return
           end
+          self.attention:run_resumed(selected.id)
           nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
         end)
         if not resume_started then
@@ -4432,6 +4472,7 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  self.attention:dispose()
   if self.resume_controller ~= nil then
     self.resume_controller:dispose()
   end

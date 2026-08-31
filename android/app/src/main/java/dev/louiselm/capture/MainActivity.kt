@@ -42,6 +42,9 @@ class MainActivity : Activity() {
     private lateinit var captureStore: CaptureStore
     private lateinit var pairingStore: PairingStore
     private lateinit var statusView: TextView
+    private lateinit var attentionStatusView: TextView
+    private lateinit var attentionCards: LinearLayout
+    private lateinit var attentionRetryButton: Button
     private lateinit var captureButton: Button
     private lateinit var pairButton: Button
     private val networkExecutor = Executors.newSingleThreadExecutor()
@@ -49,6 +52,8 @@ class MainActivity : Activity() {
     private var pendingRecording: PendingRecording? = null
     private var startedAtElapsedMs = 0L
     private var qrPhoto: File? = null
+    private var lastAttention: AttentionSnapshot? = null
+    private val attentionPreferences by lazy { getSharedPreferences("attention-ui", MODE_PRIVATE) }
     private val uploadObserver = Observer<List<WorkInfo>> { workInfos ->
         if (hasFinishedUpload(workInfos)) refreshStatus()
     }
@@ -60,11 +65,15 @@ class MainActivity : Activity() {
         pairingStore = PairingStore(applicationContext)
         setContentView(contentView())
         refreshStatus()
+        refreshAttention()
     }
 
     override fun onResume() {
         super.onResume()
-        if (recorder == null) refreshStatus()
+        if (recorder == null) {
+            refreshStatus()
+            refreshAttention()
+        }
     }
 
     override fun onStart() {
@@ -111,6 +120,20 @@ class MainActivity : Activity() {
         }, matchWidth())
         statusView = TextView(this).apply { textSize = 16f }
         content.addView(statusView, matchWidth())
+        content.addView(TextView(this).apply {
+            text = getString(R.string.attention_title)
+            textSize = 22f
+            setPadding(0, padding, 0, padding / 2)
+        }, matchWidth())
+        attentionStatusView = TextView(this).apply { textSize = 16f }
+        content.addView(attentionStatusView, matchWidth())
+        attentionCards = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(attentionCards, matchWidth())
+        attentionRetryButton = Button(this).apply {
+            text = getString(R.string.attention_retry)
+            setOnClickListener { refreshAttention() }
+        }
+        content.addView(attentionRetryButton, matchWidth(topMargin = padding / 2))
         captureButton = Button(this).apply {
             text = getString(R.string.start_capture)
             setOnClickListener { toggleRecording() }
@@ -373,6 +396,7 @@ class MainActivity : Activity() {
                         replaceExisting = shouldReplaceUploadWorkAfterPairing(plan.transition),
                     )
                     refreshStatus()
+                    refreshAttention()
                 }.onFailure { error ->
                     refreshStatus(getString(R.string.pairing_failed, error.message ?: "receiver unavailable"))
                 }
@@ -431,6 +455,93 @@ class MainActivity : Activity() {
     private fun formatSyncTime(timestampMs: Long?): String =
         timestampMs?.let { DateFormat.format("yyyy-MM-dd HH:mm", it).toString() }
             ?: getString(R.string.never_status)
+
+    private fun refreshAttention() {
+        networkExecutor.execute {
+            val result: AttentionFetch? = runCatching { pairingStore.load() }.fold(
+                onSuccess = { pairing -> pairing?.let(PinnedHttps::fetchAttention) },
+                onFailure = { AttentionFetch.OperatorAction("stored pairing configuration needs operator attention") },
+            )
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (result == null) {
+                    lastAttention = null
+                    attentionStatusView.text = getString(R.string.attention_unpaired)
+                    attentionCards.removeAllViews()
+                    attentionRetryButton.isEnabled = false
+                    return@runOnUiThread
+                }
+                when (result) {
+                    is AttentionFetch.Success -> renderAttention(result.snapshot)
+                    is AttentionFetch.Retry -> {
+                        attentionStatusView.text = getString(R.string.attention_retry_state, result.message)
+                        attentionRetryButton.isEnabled = true
+                    }
+                    is AttentionFetch.OperatorAction -> {
+                        attentionStatusView.text = getString(R.string.attention_operator_state, result.message)
+                        attentionRetryButton.isEnabled = false
+                    }
+                }
+            }
+        }
+    }
+
+    private fun renderAttention(snapshot: AttentionSnapshot) {
+        val previous = lastAttention
+        if (previous != null && snapshot.generation < previous.generation) return
+        lastAttention = snapshot
+        attentionCards.removeAllViews()
+        if (snapshot.items.isEmpty()) {
+            attentionStatusView.text = getString(R.string.attention_empty)
+        } else {
+            attentionStatusView.text = getString(R.string.attention_count, snapshot.items.size)
+            snapshot.items.forEach { item ->
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, 12, 0, 12)
+                }
+                card.addView(TextView(this).apply {
+                    text = item.kind.reason
+                    textSize = 18f
+                }, matchWidth())
+                card.addView(TextView(this).apply {
+                    text = getString(
+                        if (item.subjectKind == AttentionSubjectKind.SESSION) {
+                            R.string.attention_session
+                        } else {
+                            R.string.attention_run
+                        },
+                        item.subjectId,
+                    )
+                }, matchWidth())
+                item.linkedRunId?.let { linkedRunId ->
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_linked_run, linkedRunId)
+                    }, matchWidth())
+                }
+                item.stage?.let { stage ->
+                    card.addView(TextView(this).apply {
+                        text = getString(R.string.attention_stage, stage)
+                    }, matchWidth())
+                }
+                card.addView(TextView(this).apply {
+                    text = getString(R.string.attention_age, formatAttentionAge(item.createdAtMs))
+                }, matchWidth())
+                attentionCards.addView(card, matchWidth())
+            }
+        }
+        attentionRetryButton.isEnabled = true
+        attentionPreferences.edit().putLong("seen_generation", snapshot.generation).apply()
+    }
+
+    private fun formatAttentionAge(createdAtMs: Long): String {
+        val ageMs = (System.currentTimeMillis() - createdAtMs).coerceAtLeast(0)
+        return when {
+            ageMs < 60_000 -> getString(R.string.less_than_minute)
+            ageMs < 60 * 60_000 -> getString(R.string.minutes_age, ageMs / 60_000)
+            else -> getString(R.string.hours_age, ageMs / (60 * 60_000))
+        }
+    }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)

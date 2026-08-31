@@ -1,14 +1,12 @@
-//! Owner-only local observation and operator channel for durable Runs.
+//! Owner-only local protocol for Attention mutations and snapshots.
 
 use crate::operator_socket::{
     load_or_create_capability, remove_stale_socket, set_owner_only, token_sha256, verify_capability,
 };
-use crate::time::now_ms;
-use crate::{RunStore, RunStoreError, RunView};
+use crate::{AttentionDraft, AttentionError, AttentionKey, AttentionSnapshot, AttentionStore};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
@@ -20,72 +18,78 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
-const RESUME_LEASE_MS: u64 = 5 * 60 * 1_000;
-
-/// Failure while binding or serving the local Run socket.
+/// Failure while binding or serving the local Attention socket.
 #[derive(Debug, Error)]
-pub enum RunSocketError {
-    #[error("Run socket I/O failed: {0}")]
+pub enum AttentionSocketError {
+    /// Unix socket or lock operation failed.
+    #[error("Attention socket I/O failed: {0}")]
     Io(#[from] io::Error),
+    /// Attention persistence failed.
     #[error(transparent)]
-    Run(#[from] RunStoreError),
-    #[error("Run socket protocol failed: {0}")]
+    Attention(#[from] AttentionError),
+    /// A framed protocol message was malformed.
+    #[error("Attention socket protocol failed: {0}")]
     Json(#[from] serde_json::Error),
 }
 
-/// One newline-delimited server message with no secret capability material.
+/// One newline-delimited message from the Attention socket.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum RunSocketMessage {
-    Snapshot { runs: Vec<RunView> },
-    RunChanged { id: String, revision: u64 },
-    MutationResult { request_id: String, run: RunView },
+pub enum AttentionSocketMessage {
+    /// Complete current state, without the operator capability.
+    Snapshot { snapshot: AttentionSnapshot },
+    /// Invalidation containing only the new generation.
+    AttentionChanged { generation: u64 },
+    /// Result of one accepted or idempotent mutation.
+    MutationResult {
+        request_id: String,
+        snapshot: AttentionSnapshot,
+    },
+    /// Rejected mutation with a sanitized message.
     MutationError { request_id: String, message: String },
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ClientMessage {
     Snapshot,
-    Raise {
+    Upsert {
         request_id: String,
-        id: String,
-        expected_revision: u64,
-        ceiling: u64,
+        attention: AttentionDraft,
         capability: String,
     },
-    Resume {
+    SetEligible {
         request_id: String,
-        id: String,
-        expected_revision: u64,
-        operation_id: String,
+        key: AttentionKey,
+        eligible: bool,
         capability: String,
     },
-    FinalizeResume {
+    Clear {
         request_id: String,
-        id: String,
-        expected_revision: u64,
-        operation_id: String,
-        succeeded: bool,
+        key: AttentionKey,
         capability: String,
     },
 }
 
-/// Single owner of the local Run listener and operator capability.
-pub struct RunSocket {
+/// Single owner of the local Attention listener and operator capability.
+pub struct AttentionSocket {
     listener: UnixListener,
-    store: RunStore,
+    store: AttentionStore,
     operator_token_sha256: String,
     _lock: File,
 }
 
-impl RunSocket {
+impl AttentionSocket {
     /// Bind an owner-only listener, refusing live or non-socket collisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket is already owned or state cannot be read.
     pub async fn bind(
         path: impl AsRef<Path>,
         capability_path: impl AsRef<Path>,
-        store: RunStore,
-    ) -> Result<Self, RunSocketError> {
+        store: AttentionStore,
+    ) -> Result<Self, AttentionSocketError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -96,12 +100,18 @@ impl RunSocket {
             .read(true)
             .write(true)
             .open(PathBuf::from(format!("{}.lock", path.display())))?;
-        lock.try_lock_exclusive()
-            .map_err(|_| io::Error::new(io::ErrorKind::AddrInUse, "Run socket is already owned"))?;
+        lock.try_lock_exclusive().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "Attention socket is already owned",
+            )
+        })?;
         let operator_token = load_or_create_capability(capability_path.as_ref())?;
         if path.exists() {
             if UnixStream::connect(path).await.is_ok() {
-                return Err(io::Error::new(io::ErrorKind::AddrInUse, "Run socket is live").into());
+                return Err(
+                    io::Error::new(io::ErrorKind::AddrInUse, "Attention socket is live").into(),
+                );
             }
             remove_stale_socket(path)?;
         }
@@ -116,7 +126,7 @@ impl RunSocket {
     }
 
     /// Accept clients until the owning task is cancelled.
-    pub async fn serve(self) -> Result<(), RunSocketError> {
+    pub async fn serve(self) -> Result<(), AttentionSocketError> {
         loop {
             let (stream, _) = self.listener.accept().await?;
             let store = self.store.clone();
@@ -130,14 +140,18 @@ impl RunSocket {
 
 async fn serve_client(
     stream: UnixStream,
-    store: RunStore,
+    store: AttentionStore,
     operator_hash: String,
-) -> Result<(), RunSocketError> {
+) -> Result<(), AttentionSocketError> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     let initial = store.snapshot()?;
-    let mut known = revisions(&initial);
-    write_message(&mut writer, &RunSocketMessage::Snapshot { runs: initial }).await?;
+    let mut known_generation = initial.generation;
+    write_message(
+        &mut writer,
+        &AttentionSocketMessage::Snapshot { snapshot: initial },
+    )
+    .await?;
     let mut interval = tokio::time::interval(Duration::from_millis(50));
     interval.tick().await;
     loop {
@@ -146,21 +160,19 @@ async fn serve_client(
                 let Some(line) = line? else { return Ok(()); };
                 match serde_json::from_str::<ClientMessage>(&line)? {
                     ClientMessage::Snapshot => {
-                        let runs = store.snapshot()?;
-                        known = revisions(&runs);
-                        write_message(&mut writer, &RunSocketMessage::Snapshot { runs }).await?;
+                        let snapshot = store.snapshot()?;
+                        known_generation = snapshot.generation;
+                        write_message(&mut writer, &AttentionSocketMessage::Snapshot { snapshot }).await?;
                     }
                     request => handle_mutation(&mut writer, &store, &operator_hash, request).await?,
                 }
             }
             _ = interval.tick() => {
-                let current = store.snapshot()?;
-                for run in &current {
-                    if known.get(&run.id).copied() != Some(run.revision) {
-                        write_message(&mut writer, &RunSocketMessage::RunChanged { id: run.id.clone(), revision: run.revision }).await?;
-                    }
+                let snapshot = store.snapshot()?;
+                if snapshot.generation != known_generation {
+                    write_message(&mut writer, &AttentionSocketMessage::AttentionChanged { generation: snapshot.generation }).await?;
+                    known_generation = snapshot.generation;
                 }
-                known = revisions(&current);
             }
         }
     }
@@ -168,32 +180,35 @@ async fn serve_client(
 
 async fn handle_mutation(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
-    store: &RunStore,
+    store: &AttentionStore,
     operator_hash: &str,
     request: ClientMessage,
-) -> Result<(), RunSocketError> {
+) -> Result<(), AttentionSocketError> {
     let (request_id, capability) = match &request {
-        ClientMessage::Raise {
+        ClientMessage::Upsert {
             request_id,
             capability,
             ..
         }
-        | ClientMessage::Resume {
+        | ClientMessage::SetEligible {
             request_id,
             capability,
             ..
         }
-        | ClientMessage::FinalizeResume {
+        | ClientMessage::Clear {
             request_id,
             capability,
             ..
         } => (request_id.clone(), capability),
         ClientMessage::Snapshot => unreachable!("snapshot handled separately"),
     };
-    if request_id.is_empty() || !verify_capability(operator_hash, capability) {
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || !verify_capability(operator_hash, capability)
+    {
         return write_message(
             writer,
-            &RunSocketMessage::MutationError {
+            &AttentionSocketMessage::MutationError {
                 request_id,
                 message: "operator capability is invalid".to_owned(),
             },
@@ -201,40 +216,17 @@ async fn handle_mutation(
         .await;
     }
     let result = match request {
-        ClientMessage::Raise {
-            id,
-            expected_revision,
-            ceiling,
-            ..
-        } => store.raise_generated_work_ceiling(&id, expected_revision, ceiling),
-        ClientMessage::Resume {
-            id,
-            expected_revision,
-            operation_id,
-            ..
-        } => store
-            .begin_resume(
-                &id,
-                expected_revision,
-                &operation_id,
-                now_ms(),
-                RESUME_LEASE_MS,
-            )
-            .and_then(|_| store.view(&id)),
-        ClientMessage::FinalizeResume {
-            id,
-            expected_revision,
-            operation_id,
-            succeeded,
-            ..
-        } => store
-            .finalize_resume(&id, expected_revision, &operation_id, succeeded)
-            .and_then(|_| store.view(&id)),
+        ClientMessage::Upsert { attention, .. } => store.upsert(attention),
+        ClientMessage::SetEligible { key, eligible, .. } => store.set_eligible(key, eligible),
+        ClientMessage::Clear { key, .. } => store.clear(key),
         ClientMessage::Snapshot => unreachable!("snapshot handled separately"),
     };
     let message = match result {
-        Ok(run) => RunSocketMessage::MutationResult { request_id, run },
-        Err(error) => RunSocketMessage::MutationError {
+        Ok(snapshot) => AttentionSocketMessage::MutationResult {
+            request_id,
+            snapshot,
+        },
+        Err(error) => AttentionSocketMessage::MutationError {
             request_id,
             message: error.to_string(),
         },
@@ -242,16 +234,10 @@ async fn handle_mutation(
     write_message(writer, &message).await
 }
 
-fn revisions(runs: &[RunView]) -> BTreeMap<String, u64> {
-    runs.iter()
-        .map(|run| (run.id.clone(), run.revision))
-        .collect()
-}
-
 async fn write_message(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
-    message: &RunSocketMessage,
-) -> Result<(), RunSocketError> {
+    message: &AttentionSocketMessage,
+) -> Result<(), AttentionSocketError> {
     writer.write_all(&serde_json::to_vec(message)?).await?;
     writer.write_all(b"\n").await?;
     Ok(())

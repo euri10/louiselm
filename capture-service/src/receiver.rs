@@ -21,13 +21,14 @@ use uuid::Uuid;
 use crate::permissions::set_private_permissions;
 use crate::time::now_ms;
 use crate::{
-    CaptureDraft, CaptureSource, IngestOutcome, MAX_CAPTURE_BYTES, PairingRegistry, Store,
-    StoreError,
+    AttentionStore, CaptureDraft, CaptureSource, IngestOutcome, MAX_CAPTURE_BYTES, PairingRegistry,
+    Store, StoreError,
 };
 
 #[derive(Clone)]
 struct ReceiverState {
     store: Store,
+    attention: Option<AttentionStore>,
     pairing: Arc<PairingRegistry>,
     uploads: PathBuf,
     receiver_identity_sha256: String,
@@ -50,6 +51,37 @@ impl Receiver {
         uploads: impl AsRef<Path>,
         receiver_identity_sha256: &str,
     ) -> Result<Self, std::io::Error> {
+        Self::with_optional_attention(store, None, pairing, uploads, receiver_identity_sha256)
+    }
+
+    /// Construct a receiver that also exposes the authenticated Attention inbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the identity is malformed or upload storage cannot be created.
+    pub fn with_attention(
+        store: Store,
+        attention: AttentionStore,
+        pairing: Arc<PairingRegistry>,
+        uploads: impl AsRef<Path>,
+        receiver_identity_sha256: &str,
+    ) -> Result<Self, std::io::Error> {
+        Self::with_optional_attention(
+            store,
+            Some(attention),
+            pairing,
+            uploads,
+            receiver_identity_sha256,
+        )
+    }
+
+    fn with_optional_attention(
+        store: Store,
+        attention: Option<AttentionStore>,
+        pairing: Arc<PairingRegistry>,
+        uploads: impl AsRef<Path>,
+        receiver_identity_sha256: &str,
+    ) -> Result<Self, std::io::Error> {
         if receiver_identity_sha256.len() != 64
             || !receiver_identity_sha256
                 .bytes()
@@ -65,6 +97,7 @@ impl Receiver {
         Ok(Self {
             state: ReceiverState {
                 store,
+                attention,
                 pairing,
                 uploads: uploads.as_ref().to_path_buf(),
                 receiver_identity_sha256: receiver_identity_sha256.to_ascii_lowercase(),
@@ -74,13 +107,18 @@ impl Receiver {
 
     /// Build the receiver routes without binding a socket.
     pub fn router(&self) -> Router {
-        Router::new()
+        let router = Router::new()
             .route("/v1/health", get(health))
             .route("/v1/pair", post(pair))
             .route("/v1/captures/{id}", put(upload))
             // JSON extractors stay small; streamed audio applies its own 20 MiB limit.
-            .layer(DefaultBodyLimit::max(8 * 1024))
-            .with_state(self.state.clone())
+            .layer(DefaultBodyLimit::max(8 * 1024));
+        let router = if self.state.attention.is_some() {
+            router.route("/v1/attention", get(attention))
+        } else {
+            router
+        };
+        router.with_state(self.state.clone())
     }
 }
 
@@ -95,6 +133,21 @@ async fn health(State(state): State<ReceiverState>) -> Json<HealthResponse> {
         status: "ok",
         receiver_identity_sha256: state.receiver_identity_sha256,
     })
+}
+
+async fn attention(
+    State(state): State<ReceiverState>,
+    headers: HeaderMap,
+) -> Result<Json<crate::AttentionSnapshot>, ApiError> {
+    authenticate(&state, &headers)?;
+    let store = state
+        .attention
+        .ok_or_else(|| ApiError::internal("Attention inbox is unavailable"))?;
+    let snapshot = tokio::task::spawn_blocking(move || store.snapshot())
+        .await
+        .map_err(|_| ApiError::internal("Attention snapshot is unavailable"))?
+        .map_err(|_| ApiError::internal("Attention snapshot is unavailable"))?;
+    Ok(Json(snapshot))
 }
 
 #[derive(Deserialize)]

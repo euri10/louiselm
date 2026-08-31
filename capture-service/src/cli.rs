@@ -20,11 +20,12 @@ use thiserror::Error;
 
 use crate::time::now_ms;
 use crate::{
-    BeadsCleanup, BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState,
-    GenerateRequest, GeneratedWorkReservation, GenerationError, IdentityError, NetworkProfile,
-    NetworkProfileError, NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry,
-    Receiver, ReserveResult, RunAdmission, RunDraft, RunSession, RunSocket, RunSocketError,
-    RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript, TranscriptionWorker,
+    AttentionError, AttentionSocket, AttentionSocketError, AttentionStore, BeadsCleanup,
+    BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState, GenerateRequest,
+    GeneratedWorkReservation, GenerationError, IdentityError, NetworkProfile, NetworkProfileError,
+    NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry, Receiver, ReserveResult,
+    RunAdmission, RunDraft, RunSession, RunSocket, RunSocketError, RunStore, RunStoreError, Store,
+    StoreError, TlsIdentity, Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -42,12 +43,18 @@ pub enum CliError {
     /// Capture store operation failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// Attention store operation failed.
+    #[error(transparent)]
+    Attention(#[from] AttentionError),
     /// Durable Run-store operation failed.
     #[error(transparent)]
     Run(#[from] RunStoreError),
     /// Local Run observation socket failed.
     #[error(transparent)]
     RunSocket(#[from] RunSocketError),
+    /// Local Attention socket failed.
+    #[error(transparent)]
+    AttentionSocket(#[from] AttentionSocketError),
     /// Generated-work broker failed.
     #[error(transparent)]
     Generation(#[from] GenerationError),
@@ -92,18 +99,20 @@ pub async fn run() -> Result<(), CliError> {
     let options = &arguments[1..];
     let paths = Paths::discover()?;
     let store = Store::new(paths.captures())?;
+    let attention = AttentionStore::new(paths.attention())?;
 
     match command {
         "ingest-local" => ingest_local(&store, options),
         "list" => list(&store),
-        "status" => status(&store, &paths),
+        "status" => status(&store, &attention, &paths),
+        "attention" => attention_command(&attention, options),
         "retry" => retry(&store, options),
         "transcribe-once" => transcribe_once(&store),
         "run" => run_command(&paths, options),
         "configure-network" => configure_network(&paths, options),
         "pair" => pair(&paths, options),
         "revoke-device" => revoke_device(&paths, options),
-        "serve" => serve(store, &paths, options).await,
+        "serve" => serve(store, attention, &paths, options).await,
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
 }
@@ -353,7 +362,7 @@ fn list(store: &Store) -> Result<(), CliError> {
     Ok(())
 }
 
-fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
+fn status(store: &Store, attention: &AttentionStore, paths: &Paths) -> Result<(), CliError> {
     let captures = store.list()?;
     let pairing = PairingRegistry::open(paths.pairing())?;
     let pairing_status = pairing.status()?;
@@ -369,6 +378,12 @@ fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
     };
     let delivery_warning = (delivery_state == "degraded")
         .then_some("paired devices cannot reach the loopback-only receiver");
+    let attention = match attention.summary() {
+        Ok(summary) => serde_json::to_value(summary)?,
+        Err(_) => serde_json::json!({
+            "storage_error": "Attention state is unavailable"
+        }),
+    };
     let mut pending = 0;
     let mut retrying = 0;
     let mut failed = 0;
@@ -404,8 +419,28 @@ fn status(store: &Store, paths: &Paths) -> Result<(), CliError> {
                 "receiver_url": network.receiver_url(),
                 "phone_reachable": phone_reachable,
             },
+            "attention": attention,
         }))?
     );
+    Ok(())
+}
+
+fn attention_command(store: &AttentionStore, arguments: &[String]) -> Result<(), CliError> {
+    let Some(command) = arguments.first().map(String::as_str) else {
+        return Err(CliError::Invalid(
+            "attention requires list or status".to_owned(),
+        ));
+    };
+    if arguments.len() != 1 || !matches!(command, "list" | "status") {
+        return Err(CliError::Invalid(
+            "attention supports only list and status".to_owned(),
+        ));
+    }
+    if command == "list" {
+        println!("{}", serde_json::to_string_pretty(&store.snapshot()?)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&store.summary()?)?);
+    }
     Ok(())
 }
 
@@ -503,13 +538,19 @@ fn revoke_device(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
-async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
+async fn serve(
+    store: Store,
+    attention: AttentionStore,
+    paths: &Paths,
+    arguments: &[String],
+) -> Result<(), CliError> {
     no_arguments(arguments, "serve")?;
     let bind = NetworkProfile::load_or_default(&paths.network())?.bind();
     let identity = TlsIdentity::load_or_create(paths.tls())?;
     let pairing = Arc::new(PairingRegistry::open(paths.pairing())?);
-    let receiver = Receiver::new(
+    let receiver = Receiver::with_attention(
         store.clone(),
+        attention.clone(),
         pairing,
         paths.uploads(),
         identity.public_key_sha256(),
@@ -518,6 +559,12 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         paths.run_socket(),
         paths.operator_capability(),
         RunStore::new(paths.runs())?,
+    )
+    .await?;
+    let attention_socket = AttentionSocket::bind(
+        paths.attention_socket(),
+        paths.operator_capability(),
+        attention,
     )
     .await?;
     if let Some(workspace) =
@@ -564,6 +611,7 @@ async fn serve(store: Store, paths: &Paths, arguments: &[String]) -> Result<(), 
         axum_server::bind_rustls(bind, tls).serve(receiver.router().into_make_service());
     tokio::select! {
         result = run_socket.serve() => result?,
+        result = attention_socket.serve() => result?,
         result = network_server => result?,
     }
     Ok(())
@@ -677,6 +725,14 @@ impl Paths {
     fn operator_capability(&self) -> PathBuf {
         self.state.join("louiselm/workflow/operator-capability")
     }
+
+    fn attention(&self) -> PathBuf {
+        self.state.join("louiselm/workflow/attention")
+    }
+
+    fn attention_socket(&self) -> PathBuf {
+        self.state.join("louiselm/workflow/attention.sock")
+    }
 }
 
 fn configured_root(
@@ -700,6 +756,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  run admit --id UUID --generated-work-max N --park-ttl-ms N\n  run attach --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false\n  run generate --command create|q -- BR_ARGS\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  attention list|status\n  run admit --id UUID --generated-work-max N --park-ttl-ms N\n  run attach --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false\n  run generate --command create|q -- BR_ARGS\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }

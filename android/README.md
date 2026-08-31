@@ -45,6 +45,14 @@ The phone status shows the current endpoint, pending count and oldest age, last
 successful sync, and the latest actionable upload failure. **Sync now** remains
 the manual WorkManager retry path.
 
+When paired, **Attention inbox** reads the authenticated `/v1/attention`
+snapshot through the same pinned receiver identity. It displays only the
+closed typed kind, fixed reason, bounded Session or Run identifier, optional
+linked Run or stage, and age. It has no mutation controls; transient network
+failures retain the last safely parsed screen and offer refresh, while revoked
+pairing or pin failures require pairing/operator repair. The seen generation is
+stored only in app-private preferences.
+
 ## Physical acceptance checklist
 
 - Record while offline, stop, force-stop the app, reopen it, and confirm the

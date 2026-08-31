@@ -18,6 +18,8 @@ retry CAPTURE_UUID
 transcribe-once
 run list
 run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS --expires-at-ms N
+attention list
+attention status
 ```
 
 The default user service binds TLS on `127.0.0.1:7391` and `pair` refuses while
@@ -86,6 +88,12 @@ With default XDG paths:
   tls/receiver-cert.pem
   tls/receiver-key.pem
   uploads/
+
+~/.local/state/louiselm/workflow/
+  attention/attention.json
+  attention/attention.lock
+  attention.sock
+  operator-capability
 ```
 
 Directories and files are forced to owner-only permissions on Unix. Original
@@ -122,6 +130,13 @@ The systemd unit grants write access to that workspace's `.beads` directory;
 rerun `scripts/install-capture-service` after changing the unit or environment,
 then restart the user service. `run list` reports only unexpired cold Parks;
 expired records remain retained for cleanup retry and forensics.
+
+The Attention store keeps only current unresolved typed conditions. `attention list`
+prints its bounded snapshot; `attention status` prints generation, unresolved count,
+and fixed-kind counts. `status` includes the same summary and reports a sanitized
+storage error if Attention state cannot be read. The local `attention.sock` accepts
+only operator-capability mutations and no Agent-authored text. Paired devices can
+`GET /v1/attention` with their pairing credential; that route is read-only.
 
 ## Operator lifecycle
 

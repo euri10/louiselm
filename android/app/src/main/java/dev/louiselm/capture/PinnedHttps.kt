@@ -72,6 +72,40 @@ internal object PinnedHttps {
         }
     }
 
+    fun fetchAttention(config: PairingConfig): AttentionFetch = try {
+        val connection = connection(
+            "${config.receiverUrl}/v1/attention",
+            config.receiverIdentitySha256,
+        ).apply {
+            requestMethod = "GET"
+            setRequestProperty("Authorization", "Bearer ${config.credential}")
+            setRequestProperty("Accept", "application/json")
+        }
+        try {
+            when (val status = connection.responseCode) {
+                200 -> AttentionFetch.Success(AttentionSnapshot.parse(readBounded(connection)))
+                401, 403 -> AttentionFetch.OperatorAction("receiver pairing was revoked; pair this device again")
+                408, 429 -> AttentionFetch.Retry("receiver is temporarily unavailable ($status)")
+                in 500..599 -> AttentionFetch.Retry("receiver is temporarily unavailable ($status)")
+                else -> AttentionFetch.OperatorAction("receiver rejected the Attention inbox ($status)")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    } catch (error: SSLHandshakeException) {
+        if (hasCertificateCause(error)) {
+            AttentionFetch.OperatorAction("receiver identity does not match pairing")
+        } else {
+            AttentionFetch.Retry("secure connection failed")
+        }
+    } catch (_: IOException) {
+        AttentionFetch.Retry("receiver is unreachable")
+    } catch (_: SecurityException) {
+        AttentionFetch.OperatorAction("receiver security configuration is invalid")
+    } catch (_: IllegalArgumentException) {
+        AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox")
+    }
+
     fun pair(offer: PairingOffer, deviceName: String): PairingConfig {
         val body = JSONObject()
             .put("token", offer.token)

@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ProtocolTest {
@@ -54,5 +55,58 @@ class ProtocolTest {
         assertFalse(queueBelongsToReceiver(null, "aa".repeat(32)))
         assertTrue(queueBelongsToReceiver("aa".repeat(32), "aa".repeat(32)))
         assertFalse(queueBelongsToReceiver("bb".repeat(32), "aa".repeat(32)))
+    }
+
+    @Test
+    fun attentionSnapshotAcceptsOnlyBoundedTypedFields() {
+        val snapshot = AttentionSnapshot.parse(
+            """
+            {
+              "generation": 4,
+              "items": [{
+                "subject_kind": "session",
+                "subject_id": "agent/session-1",
+                "kind": "permission_required",
+                "source_operation_id": "11111111-2222-4333-8444-555555555555",
+                "created_at_ms": 123,
+                "eligible": true,
+                "reason": "Permission is required",
+                "linked_run_id": "11111111-2222-4333-8444-555555555555",
+                "stage": "review/execute"
+              }]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(4, snapshot.generation)
+        assertEquals(AttentionKind.PERMISSION_REQUIRED, snapshot.items.single().kind)
+        assertEquals("Permission is required", snapshot.items.single().kind.reason)
+        assertEquals("review/execute", snapshot.items.single().stage)
+    }
+
+    @Test
+    fun attentionSnapshotRejectsUnknownFieldsAndMalformedIdentifiers() {
+        val unknown = """
+            {"generation":0,"items":[],"message":"do something"}
+        """.trimIndent()
+        assertThrows(IllegalArgumentException::class.java) { AttentionSnapshot.parse(unknown) }
+
+        val malformed = """
+            {
+              "generation": 1,
+              "items": [{
+                "subject_kind": "run",
+                "subject_id": "not-a-uuid",
+                "kind": "run_parked",
+                "source_operation_id": "11111111-2222-4333-8444-555555555555",
+                "created_at_ms": 123,
+                "eligible": false,
+                "reason": "Run is Parked",
+                "linked_run_id": null,
+                "stage": null
+              }]
+            }
+        """.trimIndent()
+        assertThrows(IllegalArgumentException::class.java) { AttentionSnapshot.parse(malformed) }
     }
 }
