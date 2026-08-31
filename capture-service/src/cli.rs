@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use qrcode::{
@@ -18,6 +18,7 @@ use qrcode::{
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::time::now_ms;
 use crate::{
     BeadsCleanup, BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState,
     GenerateRequest, GeneratedWorkReservation, GenerationError, IdentityError, NetworkProfile,
@@ -616,12 +617,6 @@ fn no_arguments(arguments: &[String], command: &str) -> Result<(), CliError> {
     Err(CliError::Invalid(format!(
         "{command} takes no arguments; use configure-network"
     )))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 #[derive(Serialize)]

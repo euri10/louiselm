@@ -12,6 +12,7 @@ mod receiver;
 mod run_socket;
 mod runs;
 mod store;
+mod time;
 mod transcription;
 
 pub use generation::{

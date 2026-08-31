@@ -1,5 +1,6 @@
 //! Owner-only local observation and operator channel for durable Runs.
 
+use crate::time::now_ms;
 use crate::{RunStore, RunStoreError, RunView};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -322,9 +323,4 @@ fn verify_capability(expected_hash: &str, supplied: &str) -> bool {
         .as_bytes()
         .ct_eq(token_sha256(supplied).as_bytes())
         .into()
-}
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
 }

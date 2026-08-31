@@ -2,7 +2,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -20,6 +19,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::permissions::set_private_permissions;
+use crate::time::now_ms;
 use crate::{
     CaptureDraft, CaptureSource, IngestOutcome, MAX_CAPTURE_BYTES, PairingRegistry, Store,
     StoreError,
@@ -276,12 +276,6 @@ async fn stream_body(mut body: Body, path: &Path) -> Result<(u64, String), ApiEr
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
     Ok((bytes, format!("{:x}", hasher.finalize())))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 #[derive(Serialize)]

@@ -3005,15 +3005,8 @@ function Chat:attach(session)
   end)
   self.views[state.id] = view
   self.view_order[#self.view_order + 1] = state.id
-  self.current_id = state.id
-  nvim.api.nvim_set_current_buf(buffer)
-  nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
-  if #nvim.api.nvim_list_uis() > 0 then
-    nvim.cmd.startinsert()
-    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
-  end
   render_header(self, view)
-  render_winbars(self)
+  self:switch(state.id)
   if state.status == "ready" then
     refresh_limits(self, state.agent)
   end
