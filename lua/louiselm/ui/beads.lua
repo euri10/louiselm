@@ -74,7 +74,7 @@ local function decode_issue(value, prefix)
     or issue.priority > 4
     or issue.priority % 1 ~= 0
     or (issue.labels ~= nil and type(issue.labels) ~= "table")
-    or type(issue.description) ~= "string"
+    or (issue.description ~= nil and type(issue.description) ~= "string")
   then
     return nil
   end
@@ -91,7 +91,7 @@ local function decode_issue(value, prefix)
     status = issue.status,
     priority = issue.priority,
     labels = labels,
-    description = issue.description,
+    description = issue.description or "",
   }
 end
 

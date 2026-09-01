@@ -209,6 +209,40 @@ T["beads"]["opens an issue whose JSON omits the labels key entirely"] = function
   })
 end
 
+T["beads"]["opens an issue whose JSON omits the description key entirely (louiselm-kk27)"] = function()
+  -- `br show --json` omits `description` rather than emitting `""` when an
+  -- issue has none (e.g. a closed fixture) -- a missing key must not be
+  -- treated as malformed, mirroring the `labels` handling above.
+  local buffer = source_buffer({ "Fix louiselm-qced today" }, 8)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+  calls[2].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '[{"id":"louiselm-qced","title":"Disposable fixture","status":"closed","priority":4}]',
+    stderr = "",
+  })
+  scheduled[2]()
+
+  local popup = assert(find_buffer("louiselm://beads/louiselm-qced"))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
+    "# Disposable fixture",
+    "",
+    "ID: louiselm-qced",
+    "Status: closed",
+    "Priority: 4",
+    "Labels: none",
+    "",
+    "",
+  })
+end
+
 T["beads"]["prompts for a Beads issue ID when the cursor has none"] = function()
   local buffer = source_buffer({ "No issue here" }, 0)
   local calls = fake_system()
