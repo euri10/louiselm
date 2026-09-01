@@ -2,6 +2,7 @@ local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.routing")
+local Runs = require("louiselm.workflow")
 local ResumeController = require("louiselm.workflow.resume_controller")
 local RunClient = require("louiselm.workflow.run_client")
 local WorkflowService = require("louiselm.workflow.service")
@@ -446,6 +447,96 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
   MiniTest.expect.equality(restored.owner_run.claims, { "issue" })
   MiniTest.expect.equality(restored.owner_run.generated_work, { ceiling = 5, consumed = 2, reserved = 1 })
   MiniTest.expect.equality(restored.owner_run.status, "active")
+end
+
+T["chat"]["reconciles service Parks into live Runs and bounded operator state"] = function()
+  local session = fake_session("park-session", "codex")
+  session.state.status = "prompting"
+  function session:cancel()
+    MiniTest.expect.equality(nvim.in_fast_event(), false)
+    self.state.status = "cancelling"
+    return true
+  end
+  local run = assert(Runs.new_run({ id = "11111111-2222-4333-8444-555555555555" }))
+  assert(run:adopt_session(session))
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+
+  local original_list = WorkflowService.list
+  local original_read_capability = RunClient.read_operator_capability
+  local original_connect = RunClient.connect
+  local original_notify = nvim.notify
+  local snapshot_callback
+  local snapshot_async
+  local attention_run_id
+  local notifications = {}
+  local fake_client = {
+    dispose = function()
+      return true
+    end,
+  }
+  rawset(WorkflowService, "list", function(callback)
+    callback({})
+    return true
+  end)
+  rawset(RunClient, "read_operator_capability", function(_, callback)
+    callback("operator-capability")
+    return true
+  end)
+  rawset(RunClient, "connect", function(_, callback)
+    snapshot_callback = callback
+    return fake_client
+  end)
+  rawset(nvim, "notify", function(message)
+    notifications[#notifications + 1] = message
+  end)
+  chat.attention.run_parked = function(_, id)
+    attention_run_id = id
+  end
+  MiniTest.finally(function()
+    rawset(WorkflowService, "list", original_list)
+    rawset(RunClient, "read_operator_capability", original_read_capability)
+    rawset(RunClient, "connect", original_connect)
+    rawset(nvim, "notify", original_notify)
+    chat:dispose()
+  end)
+
+  assert(chat:resume_park())
+  assert(snapshot_callback ~= nil)
+  snapshot_async = nvim.uv.new_async(function()
+    MiniTest.expect.equality(nvim.in_fast_event(), true)
+    nvim.schedule(function()
+      snapshot_callback({
+        {
+          id = "11111111-2222-4333-8444-555555555555",
+          revision = 2,
+          state = "parked",
+          generated_work_ceiling = 3,
+          generated_work_consumed = 2,
+          generated_work_reserved = 1,
+          pending_mutation_ids = { "pending" },
+          triggering_mutation_id = "budget-exhausted",
+          park_expires_at_ms = 60000,
+        },
+      })
+    end)
+    snapshot_async:close()
+  end)
+  snapshot_async:send()
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return run.status == "parked"
+    end),
+    true
+  )
+
+  MiniTest.expect.equality(run.status, "parked")
+  MiniTest.expect.equality(session.state.status, "cancelling")
+  MiniTest.expect.equality(attention_run_id, "11111111-2222-4333-8444-555555555555")
+  MiniTest.expect.equality(
+    notifications[1],
+    "louiselm: budget Park: generated work 2/3, reserved 1, pending 1, mutation budget-exhausted"
+  )
 end
 
 T["chat"]["focuses the prompt"] = function()

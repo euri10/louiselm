@@ -8,6 +8,7 @@ local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.workflow")
+local ParkObserver = require("louiselm.workflow.park_observer")
 local ResumeController = require("louiselm.workflow.resume_controller")
 local RunClient = require("louiselm.workflow.run_client")
 local WorkflowService = require("louiselm.workflow.service")
@@ -112,6 +113,7 @@ local nvim = vim
 ---@field handoffs table<integer, louiselm.ui.Handoff>
 ---@field resume_client? louiselm.workflow.RunClient Client for durable Run mutations.
 ---@field resume_controller? louiselm.workflow.ResumeController Operator resume orchestration.
+---@field park_observer? louiselm.workflow.ParkObserver Reconciles durable Park snapshots into live Runs.
 ---@field resume_initializing boolean Whether the durable Run client is connecting.
 ---@field resume_waiters fun(controller: louiselm.workflow.ResumeController?, error_message?: string)[] Callbacks waiting for the durable Run client.
 ---@field resume_revisions table<string, integer> Revisions from the authoritative Run socket snapshot.
@@ -2744,6 +2746,7 @@ function M.new(api, options)
     handoffs = {},
     resume_client = nil,
     resume_controller = nil,
+    park_observer = nil,
     resume_initializing = false,
     resume_waiters = {},
     resume_revisions = {},
@@ -4264,6 +4267,23 @@ local function resume_run(self, id)
 end
 
 ---@param self louiselm.ui.Chat
+---@param presentation louiselm.workflow.ParkPresentation
+local function present_park(self, presentation)
+  self.attention:run_parked(presentation.id)
+  nvim.notify(
+    string.format(
+      "louiselm: budget Park: generated work %d/%d, reserved %d, pending %d, mutation %s",
+      presentation.consumed,
+      presentation.ceiling,
+      presentation.reserved,
+      #presentation.pending_mutation_ids,
+      presentation.triggering_mutation_id or "none"
+    ),
+    nvim.log.levels.WARN
+  )
+end
+
+---@param self louiselm.ui.Chat
 ---@param run louiselm.workflow.RunView
 ---@param callback fun(worker: louiselm.workflow.RunWorker?, error_message?: string)
 local function load_cold_run(self, run, callback)
@@ -4340,6 +4360,18 @@ local function ensure_resume_controller(self, callback)
       waiter(controller, error_message)
     end
   end
+  local observer, observer_error = ParkObserver.new({
+    find_run = function(id)
+      return resume_run(self, id)
+    end,
+    on_park = function(presentation)
+      present_park(self, presentation)
+    end,
+  })
+  if observer == nil then
+    finish(nil, observer_error or "could not create Park observer")
+    return false, observer_error
+  end
   local socket_path, capability_path = resume_paths()
   local capability_started, capability_error = RunClient.read_operator_capability(
     capability_path,
@@ -4350,6 +4382,18 @@ local function ensure_resume_controller(self, callback)
       end
       local connect_client, connect_error
       connect_client, connect_error = RunClient.connect(socket_path, function(runs)
+        if self.disposed then
+          return
+        end
+        local observed, observe_error = observer:observe(runs)
+        if not observed then
+          if not settled then
+            finish(nil, observe_error or "could not reconcile Park snapshot")
+          else
+            nvim.notify("louiselm: " .. (observe_error or "could not reconcile Park snapshot"), nvim.log.levels.ERROR)
+          end
+          return
+        end
         for _, run in ipairs(runs) do
           self.resume_revisions[run.id] = run.revision
         end
@@ -4375,6 +4419,7 @@ local function ensure_resume_controller(self, callback)
         end
         self.resume_client = connect_client
         self.resume_controller = controller
+        self.park_observer = observer
         finish(controller)
       end, {
         operator_capability = capability,
@@ -4493,6 +4538,9 @@ function Chat:dispose()
   end
   self.disposed = true
   self.attention:dispose()
+  if self.park_observer ~= nil then
+    self.park_observer:dispose()
+  end
   if self.resume_controller ~= nil then
     self.resume_controller:dispose()
   end
