@@ -117,13 +117,33 @@ maintainer rather than falling back to one.
   that should bind future work to this file, an unresolved question to a
   `needs-design` question. Name the destination or say none is warranted;
   silence is the failure mode, because the lesson is legible only while the
-  work is still fresh. Chores and mechanical closes are exempt, and searching
-  for prior lessons is not required at close time.
-- Write close reasons, comments, and commit bodies in the fewest words that stay
-  greppable: cite `file:line`, name the decision, state the outcome. Do not
-  restate the work as prose or re-explain what the diff already shows. Compress,
-  never omit — the routing rule above still binds, and a lesson dropped to save
-  a line costs far more than the line saved.
+  work is still fresh. Chores and mechanical closes are exempt from
+  lesson-routing and prior-lesson search, but still need a close verdict —
+  `none:mechanical` makes that exemption a checkable claim instead of a silent
+  assumption; see the Close verdict gate below.
+- Every `br close` on this project must carry exactly one typed verdict naming
+  what makes the close checkable by someone other than its author, enforced by
+  `.beads/policy.yaml`'s `close_policy.require_typed_references` gate. The five
+  kinds are a partition, not a menu — pick the one that actually applies:
+  `consumer:` (production code reaches this, e.g.
+  `consumer:lua/louiselm/ui/chat/init.lua:11`), `gate:` (a check fails if it
+  stops being true, e.g. `gate:scripts/generate-luacats`), `live:` (the
+  maintainer confirmed it running, e.g.
+  `live:codex/01a050f8-93e9-7f00-847f-be08e6920e77`), `inert:` (not reachable
+  yet — requires a filed follow-up issue), and `none:` (nothing to verify, e.g.
+  `none:mechanical`). A reason whose only typed reference is a built-in kind
+  such as `commit:` does not satisfy the gate — built-ins are not in
+  `required_kinds`, deliberately, so a stray commit citation cannot stand in
+  for naming a verdict. A parent's verdict may be no stronger than its weakest
+  child's: if any child closed `inert:`, the parent closes `inert:` too. This
+  is a convention the gate cannot see, not a rule `br` enforces — a violation
+  is a visible contradiction in the shared record, not a rejected command.
+- Write close reasons, comments, and commit bodies in the fewest words that
+  stay greppable: name the decision, state the outcome, cite `file:line`
+  where one applies. Do not restate the work as prose or re-explain what the
+  diff already shows. Compress, never omit — the routing rule above still
+  binds, and a lesson dropped to save a line costs far more than the line
+  saved.
 - `br search` excludes closed issues unless passed `-a`, and lessons live on
   closed issues almost by definition. Always search prior art with `-a`, and
   never read a zero-result search as absence without it. `br list --json`

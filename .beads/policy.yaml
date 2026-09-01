@@ -1,0 +1,5 @@
+close_policy:
+  require_typed_references:
+    enabled: true
+    required_kinds: [consumer, gate, live, inert, none]
+allow_bypass: true
