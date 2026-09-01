@@ -81,6 +81,33 @@ T["ignores work queued before disposal"] = function()
   MiniTest.expect.equality(pipe.closing, true)
 end
 
+T["normalizes null optional fields from a Run socket snapshot"] = function()
+  local pipe = fake_pipe()
+  local snapshot
+  local client = assert(RunClient.connect("/tmp/run.sock", function(runs)
+    snapshot = runs[1]
+  end, {
+    pipe_factory = function()
+      return pipe
+    end,
+  }))
+  pipe.connect_callback()
+  pipe.read_callback(
+    nil,
+    '{"type":"snapshot","runs":[{"id":"8981f800-c2ea-457f-8238-13e561246679","revision":3,"state":"cold_parked","session_id":"codex/01a05d64-ece8-77a0-998c-5e44f3be40f1","generated_work_ceiling":1,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"triggering_mutation_id":null,"park_expires_at_ms":1788359713137,"resume_operation_id":null,"resume_deadline_ms":null}]}\n'
+  )
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return snapshot ~= nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(snapshot.triggering_mutation_id, nil)
+  MiniTest.expect.equality(snapshot.resume_operation_id, nil)
+  MiniTest.expect.equality(snapshot.resume_deadline_ms, nil)
+  assert(client:dispose())
+end
+
 T["closes a disconnected handle so a new client can reconcile"] = function()
   local pipe = fake_pipe()
   local error_message

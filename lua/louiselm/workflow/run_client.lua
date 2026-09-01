@@ -58,6 +58,17 @@ local function valid_run(run)
     and type(run.park_expires_at_ms) == "number"
 end
 
+local function normalize_optional_fields(run)
+  if type(run) ~= "table" then
+    return
+  end
+  for _, field in ipairs({ "session_id", "triggering_mutation_id", "resume_operation_id", "resume_deadline_ms" }) do
+    if run[field] == nvim.NIL then
+      run[field] = nil
+    end
+  end
+end
+
 local function close_pipe(pipe)
   if pipe ~= nil and not pipe:is_closing() then
     pipe:read_stop()
@@ -95,6 +106,12 @@ local function handle_line(client, line)
     report_error(client, "Run socket returned invalid JSON")
     return
   end
+  if type(message.runs) == "table" then
+    for _, run in ipairs(message.runs) do
+      normalize_optional_fields(run)
+    end
+  end
+  normalize_optional_fields(message.run)
   if message.type == "snapshot" and type(message.runs) == "table" then
     local revisions = {}
     for _, run in ipairs(message.runs) do
