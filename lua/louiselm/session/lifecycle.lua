@@ -543,6 +543,7 @@ end
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 local function handle_request(self, request, respond)
   if request.method ~= "session/request_permission" then
+    respond(nil, { code = -32601, message = "Method not found" })
     return
   end
   if type(request.params) ~= "table" or request.params.sessionId ~= self.acp_session_id then

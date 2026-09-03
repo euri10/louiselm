@@ -1682,6 +1682,28 @@ T["new"]["cancels and disposes without allowing late process results"] = functio
   restore_processes(original_system)
 end
 
+T["new"]["rejects unsupported agent requests but ignores notifications"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local _, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local writes_before = #process.writes
+
+  local request = assert(Protocol.request(9, "session/unsupported", { sessionId = "agent-acp" }))
+  process.options.stdout(nil, assert(Protocol.encode(request)) .. "\n")
+  MiniTest.expect.equality(#process.writes, writes_before + 1)
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))), {
+    jsonrpc = "2.0",
+    id = 9,
+    error = { code = -32601, message = "Method not found" },
+  })
+
+  notification(process, "session/unsupported", { sessionId = "agent-acp" })
+  MiniTest.expect.equality(#process.writes, writes_before + 1)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["publishes permission requests with a response function"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
