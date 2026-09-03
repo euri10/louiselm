@@ -248,3 +248,34 @@ pub fn crafted_sk_signature(namespace: &str, flags: u8) -> String {
     armored.push_str("-----END SSH SIGNATURE-----\n");
     armored
 }
+
+/// Writes a registry describing one Agent, runtime, and envelope.
+pub fn write_registry(registry_root: &Path, runtime_root: &Path) {
+    let executable = runtime_root.join("bin/agent");
+    let adapter = runtime_root.join("lib/adapter.js");
+    let digest = |path: &Path| {
+        louiselm_skills::registry::measure_file(path)
+            .expect("the file measures")
+            .hex()
+            .to_owned()
+    };
+
+    write_file(
+        &registry_root.join("agents.json"),
+        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"demo","provider":"demo-provider","runtime_id":"demo-runtime","arguments":["--acp"],"environment":{"LOUISELM_SESSION":"1"}}]}"#,
+    );
+    write_file(
+        &registry_root.join("runtimes.json"),
+        &format!(
+            r#"{{"schema":"louiselm.launch.registry/1","entries":[{{"id":"demo-runtime","root":{root},"executable":"bin/agent","executable_sha256":"{executable_digest}","adapters":[{{"path":"lib/adapter.js","sha256":"{adapter_digest}"}}],"version":"1.0.0","origin":"test fixture","library_baseline":["glibc 2.41"],"isolation_policy_version":"louiselm.isolation/1"}}]}}"#,
+            root = serde_json::to_string(&runtime_root.display().to_string())
+                .expect("a path serializes"),
+            executable_digest = digest(&executable),
+            adapter_digest = digest(&adapter),
+        ),
+    );
+    write_file(
+        &registry_root.join("envelopes.json"),
+        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"denied","network":"denied","description":"No network at all."}]}"#,
+    );
+}
