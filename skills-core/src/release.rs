@@ -605,6 +605,15 @@ fn schema_identifiers() -> Vec<String> {
         crate::trust::TRUST_CHANGE_SCHEMA,
         crate::quarantine::QUARANTINE_SCHEMA,
         crate::admission::STATUS_SCHEMA,
+        crate::launch::REQUEST_SCHEMA,
+        crate::launch_protocol::LIFECYCLE_REQUEST_SCHEMA,
+        crate::launch_protocol::STATUS_REQUEST_SCHEMA,
+        crate::launch_protocol::RECEIPT_ACK_SCHEMA,
+        crate::launch_protocol::SUPERVISOR_STATUS_SCHEMA,
+        crate::launch_protocol::SESSION_STATUS_SCHEMA,
+        crate::launch_protocol::RESPONSE_SCHEMA,
+        crate::launch_receipt::RECEIPT_SCHEMA,
+        crate::launch_receipt::SIGNED_RECEIPT_SCHEMA,
         MANIFEST_SCHEMA,
     ]
     .iter()

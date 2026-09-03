@@ -17,6 +17,8 @@ pub mod inspect;
 pub mod install;
 pub mod isolation;
 pub mod launch;
+pub mod launch_protocol;
+pub mod launch_receipt;
 pub mod lineage;
 pub mod manifest;
 pub mod policy;

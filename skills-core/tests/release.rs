@@ -14,6 +14,7 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use louiselm_skills::{
     Policy,
     install::{self, InstallError},
+    launch, launch_protocol, launch_receipt,
     release::{self, ReleaseError, SourceIdentity, ToolchainIdentity},
     sshsig::SkPolicy,
     trust::{Role, TrustStore},
@@ -139,6 +140,22 @@ fn a_bundle_binds_its_source_toolchain_dependencies_policy_and_bytes() {
         bundle.join("schemas/schemas.json").is_file(),
         "the schemas a release implements are part of its identity",
     );
+    for schema in [
+        launch::REQUEST_SCHEMA,
+        launch_protocol::LIFECYCLE_REQUEST_SCHEMA,
+        launch_protocol::STATUS_REQUEST_SCHEMA,
+        launch_protocol::RECEIPT_ACK_SCHEMA,
+        launch_protocol::SUPERVISOR_STATUS_SCHEMA,
+        launch_protocol::SESSION_STATUS_SCHEMA,
+        launch_protocol::RESPONSE_SCHEMA,
+        launch_receipt::RECEIPT_SCHEMA,
+        launch_receipt::SIGNED_RECEIPT_SCHEMA,
+    ] {
+        assert!(
+            manifest.schemas.iter().any(|candidate| candidate == schema),
+            "trusted release omitted launcher schema {schema}",
+        );
+    }
 }
 
 #[test]
