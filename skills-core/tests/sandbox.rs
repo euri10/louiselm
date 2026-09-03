@@ -16,6 +16,7 @@ use std::{
     io::{BufRead, BufReader, Read},
     os::unix::fs::PermissionsExt,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -112,11 +113,40 @@ fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
 /// not guaranteed in every CI container. Skipping with a reason is honest;
 /// asserting a fact the environment cannot back up is not.
 fn cgroup_available() -> bool {
-    if Cgroup::delegated_parent().is_some() {
-        return true;
+    let Some(parent) = Cgroup::delegated_parent() else {
+        eprintln!("skipping: no delegated cgroup v2 hierarchy in this environment");
+        return false;
+    };
+    static NEXT_PROBE: AtomicU64 = AtomicU64::new(0);
+    let id = format!(
+        "lifecycle-probe-{}-{}",
+        std::process::id(),
+        NEXT_PROBE.fetch_add(1, Ordering::Relaxed),
+    );
+    let cgroup = match Cgroup::create(&parent, &id) {
+        Ok(cgroup) => cgroup,
+        Err(error) => {
+            eprintln!("skipping: cannot create a lifecycle probe cgroup: {error}");
+            return false;
+        }
+    };
+    let result = (|| {
+        if !cgroup.processes()?.is_empty() {
+            return Err(SandboxError::NoCgroup(
+                "lifecycle probe cgroup is not empty".to_owned(),
+            ));
+        }
+        cgroup.freeze()?;
+        cgroup.thaw()?;
+        cgroup.kill_all()
+    })();
+    let _ = cgroup.thaw();
+    cgroup.remove();
+    if let Err(error) = result {
+        eprintln!("skipping: cgroup lifecycle controls are unusable: {error}");
+        return false;
     }
-    eprintln!("skipping: no delegated cgroup v2 hierarchy in this environment");
-    false
+    true
 }
 
 fn expect_spawn_error(
@@ -209,6 +239,7 @@ fn assert_maps_assigned_identity(pid: u32, name: &str, host_id: u32) {
 
 #[test]
 fn spawn_runs_the_planned_executable_and_reports_matching_evidence() {
+    let lifecycle_available = cgroup_available();
     let fixture = Fixture::new();
     let confinement = plan(&fixture, "echo", "#!/bin/sh\necho sandboxed-marker\n");
     let backend = BubblewrapBackend::new();
@@ -246,8 +277,8 @@ fn spawn_runs_the_planned_executable_and_reports_matching_evidence() {
     );
     assert_eq!(
         dimension(Dimension::Lifecycle),
-        Cgroup::delegated_parent().is_some(),
-        "Lifecycle evidence must reflect whether a cgroup was actually available, not assume one",
+        lifecycle_available,
+        "Lifecycle evidence must match usable cgroup freeze-and-kill controls",
     );
 
     session.dispose().expect("disposal succeeds");

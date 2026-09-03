@@ -254,8 +254,18 @@ impl Cgroup {
             .is_some_and(|value| value.trim() == "1")
     }
 
-    fn supports_kill(&self) -> bool {
-        self.path.join("cgroup.kill").is_file()
+    fn preflight_lifecycle(&self) -> Result<(), SandboxError> {
+        let processes = self.processes()?;
+        if !processes.is_empty() {
+            return Err(SandboxError::NoCgroup(format!(
+                "new Session cgroup {} already contains {} process(es)",
+                self.path.display(),
+                processes.len(),
+            )));
+        }
+        self.freeze()?;
+        self.thaw()?;
+        self.kill_all()
     }
 
     /// Freezes every process in the cgroup, including ones forked since.
@@ -284,6 +294,37 @@ impl Cgroup {
             path: path.display().to_string(),
             source,
         })
+    }
+}
+
+fn preflight_cgroup(
+    cgroup: Option<Cgroup>,
+    identity: IdentityPlan,
+) -> Result<Option<Cgroup>, SandboxError> {
+    let Some(cgroup) = cgroup else {
+        return if matches!(identity, IdentityPlan::HostIdentity { .. }) {
+            Err(SandboxError::Refused(
+                "a distinct host identity requires a writable cgroup for fail-closed startup"
+                    .to_owned(),
+            ))
+        } else {
+            Ok(None)
+        };
+    };
+    match cgroup.preflight_lifecycle() {
+        Ok(()) => Ok(Some(cgroup)),
+        Err(error @ SandboxError::NoCgroup(_)) => {
+            cgroup.remove();
+            Err(error)
+        }
+        Err(error) => {
+            cgroup.remove();
+            if matches!(identity, IdentityPlan::HostIdentity { .. }) {
+                Err(error)
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -820,7 +861,9 @@ impl BubblewrapBackend {
         identity: Option<HostIdentityObservation>,
     ) -> IsolationEvidence {
         let identity_satisfied = identity.is_some_and(|observed| observed.initial_user_namespace);
-        let lifecycle_satisfied = cgroup.is_some_and(Cgroup::supports_freeze);
+        // `spawn` retains a cgroup only after its empty-tree lifecycle probe
+        // has successfully frozen, thawed, and killed it.
+        let lifecycle_satisfied = cgroup.is_some();
         let dimensions = vec![
             DimensionEvidence {
                 dimension: Dimension::FilesystemVisibility,
@@ -891,7 +934,7 @@ impl BubblewrapBackend {
                 detail: if lifecycle_satisfied {
                     "The whole tree can be frozen and killed through its own cgroup.".to_owned()
                 } else {
-                    "No writable cgroup v2 hierarchy, so the tree cannot be frozen or proven gone.".to_owned()
+                    "No usable cgroup v2 freeze-and-kill controls, so the tree cannot be frozen or proven gone.".to_owned()
                 },
             },
             DimensionEvidence {
@@ -992,15 +1035,7 @@ impl Backend for BubblewrapBackend {
         let cgroup = cgroup_parent
             .map(|parent| Cgroup::create(&parent, &plan.session_id))
             .transpose()?;
-        if host_identity.is_some() && !cgroup.as_ref().is_some_and(|cgroup| cgroup.supports_kill())
-        {
-            if let Some(cgroup) = &cgroup {
-                cgroup.remove();
-            }
-            return Err(SandboxError::Refused(
-                "a distinct host identity requires cgroup v2 unconditional kill support".to_owned(),
-            ));
-        }
+        let cgroup = preflight_cgroup(cgroup, plan.identity)?;
 
         let mut command = Command::new(&self.program);
         command
@@ -1164,6 +1199,125 @@ mod tests {
             sandbox_leader_pid: None,
             _status_guard: status_guard,
         }
+    }
+
+    fn lifecycle_evidence(cgroup: Option<&Cgroup>) -> DimensionEvidence {
+        BubblewrapBackend::new()
+            .evidence(NetworkPolicy::Denied, cgroup, None)
+            .dimensions
+            .into_iter()
+            .find(|evidence| evidence.dimension == Dimension::Lifecycle)
+            .expect("Lifecycle evidence is present")
+    }
+
+    #[test]
+    fn namespace_only_omits_lifecycle_when_kill_control_is_missing() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "").expect("membership fixture writes");
+        fs::write(fixture.path().join("cgroup.freeze"), "0")
+            .expect("freeze control fixture writes");
+        let kill = fixture.path().join("cgroup.kill");
+        std::os::unix::fs::symlink(fixture.path().join("missing/cgroup.kill"), &kill)
+            .expect("missing kill control fixture links");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+
+        let checked = preflight_cgroup(Some(cgroup), IdentityPlan::NamespaceOnly)
+            .expect("namespace-only startup degrades without lifecycle controls");
+        assert!(checked.is_none());
+        let evidence = lifecycle_evidence(checked.as_ref());
+        assert!(!evidence.satisfied);
+        assert_eq!(evidence.mechanism, "none");
+
+        fs::remove_file(&kill).expect("missing kill control fixture unlinks");
+        fs::write(&kill, "").expect("kill control fixture writes");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+        let checked = preflight_cgroup(Some(cgroup), IdentityPlan::NamespaceOnly)
+            .expect("complete lifecycle controls pass preflight");
+        let evidence = lifecycle_evidence(checked.as_ref());
+        assert!(evidence.satisfied);
+        assert_eq!(evidence.mechanism, "cgroup v2 freeze and kill");
+        assert_eq!(
+            fs::read_to_string(fixture.path().join("cgroup.freeze")).expect("freeze control reads"),
+            "0",
+        );
+        assert_eq!(fs::read_to_string(&kill).expect("kill control reads"), "1",);
+    }
+
+    #[test]
+    fn host_identity_refuses_kill_control_write() {
+        let identity = IdentityPlan::HostIdentity { uid: 1, gid: 1 };
+        assert!(matches!(
+            preflight_cgroup(None, identity),
+            Err(SandboxError::Refused(_)),
+        ));
+
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "").expect("membership fixture writes");
+        fs::write(fixture.path().join("cgroup.freeze"), "0")
+            .expect("freeze control fixture writes");
+        std::os::unix::fs::symlink("/dev/full", fixture.path().join("cgroup.kill"))
+            .expect("refusing kill control fixture links");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+
+        let error = preflight_cgroup(Some(cgroup), identity)
+            .expect_err("HostIdentity fails closed when kill is refused");
+        assert!(matches!(
+            error,
+            SandboxError::Io { ref path, .. }
+                if Path::new(path) == fixture.path().join("cgroup.kill")
+        ));
+        assert_eq!(
+            fs::read_to_string(fixture.path().join("cgroup.freeze")).expect("freeze control reads"),
+            "0",
+            "failed kill preflight leaves the empty cgroup thawed",
+        );
+    }
+
+    #[test]
+    fn host_identity_refuses_unreadable_membership_control() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::create_dir(fixture.path().join("cgroup.procs"))
+            .expect("unreadable membership fixture creates");
+        fs::write(fixture.path().join("cgroup.freeze"), "0")
+            .expect("freeze control fixture writes");
+        fs::write(fixture.path().join("cgroup.kill"), "").expect("kill control fixture writes");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+
+        let error = preflight_cgroup(Some(cgroup), IdentityPlan::HostIdentity { uid: 1, gid: 1 })
+            .expect_err("HostIdentity fails closed when membership cannot be read");
+        assert!(matches!(
+            error,
+            SandboxError::Io { ref path, .. }
+                if Path::new(path) == fixture.path().join("cgroup.procs")
+        ));
+    }
+
+    #[test]
+    fn lifecycle_preflight_refuses_a_nonempty_cgroup() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "123\n").expect("membership fixture writes");
+        fs::write(fixture.path().join("cgroup.freeze"), "0")
+            .expect("freeze control fixture writes");
+        fs::write(fixture.path().join("cgroup.kill"), "").expect("kill control fixture writes");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+
+        let error = preflight_cgroup(Some(cgroup), IdentityPlan::NamespaceOnly)
+            .expect_err("a lifecycle probe never kills an existing process tree");
+        assert!(matches!(error, SandboxError::NoCgroup(_)));
+        assert_eq!(
+            fs::read_to_string(fixture.path().join("cgroup.kill")).expect("kill control reads"),
+            "",
+        );
     }
 
     #[test]
