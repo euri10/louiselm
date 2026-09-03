@@ -4,7 +4,7 @@
 
 ---@class louiselm.forensics.EvidenceSource
 ---@field kind string Known evidence source kind.
----@field state "present"|"absent"|"inaccessible"|"unsupported"|"omitted" Availability state.
+---@field state "present"|"absent"|"inaccessible"|"unsupported"|"omitted" State observed during collection.
 ---@field path? string Known source path, when present.
 ---@field mutable? boolean Whether the source can change after observation.
 ---@field reason? string Bounded reason for a non-present state.
@@ -18,11 +18,23 @@
 ---@field observations table<string, unknown> Fixed, sanitized observations.
 ---@field evidence_sources louiselm.forensics.EvidenceSource[] Known evidence pointers.
 
+---@alias louiselm.forensics.AvailabilityState "available"|"missing"|"unreadable"
+
+---@class louiselm.forensics.Inspection : louiselm.forensics.Record
+---@field evidence_availability table<string, louiselm.forensics.AvailabilityState> Current availability by supported evidence property.
+
 local M = {}
 
 local VERSION = 1
 local MAX_DIRTY_FILES = 100
 local MAX_TEXT = 256
+-- Agent transcripts preserve conversation content; only ACP wire logs preserve frame ordering.
+local SOURCE_PROPERTIES = {
+  acp_log = { "conversation_content", "wire_ordering" },
+  agent_transcript = { "conversation_content" },
+  git = { "repository_state" },
+}
+local AVAILABILITY_RANK = { missing = 1, unreadable = 2, available = 3 }
 
 ---@param value unknown
 ---@return unknown
@@ -188,6 +200,28 @@ end
 ---@return louiselm.forensics.Record
 function M.copy(record)
   return copy(record) --[[@as louiselm.forensics.Record]]
+end
+
+---Create a detached inspection projection from current source availability.
+---@param record louiselm.forensics.Record Persisted record; never mutated.
+---@param source_availability louiselm.forensics.AvailabilityState[] Current state for each evidence source.
+---@return louiselm.forensics.Inspection inspection
+function M.with_availability(record, source_availability)
+  local inspection = copy(record) --[[@as louiselm.forensics.Inspection]]
+  inspection.evidence_availability = {}
+  for index, source in ipairs(record.evidence_sources) do
+    local state = source_availability[index]
+    local properties = SOURCE_PROPERTIES[source.kind]
+    if properties ~= nil then
+      for _, property in ipairs(properties) do
+        local current = inspection.evidence_availability[property]
+        if state ~= nil and (current == nil or AVAILABILITY_RANK[state] > AVAILABILITY_RANK[current]) then
+          inspection.evidence_availability[property] = state
+        end
+      end
+    end
+  end
+  return inspection
 end
 
 ---@return integer

@@ -2,6 +2,7 @@
 local nvim = vim
 local Agent = require("louiselm.agent")
 local Beads = require("louiselm.ui.beads")
+local ForensicsStore = require("louiselm.forensics.store")
 local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
@@ -585,9 +586,19 @@ function M.register()
       end
       path = latest
     end
-    local lines = nvim.fn.readfile(path)
-    if #lines == 0 then
-      report_error("could not read Forensics record")
+    local store, store_error = ForensicsStore.new(nvim.fs.dirname(path))
+    if store == nil then
+      report_error(store_error)
+      return
+    end
+    local inspection, inspection_error = store:inspect(path)
+    if inspection == nil then
+      report_error(inspection_error)
+      return
+    end
+    local encoded_ok, encoded = pcall(nvim.json.encode, inspection)
+    if not encoded_ok then
+      report_error("could not encode Forensics inspection")
       return
     end
     local buffer = nvim.api.nvim_create_buf(false, true)
@@ -596,7 +607,7 @@ function M.register()
     nvim.bo[buffer].bufhidden = "wipe"
     nvim.bo[buffer].swapfile = false
     nvim.bo[buffer].filetype = "json"
-    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
+    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { encoded })
     nvim.bo[buffer].modifiable = false
     nvim.api.nvim_set_current_buf(buffer)
   end, { nargs = "?", desc = "View a Forensics record", complete = "file", force = true })

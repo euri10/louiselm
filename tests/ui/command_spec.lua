@@ -3,6 +3,7 @@ local MiniTest = require("mini.test")
 local Protocol = require("louiselm.acp.protocol")
 local Command = require("louiselm.ui.chat.command")
 local Beads = require("louiselm.ui.beads")
+local ForensicsStore = require("louiselm.forensics.store")
 local Louiselm = require("louiselm")
 local Session = require("louiselm.session")
 
@@ -196,6 +197,42 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(commands.LouiselmTutor ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LouisLMChat, nil)
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
+end
+
+T["command"]["views current Forensics evidence availability without a chat"] = function()
+  local root = nvim.fn.tempname()
+  local store = assert(ForensicsStore.new(nvim.fs.joinpath(root, "forensics")))
+  local record_path = assert(store:write({
+    schema_version = 1,
+    id = "record-1",
+    observed_at = 100,
+    subject = { agent = "codex", acp_session_id = "acp-1" },
+    observations = {},
+    evidence_sources = {
+      {
+        kind = "acp_log",
+        state = "omitted",
+        mutable = true,
+        reason = "ACP adapter did not advertise a log path",
+      },
+      { kind = "git", state = "present", mutable = true },
+    },
+  }))
+  MiniTest.finally(function()
+    nvim.fn.delete(root, "rf")
+  end)
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensicsView", args = { record_path } }, {})
+
+  local buffer = nvim.api.nvim_get_current_buf()
+  local inspected = nvim.json.decode(table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n"))
+  MiniTest.expect.equality(inspected.evidence_availability, {
+    conversation_content = "missing",
+    repository_state = "available",
+    wire_ordering = "missing",
+  })
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("buftype", { buf = buffer }), "nofile")
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
 end
 
 T["command"]["opens the Tutor without a configured Agent"] = function()
