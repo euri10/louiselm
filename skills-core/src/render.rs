@@ -228,3 +228,63 @@ fn push(out: &mut String, line: &str) {
     out.push_str(line);
     out.push('\n');
 }
+
+/// Renders Generation status as operator-facing text.
+pub fn generation_status(status: &crate::admission::GenerationStatus) -> String {
+    let mut out = String::new();
+    match (&status.generation, status.state) {
+        (Some(generation), Some(state)) => {
+            push(
+                &mut out,
+                &format!(
+                    "Generation {generation}\n  state      {}\n  sequence   {}",
+                    state.name(),
+                    status.sequence.unwrap_or_default(),
+                ),
+            );
+            if let Some(predecessor) = &status.predecessor {
+                push(&mut out, &format!("  follows    {predecessor}"));
+            }
+            if let Some(role) = &status.signer_role {
+                push(&mut out, &format!("  signed by  {role} role"));
+            }
+            match &status.witness {
+                Some(witness) => push(
+                    &mut out,
+                    &format!(
+                        "  witnessed  {} branch {} commit {}",
+                        witness.remote, witness.branch, witness.commit
+                    ),
+                ),
+                None => push(&mut out, "  witnessed  no"),
+            }
+            push(
+                &mut out,
+                &format!("  members    {} in force", status.effective_members.len()),
+            );
+            for member in &status.excluded_members {
+                push(&mut out, &format!("  quarantined {member}"));
+            }
+        }
+        _ => push(&mut out, "No Skill Generation is in force."),
+    }
+    if !status.pending.is_empty() {
+        push(&mut out, "");
+        push(&mut out, "Signed but not in force:");
+        for pending in &status.pending {
+            push(&mut out, &format!("  {pending}"));
+        }
+    }
+    if let Some(failure) = &status.failure {
+        push(&mut out, &format!("Failure: {failure}"));
+    }
+    push(&mut out, "");
+    push(
+        &mut out,
+        &format!(
+            "Next: [{}] {}",
+            status.next_action.id, status.next_action.detail
+        ),
+    );
+    out
+}

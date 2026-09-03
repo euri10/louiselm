@@ -18,6 +18,18 @@ dossier <digest> [--against DIGEST] [--review-depth DEPTH]
                  [--assessment-model M --assessment-prompt P]
 list
 policy [--digest]
+
+trust bootstrap --primary KEY --recovery KEY [--require-hardware]
+trust show | rotation-payload | rotate | reset --confirm
+
+generation admit --member DIGEST[:DEPTH] ... --key PRIVKEY
+generation witness DIGEST --remote URL [--branch B]
+generation activate DIGEST
+generation status | list
+
+quarantine exclude DIGEST... --reason TEXT
+quarantine all --reason TEXT
+quarantine show
 ```
 
 Every command accepts `--store DIR`, `--policy FILE --policy-digest D`, and
@@ -101,6 +113,96 @@ version. An opinion about anything else is treated as absent, not as stale,
 because showing a reviewer an opinion about different bytes is worse than
 showing none.
 
+## Skill Admission
+
+A package that verifies is not a package anyone approved. Skill Admission is
+the local ceremony that turns reviewed packages into a **Skill Generation**: one
+signed record binding the complete admitted set, the Dossier each member was
+approved from, the claimed review depth, the governing policy, the Provider view
+roots, and its place in a chain — sequence and predecessor. The set is admitted
+as a whole, with one touch, so addition, deletion, replacement, policy change,
+and rollback are all visible as changes to a signed record.
+
+Three roles, kept distinct even on one physical token. **Primary** signs routine
+Admissions. **Recovery** exists only to replace key policy or the primary, and
+is refused as an ordinary signer — a recovery key that could also admit skills
+would just be a second primary. **Release** authorizes trusted builds
+(louiselm-d6fv.7). There is no seed phrase and no extractable master secret:
+losing both tokens means an explicit `trust reset` and re-Admission, which is
+the honest cost of not having a secret to steal.
+
+A signed Generation governs nothing until it is **witnessed**. Its exact bytes
+are published to a protected Git branch and read back from the remote before it
+can be activated, so a Generation only takes effect once it exists somewhere the
+operator does not solely control. The witness ledger is append-only per
+Generation: a digest already published with different bytes is refused, never
+overwritten. During a witness outage nothing changes, and the previous
+Generation stays in force. Activation also refuses any sequence at or below what
+is current, so restoring an older signed record is not a rollback path —
+intentional rollback is a newly admitted higher sequence.
+
+The commit to the witness branch is an ordinary commit. Branch protection on the
+remote is the control; a second hardware signature there would cost another
+touch and prove nothing the first one did not.
+
+**Emergency quarantine** narrows authority immediately and needs no token:
+excluded packages drop out of the current Generation the moment the file is
+written. It only ever narrows. Giving authority back requires a newly admitted
+Generation, so `quarantine clear` refuses by design rather than becoming a way
+to re-enable quarantined supply without a touch.
+
+### What v1 trusts
+
+The ceremony trusts the kernel, the root-owned `louiselm-skills` binary, and the
+local TTY. Hardware attestation bytes may be recorded alongside an enrolled key,
+but nothing here validates a manufacturer certificate chain, so the record says
+`validated: false` and the bytes are evidence only — never proof that a key is
+genuine hardware.
+
+Until louiselm-d6fv.7 installs root-owned binaries and protected trust data, the
+trust store and Generation records live in the same store an operator can write.
+That is the gap that release makes real; it is not closed here.
+
+### The manual ceremony
+
+Automated tests cover the chain, the state machine, the witness protocol, and
+signature verification, using software keys. They cannot cover a physical touch.
+Run this once on Linux with the real tokens:
+
+```sh
+# 1. Enrol. Two resident FIDO keys, on two physically separate tokens.
+ssh-keygen -t ed25519-sk -O resident -O verify-required -C admission-primary  -f ~/.ssh/id_admission
+ssh-keygen -t ed25519-sk -O resident -O verify-required -C admission-recovery -f ~/.ssh/id_recovery
+louiselm-skills trust bootstrap \
+  --primary  ~/.ssh/id_admission.pub \
+  --recovery ~/.ssh/id_recovery.pub \
+  --require-hardware
+louiselm-skills trust show
+
+# 2. Admit. One touch for the whole set; ssh-keygen prompts for it.
+louiselm-skills generation admit \
+  --member sha256:<pkg>:read \
+  --key ~/.ssh/id_admission
+louiselm-skills generation witness sha256:<generation> --remote git@your.host:infra/skill-witness.git
+louiselm-skills generation activate sha256:<generation>
+
+# 3. Verify without a token. Nothing below should prompt for a touch.
+louiselm-skills generation status
+
+# 4. Rotate the primary with the recovery key. This is the touch that matters:
+#    it must come from the recovery token, not the primary.
+louiselm-skills trust rotation-payload --role primary --key ~/.ssh/id_admission2.pub > /tmp/change
+ssh-keygen -Y sign -n louiselm.skills.trust/1 -f ~/.ssh/id_recovery /tmp/change
+louiselm-skills trust rotate --role primary --key ~/.ssh/id_admission2.pub --signature /tmp/change.sig
+
+# 5. Confirm the replaced primary is dead. This must fail.
+louiselm-skills generation admit --member sha256:<pkg>:read --key ~/.ssh/id_admission
+```
+
+Check at each touch that the token actually blinked. A ceremony that completes
+without a touch means `--require-hardware` did not reach the enrolled key, and
+the assertion flags in the signature are what the verifier checks.
+
 ## Gates
 
 ```sh
@@ -111,7 +213,12 @@ cargo test
 
 ## Scope
 
-This crate stops at the Dossier. Hardware-signed Skill Admission and remote
-witnessing (louiselm-d6fv.2), Provider-scoped views (louiselm-d6fv.3), Session
-launch and containment (louiselm-d6fv.4), and portable Endorsements
-(louiselm-d6fv.8) build on the canonical contract defined here.
+This crate owns packaging, Inspection, the Dossier, and Skill Admission. It
+requires `ssh-keygen` for signatures and `git` for witnessing; both are part of
+the trusted base rather than vendored, and this crate implements no
+cryptography of its own.
+
+Provider-scoped views (louiselm-d6fv.3), Session launch and containment
+(louiselm-d6fv.4), the trusted release that makes these bytes root-owned
+(louiselm-d6fv.7), and portable Endorsements (louiselm-d6fv.8) build on the
+canonical contract and the Generation chain defined here.
