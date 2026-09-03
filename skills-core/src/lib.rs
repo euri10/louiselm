@@ -16,6 +16,7 @@ pub mod generation;
 pub mod inspect;
 pub mod install;
 pub mod isolation;
+pub mod launch;
 pub mod lineage;
 pub mod manifest;
 pub mod policy;
