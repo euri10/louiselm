@@ -215,8 +215,14 @@ impl Cgroup {
     }
 
     /// Returns every process currently in the cgroup.
-    pub fn processes(&self) -> Vec<u32> {
-        self.try_processes().unwrap_or_default()
+    ///
+    /// Fails when `cgroup.procs` cannot be read or contains a malformed PID.
+    pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
+        let path = self.path.join("cgroup.procs");
+        self.try_processes().map_err(|source| SandboxError::Io {
+            path: path.display().to_string(),
+            source,
+        })
     }
 
     fn try_processes(&self) -> io::Result<Vec<u32>> {
@@ -332,11 +338,13 @@ impl SandboxedSession {
     }
 
     /// Returns every process in the Session's tree.
-    pub fn processes(&self) -> Vec<u32> {
-        self.cgroup
-            .as_ref()
-            .map(Cgroup::processes)
-            .unwrap_or_default()
+    ///
+    /// Fails when the Session's cgroup membership cannot be read.
+    pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
+        match &self.cgroup {
+            Some(cgroup) => cgroup.processes(),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Borrows the Session's stdin, when the ACP channel is stdio.
@@ -410,12 +418,15 @@ impl SandboxedSession {
     /// zero-survivors guarantee.
     pub fn interrupt(&self) -> Result<usize, SandboxError> {
         let cgroup = self.cgroup.as_ref();
-        if let Some(cgroup) = cgroup.filter(|cgroup| cgroup.supports_freeze()) {
-            cgroup.freeze()?;
-            wait_for_stable_membership(cgroup);
-        }
-
-        let outcome = signal(&self.processes(), "-INT", self.backend);
+        let outcome = (|| {
+            let processes = if let Some(cgroup) = cgroup.filter(|cgroup| cgroup.supports_freeze()) {
+                cgroup.freeze()?;
+                wait_for_stable_membership(cgroup)?
+            } else {
+                self.processes()?
+            };
+            signal(&processes, "-INT", self.backend)
+        })();
 
         if let Some(cgroup) = cgroup {
             let _ = cgroup.thaw();
@@ -424,24 +435,25 @@ impl SandboxedSession {
     }
 
     /// Terminates the whole tree and releases the Session's identity.
-    pub fn dispose(mut self) -> Result<DisposalReport, SandboxError> {
-        let processes_before = self.processes().len();
-        if let Some(cgroup) = &self.cgroup {
+    pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
+        let processes_before = self.processes().map(|processes| processes.len());
+        let cgroup_kill = if let Some(cgroup) = &self.cgroup {
             // Thaw first: a frozen cgroup cannot process the kill.
             let _ = cgroup.thaw();
-            cgroup.kill_all()?;
-        }
+            cgroup.kill_all()
+        } else {
+            Ok(())
+        };
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let processes_before = processes_before?;
+        cgroup_kill?;
 
         let deadline = Instant::now() + DISPOSAL_TIMEOUT;
-        let mut survivors = self.processes().len();
+        let mut survivors = self.processes()?.len();
         while survivors > 0 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
-            survivors = self.processes().len();
-        }
-        if let Some(cgroup) = &self.cgroup {
-            cgroup.remove();
+            survivors = self.processes()?.len();
         }
         if survivors > 0 {
             return Err(SandboxError::Survivors {
@@ -449,6 +461,10 @@ impl SandboxedSession {
                 survivors,
             });
         }
+        if let Some(cgroup) = self.cgroup.take() {
+            cgroup.remove();
+        }
+        self._status_guard = None;
         Ok(DisposalReport {
             session_id: self.session_id.clone(),
             processes_before,
@@ -474,14 +490,14 @@ impl SandboxedSession {
 /// A frozen cgroup still admits newly forked tasks — they are simply born
 /// frozen — so this only closes the startup-fork race before one enumeration;
 /// it says nothing about descendants forked later in the Session's life.
-fn wait_for_stable_membership(cgroup: &Cgroup) {
+fn wait_for_stable_membership(cgroup: &Cgroup) -> Result<Vec<u32>, SandboxError> {
     let deadline = Instant::now() + SIGNAL_SETTLE_TIMEOUT;
-    let mut previous = cgroup.processes();
+    let mut previous = cgroup.processes()?;
     loop {
         thread::sleep(Duration::from_millis(20));
-        let current = cgroup.processes();
+        let current = cgroup.processes()?;
         if current == previous || Instant::now() >= deadline {
-            return;
+            return Ok(current);
         }
         previous = current;
     }
@@ -1116,6 +1132,184 @@ pub fn default_system_roots() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_session(
+        session_id: &str,
+        cgroup_path: &Path,
+        status_guard: Option<UnixStream>,
+    ) -> SandboxedSession {
+        SandboxedSession {
+            session_id: session_id.to_owned(),
+            backend: "test",
+            evidence: IsolationEvidence {
+                contract_version: CONTRACT_VERSION.to_owned(),
+                backend: "test".to_owned(),
+                backend_version: "1".to_owned(),
+                kernel: KernelPrerequisites {
+                    user_namespaces: true,
+                    pid_namespaces: true,
+                    network_namespaces: true,
+                    cgroup_v2: true,
+                    details: Vec::new(),
+                },
+                dimensions: Vec::new(),
+            },
+            child: Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .expect("child starts"),
+            cgroup: Some(Cgroup {
+                path: cgroup_path.to_owned(),
+            }),
+            sandbox_leader_pid: None,
+            _status_guard: status_guard,
+        }
+    }
+
+    #[test]
+    fn disposal_still_terminates_after_initial_membership_failure() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let (status_guard, _status_peer) = UnixStream::pair().expect("status pair opens");
+        let mut session = test_session(
+            "initial-membership-error",
+            fixture.path(),
+            Some(status_guard),
+        );
+        let membership = fixture.path().join("cgroup.procs");
+
+        let error = session
+            .dispose()
+            .expect_err("missing initial membership fails the disposal");
+        match error {
+            SandboxError::Io { path, source } => {
+                assert_eq!(Path::new(&path), membership);
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        let terminated = session
+            .child
+            .try_wait()
+            .expect("child status reads")
+            .is_some();
+        if !terminated {
+            session
+                .child
+                .kill()
+                .expect("failed assertion cleans up child");
+            session.child.wait().expect("failed assertion reaps child");
+        }
+        assert!(session.cgroup.is_some(), "the cgroup handle stays owned");
+        assert!(
+            session._status_guard.is_some(),
+            "the identity-lifetime handle stays owned",
+        );
+
+        fs::write(&membership, "").expect("membership becomes readably empty");
+        session.dispose().expect("empty membership can be retried");
+        assert!(terminated, "Disposal must still terminate the child");
+    }
+
+    #[test]
+    fn disposal_does_not_treat_lost_membership_as_zero_survivors() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let (status_guard, _status_peer) = UnixStream::pair().expect("status pair opens");
+        let mut session = test_session("membership-error", fixture.path(), Some(status_guard));
+        let membership = fixture.path().join("cgroup.procs");
+        std::os::unix::fs::symlink(
+            format!("/proc/{}/oom_score", session.child.id()),
+            &membership,
+        )
+        .expect("membership follows a file that disappears with the child");
+
+        let error = session
+            .dispose()
+            .expect_err("an unreadable final membership is not zero survivors");
+        match error {
+            SandboxError::Io { path, source } => {
+                assert_eq!(Path::new(&path), membership);
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert!(session.cgroup.is_some(), "the cgroup handle stays owned");
+        assert!(
+            session._status_guard.is_some(),
+            "the identity-lifetime handle stays owned",
+        );
+
+        fs::remove_file(&membership).expect("dangling membership link is removed");
+        fs::write(&membership, "").expect("membership becomes readably empty");
+        let disposal = session.dispose().expect("empty membership can be retried");
+        assert_eq!(disposal.survivors, 0);
+        assert!(disposal.identity_released);
+        assert!(session.cgroup.is_none(), "the empty cgroup is released");
+        assert!(
+            session._status_guard.is_none(),
+            "the identity-lifetime handle is released",
+        );
+    }
+
+    #[test]
+    fn interrupt_thaws_after_membership_read_failure() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "").expect("freeze fixture writes");
+        let mut session = test_session("interrupt-error", fixture.path(), None);
+
+        let error = session
+            .interrupt()
+            .expect_err("unreadable membership fails the interrupt");
+        match error {
+            SandboxError::Io { path, source } => {
+                assert_eq!(Path::new(&path), fixture.path().join("cgroup.procs"));
+                assert_eq!(source.kind(), io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(
+            fs::read_to_string(freeze).expect("freeze state reads"),
+            "0",
+            "membership failure must not leave the Session frozen",
+        );
+
+        session.child.kill().expect("child can be cleaned up");
+        session.child.wait().expect("child is reaped");
+    }
+
+    #[test]
+    fn membership_distinguishes_missing_malformed_and_empty() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+        let membership = fixture.path().join("cgroup.procs");
+
+        for (contents, kind) in [
+            (None, io::ErrorKind::NotFound),
+            (Some("not-a-pid\n"), io::ErrorKind::InvalidData),
+        ] {
+            if let Some(contents) = contents {
+                fs::write(&membership, contents).expect("membership fixture writes");
+            }
+            let error = cgroup
+                .processes()
+                .expect_err("missing or malformed membership fails closed");
+            match error {
+                SandboxError::Io { path, source } => {
+                    assert_eq!(Path::new(&path), membership);
+                    assert_eq!(source.kind(), kind);
+                }
+                other => panic!("unexpected error: {other}"),
+            }
+        }
+
+        fs::write(&membership, "").expect("empty membership fixture writes");
+        assert_eq!(
+            cgroup.processes().expect("empty membership is readable"),
+            Vec::<u32>::new(),
+        );
+    }
 
     #[test]
     fn read_only_cgroup_files_are_not_delegation() {

@@ -48,7 +48,11 @@ fn is_alive(pid: u32) -> bool {
 }
 
 fn any_alive(session: &SandboxedSession) -> bool {
-    session.processes().iter().any(|&pid| is_alive(pid))
+    session
+        .processes()
+        .expect("cgroup membership is readable")
+        .iter()
+        .any(|&pid| is_alive(pid))
 }
 
 fn executable_script(path: &Path, script: &str) {
@@ -122,7 +126,7 @@ fn expect_spawn_error(
 ) -> SandboxError {
     match backend.spawn(confinement) {
         Err(error) => error,
-        Ok(session) => {
+        Ok(mut session) => {
             let _ = session.dispose();
             panic!("{message}");
         }
@@ -385,7 +389,12 @@ fn host_identity_changes_outer_credentials_and_owns_private_directories() {
     assert!(process_status_values(sandbox_leader_pid, "Groups:").is_empty());
     assert_maps_assigned_identity(sandbox_leader_pid, "uid_map", session_identity);
     assert_maps_assigned_identity(sandbox_leader_pid, "gid_map", session_identity);
-    assert!(session.processes().contains(&sandbox_leader_pid));
+    assert!(
+        session
+            .processes()
+            .expect("cgroup membership is readable")
+            .contains(&sandbox_leader_pid),
+    );
     for private in [&confinement.home, &confinement.workspace] {
         assert_eq!(
             fs::metadata(private)
@@ -661,7 +670,7 @@ fn park_freezes_the_whole_tree_and_resume_thaws_it() {
     let fixture = Fixture::new();
     let confinement = plan(&fixture, "park", "#!/bin/sh\nexec sleep 30\n");
     let backend = BubblewrapBackend::new();
-    let session = backend
+    let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
 
@@ -707,7 +716,7 @@ fn interrupt_reaches_the_workload_and_dispose_still_reaches_zero_survivors() {
         .environment
         .insert("HEARTBEAT".to_owned(), heartbeat.display().to_string());
     let backend = BubblewrapBackend::new();
-    let session = backend
+    let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
 
@@ -756,12 +765,18 @@ fn dispose_kills_a_grandchild_the_launcher_never_directly_forked() {
     let fixture = Fixture::new();
     let confinement = plan(&fixture, "grandchild", "#!/bin/sh\nsleep 30 &\nwait\n");
     let backend = BubblewrapBackend::new();
-    let session = backend
+    let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
 
     assert!(
-        wait_for(Duration::from_secs(2), || session.processes().len() >= 2),
+        wait_for(Duration::from_secs(2), || {
+            session
+                .processes()
+                .expect("cgroup membership is readable")
+                .len()
+                >= 2
+        }),
         "the backgrounded grandchild never joined the Session's cgroup",
     );
 
