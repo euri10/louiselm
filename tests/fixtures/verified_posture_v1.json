@@ -1,0 +1,98 @@
+{
+  "schema": "louiselm.verified-posture/1",
+  "session_id": "session-123",
+  "run_id": "11111111-2222-4333-8444-555555555555",
+  "state": "unverified",
+  "provider_disclosure_notice": "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment.",
+  "dimensions": {
+    "managed_supply": {
+      "state": "verified",
+      "requirement": "witnessed_generation",
+      "evidence": [
+        {
+          "kind": "skill_generation",
+          "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "failure_code": null,
+      "next_action": {
+        "id": "none",
+        "detail": "No action is required."
+      }
+    },
+    "native_supply": {
+      "state": "failed",
+      "requirement": "native_sources_controlled",
+      "evidence": [],
+      "failure_code": "native_supply_uncertain",
+      "next_action": {
+        "id": "mask_or_measure_native_supply",
+        "detail": "Measure or mask every native Provider instruction source before launch."
+      }
+    },
+    "runtime": {
+      "state": "verified",
+      "requirement": "measured_runtime",
+      "evidence": [
+        {
+          "kind": "runtime_measurement",
+          "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "failure_code": null,
+      "next_action": {
+        "id": "none",
+        "detail": "No action is required."
+      }
+    },
+    "isolation": {
+      "state": "verified",
+      "requirement": "isolation_contract",
+      "evidence": [
+        {
+          "kind": "isolation_receipt",
+          "id": "isolation-contract-1"
+        }
+      ],
+      "failure_code": null,
+      "next_action": {
+        "id": "none",
+        "detail": "No action is required."
+      }
+    },
+    "network": {
+      "state": "waived",
+      "requirement": "brokered_network",
+      "evidence": [
+        {
+          "kind": "capability_envelope",
+          "id": "envelope-7"
+        },
+        {
+          "kind": "waiver_receipt",
+          "id": "waiver-42"
+        }
+      ],
+      "failure_code": "broker_unavailable",
+      "next_action": {
+        "id": "restore_control_broker",
+        "detail": "Restore the authenticated control broker before granting network authority."
+      }
+    },
+    "provider_disclosure": {
+      "state": "verified",
+      "requirement": "cloud_plaintext_disclosure",
+      "evidence": [
+        {
+          "kind": "session_input_manifest",
+          "id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "failure_code": null,
+      "next_action": {
+        "id": "none",
+        "detail": "No action is required."
+      }
+    }
+  }
+}

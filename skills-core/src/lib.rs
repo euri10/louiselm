@@ -20,6 +20,7 @@ pub mod launch;
 pub mod lineage;
 pub mod manifest;
 pub mod policy;
+pub mod posture;
 pub mod quarantine;
 pub mod registry;
 pub mod release;

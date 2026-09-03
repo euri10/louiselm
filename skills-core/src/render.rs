@@ -9,6 +9,7 @@ use crate::{
     diff::{Change, LineKind},
     dossier::{AssessmentState, Dossier},
     inspect::FindingKind,
+    posture::Posture,
 };
 
 /// Renders a Dossier as reviewer-facing text.
@@ -344,6 +345,58 @@ pub fn install_status(status: &crate::install::InstallStatus) -> String {
         &format!(
             "Next: [{}] {}",
             status.next_action.id, status.next_action.detail
+        ),
+    );
+    out
+}
+
+/// Renders one normalized Verified posture as operator-facing text.
+pub fn posture(posture: &Posture) -> String {
+    let mut out = String::new();
+    push(
+        &mut out,
+        &format!("Verified posture: {}", posture.state.name()),
+    );
+    push(&mut out, &format!("Session: {}", posture.session_id));
+    push(&mut out, &format!("Run: {}", posture.run_id));
+    push(&mut out, "");
+
+    for (name, dimension) in posture.dimensions.ordered() {
+        let failure = dimension
+            .failure_code
+            .map(|code| format!(" ({})", code.name()))
+            .unwrap_or_default();
+        push(
+            &mut out,
+            &format!(
+                "{}: {}{} [{}]",
+                name.name(),
+                dimension.state.name(),
+                failure,
+                dimension.requirement.name(),
+            ),
+        );
+        for evidence in &dimension.evidence {
+            push(
+                &mut out,
+                &format!("  evidence: {}:{}", evidence.kind.name(), evidence.id),
+            );
+        }
+        push(
+            &mut out,
+            &format!(
+                "  next: {} — {}",
+                dimension.next_action.id, dimension.next_action.detail
+            ),
+        );
+    }
+
+    push(&mut out, "");
+    push(
+        &mut out,
+        &format!(
+            "Provider disclosure: {}",
+            posture.provider_disclosure_notice
         ),
     );
     out
