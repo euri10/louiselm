@@ -103,6 +103,38 @@ fn evidence_that_contradicts_itself_is_refused_rather_than_resolved() {
 }
 
 #[test]
+fn duplicate_agreeing_evidence_is_refused() {
+    let results = [true, false].map(|satisfied| {
+        let mut duplicate = complete_evidence();
+        duplicate
+            .dimensions
+            .iter_mut()
+            .find(|evidence| evidence.dimension == Dimension::NetworkDenial)
+            .expect("network denial is covered")
+            .satisfied = satisfied;
+        duplicate.dimensions.push(DimensionEvidence {
+            dimension: Dimension::NetworkDenial,
+            satisfied,
+            mechanism: "other".to_owned(),
+            detail: "a second, agreeing answer".to_owned(),
+        });
+        duplicate.check()
+    });
+
+    assert_eq!(
+        results,
+        [
+            Err(IsolationFailure::Contradictory(vec![
+                Dimension::NetworkDenial,
+            ])),
+            Err(IsolationFailure::Contradictory(vec![
+                Dimension::NetworkDenial,
+            ])),
+        ],
+    );
+}
+
+#[test]
 fn evidence_from_another_contract_version_is_not_read() {
     let mut foreign = complete_evidence();
     foreign.contract_version = "louiselm.isolation/99".to_owned();

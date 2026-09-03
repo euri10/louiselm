@@ -11,8 +11,8 @@
 //!
 //! * **Missing** — a dimension nobody answered. Silence is not a pass.
 //! * **Unsatisfied** — a dimension a backend admits it cannot cover.
-//! * **Contradictory** — two answers that disagree. Picking one would mean
-//!   choosing which part of the sandbox to believe.
+//! * **Contradictory** — more than one answer for a dimension. Even agreement
+//!   violates the exactly-one contract; picking one would hide ambiguity.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -184,7 +184,7 @@ pub enum IsolationFailure {
     /// One or more dimensions were reported unsatisfied.
     #[error("unsatisfied: {0:?}")]
     Unsatisfied(Vec<Dimension>),
-    /// One or more dimensions have disagreeing evidence.
+    /// One or more dimensions have multiple evidence records.
     #[error("contradictory evidence for {0:?}")]
     Contradictory(Vec<Dimension>),
 }
@@ -225,16 +225,7 @@ impl IsolationEvidence {
                         unsatisfied.push(dimension);
                     }
                 }
-                many => {
-                    if many
-                        .iter()
-                        .any(|evidence| evidence.satisfied != many[0].satisfied)
-                    {
-                        contradictory.push(dimension);
-                    } else if !many[0].satisfied {
-                        unsatisfied.push(dimension);
-                    }
-                }
+                _ => contradictory.push(dimension),
             }
         }
         if !contradictory.is_empty() {
