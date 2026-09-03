@@ -454,17 +454,26 @@ pub struct RunningIdentity {
 /// is the whole point: a build the Agent could have written must not be able
 /// to claim otherwise.
 pub fn running_identity() -> RunningIdentity {
-    let Ok(executable) = std::env::current_exe() else {
-        return RunningIdentity {
+    match std::env::current_exe() {
+        Ok(executable) => identity_of(&executable),
+        Err(_) => RunningIdentity {
             verified: false,
             release_id: None,
             executable: None,
             failure_code: Some("executable_unknown".to_owned()),
             detail: "The running executable could not be located.".to_owned(),
-        };
-    };
+        },
+    }
+}
+
+/// Reports whether `executable` is part of a trusted, root-owned release.
+///
+/// Split from [`running_identity`] so the ownership rules can be exercised
+/// against an install this process created, which is the only way an automated
+/// test reaches them: every test runs as an ordinary user.
+pub fn identity_of(executable: &Path) -> RunningIdentity {
     let rendered = executable.display().to_string();
-    let Some(release_root) = installed_release_root(&executable) else {
+    let Some(release_root) = installed_release_root(executable) else {
         return RunningIdentity {
             verified: false,
             release_id: None,
@@ -475,7 +484,7 @@ pub fn running_identity() -> RunningIdentity {
                     .to_owned(),
         };
     };
-    match verify_installed(&release_root, &executable) {
+    match verify_installed(&release_root, executable) {
         Ok(release_id) => RunningIdentity {
             verified: true,
             release_id: Some(release_id),
@@ -556,6 +565,27 @@ fn verify_installed(release_root: &Path, executable: &Path) -> Result<String, (S
         return Err((
             "policy_mismatch".to_owned(),
             "The compiled policy is not the policy this release binds.".to_owned(),
+        ));
+    }
+
+    // Matching bytes are not a boundary if someone other than root can replace
+    // them a moment later. A signed release installed somewhere the Agent can
+    // write is exactly that: correctly signed, and worth nothing
+    // (louiselm-jqj5).
+    let ownership = crate::install::ownership_of(prefix);
+    if !ownership.root_owned {
+        return Err((
+            "prefix_not_root_owned".to_owned(),
+            format!(
+                "The install prefix is owned by uid {}; a release its own Agent can rewrite makes no trusted claim.",
+                ownership.prefix_uid
+            ),
+        ));
+    }
+    if ownership.world_writable {
+        return Err((
+            "prefix_world_writable".to_owned(),
+            "The install prefix is writable beyond root, so its bytes are not fixed.".to_owned(),
         ));
     }
     Ok(manifest.release_id)

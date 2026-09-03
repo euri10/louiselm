@@ -497,3 +497,38 @@ fn a_component_changed_after_install_is_reported_as_tampered() {
         status.failure_code,
     );
 }
+
+#[test]
+fn a_release_installed_where_an_agent_can_write_makes_no_trusted_claim() {
+    // Regression for louiselm-jqj5: matching bytes are not a boundary if
+    // someone other than root can replace them a moment later. Every automated
+    // install here runs as an ordinary user, so this is the case that must
+    // report unverified.
+    let fixture = Fixture::new();
+    let release_key = enrol_release_key(&fixture);
+    let store = fixture.store();
+    let prefix = fixture.path("prefix");
+    let bundle = assemble(
+        &fixture,
+        "first",
+        "#!/bin/sh\necho one\n",
+        1_756_800_000_000,
+    );
+    sign_bundle(&bundle, &release_key);
+    let state = install::install(&store, &bundle, &prefix, 1).expect("the install succeeds");
+
+    let installed = prefix
+        .join("releases")
+        .join(&state.release_id)
+        .join("bin/louiselm-skills");
+    let identity = release::identity_of(&installed);
+
+    assert!(
+        !identity.verified,
+        "an install an ordinary user owns is not a trusted release",
+    );
+    assert_eq!(
+        identity.failure_code.as_deref(),
+        Some("prefix_not_root_owned")
+    );
+}

@@ -331,7 +331,7 @@ fn tampered_component(prefix: &Path, manifest: &ReleaseManifest) -> Option<Strin
     })
 }
 
-fn ownership_of(prefix: &Path) -> OwnershipEvidence {
+pub(crate) fn ownership_of(prefix: &Path) -> OwnershipEvidence {
     let mut world_writable = false;
     let mut prefix_uid = u32::MAX;
     let mut root_owned = false;
