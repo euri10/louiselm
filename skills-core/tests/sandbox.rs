@@ -12,8 +12,8 @@ mod support;
 
 use std::{
     collections::BTreeMap,
-    fs,
-    io::Read,
+    env, fs,
+    io::{BufRead, BufReader, Read},
     os::unix::fs::PermissionsExt,
     path::Path,
     time::{Duration, Instant},
@@ -58,9 +58,18 @@ fn executable_script(path: &Path, script: &str) {
 
 /// Builds a minimal, valid confinement plan running `script` as the Session.
 fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
-    let runtime_root = fixture.path(&format!("{id}/runtime"));
+    let runtimes_root = fixture.path("runtimes");
+    let sessions_root = fixture.path("sessions");
+    fs::create_dir_all(&sessions_root).expect("Sessions root is creatable");
+    fs::set_permissions(&sessions_root, fs::Permissions::from_mode(0o711))
+        .expect("Sessions root has its fixed mode");
+    let runtime_root = runtimes_root.join(id);
     let agent = runtime_root.join("bin/agent");
     executable_script(&agent, script);
+    for path in [&runtimes_root, &runtime_root, &runtime_root.join("bin")] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .expect("the runtime fixture is traversable");
+    }
 
     ConfinementPlan {
         session_id: id.to_owned(),
@@ -68,8 +77,8 @@ fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
         executable: agent,
         arguments: Vec::new(),
         environment: BTreeMap::new(),
-        home: fixture.path(&format!("{id}/home")),
-        workspace: fixture.path(&format!("{id}/workspace")),
+        home: sessions_root.join(id).join("home"),
+        workspace: sessions_root.join(id).join("workspace"),
         system_roots: default_system_roots(),
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,
@@ -104,6 +113,94 @@ fn cgroup_available() -> bool {
     }
     eprintln!("skipping: no delegated cgroup v2 hierarchy in this environment");
     false
+}
+
+fn expect_spawn_error(
+    backend: &BubblewrapBackend,
+    confinement: &ConfinementPlan,
+    message: &str,
+) -> SandboxError {
+    match backend.spawn(confinement) {
+        Err(error) => error,
+        Ok(session) => {
+            let _ = session.dispose();
+            panic!("{message}");
+        }
+    }
+}
+
+fn process_status_values(pid: u32, field: &str) -> Vec<u32> {
+    fs::read_to_string(format!("/proc/{pid}/status"))
+        .unwrap_or_else(|error| panic!("process {pid} status is readable: {error}"))
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .unwrap_or_else(|| panic!("process {pid} status contains {field}"))
+        .split_whitespace()
+        .map(|value| {
+            value
+                .parse()
+                .unwrap_or_else(|error| panic!("{field} value {value:?} is numeric: {error}"))
+        })
+        .collect()
+}
+
+fn effective_uid() -> u32 {
+    process_status_values(std::process::id(), "Uid:")[1]
+}
+
+fn is_mapped_root() -> bool {
+    effective_uid() == 0
+        && id_map(std::process::id(), "uid_map")
+            .iter()
+            .any(|[namespace_id, outer_id, _]| *namespace_id == 0 && *outer_id != 0)
+}
+
+fn is_initial_user_namespace() -> bool {
+    id_map(std::process::id(), "uid_map") == [[0, 0, u32::MAX]]
+}
+
+fn host_identity_test_id() -> Option<u32> {
+    if effective_uid() != 0 {
+        return None;
+    }
+    match env::var("LOUISELM_TEST_HOST_ID") {
+        Ok(value) => Some(
+            value
+                .parse()
+                .expect("LOUISELM_TEST_HOST_ID is a numeric non-root uid/gid"),
+        ),
+        Err(_) if is_mapped_root() => Some(12_345),
+        Err(_) => None,
+    }
+}
+
+fn unique_id(prefix: &str) -> String {
+    format!("{prefix}-{}", std::process::id())
+}
+
+fn id_map(pid: u32, name: &str) -> Vec<[u32; 3]> {
+    fs::read_to_string(format!("/proc/{pid}/{name}"))
+        .unwrap_or_else(|error| panic!("process {pid} {name} is readable: {error}"))
+        .lines()
+        .map(|line| {
+            let values = line
+                .split_whitespace()
+                .map(|value| value.parse().expect("id-map values are numeric"))
+                .collect::<Vec<_>>();
+            values
+                .try_into()
+                .unwrap_or_else(|values: Vec<u32>| panic!("id-map row has 3 values: {values:?}"))
+        })
+        .collect()
+}
+
+fn assert_maps_assigned_identity(pid: u32, name: &str, host_id: u32) {
+    let map = id_map(pid, name);
+    assert_eq!(
+        map,
+        vec![[host_id, host_id, 1]],
+        "process {pid} must map its assigned namespace identity to the same host identity in {name}",
+    );
 }
 
 #[test]
@@ -150,6 +247,367 @@ fn spawn_runs_the_planned_executable_and_reports_matching_evidence() {
     );
 
     session.dispose().expect("disposal succeeds");
+}
+
+#[test]
+fn host_identity_is_never_inferred_from_an_unprivileged_plan() {
+    if effective_uid() == 0 {
+        eprintln!("skipping: this regression exercises an unprivileged launcher");
+        return;
+    }
+    let fixture = Fixture::new();
+    let mut confinement = plan(&fixture, "unprivileged-identity", "#!/bin/sh\ntrue\n");
+    confinement.identity = IdentityPlan::HostIdentity {
+        uid: effective_uid(),
+        gid: process_status_values(std::process::id(), "Gid:")[1],
+    };
+    let backend = BubblewrapBackend::new();
+
+    let error = expect_spawn_error(
+        &backend,
+        &confinement,
+        "a non-root launcher cannot establish a distinct host identity",
+    );
+    assert!(matches!(error, SandboxError::Refused(_)));
+}
+
+#[test]
+fn host_identity_refuses_a_root_uid_or_gid() {
+    if effective_uid() != 0 {
+        eprintln!("skipping: this regression requires a root launcher");
+        return;
+    }
+    let session_identity = host_identity_test_id().unwrap_or(12_345);
+    let fixture = Fixture::new();
+    let mut confinement = plan(&fixture, "root-identity", "#!/bin/sh\ntrue\n");
+    let backend = BubblewrapBackend::new();
+
+    for identity in [
+        IdentityPlan::HostIdentity {
+            uid: 0,
+            gid: session_identity,
+        },
+        IdentityPlan::HostIdentity {
+            uid: session_identity,
+            gid: 0,
+        },
+    ] {
+        confinement.identity = identity;
+        let error = expect_spawn_error(
+            &backend,
+            &confinement,
+            "a root Session identity is inadmissible",
+        );
+        assert!(matches!(error, SandboxError::Refused(_)));
+    }
+}
+
+#[test]
+fn host_identity_changes_outer_credentials_and_owns_private_directories() {
+    let Some(session_identity) = host_identity_test_id() else {
+        eprintln!("skipping: run in a mapped root namespace or set LOUISELM_TEST_HOST_ID as root");
+        return;
+    };
+    assert_ne!(session_identity, 0, "the test identity must be non-root");
+    let require_initial_host = env::var_os("LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY").is_some();
+    if require_initial_host {
+        assert!(
+            is_initial_user_namespace(),
+            "the privileged acceptance must run in the initial user namespace",
+        );
+    }
+    let fixture = Fixture::new();
+    fs::set_permissions(fixture.path(""), fs::Permissions::from_mode(0o755))
+        .expect("the assigned identity can traverse the fixture");
+    let session_id = unique_id("host-identity");
+    let home_probe = fixture.path(&format!("sessions/{session_id}/home/created"));
+    let workspace_probe = fixture.path(&format!("sessions/{session_id}/workspace/created"));
+    let mut confinement = plan(
+        &fixture,
+        &session_id,
+        "#!/bin/sh\ntouch \"$HOME_PROBE\" \"$WORKSPACE_PROBE\"\nid -u\nid -g\nid -G\nsleep 30\n",
+    );
+    confinement.identity = IdentityPlan::HostIdentity {
+        uid: session_identity,
+        gid: session_identity,
+    };
+    confinement
+        .environment
+        .insert("HOME_PROBE".to_owned(), home_probe.display().to_string());
+    confinement.environment.insert(
+        "WORKSPACE_PROBE".to_owned(),
+        workspace_probe.display().to_string(),
+    );
+    let backend = BubblewrapBackend::new();
+
+    let mut session = backend
+        .spawn(&confinement)
+        .expect("a privileged launcher applies the assigned identity");
+    let mut stdout = BufReader::new(session.take_stdout().expect("stdout is piped")).lines();
+    let expected_identity = session_identity.to_string();
+    assert_eq!(
+        stdout.next().transpose().expect("uid reads").as_deref(),
+        Some(expected_identity.as_str())
+    );
+    assert_eq!(
+        stdout.next().transpose().expect("gid reads").as_deref(),
+        Some(expected_identity.as_str())
+    );
+    assert_eq!(
+        stdout.next().transpose().expect("groups read").as_deref(),
+        Some(expected_identity.as_str()),
+        "the Session must inherit no supplementary groups",
+    );
+
+    let outer_uids = process_status_values(session.monitor_pid(), "Uid:");
+    let outer_gids = process_status_values(session.monitor_pid(), "Gid:");
+    assert!(outer_uids.iter().all(|&uid| uid == session_identity));
+    assert!(outer_gids.iter().all(|&gid| gid == session_identity));
+    assert!(process_status_values(session.monitor_pid(), "Groups:").is_empty());
+    let sandbox_leader_pid = session
+        .sandbox_leader_pid()
+        .expect("Bubblewrap reports its host-view sandbox leader");
+    assert_ne!(
+        sandbox_leader_pid,
+        session.monitor_pid(),
+        "the reported sandbox leader is distinct from the launcher-side bwrap process",
+    );
+    assert!(
+        process_status_values(sandbox_leader_pid, "Uid:")
+            .iter()
+            .all(|&uid| uid == session_identity),
+    );
+    assert!(
+        process_status_values(sandbox_leader_pid, "Gid:")
+            .iter()
+            .all(|&gid| gid == session_identity),
+    );
+    assert!(process_status_values(sandbox_leader_pid, "Groups:").is_empty());
+    assert_maps_assigned_identity(sandbox_leader_pid, "uid_map", session_identity);
+    assert_maps_assigned_identity(sandbox_leader_pid, "gid_map", session_identity);
+    assert!(session.processes().contains(&sandbox_leader_pid));
+    for private in [&confinement.home, &confinement.workspace] {
+        assert_eq!(
+            fs::metadata(private)
+                .expect("private directory exists")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+            "private directories have explicit modes independent of umask",
+        );
+    }
+    assert_eq!(
+        fs::metadata(confinement.home.parent().expect("home has a Session root"),)
+            .expect("Session root exists")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711,
+        "the Session root is traversable but not listable",
+    );
+    assert!(home_probe.is_file(), "the assigned identity owns its home");
+    assert!(
+        workspace_probe.is_file(),
+        "the assigned identity owns its workspace",
+    );
+
+    let identity = session
+        .evidence
+        .dimensions
+        .iter()
+        .find(|evidence| evidence.dimension == Dimension::Identity)
+        .expect("identity is covered");
+    if require_initial_host {
+        assert!(
+            identity.satisfied,
+            "initial-host observations establish identity evidence",
+        );
+    }
+    assert_eq!(
+        identity.satisfied,
+        is_initial_user_namespace(),
+        "mapped-root observations prove mechanics, not initial-host identity",
+    );
+
+    session.dispose().expect("disposal succeeds");
+}
+
+#[test]
+fn host_identity_refuses_an_existing_session_root_with_the_wrong_mode() {
+    let Some(session_identity) = host_identity_test_id() else {
+        eprintln!("skipping: run in a mapped root namespace or set LOUISELM_TEST_HOST_ID as root");
+        return;
+    };
+    if !cgroup_available() {
+        eprintln!("skipping: this regression requires a writable cgroup");
+        return;
+    }
+    let fixture = Fixture::new();
+    fs::set_permissions(fixture.path(""), fs::Permissions::from_mode(0o755))
+        .expect("the assigned identity can traverse the fixture");
+    let session_id = unique_id("wrong-session-root");
+    let mut confinement = plan(&fixture, &session_id, "#!/bin/sh\ntrue\n");
+    let session_root = confinement.home.parent().expect("home has a Session root");
+    fs::create_dir(session_root).expect("the Session root is creatable");
+    fs::set_permissions(session_root, fs::Permissions::from_mode(0o700))
+        .expect("the wrong mode is installed");
+    confinement.identity = IdentityPlan::HostIdentity {
+        uid: session_identity,
+        gid: session_identity,
+    };
+    let backend = BubblewrapBackend::new();
+
+    let error = expect_spawn_error(
+        &backend,
+        &confinement,
+        "an existing wrong-mode Session root must not be rewritten",
+    );
+
+    assert!(
+        error.to_string().contains("existing Session root"),
+        "unexpected refusal: {error}",
+    );
+    assert_eq!(
+        fs::metadata(session_root)
+            .expect("Session root remains")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "refusal does not chmod a caller-owned existing directory",
+    );
+}
+
+#[test]
+fn plausible_but_unverified_host_identity_status_fails_closed() {
+    let Some(session_identity) = host_identity_test_id() else {
+        eprintln!("skipping: run in a mapped root namespace or set LOUISELM_TEST_HOST_ID as root");
+        return;
+    };
+    if !cgroup_available() {
+        eprintln!("skipping: this regression requires a writable cgroup");
+        return;
+    }
+    let fixture = Fixture::new();
+    fs::set_permissions(fixture.path(""), fs::Permissions::from_mode(0o755))
+        .expect("the assigned identity can traverse the fixture");
+    let fake_bwrap = fixture.path("fake-bwrap");
+    executable_script(
+        &fake_bwrap,
+        r#"#!/bin/bash
+status_fd=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--json-status-fd" ]; then
+    status_fd="$2"
+    break
+  fi
+  shift
+done
+eval "exec 9>&$status_fd"
+printf '{"child-pid":%s}\n' "$$" >&9
+sleep 30
+"#,
+    );
+    let session_id = unique_id("bad-identity-status");
+    let mut confinement = plan(&fixture, &session_id, "#!/bin/sh\ntrue\n");
+    confinement.identity = IdentityPlan::HostIdentity {
+        uid: session_identity,
+        gid: session_identity,
+    };
+    let cgroup_path = Cgroup::delegated_parent()
+        .expect("a delegated cgroup exists")
+        .join(format!("louiselm-session-{session_id}"));
+    let backend = BubblewrapBackend::at(&fake_bwrap);
+
+    let error = expect_spawn_error(
+        &backend,
+        &confinement,
+        "a parseable status claim is not identity evidence by itself",
+    );
+
+    assert!(
+        matches!(error, SandboxError::SpawnFailed { .. }),
+        "unexpected error: {error}",
+    );
+    assert!(
+        error.to_string().contains("unexpected parent"),
+        "independent process verification remains visible: {error}",
+    );
+    assert!(
+        !cgroup_path.exists(),
+        "failed startup must kill its process and remove its cgroup",
+    );
+}
+
+#[test]
+fn rewritten_host_identity_flags_cannot_pass_transitional_map_evidence() {
+    let Some(session_identity) = host_identity_test_id() else {
+        eprintln!("skipping: run in a mapped root namespace or set LOUISELM_TEST_HOST_ID as root");
+        return;
+    };
+    if !cgroup_available() {
+        eprintln!("skipping: this regression requires a writable cgroup");
+        return;
+    }
+    let fixture = Fixture::new();
+    fs::set_permissions(fixture.path(""), fs::Permissions::from_mode(0o755))
+        .expect("the assigned identity can traverse the fixture");
+    let wrapper = fixture.path("rewrite-identity-flags");
+    executable_script(
+        &wrapper,
+        r#"#!/bin/bash
+args=()
+while (($#)); do
+  case "$1" in
+    --uid|--gid) args+=("$1" "0"); shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+exec /usr/bin/bwrap "${args[@]}"
+"#,
+    );
+    let session_id = unique_id("rewritten-identity");
+    let workload_marker =
+        fixture.path(&format!("sessions/{session_id}/workspace/workload-started"));
+    let mut confinement = plan(
+        &fixture,
+        &session_id,
+        "#!/bin/sh\ntouch \"$WORKLOAD_MARKER\"\nsleep 30\n",
+    );
+    confinement.identity = IdentityPlan::HostIdentity {
+        uid: session_identity,
+        gid: session_identity,
+    };
+    confinement.environment.insert(
+        "WORKLOAD_MARKER".to_owned(),
+        workload_marker.display().to_string(),
+    );
+    let cgroup_path = Cgroup::delegated_parent()
+        .expect("a delegated cgroup exists")
+        .join(format!("louiselm-session-{session_id}"));
+    let backend = BubblewrapBackend::at(&wrapper);
+
+    let error = expect_spawn_error(
+        &backend,
+        &confinement,
+        "namespace-local root is not the assigned inside identity",
+    );
+
+    assert!(
+        error
+            .to_string()
+            .contains("did not reach the assigned namespace-to-host mapping"),
+        "the final id-map failure remains visible: {error}",
+    );
+    assert!(
+        !cgroup_path.exists(),
+        "failed startup must kill its process and remove its cgroup",
+    );
+    assert!(
+        !workload_marker.exists(),
+        "the workload stays blocked until final identity evidence passes",
+    );
 }
 
 #[test]
@@ -239,7 +697,7 @@ fn interrupt_reaches_the_workload_and_dispose_still_reaches_zero_survivors() {
     // change, independent of how many supporting processes bwrap keeps
     // around underneath it.
     let fixture = Fixture::new();
-    let heartbeat = fixture.path("interrupt/workspace/heartbeat");
+    let heartbeat = fixture.path("sessions/interrupt/workspace/heartbeat");
     let mut confinement = plan(
         &fixture,
         "interrupt",

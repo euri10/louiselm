@@ -250,6 +250,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux sandbox test tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          # Noble can deny capabilities inside an unprivileged user namespace;
+          # this ephemeral runner exists specifically to exercise that path.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns >/dev/null
+          fi
+
       - name: Install Rust
         run: |
           set -eu
@@ -274,3 +284,23 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Test host identity against the initial user namespace
+        run: |
+          set -eu
+          test_identity=60000
+          if getent passwd "$test_identity" >/dev/null || getent group "$test_identity" >/dev/null; then
+            echo "test uid/gid $test_identity is already allocated" >&2
+            exit 1
+          fi
+          sandbox_test="$(
+            cargo test --test sandbox --no-run --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "sandbox" and .profile.test) | .executable // empty' |
+              tail -n 1
+          )"
+          test -n "$sandbox_test"
+          sudo env \
+            "PATH=$PATH" \
+            "LOUISELM_TEST_HOST_ID=$test_identity" \
+            LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
+            /bin/bash -c 'umask 077; exec "$1" host_identity --nocapture' bash "$sandbox_test"
