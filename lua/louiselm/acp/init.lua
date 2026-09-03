@@ -191,6 +191,11 @@ function Client:initialize(params, callback)
       protocolVersion = M.PROTOCOL_VERSION,
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
+        _meta = {
+          jetbrains = {
+            air = { version = 1, capabilities = { "sessionFailure" } },
+          },
+        },
         session = { configOptions = { boolean = {} } },
         terminal = false,
       },

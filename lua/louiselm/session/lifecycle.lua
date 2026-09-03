@@ -23,6 +23,7 @@ local nvim = vim
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
 ---@field activity? string Current generic tool activity.
+---@field session_failure? louiselm.session.SessionFailure Latest Agent-provided Session failure status.
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
 ---@field embedded_context boolean Whether the Agent accepts embedded resource prompt context.
 ---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
@@ -190,11 +191,22 @@ local function set_status(self, status)
 end
 
 ---@param self louiselm.session.Session
+---@return boolean cleared
+local function clear_session_failure(self)
+  if self.state.session_failure == nil then
+    return false
+  end
+  self.state.session_failure = nil
+  return true
+end
+
+---@param self louiselm.session.Session
 ---@param message string
 local function fail(self, message)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  clear_session_failure(self)
   set_status(self, "error")
   self.permission_active = nil
   self.permission_queue = {}
@@ -252,6 +264,7 @@ local function complete_turn(self, result)
   end
   if self.turn_done_turn ~= self.state.current_turn then
     self.turn_done_turn = self.state.current_turn
+    clear_session_failure(self)
     if self.permission_active == nil and #self.permission_queue == 0 then
       set_status(self, "ready")
     else
@@ -288,16 +301,15 @@ local function handle_notification(self, message)
   end
 
   local update_type = update.sessionUpdate
-  if
-    prompt_active(self)
-    and (
-      update_type == "agent_message_chunk"
-      or update_type == "agent_thought_chunk"
-      or update_type == "tool_call"
-      or update_type == "tool_call_update"
-    )
-  then
+  local is_agent_progress = update_type == "agent_message_chunk"
+    or update_type == "agent_thought_chunk"
+    or update_type == "tool_call"
+    or update_type == "tool_call_update"
+  if prompt_active(self) and is_agent_progress then
     self.prompt_progress = self.prompt_progress + 1
+  end
+  if is_agent_progress and clear_session_failure(self) then
+    emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   end
   if update_type == "agent_message_chunk" then
     emit(self, "chunk", update)
@@ -357,6 +369,20 @@ local function handle_notification(self, message)
     local commands, diagnostics = Validation.available_commands(update.availableCommands)
     self.state.commands = commands
     emit(self, "commands_changed", { commands = nvim.deepcopy(commands), diagnostics = diagnostics })
+  elseif update_type == "session_info_update" then
+    local failure = Validation.session_failure(update._meta)
+    if failure == nil then
+      return
+    end
+    local current = self.state.session_failure
+    if current ~= nil and current.id == failure.id and failure.revision <= current.revision then
+      return
+    end
+    self.state.session_failure = failure
+    if prompt_active(self) then
+      self.prompt_progress = self.prompt_progress + 1
+    end
+    emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   end
 end
 
@@ -832,6 +858,7 @@ function Session:prompt(prompt, callback)
   if client == nil then
     return nil, "session has no ACP client"
   end
+  clear_session_failure(self)
   set_status(self, "prompting")
   self.state.current_turn = self.state.current_turn + 1
   self.turn_done_turn = nil
@@ -875,6 +902,7 @@ function Session:cancel()
     return false, message
   end
   cancel_permissions(self)
+  clear_session_failure(self)
   set_status(self, "cancelling")
   return true
 end
@@ -973,6 +1001,7 @@ function Session:dispose()
   if self.state.status == "disposed" then
     return true
   end
+  clear_session_failure(self)
   set_status(self, "disposed")
   self.permission_store:clear_session(self.state.id)
   self.permission_active = nil

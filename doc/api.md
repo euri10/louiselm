@@ -82,6 +82,7 @@ string|table
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
 - `name: string` -- User-facing session name.
+- `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
 - `status: "cancelling"|"configuring"|"disposed"|"error"|"prompting"...(+3)` -- Lifecycle state.
@@ -307,6 +308,13 @@ louiselm.session.LimitsStatus:
 - `output_tokens: number?`
 - `thought_tokens: number?`
 - `total_tokens: number?`
+
+### louiselm.session.SessionFailure
+
+- `id: string` -- Stable Agent-provided failure identifier.
+- `revision: integer` -- Monotonic revision for this identifier.
+- `severity: "error"|"warning"` -- Agent-provided urgency.
+- `title: string` -- Human-readable status title.
 
 ### louiselm.session.DiscoveredSession
 

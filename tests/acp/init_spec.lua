@@ -48,6 +48,11 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
     params = {
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
+        _meta = {
+          jetbrains = {
+            air = { version = 1, capabilities = { "sessionFailure" } },
+          },
+        },
         session = { configOptions = { boolean = {} } },
         terminal = false,
       },

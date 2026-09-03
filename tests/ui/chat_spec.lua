@@ -2852,6 +2852,41 @@ T["chat"]["keeps tool activity out of persistent session diagnostics"] = functio
   chat:dispose()
 end
 
+T["chat"]["shows a prompting session failure instead of the generic turn label"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+
+  first.state.status = "prompting"
+  first.state.session_failure = {
+    id = "turn:error",
+    revision = 1,
+    severity = "warning",
+    title = "Retrying Claude, attempt 1 of 10.\nPlease wait.",
+  }
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "prompting" } })
+  nvim.wait(100, function()
+    return buffer_lines(chat:buffer())[2]
+      == "Session: status=prompting · display=Retrying Claude, attempt 1 of 10. Please wait."
+  end, 1)
+
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusWarning#Retrying Claude, attempt 1 of 10. Please wait.%*"
+  )
+
+  first.state.status = "waiting_permission"
+  first:emit({ type = "state_changed", session_id = "session-1", data = { status = "waiting_permission" } })
+  nvim.wait(100, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }) == "%#LouiselmStatusWarning#Waiting for permission%*"
+  end, 1)
+  MiniTest.expect.equality(
+    nvim.api.nvim_get_option_value("winbar", { win = 0 }),
+    "%#LouiselmStatusWarning#Waiting for permission%*"
+  )
+  chat:dispose()
+end
+
 T["chat"]["queues one prompt in every active turn state and releases it only on turn completion"] = function()
   for _, status in ipairs({ "prompting", "waiting_permission", "cancelling" }) do
     local first = fake_session("session-" .. status, "claude")

@@ -577,6 +577,9 @@ local function turn_label(state)
     return "Your turn"
   end
   if state.status == "prompting" then
+    if state.session_failure ~= nil then
+      return single_line(state.session_failure.title)
+    end
     return "Model responding"
   end
   if state.status == "waiting_permission" then
@@ -592,6 +595,15 @@ local function turn_label(state)
     return "Error"
   end
   return "Unavailable"
+end
+
+---@param state louiselm.session.State
+---@return string group
+local function turn_highlight(state)
+  if state.status == "prompting" and state.session_failure ~= nil then
+    return state.session_failure.severity == "error" and "LouiselmStatusError" or "LouiselmStatusWarning"
+  end
+  return STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"
 end
 
 ---@param state louiselm.session.State
@@ -671,13 +683,7 @@ local function session_header(state)
   local session_line = "Session: " .. table.concat(session_parts, " · ")
   local display_text = "display=" .. turn_label(state)
   local display_start = assert(session_line:find(display_text, 1, true)) - 1
-  add_header_highlight(
-    highlights,
-    1,
-    display_start,
-    display_text,
-    STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"
-  )
+  add_header_highlight(highlights, 1, display_start, display_text, turn_highlight(state))
 
   local options_line = "ACP options:"
   for index, option in ipairs(state.config_options or {}) do
@@ -778,7 +784,7 @@ end
 ---@return string? limits_agent
 local function session_winbar(self, state)
   local fields = {
-    winbar_segment(STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning", turn_label(state)),
+    winbar_segment(turn_highlight(state), turn_label(state)),
   }
   local raw_context, derived_context = context_display(state)
   if raw_context ~= "" then

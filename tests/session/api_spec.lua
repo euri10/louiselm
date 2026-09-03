@@ -1476,6 +1476,115 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   restore_processes(original_system)
 end
 
+T["new"]["tracks AIR session failure revisions and clears the warning on progress"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local events = {}
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  local request_id = assert(session:prompt("hello"))
+  local function failure(revision, title, version)
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = {
+        sessionUpdate = "session_info_update",
+        _meta = {
+          jetbrains = {
+            air = {
+              version = version or 1,
+              sessionFailure = {
+                id = "turn:error",
+                revision = revision,
+                category = "service",
+                severity = "warning",
+                title = title,
+                actions = {},
+              },
+            },
+          },
+        },
+      },
+    })
+  end
+
+  failure(2, "Retrying Claude, attempt 2 of 10.")
+  MiniTest.expect.equality(session:inspect().session_failure, {
+    id = "turn:error",
+    revision = 2,
+    severity = "warning",
+    title = "Retrying Claude, attempt 2 of 10.",
+  })
+
+  failure(1, "stale")
+  MiniTest.expect.equality(session:inspect().session_failure.title, "Retrying Claude, attempt 2 of 10.")
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "session_info_update",
+      _meta = {
+        jetbrains = {
+          air = {
+            version = 1,
+            sessionFailure = { id = "bad", revision = 1, severity = "warning", title = 7 },
+          },
+        },
+      },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(session:inspect().session_failure.title, "Retrying Claude, attempt 2 of 10.")
+
+  failure(3, "unsupported", 2)
+  MiniTest.expect.equality(session:inspect().session_failure.title, "Retrying Claude, attempt 2 of 10.")
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "agent_message_chunk",
+      content = { type = "text", text = "recovered" },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().session_failure, nil)
+  MiniTest.expect.equality(events[#events].type, "chunk")
+
+  failure(3, "Retrying Claude, attempt 3 of 10.")
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "agent_thought_chunk",
+      content = { type = "text", text = "thinking" },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().session_failure, nil)
+
+  failure(4, "Retrying Claude, attempt 4 of 10.")
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "tool_call", toolCallId = "tool-1", status = "in_progress" },
+  })
+  MiniTest.expect.equality(session:inspect().session_failure, nil)
+
+  failure(5, "Retrying Claude, attempt 5 of 10.")
+  respond(process, request_id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().session_failure, nil)
+
+  assert(session:prompt("again"))
+  failure(6, "Retrying Claude, attempt 6 of 10.")
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().session_failure, nil)
+
+  failure(7, "Retrying Claude, attempt 7 of 10.")
+  session:dispose()
+  MiniTest.expect.equality(session:inspect().session_failure, nil)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["does not emit live user message echoes as replay events"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))

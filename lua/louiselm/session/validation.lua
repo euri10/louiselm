@@ -31,6 +31,12 @@
 ---@field cached_read_tokens? number
 ---@field cached_write_tokens? number
 
+---@class louiselm.session.SessionFailure
+---@field id string Stable Agent-provided failure identifier.
+---@field revision integer Monotonic revision for this identifier.
+---@field severity "warning"|"error" Agent-provided urgency.
+---@field title string Human-readable status title.
+
 ---@class louiselm.session.DiscoveredSession
 ---@field agent string Configured agent definition name.
 ---@field session_id string Agent-side ACP session identifier.
@@ -272,6 +278,38 @@ function M.available_commands(value)
     end
   end
   return commands, diagnostics
+end
+
+---Validate the supported JetBrains AIR session-failure metadata fields.
+---Unknown extension fields are deliberately ignored.
+---@param value unknown ACP session update `_meta` value.
+---@return louiselm.session.SessionFailure? failure
+function M.session_failure(value)
+  if type(value) ~= "table" then
+    return nil
+  end
+  local jetbrains = value.jetbrains
+  local air = type(jetbrains) == "table" and jetbrains.air or nil
+  local failure = type(air) == "table" and air.sessionFailure or nil
+  if
+    type(air) ~= "table"
+    or air.version ~= 1
+    or type(failure) ~= "table"
+    or not non_empty_string(failure.id)
+    or type(failure.revision) ~= "number"
+    or failure.revision < 1
+    or failure.revision % 1 ~= 0
+    or (failure.severity ~= "warning" and failure.severity ~= "error")
+    or not non_empty_string(failure.title)
+  then
+    return nil
+  end
+  return {
+    id = failure.id,
+    revision = failure.revision,
+    severity = failure.severity,
+    title = failure.title,
+  }
 end
 
 ---Validate one context/cost usage update.
