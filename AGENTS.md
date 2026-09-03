@@ -261,8 +261,8 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
 ./scripts/generate-luacats --check
 ```
 
-`capture-service/` is a Rust crate, not Lua, and carries its own gates. Run them
-from that directory when you touch it:
+`capture-service/` and `skills-core/` are Rust crates, not Lua, and each carries
+its own gates. Run them from the crate directory you touched:
 
 ```bash
 cargo fmt --check
@@ -270,7 +270,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-These went unenforced for the crate's whole life until
+They are separate crates with separate lockfiles, not a workspace, so a gate run
+in one says nothing about the other. CI runs both as separate jobs.
+
+These went unenforced for `capture-service`'s whole life until
 `louiselm-ci-missing-rust-gates-5o5h`: the 56 tests included the three
 regressions guarding `louiselm-capture-receiver-reachability-rnjc`, a defect that
 cost a multi-hour physical Android QA round to verify, and CI would have stayed

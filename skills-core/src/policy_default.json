@@ -1,0 +1,112 @@
+{
+  "schema": "louiselm.skills.policy/1",
+  "version": "2026-09-03.1",
+  "limits": {
+    "max_file_bytes": 5242880,
+    "max_total_bytes": 33554432,
+    "max_entries": 2000,
+    "max_depth": 12,
+    "max_text_scan_bytes": 1048576
+  },
+  "paths": {
+    "allow_non_ascii": false
+  },
+  "unicode": {
+    "profile_version": "2026-09-03.1",
+    "classes": [
+      {
+        "name": "invisible",
+        "ranges": [[173, 173], [1564, 1564], [6158, 6158], [8203, 8205], [8288, 8292], [65279, 65279]]
+      },
+      {
+        "name": "bidi_control",
+        "ranges": [[8206, 8207], [8234, 8238], [8294, 8297]]
+      },
+      {
+        "name": "deprecated_format",
+        "ranges": [[8298, 8303]]
+      },
+      {
+        "name": "variation_selector",
+        "ranges": [[65024, 65039], [917760, 917999]]
+      },
+      {
+        "name": "tag_character",
+        "ranges": [[917504, 917631]]
+      },
+      {
+        "name": "private_use",
+        "ranges": [[57344, 63743], [983040, 1048573], [1048576, 1114109]]
+      }
+    ],
+    "confusables": [
+      ["а", "a"], ["А", "A"], ["е", "e"], ["Е", "E"],
+      ["о", "o"], ["О", "O"], ["р", "p"], ["Р", "P"],
+      ["с", "c"], ["С", "C"], ["х", "x"], ["Х", "X"],
+      ["у", "y"], ["ү", "y"], ["У", "Y"], ["і", "i"],
+      ["І", "I"], ["ј", "j"], ["Ј", "J"], ["һ", "h"],
+      ["Н", "H"], ["М", "M"], ["Т", "T"], ["В", "B"],
+      ["К", "K"], ["Ѕ", "S"], ["ѕ", "s"], ["α", "a"],
+      ["Α", "A"], ["Β", "B"], ["Ε", "E"], ["Ζ", "Z"],
+      ["Η", "H"], ["Ι", "I"], ["Κ", "K"], ["Μ", "M"],
+      ["Ν", "N"], ["Ο", "O"], ["Ρ", "P"], ["Τ", "T"],
+      ["Υ", "Y"], ["Χ", "X"], ["ο", "o"], ["ρ", "p"],
+      ["υ", "u"], ["‐", "-"], ["‑", "-"], ["‒", "-"],
+      ["–", "-"], ["—", "-"], ["―", "-"], ["−", "-"],
+      ["‘", "'"], ["’", "'"], ["“", "\""], ["”", "\""],
+      ["⁄", "/"], ["∕", "/"], ["／", "/"], ["．", "."],
+      ["。", "."], ["：", ":"], ["＠", "@"], ["․", "."],
+      [" ", " "], [" ", " "], [" ", " "], ["　", " "]
+    ]
+  },
+  "url_schemes": [
+    "http://", "https://", "ftp://", "ftps://", "git://", "ssh://",
+    "sftp://", "file://", "data:", "javascript:", "vbscript:"
+  ],
+  "credential_markers": [
+    "-----begin ", "api_key", "api-key", "apikey", "secret_key", "secret-key",
+    "client_secret", "access_token", "refresh_token", "bearer ", "authorization:",
+    "password", "passphrase", "private_key", "aws_secret", "akia", "asia",
+    "ghp_", "gho_", "github_pat_", "sk-", "xoxb-", "xoxp-", "glpat-",
+    ".ssh/id_", ".aws/credentials", ".netrc", "id_rsa", "id_ed25519",
+    "credentials.json", "keychain", "gpg --", "pass show"
+  ],
+  "network_imports": [
+    "import requests", "from requests", "urllib.request", "urllib3", "http.client",
+    "httpx", "aiohttp", "socket.socket", "import socket", "xmlhttprequest",
+    "fetch(", "axios", "node-fetch", "net/http", "reqwest", "curl ", "wget ",
+    "nc -", "ncat ", "openssl s_client", "ssh ", "scp ", "rsync ", "git clone",
+    "pip install", "npm install", "cargo install", "uvx ", "npx ", "brew install"
+  ],
+  "process_imports": [
+    "subprocess", "os.system", "os.popen", "os.execv", "os.fork", "pty.spawn",
+    "child_process", "execsync", "spawnsync", "command::new", "std::process",
+    "shell_exec", "popen(", "system(", "os/exec", "runtime.exec", "eval(",
+    "exec(", "compile(", "__import__", "importlib", "ctypes", "dlopen",
+    "chmod +x", "sudo ", "doas ", "setuid", "crontab", "systemctl", "launchctl"
+  ],
+  "svg_behavior": [
+    "<script", "<foreignobject", "<use", "<image", "<iframe", "<embed",
+    "<object", "<animate", "<set ", "<handler", "javascript:", "data:text/html",
+    "onload=", "onerror=", "onclick=", "onmouseover=", "onbegin=", "onend=",
+    "xlink:href", "href=\"http"
+  ],
+  "encoded_payload": {
+    "min_base64_run": 200,
+    "min_hex_run": 200,
+    "min_escape_run": 32,
+    "decoder_markers": [
+      "base64.b64decode", "base64.decode", "atob(", "buffer.from(",
+      "frombase64string", "base64 -d", "base64 --decode", "openssl base64",
+      "codecs.decode", "binascii.unhexlify", "bytes.fromhex", "xxd -r"
+    ]
+  },
+  "declared_binary_extensions": [
+    "so", "dylib", "dll", "a", "o", "exe", "bin", "wasm", "pyc", "pyo",
+    "class", "jar", "zip", "tar", "gz", "xz", "bz2", "zst", "7z", "rar",
+    "dmg", "pkg", "deb", "rpm", "img", "iso"
+  ],
+  "image_extensions": [
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif", "avif", "svg"
+  ]
+}

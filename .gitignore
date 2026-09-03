@@ -1,5 +1,6 @@
 .deps/
 capture-service/target/
+skills-core/target/
 blog/_build/
 /public/
 # bvr's static site export (`bvr --robot-*` / graph views), regenerated on demand

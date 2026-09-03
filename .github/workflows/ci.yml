@@ -2,8 +2,8 @@
 #
 # Scope: this runs the gates AGENTS.md section 4 declares authoritative --
 # StyLua for formatting, lua-language-server for static analysis, and
-# mini.test for tests on the Lua side, plus cargo fmt/clippy/test for the
-# capture-service crate. It deliberately does NOT
+# mini.test for tests on the Lua side, plus cargo fmt/clippy/test for each
+# Rust crate. It deliberately does NOT
 # build or publish blog/, which is pages.yml's job (runs only when
 # blog/ changes). The two pipelines are disjoint on purpose: pages.yml
 # owns publishing, this one owns correctness.
@@ -18,12 +18,17 @@
 #   cargo clippy --all-targets -- -D warnings    0 clean / 101 on a lint
 #   cargo test                                   0 clean / 101 on test failure
 #
-# The Rust gates cover capture-service/, whose 56 tests were previously
-# enforced nowhere (louiselm-ci-missing-rust-gates-5o5h). The cargo test
-# failure path was exercised by reverting the loopback status warning that
+# The Rust gates cover capture-service/ and skills-core/ as separate jobs;
+# they are separate crates with separate lockfiles, not a workspace, so one
+# job's result says nothing about the other. capture-service's 56 tests were
+# previously enforced nowhere (louiselm-ci-missing-rust-gates-5o5h). Its cargo
+# test failure path was exercised by reverting the loopback status warning that
 # fixes louiselm-capture-receiver-reachability-rnjc, which is precisely the
-# defect these tests exist to keep fixed. android/ is out of scope: it needs
-# Gradle and the Android SDK, and is not wired here.
+# defect these tests exist to keep fixed. skills-core's was exercised the same
+# way, by disabling the hardlink-ambiguity refusal in capture and the
+# digest-conflict refusal in the store and watching each guard's test go red.
+# android/ is out of scope: it needs Gradle and the Android SDK, and is not
+# wired here.
 #
 # Tool versions are pinned rather than floated so an upstream release
 # cannot silently turn this pipeline red (or, worse, green).
@@ -226,6 +231,40 @@ jobs:
             ~/.cargo/git
             capture-service/target
           key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('capture-service/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  skills-core:
+    name: cargo (skills-core)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skills-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          set -eu
+          rustup toolchain install "${RUST_VERSION}" --profile minimal \
+            --component rustfmt,clippy
+          rustup default "${RUST_VERSION}"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            skills-core/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
 
       - name: Format
         run: cargo fmt --check
