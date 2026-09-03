@@ -127,6 +127,14 @@ pub enum AdmissionError {
         /// The contested Generation.
         digest: String,
     },
+    /// A development build tried to change a trusted store.
+    #[error(
+        "this is not a trusted release ({reason}); it may not activate a Generation in a trusted store"
+    )]
+    NotTrustedRelease {
+        /// Why the running executable is not a release.
+        reason: String,
+    },
     /// Activation would move the supply backwards.
     #[error("generation {attempted} would roll back from sequence {current}")]
     Rollback {
@@ -366,6 +374,14 @@ pub fn activate(
     digest: &Digest,
     _activated_at_ms: u64,
 ) -> Result<GenerationRecord, AdmissionError> {
+    let identity = crate::release::running_identity();
+    if store.is_trusted() && !identity.verified {
+        return Err(AdmissionError::NotTrustedRelease {
+            reason: identity
+                .failure_code
+                .unwrap_or_else(|| "unverified".to_owned()),
+        });
+    }
     let mut record = load_verified(store, digest)?;
     if record.witness.is_none() {
         return Err(AdmissionError::NotWitnessed {

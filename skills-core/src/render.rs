@@ -288,3 +288,63 @@ pub fn generation_status(status: &crate::admission::GenerationStatus) -> String 
     );
     out
 }
+
+/// Renders install status as operator-facing text.
+pub fn install_status(status: &crate::install::InstallStatus) -> String {
+    let mut out = String::new();
+    push(&mut out, &format!("Prefix {}", status.prefix));
+    match &status.installed {
+        Some(state) => {
+            push(&mut out, &format!("  release    {}", state.release_id));
+            push(&mut out, &format!("  commit     {}", state.source_commit));
+            push(&mut out, &format!("  policy     {}", state.policy_version));
+            push(
+                &mut out,
+                &format!("  installed  {} ms", state.installed_at_ms),
+            );
+        }
+        None => push(&mut out, "  release    none installed"),
+    }
+    push(
+        &mut out,
+        &format!(
+            "  ownership  uid {}{}{}",
+            status.ownership.prefix_uid,
+            if status.ownership.root_owned {
+                ", root-owned"
+            } else {
+                ", NOT root-owned"
+            },
+            if status.ownership.world_writable {
+                ", writable beyond root"
+            } else {
+                ""
+            },
+        ),
+    );
+    push(
+        &mut out,
+        &format!("  trusted    {}", if status.trusted { "yes" } else { "no" }),
+    );
+    for component in &status.components {
+        push(
+            &mut out,
+            &format!(
+                "  component  {} sha256:{}",
+                component.name, component.sha256
+            ),
+        );
+    }
+    if let Some(code) = &status.failure_code {
+        push(&mut out, &format!("  failure    {code}"));
+    }
+    push(&mut out, "");
+    push(
+        &mut out,
+        &format!(
+            "Next: [{}] {}",
+            status.next_action.id, status.next_action.detail
+        ),
+    );
+    out
+}

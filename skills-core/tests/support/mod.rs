@@ -152,8 +152,14 @@ impl SshKey {
     }
 
     /// Signs `payload` under `namespace`, returning the armored signature.
+    ///
+    /// Each call uses a fresh message file: `ssh-keygen` prompts before
+    /// overwriting an existing `.sig`, which turns a reused path into a test
+    /// run that hangs waiting for an answer nobody is there to give.
     pub fn sign(&self, namespace: &str, payload: &[u8]) -> String {
-        let message = self.path.with_extension("message");
+        let serial = SIGN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let message = self.path.with_extension(format!("message-{serial}"));
+        let _ = fs::remove_file(format!("{}.sig", message.display()));
         fs::write(&message, payload).expect("the message is writable");
         let status = std::process::Command::new("ssh-keygen")
             .args(["-Y", "sign", "-q", "-n", namespace, "-f"])
@@ -162,11 +168,11 @@ impl SshKey {
             .status()
             .expect("ssh-keygen is installed");
         assert!(status.success(), "ssh-keygen failed to sign");
-        fs::read_to_string(message.with_extension("message.sig"))
-            .or_else(|_| fs::read_to_string(format!("{}.sig", message.display())))
-            .expect("the signature is readable")
+        fs::read_to_string(format!("{}.sig", message.display())).expect("the signature is readable")
     }
 }
+
+static SIGN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const SK_ALGORITHM: &str = "sk-ssh-ed25519@openssh.com";
 

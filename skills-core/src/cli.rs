@@ -23,10 +23,15 @@ use crate::{
     admission::{self, AdmissionError, AdmissionRequest},
     canonical::{Digest, DigestError},
     dossier::{Dossier, DossierError, DossierRequest, ReviewDepth},
+    install::{self, InstallError},
     policy::{Policy, PolicyError},
     quarantine::{self, QuarantineError},
+    release::{
+        self, AssembleRequest, ComponentInput, ComponentKind, ReleaseError, SourceIdentity,
+        ToolchainIdentity,
+    },
     render, robot,
-    signer::SshKeygenSigner,
+    signer::{Signer, SshKeygenSigner},
     sshsig::{SkPolicy, TRUST_NAMESPACE},
     store::{PublishOutcome, Store, StoreError},
     trust::{Role, TrustError, TrustStore},
@@ -69,6 +74,15 @@ pub enum CliError {
     /// A quarantine operation failed.
     #[error(transparent)]
     Quarantine(#[from] QuarantineError),
+    /// Signing failed.
+    #[error(transparent)]
+    Signer(#[from] crate::signer::SignerError),
+    /// A release operation failed.
+    #[error(transparent)]
+    Release(#[from] ReleaseError),
+    /// An install operation failed.
+    #[error(transparent)]
+    Install(#[from] InstallError),
     /// A file named on the command line could not be read.
     #[error("cannot read '{path}': {source}")]
     Read {
@@ -123,6 +137,7 @@ pub fn run() -> Result<i32, CliError> {
         "trust" => trust(&options),
         "generation" => generation(&options),
         "quarantine" => quarantine_command(&options),
+        "release" => release_command(&options),
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
 }
@@ -141,6 +156,10 @@ struct Options {
     branch: Option<String>,
     workdir: Option<PathBuf>,
     reason: Option<String>,
+    output: Option<PathBuf>,
+    source: Option<PathBuf>,
+    bundle: Option<PathBuf>,
+    prefix: Option<PathBuf>,
     require_hardware: bool,
     confirm: bool,
     store: Option<PathBuf>,
@@ -171,6 +190,10 @@ impl Options {
             branch: None,
             workdir: None,
             reason: None,
+            output: None,
+            source: None,
+            bundle: None,
+            prefix: None,
             require_hardware: false,
             confirm: false,
             store: None,
@@ -244,6 +267,22 @@ impl Options {
                 }
                 "--reason" => {
                     parsed.reason = Some(value("--reason")?);
+                    index += 1;
+                }
+                "--output" => {
+                    parsed.output = Some(PathBuf::from(value("--output")?));
+                    index += 1;
+                }
+                "--source" => {
+                    parsed.source = Some(PathBuf::from(value("--source")?));
+                    index += 1;
+                }
+                "--bundle" => {
+                    parsed.bundle = Some(PathBuf::from(value("--bundle")?));
+                    index += 1;
+                }
+                "--prefix" => {
+                    parsed.prefix = Some(PathBuf::from(value("--prefix")?));
                     index += 1;
                 }
                 "--store" => {
@@ -362,6 +401,18 @@ impl Options {
                     .to_owned(),
             )
         })
+    }
+
+    fn required_bundle(&self) -> Result<PathBuf, CliError> {
+        self.bundle
+            .clone()
+            .ok_or_else(|| CliError::Invalid("--bundle is required".to_owned()))
+    }
+
+    fn install_prefix(&self) -> PathBuf {
+        self.prefix
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(install::DEFAULT_PREFIX))
     }
 
     fn signing_key(&self) -> Result<PathBuf, CliError> {
@@ -795,6 +846,131 @@ fn quarantine_command(options: &Options) -> Result<i32, CliError> {
     }
 }
 
+fn release_command(options: &Options) -> Result<i32, CliError> {
+    match options.subject("release")? {
+        "build" => {
+            let source = options.source.clone().unwrap_or_else(|| PathBuf::from("."));
+            let output = options.output.clone().ok_or_else(|| {
+                CliError::Invalid("release build needs --output <bundle-dir>".to_owned())
+            })?;
+            let lock = source.join("Cargo.lock");
+            let dependencies =
+                Digest::of(&std::fs::read(&lock).map_err(|error| CliError::Read {
+                    path: lock.display().to_string(),
+                    source: error,
+                })?);
+            let identity = SourceIdentity::of(&source, &dependencies.to_string())?;
+            let toolchain = ToolchainIdentity::detect()?;
+
+            // --locked, so a lockfile that would have been updated is a
+            // refusal rather than a silent difference between what was
+            // reviewed and what was built.
+            let status = std::process::Command::new("cargo")
+                .current_dir(&source)
+                .args(["build", "--release", "--locked"])
+                .status()
+                .map_err(|error| ReleaseError::Tool {
+                    tool: "cargo".to_owned(),
+                    reason: error.to_string(),
+                })?;
+            if !status.success() {
+                return Err(CliError::Release(ReleaseError::Tool {
+                    tool: "cargo".to_owned(),
+                    reason: "release build failed".to_owned(),
+                }));
+            }
+
+            let manifest = release::assemble(
+                &AssembleRequest {
+                    source: identity,
+                    toolchain,
+                    policy: &Policy::embedded(),
+                    components: vec![ComponentInput {
+                        name: "louiselm-skills".to_owned(),
+                        path: source.join("target/release/louiselm-skills"),
+                        kind: ComponentKind::Executable,
+                    }],
+                    built_at_ms: now_ms(),
+                },
+                &output,
+            )?;
+            report(options, &manifest, |manifest| {
+                format!(
+                    "release {} built from {} ({} component(s)); sign it before installing",
+                    manifest.release_id,
+                    manifest.source.commit,
+                    manifest.components.len()
+                )
+            })
+        }
+        "sign" => {
+            let bundle = options.required_bundle()?;
+            let key = options.signing_key()?;
+            let manifest_path = bundle.join("manifest.json");
+            let bytes = std::fs::read(&manifest_path).map_err(|error| CliError::Read {
+                path: manifest_path.display().to_string(),
+                source: error,
+            })?;
+            let signature = SshKeygenSigner::new(&key).sign(release::RELEASE_NAMESPACE, &bytes)?;
+            std::fs::write(bundle.join("manifest.sig"), &signature).map_err(|error| {
+                CliError::Read {
+                    path: bundle.join("manifest.sig").display().to_string(),
+                    source: error,
+                }
+            })?;
+            println!("signed {}", bundle.display());
+            Ok(0)
+        }
+        "verify" => {
+            let bundle = options.required_bundle()?;
+            let trust = TrustStore::load(&options.store()?)?.ok_or(TrustError::NotBootstrapped)?;
+            let manifest = release::verify_bundle(&bundle, &trust)?;
+            report(options, &manifest, |manifest| {
+                format!("release {} verifies", manifest.release_id)
+            })
+        }
+        "install" => {
+            let bundle = options.required_bundle()?;
+            let prefix = options.install_prefix();
+            let state = install::install(&options.store()?, &bundle, &prefix, now_ms())?;
+            report(options, &state, |state| {
+                format!(
+                    "release {} installed at {}",
+                    state.release_id,
+                    prefix.display()
+                )
+            })
+        }
+        "status" => {
+            let status = install::status(&options.install_prefix())?;
+            let trusted = status.trusted;
+            if options.robot {
+                println!("{}", robot::payload(&status)?);
+            } else {
+                println!("{}", render::install_status(&status));
+            }
+            Ok(if trusted { 0 } else { EXIT_NOT_ADMISSIBLE })
+        }
+        "identity" => {
+            let identity = release::running_identity();
+            let verified = identity.verified;
+            if options.robot {
+                println!("{}", robot::payload(&identity)?);
+            } else {
+                println!(
+                    "{} — {}",
+                    if verified { "verified" } else { "unverified" },
+                    identity.detail
+                );
+            }
+            Ok(if verified { 0 } else { EXIT_NOT_ADMISSIBLE })
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown release command '{other}'"
+        ))),
+    }
+}
+
 fn report<T: Serialize>(
     options: &Options,
     value: &T,
@@ -865,6 +1041,14 @@ Skill Generations:
   louiselm-skills generation activate <digest>
   louiselm-skills generation status
   louiselm-skills generation list
+
+Trusted release:
+  louiselm-skills release build --output <dir> [--source <dir>]
+  louiselm-skills release sign --bundle <dir> --key <privkey>
+  louiselm-skills release verify --bundle <dir>
+  louiselm-skills release install --bundle <dir> [--prefix <dir>]
+  louiselm-skills release status [--prefix <dir>]
+  louiselm-skills release identity
 
 Emergency quarantine (narrows only; no token needed):
   louiselm-skills quarantine exclude <digest>... --reason <text>

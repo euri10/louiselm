@@ -203,6 +203,88 @@ Check at each touch that the token actually blinked. A ceremony that completes
 without a touch means `--require-hardware` did not reach the enrolled key, and
 the assertion flags in the signature are what the verifier checks.
 
+## The trusted release
+
+Everything above assumes the binary enforcing it is not one the Agent can
+rewrite. Running from the development checkout makes that assumption false: the
+code being confined can edit the code that decides whether confinement worked.
+
+A **release** breaks the circle. `release build` refuses anything but a clean
+commit — untracked files count as dirty, because a file that is not in the
+commit cannot be reviewed by reading the commit and can still be compiled in —
+and binds the commit, the locked dependencies, the toolchain, the policy, the
+schema set, and every resulting byte into one manifest. Its digest is the
+release identity. A separate **release** role signs it, distinct from Admission
+and recovery even on one token, in its own signature namespace.
+
+Installing is content-addressed and atomic. Each release lands in its own
+immutable directory and the prefix's `current` symlink is replaced by a rename,
+the one operation that cannot be observed half-done:
+
+```text
+<prefix>/releases/<release-id>/{bin,policy,schemas,manifest.json,manifest.sig}
+<prefix>/current -> releases/<release-id>
+<prefix>/state.json
+```
+
+A failure anywhere before the rename leaves the previous release exactly as it
+was, and the previous release's files stay on disk and usable. Downgrades are
+refused: the safe path away from a bad release is building a newer one.
+
+The install request supplies a bundle and a prefix and nothing else. Component
+names come from a fixed allowlist, the layout is decided by the tool, and modes
+are set by the tool — an install cannot introduce a new command, a different
+policy path, or a different owner.
+
+**Ownership is reported, not asserted.** This process cannot make a file
+root-owned without being root, so `release status` says what the bytes actually
+are — uid, world-writability, and whether any installed component's hash has
+changed since install — and names the next action. It never claims a trust
+boundary the filesystem does not show.
+
+**A development build says so.** `release identity` reports `unverified` with
+the code `development_build` for anything not running from inside an installed
+release. A store created by a development build is marked untrusted at creation
+and stays that way, and a development build may not activate a Skill Generation
+in a trusted store. Promotion is not offered: an Agent that can write the store
+must not also be able to decide the store is trustworthy.
+
+### Manual release acceptance
+
+Automated tests assemble bundles from fake component files and install into
+temporary prefixes, so they cover identity, signing, tampering, atomicity, and
+downgrade without a nested build or root. Root ownership and the release-role
+touch need a machine. Run this once:
+
+```sh
+# 1. Enrol the release role. Distinct from Admission and recovery.
+ssh-keygen -t ed25519-sk -O resident -O verify-required -C louiselm-release -f ~/.ssh/id_release
+louiselm-skills trust rotation-payload --role release --key ~/.ssh/id_release.pub > /tmp/change
+ssh-keygen -Y sign -n louiselm.skills.trust/1 -f ~/.ssh/id_recovery /tmp/change
+louiselm-skills trust rotate --role release --key ~/.ssh/id_release.pub --signature /tmp/change.sig
+
+# 2. Clean build, then sign. The build refuses a dirty tree; check that first.
+git status --porcelain          # must be empty
+louiselm-skills release build --source skills-core --output /tmp/bundle
+louiselm-skills release sign --bundle /tmp/bundle --key ~/.ssh/id_release
+
+# 3. Install as root, into the fixed prefix.
+sudo louiselm-skills release install --bundle /tmp/bundle
+sudo louiselm-skills release status   # trusted: yes, ownership root-owned
+
+# 4. Upgrade. Build a newer release and install it; `current` flips, the old
+#    release stays on disk.
+sudo louiselm-skills release install --bundle /tmp/bundle-2
+ls /usr/local/lib/louiselm/releases    # both present
+
+# 5. Prove the failure paths. Each must refuse.
+sudo louiselm-skills release install --bundle /tmp/bundle      # downgrade
+sudo sed -i s/x/y/ /usr/local/lib/louiselm/current/bin/louiselm-skills
+sudo louiselm-skills release status                           # release_tampered
+```
+
+No private key material leaves the token at any point in this procedure.
+
 ## Gates
 
 ```sh
@@ -213,12 +295,15 @@ cargo test
 
 ## Scope
 
-This crate owns packaging, Inspection, the Dossier, and Skill Admission. It
+This crate owns packaging, Inspection, the Dossier, Skill Admission, and the
+trusted release. It
 requires `ssh-keygen` for signatures and `git` for witnessing; both are part of
 the trusted base rather than vendored, and this crate implements no
 cryptography of its own.
 
 Provider-scoped views (louiselm-d6fv.3), Session launch and containment
-(louiselm-d6fv.4), the trusted release that makes these bytes root-owned
-(louiselm-d6fv.7), and portable Endorsements (louiselm-d6fv.8) build on the
-canonical contract and the Generation chain defined here.
+(louiselm-d6fv.4), and portable Endorsements (louiselm-d6fv.8) build on the
+canonical contract, the Generation chain, and the release identity defined here.
+`louiselm-launch` and the control-service binary do not exist yet; the bundle
+format has slots for them, and a release that declares a component it cannot
+produce is refused rather than shipped short.
