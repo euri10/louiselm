@@ -2206,24 +2206,90 @@ T["new"]["fails a prompt that never receives a terminal ACP response"] = functio
 
   local completion
   local event
+  local error_count = 0
+  local completion_count = 0
   session:on(function(value)
     if value.type == "error" then
       event = value
+      error_count = error_count + 1
     end
   end)
   assert(session:prompt("hello", function(result, err)
+    completion_count = completion_count + 1
     completion = { result = result, error = err }
   end))
 
   MiniTest.expect.equality(#scheduled, 2)
   scheduled[2].callback()
+  scheduled[2].callback()
 
   MiniTest.expect.equality(session:inspect().status, "error")
-  MiniTest.expect.equality(event.data.message, "ACP session/prompt made no progress within 300000ms")
+  MiniTest.expect.equality(
+    event.data.message,
+    "ACP session/prompt made no progress during a 300000ms watchdog interval"
+  )
   MiniTest.expect.equality(completion, {
     result = nil,
-    error = "ACP session/prompt made no progress within 300000ms",
+    error = "ACP session/prompt made no progress during a 300000ms watchdog interval",
   })
+  MiniTest.expect.equality(error_count, 1)
+  MiniTest.expect.equality(completion_count, 1)
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["suspends the prompt watchdog while permission waits for a human"] = function()
+  local processes, original_system = fake_processes()
+  local scheduled = {}
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session = assert(api:create_session("agent", {
+    cwd = "/tmp/project",
+    schedule = function(delay_ms, callback)
+      scheduled[#scheduled + 1] = { delay_ms = delay_ms, callback = callback }
+    end,
+  }))
+  local process = processes[#processes]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "agent-acp" })
+  local request_id = assert(session:prompt("hello"))
+  local permission
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permission = event
+    end
+  end)
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "tool_call_update",
+      toolCallId = "chatcmpl-tool-bedebab03551b987",
+      title = "read",
+      status = "in_progress",
+    },
+  })
+  permission_request(process, "agent-acp", 9, { "allow", "deny" })
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  MiniTest.expect.equality(#scheduled, 2)
+
+  -- Captured OpenCode trace ses_f9a93a9f9ffeXz1SXPE1DLPAg3 stayed here
+  -- beyond two watchdog windows while its permission picker was unanswered.
+  scheduled[2].callback()
+  local second_window = scheduled[3] or scheduled[2]
+  second_window.callback()
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  MiniTest.expect.equality(process.closed, false)
+  MiniTest.expect.equality(#scheduled, 2)
+
+  assert(permission.respond({ outcome = { outcome = "selected", optionId = "allow" } }))
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(#scheduled, 3)
+  MiniTest.expect.equality(scheduled[3].delay_ms, 300000)
+
+  respond(process, request_id, { stopReason = "end_turn" })
+  scheduled[3].callback()
+  MiniTest.expect.equality(session:inspect().status, "ready")
 
   api:dispose()
   restore_processes(original_system)

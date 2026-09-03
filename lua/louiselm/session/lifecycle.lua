@@ -58,6 +58,7 @@ local nvim = vim
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
 ---@field prompt_progress integer Meaningful updates observed during the active prompt.
+---@field prompt_watchdog_revision integer Invalidates obsolete prompt timeout callbacks.
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
@@ -242,17 +243,22 @@ end
 
 ---@param self louiselm.session.Session
 local function schedule_prompt_timeout(self)
+  self.prompt_watchdog_revision = self.prompt_watchdog_revision + 1
+  local revision = self.prompt_watchdog_revision
   local turn = self.state.current_turn
   local progress = self.prompt_progress
   self.schedule(DEFAULT_PROMPT_TIMEOUT_MS, function()
-    if self.state.current_turn ~= turn or not prompt_active(self) then
+    if self.prompt_watchdog_revision ~= revision or self.state.current_turn ~= turn or not prompt_active(self) then
+      return
+    end
+    if self.permission_active ~= nil or #self.permission_queue > 0 then
       return
     end
     if self.prompt_progress ~= progress then
       schedule_prompt_timeout(self)
       return
     end
-    fail(self, "ACP session/prompt made no progress within " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms")
+    fail(self, "ACP session/prompt made no progress during a " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms watchdog interval")
   end)
 end
 
@@ -407,7 +413,11 @@ local function send_permission(self, entry, result, rpc_error)
   end
   pump_permissions(self)
   if self.permission_active == nil and self.state.status == "waiting_permission" then
-    set_status(self, self.turn_done_turn == self.state.current_turn and "ready" or "prompting")
+    local status = self.turn_done_turn == self.state.current_turn and "ready" or "prompting"
+    set_status(self, status)
+    if status == "prompting" then
+      schedule_prompt_timeout(self)
+    end
   end
   return true
 end
@@ -493,6 +503,7 @@ pump_permissions = function(self)
     end
     if not apply_remembered_permission(self, entry) then
       self.permission_active = entry
+      self.prompt_watchdog_revision = self.prompt_watchdog_revision + 1
       set_status(self, "waiting_permission")
       emit(self, "permission_requested", entry.data, function(result, rpc_error)
         return respond_permission(self, entry, result, rpc_error)
@@ -747,6 +758,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     ready_callback_called = false,
     turn_done_turn = nil,
     prompt_progress = 0,
+    prompt_watchdog_revision = 0,
     schedule = options.schedule or function(delay_ms, callback)
       nvim.defer_fn(callback, delay_ms)
     end,
@@ -901,9 +913,13 @@ function Session:cancel()
     fail(self, message)
     return false, message
   end
+  local permission_waiting = self.permission_active ~= nil or #self.permission_queue > 0
   cancel_permissions(self)
   clear_session_failure(self)
   set_status(self, "cancelling")
+  if permission_waiting then
+    schedule_prompt_timeout(self)
+  end
   return true
 end
 
