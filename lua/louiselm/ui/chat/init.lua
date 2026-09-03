@@ -82,6 +82,11 @@ local nvim = vim
 ---@field pending_skill boolean Whether a native-mode skill selection is pending.
 ---@field queued_prompt boolean Whether a prompt is queued behind the active turn.
 
+---@class louiselm.ui.ChatEventRelay
+---@field events louiselm.session.Event[]? Events waiting for a cold-resumed view.
+---@field chat louiselm.ui.Chat? Bound chat after Run finalization.
+---@field view louiselm.ui.ChatView? Bound view after Run finalization.
+
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
@@ -121,6 +126,7 @@ local nvim = vim
 ---@field resume_summaries table<string, louiselm.workflow.ParkSummary> Selected durable Run metadata.
 ---@field pending_resume_runs table<string, louiselm.workflow.Run> Locally reconstructed cold Runs awaiting finalization.
 ---@field pending_resume_sessions table<string, louiselm.session.Session> Loaded Sessions awaiting finalization.
+---@field pending_resume_relays table<string, louiselm.ui.ChatEventRelay> Session event relays awaiting finalization.
 ---@field disposed boolean Whether the chat UI has been disposed.
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
@@ -2651,6 +2657,29 @@ local function handle_event(self, view, event)
   end
 end
 
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param event louiselm.session.Event
+local function observe_view_event(self, view, event)
+  -- Recording is a pure data transform, not an editor/UI operation, so it can run
+  -- directly in this fast-event callback instead of waiting for the scheduled turn.
+  view.transcript:record(event)
+  -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
+  nvim.schedule(function()
+    handle_event(self, view, event)
+  end)
+end
+
+---@param relay? louiselm.ui.ChatEventRelay
+local function deactivate_event_relay(relay)
+  if relay == nil then
+    return
+  end
+  relay.events = nil
+  relay.chat = nil
+  relay.view = nil
+end
+
 ---@param rule louiselm.permission.Rule
 ---@return string
 local function permission_rule_label(rule)
@@ -2801,6 +2830,7 @@ function M.new(api, options)
     resume_summaries = {},
     pending_resume_runs = {},
     pending_resume_sessions = {},
+    pending_resume_relays = {},
     current_id = nil,
     disposed = false,
   }, Chat)
@@ -2941,12 +2971,14 @@ local function mark_view_seen(self, view)
   end
 end
 
----Attach a session to a scratch markdown buffer and focus it.
+---Attach a session to a scratch markdown buffer and optionally adopt its
+---cold-resume event relay.
 ---@param self louiselm.ui.Chat
 ---@param session louiselm.session.Session Session to display.
+---@param event_relay? louiselm.ui.ChatEventRelay Events captured before Run finalization.
 ---@return boolean attached
 ---@return string? error_message Validation or buffer creation error.
-function Chat:attach(session)
+local function attach_session(self, session, event_relay)
   if self.disposed then
     return false, "chat UI is disposed"
   end
@@ -2964,7 +2996,8 @@ function Chat:attach(session)
 
   local restored_usage = {}
   local restore_error
-  local replay_active = state.source == "loaded" and state.status ~= "ready"
+  local replay_active = state.source == "loaded"
+    and (state.status ~= "ready" or (event_relay ~= nil and event_relay.events ~= nil))
   if replay_active and state.acp_session_id ~= nil then
     local turns
     turns, restore_error = self.usage:turns(state.agent, state.acp_session_id)
@@ -3069,17 +3102,28 @@ function Chat:attach(session)
       nvim.cmd.startinsert()
     end
   end, { buffer = buffer, silent = true, desc = "Jump to the louiselm prompt" })
-  view.unsubscribe = session:on(function(event)
-    -- Recording is a pure data transform, not an editor/UI operation, so it can run
-    -- directly in this fast-event callback instead of waiting for the scheduled turn.
-    view.transcript:record(event)
-    -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
-    nvim.schedule(function()
-      handle_event(self, view, event)
+  if event_relay == nil then
+    view.unsubscribe = session:on(function(event)
+      observe_view_event(self, view, event)
     end)
-  end)
+  else
+    view.unsubscribe = function()
+      if event_relay.view == view then
+        deactivate_event_relay(event_relay)
+      end
+    end
+  end
   self.views[state.id] = view
   self.view_order[#self.view_order + 1] = state.id
+  if event_relay ~= nil then
+    local events = event_relay.events or {}
+    event_relay.events = nil
+    event_relay.chat = self
+    event_relay.view = view
+    for _, event in ipairs(events) do
+      observe_view_event(self, view, event)
+    end
+  end
   nvim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
     buffer = buffer,
     callback = function()
@@ -3091,7 +3135,7 @@ function Chat:attach(session)
   })
   render_header(self, view)
   self:switch(state.id)
-  if state.status == "ready" then
+  if state.status == "ready" and not replay_active then
     refresh_limits(self, state.agent)
   end
   if restore_error ~= nil then
@@ -3100,12 +3144,21 @@ function Chat:attach(session)
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
   end, { buffer = buffer, silent = true, desc = "Submit louiselm prompt" })
-  if state.status == "ready" and #state.config_options > 0 then
+  if state.status == "ready" and not replay_active and #state.config_options > 0 then
     nvim.schedule(function()
       open_session_options(self, view, true)
     end)
   end
   return true
+end
+
+---Attach a session to a scratch markdown buffer and focus it.
+---@param self louiselm.ui.Chat
+---@param session louiselm.session.Session Session to display.
+---@return boolean attached
+---@return string? error_message Validation or buffer creation error.
+function Chat:attach(session)
+  return attach_session(self, session)
 end
 
 ---Return the buffer for a session, or the current chat buffer.
@@ -4332,11 +4385,34 @@ local function load_cold_run(self, run, callback)
     callback(nil, "cold Run metadata is unavailable")
     return
   end
+  ---@type louiselm.ui.ChatEventRelay
+  local event_relay = { events = {} }
+  self.pending_resume_relays[run.id] = event_relay
   local session, load_error = self.api:load_session(summary.agent, summary.acp_session_id, {
     cwd = summary.cwd,
     name = summary.acp_session_id,
+    on_event = function(event)
+      if event_relay.chat ~= nil and event_relay.view ~= nil then
+        observe_view_event(event_relay.chat, event_relay.view, event)
+        return
+      end
+      local events = event_relay.events
+      if events ~= nil then
+        events[#events + 1] = event
+      end
+    end,
   }, function(loaded_session, ready_error)
+    if self.pending_resume_relays[run.id] ~= event_relay then
+      deactivate_event_relay(event_relay)
+      if loaded_session ~= nil then
+        loaded_session:dispose()
+      end
+      callback(nil, "cold Park load was cancelled")
+      return
+    end
     if ready_error ~= nil then
+      self.pending_resume_relays[run.id] = nil
+      deactivate_event_relay(event_relay)
       if loaded_session ~= nil then
         loaded_session:dispose()
       end
@@ -4344,6 +4420,8 @@ local function load_cold_run(self, run, callback)
       return
     end
     if loaded_session == nil then
+      self.pending_resume_relays[run.id] = nil
+      deactivate_event_relay(event_relay)
       callback(nil, "cold Park load returned no Session")
       return
     end
@@ -4353,12 +4431,16 @@ local function load_cold_run(self, run, callback)
       generated_work = summary.generated_work,
     })
     if local_run == nil then
+      self.pending_resume_relays[run.id] = nil
+      deactivate_event_relay(event_relay)
       loaded_session:dispose()
       callback(nil, run_error or "could not reconstruct resumed Run")
       return
     end
     local adopted, adopt_error = local_run:adopt_session(loaded_session)
     if not adopted then
+      self.pending_resume_relays[run.id] = nil
+      deactivate_event_relay(event_relay)
       loaded_session:dispose()
       callback(nil, adopt_error or "could not reconstruct resumed Run")
       return
@@ -4369,6 +4451,10 @@ local function load_cold_run(self, run, callback)
     callback(loaded_session)
   end)
   if session == nil then
+    if self.pending_resume_relays[run.id] == event_relay then
+      self.pending_resume_relays[run.id] = nil
+    end
+    deactivate_event_relay(event_relay)
     callback(nil, load_error or "could not load cold Park")
   end
 end
@@ -4539,19 +4625,29 @@ function Chat:resume_park()
         }
         local resume_started, resume_error = controller:resume(resume_view, function(_, error_message)
           local session = self.pending_resume_sessions[selected.id]
+          local event_relay = self.pending_resume_relays[selected.id]
           self.pending_resume_sessions[selected.id] = nil
+          self.pending_resume_relays[selected.id] = nil
           self.pending_resume_runs[selected.id] = nil
           self.resume_summaries[selected.id] = nil
           if error_message ~= nil then
+            deactivate_event_relay(event_relay)
             nvim.notify("louiselm: " .. error_message, nvim.log.levels.ERROR)
             return
           end
           if session == nil then
+            deactivate_event_relay(event_relay)
             nvim.notify("louiselm: resumed Run has no loaded Session", nvim.log.levels.ERROR)
             return
           end
-          local attached, attach_error = self:attach(session)
+          if event_relay == nil or event_relay.events == nil then
+            session:dispose()
+            nvim.notify("louiselm: resumed Run has no Session event relay", nvim.log.levels.ERROR)
+            return
+          end
+          local attached, attach_error = attach_session(self, session, event_relay)
           if not attached then
+            deactivate_event_relay(event_relay)
             session:dispose()
             nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
             return
@@ -4587,6 +4683,10 @@ function Chat:dispose()
   if self.resume_client ~= nil then
     self.resume_client:dispose()
   end
+  for _, event_relay in pairs(self.pending_resume_relays) do
+    deactivate_event_relay(event_relay)
+  end
+  self.pending_resume_relays = {}
   for _, session in pairs(self.pending_resume_sessions) do
     session:dispose()
   end

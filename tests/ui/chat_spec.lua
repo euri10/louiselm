@@ -329,13 +329,21 @@ T["chat"]["reuses the admitted Run id after a cold Park attempt fails validation
   MiniTest.expect.equality(parked_record.id, admitted_ids[1])
 end
 
-T["chat"]["reconstructs the Run budget and claims after cold resume"] = function()
+T["chat"]["reconstructs the Run and preserves replay after cold resume"] = function()
   local restored = fake_session("loaded-session", "codex")
+  restored.state.source = "loaded"
+  restored.state.status = "starting"
+  restored.state.acp_session_id = "acp"
+  local loading_session = restored
   local api = fake_api()
   local ready_callback
-  function api:load_session(_, _, _, callback)
+  function api:load_session(_, _, options, callback)
+    local session = loading_session
     ready_callback = callback
-    return restored
+    if options.on_event ~= nil then
+      session:on(options.on_event)
+    end
+    return session
   end
   local chat = assert(Chat.new(api))
   local original_list = WorkflowService.list
@@ -347,6 +355,7 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
   local scheduled = {}
   local resume_call
   local finalize_call
+  local finalize_callback
   local fake_client = {}
   function fake_client:resume(id, revision, operation_id, callback)
     resume_call = { id, revision, operation_id }
@@ -364,16 +373,7 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
   end
   function fake_client:finalize_resume(id, revision, operation_id, succeeded, callback)
     finalize_call = { id, revision, operation_id, succeeded }
-    callback({
-      id = id,
-      revision = revision + 1,
-      state = succeeded and "active" or "cold_parked",
-      generated_work_ceiling = 5,
-      generated_work_consumed = 2,
-      generated_work_reserved = 1,
-      pending_mutation_ids = {},
-      park_expires_at_ms = succeeded and 0 or 1,
-    })
+    finalize_callback = callback
     return true
   end
   function fake_client:dispose()
@@ -440,13 +440,166 @@ T["chat"]["reconstructs the Run budget and claims after cold resume"] = function
     scheduled[next_callback]()
     next_callback = next_callback + 1
   end
-  ready_callback(restored)
+
+  local replay_async
+  replay_async = nvim.uv.new_async(function()
+    replay_async:close()
+    MiniTest.expect.equality(nvim.in_fast_event(), true)
+    restored:emit({
+      type = "user_chunk",
+      session_id = "loaded-session",
+      data = { content = { type = "text", text = "Replay user" } },
+    })
+    restored:emit({
+      type = "thought_chunk",
+      session_id = "loaded-session",
+      data = { content = { type = "text", text = "Replay thought" } },
+    })
+    restored:emit({
+      type = "tool_call_finished",
+      session_id = "loaded-session",
+      data = { toolCallId = "replay-tool", title = "Replay tool", status = "completed" },
+    })
+    restored:emit({
+      type = "chunk",
+      session_id = "loaded-session",
+      data = { content = { type = "text", text = "Replay answer" } },
+    })
+    restored.state.status = "ready"
+    restored:emit({
+      type = "state_changed",
+      session_id = "loaded-session",
+      data = { status = "ready" },
+    })
+    ready_callback(restored)
+  end)
+  replay_async:send()
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return finalize_callback ~= nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(chat:buffer("loaded-session"), nil)
+
+  nvim.schedule(function()
+    finalize_callback({
+      id = "run",
+      revision = 7,
+      state = "active",
+      generated_work_ceiling = 5,
+      generated_work_consumed = 2,
+      generated_work_reserved = 1,
+      pending_mutation_ids = {},
+      park_expires_at_ms = 0,
+    })
+  end)
+  while next_callback <= #scheduled do
+    scheduled[next_callback]()
+    next_callback = next_callback + 1
+  end
 
   MiniTest.expect.equality(resume_call, { "run", 5, "61616161-6161-6161-6161-616161616161" })
   MiniTest.expect.equality(finalize_call, { "run", 6, "61616161-6161-6161-6161-616161616161", true })
   MiniTest.expect.equality(restored.owner_run.claims, { "issue" })
   MiniTest.expect.equality(restored.owner_run.generated_work, { ceiling = 5, consumed = 2, reserved = 1 })
   MiniTest.expect.equality(restored.owner_run.status, "active")
+
+  assert(chat:submit("Live question"))
+  local lines_before_live = buffer_lines(assert(chat:buffer()))
+  local scheduled_before_live = #scheduled
+  local live_async
+  live_async = nvim.uv.new_async(function()
+    live_async:close()
+    MiniTest.expect.equality(nvim.in_fast_event(), true)
+    restored:emit({
+      type = "chunk",
+      session_id = "loaded-session",
+      data = { content = { type = "text", text = "Live answer" } },
+    })
+  end)
+  live_async:send()
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return #scheduled > scheduled_before_live
+    end),
+    true
+  )
+  MiniTest.expect.equality(buffer_lines(assert(chat:buffer())), lines_before_live)
+  while next_callback <= #scheduled do
+    scheduled[next_callback]()
+    next_callback = next_callback + 1
+  end
+
+  local wanted = {
+    ["> Replay user"] = true,
+    ["Replay thought"] = true,
+    ["[tool] replay-tool: Replay tool (completed)"] = true,
+    ["Replay answer"] = true,
+    ["> Live question"] = true,
+    ["Live answer"] = true,
+  }
+  local observed = {}
+  for _, line in ipairs(buffer_lines(assert(chat:buffer()))) do
+    if wanted[line] then
+      observed[#observed + 1] = line
+    end
+  end
+  MiniTest.expect.equality(observed, {
+    "> Replay user",
+    "Replay thought",
+    "[tool] replay-tool: Replay tool (completed)",
+    "Replay answer",
+    "> Live question",
+    "Live answer",
+  })
+
+  local pending = fake_session("pending-session", "codex")
+  pending.state.source = "loaded"
+  pending.state.status = "starting"
+  pending.state.acp_session_id = "acp"
+  loading_session = pending
+  ready_callback = nil
+  finalize_callback = nil
+  assert(chat:resume_park())
+  while next_callback <= #scheduled do
+    scheduled[next_callback]()
+    next_callback = next_callback + 1
+  end
+  assert(ready_callback ~= nil)
+  pending:emit({
+    type = "chunk",
+    session_id = "pending-session",
+    data = { content = { type = "text", text = "Buffered before disposal" } },
+  })
+  chat:dispose()
+
+  local scheduled_before_disposal_event = #scheduled
+  local late_emitted = false
+  local late_was_fast = false
+  local late_async
+  late_async = nvim.uv.new_async(function()
+    late_async:close()
+    late_was_fast = nvim.in_fast_event()
+    pending:emit({
+      type = "chunk",
+      session_id = "pending-session",
+      data = { content = { type = "text", text = "Late after disposal" } },
+    })
+    late_emitted = true
+  end)
+  late_async:send()
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return late_emitted
+    end),
+    true
+  )
+  ready_callback(pending)
+  MiniTest.expect.equality(late_was_fast, true)
+  MiniTest.expect.equality(#scheduled, scheduled_before_disposal_event)
+  MiniTest.expect.equality(chat:buffer("pending-session"), nil)
+  MiniTest.expect.equality(pending.disposed, true)
 end
 
 T["chat"]["reconciles service Parks into live Runs and bounded operator state"] = function()
