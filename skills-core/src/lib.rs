@@ -19,6 +19,8 @@ pub mod isolation;
 pub mod launch;
 pub mod launch_protocol;
 pub mod launch_receipt;
+#[cfg(target_os = "linux")]
+pub mod launch_transport;
 pub mod lineage;
 pub mod manifest;
 pub mod policy;
