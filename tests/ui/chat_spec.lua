@@ -5486,8 +5486,8 @@ local function normal_map(buffer, lhs)
   return nil
 end
 
----Build a three-turn transcript: a context+thinking+prose turn, a plain prose
----turn, and a tool-only turn. The live prompt line ("> ") stays at the end.
+---Build a three-turn transcript: a context+thinking+prose-with-blockquote turn,
+---a plain prose turn, and a tool-only turn. The live prompt line ("> ") stays at the end.
 ---@return table chat
 ---@return table session
 ---@return integer buffer
@@ -5506,7 +5506,7 @@ local function navigable_chat()
   session:emit({
     type = "chunk",
     session_id = "session-1",
-    data = { content = { type = "text", text = "First answer" } },
+    data = { content = { type = "text", text = "First answer\n> Assistant quote\nFirst answer continued" } },
   })
   session.state.usage = { total_tokens = 100, input_tokens = 40, output_tokens = 60 }
   session:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
@@ -5551,8 +5551,11 @@ T["chat"]["jumps between submitted prompts with ]u and [u"] = function()
   local prev_user = assert(normal_map(buffer, "[u"))
   local contexts_header = line_of(buffer, "> [contexts: file: init.lua]")
   local review = line_of(buffer, "> Review this")
+  local quote = line_of(buffer, "> Assistant quote")
+  local continuation = line_of(buffer, "First answer continued")
   local second = line_of(buffer, "> Second question")
   local tool_only = line_of(buffer, "> Tool only")
+  MiniTest.expect.equality(review < quote and quote < continuation and continuation < second, true)
 
   nvim.api.nvim_win_set_cursor(0, { 1, 0 })
   nvim.api.nvim_buf_call(buffer, next_user)
@@ -5567,6 +5570,8 @@ T["chat"]["jumps between submitted prompts with ]u and [u"] = function()
 
   nvim.api.nvim_buf_call(buffer, prev_user)
   MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { second, 0 })
+  nvim.api.nvim_buf_call(buffer, prev_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { review, 0 })
   chat:dispose()
 end
 
@@ -5588,6 +5593,67 @@ T["chat"]["jumps to assistant replies with ]r and [r"] = function()
 
   nvim.api.nvim_buf_call(buffer, prev_reply)
   MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { first_answer, 0 })
+  chat:dispose()
+end
+
+T["chat"]["navigates replayed prompts by rendered origin"] = function()
+  local session = fake_session("session-1", "codex")
+  session.state.source = "loaded"
+  session.state.status = "starting"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  local buffer = assert(chat:buffer())
+
+  session:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "First question" } },
+  })
+  session:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Attached context" } },
+  })
+  session:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "First answer\n> Assistant quote\nFirst answer continued" } },
+  })
+  session:emit({
+    type = "user_chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Second question" } },
+  })
+  session:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = "Second answer" } },
+  })
+  session.state.status = "ready"
+  session:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(buffer), "Second answer")
+  end, 1)
+
+  local next_user = assert(normal_map(buffer, "]u"))
+  local first = line_of(buffer, "> First question")
+  local attached = line_of(buffer, "> Attached context")
+  local quote = line_of(buffer, "> Assistant quote")
+  local continuation = line_of(buffer, "First answer continued")
+  local second = line_of(buffer, "> Second question")
+  MiniTest.expect.equality(
+    first < attached and attached < quote and quote < continuation and continuation < second,
+    true
+  )
+
+  nvim.api.nvim_win_set_cursor(0, { first, 0 })
+  nvim.api.nvim_buf_call(buffer, next_user)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { second, 0 })
+
+  local next_reply = assert(normal_map(buffer, "]r"))
+  nvim.api.nvim_win_set_cursor(0, { line_of(buffer, "First answer"), 0 })
+  nvim.api.nvim_buf_call(buffer, next_reply)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { line_of(buffer, "Second answer"), 0 })
   chat:dispose()
 end
 

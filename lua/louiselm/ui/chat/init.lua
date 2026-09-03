@@ -67,6 +67,7 @@ local nvim = vim
 ---@field unread_turn boolean Whether a completed background response has not been focused.
 ---@field replay_active boolean Whether session/load history is still arriving.
 ---@field replay_user_open boolean Whether consecutive replayed user chunks belong to the current historical turn.
+---@field replay_prompt_mark integer? Range extmark for the current replayed user turn.
 ---@field replay_turn integer Number of historical user turns replayed into this view.
 ---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
@@ -1329,6 +1330,22 @@ local function open_tool_inspector(self, view, id)
 end
 
 ---@param view louiselm.ui.ChatView
+---@param first_line integer Inclusive zero-based start.
+---@param end_line integer Exclusive zero-based end.
+---@param id? integer Existing range to extend.
+---@return integer mark_id
+local function mark_submitted_prompt(view, first_line, end_line, id)
+  return nvim.api.nvim_buf_set_extmark(view.buffer, view.prompt_namespace, first_line, 0, {
+    id = id,
+    end_row = end_line,
+    end_col = 0,
+    right_gravity = false,
+    end_right_gravity = false,
+    invalidate = true,
+  })
+end
+
+---@param view louiselm.ui.ChatView
 ---@param text string
 ---@param contexts louiselm.ui.ContextItem[]
 ---@return integer line_count
@@ -1356,10 +1373,12 @@ local function replace_submitted_prompt(view, text, contexts)
       last = view.prompt_line + #lines - 1,
     }
   end
+  local first_prompt_line = view.prompt_line + #lines
   for _, line in ipairs(nvim.split(text, "\n", { plain = true })) do
     lines[#lines + 1] = "> " .. line
   end
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
+  mark_submitted_prompt(view, first_prompt_line, view.prompt_line + #lines)
   apply_context_folds(view, view.window)
   return #lines
 end
@@ -1764,6 +1783,7 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param lines string[]
+---@return integer insertion_line
 insert_transcript = function(self, view, lines)
   local replacement = {}
   for _, line in ipairs(lines) do
@@ -1775,6 +1795,7 @@ insert_transcript = function(self, view, lines)
   nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, replacement)
   view.transcript_tail = insertion_line + #replacement - 1
   mark_prompt(view, view.prompt_line + #replacement)
+  return insertion_line
 end
 
 ---Render a terminal-completion tool's retained text inline unless that exact
@@ -2320,6 +2341,7 @@ local function handle_event(self, view, event)
       return
     end
     close_thought_fold_run(view)
+    local continuing_prompt = view.replay_active and view.replay_user_open
     if view.replay_active and not view.replay_user_open then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_turn = view.replay_turn + 1
@@ -2329,8 +2351,28 @@ local function handle_event(self, view, event)
     for index, line in ipairs(lines) do
       lines[index] = "> " .. line
     end
+    local prompt_line_count = #lines
     lines[#lines + 1] = ""
-    insert_transcript(self, view, lines)
+    local insertion_line = insert_transcript(self, view, lines)
+    local first_prompt_line = insertion_line
+    local prompt_mark
+    if continuing_prompt and view.replay_prompt_mark ~= nil then
+      local position = nvim.api.nvim_buf_get_extmark_by_id(
+        view.buffer,
+        view.prompt_namespace,
+        view.replay_prompt_mark,
+        { details = true }
+      )
+      local details = position[3]
+      if #position == 3 and type(details) == "table" and details.invalid ~= true then
+        first_prompt_line = position[1]
+        prompt_mark = view.replay_prompt_mark
+      end
+    end
+    local mark = mark_submitted_prompt(view, first_prompt_line, insertion_line + prompt_line_count, prompt_mark)
+    if view.replay_active then
+      view.replay_prompt_mark = mark
+    end
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
@@ -2776,19 +2818,12 @@ function M.new(api, options)
 end
 
 ---Prefix of the submitted-context block header line; the block runs from this
----line down to the prompt's own `> `-prefixed lines.
+---line to the first prompt range recorded after it.
 local CONTEXTS_HEADER_PREFIX = "> [contexts:"
 
----@param line string
----@return boolean is_prompt_line
-local function is_submitted_prompt_line(line)
-  return line:sub(1, 2) == "> " and line:sub(1, #CONTEXTS_HEADER_PREFIX) ~= CONTEXTS_HEADER_PREFIX
-end
-
 ---Collect the Normal-mode navigation targets in the transcript history above
----the live prompt, in document order. A `prompt` target is the first `> `
----line of each submitted prompt block (the `> [contexts: …]` header and the
----context content beneath it are part of the block, not targets). A `reply`
+---the live prompt, in document order. A `prompt` target is the first line of
+---each range recorded at a trusted user-prompt render boundary. A `reply`
 ---target is the first prose line of a turn's response: thinking content is
 ---excluded via the recorded thought-fold runs (text alone cannot distinguish
 ---it from prose), and so are blank lines, `[…` marker lines, and
@@ -2798,6 +2833,17 @@ end
 ---@return integer[] targets Zero-based lines in document order.
 local function navigation_targets(view, kind)
   local lines = nvim.api.nvim_buf_get_lines(view.buffer, 0, current_prompt_line(view), false)
+  local prompt_lines = {}
+  local prompt_starts = {}
+  for _, mark in ipairs(nvim.api.nvim_buf_get_extmarks(view.buffer, view.prompt_namespace, 0, -1, { details = true })) do
+    local details = mark[4]
+    if details.end_row ~= nil and details.invalid ~= true then
+      prompt_starts[mark[2]] = true
+      for line = mark[2], details.end_row - 1 do
+        prompt_lines[line] = true
+      end
+    end
+  end
   local thinking_lines = {}
   for _, fold in ipairs(view.thought_folds) do
     for line = fold.first, fold.last do
@@ -2814,36 +2860,23 @@ local function navigation_targets(view, kind)
   local in_context_block = false
   local after_prompt = false
   local seen_reply = false
-  local last_line_was_prompt = false
   for index, line in ipairs(lines) do
     local zero_based = index - 1
     if line:sub(1, #CONTEXTS_HEADER_PREFIX) == CONTEXTS_HEADER_PREFIX then
       in_context_block = true
-      last_line_was_prompt = false
-    elseif in_context_block then
-      if is_submitted_prompt_line(line) then
-        in_context_block = false
-        if kind == "prompt" then
-          targets[#targets + 1] = zero_based
-        end
-        after_prompt = true
-        seen_reply = false
-        last_line_was_prompt = true
-      end
-    elseif is_submitted_prompt_line(line) then
-      -- Only the first `> ` line of a multi-line prompt is a target.
-      if not last_line_was_prompt and kind == "prompt" then
+    elseif prompt_lines[zero_based] then
+      in_context_block = false
+      if prompt_starts[zero_based] and kind == "prompt" then
         targets[#targets + 1] = zero_based
       end
       after_prompt = true
       seen_reply = false
-      last_line_was_prompt = true
     else
-      last_line_was_prompt = false
       if
         kind == "reply"
         and after_prompt
         and not seen_reply
+        and not in_context_block
         and line ~= ""
         and line:sub(1, 1) ~= "["
         and not thinking_lines[zero_based]
@@ -2999,6 +3032,7 @@ function Chat:attach(session)
     unread_turn = false,
     replay_active = replay_active,
     replay_user_open = false,
+    replay_prompt_mark = nil,
     replay_turn = 0,
     restored_usage = restored_usage,
     transcript = Transcript.new(),
