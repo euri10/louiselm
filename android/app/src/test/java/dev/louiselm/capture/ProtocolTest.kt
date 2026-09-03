@@ -73,15 +73,41 @@ class ProtocolTest {
                 "reason": "Permission is required",
                 "linked_run_id": "11111111-2222-4333-8444-555555555555",
                 "stage": "review/execute"
+              }, {
+                "subject_kind": "run",
+                "subject_id": "11111111-2222-4333-8444-555555555555",
+                "kind": "skill_approval_pending",
+                "source_operation_id": "22222222-3333-4444-8555-666666666666",
+                "created_at_ms": 124,
+                "eligible": true,
+                "reason": "Skill approval is pending",
+                "linked_run_id": null,
+                "stage": null,
+                "code": "admission_required"
+              }, {
+                "subject_kind": "session",
+                "subject_id": "session-2",
+                "kind": "skill_unverified",
+                "source_operation_id": "33333333-4444-4555-8666-777777777777",
+                "created_at_ms": 125,
+                "eligible": true,
+                "reason": "Skill supply is unverified",
+                "linked_run_id": "11111111-2222-4333-8444-555555555555",
+                "stage": null,
+                "code": "witness_missing"
               }]
             }
             """.trimIndent(),
         )
 
         assertEquals(4, snapshot.generation)
-        assertEquals(AttentionKind.PERMISSION_REQUIRED, snapshot.items.single().kind)
-        assertEquals("Permission is required", snapshot.items.single().kind.reason)
-        assertEquals("review/execute", snapshot.items.single().stage)
+        assertEquals(AttentionKind.PERMISSION_REQUIRED, snapshot.items[0].kind)
+        assertEquals("Permission is required", snapshot.items[0].kind.reason)
+        assertEquals("review/execute", snapshot.items[0].stage)
+        assertEquals(AttentionKind.SKILL_APPROVAL_PENDING, snapshot.items[1].kind)
+        assertEquals(AttentionCode.ADMISSION_REQUIRED, snapshot.items[1].code)
+        assertEquals(AttentionKind.SKILL_UNVERIFIED, snapshot.items[2].kind)
+        assertEquals(AttentionCode.WITNESS_MISSING, snapshot.items[2].code)
     }
 
     @Test
@@ -108,5 +134,24 @@ class ProtocolTest {
             }
         """.trimIndent()
         assertThrows(IllegalArgumentException::class.java) { AttentionSnapshot.parse(malformed) }
+
+        val hostileSkillCode = """
+            {
+              "generation": 1,
+              "items": [{
+                "subject_kind": "session",
+                "subject_id": "session-1",
+                "kind": "skill_unverified",
+                "source_operation_id": "11111111-2222-4333-8444-555555555555",
+                "created_at_ms": 123,
+                "eligible": false,
+                "reason": "Skill supply is unverified",
+                "linked_run_id": null,
+                "stage": null,
+                "code": "/home/operator/.ssh/id_ed25519"
+              }]
+            }
+        """.trimIndent()
+        assertThrows(IllegalArgumentException::class.java) { AttentionSnapshot.parse(hostileSkillCode) }
     }
 }

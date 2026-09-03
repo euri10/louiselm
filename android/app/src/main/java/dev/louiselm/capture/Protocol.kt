@@ -20,6 +20,8 @@ internal enum class AttentionKind(val reason: String) {
     PERMISSION_REQUIRED("Permission is required"),
     RUN_PARKED("Run is Parked"),
     SESSION_FAILED("Session failed"),
+    SKILL_APPROVAL_PENDING("Skill approval is pending"),
+    SKILL_UNVERIFIED("Skill supply is unverified"),
     ;
 
     companion object {
@@ -28,7 +30,43 @@ internal enum class AttentionKind(val reason: String) {
             "permission_required" -> PERMISSION_REQUIRED
             "run_parked" -> RUN_PARKED
             "session_failed" -> SESSION_FAILED
+            "skill_approval_pending" -> SKILL_APPROVAL_PENDING
+            "skill_unverified" -> SKILL_UNVERIFIED
             else -> throw IllegalArgumentException("attention kind is unsupported")
+        }
+    }
+}
+
+internal enum class AttentionCode {
+    ADMISSION_REQUIRED,
+    ROOT_TRUST_FAILED,
+    SIGNATURE_INVALID,
+    WITNESS_MISSING,
+    NATIVE_SUPPLY_UNCERTAIN,
+    RUNTIME_DRIFT,
+    ISOLATION_FAILED,
+    BROKER_UNAVAILABLE,
+    AUDIT_PERSISTENCE_UNAVAILABLE,
+    PROVIDER_DISCLOSURE_MISSING,
+    EVIDENCE_MISSING,
+    UNKNOWN_FAILURE,
+    ;
+
+    companion object {
+        fun parse(value: String): AttentionCode = when (value) {
+            "admission_required" -> ADMISSION_REQUIRED
+            "root_trust_failed" -> ROOT_TRUST_FAILED
+            "signature_invalid" -> SIGNATURE_INVALID
+            "witness_missing" -> WITNESS_MISSING
+            "native_supply_uncertain" -> NATIVE_SUPPLY_UNCERTAIN
+            "runtime_drift" -> RUNTIME_DRIFT
+            "isolation_failed" -> ISOLATION_FAILED
+            "broker_unavailable" -> BROKER_UNAVAILABLE
+            "audit_persistence_unavailable" -> AUDIT_PERSISTENCE_UNAVAILABLE
+            "provider_disclosure_missing" -> PROVIDER_DISCLOSURE_MISSING
+            "evidence_missing" -> EVIDENCE_MISSING
+            "unknown_failure" -> UNKNOWN_FAILURE
+            else -> throw IllegalArgumentException("attention code is unsupported")
         }
     }
 }
@@ -56,6 +94,7 @@ internal data class AttentionItem(
     val eligible: Boolean,
     val linkedRunId: String?,
     val stage: String?,
+    val code: AttentionCode?,
 )
 
 internal data class AttentionSnapshot(
@@ -90,6 +129,7 @@ internal data class AttentionSnapshot(
                     "reason",
                     "linked_run_id",
                     "stage",
+                    "code",
                 ),
                 "attention item",
             )
@@ -113,6 +153,16 @@ internal data class AttentionSnapshot(
                 require(stage.isNotEmpty() && stage.toByteArray(Charsets.UTF_8).size <= MAX_ATTENTION_STAGE)
                 require(stage.all { it.isLetterOrDigit() || it in "._/-" }) { "attention stage is invalid" }
             }
+            val code = optionalString(value, "code")?.let(AttentionCode::parse)
+            val validCode = when (kind) {
+                AttentionKind.SKILL_APPROVAL_PENDING -> code == AttentionCode.ADMISSION_REQUIRED
+                AttentionKind.SKILL_UNVERIFIED -> code != null && code != AttentionCode.ADMISSION_REQUIRED
+                else -> code == null
+            }
+            require(validCode) { "attention code does not match kind" }
+            if (kind == AttentionKind.SKILL_APPROVAL_PENDING || kind == AttentionKind.SKILL_UNVERIFIED) {
+                require(stage == null) { "skill Attention cannot carry stage text" }
+            }
             return AttentionItem(
                 subjectKind,
                 subjectId,
@@ -122,6 +172,7 @@ internal data class AttentionSnapshot(
                 value.getBoolean("eligible"),
                 linkedRunId,
                 stage,
+                code,
             )
         }
 

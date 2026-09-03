@@ -99,7 +99,7 @@ T["correlates mutation results and ignores late callbacks after disposal"] = fun
   nvim.wait(20)
 end
 
-T["clears all conditions for a Session"] = function()
+T["clears all conditions or one kind for a Session"] = function()
   local pipe = fake_pipe()
   local client = assert(AttentionClient.connect("/tmp/attention.sock", function() end, {
     operator_capability = "operator-secret",
@@ -116,6 +116,15 @@ T["clears all conditions for a Session"] = function()
     type = "clear_session",
     request_id = "1",
     session_id = "codex/session-1",
+    capability = "operator-secret",
+  })
+  assert(client:clear_session_kind("codex/session-1", "turn_ready", function() end))
+  request = nvim.json.decode(pipe.writes[2])
+  MiniTest.expect.equality(request, {
+    type = "clear_session_kind",
+    request_id = "2",
+    session_id = "codex/session-1",
+    kind = "turn_ready",
     capability = "operator-secret",
   })
   assert(client:dispose())

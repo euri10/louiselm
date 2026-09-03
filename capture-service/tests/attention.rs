@@ -1,8 +1,8 @@
 use std::{fs, time::Duration};
 
 use louiselm_capture::{
-    AttentionDraft, AttentionKey, AttentionKind, AttentionSocket, AttentionSocketMessage,
-    AttentionStore, AttentionSubjectKind,
+    AttentionCode, AttentionDraft, AttentionKey, AttentionKind, AttentionSocket,
+    AttentionSocketMessage, AttentionStore, AttentionSubjectKind,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -22,7 +22,111 @@ fn draft() -> AttentionDraft {
         created_at_ms: 100,
         linked_run_id: Some(RUN_ID.to_owned()),
         stage: Some("review/turn-1".to_owned()),
+        code: None,
     }
+}
+
+#[test]
+fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = AttentionStore::new(temporary.path()).expect("store");
+    let approval = AttentionDraft {
+        subject_kind: AttentionSubjectKind::Run,
+        subject_id: RUN_ID.to_owned(),
+        kind: AttentionKind::SkillApprovalPending,
+        source_operation_id: OPERATION_ID.to_owned(),
+        created_at_ms: 100,
+        linked_run_id: None,
+        stage: None,
+        code: Some(AttentionCode::AdmissionRequired),
+    };
+    let approval_snapshot = store.upsert(approval.clone()).expect("approval pending");
+    assert_eq!(
+        approval_snapshot.items[0].reason,
+        "Skill approval is pending"
+    );
+    assert_eq!(
+        approval_snapshot.items[0].code,
+        Some(AttentionCode::AdmissionRequired)
+    );
+
+    let unverified = AttentionDraft {
+        subject_kind: AttentionSubjectKind::Session,
+        subject_id: SESSION_ID.to_owned(),
+        kind: AttentionKind::SkillUnverified,
+        source_operation_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
+        created_at_ms: 101,
+        linked_run_id: Some(RUN_ID.to_owned()),
+        stage: None,
+        code: Some(AttentionCode::WitnessMissing),
+    };
+    let snapshot = store.upsert(unverified.clone()).expect("unverified skill");
+    assert_eq!(snapshot.items[1].reason, "Skill supply is unverified");
+    assert_eq!(snapshot.items[1].code, Some(AttentionCode::WitnessMissing));
+    assert_eq!(
+        store.summary().expect("summary").kinds,
+        [
+            (AttentionKind::SkillApprovalPending, 1),
+            (AttentionKind::SkillUnverified, 1),
+        ]
+        .into_iter()
+        .collect()
+    );
+
+    let mut missing_code = unverified.clone();
+    missing_code.code = None;
+    assert!(store.upsert(missing_code).is_err());
+    let mut wrong_code = approval;
+    wrong_code.code = Some(AttentionCode::WitnessMissing);
+    assert!(store.upsert(wrong_code).is_err());
+    let mut unrelated_code = draft();
+    unrelated_code.code = Some(AttentionCode::WitnessMissing);
+    assert!(store.upsert(unrelated_code).is_err());
+    let mut text_field = unverified;
+    text_field.stage = Some("candidate/summary".to_owned());
+    assert!(store.upsert(text_field).is_err());
+
+    let hostile = serde_json::json!({
+        "subject_kind": "session",
+        "subject_id": SESSION_ID,
+        "kind": "skill_unverified",
+        "source_operation_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "created_at_ms": 102,
+        "linked_run_id": RUN_ID,
+        "stage": null,
+        "code": "/home/operator/.ssh/id_ed25519"
+    });
+    assert!(serde_json::from_value::<AttentionDraft>(hostile).is_err());
+    assert_eq!(store.snapshot().expect("unchanged").generation, 2);
+}
+
+#[test]
+fn session_kind_clear_preserves_other_unresolved_conditions() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = AttentionStore::new(temporary.path()).expect("store");
+    store.upsert(draft()).expect("turn ready");
+    store
+        .upsert(AttentionDraft {
+            kind: AttentionKind::PermissionRequired,
+            source_operation_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_owned(),
+            ..draft()
+        })
+        .expect("permission");
+
+    let reopened = AttentionStore::new(temporary.path()).expect("reopen");
+    let cleared = reopened
+        .clear_session_kind(SESSION_ID, AttentionKind::TurnReady)
+        .expect("clear ready kind");
+    assert_eq!(cleared.generation, 3);
+    assert_eq!(cleared.items.len(), 1);
+    assert_eq!(cleared.items[0].kind, AttentionKind::PermissionRequired);
+    assert_eq!(
+        reopened
+            .clear_session_kind(SESSION_ID, AttentionKind::TurnReady)
+            .expect("idempotent clear")
+            .generation,
+        3
+    );
 }
 
 fn key() -> AttentionKey {
@@ -208,15 +312,16 @@ async fn attention_socket_requires_capability_and_retries_without_new_generation
         .expect("replay result");
     assert_eq!(store.snapshot().expect("replay").generation, 1);
 
-    let clear_session = serde_json::json!({
-        "type": "clear_session",
+    let clear_session_kind = serde_json::json!({
+        "type": "clear_session_kind",
         "request_id": "request-3",
         "session_id": SESSION_ID,
+        "kind": "turn_ready",
         "capability": capability
     });
     lines
         .get_mut()
-        .write_all(format!("{clear_session}\n").as_bytes())
+        .write_all(format!("{clear_session_kind}\n").as_bytes())
         .await
         .expect("clear session request");
     let cleared: AttentionSocketMessage = serde_json::from_str(
