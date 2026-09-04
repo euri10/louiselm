@@ -88,7 +88,8 @@ impl Fixture {
         .expect("ssh-keygen fixture is writable");
         fs::write(&paths.getent, "#!/bin/sh\nexit 2\n").expect("getent fixture is writable");
         fs::write(&paths.visudo, "visudo fixture\n").expect("visudo fixture is writable");
-        fs::write(&paths.bwrap, "bubblewrap fixture\n").expect("bwrap fixture is writable");
+        fs::write(&paths.bwrap, "#!/bin/sh\nprintf 'bubblewrap fixture\\n'\n")
+            .expect("bwrap fixture is writable");
         for tool in [
             &paths.ssh_keygen,
             &paths.getent,
