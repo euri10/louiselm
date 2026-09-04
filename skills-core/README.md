@@ -285,6 +285,212 @@ sudo louiselm-skills release status                           # release_tampered
 
 No private key material leaves the token at any point in this procedure.
 
+### Manual launcher-authority acceptance
+
+This procedure changes root trust data, subordinate-ID reservations, and
+`sudoers`. Run it only in a disposable VM, using a dedicated operator account,
+and take a snapshot before the destructive digest checks.
+
+#### Installer authority (louiselm-d6fv.4.2)
+
+The installer, status, rotation, and lease primitives in this slice are covered
+now by `cargo test --test launcher_install`. The production ceremony has one
+honest prerequisite: the running signed release must contain a real
+`louiselm-launch` component. The standard release build does not produce that
+binary yet, so `launcher install` correctly refuses until louiselm-d6fv.4.4
+integrates the runtime and louiselm-xkxf adds that binary to the signed release.
+Do not insert a placeholder binary merely to make this procedure pass.
+
+Once that component exists, install its signed release at the fixed prefix as
+described above. Run the following as the VM maintainer; choose unused ranges
+if the example ranges collide on the host:
+
+```sh
+operator=louiselm-operator
+uid_start=2000000
+gid_start=3000000
+slots=4
+skills=/usr/local/lib/louiselm/current/bin/louiselm-skills
+launcher=/usr/local/lib/louiselm/current/bin/louiselm-launch
+
+test "$(id -u "$operator")" -ne 0
+test -x "$skills"
+test -x "$launcher"
+sudo "$skills" release identity --robot-json | tee /tmp/release-identity.json
+release_id=$(jq -er 'select(.verified == true) | .release_id' \
+  /tmp/release-identity.json)
+launcher_digest="sha256:$(sha256sum "$launcher" | awk '{ print $1 }')"
+sudo "$skills" release status --robot-json | jq -e '.trusted == true'
+
+sudo "$skills" launcher install \
+  --operator "$operator" \
+  --uid-start "$uid_start" \
+  --gid-start "$gid_start" \
+  --slots "$slots" \
+  --robot-json | tee /tmp/launcher-install.json
+jq -e --arg operator "$operator" \
+  --arg release_id "$release_id" \
+  --arg launcher_digest "$launcher_digest" \
+  --argjson uid_start "$uid_start" \
+  --argjson gid_start "$gid_start" \
+  --argjson slots "$slots" '
+    .schema == "louiselm.launch.install.status/1" and
+    .trusted == true and (.failures | length) == 0 and
+    .config.operator == $operator and
+    .config.release_id == $release_id and
+    .config.launcher_digest == $launcher_digest and
+    .config.pool == {
+      uid_start: $uid_start,
+      gid_start: $gid_start,
+      slots: $slots
+    } and
+    (.active_key_id | type) == "string" and
+    .retained_key_ids == [] and .occupied_slots == []
+  ' /tmp/launcher-install.json
+! grep -q 'OPENSSH PRIVATE KEY' /tmp/launcher-install.json
+```
+
+Check the installed ownership and modes. Every displayed owner must be `0:0`:
+
+```sh
+sudo stat -c '%u:%g %a %n' \
+  /usr/local/lib/louiselm/launcher \
+  /usr/local/lib/louiselm/launcher/config.json \
+  /usr/local/lib/louiselm/launcher/keyring.json \
+  /usr/local/lib/louiselm/launcher/private \
+  /usr/local/lib/louiselm/launcher/private/keys \
+  /usr/local/lib/louiselm/launcher/private/scratch \
+  /usr/local/lib/louiselm/launcher/locks \
+  /etc/sudoers.d/louiselm-launch
+sudo find /usr/local/lib/louiselm/launcher/private/keys \
+  -mindepth 2 -maxdepth 2 -name key -exec stat -c '%u:%g %a %n' {} +
+```
+
+The expected modes are `0711` for `launcher`, `0444` for `keyring.json`,
+`0440` for the sudoers fragment, `0600` for `config.json` and private keys,
+and `0700` for all private and lock directories. The installer also records
+exactly one non-overlapping reservation under numeric owner `0` in each
+subordinate-ID ledger:
+
+```sh
+test "$(sudo awk -F: -v s="$uid_start" -v n="$slots" \
+  '$1 == "0" && $2 == s && $3 == n { c++ } END { print c + 0 }' \
+  /etc/subuid)" = 1
+test "$(sudo awk -F: -v s="$gid_start" -v n="$slots" \
+  '$1 == "0" && $2 == s && $3 == n { c++ } END { print c + 0 }' \
+  /etc/subgid)" = 1
+
+sudo awk -F: -v s="$uid_start" -v n="$slots" '
+  !($1 == "0" && $2 == s && $3 == n) && $2 < s + n && s < $2 + $3 { bad = 1 }
+  END { exit bad }
+' /etc/subuid
+sudo awk -F: -v s="$gid_start" -v n="$slots" '
+  !($1 == "0" && $2 == s && $3 == n) && $2 < s + n && s < $2 + $3 { bad = 1 }
+  END { exit bad }
+' /etc/subgid
+
+for uid in $(seq "$uid_start" "$((uid_start + slots - 1))"); do
+  ! /usr/bin/getent passwd "$uid" >/dev/null
+done
+for gid in $(seq "$gid_start" "$((gid_start + slots - 1))"); do
+  ! /usr/bin/getent group "$gid" >/dev/null
+done
+! awk -F: -v s="$gid_start" -v n="$slots" \
+  '$4 >= s && $4 < s + n { found = 1 } END { exit !found }' /etc/passwd
+```
+
+Validate the exact sudo boundary independently. The operator is pinned by
+numeric UID, the component by SHA-256, and the argument vector by the single
+literal `run` argument:
+
+```sh
+operator_uid=$(id -u "$operator")
+launcher_sha256=${launcher_digest#sha256:}
+sudo /usr/sbin/visudo -cf /etc/sudoers.d/louiselm-launch
+sudo grep -Fx "Defaults!$launcher fdexec=digest_only" \
+  /etc/sudoers.d/louiselm-launch
+sudo grep -Fx \
+  "#$operator_uid ALL=(root:root) NOPASSWD: NOSETENV: sha256:$launcher_sha256 $launcher run" \
+  /etc/sudoers.d/louiselm-launch
+```
+
+Prove reinstall and rotation are idempotent, and that rotation retains both
+public and private history without exposing private bytes to the operator:
+
+```sh
+old_key=$(jq -r .active_key_id /tmp/launcher-install.json)
+sudo "$skills" launcher install \
+  --operator "$operator" --uid-start "$uid_start" --gid-start "$gid_start" \
+  --slots "$slots" --robot-json > /tmp/launcher-reinstall.json
+test "$(jq -r .active_key_id /tmp/launcher-reinstall.json)" = "$old_key"
+
+rotation_id=vm-acceptance-1
+sudo "$skills" launcher rotate-key \
+  --rotation-id "$rotation_id" --expected-key-id "$old_key" \
+  --robot-json | tee /tmp/launcher-rotation.json
+new_key=$(jq -r .active_key_id /tmp/launcher-rotation.json)
+test "$new_key" != "$old_key"
+jq -e --arg new "$new_key" '.created == true and .key_id == $new' \
+  /tmp/launcher-rotation.json
+
+sudo "$skills" launcher rotate-key \
+  --rotation-id "$rotation_id" --expected-key-id "$old_key" \
+  --robot-json | jq -e --arg new "$new_key" \
+  '.created == false and .active_key_id == $new'
+sudo "$skills" launcher status --robot-json | tee /tmp/launcher-status.json
+jq -e --arg old "$old_key" --arg new "$new_key" '
+  .trusted == true and .active_key_id == $new and
+  (.retained_key_ids | index($old)) != null
+' /tmp/launcher-status.json
+sudo -u "$operator" test -r /usr/local/lib/louiselm/launcher/keyring.json
+! sudo -u "$operator" test -r /usr/local/lib/louiselm/launcher/private
+test "$(sudo find /usr/local/lib/louiselm/launcher/private/keys \
+  -mindepth 2 -maxdepth 2 -name key | wc -l)" -eq 2
+```
+
+#### Runtime acceptance (blocked on louiselm-d6fv.4.4)
+
+This slice installs the authority but has no production launcher binary, stdin
+entrypoint, or supervisor. Therefore receipt creation, live lease holding, and
+execution through sudo are deliberately **inert** here; do not report them as
+accepted for louiselm-d6fv.4.2. After louiselm-d6fv.4.4 supplies the runtime,
+submit one valid bounded request as the operator. This is the only privileged
+invocation the sudo rule may admit; there is no release-ID argument:
+
+```sh
+sudo -u "$operator" sudo -n \
+  /usr/local/lib/louiselm/current/bin/louiselm-launch run \
+  < /tmp/launch-request.json
+```
+
+Confirm that `run extra`, a copied launcher at a different path, the exact path
+after changing one byte, and a rule containing a different valid SHA-256 are all
+rejected by `sudo -n`. Roll the VM back after these destructive checks; do not
+repair an immutable release in place.
+
+Capture a receipt, rotate the launcher key once, and capture another receipt.
+The public keyring must retain both the active and retired public keys while no
+private key is readable by the operator. Verify each canonical payload against
+the public key selected by its `signing_key_id` and the fixed namespace:
+
+```sh
+key_id=$(jq -r .signing_key_id /tmp/receipt.payload)
+public_key=$(jq -r --arg key_id "$key_id" \
+  '.keys[] | select(.key_id == $key_id) | .public_key' \
+  /usr/local/lib/louiselm/launcher/keyring.json)
+test -n "$public_key"
+printf 'louiselm-launch %s\n' "$public_key" > /tmp/allowed-signers
+/usr/bin/ssh-keygen -Y verify -f /tmp/allowed-signers -I louiselm-launch \
+  -n louiselm.launch.receipt/1 -s /tmp/receipt.sig \
+  < /tmp/receipt.payload
+```
+
+Finally, hold identity slot *N* through one Session. A second acquisition of
+slot *N* must fail busy while an adjacent slot succeeds; after disposing the
+first Session, slot *N* must be acquirable again. This proves the persistent
+`locks/<slot>.lock` inode coordinates live leases rather than merely recording
+them.
+
 ## Gates
 
 ```sh

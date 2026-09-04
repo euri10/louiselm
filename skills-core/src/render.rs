@@ -350,6 +350,78 @@ pub fn install_status(status: &crate::install::InstallStatus) -> String {
     out
 }
 
+/// Renders privileged launcher authority as operator-facing text.
+pub fn launcher_status(status: &crate::launcher_install::LauncherStatus) -> String {
+    let mut out = String::new();
+    push(
+        &mut out,
+        &format!(
+            "Launcher authority: {}",
+            if status.trusted {
+                "trusted"
+            } else {
+                "NOT trusted"
+            }
+        ),
+    );
+    if let Some(config) = &status.config {
+        push(&mut out, &format!("  release     {}", config.release_id));
+        push(&mut out, &format!("  operator    {}", config.operator));
+        push(
+            &mut out,
+            &format!(
+                "  identities  {} slot(s), uid {}+, gid {}+",
+                config.pool.slots, config.pool.uid_start, config.pool.gid_start
+            ),
+        );
+    } else {
+        push(&mut out, "  configuration  none installed");
+    }
+    push(
+        &mut out,
+        &format!(
+            "  active key  {}",
+            status.active_key_id.as_deref().unwrap_or("none")
+        ),
+    );
+    push(
+        &mut out,
+        &format!(
+            "  retained    {}",
+            if status.retained_key_ids.is_empty() {
+                "none".to_owned()
+            } else {
+                status.retained_key_ids.join(", ")
+            }
+        ),
+    );
+    let occupied = status
+        .occupied_slots
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    push(
+        &mut out,
+        &format!(
+            "  occupied    {}",
+            if occupied.is_empty() {
+                "none"
+            } else {
+                &occupied
+            }
+        ),
+    );
+    for failure in &status.failures {
+        push(
+            &mut out,
+            &format!("Failure [{}]: {}", failure.code, failure.detail),
+        );
+        push(&mut out, &format!("  Next: {}", failure.next_action));
+    }
+    out
+}
+
 /// Renders one normalized Verified posture as operator-facing text.
 pub fn posture(posture: &Posture) -> String {
     let mut out = String::new();

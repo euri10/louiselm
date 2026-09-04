@@ -267,3 +267,63 @@ fn an_unknown_command_is_refused_rather_than_guessed() {
     assert_eq!(output.status, 1);
     assert!(output.stderr.contains("unknown command"));
 }
+
+#[test]
+fn launcher_status_has_a_robot_view() {
+    let fixture = Fixture::new();
+
+    let output = run(&fixture, &["launcher", "status", "--robot-json"]);
+    let human = run(&fixture, &["launcher", "status"]);
+
+    assert!(
+        matches!(output.status, 0 | 2),
+        "stderr was: {}",
+        output.stderr
+    );
+    let status: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("launcher status is JSON");
+    assert_eq!(status["schema"], "louiselm.launch.install.status/1");
+    assert!(status["trusted"].is_boolean());
+    assert!(human.stdout.contains("Launcher authority:"));
+    assert!(human.stdout.contains("active key"));
+}
+
+#[test]
+fn a_development_build_cannot_provision_launcher_authority() {
+    let fixture = Fixture::new();
+
+    let output = run(
+        &fixture,
+        &[
+            "launcher",
+            "install",
+            "--operator",
+            "louise",
+            "--uid-start",
+            "200000",
+            "--gid-start",
+            "300000",
+            "--slots",
+            "4",
+        ],
+    );
+
+    assert_eq!(output.status, 1);
+    assert!(
+        output.stderr.contains("current verified release"),
+        "stderr was: {}",
+        output.stderr
+    );
+}
+
+#[test]
+fn launcher_paths_cannot_be_redirected() {
+    let fixture = Fixture::new();
+    let output = run(
+        &fixture,
+        &["launcher", "status", "--prefix", "/tmp/launcher"],
+    );
+
+    assert_eq!(output.status, 1);
+    assert!(output.stderr.contains("paths are fixed"));
+}

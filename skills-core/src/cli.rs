@@ -24,6 +24,10 @@ use crate::{
     canonical::{Digest, DigestError},
     dossier::{Dossier, DossierError, DossierRequest, ReviewDepth},
     install::{self, InstallError},
+    launcher_install::{
+        self, IdentityPool, InstallRequest as LauncherInstallRequest, LauncherError, LauncherPaths,
+        RotationRequest, SystemCommandRunner,
+    },
     policy::{Policy, PolicyError},
     quarantine::{self, QuarantineError},
     release::{
@@ -83,6 +87,9 @@ pub enum CliError {
     /// An install operation failed.
     #[error(transparent)]
     Install(#[from] InstallError),
+    /// A launcher authority operation failed.
+    #[error(transparent)]
+    Launcher(#[from] LauncherError),
     /// A file named on the command line could not be read.
     #[error("cannot read '{path}': {source}")]
     Read {
@@ -138,6 +145,7 @@ pub fn run() -> Result<i32, CliError> {
         "generation" => generation(&options),
         "quarantine" => quarantine_command(&options),
         "release" => release_command(&options),
+        "launcher" => launcher_command(&options),
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
 }
@@ -160,6 +168,12 @@ struct Options {
     source: Option<PathBuf>,
     bundle: Option<PathBuf>,
     prefix: Option<PathBuf>,
+    operator: Option<String>,
+    uid_start: Option<u32>,
+    gid_start: Option<u32>,
+    slots: Option<u32>,
+    rotation_id: Option<String>,
+    expected_key_id: Option<String>,
     require_hardware: bool,
     confirm: bool,
     store: Option<PathBuf>,
@@ -194,6 +208,12 @@ impl Options {
             source: None,
             bundle: None,
             prefix: None,
+            operator: None,
+            uid_start: None,
+            gid_start: None,
+            slots: None,
+            rotation_id: None,
+            expected_key_id: None,
             require_hardware: false,
             confirm: false,
             store: None,
@@ -283,6 +303,30 @@ impl Options {
                 }
                 "--prefix" => {
                     parsed.prefix = Some(PathBuf::from(value("--prefix")?));
+                    index += 1;
+                }
+                "--operator" => {
+                    parsed.operator = Some(value("--operator")?);
+                    index += 1;
+                }
+                "--uid-start" => {
+                    parsed.uid_start = Some(parse_u32("--uid-start", &value("--uid-start")?)?);
+                    index += 1;
+                }
+                "--gid-start" => {
+                    parsed.gid_start = Some(parse_u32("--gid-start", &value("--gid-start")?)?);
+                    index += 1;
+                }
+                "--slots" => {
+                    parsed.slots = Some(parse_u32("--slots", &value("--slots")?)?);
+                    index += 1;
+                }
+                "--rotation-id" => {
+                    parsed.rotation_id = Some(value("--rotation-id")?);
+                    index += 1;
+                }
+                "--expected-key-id" => {
+                    parsed.expected_key_id = Some(value("--expected-key-id")?);
                     index += 1;
                 }
                 "--store" => {
@@ -413,6 +457,25 @@ impl Options {
         self.prefix
             .clone()
             .unwrap_or_else(|| PathBuf::from(install::DEFAULT_PREFIX))
+    }
+
+    fn launcher_install_request(&self) -> Result<LauncherInstallRequest, CliError> {
+        Ok(LauncherInstallRequest {
+            operator: required(&self.operator, "--operator")?.to_owned(),
+            pool: IdentityPool {
+                uid_start: *required(&self.uid_start, "--uid-start")?,
+                gid_start: *required(&self.gid_start, "--gid-start")?,
+                slots: *required(&self.slots, "--slots")?,
+            },
+        })
+    }
+
+    fn rotation_request(&self) -> Result<RotationRequest, CliError> {
+        Ok(RotationRequest {
+            rotation_id: required(&self.rotation_id, "--rotation-id")?.to_owned(),
+            expected_active_key_id: required(&self.expected_key_id, "--expected-key-id")?
+                .to_owned(),
+        })
     }
 
     fn signing_key(&self) -> Result<PathBuf, CliError> {
@@ -971,6 +1034,94 @@ fn release_command(options: &Options) -> Result<i32, CliError> {
     }
 }
 
+fn launcher_command(options: &Options) -> Result<i32, CliError> {
+    if options.prefix.is_some() {
+        return Err(CliError::Invalid(
+            "launcher paths are fixed; --prefix is not supported".to_owned(),
+        ));
+    }
+    if options.positional.len() != 1 {
+        return Err(CliError::Invalid(
+            "launcher accepts exactly one subcommand".to_owned(),
+        ));
+    }
+    let paths = LauncherPaths::system();
+    match options.subject("launcher")? {
+        "install" => {
+            let request = options.launcher_install_request()?;
+            require_verified_running_release(&paths)?;
+            let status =
+                launcher_install::install(&paths, &SystemCommandRunner, &request, now_ms())?;
+            report_launcher_status(options, &status)
+        }
+        "rotate-key" => {
+            let request = options.rotation_request()?;
+            require_verified_running_release(&paths)?;
+            let outcome =
+                launcher_install::rotate(&paths, &SystemCommandRunner, &request, now_ms())?;
+            report(options, &outcome, |outcome| {
+                format!(
+                    "launcher key {} ({})",
+                    outcome.key_id,
+                    if outcome.created {
+                        "rotated"
+                    } else {
+                        "already rotated"
+                    }
+                )
+            })
+        }
+        "status" => {
+            let status = launcher_install::status(&paths);
+            report_launcher_status(options, &status)
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown launcher command '{other}'"
+        ))),
+    }
+}
+
+fn require_verified_running_release(paths: &LauncherPaths) -> Result<(), CliError> {
+    let identity = release::running_identity();
+    if !identity.verified {
+        return Err(CliError::Invalid(format!(
+            "launcher authority requires the current verified release ({}): {}",
+            identity
+                .failure_code
+                .as_deref()
+                .unwrap_or("unverified_release"),
+            identity.detail
+        )));
+    }
+    let installed = install::load_state(&paths.release_prefix)?.ok_or_else(|| {
+        CliError::Invalid("the fixed launcher prefix has no current release".to_owned())
+    })?;
+    if identity.release_id.as_deref() != Some(installed.release_id.as_str()) {
+        return Err(CliError::Invalid(format!(
+            "running release {} does not match the fixed launcher's current release {}",
+            identity.release_id.as_deref().unwrap_or("unknown"),
+            installed.release_id
+        )));
+    }
+    Ok(())
+}
+
+fn report_launcher_status(
+    options: &Options,
+    status: &launcher_install::LauncherStatus,
+) -> Result<i32, CliError> {
+    if options.robot {
+        println!("{}", robot::payload(status)?);
+    } else {
+        println!("{}", render::launcher_status(status));
+    }
+    Ok(if status.trusted {
+        0
+    } else {
+        EXIT_NOT_ADMISSIBLE
+    })
+}
+
 fn report<T: Serialize>(
     options: &Options,
     value: &T,
@@ -988,6 +1139,18 @@ fn read_text(path: &Path) -> Result<String, CliError> {
     std::fs::read_to_string(path).map_err(|source| CliError::Read {
         path: path.display().to_string(),
         source,
+    })
+}
+
+fn required<'a, T>(value: &'a Option<T>, flag: &str) -> Result<&'a T, CliError> {
+    value
+        .as_ref()
+        .ok_or_else(|| CliError::Invalid(format!("{flag} is required")))
+}
+
+fn parse_u32(flag: &str, value: &str) -> Result<u32, CliError> {
+    value.parse().map_err(|_| {
+        CliError::Invalid(format!("{flag} must be an unsigned integer, not '{value}'"))
     })
 }
 
@@ -1050,6 +1213,12 @@ Trusted release:
   louiselm-skills release status [--prefix <dir>]
   louiselm-skills release identity
 
+Privileged launcher authority (install/rotation require current verified release):
+  louiselm-skills launcher install --operator <user> --uid-start <id>
+                                    --gid-start <id> --slots <count>
+  louiselm-skills launcher rotate-key --rotation-id <id> --expected-key-id <id>
+  louiselm-skills launcher status
+
 Emergency quarantine (narrows only; no token needed):
   louiselm-skills quarantine exclude <digest>... --reason <text>
   louiselm-skills quarantine all --reason <text>
@@ -1070,4 +1239,51 @@ Exit status:
   2  succeeded; the subject is NOT admissible (verification failed, a fatal finding,
      or no Skill Generation is in force)"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn launcher_install_options_are_explicit_and_numeric() {
+        let options = Options::parse(&arguments(&[
+            "install",
+            "--operator",
+            "louise",
+            "--uid-start",
+            "200000",
+            "--gid-start",
+            "300000",
+            "--slots",
+            "4",
+        ]))
+        .expect("launcher options parse");
+
+        let request = options.launcher_install_request().unwrap();
+        assert_eq!(request.operator, "louise");
+        assert_eq!(request.pool.uid_start, 200_000);
+        assert_eq!(request.pool.gid_start, 300_000);
+        assert_eq!(request.pool.slots, 4);
+
+        let error = Options::parse(&arguments(&["install", "--slots", "many"]))
+            .err()
+            .expect("non-numeric pool size is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("--slots must be an unsigned integer")
+        );
+    }
+
+    #[test]
+    fn a_development_build_cannot_install_launcher_authority() {
+        let error = require_verified_running_release(&LauncherPaths::system())
+            .expect_err("the test executable is not a current installed release");
+        assert!(error.to_string().contains("current verified release"));
+    }
 }
