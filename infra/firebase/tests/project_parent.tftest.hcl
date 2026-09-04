@@ -160,6 +160,21 @@ run "site_deploy_only_federation" {
   }
 }
 
+run "hosting_custom_domain" {
+  command = plan
+
+  assert {
+    condition = (
+      google_firebase_hosting_custom_domain.public.project == var.project_id &&
+      google_firebase_hosting_custom_domain.public.site_id == var.project_id &&
+      google_firebase_hosting_custom_domain.public.custom_domain == "louiselm.com" &&
+      !google_firebase_hosting_custom_domain.public.wait_dns_verification &&
+      google_firebase_hosting_custom_domain.public.deletion_policy == "PREVENT"
+    )
+    error_message = "The protected Firebase custom-domain association must target louiselm.com without blocking OpenTofu on external DNS propagation."
+  }
+}
+
 run "isolated_state_project" {
   command = plan
 
