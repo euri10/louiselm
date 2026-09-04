@@ -1309,7 +1309,6 @@ struct BubblewrapPreparedAgent {
     prepared: Option<PreparedSession>,
     backend_id: String,
     tree: ProcessTree,
-    observation: Arc<Mutex<Option<OuterProcessObservation>>>,
 }
 
 impl PreparedAgent for BubblewrapPreparedAgent {
@@ -1350,16 +1349,9 @@ impl PreparedAgent for BubblewrapPreparedAgent {
             .prepared
             .take()
             .expect("the real prepared Session remains owned");
-        let monitor_pid = prepared.monitor_pid();
-        let sandbox_leader_pid = prepared
-            .sandbox_leader_pid()
-            .ok_or(SupervisorError::IsolationRejected)?;
         let session = prepared.start().map_err(map_test_sandbox)?;
         Ok(Box::new(BubblewrapRunningAgent {
             session: Arc::new(Mutex::new(session)),
-            observation: Arc::clone(&self.observation),
-            monitor_pid,
-            sandbox_leader_pid,
         }))
     }
 
@@ -1375,9 +1367,6 @@ impl PreparedAgent for BubblewrapPreparedAgent {
 
 struct BubblewrapRunningAgent {
     session: Arc<Mutex<SandboxedSession>>,
-    observation: Arc<Mutex<Option<OuterProcessObservation>>>,
-    monitor_pid: u32,
-    sandbox_leader_pid: u32,
 }
 
 impl RunningAgent for BubblewrapRunningAgent {
@@ -1396,15 +1385,10 @@ impl RunningAgent for BubblewrapRunningAgent {
             )
         };
         let session = Arc::clone(&self.session);
-        let observation = Arc::clone(&self.observation);
-        let monitor_pid = self.monitor_pid;
-        let sandbox_leader_pid = self.sandbox_leader_pid;
         thread::Builder::new()
             .name("louiselm-test-agent-relay".to_owned())
             .spawn(move || {
                 let result: Result<i32, SupervisorError> = (|| {
-                    *lock(&observation) =
-                        Some(observe_sandbox_leader(sandbox_leader_pid, monitor_pid)?);
                     let error_worker = thread::Builder::new()
                         .name("louiselm-test-agent-stderr".to_owned())
                         .spawn(move || io::copy(&mut agent_error, &mut io::sink()))
@@ -1534,11 +1518,17 @@ impl LaunchPlatform for BubblewrapLaunchPlatform {
         let tree = prepared
             .process_tree()
             .ok_or(SupervisorError::IsolationRejected)?;
+        let sandbox_leader_pid = prepared
+            .sandbox_leader_pid()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        *lock(&self.observation) = Some(observe_sandbox_leader(
+            sandbox_leader_pid,
+            prepared.monitor_pid(),
+        )?);
         Ok(Box::new(BubblewrapPreparedAgent {
             prepared: Some(prepared),
             backend_id: self.backend_id.clone(),
             tree,
-            observation: Arc::clone(&self.observation),
         }))
     }
 }
