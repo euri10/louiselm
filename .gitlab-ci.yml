@@ -16,6 +16,7 @@ include:
 
 variables:
   # Public validation does not receive backend credentials or an ID token.
+  LOUISELM_PRODUCTION_READY: "false"
   TF_PROD_ENABLED: "true"
   TF_PROD_PLAN_ENABLED: "true"
   TF_PROD_APPLY_OPTS: "-refresh=false"
@@ -42,6 +43,8 @@ tf-plan-production:
     GCP_JWT:
       aud: "$CI_SERVER_URL"
   rules:
+    - if: '$LOUISELM_PRODUCTION_READY != "true"'
+      when: never
     - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       when: never
     - if: '$CI_COMMIT_REF_PROTECTED != "true"'
@@ -66,6 +69,8 @@ tf-production:
   dependencies:
     - tf-plan-production
   rules:
+    - if: '$LOUISELM_PRODUCTION_READY != "true"'
+      when: never
     - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       when: never
     - if: '$CI_COMMIT_REF_PROTECTED != "true"'
@@ -154,6 +159,8 @@ site-deploy:
       - firebase-deploy.json
   manual_confirmation: "Deploy this commit's reviewed public artifact to Firebase Hosting?"
   rules:
+    - if: '$LOUISELM_PRODUCTION_READY != "true"'
+      when: never
     - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       when: never
     - if: '$CI_COMMIT_REF_PROTECTED != "true"'
