@@ -50,11 +50,6 @@ output "hosting_default_url" {
   value       = google_firebase_hosting_site.public.default_url
 }
 
-output "hosting_custom_domain_dns_updates" {
-  description = "DNS changes Firebase requires before louiselm.com can serve the Hosting site."
-  value       = google_firebase_hosting_custom_domain.public.required_dns_updates
-}
-
 output "hosting_deployer_service_account_email" {
   description = "Site-production GitLab deploy service account email."
   value       = google_service_account.hosting_deployer.email
