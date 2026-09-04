@@ -106,6 +106,20 @@ resource "google_firebase_hosting_site" "public" {
   ]
 }
 
+resource "google_firebase_hosting_custom_domain" "public" {
+  provider = google-beta
+
+  project               = google_project.notifications.project_id
+  site_id               = google_firebase_hosting_site.public.site_id
+  custom_domain         = "louiselm.com"
+  wait_dns_verification = false
+  deletion_policy       = "PREVENT"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "google_apikeys_key" "android" {
   provider = google-beta
 
