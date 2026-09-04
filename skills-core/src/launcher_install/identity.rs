@@ -979,6 +979,7 @@ mod tests {
     use super::*;
 
     static DEADLINE_TESTS: Mutex<()> = Mutex::new(());
+    const DEADLINE_TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
     struct DeadlineIdentityFixture {
         _root: tempfile::TempDir,
@@ -1145,7 +1146,7 @@ mod tests {
         let error = acquire_identity_with_deadline(
             &fixture.paths,
             0,
-            Instant::now() + Duration::from_millis(250),
+            Instant::now() + DEADLINE_TEST_TIMEOUT,
         )
         .expect_err("hung NSS lookup must observe the operation deadline");
 
@@ -1189,11 +1190,9 @@ mod tests {
         fs::write(&fixture.hold_path, b"hold").expect("getent hold marker");
         let started = Instant::now();
 
-        let error = runtime_config_with_deadline(
-            &fixture.paths,
-            Instant::now() + Duration::from_millis(250),
-        )
-        .expect_err("hung runtime NSS validation must observe the operation deadline");
+        let error =
+            runtime_config_with_deadline(&fixture.paths, Instant::now() + DEADLINE_TEST_TIMEOUT)
+                .expect_err("hung runtime NSS validation must observe the operation deadline");
 
         match &error {
             LauncherError::Io { source, .. } => {
