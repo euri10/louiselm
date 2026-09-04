@@ -6,12 +6,15 @@ locals {
     "cloudbilling.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "fcm.googleapis.com",
+    "fcmregistrations.googleapis.com",
     "firebase.googleapis.com",
     "firebasehosting.googleapis.com",
     "firebaseinstallations.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "logging.googleapis.com",
     "serviceusage.googleapis.com",
+    "sts.googleapis.com",
   ])
 }
 
@@ -37,6 +40,8 @@ resource "google_project" "notifications" {
 resource "google_project_iam_audit_config" "notifications" {
   project = google_project.notifications.project_id
   service = "allServices"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
@@ -113,7 +118,15 @@ resource "google_apikeys_key" "android" {
     }
 
     api_targets {
-      service = "fcm.googleapis.com"
+      service = "fcmregistrations.googleapis.com"
+    }
+
+    api_targets {
+      service = "firebaseinstallations.googleapis.com"
+    }
+
+    api_targets {
+      service = "logging.googleapis.com"
     }
   }
 
@@ -151,6 +164,8 @@ resource "google_service_account" "sender" {
   display_name    = "LouiseLM FCM sender"
   deletion_policy = "PREVENT"
 
+  depends_on = [google_project_service.required]
+
   lifecycle {
     prevent_destroy = true
   }
@@ -164,6 +179,8 @@ resource "google_project_iam_custom_role" "sender" {
   permissions     = ["cloudmessaging.messages.create"]
   stage           = "GA"
   deletion_policy = "PREVENT"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
@@ -183,6 +200,8 @@ resource "google_iam_workload_identity_pool" "gitlab" {
   description               = "Keyless protected-main CI access for LouiseLM infrastructure."
   disabled                  = false
   deletion_policy           = "PREVENT"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
@@ -219,6 +238,8 @@ resource "google_service_account" "ci" {
   account_id      = "louiselm-infra-ci"
   display_name    = "LouiseLM infrastructure CI"
   deletion_policy = "PREVENT"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
@@ -257,6 +278,8 @@ resource "google_service_account" "hosting_deployer" {
   account_id      = "louiselm-hosting-deployer"
   display_name    = "LouiseLM Firebase Hosting deployer"
   deletion_policy = "PREVENT"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
