@@ -87,10 +87,13 @@ GCP_OIDC_ACCOUNT  = tofu output -raw ci_service_account_email
 GCP_HOSTING_OIDC_ACCOUNT = tofu output -raw hosting_deployer_service_account_email
 ```
 
-Set the remaining `LOUISELM_*`, `GITLAB_OIDC_ISSUER_URL`, `GITLAB_WIF_POOL_ID`,
-and `GITLAB_WIF_PROVIDER_ID` variables as protected project variables, along
-with the `TF_VAR_*` infrastructure inputs. Omit both parent variables for a
-parentless project; otherwise set at most one of protected `TF_VAR_org_id` and
+Set protected project variables for the required root inputs:
+`TF_VAR_project_id`, `TF_VAR_billing_account_id`,
+`TF_VAR_android_sha1_fingerprint`, and `TF_VAR_gitlab_issuer_url`. CI derives
+`TF_VAR_gitlab_project_id` and `TF_VAR_gitlab_default_branch` from GitLab; the
+other inputs keep their documented defaults unless an operator deliberately
+overrides them with another `TF_VAR_*` variable. Omit both parent variables for
+a parentless project; otherwise set at most one of protected `TF_VAR_org_id` and
 `TF_VAR_folder_id`. Scope `GCP_HOSTING_OIDC_ACCOUNT` to the `site-production`
 environment when the GitLab tier supports environment-scoped variables. Do not
 add a Google key: production jobs write a short-lived external-account ADC file
