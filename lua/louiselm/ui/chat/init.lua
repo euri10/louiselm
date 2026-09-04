@@ -24,6 +24,8 @@ local nvim = vim
 ---@field skill_catalog? string Hidden catalog held for the first accepted model prompt in a new inject session.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
+---@field markdown_highlighting? boolean Whether chat buffers start Markdown tree-sitter highlighting; defaults to true.
+---@field start_insert_on_switch? boolean Whether switching to a chat starts Insert mode; defaults to true.
 
 ---@class louiselm.ui.ChatView
 ---@field session louiselm.session.Session Attached session.
@@ -96,6 +98,8 @@ local nvim = vim
 ---@field initial_contexts louiselm.ui.ContextItem[] Context queued for every new session.
 ---@field skill_catalog? string Hidden catalog copied only into brand-new inject sessions.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
+---@field markdown_highlighting boolean Whether chat buffers start Markdown tree-sitter highlighting.
+---@field start_insert_on_switch boolean Whether switching to a chat starts Insert mode.
 ---@field attention louiselm.ui.Attention Shared durable Attention controller.
 ---@field diff louiselm.ui.Diff File-edit review UI.
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
@@ -2758,6 +2762,8 @@ function M.new(api, options)
         and key ~= "skill_catalog"
         and key ~= "instructions_context"
         and key ~= "workflow"
+        and key ~= "markdown_highlighting"
+        and key ~= "start_insert_on_switch"
       then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
@@ -2783,6 +2789,14 @@ function M.new(api, options)
   if skill_catalog ~= nil and (type(skill_catalog) ~= "string" or skill_catalog == "") then
     return nil, "chat skill catalog must be a non-empty string"
   end
+  local markdown_highlighting = options == nil or options.markdown_highlighting ~= false
+  if options ~= nil and options.markdown_highlighting ~= nil and type(options.markdown_highlighting) ~= "boolean" then
+    return nil, "chat markdown_highlighting must be a boolean"
+  end
+  local start_insert_on_switch = options == nil or options.start_insert_on_switch ~= false
+  if options ~= nil and options.start_insert_on_switch ~= nil and type(options.start_insert_on_switch) ~= "boolean" then
+    return nil, "chat start_insert_on_switch must be a boolean"
+  end
   local instructions_contexts, instructions_context_error =
     copy_initial_contexts(options and options.instructions_context and { options.instructions_context } or nil)
   if instructions_contexts == nil then
@@ -2802,6 +2816,8 @@ function M.new(api, options)
     initial_contexts = initial_contexts,
     skill_catalog = skill_catalog,
     instructions_context = instructions_contexts[1],
+    markdown_highlighting = markdown_highlighting,
+    start_insert_on_switch = start_insert_on_switch,
     workflow = options and options.workflow,
     attention = Attention.new(),
     usage = usage,
@@ -3022,7 +3038,9 @@ local function attach_session(self, session, event_relay)
   -- decoupled from `filetype`, so this buffer opts back into only what it
   -- actually wants.
   nvim.api.nvim_set_option_value("filetype", "louiselm-session", { buf = buffer })
-  nvim.treesitter.start(buffer, "markdown")
+  if self.markdown_highlighting then
+    nvim.treesitter.start(buffer, "markdown")
+  end
   local header = session_header(state)
   local initial_lines = nvim.list_extend(header, { "", "> " })
   nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, initial_lines)
@@ -3606,7 +3624,7 @@ function Chat:switch(session_id)
   view.window = nvim.api.nvim_get_current_win()
   nvim.api.nvim_set_current_buf(view.buffer)
   nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
-  if #nvim.api.nvim_list_uis() > 0 then
+  if self.start_insert_on_switch and #nvim.api.nvim_list_uis() > 0 then
     nvim.cmd.startinsert()
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
   end

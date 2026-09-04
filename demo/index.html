@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>LouiseLM Interactive Demo</title>
+    <link rel="stylesheet" href="demo.css" />
+  </head>
+  <body>
+    <main class="demo-shell">
+      <section class="demo-guide" aria-labelledby="demo-title">
+        <div class="topline">
+          <p id="demo-eyebrow" class="eyebrow">Experimental browser demo</p>
+          <div class="language-switch" aria-label="Guide language">
+            <button type="button" data-language="en" aria-pressed="true">EN</button>
+            <button type="button" data-language="zh-CN" aria-pressed="false">简体中文</button>
+          </div>
+        </div>
+        <h1 id="demo-title" class="title">LouiseLM Interactive Demo</h1>
+        <p id="demo-summary" class="summary">
+          Real Neovim and LouiseLM, running locally in this tab. The guided
+          Agent behavior is scripted.
+        </p>
+        <section class="profile-choice" aria-labelledby="profile-title">
+          <h2 id="profile-title">Choose the Neovim experience</h2>
+          <div class="options">
+            <button id="profile-enhanced" type="button" data-profile="enhanced" aria-pressed="true">
+              <strong id="profile-enhanced-title">Enhanced</strong>
+              <span id="profile-enhanced-body">Searchable Snacks pickers and which-key hints. Preselected.</span>
+            </button>
+            <button id="profile-core" type="button" data-profile="core" aria-pressed="false">
+              <strong id="profile-core-title">Core</strong>
+              <span id="profile-core-body">LouiseLM with Neovim’s native numbered selectors.</span>
+            </button>
+          </div>
+          <p id="profile-note" class="note">Snacks and which-key are pinned, self-hosted demo extras—not LouiseLM dependencies. Changing profile restarts the tour.</p>
+        </section>
+        <div id="demo-disclosure" class="disclosure-box" role="note">
+          Scripted demo—no Agent or Provider connected.
+        </div>
+        <section id="guide-step" class="guide-step" aria-live="polite" aria-labelledby="step-title">
+          <p id="step-progress" class="progress">Step 1 of 10 · about 7 minutes</p>
+          <h2 id="step-title" class="title">Ask about the bug</h2>
+          <p id="step-body" class="body">A disposable Lua project is already attached to this Session.</p>
+          <p id="step-action" class="action">Focus Neovim, press i, type anything about the bug, then press Enter.</p>
+          <p id="step-check" class="check">Waiting for the real diff review…</p>
+        </section>
+        <div class="guide-actions">
+          <button id="type-action" class="action-button -primary" type="button">Type it for me</button>
+          <button id="skip-step" class="action-button" type="button">Skip</button>
+          <button id="reset-demo" class="action-button" type="button">Reset</button>
+        </div>
+        <section id="completion-panel" class="completion-panel" hidden aria-live="polite">
+          <h2 id="completion-title">You completed the LouiseLM tour</h2>
+          <p id="completion-body">You used real Session, permission, Resume, limit, and Handoff UI—without installing anything.</p>
+          <a id="completion-install-link" class="action-button -primary" href="/docs/onboarding/">Install LouiseLM locally</a>
+          <button id="replay-demo" class="action-button" type="button">Replay from the start</button>
+          <button id="replay-other-profile" class="action-button" type="button">Replay in Core</button>
+        </section>
+        <p class="status-banner" aria-live="polite">
+          <span id="status-label" class="label">Status</span>
+          <span id="demo-status" class="value">Preparing browser runtime…</span>
+        </p>
+        <section id="fallback-panel" class="fallback-panel" hidden>
+          <h2 id="fallback-title">Read the static tour</h2>
+          <p id="fallback-body">The interactive demo needs a desktop browser, cross-origin isolation, and a physical keyboard.</p>
+          <ol id="fallback-list">
+            <li>Prompt a named Agent Session with attached editor context.</li>
+            <li>Review and accept or reject a proposed file edit.</li>
+            <li>Resume, switch, inspect limits, and review a Handoff.</li>
+          </ol>
+          <p><a id="fallback-install-link" class="action-button -primary" href="/docs/onboarding/">Install LouiseLM locally</a></p>
+          <p><a id="tutor-link" href="/docs/tutorial/">Open the static Tutor</a></p>
+        </section>
+      </section>
+
+      <section class="editor-panel" aria-labelledby="editor-title">
+        <div class="bar">
+          <h2 id="editor-title" class="title">Neovim</h2>
+          <span class="runtime-state"><span id="mode"></span><span id="status" class="status">Booting…</span></span>
+        </div>
+        <div id="grid" class="grid" tabindex="0" aria-label="Neovim editor"></div>
+      </section>
+    </main>
+
+    <noscript>This interactive demo requires JavaScript. Read the <a href="/docs/tutorial/">static Tutor</a> instead.</noscript>
+    <script src="bootstrap.js"></script>
+  </body>
+</html>

@@ -17,6 +17,7 @@ public_markdown_sources=(
 	"$source_root/TRADEMARK_POLICY.md"
 	"$source_root/doc/api.md"
 	"$source_root/docs/example-workflow.md"
+	"$source_root/docs/demo-promotion.md"
 	"$source_root/docs/index.md"
 	"$source_root/docs/onboarding.md"
 	"$source_root/docs/tutorial.md"
@@ -41,7 +42,7 @@ while IFS= read -r -d '' path; do
 	esac
 done < <(find "$artifact" -mindepth 1 -type d -print0)
 
-for route in index.html docs/index.html blog/index.html; do
+for route in index.html docs/index.html blog/index.html demo/index.html; do
 	if [ ! -f "$artifact/$route" ]; then
 		reject "missing /${route%index.html} route ($route)"
 	fi
@@ -74,7 +75,7 @@ while IFS= read -r -d '' path; do
 	# known public source basenames and require byte identity with one of the
 	# curated source files. MyST flattens source paths here, so names alone
 	# cannot distinguish a public page from a linked private document.
-	if [[ "$relative" =~ ^build/(README|CONTRIBUTING|POLITICAL_STATEMENT|TRADEMARK_POLICY|api|blog|example-workflow|index|onboarding|tutorial)-[[:xdigit:]]{32}\.md$ ]]; then
+	if [[ "$relative" =~ ^build/(README|CONTRIBUTING|POLITICAL_STATEMENT|TRADEMARK_POLICY|api|blog|demo-promotion|example-workflow|index|onboarding|tutorial)-[[:xdigit:]]{32}\.md$ ]]; then
 		matched=0
 		for source in "${public_markdown_sources[@]}"; do
 			if [ -f "$source" ] && cmp -s "$path" "$source"; then
@@ -106,8 +107,12 @@ while IFS= read -r -d '' path; do
 		continue
 	fi
 
+	case "$relative" in
+	demo/runtime/nvim.data | demo/runtime/nvim.wasm) continue ;;
+	esac
+
 	case "$lower" in
-	*.avif | *.css | *.eot | *.gif | *.html | *.ico | *.inv | *.jpeg | *.jpg | *.js | *.json | *.map | *.mjs | *.otf | *.png | *.svg | *.ttf | *.txt | *.wasm | *.webmanifest | *.webp | *.woff | *.woff2 | *.xml | *.xsl) ;;
+	*.avif | *.css | *.eot | *.gif | *.html | *.ico | *.inv | *.jpeg | *.jpg | *.js | *.json | *.map | *.mjs | *.otf | *.png | *.svg | *.ttf | *.txt | *.webmanifest | *.webp | *.woff | *.woff2 | *.xml | *.xsl) ;;
 	*) reject "file type is not allowlisted: $relative" ;;
 	esac
 done < <(find "$artifact" -type f -print0)

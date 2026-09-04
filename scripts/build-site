@@ -18,6 +18,8 @@ command -v myst >/dev/null 2>&1 || {
 	myst build --html --strict --ci
 )
 
+node "$script_dir/build-demo.mjs" "$repo_root" "$repo_root/_build/html"
+
 # MyST renders static pages by requesting its temporary localhost server and
 # preserves that request origin in generated metadata. Static apex hosting has
 # no BASE_URL, so replace only those generated origin fields after rendering.

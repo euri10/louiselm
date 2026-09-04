@@ -8,6 +8,9 @@ Start with the [Tutor](tutorial.md) or the complete
 [onboarding guide](onboarding.md). The generated [API appendix](../doc/api.md)
 documents the headless Session API and public Lua types.
 
+Maintainers use the [Interactive Demo promotion
+checklist](demo-promotion.md) before publishing pinned browser assets.
+
 The [example workflow](example-workflow.md),
 [contribution policy](../CONTRIBUTING.md),
 [political statement](../POLITICAL_STATEMENT.md), and

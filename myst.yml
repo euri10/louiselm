@@ -12,12 +12,14 @@ project:
     - capture-service/**
     - infra/**
     - skills-core/**
+    - demo/**
   toc:
     - file: README.md
     - file: docs/index.md
       children:
         - file: docs/tutorial.md
         - file: docs/onboarding.md
+        - file: docs/demo-promotion.md
         - file: docs/example-workflow.md
         - file: doc/api.md
         - file: CONTRIBUTING.md

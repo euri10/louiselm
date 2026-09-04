@@ -265,6 +265,9 @@ local function ensure_connection(self)
 end
 
 enqueue = function(self, action)
+  if self.disposed then
+    return
+  end
   self.queue[#self.queue + 1] = action
   ensure_connection(self)
 end
@@ -414,6 +417,9 @@ end
 ---@param self louiselm.ui.Attention
 ---@param session_id string Agent-side Session identifier.
 function Attention:seen(session_id)
+  if self.disposed then
+    return
+  end
   local entries = {}
   for _, entry in pairs(self.entries) do
     if entry.session_id == session_id and entry.kind == "turn_ready" then
@@ -481,6 +487,9 @@ end
 ---@param session_id string Agent-side Session identifier.
 ---@param request_id string|number ACP request identifier.
 function Attention:permission_resolved(session_id, request_id)
+  if self.disposed then
+    return
+  end
   clear_entries(self, function(entry)
     return entry.kind == "permission_required"
       and entry.session_id == session_id
@@ -493,7 +502,7 @@ end
 ---@param session_id string Agent-side Session identifier.
 ---@param request_ids table ACP request identifiers.
 function Attention:permission_cancelled(session_id, request_ids)
-  if type(request_ids) ~= "table" then
+  if self.disposed or type(request_ids) ~= "table" then
     return
   end
   local cancelled = {}
@@ -571,6 +580,9 @@ end
 ---@param self louiselm.ui.Attention
 ---@param run_id string Durable Run UUID.
 function Attention:run_resumed(run_id)
+  if self.disposed then
+    return
+  end
   clear_entries(self, function(entry)
     return entry.kind == "run_parked" and entry.key.subject_id == run_id
   end)
@@ -681,6 +693,9 @@ end
 ---@param self louiselm.ui.Attention
 ---@param session_id string Agent-side Session identifier.
 function Attention:session_disposed(session_id)
+  if self.disposed then
+    return
+  end
   clear_entries(self, function(entry)
     return entry.session_id == session_id and (entry.kind == "session_failed" or entry.kind == "permission_required")
   end)
@@ -710,6 +725,7 @@ function Attention:dispose()
   nvim.api.nvim_del_augroup_by_id(self.autocmd_group)
   self.pending = {}
   self.queue = {}
+  self.entries = {}
   if self.client ~= nil then
     self.client:dispose()
   end

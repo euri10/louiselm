@@ -3,6 +3,9 @@ local AttentionClient = require("louiselm.workflow.attention_client")
 local RunClient = require("louiselm.workflow.run_client")
 local Attention = require("louiselm.ui.attention")
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 local T = MiniTest.new_set()
 
 T["emits unseen turns only after inactivity and clears when seen"] = function()
@@ -145,6 +148,7 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
     return true
   end
   local connected
+  local connections = 0
   ---@diagnostic disable-next-line: duplicate-set-field
   RunClient.read_operator_capability = function(_, callback)
     callback("capability", nil)
@@ -152,6 +156,7 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   end
   ---@diagnostic disable-next-line: duplicate-set-field
   AttentionClient.connect = function(_, on_snapshot)
+    connections = connections + 1
     connected = on_snapshot
     return fake
   end
@@ -258,10 +263,35 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
     callback()
   end
   MiniTest.expect.equality(fake.eligibilities, {})
+  local counts = {
+    upserts = #fake.upserts,
+    clears = #fake.clears,
+    clear_session_kinds = #fake.clear_session_kinds,
+    queue = #attention.queue,
+    entries = nvim.tbl_count(attention.entries),
+  }
+  attention:turn_done({ status = "ready", acp_session_id = "session-2", agent = "codex", current_turn = 1 }, false)
+  attention:seen("session-2")
+  attention:prompt_started("session-2")
+  attention:permission_required({ acp_session_id = "session-2", current_turn = 1 }, { request_id = 1 })
+  attention:permission_resolved("session-2", 1)
+  attention:permission_cancelled("session-2", { 1 })
+  attention:session_failed({ acp_session_id = "session-2", current_turn = 1 })
+  attention:run_parked("11111111-2222-4333-8444-555555555555")
+  attention:run_resumed("11111111-2222-4333-8444-555555555555")
+  attention:session_disposed("session-1")
+  attention:activity()
   accepted, validation_error = attention:skill_unverified(unverified, "witness_missing")
   MiniTest.expect.equality(accepted, false)
   MiniTest.expect.equality(validation_error, "Attention controller is disposed")
-  MiniTest.expect.equality(#fake.upserts, 5)
+  MiniTest.expect.equality(connections, 1)
+  MiniTest.expect.equality({
+    upserts = #fake.upserts,
+    clears = #fake.clears,
+    clear_session_kinds = #fake.clear_session_kinds,
+    queue = #attention.queue,
+    entries = nvim.tbl_count(attention.entries),
+  }, counts)
   RunClient.read_operator_capability = original_read
   AttentionClient.connect = original_connect
 end

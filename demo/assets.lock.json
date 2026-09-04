@@ -1,0 +1,41 @@
+{
+  "neovim": {
+    "version": "v0.13.0-dev-1511+g5209695703",
+    "commit": "5209695703db4096923c203f235d78aec0cbdec8",
+    "asset_id": 543842099,
+    "url": "https://api.github.com/repos/neovim/neovim/releases/assets/543842099",
+    "sha256": "9c0fa6c5639e8893b327129b6fea4abeda0397d4f0657b706d8fd7023b3c3271",
+    "license": "Apache-2.0",
+    "license_url": "https://raw.githubusercontent.com/neovim/neovim/5209695703db4096923c203f235d78aec0cbdec8/LICENSE.txt",
+    "license_sha256": "de23202ef9a51f5e654034190539739a4abece5505f2ce75e780791106707011"
+  },
+  "msgpackr": {
+    "version": "2.1.0",
+    "url": "https://registry.npmjs.org/msgpackr/-/msgpackr-2.1.0.tgz",
+    "sha256": "58a5558a1c7f79495872c08d85088c1a8be44d777772a0039288cb22a5a86bb8",
+    "license": "MIT",
+    "browser_path": "package/dist/index.js",
+    "license_path": "package/LICENSE",
+    "license_sha256": "d00470775464c789c7ac04cfba3bf1b79ef149790eb72556d1c51d8f50c8e7f3"
+  },
+  "snacks": {
+    "version": "v2.31.0",
+    "commit": "e6fd58c82f2f3fcddd3fe81703d47d6d48fc7b9f",
+    "url": "https://codeload.github.com/folke/snacks.nvim/tar.gz/e6fd58c82f2f3fcddd3fe81703d47d6d48fc7b9f",
+    "sha256": "171fa47c5751d07d1e5b2fbde24327e9a94bf84e2ca400601f8ec39699de6cd5",
+    "license": "Apache-2.0",
+    "archive_prefix": "snacks.nvim-e6fd58c82f2f3fcddd3fe81703d47d6d48fc7b9f",
+    "license_path": "snacks.nvim-e6fd58c82f2f3fcddd3fe81703d47d6d48fc7b9f/LICENSE",
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "which_key": {
+    "version": "v3.17.0",
+    "commit": "fcbf4eea17cb299c02557d576f0d568878e354a4",
+    "url": "https://codeload.github.com/folke/which-key.nvim/tar.gz/fcbf4eea17cb299c02557d576f0d568878e354a4",
+    "sha256": "6059cef541dd8d13abb19d6465a76bf447ca23b9b5f17dbbf5a4c251852b9941",
+    "license": "Apache-2.0",
+    "archive_prefix": "which-key.nvim-fcbf4eea17cb299c02557d576f0d568878e354a4",
+    "license_path": "which-key.nvim-fcbf4eea17cb299c02557d576f0d568878e354a4/LICENSE",
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
+}

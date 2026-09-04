@@ -5,6 +5,11 @@ LouiseLM does not install Agents or create credentials for you. Choose an
 Agent, install it using its own documentation, authenticate it, then point
 LouiseLM at the executable.
 
+If you want to explore Sessions, permission review, Resume, limits, and
+Handoff before installing anything, [try LouiseLM in your
+browser](https://louiselm.com/demo/). Its Agent behavior is scripted and no
+Provider is connected.
+
 The shortest path is Codex. The included quickstart tracks LouiseLM `main`, so
 it is intended for this alpha project's current onboarding flow.
 

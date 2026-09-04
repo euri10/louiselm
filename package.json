@@ -2,7 +2,8 @@
   "name": "louiselm-site",
   "private": true,
   "scripts": {
-    "site:build": "./scripts/build-site"
+    "site:build": "./scripts/build-site",
+    "site:test": "node ./scripts/test-demo-config.mjs && ./scripts/test-public-artifact.sh"
   },
   "devDependencies": {
     "mystmd": "1.10.1"

@@ -5,6 +5,10 @@
 **LouiseLM Organizes Unruled Intelligent Systems into Emancipated Language
 Meshes.**
 
+**[Try LouiseLM in your browser](/demo/)** — no installation, Agent, Provider,
+credentials, or project files required. The guided Agent behavior is clearly
+labelled and scripted; the Neovim and LouiseLM UI are real.
+
 > LouiseLM turns ideas into reality.
 
 Ideas arrive wild and unordered. LouiseLM gives them enough structure to become

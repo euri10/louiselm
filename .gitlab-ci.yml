@@ -161,7 +161,7 @@ site-build:
     HOST: "127.0.0.1"
   script:
     - npm ci
-    - ./scripts/test-public-artifact.sh
+    - npm run site:test
     - npm run site:build
   artifacts:
     name: "Public site $CI_COMMIT_SHA"

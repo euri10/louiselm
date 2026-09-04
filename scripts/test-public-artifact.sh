@@ -11,11 +11,14 @@ trap cleanup EXIT
 make_safe_artifact() {
 	local root=$1
 	local source=$2
-	mkdir -p "$root/docs" "$root/blog" "$root/build"
+	mkdir -p "$root/docs" "$root/blog" "$root/build" "$root/demo/runtime"
 	mkdir -p "$source/docs"
 	: >"$root/index.html"
 	: >"$root/docs/index.html"
 	: >"$root/blog/index.html"
+	: >"$root/demo/index.html"
+	: >"$root/demo/runtime/nvim.data"
+	: >"$root/demo/runtime/nvim.wasm"
 	: >"$root/build/site.js"
 	: >"$root/build/tutorial-0123456789abcdef0123456789abcdef.md"
 	: >"$root/build/LICENSE-0123456789abcdef0123456789abcdef"
@@ -42,6 +45,10 @@ for forbidden in \
 	"build/AGENTS-0123456789abcdef0123456789abcdef.md" \
 	"build/private-0123456789abcdef0123456789abcdef.md" \
 	"build/nested/source.md" \
+	"demo/runtime/private.data" \
+	"demo/runtime/private.wasm" \
+	"outside-demo.data" \
+	"outside-demo.wasm" \
 	"unexpected.exe"; do
 	unsafe="$work_dir/unsafe"
 	unsafe_source="$work_dir/unsafe-source"

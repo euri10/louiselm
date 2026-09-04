@@ -194,6 +194,7 @@ end
 local original_schedule = nvim.schedule
 local original_select = nvim.ui.select
 local original_input = nvim.ui.input
+local original_treesitter_start = nvim.treesitter.start
 
 T["chat"] = MiniTest.new_set({
   hooks = {
@@ -202,6 +203,7 @@ T["chat"] = MiniTest.new_set({
       rawset(nvim, "schedule", original_schedule)
       nvim.ui.select = original_select
       nvim.ui.input = original_input
+      nvim.treesitter.start = original_treesitter_start
       nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
         if nvim.api.nvim_buf_is_valid(buffer) and nvim.api.nvim_buf_get_name(buffer):match("^louiselm://") then
@@ -211,6 +213,20 @@ T["chat"] = MiniTest.new_set({
     end,
   },
 })
+
+T["chat"]["can attach without starting Markdown tree-sitter"] = function()
+  local started = false
+  nvim.treesitter.start = function()
+    started = true
+  end
+  local session = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  assert(chat:attach(session))
+  nvim.treesitter.start = original_treesitter_start
+
+  MiniTest.expect.equality(started, false)
+  chat:dispose()
+end
 
 T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   local session = fake_session("park-session", "codex")

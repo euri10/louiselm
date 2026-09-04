@@ -3,6 +3,10 @@
 Welcome. LouiseLM gives you a chat inside Neovim and lets an Agent work with
 the files in your project. This short tour teaches the core loop.
 
+Want to feel the interaction before configuring an Agent? [Try LouiseLM in
+your browser](https://louiselm.com/demo/). It runs real Neovim and LouiseLM
+against a clearly disclosed scripted demo; no Agent or Provider is connected.
+
 ## 1. Start here
 
 You are reading the Tutor inside Neovim. The file is read-only so the shipped
