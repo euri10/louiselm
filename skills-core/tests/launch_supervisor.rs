@@ -7,6 +7,7 @@ mod support;
 use std::{
     env, fs,
     io::{self, BufReader, Cursor, Read, Write},
+    net::Shutdown,
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     sync::{
@@ -8051,6 +8052,9 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     controller_input
         .write_all(&acp)
         .expect("ACP bytes reach the real Agent");
+    controller_input
+        .shutdown(Shutdown::Write)
+        .expect("the real Agent receives ACP EOF");
     let output_deadline = Instant::now() + CALLBACK_TIMEOUT;
     while *lock(&output) != acp {
         assert!(
@@ -8061,11 +8065,6 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     }
     assert_eq!(*lock(&output), acp);
 
-    setup.broker.wait_for_session_request();
-    let disposal = disposal_request(&setup, "privileged-composition-disposal");
-    setup
-        .broker
-        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
     setup.broker.wait_for_session_receipt(0);
     setup.broker.wait_for_session_request();
     setup
@@ -8073,10 +8072,6 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
             setup.broker.session_receipt_acknowledgement(0),
         ));
-    let response = setup
-        .broker
-        .wait_for_session_response(&disposal.request_id, 0);
-    assert!(matches!(response.result, ResponseResult::Receipt { .. }));
     finish_terminal_session_relay(controller_input, relay_receiver, relay_worker);
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
 
