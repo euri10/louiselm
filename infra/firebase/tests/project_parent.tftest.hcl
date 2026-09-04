@@ -70,3 +70,41 @@ run "wif_requires_branch_ref" {
     error_message = "GitLab federation must distinguish the protected main branch from a protected tag with the same short ref."
   }
 }
+
+run "fcm_client_api_key_allowlist" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for service in [
+        "fcm.googleapis.com",
+        "fcmregistrations.googleapis.com",
+        "firebase.googleapis.com",
+        "firebaseinstallations.googleapis.com",
+        "logging.googleapis.com",
+      ] : contains(local.required_services, service)
+    ])
+    error_message = "The project must enable the server send API and every client API required by Firebase Cloud Messaging."
+  }
+
+  assert {
+    condition = toset([
+      for target in google_apikeys_key.android.restrictions[0].api_targets : target.service
+      ]) == toset([
+      "fcmregistrations.googleapis.com",
+      "firebase.googleapis.com",
+      "firebaseinstallations.googleapis.com",
+      "logging.googleapis.com",
+    ])
+    error_message = "The Android API key must allow exactly the Firebase client APIs required by Cloud Messaging."
+  }
+}
+
+run "wif_required_services" {
+  command = plan
+
+  assert {
+    condition     = contains(local.required_services, "sts.googleapis.com")
+    error_message = "Workload identity federation requires the Security Token Service API."
+  }
+}

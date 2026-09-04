@@ -69,7 +69,9 @@ project and its data.
 ## Protected GitLab CI
 
 `.gitlab-ci.yml` includes to-be-continuous Terraform and its Google Cloud
-variant at `9.4.0`. Production plan and apply run only on protected `main`, use
+variant at `9.4.0`. Production plan, apply, and site deployment are omitted
+until the protected `LOUISELM_PRODUCTION_READY` variable is explicitly set to
+`true` after bootstrap. They then run only on protected `main`, use
 GitLab-managed HTTP state, and receive a short-lived OIDC token only in those
 jobs. The Developer-only plan artifact expires after one day and includes the
 binary plan consumed by the blocking manual apply. Branches and merge requests
@@ -94,24 +96,30 @@ Set protected project variables for the required root inputs:
 other inputs keep their documented defaults unless an operator deliberately
 overrides them with another `TF_VAR_*` variable. Omit both parent variables for
 a parentless project; otherwise set at most one of protected `TF_VAR_org_id` and
-`TF_VAR_folder_id`. Scope `GCP_HOSTING_OIDC_ACCOUNT` to the `site-production`
-environment when the GitLab tier supports environment-scoped variables. Do not
-add a Google key: production jobs write a short-lived external-account ADC file
-from their job ID token. The `production` environment may impersonate only the
-infrastructure account; `site-production` may impersonate only the Hosting
-deployer. Never commit state, plans, credentials, Android configuration, or a
-Firebase CLI token.
+`TF_VAR_folder_id`. Cancel any older pending or manual production jobs, then
+set protected `LOUISELM_PRODUCTION_READY=true` only after all seven input/output
+variables are installed; this enables the next protected-main plan and the
+manual apply/deploy jobs. GitLab evaluates this gate when it creates a pipeline,
+so changing the variable does not disable jobs in an existing pipeline. Scope
+`GCP_HOSTING_OIDC_ACCOUNT` to the `site-production` environment when the GitLab
+tier supports environment-scoped variables. Do not add a Google key: production
+jobs write a short-lived external-account ADC file from their job ID token. The
+`production` environment may impersonate only the infrastructure account;
+`site-production` may impersonate only the Hosting deployer. Never commit state,
+plans, credentials, Android configuration, or a Firebase CLI token.
 
 The Hosting deployer receives Firebase's supported predefined deployment pair:
 `roles/firebasehosting.admin` and `roles/serviceusage.apiKeysViewer`. It cannot
 administer project IAM or FCM, but Hosting Admin covers every Hosting site in
 this project and API Keys Viewer can read the restricted Android client key.
 
-For federation failures, verify the issuer's trailing slash, the job audience
-without a trailing slash, the numeric project ID, protected branch, GitLab
-environment claim, and `roles/iam.workloadIdentityUser` binding. Recovery
-disables the CI variables and uses operator ADC for a reviewed plan. Rollback
-is a reviewed exact plan; never destroy the deletion-protected project.
+For federation failures, set `LOUISELM_PRODUCTION_READY=false` first and cancel
+existing pending or manual production jobs. Then verify the issuer's trailing
+slash, the job audience without a trailing slash, the numeric project ID,
+protected branch, GitLab environment claim, and
+`roles/iam.workloadIdentityUser` binding. Recovery uses operator ADC for a
+reviewed plan. Rollback is a reviewed exact plan; never destroy the
+deletion-protected project.
 
 After the Hosting site and deployer exist, a protected-main pipeline exposes a
 manual `site-deploy` job. It deploys only the checked `_build/html` artifact and
