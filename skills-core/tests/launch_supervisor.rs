@@ -8033,16 +8033,51 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
 
     let acp = b"composite ACP bytes\n".to_vec();
     let output = Arc::new(Mutex::new(Vec::new()));
-    assert_eq!(
-        session
-            .relay_stdio(
-                Box::new(Cursor::new(acp.clone())),
-                Box::new(SharedWriter(Arc::clone(&output))),
-            )
-            .expect("the deterministic fake Agent relays and exits"),
-        0,
-    );
+    let (mut controller_input, supervisor_input) =
+        UnixStream::pair().expect("privileged relay socket pair opens");
+    let worker_output = Arc::clone(&output);
+    let (relay_sender, relay_receiver) = mpsc::sync_channel(1);
+    let relay_worker = thread::Builder::new()
+        .name("privileged-launch-relay".to_owned())
+        .spawn(move || {
+            relay_sender
+                .send(session.relay_stdio(
+                    Box::new(supervisor_input),
+                    Box::new(SharedWriter(worker_output)),
+                ))
+                .expect("test receives privileged relay completion");
+        })
+        .expect("privileged relay worker starts");
+    controller_input
+        .write_all(&acp)
+        .expect("ACP bytes reach the real Agent");
+    let output_deadline = Instant::now() + CALLBACK_TIMEOUT;
+    while *lock(&output) != acp {
+        assert!(
+            Instant::now() < output_deadline,
+            "the real Agent never echoed the ACP bytes",
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(*lock(&output), acp);
+
+    setup.broker.wait_for_session_request();
+    let disposal = disposal_request(&setup, "privileged-composition-disposal");
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
+    setup.broker.wait_for_session_receipt(0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    let response = setup
+        .broker
+        .wait_for_session_response(&disposal.request_id, 0);
+    assert!(matches!(response.result, ResponseResult::Receipt { .. }));
+    finish_terminal_session_relay(controller_input, relay_receiver, relay_worker);
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
 
     let observed = lock(&observation)
