@@ -6,6 +6,7 @@ include:
       gitlab-backend-disabled: true
       fmt-enabled: true
       validate-enabled: true
+      tflint-image: ghcr.io/terraform-linters/tflint@sha256:1c595f42d794c32c45a6ea8b58655fd66433d4ca3b1bc631c574a48d120bd19f
       prod-enabled: false
       prod-plan-enabled: false
 
@@ -25,6 +26,28 @@ tf-validate:
 
 tf-tflint:
   id_tokens: null
+  variables:
+    TFLINT_GOOGLE_VERSION: "0.39.0"
+    TFLINT_GOOGLE_SHA256: "e5034d2c25c2ed94b131897904614ea8b575fb1fc7a0619b14a874d8cb9adec1"
+  before_script:
+    - !reference [.tf-base, before_script]
+    - |
+      test "$(uname -m)" = "x86_64"
+      plugin="$TFLINT_PLUGIN_DIR/tflint-ruleset-google"
+      if [ ! -x "$plugin" ]; then
+        mkdir -p "$TFLINT_PLUGIN_DIR"
+        archive="$(mktemp)"
+        wget -qO "$archive" "https://github.com/terraform-linters/tflint-ruleset-google/releases/download/v${TFLINT_GOOGLE_VERSION}/tflint-ruleset-google_linux_amd64.zip"
+        printf '%s  %s\n' "$TFLINT_GOOGLE_SHA256" "$archive" | sha256sum -c -
+        unzip -p "$archive" tflint-ruleset-google > "$plugin"
+        chmod 0755 "$plugin"
+        find "$archive" -maxdepth 0 -type f -delete
+      fi
+  script:
+    - mkdir -p -m 777 reports
+    - tflint --init
+    - tflint --format=junit $TF_TFLINT_ARGS > reports/tflint.xunit.xml || true
+    - TFLINT_LOG=${TRACE+debug} tflint $TF_TFLINT_ARGS
   rules:
     - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
 
