@@ -160,10 +160,13 @@ glab api 'projects/163/jobs?per_page=100' --paginate | jq -e '
 ' >/dev/null
 ```
 
-Use the prepared `bartab-dns-20260802` quota project only for bootstrap and the
-first apply. Every bootstrap `gcloud` command names it explicitly; the final
-Policy Troubleshooter checks instead bill the state project where that API is
-enabled. Do not change the default project or persist either choice in ADC.
+Use the prepared `bartab-dns-20260802` quota project only for bootstrap commands
+and the GCS backend. Every bootstrap `gcloud` command names it explicitly. The
+`google-beta` provider separately pins Firebase API quota to `louiselm`; this
+prevents the ambient ADC quota project from charging Firebase Management calls
+to the unrelated DNS project during plan/apply. The final Policy Troubleshooter
+checks instead bill the state project where that API is enabled. Do not change
+the default project or persist any of these choices in ADC.
 
 ```bash
 quota_project=bartab-dns-20260802
