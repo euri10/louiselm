@@ -1389,16 +1389,23 @@ impl RunningAgent for BubblewrapRunningAgent {
             .name("louiselm-test-agent-relay".to_owned())
             .spawn(move || {
                 let result: Result<i32, SupervisorError> = (|| {
+                    let input_worker = thread::Builder::new()
+                        .name("louiselm-test-agent-stdin".to_owned())
+                        .spawn(move || {
+                            io::copy(&mut input, &mut agent_input).and_then(|_| agent_input.flush())
+                        })
+                        .map_err(|_| SupervisorError::RelayFailed)?;
                     let error_worker = thread::Builder::new()
                         .name("louiselm-test-agent-stderr".to_owned())
                         .spawn(move || io::copy(&mut agent_error, &mut io::sink()))
                         .map_err(|_| SupervisorError::RelayFailed)?;
-                    io::copy(&mut input, &mut agent_input)?;
-                    agent_input.flush()?;
-                    drop(agent_input);
                     io::copy(&mut agent_output, &mut output)?;
                     output.flush()?;
                     let exit = lock(&session).wait().map_err(map_test_sandbox)?;
+                    input_worker
+                        .join()
+                        .map_err(|_| SupervisorError::RelayFailed)?
+                        .map_err(|_| SupervisorError::RelayFailed)?;
                     error_worker
                         .join()
                         .map_err(|_| SupervisorError::RelayFailed)?
@@ -8025,9 +8032,6 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     controller_input
         .write_all(&acp)
         .expect("ACP bytes reach the real Agent");
-    controller_input
-        .shutdown(Shutdown::Write)
-        .expect("the real Agent receives ACP EOF");
     let output_deadline = Instant::now() + CALLBACK_TIMEOUT;
     while *lock(&output) != acp {
         assert!(
@@ -8037,6 +8041,9 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(*lock(&output), acp);
+    controller_input
+        .shutdown(Shutdown::Write)
+        .expect("the real Agent receives ACP EOF");
 
     setup.broker.wait_for_session_receipt(0);
     setup.broker.wait_for_session_request();
