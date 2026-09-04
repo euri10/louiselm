@@ -14,9 +14,14 @@ use std::{
 };
 
 use louiselm_skills::{
+    canonical::Digest,
     launch_protocol::{
         self, ErrorCode, PROTOCOL_VERSION, ProtocolError, ProtocolMessage, ProtocolResponse,
         RESPONSE_SCHEMA, ResponseResult, STATUS_REQUEST_SCHEMA, StatusRequest,
+    },
+    launch_receipt::{
+        Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptError, ReceiptOutcome,
+        ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
     },
     launch_transport::{
         AuthenticatedPacket, CredentialPin, KernelCredentials, LauncherPacket, MAX_PACKET_BYTES,
@@ -79,6 +84,49 @@ fn response(request_id: &str) -> ProtocolResponse {
         result: ResponseResult::Error {
             error: ProtocolError::new(ErrorCode::BrokerUnavailable, None, None),
         },
+    }
+}
+
+fn digest(label: &str) -> String {
+    Digest::of(label.as_bytes()).to_string()
+}
+
+fn signed_receipt() -> SignedReceipt {
+    let launch_digest = digest("launch-request");
+    let payload = ReceiptPayload {
+        schema: RECEIPT_SCHEMA.to_owned(),
+        session_id: "session-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        request_id: "launch-1".to_owned(),
+        envelope_revision: 1,
+        sequence: 0,
+        previous_receipt_digest: None,
+        release_id: digest("release"),
+        signing_key_id: digest("launcher-key"),
+        outcome: ReceiptOutcome::Launch {
+            authorization: Authorization {
+                authorization_id: "authorization-1".to_owned(),
+                request_id: "launch-1".to_owned(),
+                request_digest: launch_digest.clone(),
+            },
+            evidence: Box::new(LaunchEvidence {
+                launch_request_digest: launch_digest,
+                runtime_measurement_digest: digest("runtime"),
+                skill_generation_id: digest("generation"),
+                session_input_manifest_id: digest("input"),
+                isolation_contract: "louiselm.isolation/1".to_owned(),
+                isolation_backend_id: "bubblewrap-0_12".to_owned(),
+                kernel_identity: "linux-6_18".to_owned(),
+                isolation_evidence_digest: digest("isolation"),
+                capability_channel_ids: vec!["acp".to_owned()],
+            }),
+        },
+        resulting_state: SessionState::Starting,
+    };
+    SignedReceipt {
+        schema: SIGNED_RECEIPT_SCHEMA.to_owned(),
+        signature: digest("signature"),
+        payload,
     }
 }
 
@@ -255,6 +303,53 @@ fn seqpacket_preserves_one_message_per_packet_in_both_protocol_directions() {
         ErrorCode::MalformedMessage,
     );
     assert!(hostile.server.is_closed());
+}
+
+#[test]
+fn signed_receipt_packet_preserves_exact_canonical_bytes() {
+    let pair = connected_pair(process_pin());
+    let receipt = signed_receipt();
+    let bytes = receipt.canonical_bytes();
+
+    send_packet(&pair.client, bytes.clone()).expect("signed receipt sends");
+    let received = receive_packet(&pair.server).expect("signed receipt arrives");
+    assert_eq!(received.bytes, bytes);
+    assert_eq!(received.packet, LauncherPacket::SignedReceipt(receipt));
+
+    let hostile = raw_connection(process_pin());
+    let mut non_canonical = signed_receipt().canonical_bytes();
+    non_canonical.push(b'\n');
+    raw_send(&hostile.peer, &non_canonical);
+    assert!(matches!(
+        receive_packet(&hostile.server).expect_err("non-canonical receipt is rejected"),
+        TransportError::Receipt(ReceiptError::NonCanonical)
+    ));
+    assert!(hostile.server.is_closed());
+}
+
+#[test]
+fn bound_listener_rejects_connections_until_enabled() {
+    let directory = TempDir::new().expect("temporary rendezvous directory");
+    let path = path_in(&directory);
+    let disabled = SeqpacketListener::bind_disabled(&path).expect("listener binds disabled");
+    let connector = SeqpacketConnector::new().expect("connector starts");
+
+    assert!(matches!(
+        wait(connected(&connector, &path, process_pin())),
+        Err(TransportError::ConnectFailed)
+    ));
+
+    let listener = disabled.enable().expect("listener is enabled");
+    let accept_result = accepted(&listener, process_pin());
+    let client = wait(connected(&connector, &path, process_pin())).expect("client connects");
+    let server = wait(accept_result).expect("server accepts only after enable");
+    let bytes = status_bytes("after-enable");
+    send_packet(&client, bytes.clone()).expect("post-enable packet sends");
+    assert_request(
+        receive_packet(&server).expect("post-enable packet arrives"),
+        &bytes,
+        "after-enable",
+    );
 }
 
 #[test]

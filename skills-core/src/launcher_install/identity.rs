@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::{CStr, OsString},
     fs::{self, File, OpenOptions, TryLockError},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Mutex, atomic::Ordering},
@@ -20,6 +20,12 @@ use super::{
 const SUBID_OWNER: &str = "0";
 const MAX_IDENTITY_SLOTS: u32 = 4096;
 static IDENTITY_VALIDATION: Mutex<()> = Mutex::new(());
+const POISON_MARKER: &[u8] = b"louiselm.identity.cleanup-unproven/1\n";
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_NEXT_RELEASE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// One fixed contiguous pool from which Session identities are leased.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,11 +87,15 @@ pub struct Identity {
     pub gid: u32,
 }
 
-/// An exclusive identity lease. Dropping it releases the slot.
+/// An exclusive identity lease.
+///
+/// Acquisition durably marks the slot unsafe to reuse. Call [`Self::release`]
+/// only after the owning process tree is proved empty; dropping or poisoning
+/// the lease deliberately leaves that marker behind.
 #[derive(Debug)]
 pub struct IdentityLease {
     identity: Identity,
-    _lock: File,
+    lock: File,
 }
 
 impl IdentityLease {
@@ -93,6 +103,59 @@ impl IdentityLease {
     pub fn identity(&self) -> Identity {
         self.identity
     }
+
+    /// Releases this slot after its process tree is proved empty.
+    pub fn release(mut self) -> Result<(), LauncherError> {
+        let released = self
+            .lock
+            .set_len(0)
+            .and_then(|()| self.lock.seek(SeekFrom::Start(0)))
+            .map(|_| ())
+            .and_then(|()| sync_released_lock(&self.lock));
+        if let Err(source) = released {
+            return self.fail_release(io_error("identity lock", source));
+        }
+        if let Err(source) = self.lock.unlock() {
+            return self.fail_release(io_error("identity lock", source));
+        }
+        Ok(())
+    }
+
+    fn fail_release(mut self, error: LauncherError) -> Result<(), LauncherError> {
+        if mark_active(&mut self.lock).is_err() {
+            // Neither a durable empty marker nor a durable poison marker was
+            // established. Retain the kernel lock so this process cannot hand
+            // the identity to another Session under ambiguous state.
+            std::mem::forget(self);
+        } else {
+            // A forked child may share this open file description until exec.
+            // Unlock explicitly so its inherited descriptor cannot extend the
+            // lease after the durable marker has settled the slot's authority.
+            let _ = self.lock.unlock();
+        }
+        Err(error)
+    }
+
+    /// Permanently withholds this slot after process-tree cleanup could not be
+    /// proved.
+    ///
+    /// Repair requires an operator to prove the old tree gone and truncate the
+    /// root-owned lock file; ordinary install and acquisition never clear it.
+    pub fn poison(self) -> Result<(), LauncherError> {
+        // Acquisition already wrote and fsynced the fail-closed marker. The
+        // important action here is *not* clearing it before unlocking.
+        self.lock
+            .unlock()
+            .map_err(|source| io_error("identity lock", source))
+    }
+}
+
+fn sync_released_lock(file: &File) -> io::Result<()> {
+    #[cfg(test)]
+    if FAIL_NEXT_RELEASE_SYNC.with(|failure| failure.replace(false)) {
+        return Err(io::Error::other("injected identity release sync failure"));
+    }
+    file.sync_all()
 }
 
 #[derive(Default)]
@@ -345,6 +408,14 @@ fn require_system_files(paths: &LauncherPaths) -> Result<(), LauncherError> {
 }
 
 pub(super) fn acquire(paths: &LauncherPaths, slot: u32) -> Result<IdentityLease, LauncherError> {
+    acquire_with_runner(paths, slot, &SystemCommandRunner)
+}
+
+pub(super) fn acquire_with_runner(
+    paths: &LauncherPaths,
+    slot: u32,
+    runner: &impl CommandRunner,
+) -> Result<IdentityLease, LauncherError> {
     super::validate_paths(paths)?;
     require_system_config(paths)?;
     let config: LauncherConfig = read_required_json(&paths.config())?;
@@ -363,16 +434,46 @@ pub(super) fn acquire(paths: &LauncherPaths, slot: u32) -> Result<IdentityLease,
     let _subuid_lock = ShadowLock::acquire(&paths.subuid)?;
     let _subgid_lock = ShadowLock::acquire(&paths.subgid)?;
     let accounts = read_accounts(paths)?;
-    validate_identity_authority(paths, &SystemCommandRunner, &config.pool, &accounts, true)?;
+    validate_identity_authority(paths, runner, &config.pool, &accounts, true)?;
     let path = paths.locks().join(format!("{slot}.lock"));
-    let file = open_existing_regular(&path, *paths == LauncherPaths::system())?;
+    let mut file = open_existing_regular(&path, *paths == LauncherPaths::system())?;
     match file.try_lock() {
-        Ok(()) => Ok(IdentityLease {
-            identity,
-            _lock: file,
-        }),
+        Ok(()) => {
+            require_unpoisoned(&mut file, slot)?;
+            mark_active(&mut file)?;
+            Ok(IdentityLease {
+                identity,
+                lock: file,
+            })
+        }
         Err(TryLockError::WouldBlock) => Err(LauncherError::Occupied { slot }),
         Err(TryLockError::Error(source)) => Err(io_error("identity lock", source)),
+    }
+}
+
+fn mark_active(file: &mut File) -> Result<(), LauncherError> {
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.write_all(POISON_MARKER))
+        .and_then(|()| file.set_len(POISON_MARKER.len() as u64))
+        .and_then(|()| file.sync_all())
+        .map_err(|source| io_error("identity lock", source))
+}
+
+fn require_unpoisoned(file: &mut File, slot: u32) -> Result<(), LauncherError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| io_error("identity lock", source))?;
+    let mut marker = Vec::new();
+    file.take((POISON_MARKER.len() + 1) as u64)
+        .read_to_end(&mut marker)
+        .map_err(|source| io_error("identity lock", source))?;
+    if marker.is_empty() {
+        Ok(())
+    } else if marker == POISON_MARKER {
+        Err(LauncherError::Poisoned { slot })
+    } else {
+        Err(LauncherError::Invalid(
+            "identity lock contains an unknown persistent marker".to_owned(),
+        ))
     }
 }
 
@@ -695,15 +796,20 @@ pub(super) fn occupied_slots(
     let mut occupied = Vec::new();
     for slot in 0..slots {
         let path = paths.locks().join(format!("{slot}.lock"));
-        match open_existing_regular(&path, *paths == LauncherPaths::system()).and_then(|file| {
-            match file.try_lock() {
-                Ok(()) => Ok(false),
+        match open_existing_regular(&path, *paths == LauncherPaths::system()).and_then(
+            |mut file| match file.try_lock() {
+                Ok(()) => require_unpoisoned(&mut file, slot).map(|()| false),
                 Err(TryLockError::WouldBlock) => Ok(true),
                 Err(TryLockError::Error(source)) => Err(io_error("identity lock", source)),
-            }
-        }) {
+            },
+        ) {
             Ok(true) => occupied.push(slot),
             Ok(false) => {}
+            Err(LauncherError::Poisoned { slot }) => failures.push(failure(
+                "identity_slot_poisoned",
+                format!("Identity slot {slot} is withheld after unproven process cleanup."),
+                "Prove the old process tree gone, then clear the slot marker as root.",
+            )),
             Err(error) => failures.push(failure(
                 "identity_lock_unreadable",
                 error.to_string(),
@@ -847,5 +953,343 @@ pub(super) fn check_secure_tool(path: &Path, failures: &mut Vec<LauncherFailure>
             ));
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        os::unix::fs::{PermissionsExt, symlink},
+        time::{Duration, Instant},
+    };
+
+    use crate::{
+        Digest,
+        install::{InstalledState, STATE_SCHEMA as RELEASE_STATE_SCHEMA},
+        release::{
+            Component, MANIFEST_SCHEMA, PolicyIdentity, ReleaseManifest, SourceIdentity,
+            ToolchainIdentity,
+        },
+    };
+
+    use super::super::{
+        CONFIG_SCHEMA, acquire_identity, acquire_identity_with_deadline,
+        runtime_config_with_deadline,
+    };
+    use super::*;
+
+    static DEADLINE_TESTS: Mutex<()> = Mutex::new(());
+
+    struct DeadlineIdentityFixture {
+        _root: tempfile::TempDir,
+        paths: LauncherPaths,
+        hold_path: PathBuf,
+        pid_path: PathBuf,
+    }
+
+    impl DeadlineIdentityFixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("temporary launcher root");
+            let root_path = root.path();
+            let release_prefix = root_path.join("release");
+            let paths = LauncherPaths {
+                state_root: release_prefix.join("launcher"),
+                release_prefix,
+                sudoers: root_path.join("sudoers"),
+                subuid: root_path.join("subuid"),
+                subgid: root_path.join("subgid"),
+                passwd: root_path.join("passwd"),
+                group: root_path.join("group"),
+                nsswitch: root_path.join("nsswitch"),
+                ssh_keygen: root_path.join("ssh-keygen"),
+                getent: root_path.join("getent"),
+                visudo: root_path.join("visudo"),
+                bwrap: PathBuf::from("/usr/bin/true"),
+                broker_socket: root_path.join("control.sock"),
+            };
+            fs::create_dir_all(paths.state_root.join("locks")).expect("launcher locks directory");
+            fs::write(&paths.subuid, "0:200000:1\n").expect("subuid fixture");
+            fs::write(&paths.subgid, "0:300000:1\n").expect("subgid fixture");
+            fs::write(
+                &paths.passwd,
+                "root:x:0:0:root:/root:/bin/sh\nlouise:x:1000:1000::/home/louise:/bin/sh\n",
+            )
+            .expect("passwd fixture");
+            fs::write(&paths.group, "root:x:0:\nlouise:x:1000:\n").expect("group fixture");
+            fs::write(
+                &paths.nsswitch,
+                "passwd: files\ngroup: files\nsubid: files\n",
+            )
+            .expect("nsswitch fixture");
+            fs::write(
+                &paths.getent,
+                "#!/bin/sh\nif [ -e \"$0.hold\" ]; then printf '%s\\n' \"$$\" > \"$0.pid\"; exec /usr/bin/sleep 60; fi\nexit 2\n",
+            )
+            .expect("getent fixture");
+            fs::set_permissions(&paths.getent, fs::Permissions::from_mode(0o755))
+                .expect("getent fixture mode");
+
+            let launcher = b"measured launcher\n";
+            let launcher_digest = Digest::of(launcher).to_string();
+            let mut manifest = ReleaseManifest {
+                schema: MANIFEST_SCHEMA.to_owned(),
+                release_id: String::new(),
+                version: "0.1.0".to_owned(),
+                built_at_ms: 1,
+                source: SourceIdentity {
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+                    clean: true,
+                    describe: "test".to_owned(),
+                    dependencies_digest: Digest::of(b"Cargo.lock").to_string(),
+                },
+                toolchain: ToolchainIdentity {
+                    rustc: "1.97.1".to_owned(),
+                    cargo: "1.97.1".to_owned(),
+                    target: "x86_64-linux".to_owned(),
+                },
+                policy: PolicyIdentity {
+                    version: "1".to_owned(),
+                    digest: Digest::of(b"policy").to_string(),
+                },
+                schemas: Vec::new(),
+                components: vec![Component {
+                    name: "louiselm-launch".to_owned(),
+                    path: "bin/louiselm-launch".to_owned(),
+                    sha256: Digest::of(launcher).hex().to_owned(),
+                    size: launcher.len() as u64,
+                    executable: true,
+                }],
+            };
+            manifest.release_id = manifest.digest().to_string();
+            let release_root = paths
+                .release_prefix
+                .join("releases")
+                .join(&manifest.release_id);
+            fs::create_dir_all(release_root.join("bin")).expect("release directory");
+            let launcher_path = release_root.join("bin/louiselm-launch");
+            fs::write(&launcher_path, launcher).expect("launcher fixture");
+            fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o555))
+                .expect("launcher fixture mode");
+            fs::write(
+                release_root.join("manifest.json"),
+                serde_json::to_vec(&manifest).expect("manifest serializes"),
+            )
+            .expect("manifest fixture");
+            symlink(
+                Path::new("releases").join(&manifest.release_id),
+                paths.release_prefix.join("current"),
+            )
+            .expect("current release link");
+            fs::write(
+                paths.release_prefix.join("state.json"),
+                serde_json::to_vec(&InstalledState {
+                    schema: RELEASE_STATE_SCHEMA.to_owned(),
+                    release_id: manifest.release_id.clone(),
+                    built_at_ms: manifest.built_at_ms,
+                    installed_at_ms: 2,
+                    source_commit: manifest.source.commit.clone(),
+                    policy_version: manifest.policy.version.clone(),
+                })
+                .expect("installed state serializes"),
+            )
+            .expect("installed state fixture");
+            fs::write(
+                paths.state_root.join("config.json"),
+                serde_json::to_vec(&LauncherConfig {
+                    schema: CONFIG_SCHEMA.to_owned(),
+                    operator: "louise".to_owned(),
+                    operator_uid: 1_000,
+                    broker_uid: 1_500,
+                    broker_gid: 1_500,
+                    broker_socket_path: paths.broker_socket.clone(),
+                    release_id: manifest.release_id,
+                    launcher_digest,
+                    launcher_path: paths.launcher(),
+                    ssh_keygen_path: paths.ssh_keygen.clone(),
+                    ssh_keygen_digest: Digest::of(b"ssh-keygen").to_string(),
+                    getent_path: paths.getent.clone(),
+                    getent_digest: hash_file(&paths.getent, "getent")
+                        .expect("getent fixture is readable")
+                        .to_string(),
+                    bwrap_path: paths.bwrap.clone(),
+                    bwrap_digest: hash_file(&paths.bwrap, "bubblewrap")
+                        .expect("bubblewrap fixture is readable")
+                        .to_string(),
+                    pool: IdentityPool {
+                        uid_start: 200_000,
+                        gid_start: 300_000,
+                        slots: 1,
+                    },
+                })
+                .expect("launcher config serializes"),
+            )
+            .expect("launcher config fixture");
+            ensure_slot_files(&paths, 1).expect("identity slot fixture");
+
+            Self {
+                hold_path: paths.getent.with_extension("hold"),
+                pid_path: paths.getent.with_extension("pid"),
+                _root: root,
+                paths,
+            }
+        }
+    }
+
+    #[test]
+    fn identity_deadline_reaps_getent_without_acquiring_or_poisoning_the_slot() {
+        let _serial = DEADLINE_TESTS.lock().expect("deadline test lock");
+        let fixture = DeadlineIdentityFixture::new();
+        fs::write(&fixture.hold_path, b"hold").expect("getent hold marker");
+        let started = Instant::now();
+
+        let error = acquire_identity_with_deadline(
+            &fixture.paths,
+            0,
+            Instant::now() + Duration::from_millis(250),
+        )
+        .expect_err("hung NSS lookup must observe the operation deadline");
+
+        match &error {
+            LauncherError::Io { source, .. } => {
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut)
+            }
+            _ => panic!("deadline must remain an I/O timeout: {error}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let pid = fs::read_to_string(&fixture.pid_path)
+            .expect("getent helper records its pid")
+            .trim()
+            .parse::<i32>()
+            .expect("getent helper records a numeric pid");
+        let pid = rustix::process::Pid::from_raw(pid).expect("getent helper has a positive pid");
+        assert_eq!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH),
+            "the deadline must reap the held getent helper before returning"
+        );
+        assert_eq!(
+            fs::metadata(fixture.paths.locks().join("0.lock"))
+                .expect("identity lock remains")
+                .len(),
+            0,
+            "NSS failure must happen before the slot is marked active"
+        );
+
+        fs::remove_file(&fixture.hold_path).expect("getent hold marker is removable");
+        acquire_identity(&fixture.paths, 0)
+            .expect("the failed bounded lookup left the slot reusable")
+            .release()
+            .expect("reacquired slot releases cleanly");
+    }
+
+    #[test]
+    fn runtime_config_deadline_reaps_held_getent_validation() {
+        let _serial = DEADLINE_TESTS.lock().expect("deadline test lock");
+        let fixture = DeadlineIdentityFixture::new();
+        fs::write(&fixture.hold_path, b"hold").expect("getent hold marker");
+        let started = Instant::now();
+
+        let error = runtime_config_with_deadline(
+            &fixture.paths,
+            Instant::now() + Duration::from_millis(250),
+        )
+        .expect_err("hung runtime NSS validation must observe the operation deadline");
+
+        match &error {
+            LauncherError::Io { source, .. } => {
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut)
+            }
+            _ => panic!("deadline must remain an I/O timeout: {error}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let pid = fs::read_to_string(&fixture.pid_path)
+            .expect("getent helper records its pid")
+            .trim()
+            .parse::<i32>()
+            .expect("getent helper records a numeric pid");
+        let pid = rustix::process::Pid::from_raw(pid).expect("getent helper has a positive pid");
+        assert_eq!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH),
+            "runtime validation must reap the held getent helper before returning"
+        );
+    }
+
+    #[test]
+    fn successful_release_unlocks_a_fork_equivalent_descriptor() {
+        let directory = tempfile::tempdir().expect("temporary identity directory");
+        let path = directory.path().join("6.lock");
+        let mut lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .expect("identity lock");
+        mark_active(&mut lock).expect("initial poison marker");
+        lock.try_lock().expect("exclusive lease");
+        let lease = IdentityLease {
+            identity: Identity {
+                slot: 6,
+                uid: 200_006,
+                gid: 200_006,
+            },
+            lock,
+        };
+        let _inherited_lock = lease
+            .lock
+            .try_clone()
+            .expect("a fork-equivalent descriptor can inherit the lease");
+
+        lease.release().expect("clean lease release");
+
+        let mut reopened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("reopened identity lock");
+        reopened.try_lock().expect("released lease unlocked");
+        require_unpoisoned(&mut reopened, 6).expect("clean release cleared the poison marker");
+    }
+
+    #[test]
+    fn release_sync_failure_keeps_the_slot_poisoned_after_unlock() {
+        let directory = tempfile::tempdir().expect("temporary identity directory");
+        let path = directory.path().join("7.lock");
+        let mut lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .expect("identity lock");
+        mark_active(&mut lock).expect("initial poison marker");
+        lock.try_lock().expect("exclusive lease");
+        let lease = IdentityLease {
+            identity: Identity {
+                slot: 7,
+                uid: 200_007,
+                gid: 200_007,
+            },
+            lock,
+        };
+        let _inherited_lock = lease
+            .lock
+            .try_clone()
+            .expect("a fork-equivalent descriptor can inherit the lease");
+
+        FAIL_NEXT_RELEASE_SYNC.with(|failure| failure.set(true));
+        assert!(lease.release().is_err());
+
+        let mut reopened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("reopened identity lock");
+        reopened.try_lock().expect("failed lease unlocked");
+        assert!(matches!(
+            require_unpoisoned(&mut reopened, 7),
+            Err(LauncherError::Poisoned { slot: 7 })
+        ));
     }
 }

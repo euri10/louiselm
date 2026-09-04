@@ -13,7 +13,7 @@ mod support;
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
@@ -281,6 +281,187 @@ fn spawn_runs_the_planned_executable_and_reports_matching_evidence() {
         "Lifecycle evidence must match usable cgroup freeze-and-kill controls",
     );
 
+    session.dispose().expect("disposal succeeds");
+}
+
+#[test]
+fn prepare_blocks_the_workload_until_start() {
+    let fixture = Fixture::new();
+    let marker = fixture.path("sessions/prepared/workspace/started");
+    let mut confinement = plan(
+        &fixture,
+        "prepared",
+        "#!/bin/sh\ntouch \"$STARTED\"\nsleep 30\n",
+    );
+    confinement
+        .environment
+        .insert("STARTED".to_owned(), marker.display().to_string());
+    let backend = BubblewrapBackend::new();
+
+    let prepared = backend
+        .prepare(&confinement)
+        .expect("bwrap prepares the session");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !marker.exists(),
+        "the workload must remain blocked before start",
+    );
+
+    let mut session = prepared.start().expect("the prepared session starts");
+    assert!(
+        wait_for(Duration::from_secs(2), || marker.exists()),
+        "the workload never ran after start",
+    );
+    assert_eq!(
+        session.try_wait().expect("running status is readable"),
+        None,
+        "a nonblocking status check leaves the running Session alone",
+    );
+    session.dispose().expect("disposal succeeds");
+}
+
+#[test]
+fn prepared_and_running_sessions_expose_their_dynamic_process_tree() {
+    if !cgroup_available() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let confinement = plan(
+        &fixture,
+        "process-tree-handle",
+        "#!/bin/sh\nexec sleep 30\n",
+    );
+    let backend = BubblewrapBackend::new();
+
+    let prepared = backend
+        .prepare(&confinement)
+        .expect("bwrap prepares the session");
+    let member_pid = *prepared
+        .processes()
+        .expect("prepared membership is readable")
+        .first()
+        .expect("the prepared Session has a cgroup member");
+    let process_tree = prepared
+        .process_tree()
+        .expect("a lifecycle-backed Session exposes its process tree");
+    let cloned_tree = process_tree.clone();
+    assert!(
+        process_tree
+            .contains(member_pid)
+            .expect("process-tree membership is readable"),
+        "the prepared process belongs to the Session tree",
+    );
+    assert_eq!(
+        process_tree
+            .processes()
+            .expect("process-tree membership is readable"),
+        cloned_tree
+            .processes()
+            .expect("a cloned handle reads the same live tree"),
+    );
+
+    let mut session = prepared.start().expect("the prepared session starts");
+    assert!(
+        session
+            .process_tree()
+            .expect("the running Session retains its process tree")
+            .contains(member_pid)
+            .expect("running membership is readable"),
+    );
+    session.dispose().expect("disposal succeeds");
+}
+
+#[test]
+fn disposing_a_prepared_session_never_runs_its_workload() {
+    let fixture = Fixture::new();
+    let marker = fixture.path("sessions/dispose-prepared/workspace/started");
+    let mut confinement = plan(
+        &fixture,
+        "dispose-prepared",
+        "#!/bin/sh\ntouch \"$STARTED\"\nsleep 30\n",
+    );
+    confinement
+        .environment
+        .insert("STARTED".to_owned(), marker.display().to_string());
+    let backend = BubblewrapBackend::new();
+
+    let mut prepared = backend
+        .prepare(&confinement)
+        .expect("bwrap prepares the session");
+    let monitor_pid = prepared.monitor_pid();
+    let disposal = prepared.dispose().expect("prepared disposal succeeds");
+
+    assert_eq!(disposal.survivors, 0);
+    assert!(
+        !Path::new(&format!("/proc/{monitor_pid}")).exists(),
+        "prepared disposal reaps the Bubblewrap monitor",
+    );
+    assert!(!marker.exists(), "disposed workload must never run");
+}
+
+#[test]
+fn dropping_a_prepared_session_kills_it_without_releasing_the_gate() {
+    let fixture = Fixture::new();
+    let marker = fixture.path("sessions/drop-prepared/workspace/started");
+    let mut confinement = plan(
+        &fixture,
+        "drop-prepared",
+        "#!/bin/sh\ntouch \"$STARTED\"\nsleep 30\n",
+    );
+    confinement
+        .environment
+        .insert("STARTED".to_owned(), marker.display().to_string());
+    let backend = BubblewrapBackend::new();
+
+    let prepared = backend
+        .prepare(&confinement)
+        .expect("bwrap prepares the session");
+    let monitor_pid = prepared.monitor_pid();
+    let enclosed = prepared
+        .processes()
+        .expect("prepared cgroup membership is readable");
+    drop(prepared);
+
+    assert!(
+        !Path::new(&format!("/proc/{monitor_pid}")).exists(),
+        "dropping a prepared Session reaps the Bubblewrap monitor",
+    );
+    for pid in enclosed {
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "dropping kills enclosed process {pid}",
+        );
+    }
+    assert!(!marker.exists(), "dropping must not release the workload");
+}
+
+#[test]
+fn sandboxed_stdin_can_be_taken_for_an_owned_relay() {
+    let fixture = Fixture::new();
+    let confinement = plan(
+        &fixture,
+        "take-stdin",
+        "#!/bin/sh\nIFS= read -r line\nprintf '%s\\n' \"$line\"\n",
+    );
+    let backend = BubblewrapBackend::new();
+    let mut session = backend
+        .spawn(&confinement)
+        .expect("bwrap starts the session");
+
+    session
+        .take_stdin()
+        .expect("stdin is piped")
+        .write_all(b"relayed input\n")
+        .expect("stdin accepts relayed input");
+    let mut stdout = String::new();
+    session
+        .take_stdout()
+        .expect("stdout is piped")
+        .read_to_string(&mut stdout)
+        .expect("stdout reads to EOF");
+
+    assert_eq!(session.wait().expect("the session exits"), 0);
+    assert_eq!(stdout, "relayed input\n");
     session.dispose().expect("disposal succeeds");
 }
 

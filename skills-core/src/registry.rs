@@ -13,9 +13,11 @@
 //! refused rather than silently running different bytes.
 
 use std::{
-    collections::BTreeMap,
-    fs, io,
-    path::{Path, PathBuf},
+    collections::{BTreeMap, HashSet},
+    fs::{self, File},
+    io::{self, Read},
+    os::unix::fs::MetadataExt,
+    path::{Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -26,8 +28,15 @@ use crate::{canonical::Digest, release};
 /// The registry schema this build reads.
 pub const REGISTRY_SCHEMA: &str = "louiselm.launch.registry/1";
 
+/// Maximum encoded size of one registry document.
+pub const MAX_REGISTRY_BYTES: usize = 4 * 1024 * 1024;
+
+const MAX_REGISTRY_ENTRIES: usize = 4_096;
+const MAX_IDENTIFIER_BYTES: usize = 128;
+
 /// A file bound to the digest it had when it was registered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeasuredFile {
     /// Path relative to the runtime root.
     pub path: String,
@@ -135,6 +144,28 @@ pub enum RegistryError {
         /// Why it is unusable.
         reason: String,
     },
+    /// A registry document exceeds the fixed input bound.
+    #[error("{kind} registry exceeds {MAX_REGISTRY_BYTES} bytes")]
+    Oversized {
+        /// Which registry.
+        kind: &'static str,
+    },
+    /// A production registry or runtime path is not immutable authority.
+    #[error("untrusted launch path '{path}': {reason}")]
+    Untrusted {
+        /// Path that failed the ownership boundary.
+        path: String,
+        /// Stable reason the path is not trusted.
+        reason: &'static str,
+    },
+    /// Two entries claim the same identifier.
+    #[error("duplicate {kind} identifier '{id}'")]
+    Duplicate {
+        /// Kind of entry that was duplicated.
+        kind: &'static str,
+        /// Duplicated identifier.
+        id: String,
+    },
     /// The request named something that is not registered.
     #[error("no {kind} is registered as '{id}'")]
     Unknown {
@@ -179,12 +210,48 @@ pub struct Registry {
 impl Registry {
     /// Opens the registries under `root`.
     pub fn open(root: &Path) -> Result<Self, RegistryError> {
-        Ok(Self {
+        let registry = Self {
             root: root.to_path_buf(),
             agents: read_list(root, "agents")?,
             runtimes: read_list(root, "runtimes")?,
             envelopes: read_list(root, "envelopes")?,
-        })
+        };
+        registry.validate()?;
+        Ok(registry)
+    }
+
+    /// Opens launch authority only when every path is root-owned and immutable
+    /// by other users.
+    ///
+    /// [`Registry::open`] remains useful for unprivileged inspection and test
+    /// fixtures. A privileged launcher must use this entrypoint: matching a
+    /// digest does not stop an unprivileged owner from replacing the pathname
+    /// between measurement and execution.
+    pub fn open_trusted(root: &Path) -> Result<Self, RegistryError> {
+        require_trusted_path(root, TrustedKind::Directory)?;
+        for kind in ["agents", "runtimes", "envelopes"] {
+            let path = root.join(format!("{kind}.json"));
+            match fs::symlink_metadata(&path) {
+                Ok(_) => require_trusted_path(&path, TrustedKind::File)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(RegistryError::Io {
+                        path: path.display().to_string(),
+                        source,
+                    });
+                }
+            }
+        }
+
+        let registry = Self::open(root)?;
+        for runtime in &registry.runtimes {
+            require_trusted_path(&runtime.root, TrustedKind::Directory)?;
+            require_trusted_path(&runtime.executable_path(), TrustedKind::File)?;
+            for adapter in &runtime.adapters {
+                require_trusted_path(&runtime.root.join(&adapter.path), TrustedKind::File)?;
+            }
+        }
+        Ok(registry)
     }
 
     /// Returns the directory the registries were read from.
@@ -231,6 +298,40 @@ impl Registry {
     /// Lists every registered Agent identifier.
     pub fn agent_ids(&self) -> Vec<String> {
         self.agents.iter().map(|agent| agent.id.clone()).collect()
+    }
+
+    fn validate(&self) -> Result<(), RegistryError> {
+        validate_unique_ids("agent", self.agents.iter().map(|entry| &entry.id))?;
+        validate_unique_ids("runtime", self.runtimes.iter().map(|entry| &entry.id))?;
+        validate_unique_ids("envelope", self.envelopes.iter().map(|entry| &entry.id))?;
+
+        for agent in &self.agents {
+            validate_identifier("agent", &agent.id)?;
+            validate_identifier("runtime", &agent.runtime_id)?;
+        }
+        for envelope in &self.envelopes {
+            validate_identifier("envelope", &envelope.id)?;
+        }
+        for runtime in &self.runtimes {
+            validate_identifier("runtime", &runtime.id)?;
+            validate_absolute_path("runtime", &runtime.root)?;
+            validate_relative_path("runtime", &runtime.executable)?;
+            validate_digest("runtime", &runtime.executable_sha256)?;
+
+            let mut paths = HashSet::new();
+            paths.insert(runtime.executable.as_str());
+            for adapter in &runtime.adapters {
+                validate_relative_path("runtime", &adapter.path)?;
+                validate_digest("runtime", &adapter.sha256)?;
+                if !paths.insert(adapter.path.as_str()) {
+                    return Err(RegistryError::Malformed {
+                        kind: "runtime".to_owned(),
+                        reason: format!("duplicate measured path '{}'", adapter.path),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -310,7 +411,7 @@ pub fn measure_file(path: &Path) -> Result<Digest, RegistryError> {
 
 fn read_list<T: for<'de> Deserialize<'de>>(
     root: &Path,
-    kind: &str,
+    kind: &'static str,
 ) -> Result<Vec<T>, RegistryError> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -320,8 +421,8 @@ fn read_list<T: for<'de> Deserialize<'de>>(
     }
 
     let path = root.join(format!("{kind}.json"));
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => {
             return Err(RegistryError::Io {
@@ -330,6 +431,17 @@ fn read_list<T: for<'de> Deserialize<'de>>(
             });
         }
     };
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take((MAX_REGISTRY_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|source| RegistryError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+    if bytes.len() > MAX_REGISTRY_BYTES {
+        return Err(RegistryError::Oversized { kind });
+    }
     let document: Document<T> =
         serde_json::from_slice(&bytes).map_err(|error| RegistryError::Malformed {
             kind: kind.to_owned(),
@@ -344,5 +456,144 @@ fn read_list<T: for<'de> Deserialize<'de>>(
             ),
         });
     }
+    if document.entries.len() > MAX_REGISTRY_ENTRIES {
+        return Err(RegistryError::Malformed {
+            kind: kind.to_owned(),
+            reason: format!("must contain at most {MAX_REGISTRY_ENTRIES} entries"),
+        });
+    }
     Ok(document.entries)
+}
+
+fn validate_unique_ids<'a>(
+    kind: &'static str,
+    ids: impl Iterator<Item = &'a String>,
+) -> Result<(), RegistryError> {
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(RegistryError::Duplicate {
+                kind,
+                id: id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_identifier(kind: &'static str, value: &str) -> Result<(), RegistryError> {
+    if value.is_empty()
+        || value.len() > MAX_IDENTIFIER_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(RegistryError::Malformed {
+            kind: kind.to_owned(),
+            reason: format!("invalid identifier '{}'", crate::scan::escape(value)),
+        });
+    }
+    Ok(())
+}
+
+fn validate_digest(kind: &'static str, value: &str) -> Result<(), RegistryError> {
+    let parsed = Digest::parse(value).map_err(|error| RegistryError::Malformed {
+        kind: kind.to_owned(),
+        reason: error.to_string(),
+    })?;
+    if parsed.hex() != value {
+        return Err(RegistryError::Malformed {
+            kind: kind.to_owned(),
+            reason: "digests must be bare lowercase sha256 hex".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_absolute_path(kind: &'static str, path: &Path) -> Result<(), RegistryError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(RegistryError::Malformed {
+            kind: kind.to_owned(),
+            reason: format!(
+                "runtime root '{}' must be an absolute normalized path",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_relative_path(kind: &'static str, raw: &str) -> Result<(), RegistryError> {
+    let path = Path::new(raw);
+    if raw.is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(RegistryError::Malformed {
+            kind: kind.to_owned(),
+            reason: format!(
+                "'{}' must be a normalized relative path",
+                crate::scan::escape(raw)
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum TrustedKind {
+    Directory,
+    File,
+}
+
+fn require_trusted_path(path: &Path, kind: TrustedKind) -> Result<(), RegistryError> {
+    validate_absolute_path("launch path", path)?;
+
+    let mut current = PathBuf::from("/");
+    let components: Vec<_> = path.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        let metadata = fs::symlink_metadata(&current).map_err(|source| RegistryError::Io {
+            path: current.display().to_string(),
+            source,
+        })?;
+        let final_component = index + 1 == components.len();
+        let expected_type = if final_component {
+            kind
+        } else {
+            TrustedKind::Directory
+        };
+        let right_type = match expected_type {
+            TrustedKind::Directory => metadata.is_dir(),
+            TrustedKind::File => metadata.is_file(),
+        };
+        if metadata.file_type().is_symlink() || !right_type {
+            return Err(RegistryError::Untrusted {
+                path: current.display().to_string(),
+                reason: "must not contain symlinks or unexpected file types",
+            });
+        }
+        if metadata.uid() != 0 {
+            return Err(RegistryError::Untrusted {
+                path: current.display().to_string(),
+                reason: "must be owned by root",
+            });
+        }
+        if metadata.mode() & 0o022 != 0 {
+            return Err(RegistryError::Untrusted {
+                path: current.display().to_string(),
+                reason: "must not be writable by group or other users",
+            });
+        }
+    }
+    Ok(())
 }

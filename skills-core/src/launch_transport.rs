@@ -38,9 +38,12 @@ use rustix::{
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::launch_protocol::{
-    MAX_PROTOCOL_MESSAGE_BYTES, ProtocolError, ProtocolMessage, ProtocolResponse, RESPONSE_SCHEMA,
-    decode_message,
+use crate::{
+    launch_protocol::{
+        MAX_PROTOCOL_MESSAGE_BYTES, ProtocolError, ProtocolMessage, ProtocolResponse,
+        RESPONSE_SCHEMA, decode_message,
+    },
+    launch_receipt::{ReceiptError, SIGNED_RECEIPT_SCHEMA, SignedReceipt},
 };
 
 /// Maximum bytes in one launcher packet.
@@ -107,6 +110,8 @@ pub enum LauncherPacket {
     Request(ProtocolMessage),
     /// Correlated supervisor or broker response.
     Response(Box<ProtocolResponse>),
+    /// Exact signed receipt awaiting durable broker acknowledgement.
+    SignedReceipt(SignedReceipt),
 }
 
 /// One protocol packet accompanied by both kernel credential observations.
@@ -207,6 +212,9 @@ pub enum TransportError {
     /// Packet bytes failed the closed launcher protocol decoder.
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+    /// Packet bytes failed signed-receipt validation.
+    #[error(transparent)]
+    Receipt(#[from] ReceiptError),
 }
 
 #[derive(Deserialize)]
@@ -222,15 +230,17 @@ fn decode_packet(bytes: &[u8]) -> Result<LauncherPacket, TransportError> {
             None,
         ))
     })?;
-    if header.schema == RESPONSE_SCHEMA {
-        ProtocolResponse::parse_canonical(bytes)
+    match header.schema.as_str() {
+        RESPONSE_SCHEMA => ProtocolResponse::parse_canonical(bytes)
             .map(Box::new)
             .map(LauncherPacket::Response)
-            .map_err(TransportError::Protocol)
-    } else {
-        decode_message(bytes)
+            .map_err(TransportError::Protocol),
+        SIGNED_RECEIPT_SCHEMA => SignedReceipt::parse_canonical(bytes)
+            .map(LauncherPacket::SignedReceipt)
+            .map_err(TransportError::Receipt),
+        _ => decode_message(bytes)
             .map(LauncherPacket::Request)
-            .map_err(TransportError::Protocol)
+            .map_err(TransportError::Protocol),
     }
 }
 
@@ -689,6 +699,20 @@ impl Drop for ListenerInner {
     }
 }
 
+/// Bound rendezvous socket that cannot accept or queue connections yet.
+#[derive(Debug)]
+pub struct BoundSeqpacketListener {
+    fd: OwnedFd,
+}
+
+impl BoundSeqpacketListener {
+    /// Starts listening and returns the enabled listener.
+    pub fn enable(self) -> Result<SeqpacketListener, TransportError> {
+        listen(&self.fd, LISTEN_BACKLOG).map_err(|_| TransportError::ListenFailed)?;
+        SeqpacketListener::from_listening(self.fd)
+    }
+}
+
 /// Bound Unix `SOCK_SEQPACKET` rendezvous listener.
 #[derive(Clone)]
 pub struct SeqpacketListener {
@@ -696,8 +720,8 @@ pub struct SeqpacketListener {
 }
 
 impl SeqpacketListener {
-    /// Binds a new listener without deleting or replacing an existing path.
-    pub fn bind(path: &Path) -> Result<Self, TransportError> {
+    /// Binds without listening, so connections remain impossible until enabled.
+    pub fn bind_disabled(path: &Path) -> Result<BoundSeqpacketListener, TransportError> {
         let address = SocketAddrUnix::new(path).map_err(|_| TransportError::InvalidAddress)?;
         let fd = socket_with(
             AddressFamily::UNIX,
@@ -709,7 +733,15 @@ impl SeqpacketListener {
         configure_passcred(&fd)?;
         configure_packet_buffers(&fd)?;
         bind(&fd, &address).map_err(|_| TransportError::BindFailed)?;
-        listen(&fd, LISTEN_BACKLOG).map_err(|_| TransportError::ListenFailed)?;
+        Ok(BoundSeqpacketListener { fd })
+    }
+
+    /// Binds and immediately enables a listener without replacing an existing path.
+    pub fn bind(path: &Path) -> Result<Self, TransportError> {
+        Self::bind_disabled(path)?.enable()
+    }
+
+    fn from_listening(fd: OwnedFd) -> Result<Self, TransportError> {
         let accept_fd = duplicate(&fd)?;
         let (commands, receiver) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let core = Arc::new(ListenerCore {

@@ -2,14 +2,16 @@
 
 use louiselm_skills::{
     canonical::Digest,
+    launch::{LaunchRequest, REQUEST_SCHEMA},
     launch_protocol::{
         self, BrokerConnection, ChannelState, CompletedRequest, ErrorCode,
-        LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest, MAX_IDENTIFIER_BYTES,
-        MAX_PROTOCOL_MESSAGE_BYTES, NextAction, PROTOCOL_VERSION, PendingAction, PendingOperation,
-        PendingPhase, PostureSummary, ProtocolError, ProtocolMessage, ProtocolResponse,
-        RECEIPT_ACK_SCHEMA, RESPONSE_SCHEMA, ReceiptAcknowledgement, RequestDisposition,
-        ResponseResult, SESSION_STATUS_SCHEMA, STATUS_REQUEST_SCHEMA, SUPERVISOR_STATUS_SCHEMA,
-        SessionStatus, StatusRequest, SupervisorStatus,
+        LAUNCH_AUTHORIZATION_SCHEMA, LIFECYCLE_REQUEST_SCHEMA, LaunchAuthorization,
+        LifecycleAction, LifecycleRequest, MAX_IDENTIFIER_BYTES, MAX_PROTOCOL_MESSAGE_BYTES,
+        NextAction, PROTOCOL_VERSION, PendingAction, PendingOperation, PendingPhase,
+        PostureSummary, ProtocolError, ProtocolMessage, ProtocolResponse, RECEIPT_ACK_SCHEMA,
+        RESPONSE_SCHEMA, ReceiptAcknowledgement, RequestDisposition, ResponseResult,
+        SESSION_STATUS_SCHEMA, STATUS_REQUEST_SCHEMA, SUPERVISOR_STATUS_SCHEMA, SessionStatus,
+        StatusRequest, SupervisorStatus,
     },
     launch_receipt::{
         Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptHead,
@@ -19,6 +21,40 @@ use louiselm_skills::{
 
 fn digest(value: &[u8]) -> String {
     Digest::of(value).to_string()
+}
+
+fn launch_request() -> LaunchRequest {
+    LaunchRequest {
+        schema: REQUEST_SCHEMA.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "launch-request-1".to_owned(),
+        authorization_id: "launch-authorization-1".to_owned(),
+        session_id: "session-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        agent_id: "agent-1".to_owned(),
+        envelope_id: "envelope-1".to_owned(),
+        envelope_revision: 7,
+        skill_generation_id: digest(b"generation"),
+        session_input_manifest_id: digest(b"input"),
+    }
+}
+
+fn launch_authorization(request: &LaunchRequest) -> LaunchAuthorization {
+    LaunchAuthorization {
+        schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        authorization_id: request.authorization_id.clone(),
+        request_id: request.request_id.clone(),
+        request_digest: request.digest().to_string(),
+        controller_uid: 1000,
+        session_id: request.session_id.clone(),
+        run_id: request.run_id.clone(),
+        envelope_revision: request.envelope_revision,
+        identity_slot: 3,
+        assigned_uid: 200_003,
+        assigned_gid: 300_003,
+        expires_at_ms: 2_000,
+    }
 }
 
 fn lifecycle(action: LifecycleAction, expected_state: SessionState) -> LifecycleRequest {
@@ -31,7 +67,7 @@ fn lifecycle(action: LifecycleAction, expected_state: SessionState) -> Lifecycle
         authorization_id: "authorization-1".to_owned(),
         action,
         expected_state,
-        expected_receipt_sequence: Some(0),
+        expected_receipt_sequence: Some(1),
         envelope_revision: 7,
     }
 }
@@ -52,8 +88,8 @@ fn supervisor(state: SessionState) -> SupervisorStatus {
             SessionState::Terminal => ChannelState::Closed,
         },
         receipt_head: Some(ReceiptHead {
-            sequence: 0,
-            digest: digest(b"receipt-0"),
+            sequence: 1,
+            digest: digest(b"receipt-1"),
         }),
         pending_operation: None,
         last_failure: None,
@@ -67,8 +103,8 @@ fn signed_receipt(request: &LifecycleRequest) -> SignedReceipt {
         run_id: request.run_id.clone(),
         request_id: request.request_id.clone(),
         envelope_revision: request.envelope_revision,
-        sequence: 1,
-        previous_receipt_digest: Some(digest(b"receipt-0")),
+        sequence: 2,
+        previous_receipt_digest: Some(digest(b"receipt-1")),
         release_id: digest(b"release"),
         signing_key_id: digest(b"launcher-key"),
         outcome: ReceiptOutcome::Park {
@@ -89,6 +125,13 @@ fn signed_receipt(request: &LifecycleRequest) -> SignedReceipt {
 
 #[test]
 fn messages_are_closed_versioned_and_bounded() {
+    let launch_request = launch_request();
+    assert_eq!(
+        launch_protocol::decode_message(&launch_request.canonical_bytes())
+            .expect("launch authorization query decodes"),
+        ProtocolMessage::LaunchAuthorization(launch_request),
+    );
+
     let status = StatusRequest {
         schema: STATUS_REQUEST_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
@@ -200,7 +243,7 @@ fn messages_are_closed_versioned_and_bounded() {
         ),
         (
             lifecycle_json.replace(
-                r#""expected_receipt_sequence":0"#,
+                r#""expected_receipt_sequence":1"#,
                 r#""expected_receipt_sequence":null"#,
             ),
             ErrorCode::InvalidRequest,
@@ -211,6 +254,127 @@ fn messages_are_closed_versioned_and_bounded() {
                 .expect_err("malformed lifecycle shape is rejected")
                 .code,
             expected,
+        );
+    }
+}
+
+#[test]
+fn launch_authorization_is_correlated_closed_and_exactly_bound() {
+    let request = launch_request();
+    let authorization = launch_authorization(&request);
+    authorization
+        .validate_for(&request, 1000, 1_999)
+        .expect("matching unexpired authorization is usable");
+
+    let response = ProtocolResponse {
+        schema: RESPONSE_SCHEMA.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: request.request_id.clone(),
+        result: ResponseResult::LaunchAuthorization {
+            authorization: authorization.clone(),
+        },
+    };
+    assert_eq!(
+        ProtocolResponse::parse_canonical(&response.canonical_bytes())
+            .expect("canonical launch authorization response parses"),
+        response,
+    );
+
+    let mut wrong_response = response.clone();
+    wrong_response.request_id = "another-request".to_owned();
+    assert_eq!(
+        wrong_response
+            .validate()
+            .expect_err("the response request ID is correlated")
+            .code,
+        ErrorCode::InvalidRequest,
+    );
+
+    let mut with_extra = String::from_utf8(response.canonical_bytes()).expect("JSON is UTF-8");
+    with_extra = with_extra.replace(
+        r#""expires_at_ms":2000"#,
+        r#""expires_at_ms":2000,"consumed":false"#,
+    );
+    assert_eq!(
+        ProtocolResponse::parse_canonical(with_extra.as_bytes())
+            .expect_err("authorization fields are closed")
+            .code,
+        ErrorCode::MalformedMessage,
+    );
+
+    assert_eq!(
+        authorization
+            .validate_for(&request, 1000, authorization.expires_at_ms)
+            .expect_err("expiry is exclusive")
+            .code,
+        ErrorCode::InvalidRequest,
+    );
+
+    let mismatches = [
+        {
+            let mut value = authorization.clone();
+            value.authorization_id = "another-authorization".to_owned();
+            value
+        },
+        {
+            let mut value = authorization.clone();
+            value.request_id = "another-request".to_owned();
+            value
+        },
+        {
+            let mut value = authorization.clone();
+            value.request_digest = digest(b"another-request");
+            value
+        },
+        {
+            let mut value = authorization.clone();
+            value.controller_uid = 1001;
+            value
+        },
+        {
+            let mut value = authorization.clone();
+            value.session_id = "another-session".to_owned();
+            value
+        },
+        {
+            let mut value = authorization.clone();
+            value.run_id = "another-run".to_owned();
+            value
+        },
+        {
+            let mut value = authorization.clone();
+            value.envelope_revision += 1;
+            value
+        },
+    ];
+    for mismatch in mismatches {
+        assert_eq!(
+            mismatch
+                .validate_for(&request, 1000, 1_999)
+                .expect_err("every authorization binding is exact")
+                .code,
+            ErrorCode::InvalidRequest,
+        );
+    }
+
+    for invalid_identity in [
+        {
+            let mut value = authorization.clone();
+            value.assigned_uid = 0;
+            value
+        },
+        {
+            let mut value = authorization;
+            value.assigned_gid = 0;
+            value
+        },
+    ] {
+        assert_eq!(
+            invalid_identity
+                .validate()
+                .expect_err("root is not an assigned Session identity")
+                .code,
+            ErrorCode::InvalidRequest,
         );
     }
 }
@@ -322,6 +486,119 @@ fn lifecycle_transition_matrix_is_closed() {
 }
 
 #[test]
+fn launch_status_represents_both_receipt_commit_points() {
+    let mut signing_launch = supervisor(SessionState::Starting);
+    signing_launch.receipt_head = None;
+    signing_launch.pending_operation = Some(PendingOperation {
+        request_id: "launch-request".to_owned(),
+        action: PendingAction::Launch,
+        phase: PendingPhase::Signing,
+    });
+    signing_launch
+        .validate()
+        .expect("sequence zero may be signing while the workload is blocked");
+
+    let mut awaiting_launch = signing_launch.clone();
+    awaiting_launch.receipt_head = Some(ReceiptHead {
+        sequence: 0,
+        digest: digest(b"receipt-0"),
+    });
+    awaiting_launch.pending_operation.as_mut().unwrap().phase = PendingPhase::AwaitingDurableAck;
+    awaiting_launch
+        .validate()
+        .expect("sequence zero may await its durable acknowledgement");
+
+    let mut applying_start = awaiting_launch.clone();
+    applying_start.pending_operation.as_mut().unwrap().phase = PendingPhase::Applying;
+    applying_start
+        .validate()
+        .expect("the durable Starting head may gate workload release");
+
+    let mut signing_start = supervisor(SessionState::Running);
+    signing_start.receipt_head = awaiting_launch.receipt_head.clone();
+    signing_start.pending_operation = Some(PendingOperation {
+        request_id: "launch-request".to_owned(),
+        action: PendingAction::Launch,
+        phase: PendingPhase::Signing,
+    });
+    signing_start
+        .validate()
+        .expect("a started workload may be signing its Running receipt");
+
+    let mut awaiting_start = supervisor(SessionState::Running);
+    awaiting_start.pending_operation = Some(PendingOperation {
+        request_id: "launch-request".to_owned(),
+        action: PendingAction::Launch,
+        phase: PendingPhase::AwaitingDurableAck,
+    });
+    awaiting_start
+        .validate()
+        .expect("the Running receipt may await durable acknowledgement");
+
+    let mut signing_launch_with_head = signing_launch.clone();
+    signing_launch_with_head.receipt_head = awaiting_launch.receipt_head.clone();
+    let mut awaiting_launch_with_later_head = awaiting_launch.clone();
+    awaiting_launch_with_later_head.receipt_head = awaiting_start.receipt_head.clone();
+    let mut signing_start_with_later_head = signing_start.clone();
+    signing_start_with_later_head.receipt_head = awaiting_start.receipt_head.clone();
+    let mut awaiting_start_with_earlier_head = awaiting_start.clone();
+    awaiting_start_with_earlier_head.receipt_head = awaiting_launch.receipt_head.clone();
+    let stable_starting_with_later_head = supervisor(SessionState::Starting);
+    let mut stable_running_with_earlier_head = signing_start.clone();
+    stable_running_with_earlier_head.pending_operation = None;
+    for (label, status) in [
+        (
+            "Starting/signing with a signed head",
+            signing_launch_with_head,
+        ),
+        (
+            "Starting/awaiting with the Running head",
+            awaiting_launch_with_later_head,
+        ),
+        (
+            "Running/signing with the Running head",
+            signing_start_with_later_head,
+        ),
+        (
+            "Running/awaiting with only the Starting head",
+            awaiting_start_with_earlier_head,
+        ),
+        (
+            "stable Starting after sequence zero",
+            stable_starting_with_later_head,
+        ),
+        (
+            "stable Running before sequence one",
+            stable_running_with_earlier_head,
+        ),
+    ] {
+        assert_eq!(
+            status
+                .validate()
+                .expect_err("an impossible launch receipt head must be rejected")
+                .code,
+            ErrorCode::InvalidRequest,
+            "case {label}",
+        );
+    }
+
+    let mut request_from_sequence_zero =
+        lifecycle(LifecycleAction::Disposal, SessionState::Starting);
+    request_from_sequence_zero.expected_receipt_sequence = Some(0);
+    request_from_sequence_zero
+        .validate()
+        .expect("Starting may already have the durable sequence-zero head");
+    request_from_sequence_zero.expected_receipt_sequence = Some(1);
+    assert_eq!(
+        request_from_sequence_zero
+            .validate()
+            .expect_err("Starting cannot have advanced beyond sequence zero")
+            .code,
+        ErrorCode::InvalidRequest,
+    );
+}
+
+#[test]
 fn evaluation_is_stateless_and_applies_pending_then_cas_precedence() {
     let status = supervisor(SessionState::Running);
     let request = lifecycle(LifecycleAction::Park, SessionState::Running);
@@ -330,7 +607,7 @@ fn evaluation_is_stateless_and_applies_pending_then_cas_precedence() {
     let intent = disposition
         .execute_intent()
         .expect("new request returns an execution intent");
-    assert_eq!(intent.sequence, 1);
+    assert_eq!(intent.sequence, 2);
     assert_eq!(
         intent.previous_receipt_digest,
         status.receipt_head.as_ref().unwrap().digest,
@@ -407,7 +684,7 @@ fn identical_retry_replays_exact_receipt_before_stale_cas() {
     let mut advanced = supervisor(SessionState::Parked);
     advanced.envelope_revision = 8;
     advanced.receipt_head = Some(ReceiptHead {
-        sequence: 1,
+        sequence: 2,
         digest: receipt.digest().to_string(),
     });
 
@@ -476,7 +753,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
         last_failure: Some(ProtocolError::new(
             ErrorCode::BrokerUnavailable,
             Some(SessionState::Running),
-            Some(0),
+            Some(1),
         )),
         ..supervisor(SessionState::Running)
     };
@@ -489,7 +766,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
     assert_eq!(status.schema, SESSION_STATUS_SCHEMA);
     assert_eq!(
         String::from_utf8(status.canonical_bytes()).expect("status JSON is UTF-8"),
-        r#"{"schema":"louiselm.launch.session-status/1","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","receipt_head":{"sequence":0,"digest":"sha256:f39f0abf1b8b3bf488787ca4e20fcaa09e1b3c43faba53b3cc8058052ccdf21b"},"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":0,"next_action":"reconnect_broker"}}"#,
+        r#"{"schema":"louiselm.launch.session-status/1","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","receipt_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
     );
 
     let response = ProtocolResponse {
@@ -721,7 +998,7 @@ fn responses_enforce_request_correlation_and_the_encoded_size_limit() {
                 capability_channel_ids: channels,
             }),
         },
-        resulting_state: SessionState::Running,
+        resulting_state: SessionState::Starting,
     };
     let mut receipt = SignedReceipt {
         schema: SIGNED_RECEIPT_SCHEMA.to_owned(),

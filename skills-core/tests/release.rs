@@ -142,6 +142,7 @@ fn a_bundle_binds_its_source_toolchain_dependencies_policy_and_bytes() {
     );
     for schema in [
         launch::REQUEST_SCHEMA,
+        launch_protocol::LAUNCH_AUTHORIZATION_SCHEMA,
         launch_protocol::LIFECYCLE_REQUEST_SCHEMA,
         launch_protocol::STATUS_REQUEST_SCHEMA,
         launch_protocol::RECEIPT_ACK_SCHEMA,

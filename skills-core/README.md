@@ -294,12 +294,9 @@ and take a snapshot before the destructive digest checks.
 #### Installer authority (louiselm-d6fv.4.2)
 
 The installer, status, rotation, and lease primitives in this slice are covered
-now by `cargo test --test launcher_install`. The production ceremony has one
-honest prerequisite: the running signed release must contain a real
-`louiselm-launch` component. The standard release build does not produce that
-binary yet, so `launcher install` correctly refuses until louiselm-d6fv.4.4
-integrates the runtime and louiselm-xkxf adds that binary to the signed release.
-Do not insert a placeholder binary merely to make this procedure pass.
+by `cargo test --test launcher_install`. The standard release build includes
+the real `louiselm-launch` executable; installation refuses a release that does
+not contain those measured bytes.
 
 Once that component exists, install its signed release at the fixed prefix as
 described above. Run the following as the VM maintainer; choose unused ranges
@@ -310,6 +307,8 @@ operator=louiselm-operator
 uid_start=2000000
 gid_start=3000000
 slots=4
+broker_uid=1500
+broker_gid=1500
 skills=/usr/local/lib/louiselm/current/bin/louiselm-skills
 launcher=/usr/local/lib/louiselm/current/bin/louiselm-launch
 
@@ -324,6 +323,8 @@ sudo "$skills" release status --robot-json | jq -e '.trusted == true'
 
 sudo "$skills" launcher install \
   --operator "$operator" \
+  --broker-uid "$broker_uid" \
+  --broker-gid "$broker_gid" \
   --uid-start "$uid_start" \
   --gid-start "$gid_start" \
   --slots "$slots" \
@@ -420,7 +421,8 @@ public and private history without exposing private bytes to the operator:
 ```sh
 old_key=$(jq -r .active_key_id /tmp/launcher-install.json)
 sudo "$skills" launcher install \
-  --operator "$operator" --uid-start "$uid_start" --gid-start "$gid_start" \
+  --operator "$operator" --broker-uid "$broker_uid" --broker-gid "$broker_gid" \
+  --uid-start "$uid_start" --gid-start "$gid_start" \
   --slots "$slots" --robot-json > /tmp/launcher-reinstall.json
 test "$(jq -r .active_key_id /tmp/launcher-reinstall.json)" = "$old_key"
 
@@ -448,14 +450,14 @@ test "$(sudo find /usr/local/lib/louiselm/launcher/private/keys \
   -mindepth 2 -maxdepth 2 -name key | wc -l)" -eq 2
 ```
 
-#### Runtime acceptance (blocked on louiselm-d6fv.4.4)
+#### Runtime acceptance
 
-This slice installs the authority but has no production launcher binary, stdin
-entrypoint, or supervisor. Therefore receipt creation, live lease holding, and
-execution through sudo are deliberately **inert** here; do not report them as
-accepted for louiselm-d6fv.4.2. After louiselm-d6fv.4.4 supplies the runtime,
-submit one valid bounded request as the operator. This is the only privileged
-invocation the sudo rule may admit; there is no release-ID argument:
+`cargo test --test launch_supervisor` covers the complete launch transaction
+against a deterministic fake Control broker. A live ceremony additionally
+requires the real broker from louiselm-qbr.5.1.1 at the installed rendezvous.
+Once it is installed, submit one canonical request line as the operator, then
+continue ACP on the same stdin. This is the only privileged invocation the
+sudo rule may admit; there is no release-ID argument:
 
 ```sh
 sudo -u "$operator" sudo -n \
@@ -468,10 +470,13 @@ after changing one byte, and a rule containing a different valid SHA-256 are all
 rejected by `sudo -n`. Roll the VM back after these destructive checks; do not
 repair an immutable release in place.
 
-Capture a receipt, rotate the launcher key once, and capture another receipt.
-The public keyring must retain both the active and retired public keys while no
-private key is readable by the operator. Verify each canonical payload against
-the public key selected by its `signing_key_id` and the fixed namespace:
+Capture both receipts from one launch: sequence zero records `Starting`, its
+durable acknowledgement permits startup, and sequence one records `Running`.
+Rotate the launcher key once and capture another pair. Verify both linked
+receipts from each launch. The public keyring must retain both the active and
+retired public keys while no private key is readable by the operator. Verify
+each canonical payload against the public key selected by its `signing_key_id`
+and the fixed namespace:
 
 ```sh
 key_id=$(jq -r .signing_key_id /tmp/receipt.payload)
@@ -481,7 +486,7 @@ public_key=$(jq -r --arg key_id "$key_id" \
 test -n "$public_key"
 printf 'louiselm-launch %s\n' "$public_key" > /tmp/allowed-signers
 /usr/bin/ssh-keygen -Y verify -f /tmp/allowed-signers -I louiselm-launch \
-  -n louiselm.launch.receipt/1 -s /tmp/receipt.sig \
+  -n louiselm.launch.receipt/2 -s /tmp/receipt.sig \
   < /tmp/receipt.payload
 ```
 
@@ -510,6 +515,7 @@ cryptography of its own.
 Provider-scoped views (louiselm-d6fv.3), Session launch and containment
 (louiselm-d6fv.4), and portable Endorsements (louiselm-d6fv.8) build on the
 canonical contract, the Generation chain, and the release identity defined here.
-`louiselm-launch` and the control-service binary do not exist yet; the bundle
-format has slots for them, and a release that declares a component it cannot
-produce is refused rather than shipped short.
+`louiselm-launch` is built into the signed bundle. The control-service binary
+is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
+and a release that declares a component it cannot produce is refused rather
+than shipped short.

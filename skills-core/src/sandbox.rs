@@ -158,6 +158,14 @@ pub enum SandboxError {
         /// What it reported.
         reason: String,
     },
+    /// A post-fork failure could not prove the blocked process tree gone.
+    #[error("cleanup of session {session_id} was not proven: {reason}")]
+    CleanupUnproven {
+        /// Session whose identity must remain reserved.
+        session_id: String,
+        /// What prevented a zero-survivor proof.
+        reason: String,
+    },
     /// No usable cgroup, so the process tree could not be enclosed.
     #[error("no writable cgroup v2 hierarchy: {0}")]
     NoCgroup(String),
@@ -178,6 +186,27 @@ pub enum SandboxError {
 #[derive(Clone, Debug)]
 pub struct Cgroup {
     path: PathBuf,
+}
+
+/// Read-only handle to one Session's live cgroup membership.
+///
+/// Clones observe the cgroup again on every call; they do not retain a PID
+/// snapshot that could become stale before a capability peer is checked.
+#[derive(Clone, Debug)]
+pub struct ProcessTree {
+    cgroup: Cgroup,
+}
+
+impl ProcessTree {
+    /// Returns every process currently enclosed in this Session's cgroup.
+    pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
+        self.cgroup.processes()
+    }
+
+    /// Reports whether `pid` is currently enclosed in this Session's cgroup.
+    pub fn contains(&self, pid: u32) -> Result<bool, SandboxError> {
+        Ok(self.processes()?.contains(&pid))
+    }
 }
 
 impl Cgroup {
@@ -352,6 +381,13 @@ pub struct SandboxedSession {
     _status_guard: Option<UnixStream>,
 }
 
+/// A confined process tree whose workload is still blocked before `exec`.
+#[derive(Debug)]
+pub struct PreparedSession {
+    session: Option<SandboxedSession>,
+    startup_gate: Option<HostIdentityGate>,
+}
+
 /// What disposal actually did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DisposalReport {
@@ -388,9 +424,25 @@ impl SandboxedSession {
         }
     }
 
+    /// Returns a dynamic read-only handle to this Session's process tree.
+    ///
+    /// Namespace-only Sessions without lifecycle cgroup control return
+    /// `None`; a verified host-identity Session always has one.
+    pub fn process_tree(&self) -> Option<ProcessTree> {
+        self.cgroup
+            .as_ref()
+            .cloned()
+            .map(|cgroup| ProcessTree { cgroup })
+    }
+
     /// Borrows the Session's stdin, when the ACP channel is stdio.
     pub fn stdin(&mut self) -> Option<&mut std::process::ChildStdin> {
         self.child.stdin.as_mut()
+    }
+
+    /// Takes the Session's stdin for an owned ACP relay.
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.child.stdin.take()
     }
 
     /// Takes the Session's stdout, when the ACP channel is stdio.
@@ -477,6 +529,7 @@ impl SandboxedSession {
 
     /// Terminates the whole tree and releases the Session's identity.
     pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
+        let deadline = Instant::now() + DISPOSAL_TIMEOUT;
         let processes_before = self.processes().map(|processes| processes.len());
         let cgroup_kill = if let Some(cgroup) = &self.cgroup {
             // Thaw first: a frozen cgroup cannot process the kill.
@@ -486,20 +539,77 @@ impl SandboxedSession {
             Ok(())
         };
         let _ = self.child.kill();
-        let _ = self.child.wait();
-        let processes_before = processes_before?;
-        cgroup_kill?;
 
-        let deadline = Instant::now() + DISPOSAL_TIMEOUT;
-        let mut survivors = self.processes()?.len();
-        while survivors > 0 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(20));
-            survivors = self.processes()?.len();
+        let mut original_error = None;
+        let processes_before = match processes_before {
+            Ok(processes) => Some(processes),
+            Err(error) => {
+                original_error = Some(error);
+                None
+            }
+        };
+        if let Err(error) = cgroup_kill
+            && original_error.is_none()
+        {
+            original_error = Some(error);
         }
+
+        let mut child_reaped = false;
+        let mut child_reap_failed = false;
+        let survivors = loop {
+            if !child_reaped && !child_reap_failed {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => child_reaped = true,
+                    Ok(None) => {}
+                    Err(source) => {
+                        child_reap_failed = true;
+                        if original_error.is_none() {
+                            original_error = Some(SandboxError::CleanupUnproven {
+                                session_id: self.session_id.clone(),
+                                reason: format!(
+                                    "launcher-side child could not be reaped: {source}"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            let survivors = match self.processes() {
+                Ok(processes) => Some(processes.len()),
+                Err(error) => {
+                    if original_error.is_none() {
+                        original_error = Some(error);
+                    }
+                    None
+                }
+            };
+            let membership_settled = survivors.is_none_or(|survivors| survivors == 0);
+            if (child_reaped || child_reap_failed) && membership_settled {
+                break survivors;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break survivors;
+            }
+            thread::sleep(Duration::from_millis(20).min(deadline - now));
+        };
+        if let Some(error) = original_error {
+            return Err(error);
+        }
+        let survivors = survivors.ok_or_else(|| SandboxError::CleanupUnproven {
+            session_id: self.session_id.clone(),
+            reason: "Session cgroup membership could not be proved empty".to_owned(),
+        })?;
         if survivors > 0 {
             return Err(SandboxError::Survivors {
                 session_id: self.session_id.clone(),
                 survivors,
+            });
+        }
+        if !child_reaped {
+            return Err(SandboxError::CleanupUnproven {
+                session_id: self.session_id.clone(),
+                reason: "launcher-side child did not exit before the disposal deadline".to_owned(),
             });
         }
         if let Some(cgroup) = self.cgroup.take() {
@@ -508,7 +618,8 @@ impl SandboxedSession {
         self._status_guard = None;
         Ok(DisposalReport {
             session_id: self.session_id.clone(),
-            processes_before,
+            processes_before: processes_before
+                .expect("successful disposal observed the initial process count"),
             survivors: 0,
             identity_released: true,
         })
@@ -523,6 +634,115 @@ impl SandboxedSession {
                 path: "child".to_owned(),
                 source,
             })
+    }
+
+    /// Reports the Session's exit status without waiting.
+    pub fn try_wait(&mut self) -> Result<Option<i32>, SandboxError> {
+        self.child
+            .try_wait()
+            .map(|status| status.map(|status| status.code().unwrap_or(-1)))
+            .map_err(|source| SandboxError::Io {
+                path: "child".to_owned(),
+                source,
+            })
+    }
+}
+
+impl PreparedSession {
+    fn session(&self) -> &SandboxedSession {
+        self.session
+            .as_ref()
+            .expect("a prepared Session remains owned until start or disposal")
+    }
+
+    /// Returns the Session identifier.
+    pub fn session_id(&self) -> &str {
+        &self.session().session_id
+    }
+
+    /// Returns the backend that prepared the Session.
+    pub fn backend(&self) -> &'static str {
+        self.session().backend
+    }
+
+    /// Returns the confinement evidence established before the workload runs.
+    pub fn evidence(&self) -> &IsolationEvidence {
+        &self.session().evidence
+    }
+
+    /// Returns the host PID of Bubblewrap's outer monitor process.
+    pub fn monitor_pid(&self) -> u32 {
+        self.session().monitor_pid()
+    }
+
+    /// Returns Bubblewrap's verified host-view PID-namespace leader, when available.
+    pub fn sandbox_leader_pid(&self) -> Option<u32> {
+        self.session().sandbox_leader_pid()
+    }
+
+    /// Returns every process currently enclosed in the Session cgroup.
+    pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
+        self.session().processes()
+    }
+
+    /// Returns a dynamic read-only handle to the still-blocked process tree.
+    pub fn process_tree(&self) -> Option<ProcessTree> {
+        self.session().process_tree()
+    }
+
+    /// Releases the startup gate and returns the now-running Session.
+    pub fn start(mut self) -> Result<SandboxedSession, SandboxError> {
+        let release = self
+            .startup_gate
+            .as_mut()
+            .expect("a prepared Session owns its startup gate")
+            .release();
+        if let Err(source) = release {
+            let session_id = self.session_id().to_owned();
+            return match self.dispose() {
+                Ok(_) => Err(SandboxError::SpawnFailed {
+                    backend: "bubblewrap",
+                    reason: format!("startup gate release failed: {source}"),
+                }),
+                Err(cleanup) => Err(SandboxError::CleanupUnproven {
+                    session_id,
+                    reason: format!("startup gate release failed: {source}; {cleanup}"),
+                }),
+            };
+        }
+
+        let gate = self
+            .startup_gate
+            .take()
+            .expect("the released startup gate remains owned");
+        let mut session = self
+            .session
+            .take()
+            .expect("the prepared Session remains owned");
+        session._status_guard = Some(gate.into_status());
+        Ok(session)
+    }
+
+    /// Kills the still-blocked process tree and proves it has no survivors.
+    pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
+        let report = self
+            .session
+            .as_mut()
+            .ok_or_else(|| {
+                SandboxError::Refused("prepared Session is already disposed".to_owned())
+            })?
+            .dispose()?;
+        self.startup_gate = None;
+        self.session = None;
+        Ok(report)
+    }
+}
+
+impl Drop for PreparedSession {
+    fn drop(&mut self) {
+        if self.session.is_some() {
+            let _ = self.dispose();
+        }
     }
 }
 
@@ -611,10 +831,10 @@ fn identity_start_failed(
         || "cgroup kill was issued".to_owned(),
         |error| format!("cgroup kill failed: {error}"),
     );
-    SandboxError::SpawnFailed {
-        backend,
+    SandboxError::CleanupUnproven {
+        session_id: session_id.to_owned(),
         reason: format!(
-            "host identity verification failed: {source}; cleanup of session {session_id} was not proven ({killing}; {membership}; {reaping})",
+            "{backend} host identity verification failed: {source}; {killing}; {membership}; {reaping}",
         ),
     }
 }
@@ -756,6 +976,8 @@ pub trait Backend {
 #[derive(Clone, Debug)]
 pub struct BubblewrapBackend {
     program: PathBuf,
+    cgroup_parent: Option<PathBuf>,
+    cached_version: Option<String>,
 }
 
 impl Default for BubblewrapBackend {
@@ -769,6 +991,8 @@ impl BubblewrapBackend {
     pub fn new() -> Self {
         Self {
             program: PathBuf::from("bwrap"),
+            cgroup_parent: None,
+            cached_version: None,
         }
     }
 
@@ -776,7 +1000,51 @@ impl BubblewrapBackend {
     pub fn at(program: &Path) -> Self {
         Self {
             program: program.to_path_buf(),
+            cgroup_parent: None,
+            cached_version: None,
         }
+    }
+
+    /// Uses only the launcher's pinned binary, cgroup parent, and measured version.
+    pub(crate) fn for_launcher(
+        program: &Path,
+        cgroup_parent: &Path,
+        backend_version: String,
+    ) -> Self {
+        Self {
+            program: program.to_path_buf(),
+            cgroup_parent: Some(cgroup_parent.to_path_buf()),
+            cached_version: Some(backend_version),
+        }
+    }
+
+    fn cgroup_parent(&self) -> Result<Option<PathBuf>, SandboxError> {
+        let Some(parent) = &self.cgroup_parent else {
+            return Ok(Cgroup::delegated_parent());
+        };
+        let metadata = fs::symlink_metadata(parent).map_err(|source| {
+            SandboxError::NoCgroup(format!(
+                "cannot inspect configured cgroup parent '{}': {source}",
+                parent.display(),
+            ))
+        })?;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != 0
+            || metadata.mode() & 0o7777 != 0o700
+        {
+            return Err(SandboxError::NoCgroup(format!(
+                "configured cgroup parent '{}' must be a root-owned non-symlink directory with mode 0700",
+                parent.display(),
+            )));
+        }
+        if usable_delegated_parent(parent) {
+            return Ok(Some(parent.clone()));
+        }
+        Err(SandboxError::NoCgroup(format!(
+            "configured cgroup parent '{}' is not writable",
+            parent.display(),
+        )))
     }
 
     fn arguments(
@@ -852,6 +1120,139 @@ impl BubblewrapBackend {
         arguments.push(plan.executable.display().to_string());
         arguments.extend(plan.arguments.iter().cloned());
         arguments
+    }
+
+    /// Materializes a confined Session while keeping its workload blocked.
+    pub fn prepare(&self, plan: &ConfinementPlan) -> Result<PreparedSession, SandboxError> {
+        if plan.network != NetworkPolicy::Denied {
+            return Err(SandboxError::Refused(
+                "this build confines only Sessions with no network; brokered egress belongs to the control service".to_owned(),
+            ));
+        }
+        let host_identity = if let IdentityPlan::HostIdentity { uid, gid } = plan.identity {
+            if !rustix::process::geteuid().is_root() {
+                return Err(SandboxError::Refused(
+                    "a distinct host identity requires a root launcher".to_owned(),
+                ));
+            }
+            if uid == 0 || gid == 0 {
+                return Err(SandboxError::Refused(
+                    "a Session host identity must be non-root".to_owned(),
+                ));
+            }
+            Some((uid, gid))
+        } else {
+            None
+        };
+        if host_identity.is_some() {
+            materialize_session_root(&plan.home, &plan.workspace)?;
+        }
+        for writable in [&plan.home, &plan.workspace] {
+            materialize_writable(writable, host_identity)?;
+        }
+
+        let mut startup_gate = HostIdentityGate::new().map_err(|source| SandboxError::Io {
+            path: "startup gate".to_owned(),
+            source,
+        })?;
+        let cgroup_parent = self.cgroup_parent()?;
+        if host_identity.is_some() && cgroup_parent.is_none() {
+            return Err(SandboxError::Refused(
+                "a distinct host identity requires a writable cgroup for fail-closed startup"
+                    .to_owned(),
+            ));
+        }
+        let cgroup = cgroup_parent
+            .map(|parent| Cgroup::create(&parent, &plan.session_id))
+            .transpose()?;
+        let cgroup = preflight_cgroup(cgroup, plan.identity)?;
+
+        let mut command = Command::new(&self.program);
+        command
+            .args(self.arguments(plan, Some(&startup_gate)))
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some((uid, gid)) = host_identity {
+            command.gid(gid).uid(uid);
+        }
+        startup_gate.inherit_fds(&mut command);
+
+        if let Some(cgroup) = &cgroup {
+            let procs = cgroup.path().join("cgroup.procs");
+            let file = match fs::OpenOptions::new().write(true).open(&procs) {
+                Ok(file) => file,
+                Err(source) => {
+                    cgroup.remove();
+                    return Err(SandboxError::Io {
+                        path: procs.display().to_string(),
+                        source,
+                    });
+                }
+            };
+            // The file is deliberately opened before the uid/gid drop. cgroup
+            // v2 authorizes migration against its open-time credentials.
+            // Between fork and exec the child writes itself into the cgroup:
+            // "0" means "the writing process". Doing this from the parent
+            // after spawn would leave a window in which the child could fork a
+            // descendant that never joins, and disposal could not prove it
+            // gone.
+            unsafe {
+                command.pre_exec(move || {
+                    (&file).write_all(b"0\n")?;
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some(cgroup) = &cgroup {
+                    cgroup.remove();
+                }
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.name(),
+                    reason: error.to_string(),
+                });
+            }
+        };
+        startup_gate.child_spawned();
+
+        let (identity, sandbox_leader_pid) = if let Some((uid, gid)) = host_identity {
+            let cgroup = cgroup
+                .as_ref()
+                .expect("HostIdentity requires a cgroup before spawning");
+            let observation = match startup_gate.verify(child.id(), cgroup, uid, gid) {
+                Ok(observation) => observation,
+                Err(error) => {
+                    return Err(identity_start_failed(
+                        self.name(),
+                        &plan.session_id,
+                        &mut child,
+                        cgroup,
+                        error,
+                    ));
+                }
+            };
+            (Some(observation), Some(observation.sandbox_leader_pid))
+        } else {
+            (None, None)
+        };
+
+        Ok(PreparedSession {
+            session: Some(SandboxedSession {
+                session_id: plan.session_id.clone(),
+                backend: self.name(),
+                evidence: self.evidence(plan.network, cgroup.as_ref(), identity),
+                child,
+                cgroup,
+                sandbox_leader_pid,
+                _status_guard: None,
+            }),
+            startup_gate: Some(startup_gate),
+        })
     }
 
     fn evidence(
@@ -960,6 +1361,9 @@ impl Backend for BubblewrapBackend {
     }
 
     fn version(&self) -> Result<String, SandboxError> {
+        if let Some(version) = &self.cached_version {
+            return Ok(version.clone());
+        }
         let output = Command::new(&self.program)
             .arg("--version")
             .output()
@@ -977,7 +1381,7 @@ impl Backend for BubblewrapBackend {
                 .ok()
                 .and_then(|value| value.trim().parse::<u64>().ok())
                 .is_some_and(|count| count > 0);
-        let cgroup_v2 = Cgroup::delegated_parent().is_some();
+        let cgroup_v2 = self.cgroup_parent().is_ok_and(|parent| parent.is_some());
         KernelPrerequisites {
             user_namespaces,
             pid_namespaces: Path::new("/proc/self/ns/pid").exists(),
@@ -991,158 +1395,7 @@ impl Backend for BubblewrapBackend {
     }
 
     fn spawn(&self, plan: &ConfinementPlan) -> Result<SandboxedSession, SandboxError> {
-        if plan.network != NetworkPolicy::Denied {
-            return Err(SandboxError::Refused(
-                "this build confines only Sessions with no network; brokered egress belongs to the control service".to_owned(),
-            ));
-        }
-        let host_identity = if let IdentityPlan::HostIdentity { uid, gid } = plan.identity {
-            if !rustix::process::geteuid().is_root() {
-                return Err(SandboxError::Refused(
-                    "a distinct host identity requires a root launcher".to_owned(),
-                ));
-            }
-            if uid == 0 || gid == 0 {
-                return Err(SandboxError::Refused(
-                    "a Session host identity must be non-root".to_owned(),
-                ));
-            }
-            Some((uid, gid))
-        } else {
-            None
-        };
-        let cgroup_parent = Cgroup::delegated_parent();
-        if host_identity.is_some() && cgroup_parent.is_none() {
-            return Err(SandboxError::Refused(
-                "a distinct host identity requires a writable cgroup for fail-closed startup"
-                    .to_owned(),
-            ));
-        }
-        if host_identity.is_some() {
-            materialize_session_root(&plan.home, &plan.workspace)?;
-        }
-        for writable in [&plan.home, &plan.workspace] {
-            materialize_writable(writable, host_identity)?;
-        }
-
-        let mut identity_gate = host_identity
-            .map(|_| HostIdentityGate::new())
-            .transpose()
-            .map_err(|source| SandboxError::Io {
-                path: "host identity startup gate".to_owned(),
-                source,
-            })?;
-        let cgroup = cgroup_parent
-            .map(|parent| Cgroup::create(&parent, &plan.session_id))
-            .transpose()?;
-        let cgroup = preflight_cgroup(cgroup, plan.identity)?;
-
-        let mut command = Command::new(&self.program);
-        command
-            .args(self.arguments(plan, identity_gate.as_ref()))
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some((uid, gid)) = host_identity {
-            command.gid(gid).uid(uid);
-        }
-        if let Some(gate) = &identity_gate {
-            gate.inherit_fds(&mut command);
-        }
-
-        if let Some(cgroup) = &cgroup {
-            let procs = cgroup.path().join("cgroup.procs");
-            let file = match fs::OpenOptions::new().write(true).open(&procs) {
-                Ok(file) => file,
-                Err(source) => {
-                    cgroup.remove();
-                    return Err(SandboxError::Io {
-                        path: procs.display().to_string(),
-                        source,
-                    });
-                }
-            };
-            // The file is deliberately opened before the uid/gid drop. cgroup
-            // v2 authorizes migration against its open-time credentials.
-            // Between fork and exec the child writes itself into the cgroup:
-            // "0" means "the writing process". Doing this from the parent
-            // after spawn would leave a window in which the child could fork a
-            // descendant that never joins, and disposal could not prove it
-            // gone.
-            unsafe {
-                command.pre_exec(move || {
-                    (&file).write_all(b"0\n")?;
-                    Ok(())
-                });
-            }
-        }
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                if let Some(cgroup) = &cgroup {
-                    cgroup.remove();
-                }
-                return Err(SandboxError::SpawnFailed {
-                    backend: self.name(),
-                    reason: error.to_string(),
-                });
-            }
-        };
-        if let Some(gate) = &mut identity_gate {
-            gate.child_spawned();
-        }
-
-        let (identity, sandbox_leader_pid, status) = if let Some((uid, gid)) = host_identity {
-            let cgroup = cgroup
-                .as_ref()
-                .expect("HostIdentity requires a cgroup before spawning");
-            let gate = identity_gate
-                .as_mut()
-                .expect("HostIdentity creates a startup gate");
-            let observation = match gate.verify(child.id(), cgroup, uid, gid) {
-                Ok(observation) => observation,
-                Err(error) => {
-                    return Err(identity_start_failed(
-                        self.name(),
-                        &plan.session_id,
-                        &mut child,
-                        cgroup,
-                        error,
-                    ));
-                }
-            };
-            if let Err(error) = gate.release() {
-                return Err(identity_start_failed(
-                    self.name(),
-                    &plan.session_id,
-                    &mut child,
-                    cgroup,
-                    error,
-                ));
-            }
-            let gate = identity_gate
-                .take()
-                .expect("the verified identity gate is present");
-            (
-                Some(observation),
-                Some(observation.sandbox_leader_pid),
-                Some(gate.into_status()),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        Ok(SandboxedSession {
-            session_id: plan.session_id.clone(),
-            backend: self.name(),
-            evidence: self.evidence(plan.network, cgroup.as_ref(), identity),
-            child,
-            cgroup,
-            sandbox_leader_pid,
-            _status_guard: status,
-        })
+        self.prepare(plan)?.start()
     }
 }
 
@@ -1208,6 +1461,235 @@ mod tests {
             .into_iter()
             .find(|evidence| evidence.dimension == Dimension::Lifecycle)
             .expect("Lifecycle evidence is present")
+    }
+
+    #[test]
+    fn launcher_backend_rejects_an_untrusted_pinned_cgroup_parent_without_fallback() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("membership control fixture writes");
+        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700))
+            .expect("fixture mode is exact");
+        let backend = BubblewrapBackend::for_launcher(
+            Path::new("/usr/bin/bwrap"),
+            fixture.path(),
+            "bubblewrap 1.0".to_owned(),
+        );
+
+        let error = backend
+            .cgroup_parent()
+            .expect_err("a caller-owned parent must not be trusted or replaced");
+        assert!(
+            matches!(error, SandboxError::NoCgroup(ref reason) if reason.contains(&fixture.path().display().to_string())),
+            "unexpected error: {error}",
+        );
+
+        let link = fixture.path().with_extension("link");
+        std::os::unix::fs::symlink(fixture.path(), &link).expect("parent symlink creates");
+        let backend = BubblewrapBackend::for_launcher(
+            Path::new("/usr/bin/bwrap"),
+            &link,
+            "bubblewrap 1.0".to_owned(),
+        );
+        assert!(
+            matches!(backend.cgroup_parent(), Err(SandboxError::NoCgroup(_))),
+            "a pinned symlink must not be followed or replaced",
+        );
+        fs::remove_file(link).expect("parent symlink removes");
+    }
+
+    #[test]
+    fn launcher_evidence_uses_the_cached_backend_version_without_spawning() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("membership control fixture writes");
+        let marker = fixture.path().join("backend-ran");
+        let program = fixture.path().join("bwrap");
+        fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("backend fixture writes");
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))
+            .expect("backend fixture becomes executable");
+        let backend = BubblewrapBackend::for_launcher(
+            &program,
+            fixture.path(),
+            "bubblewrap measured-before-authorization".to_owned(),
+        );
+
+        let evidence = backend.evidence(NetworkPolicy::Denied, None, None);
+
+        assert_eq!(
+            evidence.backend_version,
+            "bubblewrap measured-before-authorization",
+        );
+        assert!(!marker.exists(), "evidence must not spawn Bubblewrap");
+    }
+
+    #[test]
+    fn pinned_root_cgroup_prevents_operator_migration_of_a_session_process() {
+        if std::env::var_os("LOUISELM_TEST_PINNED_CGROUP_ESCAPE").is_none() {
+            return;
+        }
+        assert!(
+            rustix::process::geteuid().is_root(),
+            "the pinned-cgroup acceptance must run as root",
+        );
+        let parse_id = |name: &str| {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("{name} is required"))
+                .parse::<u32>()
+                .unwrap_or_else(|error| panic!("{name} must be numeric: {error}"))
+        };
+        let operator_uid = parse_id("LOUISELM_TEST_OPERATOR_UID");
+        let operator_gid = parse_id("LOUISELM_TEST_OPERATOR_GID");
+        let session_identity = parse_id("LOUISELM_TEST_HOST_ID");
+        assert_ne!(operator_uid, 0, "the operator must be non-root");
+        assert_ne!(operator_gid, 0, "the operator group must be non-root");
+        assert_ne!(session_identity, 0, "the Session identity must be non-root");
+
+        struct CgroupFixture(PathBuf);
+
+        impl Drop for CgroupFixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+
+        let cgroup_root = Path::new("/sys/fs/cgroup");
+        assert!(
+            cgroup_root.join("cgroup.controllers").is_file(),
+            "the pinned-cgroup acceptance requires cgroup v2",
+        );
+        let suffix = std::process::id();
+        let launcher_parent = cgroup_root.join(format!("louiselm-launch-test-{suffix}"));
+        fs::create_dir(&launcher_parent).expect("the root-only launcher cgroup parent creates");
+        let _launcher_parent_guard = CgroupFixture(launcher_parent.clone());
+        fs::set_permissions(&launcher_parent, fs::Permissions::from_mode(0o700))
+            .expect("the launcher cgroup parent becomes root-only");
+
+        let operator_cgroup = cgroup_root.join(format!("louiselm-operator-test-{suffix}"));
+        fs::create_dir(&operator_cgroup).expect("the operator cgroup creates");
+        let _operator_cgroup_guard = CgroupFixture(operator_cgroup.clone());
+        chown(&operator_cgroup, Some(operator_uid), Some(operator_gid))
+            .expect("the operator owns its cgroup");
+        fs::set_permissions(&operator_cgroup, fs::Permissions::from_mode(0o700))
+            .expect("the operator cgroup becomes private");
+        let operator_procs = operator_cgroup.join("cgroup.procs");
+        chown(&operator_procs, Some(operator_uid), Some(operator_gid))
+            .expect("the operator can manage its own cgroup membership");
+
+        let fixture = tempfile::tempdir().expect("Session fixture opens");
+        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755))
+            .expect("the assigned identity can traverse the fixture");
+        let sessions_root = fixture.path().join("sessions");
+        fs::DirBuilder::new()
+            .mode(0o711)
+            .create(&sessions_root)
+            .expect("the root-owned Sessions root creates");
+        let runtime_root = fixture.path().join("runtime");
+        fs::create_dir(&runtime_root).expect("the runtime root creates");
+        fs::set_permissions(&runtime_root, fs::Permissions::from_mode(0o755))
+            .expect("the runtime root is traversable");
+        let executable = runtime_root.join("agent");
+        fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 30\n")
+            .expect("the Agent fixture writes");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("the Agent fixture becomes executable");
+        let session_id = format!("pinned-cgroup-{suffix}");
+        let plan = ConfinementPlan {
+            session_id: session_id.clone(),
+            runtime_root,
+            executable,
+            arguments: Vec::new(),
+            environment: BTreeMap::new(),
+            home: sessions_root.join(&session_id).join("home"),
+            workspace: sessions_root.join(&session_id).join("workspace"),
+            system_roots: default_system_roots(),
+            network: NetworkPolicy::Denied,
+            identity: IdentityPlan::HostIdentity {
+                uid: session_identity,
+                gid: session_identity,
+            },
+            channels: vec![Channel::AcpStdio {
+                id: "acp".to_owned(),
+            }],
+        };
+        let backend = BubblewrapBackend::for_launcher(
+            Path::new("/usr/bin/bwrap"),
+            &launcher_parent,
+            "bubblewrap measured before authorization".to_owned(),
+        );
+        let mut prepared = backend
+            .prepare(&plan)
+            .expect("the pinned backend prepares the Session");
+        let sandbox_leader = prepared
+            .sandbox_leader_pid()
+            .expect("Bubblewrap reports its sandbox leader");
+        let session_cgroup = launcher_parent.join(format!("louiselm-session-{session_id}"));
+        assert!(session_cgroup.is_dir(), "the pinned parent owns the child");
+
+        let mut helper = Command::new("/bin/sh");
+        helper
+            .arg("-c")
+            .arg(
+                "IFS= read -r pid; printf '0\\n' > \"$DESTINATION\" || exit 10; printf '%s\\n' \"$pid\" > \"$DESTINATION\"",
+            )
+            .env_clear()
+            .env("DESTINATION", &operator_procs)
+            .uid(operator_uid)
+            .gid(operator_gid)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut helper = helper.spawn().expect("the operator helper starts");
+        fs::write(&operator_procs, format!("{}\n", helper.id()))
+            .expect("root places the helper in its delegated cgroup");
+        writeln!(
+            helper.stdin.as_mut().expect("helper stdin is piped"),
+            "{sandbox_leader}",
+        )
+        .expect("the migration target reaches the helper");
+        drop(helper.stdin.take());
+        let attack = helper
+            .wait_with_output()
+            .expect("the operator migration attempt exits");
+        let still_enclosed = prepared
+            .process_tree()
+            .expect("the prepared Session has a process tree")
+            .contains(sandbox_leader)
+            .expect("Session membership remains readable");
+        if !still_enclosed {
+            fs::write(
+                session_cgroup.join("cgroup.procs"),
+                format!("{sandbox_leader}\n"),
+            )
+            .expect("root restores an escaped leader before cleanup");
+        }
+        let disposal = prepared.dispose();
+        let session_cgroup_removed = !session_cgroup.exists();
+
+        assert_ne!(
+            attack.status.code(),
+            Some(10),
+            "the operator helper must be able to write its own cgroup.procs: {}",
+            String::from_utf8_lossy(&attack.stderr),
+        );
+        assert!(
+            !attack.status.success(),
+            "the operator escaped the Session leader from the pinned cgroup",
+        );
+        assert!(
+            still_enclosed,
+            "the failed migration must leave the leader enclosed"
+        );
+        let disposal = disposal.expect("the prepared Session cleans up");
+        assert_eq!(disposal.survivors, 0);
+        assert!(
+            session_cgroup_removed,
+            "cleanup removes the Session child cgroup",
+        );
     }
 
     #[test]

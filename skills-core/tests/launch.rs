@@ -6,8 +6,10 @@ use std::{fs, io::Read, os::unix::fs::PermissionsExt};
 
 use louiselm_skills::{
     canonical::Digest,
-    launch::{self, LaunchError, LaunchRequest, REQUEST_SCHEMA},
-    registry::{NetworkPolicy, Registry, RegistryError},
+    launch::{
+        self, LaunchError, LaunchRequest, MAX_REQUEST_BYTES, PROTOCOL_VERSION, REQUEST_SCHEMA,
+    },
+    registry::{MAX_REGISTRY_BYTES, NetworkPolicy, Registry, RegistryError},
     sandbox::{Backend, BubblewrapBackend, IdentityPlan},
 };
 use support::{Fixture, write_file, write_registry};
@@ -15,10 +17,14 @@ use support::{Fixture, write_file, write_registry};
 fn valid_request() -> LaunchRequest {
     LaunchRequest {
         schema: REQUEST_SCHEMA.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "request-abc123".to_owned(),
+        authorization_id: "authorization-abc123".to_owned(),
         session_id: "session-abc123".to_owned(),
         run_id: "run-xyz789".to_owned(),
         agent_id: "demo".to_owned(),
         envelope_id: "denied".to_owned(),
+        envelope_revision: 7,
         skill_generation_id: Digest::of(b"generation").to_string(),
         session_input_manifest_id: Digest::of(b"manifest").to_string(),
     }
@@ -175,6 +181,16 @@ fn resolve_refuses_a_malformed_skill_generation_id() {
         ),
         "unexpected error: {error}",
     );
+
+    let mut alias = valid_request();
+    alias.skill_generation_id = alias.skill_generation_id[7..].to_owned();
+    assert!(matches!(
+        alias.validate(),
+        Err(LaunchError::MalformedIdentifier {
+            field: "skill_generation_id",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -199,23 +215,84 @@ fn resolve_refuses_a_request_naming_the_wrong_schema() {
 }
 
 #[test]
-fn deserializing_a_request_with_an_extra_field_fails_closed() {
-    let json = serde_json::json!({
-        "schema": REQUEST_SCHEMA,
-        "session_id": "session-abc123",
-        "run_id": "run-xyz789",
-        "agent_id": "demo",
-        "envelope_id": "denied",
-        "skill_generation_id": Digest::of(b"generation").to_string(),
-        "session_input_manifest_id": Digest::of(b"manifest").to_string(),
-        "command": "whoami",
-    });
+fn launch_requests_are_canonical_versioned_and_bounded() {
+    let request = valid_request();
+    let bytes = request.canonical_bytes();
 
-    let result: Result<LaunchRequest, _> = serde_json::from_value(json);
-    assert!(
-        result.is_err(),
-        "a request carrying an extra 'command' field must not deserialize",
+    assert_eq!(
+        LaunchRequest::parse_canonical(&bytes).expect("canonical request parses"),
+        request,
     );
+    assert_eq!(request.digest(), Digest::of(&bytes));
+
+    let mut noncanonical = bytes.clone();
+    noncanonical.push(b'\n');
+    assert!(matches!(
+        LaunchRequest::parse_canonical(&noncanonical),
+        Err(LaunchError::NonCanonical)
+    ));
+
+    let oversized = vec![b' '; MAX_REQUEST_BYTES + 1];
+    assert!(matches!(
+        LaunchRequest::parse_canonical(&oversized),
+        Err(LaunchError::RequestTooLarge { .. })
+    ));
+
+    let mut wrong_version = request;
+    wrong_version.protocol_version += 1;
+    assert!(matches!(
+        wrong_version.validate(),
+        Err(LaunchError::ProtocolVersion { .. })
+    ));
+}
+
+#[test]
+fn launch_request_authority_fields_are_bounded_identifiers() {
+    let request = valid_request();
+    for field in ["request_id", "authorization_id"] {
+        for hostile in ["", "../escape", "has space", "non-ascii-é"] {
+            let mut candidate = request.clone();
+            match field {
+                "request_id" => candidate.request_id = hostile.to_owned(),
+                "authorization_id" => candidate.authorization_id = hostile.to_owned(),
+                _ => unreachable!(),
+            }
+            assert!(matches!(
+                candidate.validate(),
+                Err(LaunchError::MalformedIdentifier {
+                    field: found,
+                    ..
+                }) if found == field
+            ));
+        }
+    }
+}
+
+#[test]
+fn deserializing_a_request_with_an_extra_field_fails_closed() {
+    let request = valid_request();
+    let base = serde_json::to_value(request).expect("request serializes");
+    for (field, value) in [
+        ("command", serde_json::json!("whoami")),
+        ("environment", serde_json::json!({ "TOKEN": "secret" })),
+        ("mount", serde_json::json!("/")),
+        ("path", serde_json::json!("/bin/sh")),
+        ("identity", serde_json::json!(0)),
+        ("backend", serde_json::json!("none")),
+        ("policy", serde_json::json!("allow-all")),
+        ("systemd", serde_json::json!({ "property": "Delegate=yes" })),
+    ] {
+        let mut hostile = base.clone();
+        hostile
+            .as_object_mut()
+            .expect("request is an object")
+            .insert(field.to_owned(), value);
+        let result: Result<LaunchRequest, _> = serde_json::from_value(hostile);
+        assert!(
+            result.is_err(),
+            "a request carrying '{field}' must fail closed"
+        );
+    }
 }
 
 #[test]
@@ -250,4 +327,66 @@ fn a_resolved_plan_actually_spawns_through_the_bubblewrap_backend() {
     assert_eq!(stdout.trim(), "launched-via-request");
 
     session.dispose().expect("disposal succeeds");
+}
+
+#[test]
+fn trusted_registry_rejects_writable_authority_before_lookup() {
+    let fixture = Fixture::new();
+    let registry_root = fixture.path("registry");
+    let runtime_root = fixture.path("runtime");
+    write_file(&runtime_root.join("bin/agent"), "#!/bin/sh\nexec cat\n");
+    fs::set_permissions(
+        runtime_root.join("bin/agent"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("script is chmod +x");
+    write_file(&runtime_root.join("lib/adapter.js"), "// adapter\n");
+    write_registry(&registry_root, &runtime_root);
+    fs::set_permissions(&registry_root, fs::Permissions::from_mode(0o777))
+        .expect("registry becomes writable");
+
+    let error = Registry::open_trusted(&registry_root)
+        .expect_err("a writable registry is never launch authority");
+
+    assert!(matches!(error, RegistryError::Untrusted { .. }));
+}
+
+#[test]
+fn registry_documents_are_bounded_and_duplicate_ids_are_rejected() {
+    let fixture = Fixture::new();
+    let registry_root = fixture.path("registry");
+    write_file(
+        &registry_root.join("agents.json"),
+        &" ".repeat(MAX_REGISTRY_BYTES + 1),
+    );
+
+    assert!(matches!(
+        Registry::open(&registry_root),
+        Err(RegistryError::Oversized { kind: "agents" })
+    ));
+
+    write_file(
+        &registry_root.join("agents.json"),
+        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"same","provider":"one","runtime_id":"runtime","arguments":[],"environment":{}},{"id":"same","provider":"two","runtime_id":"runtime","arguments":[],"environment":{}}]}"#,
+    );
+
+    assert!(matches!(
+        Registry::open(&registry_root),
+        Err(RegistryError::Duplicate { kind: "agent", .. })
+    ));
+}
+
+#[test]
+fn registry_rejects_runtime_paths_that_escape_the_registered_root() {
+    let fixture = Fixture::new();
+    let registry_root = fixture.path("registry");
+    write_file(
+        &registry_root.join("runtimes.json"),
+        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"runtime","root":"/tmp/runtime","executable":"../agent","executable_sha256":"00","adapters":[],"version":"1","origin":"test","library_baseline":[],"isolation_policy_version":"louiselm.isolation/1"}]}"#,
+    );
+
+    assert!(matches!(
+        Registry::open(&registry_root),
+        Err(RegistryError::Malformed { kind, .. }) if kind == "runtime"
+    ));
 }

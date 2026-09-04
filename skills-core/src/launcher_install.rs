@@ -10,10 +10,15 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::{
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicU64, Ordering},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -32,7 +37,7 @@ mod identity;
 pub use identity::{Identity, IdentityLease, IdentityPool};
 
 /// Schema for the launcher configuration held by root.
-pub const CONFIG_SCHEMA: &str = "louiselm.launch.config/1";
+pub const CONFIG_SCHEMA: &str = "louiselm.launch.config/2";
 /// Schema for the public launcher verification keyring.
 pub const KEYRING_SCHEMA: &str = "louiselm.launch.keyring/1";
 /// Schema for launcher installation diagnostics.
@@ -43,6 +48,9 @@ const LAUNCHER_RELATIVE_PATH: &str = "bin/louiselm-launch";
 const SUDO_PATH: &str = "/usr/bin/sudo";
 const PENDING_ROTATION_SCHEMA: &str = "louiselm.launch.rotation.pending/1";
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
+const COMMAND_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+// Leave part of the caller's deadline for verified SIGKILL and reaping.
+const MAX_COMMAND_CLEANUP_RESERVE: Duration = Duration::from_millis(100);
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Every path the root installer is allowed to touch.
@@ -70,6 +78,10 @@ pub struct LauncherPaths {
     pub getent: PathBuf,
     /// Absolute sudoers validator.
     pub visudo: PathBuf,
+    /// Absolute sandbox helper measured at installation.
+    pub bwrap: PathBuf,
+    /// Fixed Control broker rendezvous.
+    pub broker_socket: PathBuf,
 }
 
 impl LauncherPaths {
@@ -88,6 +100,8 @@ impl LauncherPaths {
             ssh_keygen: PathBuf::from("/usr/bin/ssh-keygen"),
             getent: PathBuf::from("/usr/bin/getent"),
             visudo: PathBuf::from("/usr/sbin/visudo"),
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            broker_socket: PathBuf::from("/run/louiselm/control.sock"),
         }
     }
 
@@ -135,6 +149,10 @@ impl LauncherPaths {
 pub struct InstallRequest {
     /// Existing unprivileged account permitted to invoke the launcher.
     pub operator: String,
+    /// Dedicated non-root Control broker UID.
+    pub broker_uid: u32,
+    /// Dedicated non-root Control broker GID.
+    pub broker_gid: u32,
     /// Host identities reserved for Sessions.
     pub pool: IdentityPool,
 }
@@ -149,6 +167,12 @@ pub struct LauncherConfig {
     pub operator: String,
     /// Numeric identity pinned in sudoers so a name reassignment cannot widen authority.
     pub operator_uid: u32,
+    /// Dedicated Control broker UID pinned for kernel credential checks.
+    pub broker_uid: u32,
+    /// Dedicated Control broker GID pinned for kernel credential checks.
+    pub broker_gid: u32,
+    /// Fixed broker rendezvous; never supplied by a launch request.
+    pub broker_socket_path: PathBuf,
     /// Installed release identity.
     pub release_id: String,
     /// Digest of the launcher component bytes.
@@ -163,6 +187,10 @@ pub struct LauncherConfig {
     pub getent_path: PathBuf,
     /// Digest of the measured identity resolver bytes.
     pub getent_digest: String,
+    /// Absolute sandbox helper path.
+    pub bwrap_path: PathBuf,
+    /// Digest of the measured sandbox helper bytes.
+    pub bwrap_digest: String,
     /// Installed identity pool.
     pub pool: IdentityPool,
 }
@@ -333,35 +361,372 @@ pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, invocation: &CommandInvocation) -> io::Result<CommandOutput> {
-        let mut child = Command::new(&invocation.program);
-        child
-            .args(&invocation.arguments)
-            .env_clear()
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(current_dir) = &invocation.current_dir {
-            child.current_dir(current_dir);
+        run_system_command(invocation, None)
+    }
+}
+
+// The dedicated launcher owns SIGCHLD normally; losing waitable-child ownership is fatal.
+struct BoundedSystemCommandRunner {
+    deadline: Instant,
+}
+
+impl CommandRunner for BoundedSystemCommandRunner {
+    fn run(&self, invocation: &CommandInvocation) -> io::Result<CommandOutput> {
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "command operation exceeded its fixed deadline",
+            ));
         }
-        if invocation.stdin.is_empty() {
-            child.stdin(Stdio::null());
-        } else {
-            child.stdin(Stdio::piped());
+        run_system_command(invocation, Some(self.deadline))
+    }
+}
+
+type BytesWorker = JoinHandle<io::Result<Vec<u8>>>;
+
+fn run_system_command(
+    invocation: &CommandInvocation,
+    deadline: Option<Instant>,
+) -> io::Result<CommandOutput> {
+    let mut command = Command::new(&invocation.program);
+    command
+        .args(&invocation.arguments)
+        .env_clear()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(current_dir) = &invocation.current_dir {
+        command.current_dir(current_dir);
+    }
+    if invocation.stdin.is_empty() {
+        command.stdin(Stdio::null());
+    } else {
+        command.stdin(Stdio::piped());
+    }
+    if deadline.is_some() {
+        // Fixed measured helpers may fork ordinary descendants; none may outlive the invocation.
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let process_group = deadline.map(|_| {
+        rustix::process::Pid::from_raw(child.id().cast_signed())
+            .expect("a spawned command has a positive process ID")
+    });
+    let cleanup_deadline = deadline.unwrap_or_else(|| Instant::now() + COMMAND_CLEANUP_TIMEOUT);
+    let execution_deadline = deadline.map(command_execution_deadline);
+    let stdin_worker = child.stdin.take().map(|mut stdin| {
+        let bytes = invocation.stdin.clone();
+        thread::Builder::new()
+            .name("louiselm-command-stdin".to_owned())
+            .spawn(move || stdin.write_all(&bytes))
+    });
+    let stdin_worker = match stdin_worker.transpose() {
+        Ok(worker) => worker,
+        Err(error) => {
+            let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+            cleanup?;
+            return Err(error);
         }
-        let mut child = child.spawn()?;
-        if !invocation.stdin.is_empty() {
-            child
-                .stdin
-                .take()
-                .expect("piped stdin is present")
-                .write_all(&invocation.stdin)?;
+    };
+    let stdout_worker = match command_output_worker(
+        "louiselm-command-stdout",
+        child.stdout.take().expect("command stdout is piped"),
+    ) {
+        Ok(worker) => worker,
+        Err(error) => {
+            let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+            cleanup?;
+            if let Some(worker) = stdin_worker {
+                drain_worker(worker, cleanup_deadline)?;
+            }
+            return Err(error);
         }
-        let output = child.wait_with_output()?;
-        Ok(CommandOutput {
-            success: output.status.success(),
-            exit_code: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+    };
+    let stderr_worker = match command_output_worker(
+        "louiselm-command-stderr",
+        child.stderr.take().expect("command stderr is piped"),
+    ) {
+        Ok(worker) => worker,
+        Err(error) => {
+            let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+            cleanup?;
+            if let Some(worker) = stdin_worker {
+                drain_worker(worker, cleanup_deadline)?;
+            }
+            drain_worker(stdout_worker, cleanup_deadline)?;
+            return Err(error);
+        }
+    };
+
+    let status = match execution_deadline {
+        Some(execution_deadline) => {
+            let process_group = process_group.expect("a bounded command has a process group");
+            match wait_until_exit(process_group, execution_deadline) {
+                Ok(true) => None,
+                Ok(false) => {
+                    let cleanup =
+                        terminate_child(&mut child, Some(process_group), cleanup_deadline);
+                    cleanup?;
+                    if let Some(worker) = stdin_worker {
+                        drain_worker(worker, cleanup_deadline)?;
+                    }
+                    drain_worker(stdout_worker, cleanup_deadline)?;
+                    drain_worker(stderr_worker, cleanup_deadline)?;
+                    let error = io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "command exceeded its fixed deadline",
+                    );
+                    return Err(error);
+                }
+                Err(error) => {
+                    let cleanup =
+                        terminate_child(&mut child, Some(process_group), cleanup_deadline);
+                    cleanup?;
+                    if let Some(worker) = stdin_worker {
+                        drain_worker(worker, cleanup_deadline)?;
+                    }
+                    drain_worker(stdout_worker, cleanup_deadline)?;
+                    drain_worker(stderr_worker, cleanup_deadline)?;
+                    return Err(error);
+                }
+            }
+        }
+        None => {
+            // A wait error returns directly because numeric PID ownership would be unproven.
+            Some(child.wait()?)
+        }
+    };
+
+    if execution_deadline.is_some_and(|execution_deadline| {
+        !wait_for_command_io(
+            &stdin_worker,
+            &stdout_worker,
+            &stderr_worker,
+            execution_deadline,
+        )
+    }) {
+        let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+        cleanup?;
+        if let Some(worker) = stdin_worker {
+            drain_worker(worker, cleanup_deadline)?;
+        }
+        drain_worker(stdout_worker, cleanup_deadline)?;
+        drain_worker(stderr_worker, cleanup_deadline)?;
+        let error = io::Error::new(
+            io::ErrorKind::TimedOut,
+            "command I/O exceeded its fixed deadline",
+        );
+        return Err(error);
+    }
+
+    let status = match status {
+        Some(status) => status,
+        None => terminate_child(&mut child, process_group, cleanup_deadline)?,
+    };
+    if process_group.is_some() {
+        if let Some(worker) = stdin_worker {
+            join_worker_until(worker, cleanup_deadline)??;
+        }
+        let stdout = join_worker_until(stdout_worker, cleanup_deadline)??;
+        let stderr = join_worker_until(stderr_worker, cleanup_deadline)??;
+        return Ok(command_output(status, stdout, stderr));
+    }
+    if let Some(worker) = stdin_worker {
+        join_worker(worker)??;
+    }
+    let stdout = join_worker(stdout_worker)??;
+    let stderr = join_worker(stderr_worker)??;
+    Ok(command_output(status, stdout, stderr))
+}
+
+fn command_output_worker(
+    name: &str,
+    mut pipe: impl Read + Send + 'static,
+) -> io::Result<BytesWorker> {
+    thread::Builder::new().name(name.to_owned()).spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn wait_until_exit(child: rustix::process::Pid, deadline: Instant) -> io::Result<bool> {
+    loop {
+        let status = match rustix::process::waitid(
+            rustix::process::WaitId::Pid(child),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOWAIT
+                | rustix::process::WaitIdOptions::NOHANG,
+        ) {
+            Ok(status) => status,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(waitable_child_error(error)),
+        };
+        if status.is_some() {
+            return Ok(Instant::now() < deadline);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        thread::sleep(remaining.min(Duration::from_millis(5)));
+    }
+}
+
+fn wait_for_command_io(
+    stdin: &Option<JoinHandle<io::Result<()>>>,
+    stdout: &BytesWorker,
+    stderr: &BytesWorker,
+    deadline: Instant,
+) -> bool {
+    loop {
+        if stdin.as_ref().is_none_or(JoinHandle::is_finished)
+            && stdout.is_finished()
+            && stderr.is_finished()
+        {
+            return Instant::now() < deadline;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        thread::sleep(remaining.min(Duration::from_millis(5)));
+    }
+}
+
+fn terminate_child(
+    child: &mut Child,
+    process_group: Option<rustix::process::Pid>,
+    deadline: Instant,
+) -> io::Result<ExitStatus> {
+    if let Some(process_group) = process_group {
+        ensure_child_waitable(process_group)?;
+    }
+    let group_signal = terminate_process_group(process_group);
+    let direct_signal = child.kill();
+    let status = wait_for_child_exit(child, deadline);
+    let group_exit = match (process_group, &status) {
+        (Some(process_group), Ok(_)) => wait_for_process_group_exit(process_group, deadline),
+        _ => Ok(()),
+    };
+
+    group_signal?;
+    if process_group.is_none() {
+        direct_signal?;
+    }
+    let status = status?;
+    group_exit?;
+    Ok(status)
+}
+
+fn ensure_child_waitable(child: rustix::process::Pid) -> io::Result<()> {
+    loop {
+        match rustix::process::waitid(
+            rustix::process::WaitId::Pid(child),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOWAIT
+                | rustix::process::WaitIdOptions::NOHANG,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(rustix::io::Errno::INTR) => continue,
+            // ECHILD means SIGCHLD was ignored or another reaper won; never signal a stale PGID.
+            Err(error) => return Err(waitable_child_error(error)),
+        }
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, deadline: Instant) -> io::Result<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "command leader did not terminate",
+            ));
+        }
+        thread::sleep(remaining.min(Duration::from_millis(5)));
+    }
+}
+
+fn waitable_child_error(error: rustix::io::Errno) -> io::Error {
+    if error == rustix::io::Errno::CHILD {
+        return io::Error::other(
+            "bounded command lost waitable-child ownership; the launcher must own SIGCHLD",
+        );
+    }
+    error.into()
+}
+
+fn terminate_process_group(process_group: Option<rustix::process::Pid>) -> io::Result<()> {
+    if let Some(process_group) = process_group {
+        rustix::process::kill_process_group(process_group, rustix::process::Signal::KILL)?;
+    }
+    Ok(())
+}
+
+fn wait_for_process_group_exit(
+    process_group: rustix::process::Pid,
+    deadline: Instant,
+) -> io::Result<()> {
+    loop {
+        // The leader is reaped here, so only probe: another signal could hit a reused PGID.
+        match rustix::process::test_kill_process_group(process_group) {
+            Err(rustix::io::Errno::SRCH) => return Ok(()),
+            Err(error) => return Err(error.into()),
+            Ok(()) if Instant::now() >= deadline => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "command process group did not terminate",
+                ));
+            }
+            Ok(()) => thread::yield_now(),
+        }
+    }
+}
+
+fn command_execution_deadline(deadline: Instant) -> Instant {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    deadline
+        .checked_sub((remaining / 2).min(MAX_COMMAND_CLEANUP_RESERVE))
+        .unwrap_or(deadline)
+}
+
+fn drain_worker<T>(worker: JoinHandle<T>, deadline: Instant) -> io::Result<()> {
+    let _ = join_worker_until(worker, deadline)?;
+    Ok(())
+}
+
+fn join_worker_until<T>(worker: JoinHandle<T>, deadline: Instant) -> io::Result<T> {
+    while !worker.is_finished() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "command I/O cleanup did not terminate",
+            ));
+        }
+        thread::sleep(remaining.min(Duration::from_millis(5)));
+    }
+    join_worker(worker)
+}
+
+fn join_worker<T>(worker: JoinHandle<T>) -> io::Result<T> {
+    worker
+        .join()
+        .map_err(|_| io::Error::other("command I/O worker panicked"))
+}
+
+fn command_output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> CommandOutput {
+    CommandOutput {
+        success: status.success(),
+        exit_code: status.code(),
+        stdout,
+        stderr,
     }
 }
 
@@ -394,6 +759,12 @@ pub enum LauncherError {
     #[error("identity slot {slot} is occupied")]
     Occupied {
         /// Contended slot.
+        slot: u32,
+    },
+    /// A previous supervisor could not prove the assigned process tree gone.
+    #[error("identity slot {slot} is poisoned by an unproven cleanup")]
+    Poisoned {
+        /// Slot withheld from reuse.
         slot: u32,
     },
     /// The global install/rotation lock is already held.
@@ -439,8 +810,10 @@ pub fn install(
     let release = load_current_release(paths)?;
     let ssh_digest = hash_file(&paths.ssh_keygen, "ssh-keygen")?.to_string();
     let getent_digest = hash_file(&paths.getent, "getent")?.to_string();
+    let bwrap_digest = hash_file(&paths.bwrap, "bubblewrap")?.to_string();
     let operator_uid =
         identity::validate_install_authority(paths, runner, &request.pool, &request.operator)?;
+    validate_broker_identity(request, operator_uid)?;
 
     let existing_config: Option<LauncherConfig> = read_optional_json(&paths.config())?;
     let existing_keyring: Option<PublicKeyring> = read_optional_json(&paths.keyring())?;
@@ -448,6 +821,8 @@ pub fn install(
         validate_config(config, paths)?;
         if config.operator != request.operator
             || config.operator_uid != operator_uid
+            || config.broker_uid != request.broker_uid
+            || config.broker_gid != request.broker_gid
             || config.pool != request.pool
         {
             return Err(LauncherError::Invalid(
@@ -469,6 +844,9 @@ pub fn install(
         schema: CONFIG_SCHEMA.to_owned(),
         operator: request.operator.clone(),
         operator_uid,
+        broker_uid: request.broker_uid,
+        broker_gid: request.broker_gid,
+        broker_socket_path: paths.broker_socket.clone(),
         release_id: release.manifest.release_id,
         launcher_digest: release.launcher_digest,
         launcher_path: paths.launcher(),
@@ -476,6 +854,8 @@ pub fn install(
         ssh_keygen_digest: ssh_digest,
         getent_path: paths.getent.clone(),
         getent_digest,
+        bwrap_path: paths.bwrap.clone(),
+        bwrap_digest,
         pool: request.pool.clone(),
     };
     if let Some(keyring) = &existing_keyring {
@@ -629,6 +1009,45 @@ pub fn acquire_identity(paths: &LauncherPaths, slot: u32) -> Result<IdentityLeas
     identity::acquire(paths, slot)
 }
 
+pub(crate) fn acquire_identity_with_deadline(
+    paths: &LauncherPaths,
+    slot: u32,
+    deadline: Instant,
+) -> Result<IdentityLease, LauncherError> {
+    identity::acquire_with_runner(paths, slot, &BoundedSystemCommandRunner { deadline })
+}
+
+/// Loads the fixed runtime authority consumed by `louiselm-launch run`.
+///
+/// Unlike [`status`], this fails on the first trust violation and therefore
+/// cannot be mistaken for permission to launch.
+pub fn runtime_config(paths: &LauncherPaths) -> Result<LauncherConfig, LauncherError> {
+    runtime_config_with_runner(paths, &SystemCommandRunner)
+}
+
+/// Loads the fixed runtime authority while bounding every NSS helper by one
+/// absolute operation deadline.
+pub fn runtime_config_with_deadline(
+    paths: &LauncherPaths,
+    deadline: Instant,
+) -> Result<LauncherConfig, LauncherError> {
+    runtime_config_with_runner(paths, &BoundedSystemCommandRunner { deadline })
+}
+
+fn runtime_config_with_runner(
+    paths: &LauncherPaths,
+    runner: &impl CommandRunner,
+) -> Result<LauncherConfig, LauncherError> {
+    validate_paths(paths)?;
+    require_system_config(paths)?;
+    let config: LauncherConfig = read_required_json(&paths.config())?;
+    validate_config(&config, paths)?;
+    require_configured_release(paths, &config)?;
+    require_measured_bwrap(&config)?;
+    identity::validate_installed_authority(paths, runner, &config)?;
+    Ok(config)
+}
+
 /// Builds the exact documented non-interactive launcher invocation.
 pub fn sudo_invocation(config: &LauncherConfig) -> CommandInvocation {
     CommandInvocation {
@@ -705,7 +1124,12 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
         } else {
             config_valid = true;
             if *paths != LauncherPaths::system()
-                || check_secure_tool(&config.ssh_keygen_path, &mut failures)
+                || check_secure_tool(
+                    &config.ssh_keygen_path,
+                    "ssh_keygen",
+                    "ssh-keygen",
+                    &mut failures,
+                )
             {
                 match hash_file(&config.ssh_keygen_path, "ssh-keygen") {
                     Ok(found) if found.to_string() == config.ssh_keygen_digest => {}
@@ -735,6 +1159,23 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
                         "getent_unreadable",
                         error.to_string(),
                         "Restore the measured getent binary.",
+                    )),
+                }
+            }
+            if *paths != LauncherPaths::system()
+                || check_secure_tool(&config.bwrap_path, "bwrap", "bubblewrap", &mut failures)
+            {
+                match hash_file(&config.bwrap_path, "bubblewrap") {
+                    Ok(found) if found.to_string() == config.bwrap_digest => {}
+                    Ok(_) => failures.push(failure(
+                        "bwrap_changed",
+                        "The measured bubblewrap bytes changed after installation.",
+                        "Review the sandbox helper update, then rerun the root launcher installer.",
+                    )),
+                    Err(error) => failures.push(failure(
+                        "bwrap_unreadable",
+                        error.to_string(),
+                        "Restore the measured bubblewrap binary.",
                     )),
                 }
             }
@@ -893,6 +1334,20 @@ pub struct LauncherSigner {
 impl LauncherSigner {
     /// Opens the installed root-only signer after revalidating its authority.
     pub fn open(paths: &LauncherPaths) -> Result<Self, LauncherError> {
+        Self::open_with(paths, &SystemCommandRunner)
+    }
+
+    pub(crate) fn open_with_deadline(
+        paths: &LauncherPaths,
+        deadline: Instant,
+    ) -> Result<Self, LauncherError> {
+        Self::open_with(paths, &BoundedSystemCommandRunner { deadline })
+    }
+
+    fn open_with(
+        paths: &LauncherPaths,
+        runner: &impl CommandRunner,
+    ) -> Result<Self, LauncherError> {
         validate_paths(paths)?;
         require_root_metadata(&paths.state_root, 0o711, true, "launcher state")?;
         require_root_metadata(&paths.config(), 0o600, false, "launcher config")?;
@@ -906,7 +1361,7 @@ impl LauncherSigner {
         let keyring = public_keyring(paths)?;
         validate_keyring(paths, &keyring, true)?;
         require_private_key_ownership(paths, &keyring)?;
-        validate_private_public_keys(paths, &SystemCommandRunner, &config, &keyring)?;
+        validate_private_public_keys(paths, runner, &config, &keyring)?;
         Ok(Self {
             ssh_keygen: config.ssh_keygen_path,
             ssh_keygen_digest: config.ssh_keygen_digest,
@@ -923,6 +1378,25 @@ impl LauncherSigner {
     /// a chain can retain the key named by its genesis receipt.
     pub fn sign_receipt(&self, key_id: &str, payload: &[u8]) -> Result<String, LauncherError> {
         self.sign_receipt_with(&SystemCommandRunner, key_id, payload)
+    }
+
+    pub(crate) fn sign_receipt_with_deadline(
+        &self,
+        key_id: &str,
+        payload: &[u8],
+        deadline: Instant,
+    ) -> Result<String, LauncherError> {
+        self.sign_receipt_with(&BoundedSystemCommandRunner { deadline }, key_id, payload)
+    }
+
+    /// Release identity fixed by the validated launcher installation.
+    pub fn release_id(&self) -> &str {
+        &self.release_id
+    }
+
+    /// Key used for a new receipt chain.
+    pub fn active_key_id(&self) -> &str {
+        &self.keyring.active_key_id
     }
 
     fn sign_receipt_with(
@@ -1064,6 +1538,8 @@ fn validate_paths(paths: &LauncherPaths) -> Result<(), LauncherError> {
         ("ssh-keygen", &paths.ssh_keygen),
         ("getent", &paths.getent),
         ("visudo", &paths.visudo),
+        ("bubblewrap", &paths.bwrap),
+        ("Control broker socket", &paths.broker_socket),
     ] {
         if !path.is_absolute() {
             return Err(LauncherError::Invalid(format!(
@@ -1090,6 +1566,7 @@ fn require_system_install_context(paths: &LauncherPaths) -> Result<(), LauncherE
     }
     require_secure_tool(&paths.ssh_keygen, "ssh-keygen")?;
     require_secure_tool(&paths.visudo, "visudo")?;
+    require_secure_tool(&paths.bwrap, "bubblewrap")?;
     identity::require_system_install_context(paths)
 }
 
@@ -1236,6 +1713,34 @@ fn validate_operator(operator: &str) -> Result<(), LauncherError> {
     if !valid {
         return Err(LauncherError::Invalid(
             "operator must be a conservative local account name".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_broker_identity(
+    request: &InstallRequest,
+    operator_uid: u32,
+) -> Result<(), LauncherError> {
+    let uid_end = request
+        .pool
+        .uid_start
+        .checked_add(request.pool.slots)
+        .expect("validated identity pool does not overflow");
+    let gid_end = request
+        .pool
+        .gid_start
+        .checked_add(request.pool.slots)
+        .expect("validated identity pool does not overflow");
+    if request.broker_uid == 0
+        || request.broker_gid == 0
+        || request.broker_uid == operator_uid
+        || (request.pool.uid_start..uid_end).contains(&request.broker_uid)
+        || (request.pool.gid_start..gid_end).contains(&request.broker_gid)
+    {
+        return Err(LauncherError::Invalid(
+            "Control broker must use a dedicated non-root identity outside the operator and Session pool"
+                .to_owned(),
         ));
     }
     Ok(())
@@ -1962,12 +2467,27 @@ fn validate_config(config: &LauncherConfig, paths: &LauncherPaths) -> Result<(),
         .map_err(|error| LauncherError::Malformed(error.to_string()))?;
     Digest::parse(&config.getent_digest)
         .map_err(|error| LauncherError::Malformed(error.to_string()))?;
+    Digest::parse(&config.bwrap_digest)
+        .map_err(|error| LauncherError::Malformed(error.to_string()))?;
+    validate_broker_identity(
+        &InstallRequest {
+            operator: config.operator.clone(),
+            broker_uid: config.broker_uid,
+            broker_gid: config.broker_gid,
+            pool: config.pool.clone(),
+        },
+        config.operator_uid,
+    )?;
     if config.launcher_path != paths.launcher()
         || config.ssh_keygen_path != paths.ssh_keygen
         || config.getent_path != paths.getent
+        || config.bwrap_path != paths.bwrap
+        || config.broker_socket_path != paths.broker_socket
         || !config.launcher_path.is_absolute()
         || !config.ssh_keygen_path.is_absolute()
         || !config.getent_path.is_absolute()
+        || !config.bwrap_path.is_absolute()
+        || !config.broker_socket_path.is_absolute()
     {
         return Err(LauncherError::Invalid(
             "launcher configuration contains a non-fixed executable path".to_owned(),
@@ -2053,6 +2573,37 @@ fn require_measured_tool(config: &LauncherConfig) -> Result<(), LauncherError> {
         ));
     }
     Ok(())
+}
+
+pub(crate) fn require_measured_bwrap(config: &LauncherConfig) -> Result<(), LauncherError> {
+    require_secure_tool(&config.bwrap_path, "bubblewrap")?;
+    let found = hash_file(&config.bwrap_path, "bubblewrap")?.to_string();
+    if found == config.bwrap_digest {
+        Ok(())
+    } else {
+        Err(LauncherError::Invalid(
+            "measured bubblewrap changed after installation".to_owned(),
+        ))
+    }
+}
+
+pub(crate) fn bwrap_version_with_deadline(
+    config: &LauncherConfig,
+    deadline: Instant,
+) -> Result<String, LauncherError> {
+    require_measured_bwrap(config)?;
+    let output = BoundedSystemCommandRunner { deadline }
+        .run(&CommandInvocation {
+            program: config.bwrap_path.clone(),
+            arguments: vec![OsString::from("--version")],
+            stdin: Vec::new(),
+            current_dir: None,
+        })
+        .map_err(|source| io_error("bubblewrap", source))?;
+    if !output.success {
+        return Err(tool_error("bubblewrap", &output.stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn validate_private_public_keys(
@@ -2310,7 +2861,12 @@ fn ensure_regular(path: &Path, label: &str) -> Result<(), LauncherError> {
     Ok(())
 }
 
-fn check_secure_tool(path: &Path, failures: &mut Vec<LauncherFailure>) -> bool {
+fn check_secure_tool(
+    path: &Path,
+    code_prefix: &str,
+    label: &str,
+    failures: &mut Vec<LauncherFailure>,
+) -> bool {
     match fs::symlink_metadata(path) {
         Ok(metadata)
             if metadata.is_file()
@@ -2323,17 +2879,17 @@ fn check_secure_tool(path: &Path, failures: &mut Vec<LauncherFailure>) -> bool {
         }
         Ok(_) => {
             failures.push(failure(
-                "ssh_keygen_permissions",
-                "The measured ssh-keygen is not a root-owned, non-writable executable.",
-                "Restore the system OpenSSH executable before signing receipts.",
+                &format!("{code_prefix}_permissions"),
+                format!("The measured {label} is not a root-owned, non-writable executable."),
+                "Restore the measured system executable before launching Sessions.",
             ));
             false
         }
         Err(error) => {
             failures.push(failure(
-                "ssh_keygen_unreadable",
+                &format!("{code_prefix}_unreadable"),
                 error.to_string(),
-                "Restore the measured ssh-keygen executable.",
+                "Restore the measured system executable.",
             ));
             false
         }
@@ -2425,12 +2981,272 @@ fn tool_error(tool: &'static str, stderr: &[u8]) -> LauncherError {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::{
+        cell::RefCell,
+        sync::mpsc::{self, RecvTimeoutError},
+    };
 
     use tempfile::TempDir;
 
     use super::*;
     use crate::launch_receipt::{Authorization, ReceiptOutcome, SessionState};
+
+    fn config_with_measured_bwrap(program: &Path) -> LauncherConfig {
+        LauncherConfig {
+            schema: CONFIG_SCHEMA.to_owned(),
+            operator: "louise".to_owned(),
+            operator_uid: 1_000,
+            broker_uid: 1_500,
+            broker_gid: 1_500,
+            broker_socket_path: PathBuf::from("/run/louiselm/control.sock"),
+            release_id: Digest::of(b"release").to_string(),
+            launcher_digest: Digest::of(b"launcher").to_string(),
+            launcher_path: PathBuf::from("/usr/local/lib/louiselm/current/bin/louiselm-launch"),
+            ssh_keygen_path: PathBuf::from("/usr/bin/ssh-keygen"),
+            ssh_keygen_digest: Digest::of(b"ssh-keygen").to_string(),
+            getent_path: PathBuf::from("/usr/bin/getent"),
+            getent_digest: Digest::of(b"getent").to_string(),
+            bwrap_path: program.to_path_buf(),
+            bwrap_digest: hash_file(program, "bubblewrap")
+                .expect("version fixture is readable")
+                .to_string(),
+            pool: IdentityPool {
+                uid_start: 200_000,
+                gid_start: 300_000,
+                slots: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn bwrap_version_uses_the_absolute_operation_deadline() {
+        let config = config_with_measured_bwrap(Path::new("/usr/bin/true"));
+
+        let error = bwrap_version_with_deadline(&config, Instant::now())
+            .expect_err("an exhausted deadline must prevent version execution");
+
+        match error {
+            LauncherError::Io { source, .. } => {
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut)
+            }
+            other => panic!("deadline must remain an I/O timeout: {other}"),
+        }
+    }
+
+    #[test]
+    fn bounded_system_runner_kills_a_command_at_its_deadline() {
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/usr/bin/sleep"),
+            arguments: vec![OsString::from("60")],
+            stdin: Vec::new(),
+            current_dir: None,
+        };
+        let started = Instant::now();
+        let error = BoundedSystemCommandRunner {
+            deadline: Instant::now() + Duration::from_millis(20),
+        }
+        .run(&invocation)
+        .expect_err("the bounded runner must terminate a hung signer command");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn bounded_system_runner_reaps_a_timed_out_command_before_returning() {
+        let temp = TempDir::new().unwrap();
+        let pid_path = temp.path().join("command.pid");
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/bin/sh"),
+            arguments: vec![
+                OsString::from("-c"),
+                OsString::from("printf '%s\\n' \"$$\" > \"$1\"; exec /usr/bin/sleep 60"),
+                OsString::from("louiselm-deadline-test"),
+                pid_path.as_os_str().to_owned(),
+            ],
+            stdin: Vec::new(),
+            current_dir: None,
+        };
+        let error = BoundedSystemCommandRunner {
+            deadline: Instant::now() + Duration::from_millis(100),
+        }
+        .run(&invocation)
+        .expect_err("the bounded runner must terminate a hung command");
+        let pid = fs::read_to_string(&pid_path)
+            .expect("the command records its pid before blocking")
+            .trim()
+            .parse::<i32>()
+            .expect("the command records a numeric pid");
+        let pid = rustix::process::Pid::from_raw(pid).expect("the command records a positive pid");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_process_group_gone(pid);
+        assert_eq!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH),
+            "the timed-out command must no longer exist at completion"
+        );
+    }
+
+    #[test]
+    fn bounded_system_runner_kills_a_timed_out_command_and_its_descendant() {
+        assert_bounded_runner_kills_inherited_pipe_descendant(true);
+    }
+
+    #[test]
+    fn bounded_system_runner_bounds_pipes_held_after_the_command_exits() {
+        assert_bounded_runner_kills_inherited_pipe_descendant(false);
+    }
+
+    #[test]
+    fn bounded_system_runner_kills_a_daemonized_descendant_after_success() {
+        let temp = TempDir::new().unwrap();
+        let pid_path = temp.path().join("command-tree.pids");
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/bin/sh"),
+            arguments: vec![
+                OsString::from("-c"),
+                OsString::from(
+                    "/usr/bin/tail -f /dev/null >/dev/null 2>&1 & descendant=$!; \
+                     printf '%s %s\\n' \"$$\" \"$descendant\" > \"$1\"; \
+                     printf 'captured output\\n'; printf 'captured error\\n' >&2; exit 0",
+                ),
+                OsString::from("louiselm-deadline-daemon-test"),
+                pid_path.as_os_str().to_owned(),
+            ],
+            stdin: Vec::new(),
+            current_dir: None,
+        };
+
+        let output = BoundedSystemCommandRunner {
+            deadline: Instant::now() + Duration::from_secs(2),
+        }
+        .run(&invocation)
+        .expect("the direct helper succeeds");
+        let (parent, descendant) = read_test_processes(&pid_path);
+
+        assert!(output.success);
+        assert_eq!(output.exit_code, Some(0));
+        assert_eq!(output.stdout, b"captured output\n");
+        assert_eq!(output.stderr, b"captured error\n");
+        assert_process_group_gone(parent);
+        assert_process_gone(parent);
+        assert_process_gone(descendant);
+    }
+
+    fn assert_bounded_runner_kills_inherited_pipe_descendant(parent_waits: bool) {
+        let temp = TempDir::new().unwrap();
+        let pid_path = temp.path().join("command-tree.pids");
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/bin/sh"),
+            arguments: vec![
+                OsString::from("-c"),
+                OsString::from(
+                    "/usr/bin/tail -f /dev/null & descendant=$!; \
+                     printf '%s %s\\n' \"$$\" \"$descendant\" > \"$1\"; \
+                     if [ \"$2\" = wait ]; then wait \"$descendant\"; else exit 0; fi",
+                ),
+                OsString::from("louiselm-deadline-tree-test"),
+                pid_path.as_os_str().to_owned(),
+                OsString::from(if parent_waits { "wait" } else { "exit" }),
+            ],
+            stdin: Vec::new(),
+            current_dir: None,
+        };
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let started = Instant::now();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let runner = thread::spawn(move || {
+            sender
+                .send(BoundedSystemCommandRunner { deadline }.run(&invocation))
+                .expect("the test receives the command result");
+        });
+
+        let result = match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => {
+                let (parent, descendant) = read_test_processes(&pid_path);
+                let _ = rustix::process::kill_process(descendant, rustix::process::Signal::KILL);
+                let _ = rustix::process::kill_process(parent, rustix::process::Signal::KILL);
+                let _ = receiver.recv_timeout(Duration::from_secs(1));
+                runner.join().expect("the rescued runner thread exits");
+                panic!("the bounded runner blocked while a descendant held its pipes");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                runner.join().expect("the runner thread reports its panic");
+                panic!("the bounded runner did not report a result");
+            }
+        };
+        runner.join().expect("the bounded runner thread exits");
+        let (parent, descendant) = read_test_processes(&pid_path);
+
+        assert_eq!(
+            result
+                .expect_err("an inherited-pipe descendant must exhaust the deadline")
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_process_group_gone(parent);
+        assert_process_gone(parent);
+        assert_process_gone(descendant);
+    }
+
+    fn read_test_processes(path: &Path) -> (rustix::process::Pid, rustix::process::Pid) {
+        let contents = fs::read_to_string(path).expect("the helper records both process IDs");
+        let mut pids = contents.split_ascii_whitespace().map(|value| {
+            value
+                .parse::<i32>()
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+                .expect("the helper records positive process IDs")
+        });
+        let parent = pids.next().expect("the helper records its own process ID");
+        let descendant = pids
+            .next()
+            .expect("the helper records its descendant process ID");
+        assert!(pids.next().is_none());
+        (parent, descendant)
+    }
+
+    fn assert_process_gone(pid: rustix::process::Pid) {
+        assert_eq!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH),
+            "process {} must be gone when bounded command completion returns",
+            pid.as_raw_pid(),
+        );
+    }
+
+    fn assert_process_group_gone(process_group: rustix::process::Pid) {
+        assert_eq!(
+            rustix::process::test_kill_process_group(process_group),
+            Err(rustix::io::Errno::SRCH),
+            "the bounded command process group must be absent at completion",
+        );
+    }
+
+    #[test]
+    fn bounded_system_runner_shares_one_deadline_across_commands() {
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let runner = BoundedSystemCommandRunner { deadline };
+        let invocation = CommandInvocation {
+            program: PathBuf::from("/usr/bin/true"),
+            arguments: Vec::new(),
+            stdin: Vec::new(),
+            current_dir: None,
+        };
+        runner.run(&invocation).expect("first command completes");
+        while Instant::now() < deadline {
+            thread::yield_now();
+        }
+
+        let error = runner
+            .run(&invocation)
+            .expect_err("the exhausted operation deadline must reject a second command");
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
 
     struct RecordingRunner {
         calls: RefCell<Vec<CommandInvocation>>,
@@ -2478,6 +3294,8 @@ mod tests {
             ssh_keygen: PathBuf::from("/usr/bin/ssh-keygen"),
             getent: PathBuf::from("/usr/bin/getent"),
             visudo: PathBuf::from("/usr/sbin/visudo"),
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            broker_socket: root.join("control.sock"),
         }
     }
 
@@ -2489,7 +3307,7 @@ mod tests {
             run_id: "run-1".to_owned(),
             request_id: request_id.clone(),
             envelope_revision: 1,
-            sequence: 1,
+            sequence: 2,
             previous_receipt_digest: Some(Digest::of(b"previous").to_string()),
             release_id: release_id.to_owned(),
             signing_key_id: signing_key_id.to_owned(),

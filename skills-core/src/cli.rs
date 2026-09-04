@@ -169,6 +169,8 @@ struct Options {
     bundle: Option<PathBuf>,
     prefix: Option<PathBuf>,
     operator: Option<String>,
+    broker_uid: Option<u32>,
+    broker_gid: Option<u32>,
     uid_start: Option<u32>,
     gid_start: Option<u32>,
     slots: Option<u32>,
@@ -209,6 +211,8 @@ impl Options {
             bundle: None,
             prefix: None,
             operator: None,
+            broker_uid: None,
+            broker_gid: None,
             uid_start: None,
             gid_start: None,
             slots: None,
@@ -307,6 +311,14 @@ impl Options {
                 }
                 "--operator" => {
                     parsed.operator = Some(value("--operator")?);
+                    index += 1;
+                }
+                "--broker-uid" => {
+                    parsed.broker_uid = Some(parse_u32("--broker-uid", &value("--broker-uid")?)?);
+                    index += 1;
+                }
+                "--broker-gid" => {
+                    parsed.broker_gid = Some(parse_u32("--broker-gid", &value("--broker-gid")?)?);
                     index += 1;
                 }
                 "--uid-start" => {
@@ -462,6 +474,8 @@ impl Options {
     fn launcher_install_request(&self) -> Result<LauncherInstallRequest, CliError> {
         Ok(LauncherInstallRequest {
             operator: required(&self.operator, "--operator")?.to_owned(),
+            broker_uid: *required(&self.broker_uid, "--broker-uid")?,
+            broker_gid: *required(&self.broker_gid, "--broker-gid")?,
             pool: IdentityPool {
                 uid_start: *required(&self.uid_start, "--uid-start")?,
                 gid_start: *required(&self.gid_start, "--gid-start")?,
@@ -909,6 +923,17 @@ fn quarantine_command(options: &Options) -> Result<i32, CliError> {
     }
 }
 
+fn release_component_inputs(source: &Path) -> Vec<ComponentInput> {
+    ["louiselm-skills", "louiselm-launch"]
+        .into_iter()
+        .map(|name| ComponentInput {
+            name: name.to_owned(),
+            path: source.join("target/release").join(name),
+            kind: ComponentKind::Executable,
+        })
+        .collect()
+}
+
 fn release_command(options: &Options) -> Result<i32, CliError> {
     match options.subject("release")? {
         "build" => {
@@ -948,11 +973,7 @@ fn release_command(options: &Options) -> Result<i32, CliError> {
                     source: identity,
                     toolchain,
                     policy: &Policy::embedded(),
-                    components: vec![ComponentInput {
-                        name: "louiselm-skills".to_owned(),
-                        path: source.join("target/release/louiselm-skills"),
-                        kind: ComponentKind::Executable,
-                    }],
+                    components: release_component_inputs(&source),
                     built_at_ms: now_ms(),
                 },
                 &output,
@@ -1214,7 +1235,8 @@ Trusted release:
   louiselm-skills release identity
 
 Privileged launcher authority (install/rotation require current verified release):
-  louiselm-skills launcher install --operator <user> --uid-start <id>
+  louiselm-skills launcher install --operator <user> --broker-uid <id>
+                                    --broker-gid <id> --uid-start <id>
                                     --gid-start <id> --slots <count>
   louiselm-skills launcher rotate-key --rotation-id <id> --expected-key-id <id>
   louiselm-skills launcher status
@@ -1255,6 +1277,10 @@ mod tests {
             "install",
             "--operator",
             "louise",
+            "--broker-uid",
+            "1500",
+            "--broker-gid",
+            "1500",
             "--uid-start",
             "200000",
             "--gid-start",
@@ -1266,6 +1292,8 @@ mod tests {
 
         let request = options.launcher_install_request().unwrap();
         assert_eq!(request.operator, "louise");
+        assert_eq!(request.broker_uid, 1_500);
+        assert_eq!(request.broker_gid, 1_500);
         assert_eq!(request.pool.uid_start, 200_000);
         assert_eq!(request.pool.gid_start, 300_000);
         assert_eq!(request.pool.slots, 4);
@@ -1285,5 +1313,22 @@ mod tests {
         let error = require_verified_running_release(&LauncherPaths::system())
             .expect_err("the test executable is not a current installed release");
         assert!(error.to_string().contains("current verified release"));
+    }
+
+    #[test]
+    fn release_build_declares_both_installed_executables() {
+        let source = Path::new("/reviewed/source");
+        let components = release_component_inputs(source);
+        assert_eq!(
+            components
+                .iter()
+                .map(|component| component.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["louiselm-skills", "louiselm-launch"]
+        );
+        assert_eq!(
+            components[1].path,
+            source.join("target/release/louiselm-launch")
+        );
     }
 }

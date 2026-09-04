@@ -27,7 +27,13 @@ use crate::{
 };
 
 /// The launch request schema this build reads.
-pub const REQUEST_SCHEMA: &str = "louiselm.launch.request/1";
+pub const REQUEST_SCHEMA: &str = "louiselm.launch.request/2";
+
+/// Protocol version carried by every launch request and control message.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Longest accepted encoded launch request.
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// The longest an identifier field may be.
 ///
@@ -46,6 +52,12 @@ const MAX_IDENTIFIER_LEN: usize = 128;
 pub struct LaunchRequest {
     /// Schema identifier.
     pub schema: String,
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// Idempotency key for this exact launch request.
+    pub request_id: String,
+    /// Single-use authorization the Control broker must consume.
+    pub authorization_id: String,
     /// Identifies the Session being launched.
     pub session_id: String,
     /// The Run this Session belongs to.
@@ -54,6 +66,8 @@ pub struct LaunchRequest {
     pub agent_id: String,
     /// The registered capability envelope the Session runs under.
     pub envelope_id: String,
+    /// Exact capability-envelope revision authorized for this Session.
+    pub envelope_revision: u64,
     /// Digest of the Skill Generation this Session is bound to.
     ///
     /// Whether that Generation is actually admitted and current is a Skill
@@ -83,6 +97,18 @@ pub struct Resolution {
 /// A request that could not be resolved.
 #[derive(Debug, Error)]
 pub enum LaunchError {
+    /// Encoded request exceeded the fixed input boundary.
+    #[error("launch request exceeds {max} bytes")]
+    RequestTooLarge {
+        /// Fixed maximum this build accepts.
+        max: usize,
+    },
+    /// Bytes were not one closed launch request.
+    #[error("launch request is malformed")]
+    MalformedRequest,
+    /// Bytes decoded, but were not the request's exact canonical encoding.
+    #[error("launch request is not canonically encoded")]
+    NonCanonical,
     /// The request answers a different schema.
     #[error("request answers schema '{found}', not '{expected}'")]
     Schema {
@@ -90,6 +116,14 @@ pub enum LaunchError {
         found: String,
         /// Schema this build reads.
         expected: &'static str,
+    },
+    /// The request answers a protocol version this build does not implement.
+    #[error("request uses protocol version {found}, not {expected}")]
+    ProtocolVersion {
+        /// Version the request carries.
+        found: u32,
+        /// Version this build reads.
+        expected: u32,
     },
     /// An identifier field is not well-formed.
     #[error("'{field}' is not a valid identifier: {reason}")]
@@ -102,6 +136,66 @@ pub enum LaunchError {
     /// A referenced registry entry does not exist or does not check out.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+}
+
+impl LaunchRequest {
+    /// Serializes this request to its deterministic wire bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a launch request is always serializable")
+    }
+
+    /// Returns the content address bound by its single-use authorization.
+    #[must_use]
+    pub fn digest(&self) -> Digest {
+        Digest::of(&self.canonical_bytes())
+    }
+
+    /// Validates the closed request without consulting launch authority.
+    pub fn validate(&self) -> Result<(), LaunchError> {
+        if self.canonical_bytes().len() > MAX_REQUEST_BYTES {
+            return Err(LaunchError::RequestTooLarge {
+                max: MAX_REQUEST_BYTES,
+            });
+        }
+        if self.schema != REQUEST_SCHEMA {
+            return Err(LaunchError::Schema {
+                found: self.schema.clone(),
+                expected: REQUEST_SCHEMA,
+            });
+        }
+        if self.protocol_version != PROTOCOL_VERSION {
+            return Err(LaunchError::ProtocolVersion {
+                found: self.protocol_version,
+                expected: PROTOCOL_VERSION,
+            });
+        }
+        validate_identifier("request_id", &self.request_id)?;
+        validate_identifier("authorization_id", &self.authorization_id)?;
+        validate_identifier("session_id", &self.session_id)?;
+        validate_identifier("run_id", &self.run_id)?;
+        validate_identifier("agent_id", &self.agent_id)?;
+        validate_identifier("envelope_id", &self.envelope_id)?;
+        validate_digest("skill_generation_id", &self.skill_generation_id)?;
+        validate_digest("session_input_manifest_id", &self.session_input_manifest_id)?;
+        Ok(())
+    }
+
+    /// Parses one bounded exact canonical launch request.
+    pub fn parse_canonical(bytes: &[u8]) -> Result<Self, LaunchError> {
+        if bytes.len() > MAX_REQUEST_BYTES {
+            return Err(LaunchError::RequestTooLarge {
+                max: MAX_REQUEST_BYTES,
+            });
+        }
+        let request: Self =
+            serde_json::from_slice(bytes).map_err(|_| LaunchError::MalformedRequest)?;
+        if request.canonical_bytes() != bytes {
+            return Err(LaunchError::NonCanonical);
+        }
+        request.validate()?;
+        Ok(request)
+    }
 }
 
 /// Resolves `request` into a plan a [`crate::sandbox::Backend`] can spawn.
@@ -117,21 +211,7 @@ pub fn resolve(
     sessions_root: &Path,
     identity: IdentityPlan,
 ) -> Result<Resolution, LaunchError> {
-    if request.schema != REQUEST_SCHEMA {
-        return Err(LaunchError::Schema {
-            found: request.schema.clone(),
-            expected: REQUEST_SCHEMA,
-        });
-    }
-    validate_identifier("session_id", &request.session_id)?;
-    validate_identifier("run_id", &request.run_id)?;
-    validate_identifier("agent_id", &request.agent_id)?;
-    validate_identifier("envelope_id", &request.envelope_id)?;
-    validate_digest("skill_generation_id", &request.skill_generation_id)?;
-    validate_digest(
-        "session_input_manifest_id",
-        &request.session_input_manifest_id,
-    )?;
+    request.validate()?;
 
     let agent = registry.agent(&request.agent_id)?;
     let runtime = registry.runtime(&agent.runtime_id)?;
@@ -192,8 +272,16 @@ fn validate_identifier(field: &'static str, value: &str) -> Result<(), LaunchErr
 }
 
 fn validate_digest(field: &'static str, value: &str) -> Result<Digest, LaunchError> {
-    Digest::parse(value).map_err(|error: DigestError| LaunchError::MalformedIdentifier {
-        field,
-        reason: error.to_string(),
-    })
+    let digest =
+        Digest::parse(value).map_err(|error: DigestError| LaunchError::MalformedIdentifier {
+            field,
+            reason: error.to_string(),
+        })?;
+    if digest.to_string() != value {
+        return Err(LaunchError::MalformedIdentifier {
+            field,
+            reason: "must use canonical sha256:<lowercase hex> spelling".to_owned(),
+        });
+    }
+    Ok(digest)
 }

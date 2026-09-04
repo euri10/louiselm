@@ -14,10 +14,10 @@ use thiserror::Error;
 use crate::{canonical::Digest, isolation::CONTRACT_VERSION};
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/1";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/2";
 
 /// Schema for the payload plus its launcher signature.
-pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/1";
+pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/2";
 
 /// Largest canonical payload or signed envelope accepted at the trust boundary.
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
@@ -29,7 +29,7 @@ const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
-    /// The authorized launch has not produced its sequence-zero receipt yet.
+    /// The process tree is prepared and authorized, but its workload is blocked.
     Starting,
     /// The Session process tree may execute.
     Running,
@@ -51,10 +51,12 @@ pub struct Authorization {
     pub request_digest: String,
 }
 
-/// Closed mechanical causes that can require an outcome without a broker action.
+/// Closed mechanical causes that can require an outcome without a new authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReceiptCause {
+    /// The durable sequence-zero launch receipt was acknowledged.
+    LaunchAcknowledged,
     /// The authenticated Control broker disconnected.
     BrokerLost,
     /// The owning controller disappeared.
@@ -113,6 +115,11 @@ pub enum ReceiptOutcome {
         /// Measurements and fixed inputs used to launch.
         evidence: Box<LaunchEvidence>,
     },
+    /// The prepared process tree was released after launch acknowledgement.
+    Start {
+        /// Closed supervisor-observed launch acknowledgement.
+        authority: ReceiptAuthority,
+    },
     /// The process tree was frozen.
     Park {
         /// Authorization or supervisor-observed cause.
@@ -154,7 +161,8 @@ impl ReceiptOutcome {
 
     fn expected_result(&self) -> SessionState {
         match self {
-            Self::Launch { .. } | Self::Resume { .. } | Self::Interrupt { .. } => {
+            Self::Launch { .. } => SessionState::Starting,
+            Self::Start { .. } | Self::Resume { .. } | Self::Interrupt { .. } => {
                 SessionState::Running
             }
             Self::Park { .. } => SessionState::Parked,
@@ -244,6 +252,16 @@ impl ReceiptPayload {
                 if authorization.request_digest != evidence.launch_request_digest {
                     return Err(ReceiptError::LaunchRequestMismatch);
                 }
+            }
+            ReceiptOutcome::Start { authority }
+                if !matches!(
+                    authority,
+                    ReceiptAuthority::Cause {
+                        cause: ReceiptCause::LaunchAcknowledged
+                    }
+                ) =>
+            {
+                return Err(ReceiptError::ContradictoryCause);
             }
             ReceiptOutcome::Park {
                 authority: ReceiptAuthority::Cause { cause },
@@ -524,7 +542,8 @@ where
 fn valid_transition(state: SessionState, outcome: &ReceiptOutcome) -> bool {
     matches!(
         (state, outcome),
-        (SessionState::Running, ReceiptOutcome::Park { .. })
+        (SessionState::Starting, ReceiptOutcome::Start { .. })
+            | (SessionState::Running, ReceiptOutcome::Park { .. })
             | (SessionState::Parked, ReceiptOutcome::Resume { .. })
             | (SessionState::Running, ReceiptOutcome::Interrupt { .. })
             | (SessionState::Running, ReceiptOutcome::Disposal { .. })

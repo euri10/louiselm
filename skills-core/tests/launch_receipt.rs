@@ -84,11 +84,23 @@ fn chain() -> Vec<SignedReceipt> {
             authorization: launch_authorization("request-0"),
             evidence: Box::new(launch_evidence()),
         },
+        SessionState::Starting,
+    ));
+    let start = signed(payload(
+        1,
+        Some(launch.digest().to_string()),
+        3,
+        "request-start",
+        ReceiptOutcome::Start {
+            authority: ReceiptAuthority::Cause {
+                cause: ReceiptCause::LaunchAcknowledged,
+            },
+        },
         SessionState::Running,
     ));
     let park = signed(payload(
-        1,
-        Some(launch.digest().to_string()),
+        2,
+        Some(start.digest().to_string()),
         3,
         "request-1",
         ReceiptOutcome::Park {
@@ -99,7 +111,7 @@ fn chain() -> Vec<SignedReceipt> {
         SessionState::Parked,
     ));
     let resume = signed(payload(
-        2,
+        3,
         Some(park.digest().to_string()),
         4,
         "request-2",
@@ -109,7 +121,7 @@ fn chain() -> Vec<SignedReceipt> {
         SessionState::Running,
     ));
     let interrupt = signed(payload(
-        3,
+        4,
         Some(resume.digest().to_string()),
         4,
         "request-3",
@@ -119,7 +131,7 @@ fn chain() -> Vec<SignedReceipt> {
         SessionState::Running,
     ));
     let dispose = signed(payload(
-        4,
+        5,
         Some(interrupt.digest().to_string()),
         4,
         "request-4",
@@ -130,7 +142,7 @@ fn chain() -> Vec<SignedReceipt> {
         },
         SessionState::Terminal,
     ));
-    vec![launch, park, resume, interrupt, dispose]
+    vec![launch, start, park, resume, interrupt, dispose]
 }
 
 fn anchor() -> ChainAnchor {
@@ -156,7 +168,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/1\",",
+                "{{\"schema\":\"louiselm.launch.receipt/2\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -173,7 +185,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"kernel_identity\":\"linux-6_18\",",
                 "\"isolation_evidence_digest\":\"{}\",",
                 "\"capability_channel_ids\":[\"acp\",\"broker\"]}}}},",
-                "\"resulting_state\":\"running\"}}"
+                "\"resulting_state\":\"starting\"}}"
             ),
             digest("release"),
             digest("launcher-key"),
@@ -186,12 +198,40 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         ),
     );
     assert_eq!(
+        String::from_utf8(envelope_bytes.clone()).unwrap(),
+        format!(
+            "{{\"schema\":\"louiselm.launch.signed-receipt/2\",\"payload\":{},\"signature\":\"{}\"}}",
+            String::from_utf8(payload_bytes.clone()).unwrap(),
+            receipt.signature,
+        ),
+    );
+    assert_eq!(
         ReceiptPayload::parse_canonical(&payload_bytes).unwrap(),
         receipt.payload,
     );
     assert_eq!(
         SignedReceipt::parse_canonical(&envelope_bytes).unwrap(),
         receipt,
+    );
+
+    let start = chain().remove(1);
+    assert_eq!(
+        String::from_utf8(start.payload.canonical_bytes()).unwrap(),
+        format!(
+            concat!(
+                "{{\"schema\":\"louiselm.launch.receipt/2\",",
+                "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
+                "\"request_id\":\"request-start\",\"envelope_revision\":3,",
+                "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
+                "\"release_id\":\"{}\",\"signing_key_id\":\"{}\",",
+                "\"outcome\":{{\"action\":\"start\",\"authority\":{{",
+                "\"kind\":\"cause\",\"cause\":\"launch_acknowledged\"}}}},",
+                "\"resulting_state\":\"running\"}}"
+            ),
+            chain()[0].digest(),
+            digest("release"),
+            digest("launcher-key"),
+        ),
     );
 
     let mut alternate_signature = receipt.clone();
@@ -283,7 +323,7 @@ fn payload_validation_rejects_each_contradictory_shape() {
     let launch = chain().remove(0);
 
     let mut wrong_schema = launch.payload.clone();
-    wrong_schema.schema = "louiselm.launch.receipt/2".to_owned();
+    wrong_schema.schema = "louiselm.launch.receipt/1".to_owned();
     assert!(matches!(
         wrong_schema.validate(),
         Err(ReceiptError::UnsupportedSchema(_))
@@ -325,11 +365,31 @@ fn payload_validation_rejects_each_contradictory_shape() {
         Err(ReceiptError::GenesisNotLaunch)
     );
 
-    let mut contradictory_result = launch.payload.clone();
-    contradictory_result.resulting_state = SessionState::Starting;
+    let mut launch_claiming_running = launch.payload.clone();
+    launch_claiming_running.resulting_state = SessionState::Running;
     assert_eq!(
-        contradictory_result.validate(),
+        launch_claiming_running.validate(),
         Err(ReceiptError::ContradictoryResult)
+    );
+
+    let mut authorized_start = chain().remove(1).payload;
+    authorized_start.outcome = ReceiptOutcome::Start {
+        authority: ReceiptAuthority::Authorized(authorization("request-start")),
+    };
+    assert_eq!(
+        authorized_start.validate(),
+        Err(ReceiptError::ContradictoryCause)
+    );
+
+    let mut wrongly_caused_start = chain().remove(1).payload;
+    wrongly_caused_start.outcome = ReceiptOutcome::Start {
+        authority: ReceiptAuthority::Cause {
+            cause: ReceiptCause::BrokerLost,
+        },
+    };
+    assert_eq!(
+        wrongly_caused_start.validate(),
+        Err(ReceiptError::ContradictoryCause)
     );
 
     let mut wrong_contract = launch.payload.clone();
@@ -372,7 +432,7 @@ fn payload_validation_rejects_each_contradictory_shape() {
     }
     assert_eq!(oversized_payload.validate(), Err(ReceiptError::Oversized));
 
-    let mut impossible_cause = chain().remove(1).payload;
+    let mut impossible_cause = chain().remove(2).payload;
     impossible_cause.outcome = ReceiptOutcome::Park {
         authority: ReceiptAuthority::Cause {
             cause: ReceiptCause::ProcessExited,
@@ -383,7 +443,7 @@ fn payload_validation_rejects_each_contradictory_shape() {
         Err(ReceiptError::ContradictoryCause)
     );
 
-    let mut failed_launch_cleanup = chain().remove(4).payload;
+    let mut failed_launch_cleanup = chain().remove(5).payload;
     failed_launch_cleanup.outcome = ReceiptOutcome::Disposal {
         authority: ReceiptAuthority::Cause {
             cause: ReceiptCause::AcknowledgementFailed,
@@ -408,9 +468,18 @@ fn a_complete_chain_and_a_suffix_from_a_trusted_head_verify() {
     let receipts = chain();
     let head = louiselm_skills::launch_receipt::verify_chain(&receipts, &anchor(), verifies)
         .expect("the complete receipt chain verifies");
-    assert_eq!(head.sequence(), 4);
+    assert_eq!(head.sequence(), 5);
     assert_eq!(head.state(), SessionState::Terminal);
-    assert_eq!(head.receipt_digest(), receipts[4].digest().to_string());
+    assert_eq!(head.receipt_digest(), receipts[5].digest().to_string());
+
+    let starting =
+        louiselm_skills::launch_receipt::verify_chain(&receipts[..1], &anchor(), verifies).unwrap();
+    assert_eq!(starting.sequence(), 0);
+    assert_eq!(starting.state(), SessionState::Starting);
+    let running =
+        louiselm_skills::launch_receipt::verify_chain(&receipts[..2], &anchor(), verifies).unwrap();
+    assert_eq!(running.sequence(), 1);
+    assert_eq!(running.state(), SessionState::Running);
 
     let trusted =
         louiselm_skills::launch_receipt::verify_chain(&receipts[..3], &anchor(), verifies).unwrap();
@@ -486,13 +555,7 @@ fn verification_rejects_mutation_order_gaps_duplicates_foreign_prefixes_and_spli
     ));
 
     let mut reused_request = base[2..3].to_vec();
-    reused_request[0].payload.request_id = "request-1".to_owned();
-    if let ReceiptOutcome::Resume {
-        authorization: receipt_authorization,
-    } = &mut reused_request[0].payload.outcome
-    {
-        *receipt_authorization = authorization("request-1");
-    }
+    reused_request[0].payload.request_id = "request-0".to_owned();
     reused_request[0].signature =
         Digest::of(&reused_request[0].payload.canonical_bytes()).to_string();
     assert!(matches!(
@@ -504,10 +567,12 @@ fn verification_rejects_mutation_order_gaps_duplicates_foreign_prefixes_and_spli
 #[test]
 fn verification_enforces_state_and_envelope_transitions() {
     let mut receipts = chain();
-    receipts[2].payload.outcome = ReceiptOutcome::Park {
-        authority: ReceiptAuthority::Authorized(authorization("request-2")),
+    receipts[2].payload.outcome = ReceiptOutcome::Start {
+        authority: ReceiptAuthority::Cause {
+            cause: ReceiptCause::LaunchAcknowledged,
+        },
     };
-    receipts[2].payload.resulting_state = SessionState::Parked;
+    receipts[2].payload.resulting_state = SessionState::Running;
     receipts[2].signature = Digest::of(&receipts[2].payload.canonical_bytes()).to_string();
     receipts[3].payload.previous_receipt_digest = Some(receipts[2].digest().to_string());
     receipts[3].signature = Digest::of(&receipts[3].payload.canonical_bytes()).to_string();
@@ -528,7 +593,7 @@ fn verification_enforces_state_and_envelope_transitions() {
         })
     ));
 
-    let mut receipt = chain().remove(1);
+    let mut receipt = chain().remove(2);
     if let ReceiptOutcome::Park { authority } = &mut receipt.payload.outcome {
         *authority = ReceiptAuthority::Authorized(authorization("different-request"));
     }

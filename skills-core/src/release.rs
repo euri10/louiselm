@@ -606,6 +606,7 @@ fn schema_identifiers() -> Vec<String> {
         crate::quarantine::QUARANTINE_SCHEMA,
         crate::admission::STATUS_SCHEMA,
         crate::launch::REQUEST_SCHEMA,
+        crate::launch_protocol::LAUNCH_AUTHORIZATION_SCHEMA,
         crate::launch_protocol::LIFECYCLE_REQUEST_SCHEMA,
         crate::launch_protocol::STATUS_REQUEST_SCHEMA,
         crate::launch_protocol::RECEIPT_ACK_SCHEMA,

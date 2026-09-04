@@ -7,20 +7,24 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
     sync::{Arc, Barrier},
+    time::Duration,
 };
 
 use louiselm_skills::{
     Digest,
     install::{InstalledState, STATE_SCHEMA as RELEASE_STATE_SCHEMA},
+    launch_supervisor::{LaunchPlatform, SupervisorError, SystemLaunchPlatform},
     launcher_install::{
         CommandInvocation, CommandOutput, CommandRunner, IdentityPool, InstallRequest,
-        LauncherPaths, RotationRequest, acquire_identity, install, public_keyring, rotate, status,
-        sudo_invocation,
+        LauncherPaths, RotationRequest, acquire_identity, install, public_keyring, rotate,
+        runtime_config, status, sudo_invocation,
     },
+    registry::NetworkPolicy,
     release::{
         Component, MANIFEST_SCHEMA, PolicyIdentity, ReleaseManifest, SourceIdentity,
         ToolchainIdentity,
     },
+    sandbox::{ConfinementPlan, IdentityPlan},
 };
 use tempfile::TempDir;
 
@@ -47,6 +51,8 @@ impl Fixture {
             ssh_keygen: root_path.join("usr/bin/ssh-keygen"),
             getent: root_path.join("usr/bin/getent"),
             visudo: root_path.join("usr/sbin/visudo"),
+            bwrap: root_path.join("usr/bin/bwrap"),
+            broker_socket: root_path.join("run/louiselm/control.sock"),
         };
         for path in [
             &paths.subuid,
@@ -57,6 +63,7 @@ impl Fixture {
             &paths.ssh_keygen,
             &paths.getent,
             &paths.visudo,
+            &paths.bwrap,
         ] {
             fs::create_dir_all(path.parent().expect("fixture path has a parent"))
                 .expect("fixture parent is creatable");
@@ -81,7 +88,13 @@ impl Fixture {
         .expect("ssh-keygen fixture is writable");
         fs::write(&paths.getent, "#!/bin/sh\nexit 2\n").expect("getent fixture is writable");
         fs::write(&paths.visudo, "visudo fixture\n").expect("visudo fixture is writable");
-        for tool in [&paths.ssh_keygen, &paths.getent, &paths.visudo] {
+        fs::write(&paths.bwrap, "bubblewrap fixture\n").expect("bwrap fixture is writable");
+        for tool in [
+            &paths.ssh_keygen,
+            &paths.getent,
+            &paths.visudo,
+            &paths.bwrap,
+        ] {
             fs::set_permissions(tool, fs::Permissions::from_mode(0o755))
                 .expect("tool mode is settable");
         }
@@ -163,6 +176,8 @@ impl Fixture {
     fn request(&self) -> InstallRequest {
         InstallRequest {
             operator: "louise".to_owned(),
+            broker_uid: 1_500,
+            broker_gid: 1_500,
             pool: IdentityPool {
                 uid_start: 200_000,
                 gid_start: 300_000,
@@ -371,7 +386,15 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     assert_eq!(config.launcher_digest, fixture.launcher_digest);
     assert_eq!(config.operator, "louise");
     assert_eq!(config.operator_uid, 1000);
+    assert_eq!(config.broker_uid, 1_500);
+    assert_eq!(config.broker_gid, 1_500);
+    assert_eq!(config.broker_socket_path, fixture.paths.broker_socket);
     assert_eq!(config.pool, fixture.request().pool);
+    assert_eq!(config.bwrap_path, fixture.paths.bwrap);
+    assert_eq!(
+        config.bwrap_digest,
+        Digest::of(&fs::read(&fixture.paths.bwrap).unwrap()).to_string(),
+    );
     assert_eq!(config.ssh_keygen_path, fixture.paths.ssh_keygen);
     assert_eq!(
         config.ssh_keygen_digest,
@@ -446,6 +469,97 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
                 .as_ref(),
             "run",
         ]
+    );
+}
+
+#[test]
+fn measured_bubblewrap_and_dedicated_broker_identity_are_required() {
+    let fixture = Fixture::new();
+    let runner = FakeRunner::default();
+    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+
+    fs::write(&fixture.paths.bwrap, "replaced bubblewrap\n").unwrap();
+    assert!(
+        status(&fixture.paths)
+            .failures
+            .iter()
+            .any(|failure| failure.code == "bwrap_changed"),
+        "a changed sandbox helper must make launcher authority untrusted"
+    );
+
+    for (broker_uid, broker_gid) in [
+        (0, 1_500),
+        (1_000, 1_500),
+        (200_001, 1_500),
+        (1_500, 300_001),
+    ] {
+        let other = Fixture::new();
+        let mut request = other.request();
+        request.broker_uid = broker_uid;
+        request.broker_gid = broker_gid;
+        let error = install(&other.paths, &FakeRunner::default(), &request, 10)
+            .expect_err("root, operator, and Session-pool identities cannot be the broker");
+        assert!(error.to_string().contains("broker"), "{error}");
+    }
+}
+
+#[test]
+fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn() {
+    if std::env::var_os("LOUISELM_TEST_ROOT_LAUNCHER").is_none() {
+        eprintln!("skipping: set LOUISELM_TEST_ROOT_LAUNCHER in the root fixture");
+        return;
+    }
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "the production platform requires root"
+    );
+    if std::env::var_os("LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY").is_some() {
+        assert_eq!(
+            fs::read_to_string("/proc/self/uid_map").unwrap(),
+            format!("{:>10} {:>10} {:>10}\n", 0, 0, u32::MAX),
+            "CI must exercise the initial user namespace"
+        );
+    }
+
+    let fixture = Fixture::new();
+    install(
+        &fixture.paths,
+        &FakeRunner::default(),
+        &fixture.request(),
+        10,
+    )
+    .expect("launcher authority installs");
+    let config = runtime_config(&fixture.paths).expect("runtime authority validates");
+    let platform = SystemLaunchPlatform::new(fixture.paths.clone(), config, Duration::from_secs(5))
+        .expect("production platform opens the measured backend");
+
+    let marker = fixture.root().join("mutated-bwrap-spawned");
+    fs::write(
+        &fixture.paths.bwrap,
+        format!(
+            "#!/bin/sh\nprintf spawned > '{}'\nexit 97\n",
+            marker.display()
+        ),
+    )
+    .expect("measured bwrap is replaced after runtime configuration");
+    let result = platform.prepare(ConfinementPlan {
+        session_id: "changed-bwrap".to_owned(),
+        runtime_root: fixture.root().join("runtime"),
+        executable: PathBuf::from("/bin/true"),
+        arguments: Vec::new(),
+        environment: Default::default(),
+        home: fixture.root().join("sessions/changed-bwrap/home"),
+        workspace: fixture.root().join("sessions/changed-bwrap/workspace"),
+        system_roots: Vec::new(),
+        network: NetworkPolicy::Denied,
+        identity: IdentityPlan::NamespaceOnly,
+        channels: Vec::new(),
+    });
+
+    assert!(matches!(result, Err(SupervisorError::SpawnFailed)));
+    assert!(
+        !marker.exists(),
+        "a changed measured backend must be rejected before execution"
     );
 }
 
@@ -784,8 +898,14 @@ fn identity_lease_is_bounded_exclusive_and_survives_reinstall() {
     install(&fixture.paths, &runner, &fixture.request(), 20).unwrap();
     assert_eq!(fs::metadata(&lock_path).unwrap().ino(), inode);
     assert!(acquire_identity(&fixture.paths, 0).is_err());
-    drop(first);
-    acquire_identity(&fixture.paths, 0).expect("dropping the lease releases its lock");
+    first
+        .release()
+        .expect("a zero-survivor proof releases its lock");
+    acquire_identity(&fixture.paths, 0)
+        .expect("released slot is reusable")
+        .release()
+        .unwrap();
+    second.release().unwrap();
     assert!(acquire_identity(&fixture.paths, 4).is_err());
 }
 
@@ -1149,9 +1269,61 @@ fn simultaneous_different_slots_leave_no_shadow_lock_behind() {
     assert!(!PathBuf::from(format!("{}.lock", paths.subgid.display())).exists());
     release.wait();
     for thread in threads {
-        drop(thread.join().expect("lease thread exits"));
+        thread
+            .join()
+            .expect("lease thread exits")
+            .release()
+            .expect("proved-empty slot is released");
     }
-    acquire_identity(&paths, 0).expect("slot is reusable after both leases drop");
+    acquire_identity(&paths, 0)
+        .expect("slot is reusable after both leases release")
+        .release()
+        .unwrap();
+}
+
+#[test]
+fn dropping_an_unreleased_lease_fails_closed_across_reacquisition() {
+    let fixture = Fixture::new();
+    install(
+        &fixture.paths,
+        &FakeRunner::default(),
+        &fixture.request(),
+        10,
+    )
+    .unwrap();
+
+    drop(acquire_identity(&fixture.paths, 3).expect("slot is initially available"));
+
+    assert!(matches!(
+        acquire_identity(&fixture.paths, 3),
+        Err(louiselm_skills::launcher_install::LauncherError::Poisoned { slot: 3 })
+    ));
+}
+
+#[test]
+fn an_unproven_cleanup_durably_poisons_the_identity_slot() {
+    let fixture = Fixture::new();
+    install(
+        &fixture.paths,
+        &FakeRunner::default(),
+        &fixture.request(),
+        10,
+    )
+    .unwrap();
+
+    acquire_identity(&fixture.paths, 2)
+        .expect("slot is initially available")
+        .poison()
+        .expect("poison marker is durable");
+
+    assert!(matches!(
+        acquire_identity(&fixture.paths, 2),
+        Err(louiselm_skills::launcher_install::LauncherError::Poisoned { slot: 2 })
+    ));
+    let report = status(&fixture.paths);
+    assert!(report.failures.iter().any(|failure| {
+        failure.code == "identity_slot_poisoned" && failure.detail.contains("slot 2")
+    }));
 }
 
 #[test]

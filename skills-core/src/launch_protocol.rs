@@ -1,4 +1,4 @@
-//! Closed lifecycle messages shared by the Launch supervisor and Control broker.
+//! Closed launch and lifecycle messages shared by the supervisor and broker.
 //!
 //! This module describes bytes and pure compare-and-swap decisions. It does
 //! not own transport, authorization policy, persistence, or process mechanics.
@@ -7,16 +7,16 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::launch::PROTOCOL_VERSION;
+
 use crate::{
     canonical::Digest,
+    launch::{LaunchError, LaunchRequest, REQUEST_SCHEMA},
     launch_receipt::{
         Authorization, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptError, ReceiptHead, ReceiptOutcome,
         ReceiptPayload, SessionState, SignedReceipt,
     },
 };
-
-/// Protocol version carried by every launcher message.
-pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Longest accepted encoded protocol message.
 pub const MAX_PROTOCOL_MESSAGE_BYTES: usize = 64 * 1024;
@@ -32,6 +32,9 @@ pub const STATUS_REQUEST_SCHEMA: &str = "louiselm.launch.status-request/1";
 
 /// Schema for durable receipt acknowledgement.
 pub const RECEIPT_ACK_SCHEMA: &str = "louiselm.launch.receipt-ack/1";
+
+/// Schema for a broker-consumed single-use launch authorization.
+pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/1";
 
 /// Schema for the mechanical supervisor status.
 pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/1";
@@ -60,7 +63,7 @@ pub enum LifecycleAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingAction {
-    /// Establish the sequence-zero launch receipt.
+    /// Complete the two-receipt launch transaction.
     Launch,
     /// Park the Session.
     Park,
@@ -91,7 +94,7 @@ pub enum PendingPhase {
     Applying,
     /// The resulting receipt is being signed.
     Signing,
-    /// Enabling remains blocked until the broker acknowledges durable bytes.
+    /// Completion remains blocked until the broker acknowledges durable bytes.
     AwaitingDurableAck,
 }
 
@@ -318,7 +321,9 @@ impl LifecycleRequest {
         validate_identifier(&self.run_id)?;
         validate_identifier(&self.authorization_id)?;
         let sequence_shape_matches = match self.expected_state {
-            SessionState::Starting => self.expected_receipt_sequence.is_none(),
+            SessionState::Starting => {
+                matches!(self.expected_receipt_sequence, None | Some(0))
+            }
             SessionState::Running | SessionState::Parked | SessionState::Terminal => {
                 self.expected_receipt_sequence.is_some()
             }
@@ -408,9 +413,95 @@ impl ReceiptAcknowledgement {
     }
 }
 
+/// A pending launch authorization atomically consumed by the Control broker.
+///
+/// The broker returns this record at most once. The record binds its identity
+/// assignment and expiry to one exact canonical [`LaunchRequest`]; it does not
+/// carry a command, environment, path, backend, or other launch mechanic.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchAuthorization {
+    /// Authorization schema.
+    pub schema: String,
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// Single-use authorization identity.
+    pub authorization_id: String,
+    /// Correlated launch request identity.
+    pub request_id: String,
+    /// Digest of the exact canonical launch request.
+    pub request_digest: String,
+    /// Unprivileged controller identity authorized by the broker.
+    pub controller_uid: u32,
+    /// Authorized Session.
+    pub session_id: String,
+    /// Authorized Run.
+    pub run_id: String,
+    /// Authorized capability-envelope revision.
+    pub envelope_revision: u64,
+    /// Slot assigned from the installed launcher identity pool.
+    pub identity_slot: u32,
+    /// Host UID assigned to the Session.
+    pub assigned_uid: u32,
+    /// Host GID assigned to the Session.
+    pub assigned_gid: u32,
+    /// Exclusive millisecond expiry; `now >= expires_at_ms` is expired.
+    pub expires_at_ms: u64,
+}
+
+impl LaunchAuthorization {
+    /// Validates the closed authorization's own wire shape.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_schema(&self.schema, LAUNCH_AUTHORIZATION_SCHEMA)?;
+        validate_version(self.protocol_version)?;
+        validate_identifier(&self.authorization_id)?;
+        validate_identifier(&self.request_id)?;
+        validate_digest(&self.request_digest)?;
+        validate_identifier(&self.session_id)?;
+        validate_identifier(&self.run_id)?;
+        if self.controller_uid == 0
+            || self.assigned_uid == 0
+            || self.assigned_gid == 0
+            || self.expires_at_ms == 0
+        {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        Ok(())
+    }
+
+    /// Checks every broker-owned binding against one invocation.
+    ///
+    /// Single-use consumption is the broker's atomic storage operation. This
+    /// method checks the consumed record the supervisor received, including
+    /// the exclusive expiry boundary, without weakening that storage rule.
+    pub fn validate_for(
+        &self,
+        request: &LaunchRequest,
+        controller_uid: u32,
+        now_ms: u64,
+    ) -> Result<(), ProtocolError> {
+        self.validate()?;
+        request.validate().map_err(protocol_error_from_launch)?;
+        if self.authorization_id != request.authorization_id
+            || self.request_id != request.request_id
+            || self.request_digest != request.digest().to_string()
+            || self.controller_uid != controller_uid
+            || self.session_id != request.session_id
+            || self.run_id != request.run_id
+            || self.envelope_revision != request.envelope_revision
+            || now_ms >= self.expires_at_ms
+        {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        Ok(())
+    }
+}
+
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Query that atomically consumes one pending launch authorization.
+    LaunchAuthorization(LaunchRequest),
     /// Authorized lifecycle mutation.
     Lifecycle(LifecycleRequest),
     /// Read-only status request.
@@ -428,6 +519,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        REQUEST_SCHEMA => {
+            let request =
+                LaunchRequest::parse_canonical(bytes).map_err(protocol_error_from_launch)?;
+            Ok(ProtocolMessage::LaunchAuthorization(request))
+        }
         LIFECYCLE_REQUEST_SCHEMA => {
             let request: LifecycleRequest = decode_closed(bytes)?;
             request.validate()?;
@@ -456,6 +552,19 @@ struct MessageHeader {
 fn decode_closed<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtocolError> {
     serde_json::from_slice(bytes)
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))
+}
+
+fn protocol_error_from_launch(error: LaunchError) -> ProtocolError {
+    let code = match error {
+        LaunchError::RequestTooLarge { .. } => ErrorCode::MessageTooLarge,
+        LaunchError::MalformedRequest => ErrorCode::MalformedMessage,
+        LaunchError::Schema { .. } => ErrorCode::UnsupportedSchema,
+        LaunchError::ProtocolVersion { .. } => ErrorCode::UnsupportedVersion,
+        LaunchError::NonCanonical
+        | LaunchError::MalformedIdentifier { .. }
+        | LaunchError::Registry(_) => ErrorCode::InvalidRequest,
+    };
+    ProtocolError::new(code, None, None)
 }
 
 /// Mechanical status authored by one Launch supervisor.
@@ -941,6 +1050,7 @@ fn authorized_lifecycle_outcome(
             authority: ReceiptAuthority::Authorized(authorization),
         } => Some((authorization, LifecycleAction::Disposal)),
         ReceiptOutcome::Launch { .. }
+        | ReceiptOutcome::Start { .. }
         | ReceiptOutcome::Park { .. }
         | ReceiptOutcome::Disposal { .. } => None,
     }
@@ -969,6 +1079,11 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Broker-consumed authorization for one exact launch request.
+    LaunchAuthorization {
+        /// Single-use authorization and assigned host identity.
+        authorization: LaunchAuthorization,
+    },
     /// Mechanical status authored by the Launch supervisor.
     SupervisorStatus {
         /// Status value.
@@ -1021,6 +1136,13 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
+            ResponseResult::LaunchAuthorization { authorization } => {
+                authorization.validate()?;
+                if authorization.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
             ResponseResult::SupervisorStatus { status } => status.validate(),
             ResponseResult::SessionStatus { status } => status.validate(),
             ResponseResult::Receipt { receipt } => {
@@ -1107,7 +1229,10 @@ fn validate_status_shape(
             return Err(invalid_status(state, receipt_head));
         }
         let pending_state_matches = match (pending.action, pending.phase) {
-            (PendingAction::Launch, _) => state == SessionState::Starting,
+            (PendingAction::Launch, PendingPhase::Applying) => state == SessionState::Starting,
+            (PendingAction::Launch, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
+                matches!(state, SessionState::Starting | SessionState::Running)
+            }
             (PendingAction::Park, PendingPhase::Applying) => state == SessionState::Running,
             (PendingAction::Park, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
                 state == SessionState::Parked
@@ -1124,13 +1249,52 @@ fn validate_status_shape(
         if !pending_state_matches {
             return Err(invalid_status(state, receipt_head));
         }
+        let head_sequence = receipt_head.map(|head| head.sequence);
+        let launch_head_matches = match (state, pending.action, pending.phase) {
+            (SessionState::Starting, PendingAction::Launch, PendingPhase::Applying) => {
+                matches!(head_sequence, None | Some(0))
+            }
+            (SessionState::Starting, PendingAction::Launch, PendingPhase::Signing) => {
+                head_sequence.is_none()
+            }
+            (SessionState::Starting, PendingAction::Launch, PendingPhase::AwaitingDurableAck) => {
+                head_sequence == Some(0)
+            }
+            (SessionState::Running, PendingAction::Launch, PendingPhase::Signing) => {
+                head_sequence == Some(0)
+            }
+            (SessionState::Running, PendingAction::Launch, PendingPhase::AwaitingDurableAck) => {
+                head_sequence == Some(1)
+            }
+            (_, PendingAction::Launch, _) => false,
+            _ => true,
+        };
+        if !launch_head_matches {
+            return Err(invalid_status(state, receipt_head));
+        }
     }
     if let Some(failure) = last_failure {
         failure.validate()?;
     }
     let state_matches = match state {
-        SessionState::Starting => channel_state == ChannelState::Disabled,
-        SessionState::Running => channel_state != ChannelState::Closed && receipt_head.is_some(),
+        SessionState::Starting => {
+            channel_state == ChannelState::Disabled
+                && receipt_head.is_none_or(|head| head.sequence == 0)
+        }
+        SessionState::Running => {
+            let receipt_head_matches = receipt_head.is_some_and(|head| {
+                head.sequence > 0
+                    || matches!(
+                        pending_operation,
+                        Some(PendingOperation {
+                            action: PendingAction::Launch,
+                            phase: PendingPhase::Signing,
+                            ..
+                        })
+                    )
+            });
+            channel_state != ChannelState::Closed && receipt_head_matches
+        }
         SessionState::Parked => {
             matches!(
                 channel_state,
