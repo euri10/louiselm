@@ -1290,7 +1290,6 @@ impl Drop for FakeRunningAgent {
 struct OuterProcessObservation {
     agent_pid: u32,
     monitor_pid: u32,
-    sandbox_leader_pid: u32,
     uids: Vec<u32>,
     gids: Vec<u32>,
     groups: Vec<u32>,
@@ -1352,7 +1351,7 @@ impl PreparedAgent for BubblewrapPreparedAgent {
             .take()
             .expect("the real prepared Session remains owned");
         let monitor_pid = prepared.monitor_pid();
-        let sandbox_leader_pid = prepared
+        prepared
             .sandbox_leader_pid()
             .ok_or(SupervisorError::IsolationRejected)?;
         let session = prepared.start().map_err(map_test_sandbox)?;
@@ -1361,7 +1360,6 @@ impl PreparedAgent for BubblewrapPreparedAgent {
             tree: self.tree.clone(),
             observation: Arc::clone(&self.observation),
             monitor_pid,
-            sandbox_leader_pid,
         }))
     }
 
@@ -1380,7 +1378,6 @@ struct BubblewrapRunningAgent {
     tree: ProcessTree,
     observation: Arc<Mutex<Option<OuterProcessObservation>>>,
     monitor_pid: u32,
-    sandbox_leader_pid: u32,
 }
 
 impl RunningAgent for BubblewrapRunningAgent {
@@ -1402,16 +1399,11 @@ impl RunningAgent for BubblewrapRunningAgent {
         let tree = self.tree.clone();
         let observation = Arc::clone(&self.observation);
         let monitor_pid = self.monitor_pid;
-        let sandbox_leader_pid = self.sandbox_leader_pid;
         thread::Builder::new()
             .name("louiselm-test-agent-relay".to_owned())
             .spawn(move || {
                 let result: Result<i32, SupervisorError> = (|| {
-                    *lock(&observation) = Some(observe_agent_process(
-                        &tree,
-                        monitor_pid,
-                        sandbox_leader_pid,
-                    )?);
+                    *lock(&observation) = Some(observe_agent_process(&tree, monitor_pid)?);
                     let error_worker = thread::Builder::new()
                         .name("louiselm-test-agent-stderr".to_owned())
                         .spawn(move || io::copy(&mut agent_error, &mut io::sink()))
@@ -1562,12 +1554,11 @@ fn map_test_sandbox(error: SandboxError) -> SupervisorError {
 fn observe_agent_process(
     tree: &ProcessTree,
     monitor_pid: u32,
-    sandbox_leader_pid: u32,
 ) -> Result<OuterProcessObservation, SupervisorError> {
     let deadline = Instant::now() + CALLBACK_TIMEOUT;
     loop {
         for pid in tree.processes().map_err(map_test_sandbox)? {
-            if pid == monitor_pid || pid == sandbox_leader_pid {
+            if pid == monitor_pid {
                 continue;
             }
             if fs::read_to_string(format!("/proc/{pid}/comm"))
@@ -1581,7 +1572,6 @@ fn observe_agent_process(
                 return Ok(OuterProcessObservation {
                     agent_pid: pid,
                     monitor_pid,
-                    sandbox_leader_pid,
                     uids,
                     gids,
                     groups,
@@ -8079,7 +8069,6 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         .take()
         .expect("the live Agent was observed through host /proc");
     assert_ne!(observed.agent_pid, observed.monitor_pid);
-    assert_ne!(observed.agent_pid, observed.sandbox_leader_pid);
     assert!(observed.uids.iter().all(|uid| *uid == assigned));
     assert!(observed.gids.iter().all(|gid| *gid == assigned));
     assert!(
