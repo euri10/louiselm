@@ -130,6 +130,19 @@ contract.
 
 ## Development
 
+Install the pinned MyST CLI and build the public landing page, documentation,
+API appendix, and blog as one strictly checked static artifact:
+
+```sh
+npm ci
+npm run site:build
+```
+
+The deployable directory is `_build/html`. The build accepts only the pages
+listed in `myst.yml`; Markdown downloads must match those curated sources
+byte-for-byte. It rejects conversation exports, unlisted Markdown sources,
+state, plans, and environment files before that directory can be published.
+
 Install the pinned `mini.test` dependency from `mini.nvim`:
 
 ```sh

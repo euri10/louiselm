@@ -1,5 +1,5 @@
 variable "project_id" {
-  description = "Dedicated GCP project ID for LouiseLM notification infrastructure."
+  description = "Dedicated GCP project ID for LouiseLM application infrastructure."
   type        = string
 
   validation {
@@ -11,7 +11,7 @@ variable "project_id" {
 variable "project_name" {
   description = "Human-readable name for the dedicated project."
   type        = string
-  default     = "LouiseLM Notifications"
+  default     = "LouiseLM"
 }
 
 variable "billing_account_id" {
@@ -25,7 +25,7 @@ variable "billing_account_id" {
 }
 
 variable "org_id" {
-  description = "Google Cloud organization ID; exactly one of org_id and folder_id is required."
+  description = "Optional Google Cloud organization ID; org_id and folder_id are mutually exclusive."
   type        = string
   default     = null
   nullable    = true
@@ -37,7 +37,7 @@ variable "org_id" {
 }
 
 variable "folder_id" {
-  description = "Google Cloud folder ID; exactly one of folder_id and org_id is required."
+  description = "Optional Google Cloud folder ID; folder_id and org_id are mutually exclusive."
   type        = string
   default     = null
   nullable    = true
@@ -130,12 +130,5 @@ variable "gitlab_workload_identity_provider_id" {
   validation {
     condition     = can(regex("^[a-z0-9-]{4,32}$", var.gitlab_workload_identity_provider_id))
     error_message = "gitlab_workload_identity_provider_id must be 4-32 lowercase letters, digits, or hyphens."
-  }
-}
-
-check "project_parent" {
-  assert {
-    condition     = (var.org_id != null) != (var.folder_id != null)
-    error_message = "Exactly one of org_id or folder_id must be supplied to create the dedicated project."
   }
 }

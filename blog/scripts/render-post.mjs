@@ -27,7 +27,7 @@
 //      them into the deployed site.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const FRAGMENT_SUFFIX = '.nvim-transcript.html';
@@ -37,6 +37,17 @@ const IFRAME_OPEN_RE = /^```\{iframe\}\s+(\S+)\s*$/;
 function fail(message) {
 	console.error(`render-post: ${message}`);
 	process.exit(1);
+}
+
+function findProjectConfig(startDir) {
+	let dir = startDir;
+	while (true) {
+		const candidate = join(dir, 'myst.yml');
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
 }
 
 /**
@@ -338,8 +349,10 @@ function main() {
 	const blogMdPath = join(postDir, 'blog.md');
 	if (!existsSync(blogMdPath)) fail(`${blogMdPath} not found`);
 
-	const mystYmlPath = resolve(postDir, '..', 'myst.yml');
-	if (!existsSync(mystYmlPath)) fail(`${mystYmlPath} not found (post directory must be a direct child of the MyST project root)`);
+	const mystYmlPath = findProjectConfig(postDir);
+	if (!mystYmlPath) fail(`myst.yml not found in ${postDir} or any parent directory`);
+	const projectRoot = dirname(mystYmlPath);
+	const postRelDir = relative(projectRoot, postDir).replaceAll('\\', '/');
 
 	const originalText = readFileSync(blogMdPath, 'utf8');
 
@@ -378,7 +391,7 @@ function main() {
 			basename: basename_,
 			fragmentPath: join(postDir, basename_),
 			iframeSrc: `/${basename_}`,
-			staticRelPath: `${postName}/${basename_}`,
+			staticRelPath: `${postRelDir}/${basename_}`,
 		};
 	});
 
@@ -405,7 +418,7 @@ function main() {
 	const mystYmlText = readFileSync(mystYmlPath, 'utf8');
 	const newMystYml = mergeStaticFiles(
 		mystYmlText,
-		postName,
+		postRelDir,
 		finalEntries.map((e) => e.staticRelPath),
 	);
 	if (newMystYml !== mystYmlText) {

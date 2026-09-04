@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 2 ] || [ ! -d "$1" ] || [ ! -d "$2" ]; then
+	echo "usage: $(basename "$0") <artifact-directory> <source-root>" >&2
+	exit 1
+fi
+
+artifact=$(CDPATH= cd -- "$1" && pwd)
+source_root=$(CDPATH= cd -- "$2" && pwd)
+failed=0
+
+public_markdown_sources=(
+	"$source_root/README.md"
+	"$source_root/CONTRIBUTING.md"
+	"$source_root/POLITICAL_STATEMENT.md"
+	"$source_root/TRADEMARK_POLICY.md"
+	"$source_root/doc/api.md"
+	"$source_root/docs/example-workflow.md"
+	"$source_root/docs/index.md"
+	"$source_root/docs/onboarding.md"
+	"$source_root/docs/tutorial.md"
+	"$source_root/blog/index.md"
+)
+for source in "$source_root"/blog/post-*/blog.md; do
+	if [ -f "$source" ]; then
+		public_markdown_sources+=("$source")
+	fi
+done
+
+reject() {
+	echo "public artifact rejected: $1" >&2
+	failed=1
+}
+
+while IFS= read -r -d '' path; do
+	relative=${path#"$artifact"/}
+	lower=${relative,,}
+	case "/$lower/" in
+	*/conversations/*) reject "private conversations path: $relative" ;;
+	esac
+done < <(find "$artifact" -mindepth 1 -type d -print0)
+
+for route in index.html docs/index.html blog/index.html; do
+	if [ ! -f "$artifact/$route" ]; then
+		reject "missing /${route%index.html} route ($route)"
+	fi
+done
+
+for path in "$artifact/robots.txt" "$artifact/sitemap.xml"; do
+	if [ -f "$path" ] && grep -Eq 'http://localhost:[0-9]+' "$path"; then
+		reject "MyST build-server origin in ${path#"$artifact"/}"
+	fi
+done
+
+while IFS= read -r -d '' path; do
+	if grep -Eq '"domain":"http://localhost:[0-9]+"' "$path"; then
+		reject "MyST build-server origin in ${path#"$artifact"/}"
+	fi
+done < <(find "$artifact" -type f \( -name '*.html' -o -name '*.json' \) -print0)
+
+while IFS= read -r -d '' path; do
+	relative=${path#"$artifact"/}
+	lower=${relative,,}
+
+	case "/$lower/" in
+	*/conversations/*)
+		reject "private conversations path: $relative"
+		continue
+		;;
+	esac
+
+	# MyST writes hashed Markdown exports for selected pages. Keep only the
+	# known public source basenames and require byte identity with one of the
+	# curated source files. MyST flattens source paths here, so names alone
+	# cannot distinguish a public page from a linked private document.
+	if [[ "$relative" =~ ^build/(README|CONTRIBUTING|POLITICAL_STATEMENT|TRADEMARK_POLICY|api|blog|example-workflow|index|onboarding|tutorial)-[[:xdigit:]]{32}\.md$ ]]; then
+		matched=0
+		for source in "${public_markdown_sources[@]}"; do
+			if [ -f "$source" ] && cmp -s "$path" "$source"; then
+				matched=1
+				break
+			fi
+		done
+		if [ "$matched" -eq 1 ]; then
+			continue
+		fi
+		reject "Markdown export does not match a curated source: $relative"
+		continue
+	fi
+
+	case "$lower" in
+	*.jsonl | *.tfstate | *.tfstate.* | *.tfvars | *.tfvars.* | *.plan | *.tfplan | tfplan | */tfplan | .env | */.env | .env.* | */.env.* | *.env | *.md | *.markdown | *.mdown | *.mkd)
+		reject "forbidden source or state file: $relative"
+		continue
+		;;
+	esac
+
+	# README.md links to this one public, canonical, extensionless source file.
+	# MyST gives it a content hash but preserves the extensionless basename.
+	if [[ "$relative" =~ ^build/LICENSE-[[:xdigit:]]{32}$ ]]; then
+		if cmp -s "$path" "$source_root/LICENSE"; then
+			continue
+		fi
+		reject "LICENSE export does not match the canonical source: $relative"
+		continue
+	fi
+
+	case "$lower" in
+	*.avif | *.css | *.eot | *.gif | *.html | *.ico | *.inv | *.jpeg | *.jpg | *.js | *.json | *.map | *.mjs | *.otf | *.png | *.svg | *.ttf | *.txt | *.wasm | *.webmanifest | *.webp | *.woff | *.woff2 | *.xml | *.xsl) ;;
+	*) reject "file type is not allowlisted: $relative" ;;
+	esac
+done < <(find "$artifact" -type f -print0)
+
+while IFS= read -r -d '' path; do
+	reject "non-regular artifact entry: ${path#"$artifact"/}"
+done < <(find "$artifact" -mindepth 1 ! -type d ! -type f -print0)
+
+if [ "$failed" -ne 0 ]; then
+	exit 1
+fi
+
+echo "public artifact accepted: $artifact"

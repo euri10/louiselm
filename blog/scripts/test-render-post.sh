@@ -52,26 +52,28 @@ trap cleanup EXIT
 nvim_config_dir=$(CDPATH= cd -- "${XDG_CONFIG_HOME:-$HOME/.config}/nvim" && pwd)
 nvim_init="$nvim_config_dir/init.lua"
 
-# work_dir is the fixture MyST project root for every part below: render-post.mjs
-# now requires <post-dir>/../myst.yml to exist.
+# work_dir is the fixture MyST project root for every part below. The post is
+# nested exactly like the real project, proving render-post.mjs finds the
+# nearest ancestor myst.yml and writes project-relative static-file paths.
 cat >"$work_dir/myst.yml" <<'EOF'
 version: 1
 project:
   title: fixture
   toc:
-    - file: index.md
-    - pattern: 'post-*/blog.md'
+    - file: blog/index.md
+    - pattern: 'blog/post-*/blog.md'
 site:
-  template: book-theme
+  template: https://github.com/myst-templates/book-theme/archive/45706bcb9ac02b6713270785e3fc22eda348ed3b.zip
   options:
     folders: true
-    style: ./blog.css
+    style: ./blog/blog.css
 EOF
-touch "$work_dir/blog.css"
+mkdir -p "$work_dir/blog"
+touch "$work_dir/blog/blog.css"
 # A real, crawlable link to the post is required for part 3: the book theme's
 # server only writes a page's static HTML to _build/html on first request, and
 # its own startup crawl only follows links reachable from index.md.
-cat >"$work_dir/index.md" <<'EOF'
+cat >"$work_dir/blog/index.md" <<'EOF'
 ---
 title: fixture
 ---
@@ -81,7 +83,7 @@ title: fixture
 - [Fixture Post](post-fixture/blog.md)
 EOF
 
-fixture_post="$work_dir/post-fixture"
+fixture_post="$work_dir/blog/post-fixture"
 mkdir -p "$fixture_post/conversations"
 
 # The excerpted ranges below must stay rich enough to expose CSS ordering
@@ -295,8 +297,8 @@ else
 	cat "$fixture_post/blog.md" >&2 || true
 fi
 
-if grep -qF -- "- 'post-fixture/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html'" "$work_dir/myst.yml" &&
-	grep -qF -- "- 'post-fixture/post-fixture--conversations-fixture-session.L22-26.nvim-transcript.html'" "$work_dir/myst.yml"; then
+if grep -qF -- "- 'blog/post-fixture/post-fixture--conversations-fixture-session.L9-20.nvim-transcript.html'" "$work_dir/myst.yml" &&
+	grep -qF -- "- 'blog/post-fixture/post-fixture--conversations-fixture-session.L22-26.nvim-transcript.html'" "$work_dir/myst.yml"; then
 	ok "myst.yml static_files lists both generated fragments"
 else
 	fail "myst.yml static_files lists both generated fragments"
@@ -362,7 +364,7 @@ else
 	ok "myst CLI is on PATH (required for the end-to-end build check)"
 
 	build_log="$work_dir/myst-build.log"
-	target_page="$work_dir/_build/html/post-fixture/blog/index.html"
+	target_page="$work_dir/_build/html/blog/post-fixture/blog/index.html"
 
 	# `myst build --html` fetches every site route through a throwaway internal
 	# server, writes each page as its fetch resolves, copies static_files only
