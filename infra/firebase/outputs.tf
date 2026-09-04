@@ -35,11 +35,6 @@ output "sender_role" {
   value       = google_project_iam_custom_role.sender.name
 }
 
-output "ci_service_account_email" {
-  description = "Protected-main GitLab CI service account email."
-  value       = google_service_account.ci.email
-}
-
 output "gitlab_workload_identity_provider" {
   description = "Provider resource name to configure as GCP_OIDC_PROVIDER in GitLab."
   value       = google_iam_workload_identity_pool_provider.gitlab.name

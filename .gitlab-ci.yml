@@ -1,32 +1,17 @@
 include:
-  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform@9.4.0
+  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform@fef22b89d78f356aeac7b7357fd8e5984d05bbca
     inputs:
-      image: ghcr.io/opentofu/opentofu:1.12.3
+      image: ghcr.io/opentofu/opentofu:1.12.3@sha256:a0766d12f07b43e66f2ed40d7a8babe97d581d20339c68ad0ab561737af9a5b3
       project-dir: infra/firebase
-      gitlab-backend-disabled: false
+      gitlab-backend-disabled: true
       fmt-enabled: true
       validate-enabled: true
-      prod-enabled: true
-      prod-plan-enabled: true
-  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform-gcp@9.4.0
-    inputs:
-      gcp-oidc-aud: $CI_SERVER_URL
-      gcp-prod-oidc-provider: $GCP_OIDC_PROVIDER
-      gcp-prod-oidc-account: $GCP_OIDC_ACCOUNT
+      prod-enabled: false
+      prod-plan-enabled: false
 
 variables:
   # Public validation does not receive backend credentials or an ID token.
   LOUISELM_PRODUCTION_READY: "false"
-  TF_PROD_ENABLED: "true"
-  TF_PROD_PLAN_ENABLED: "true"
-  TF_PROD_APPLY_OPTS: "-refresh=false"
-  TF_VAR_gitlab_project_id: $CI_PROJECT_ID
-  TF_VAR_gitlab_default_branch: $CI_DEFAULT_BRANCH
-
-# The GCP variant adds an ID token to .tf-base. Remove it from public jobs;
-# only the protected production plan/apply jobs re-add it below.
-.tf-base:
-  id_tokens: null
 
 tf-fmt:
   id_tokens: null
@@ -38,46 +23,112 @@ tf-validate:
   rules:
     - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
 
-tf-plan-production:
-  id_tokens:
-    GCP_JWT:
-      aud: "$CI_SERVER_URL"
+tf-tflint:
+  id_tokens: null
   rules:
-    - if: '$LOUISELM_PRODUCTION_READY != "true"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
-      when: never
-    - if: '$CI_COMMIT_REF_PROTECTED != "true"'
-      when: never
-    - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
-      when: never
-    - when: on_success
-  artifacts:
-    name: "Reviewed OpenTofu production plan $CI_COMMIT_SHA"
-    expire_in: 1 day
-    access: developer
-    paths:
-      - $TF_PROJECT_DIR/production.tfplan
-      - $TF_PROJECT_DIR/production-plan.json
-    reports:
-      terraform: $TF_PROJECT_DIR/production-plan.json
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+tf-trivy:
+  id_tokens: null
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+tf-test-static:
+  image:
+    name: ghcr.io/opentofu/opentofu:1.12.3@sha256:a0766d12f07b43e66f2ed40d7a8babe97d581d20339c68ad0ab561737af9a5b3
+    entrypoint: [""]
+  stage: test
+  id_tokens: null
+  script:
+    - cd infra/firebase
+    - ./tf-pre-init.sh
+    - tofu init -backend=false -lockfile=readonly -input=false
+    - tofu test
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+# The pinned component defines optional and stateful jobs even when its inputs
+# are false. Unconditional rules keep higher-precedence CI variables from
+# reviving work outside this repository's static-validation boundary.
+tf-tfsec:
+  rules:
+    - when: never
+
+tf-checkov:
+  rules:
+    - when: never
+
+tf-infracost:
+  rules:
+    - when: never
+
+tf-docs:
+  rules:
+    - when: never
+
+tf-publish-module:
+  rules:
+    - when: never
+
+tf-plan-review:
+  rules:
+    - when: never
+
+tf-test-review:
+  rules:
+    - when: never
+
+tf-review:
+  rules:
+    - when: never
+
+tf-destroy-review:
+  rules:
+    - when: never
+
+tf-plan-integration:
+  rules:
+    - when: never
+
+tf-test-integration:
+  rules:
+    - when: never
+
+tf-integration:
+  rules:
+    - when: never
+
+tf-destroy-integration:
+  rules:
+    - when: never
+
+tf-plan-staging:
+  rules:
+    - when: never
+
+tf-test-staging:
+  rules:
+    - when: never
+
+tf-staging:
+  rules:
+    - when: never
+
+tf-destroy-staging:
+  rules:
+    - when: never
+
+tf-plan-production:
+  rules:
+    - when: never
+
+tf-test-production:
+  rules:
+    - when: never
 
 tf-production:
-  id_tokens:
-    GCP_JWT:
-      aud: "$CI_SERVER_URL"
-  dependencies:
-    - tf-plan-production
   rules:
-    - if: '$LOUISELM_PRODUCTION_READY != "true"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
-      when: never
-    - if: '$CI_COMMIT_REF_PROTECTED != "true"'
-      when: never
-    - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
-      when: never
-    - when: manual
+    - when: never
 
 site-build:
   image: node:24.18.0-bookworm@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059

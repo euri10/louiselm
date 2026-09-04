@@ -1,17 +1,23 @@
 variable "project_id" {
-  description = "Dedicated GCP project ID for LouiseLM application infrastructure."
+  description = "Fixed GCP project ID for LouiseLM application infrastructure."
   type        = string
+  default     = "louiselm"
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.project_id))
-    error_message = "project_id must be a 6-30 character lowercase GCP project ID."
+    condition     = var.project_id == "louiselm"
+    error_message = "project_id must remain louiselm because the Firebase and Hosting identity is fixed to that project."
   }
 }
 
-variable "project_name" {
-  description = "Human-readable name for the dedicated project."
+variable "state_project_id" {
+  description = "Fixed state-only GCP project ID that owns the OpenTofu backend bucket."
   type        = string
-  default     = "LouiseLM"
+  default     = "louiselm-state"
+
+  validation {
+    condition     = var.state_project_id == "louiselm-state"
+    error_message = "state_project_id must remain louiselm-state because the backend bootstrap boundary is fixed to that project."
+  }
 }
 
 variable "billing_account_id" {
@@ -81,33 +87,35 @@ variable "android_sha256_fingerprints" {
 }
 
 variable "gitlab_issuer_url" {
-  description = "Self-managed GitLab OIDC issuer URL, including the trailing slash."
+  description = "Fixed self-managed GitLab OIDC issuer URL."
   type        = string
+  default     = "https://gitlab.bartab.fr/"
 
   validation {
-    condition     = can(regex("^https://[^/]+/$", var.gitlab_issuer_url))
-    error_message = "gitlab_issuer_url must be an HTTPS origin with a trailing slash."
+    condition     = var.gitlab_issuer_url == "https://gitlab.bartab.fr/"
+    error_message = "gitlab_issuer_url must remain https://gitlab.bartab.fr/ because it is part of the deployment trust boundary."
   }
 }
 
 variable "gitlab_project_id" {
-  description = "Immutable numeric GitLab project ID allowed to impersonate the CI account."
+  description = "Fixed GitLab project ID allowed to impersonate the Hosting deployer."
   type        = string
+  default     = "163"
 
   validation {
-    condition     = can(regex("^[0-9]+$", var.gitlab_project_id))
-    error_message = "gitlab_project_id must be a numeric GitLab project ID."
+    condition     = var.gitlab_project_id == "163"
+    error_message = "gitlab_project_id must remain 163 because it is part of the deployment trust boundary."
   }
 }
 
 variable "gitlab_default_branch" {
-  description = "Protected GitLab branch allowed to impersonate the CI account."
+  description = "Fixed protected GitLab branch allowed to impersonate the Hosting deployer."
   type        = string
   default     = "main"
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9._/-]+$", var.gitlab_default_branch))
-    error_message = "gitlab_default_branch must be a non-empty Git ref name."
+    condition     = var.gitlab_default_branch == "main"
+    error_message = "gitlab_default_branch must remain main because it is part of the deployment trust boundary."
   }
 }
 
