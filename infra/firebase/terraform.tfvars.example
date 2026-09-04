@@ -1,14 +1,10 @@
-# Copy to terraform.tfvars outside version control and fill with operator-owned values.
-project_id                    = "replace-with-dedicated-project-id"
-project_name                  = "LouiseLM"
+# Project IDs are fixed to louiselm-state and louiselm; the state bucket is fixed to louiselm-tfstate.
+# Copy this file to terraform.tfvars outside version control and fill with operator-owned values.
 billing_account_id            = "000000-000000-000000"
 # org_id                      = "000000000000"
 # folder_id                   = "000000000000"
 android_package_name          = "dev.louiselm.capture"
 android_sha1_fingerprint      = "0000000000000000000000000000000000000000"
 android_sha256_fingerprints   = []
-gitlab_issuer_url              = "https://gitlab.example.com/"
-gitlab_project_id              = "123456"
-gitlab_default_branch          = "main"
 gitlab_workload_identity_pool_id     = "gitlab"
 gitlab_workload_identity_provider_id = "louiselm"
