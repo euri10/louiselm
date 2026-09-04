@@ -57,6 +57,7 @@ use support::{Fixture, write_file, write_registry};
 const CONTROLLER_UID: u32 = 1_000;
 const NOW_MS: u64 = 1_000;
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
+const PRIVILEGED_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_millis(500);
 const BROKER_LOSS_GRACE_MS: u32 = 250;
 
@@ -7962,7 +7963,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         },
         AppendBehavior::Hold,
         PlatformBehavior::default(),
-        Duration::from_secs(5),
+        PRIVILEGED_TIMEOUT,
     );
     for path in [
         setup._fixture.path(""),
@@ -7998,7 +7999,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         platform,
         Arc::clone(&setup.registry),
         setup.sessions_root.clone(),
-        Duration::from_secs(5),
+        PRIVILEGED_TIMEOUT,
     );
     let (receiver, completion_count) =
         begin_launch_on(&supervisor, &setup.request, &setup.events, operator_uid);
@@ -8032,7 +8033,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     controller_input
         .write_all(&acp)
         .expect("ACP bytes reach the real Agent");
-    let output_deadline = Instant::now() + CALLBACK_TIMEOUT;
+    let output_deadline = Instant::now() + PRIVILEGED_TIMEOUT;
     while *lock(&output) != acp {
         assert!(
             Instant::now() < output_deadline,
@@ -8052,7 +8053,14 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
             setup.broker.session_receipt_acknowledgement(0),
         ));
-    finish_terminal_session_relay(controller_input, relay_receiver, relay_worker);
+    drop(controller_input);
+    relay_receiver
+        .recv_timeout(PRIVILEGED_TIMEOUT)
+        .expect("terminal privileged relay completes")
+        .expect("terminal privileged supervisor cleanup succeeds");
+    relay_worker
+        .join()
+        .expect("terminal privileged relay worker finishes");
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
 
     let observed = lock(&observation)
