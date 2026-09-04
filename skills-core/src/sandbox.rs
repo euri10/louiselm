@@ -2219,6 +2219,8 @@ mod tests {
             .mode(0o711)
             .create(&sessions_root)
             .expect("the root-owned Sessions root creates");
+        fs::set_permissions(&sessions_root, fs::Permissions::from_mode(0o711))
+            .expect("the root-owned Sessions root has its fixed mode");
         let runtime_root = fixture.path().join("runtime");
         fs::create_dir(&runtime_root).expect("the runtime root creates");
         fs::set_permissions(&runtime_root, fs::Permissions::from_mode(0o755))

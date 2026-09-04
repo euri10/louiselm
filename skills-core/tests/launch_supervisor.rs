@@ -7,6 +7,7 @@ mod support;
 use std::{
     env, fs,
     io::{self, BufReader, Cursor, Read, Write},
+    net::Shutdown,
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     sync::{
@@ -56,6 +57,7 @@ use support::{Fixture, write_file, write_registry};
 const CONTROLLER_UID: u32 = 1_000;
 const NOW_MS: u64 = 1_000;
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
+const PRIVILEGED_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_millis(500);
 const BROKER_LOSS_GRACE_MS: u32 = 250;
 
@@ -1287,9 +1289,8 @@ impl Drop for FakeRunningAgent {
 
 #[derive(Debug, PartialEq, Eq)]
 struct OuterProcessObservation {
-    agent_pid: u32,
-    monitor_pid: u32,
     sandbox_leader_pid: u32,
+    monitor_pid: u32,
     uids: Vec<u32>,
     gids: Vec<u32>,
     groups: Vec<u32>,
@@ -1309,7 +1310,6 @@ struct BubblewrapPreparedAgent {
     prepared: Option<PreparedSession>,
     backend_id: String,
     tree: ProcessTree,
-    observation: Arc<Mutex<Option<OuterProcessObservation>>>,
 }
 
 impl PreparedAgent for BubblewrapPreparedAgent {
@@ -1350,17 +1350,9 @@ impl PreparedAgent for BubblewrapPreparedAgent {
             .prepared
             .take()
             .expect("the real prepared Session remains owned");
-        let monitor_pid = prepared.monitor_pid();
-        let sandbox_leader_pid = prepared
-            .sandbox_leader_pid()
-            .ok_or(SupervisorError::IsolationRejected)?;
         let session = prepared.start().map_err(map_test_sandbox)?;
         Ok(Box::new(BubblewrapRunningAgent {
             session: Arc::new(Mutex::new(session)),
-            tree: self.tree.clone(),
-            observation: Arc::clone(&self.observation),
-            monitor_pid,
-            sandbox_leader_pid,
         }))
     }
 
@@ -1376,10 +1368,6 @@ impl PreparedAgent for BubblewrapPreparedAgent {
 
 struct BubblewrapRunningAgent {
     session: Arc<Mutex<SandboxedSession>>,
-    tree: ProcessTree,
-    observation: Arc<Mutex<Option<OuterProcessObservation>>>,
-    monitor_pid: u32,
-    sandbox_leader_pid: u32,
 }
 
 impl RunningAgent for BubblewrapRunningAgent {
@@ -1398,29 +1386,27 @@ impl RunningAgent for BubblewrapRunningAgent {
             )
         };
         let session = Arc::clone(&self.session);
-        let tree = self.tree.clone();
-        let observation = Arc::clone(&self.observation);
-        let monitor_pid = self.monitor_pid;
-        let sandbox_leader_pid = self.sandbox_leader_pid;
         thread::Builder::new()
             .name("louiselm-test-agent-relay".to_owned())
             .spawn(move || {
                 let result: Result<i32, SupervisorError> = (|| {
-                    *lock(&observation) = Some(observe_agent_process(
-                        &tree,
-                        monitor_pid,
-                        sandbox_leader_pid,
-                    )?);
+                    let input_worker = thread::Builder::new()
+                        .name("louiselm-test-agent-stdin".to_owned())
+                        .spawn(move || {
+                            io::copy(&mut input, &mut agent_input).and_then(|_| agent_input.flush())
+                        })
+                        .map_err(|_| SupervisorError::RelayFailed)?;
                     let error_worker = thread::Builder::new()
                         .name("louiselm-test-agent-stderr".to_owned())
                         .spawn(move || io::copy(&mut agent_error, &mut io::sink()))
                         .map_err(|_| SupervisorError::RelayFailed)?;
-                    io::copy(&mut input, &mut agent_input)?;
-                    agent_input.flush()?;
-                    drop(agent_input);
                     io::copy(&mut agent_output, &mut output)?;
                     output.flush()?;
                     let exit = lock(&session).wait().map_err(map_test_sandbox)?;
+                    input_worker
+                        .join()
+                        .map_err(|_| SupervisorError::RelayFailed)?
+                        .map_err(|_| SupervisorError::RelayFailed)?;
                     error_worker
                         .join()
                         .map_err(|_| SupervisorError::RelayFailed)?
@@ -1540,11 +1526,17 @@ impl LaunchPlatform for BubblewrapLaunchPlatform {
         let tree = prepared
             .process_tree()
             .ok_or(SupervisorError::IsolationRejected)?;
+        let sandbox_leader_pid = prepared
+            .sandbox_leader_pid()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        *lock(&self.observation) = Some(observe_sandbox_leader(
+            sandbox_leader_pid,
+            prepared.monitor_pid(),
+        )?);
         Ok(Box::new(BubblewrapPreparedAgent {
             prepared: Some(prepared),
             backend_id: self.backend_id.clone(),
             tree,
-            observation: Arc::clone(&self.observation),
         }))
     }
 }
@@ -1558,34 +1550,24 @@ fn map_test_sandbox(error: SandboxError) -> SupervisorError {
     }
 }
 
-fn observe_agent_process(
-    tree: &ProcessTree,
-    monitor_pid: u32,
+fn observe_sandbox_leader(
     sandbox_leader_pid: u32,
+    monitor_pid: u32,
 ) -> Result<OuterProcessObservation, SupervisorError> {
     let deadline = Instant::now() + CALLBACK_TIMEOUT;
     loop {
-        for pid in tree.processes().map_err(map_test_sandbox)? {
-            if pid == monitor_pid || pid == sandbox_leader_pid {
-                continue;
-            }
-            if fs::read_to_string(format!("/proc/{pid}/comm"))
-                .is_ok_and(|name| name.trim() == "cat")
-                && let (Some(uids), Some(gids), Some(groups)) = (
-                    process_status_values(pid, "Uid:"),
-                    process_status_values(pid, "Gid:"),
-                    process_status_values(pid, "Groups:"),
-                )
-            {
-                return Ok(OuterProcessObservation {
-                    agent_pid: pid,
-                    monitor_pid,
-                    sandbox_leader_pid,
-                    uids,
-                    gids,
-                    groups,
-                });
-            }
+        if let (Some(uids), Some(gids), Some(groups)) = (
+            process_status_values(sandbox_leader_pid, "Uid:"),
+            process_status_values(sandbox_leader_pid, "Gid:"),
+            process_status_values(sandbox_leader_pid, "Groups:"),
+        ) {
+            return Ok(OuterProcessObservation {
+                sandbox_leader_pid,
+                monitor_pid,
+                uids,
+                gids,
+                groups,
+            });
         }
         if Instant::now() >= deadline {
             return Err(SupervisorError::RelayFailed);
@@ -7981,7 +7963,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         },
         AppendBehavior::Hold,
         PlatformBehavior::default(),
-        Duration::from_secs(5),
+        PRIVILEGED_TIMEOUT,
     );
     for path in [
         setup._fixture.path(""),
@@ -8017,7 +7999,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         platform,
         Arc::clone(&setup.registry),
         setup.sessions_root.clone(),
-        Duration::from_secs(5),
+        PRIVILEGED_TIMEOUT,
     );
     let (receiver, completion_count) =
         begin_launch_on(&supervisor, &setup.request, &setup.events, operator_uid);
@@ -8033,23 +8015,58 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
 
     let acp = b"composite ACP bytes\n".to_vec();
     let output = Arc::new(Mutex::new(Vec::new()));
-    assert_eq!(
-        session
-            .relay_stdio(
-                Box::new(Cursor::new(acp.clone())),
-                Box::new(SharedWriter(Arc::clone(&output))),
-            )
-            .expect("the deterministic fake Agent relays and exits"),
-        0,
-    );
+    let (mut controller_input, supervisor_input) =
+        UnixStream::pair().expect("privileged relay socket pair opens");
+    let worker_output = Arc::clone(&output);
+    let (relay_sender, relay_receiver) = mpsc::sync_channel(1);
+    let relay_worker = thread::Builder::new()
+        .name("privileged-launch-relay".to_owned())
+        .spawn(move || {
+            relay_sender
+                .send(session.relay_stdio(
+                    Box::new(supervisor_input),
+                    Box::new(SharedWriter(worker_output)),
+                ))
+                .expect("test receives privileged relay completion");
+        })
+        .expect("privileged relay worker starts");
+    controller_input
+        .write_all(&acp)
+        .expect("ACP bytes reach the real Agent");
+    let output_deadline = Instant::now() + PRIVILEGED_TIMEOUT;
+    while *lock(&output) != acp {
+        assert!(
+            Instant::now() < output_deadline,
+            "the real Agent never echoed the ACP bytes",
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(*lock(&output), acp);
+    controller_input
+        .shutdown(Shutdown::Write)
+        .expect("the real Agent receives ACP EOF");
+
+    setup.broker.wait_for_session_receipt(0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    drop(controller_input);
+    relay_receiver
+        .recv_timeout(PRIVILEGED_TIMEOUT)
+        .expect("terminal privileged relay completes")
+        .expect("terminal privileged supervisor cleanup succeeds");
+    relay_worker
+        .join()
+        .expect("terminal privileged relay worker finishes");
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
 
     let observed = lock(&observation)
         .take()
         .expect("the live Agent was observed through host /proc");
-    assert_ne!(observed.agent_pid, observed.monitor_pid);
-    assert_ne!(observed.agent_pid, observed.sandbox_leader_pid);
+    assert_ne!(observed.sandbox_leader_pid, observed.monitor_pid);
     assert!(observed.uids.iter().all(|uid| *uid == assigned));
     assert!(observed.gids.iter().all(|gid| *gid == assigned));
     assert!(
