@@ -615,11 +615,17 @@ for policy in "$state_policy" "$bucket_policy"; do
   printf '%s' "$policy" | jq -e \
     --arg wif_member "$wif_member_prefix" \
     --arg wif_principal "$wif_principal_prefix" \
-    --arg app_set "$app_principal_set_prefix" '
+    --arg app_set "$app_principal_set_prefix" \
+    --arg app_id "$app_project" \
+    --arg app_number "$app_project_number" '
       [.bindings[].members[]? |
         select(startswith($wif_member) or
           startswith($wif_principal) or
-          startswith($app_set))] |
+          startswith($app_set) or
+          (startswith("serviceAccount:") and
+            (endswith("@" + $app_id + ".iam.gserviceaccount.com") or
+              contains($app_number) or
+              . == "serviceAccount:" + $app_id + "@appspot.gserviceaccount.com")))] |
       length == 0
     ' >/dev/null
 done
@@ -635,13 +641,9 @@ policy_accounts=$(printf '%s' "$app_policy" | jq -r '
     ltrimstr("serviceAccount:")] |
   unique | .[]
 ')
-firebase_management="service-${app_project_number}@gcp-sa-firebase.iam.gserviceaccount.com"
-firebase_rules="service-${app_project_number}@firebase-rules.iam.gserviceaccount.com"
 compute_account="${app_project_number}-compute@developer.gserviceaccount.com"
-cloud_services_account="${app_project_number}@cloudservices.gserviceaccount.com"
-app_principals=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-  "$managed_accounts" "$policy_accounts" "$firebase_management" \
-  "$firebase_rules" "$compute_account" "$cloud_services_account" |
+app_principals=$(printf '%s\n%s\n' \
+  "$managed_accounts" "$policy_accounts" |
   sed '/^$/d' | LC_ALL=C sort -u)
 test -n "$app_principals"
 
@@ -688,8 +690,8 @@ done <<EOF
 $app_principals
 EOF
 unset access app_policy app_principal_set_prefix app_principals bucket_policy
-unset bucket_resource cloud_services_account compute_account compute_roles
-unset firebase_management firebase_rules managed_accounts managed_folders permission policy
+unset bucket_resource compute_account compute_roles
+unset managed_accounts managed_folders permission policy
 unset policy_accounts principal state_compute state_compute_member state_policy
 unset state_project_resource wif_member_prefix wif_pool wif_principal_prefix
 unset wif_provider
