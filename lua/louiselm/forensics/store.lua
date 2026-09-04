@@ -4,6 +4,7 @@ local Record = require("louiselm.forensics.record")
 ---@field directory string Private record directory.
 ---@field write fun(self: louiselm.forensics.Store, record: louiselm.forensics.Record): string?, string? Write one immutable record.
 ---@field read fun(self: louiselm.forensics.Store, path: string): louiselm.forensics.Record?, string? Read and validate one record.
+---@field inspect fun(self: louiselm.forensics.Store, path: string): louiselm.forensics.Inspection?, string? Read a record and report current evidence availability without mutating it.
 
 local M = {}
 local Store = {}
@@ -19,6 +20,43 @@ end
 ---@return string
 local function record_name(value)
   return string.format("%d-%s.json", os.time(), value)
+end
+
+local RECORDED_AVAILABILITY = {
+  present = "available",
+  absent = "missing",
+  inaccessible = "unreadable",
+  unsupported = "missing",
+  omitted = "missing",
+}
+
+---@param code string?
+---@return boolean
+local function is_missing(code)
+  return code == "ENOENT" or code == "ENOTDIR"
+end
+
+---@param editor table
+---@param source louiselm.forensics.EvidenceSource
+---@return louiselm.forensics.AvailabilityState
+local function current_availability(editor, source)
+  if source.path == nil then
+    if source.state == "present" and source.kind ~= "git" then
+      return "missing"
+    end
+    return RECORDED_AVAILABILITY[source.state]
+  end
+  local read_flags = editor.uv.constants.O_RDONLY + editor.uv.constants.O_NONBLOCK
+  local file, _, open_code = editor.uv.fs_open(source.path, read_flags, 384)
+  if file == nil then
+    return is_missing(open_code) and "missing" or "unreadable"
+  end
+  local opened_stat = editor.uv.fs_fstat(file)
+  local closed = editor.uv.fs_close(file)
+  if opened_stat == nil or opened_stat.type ~= "file" or not closed then
+    return "unreadable"
+  end
+  return "available"
 end
 
 ---@param directory string
@@ -89,24 +127,54 @@ function Store:read(path)
     return nil, "forensics record path must be a non-empty string"
   end
   local editor = nvim()
-  local stat = editor.uv.fs_stat(path)
-  if stat == nil or stat.type ~= "file" then
-    return nil, "forensics record is not a regular file"
-  end
-  local file, open_error = editor.uv.fs_open(path, "r", 384)
+  local read_flags = editor.uv.constants.O_RDONLY + editor.uv.constants.O_NONBLOCK
+  local file, open_error, open_code = editor.uv.fs_open(path, read_flags, 384)
   if file == nil then
+    if is_missing(open_code) then
+      return nil, "forensics record is not a regular file"
+    end
     return nil, "could not read forensics record: " .. tostring(open_error)
   end
+  local stat, stat_error = editor.uv.fs_fstat(file)
+  if stat == nil then
+    editor.uv.fs_close(file)
+    return nil, "could not inspect forensics record: " .. tostring(stat_error)
+  end
+  if stat.type ~= "file" then
+    editor.uv.fs_close(file)
+    return nil, "forensics record is not a regular file"
+  end
   local content, read_error = editor.uv.fs_read(file, stat.size, 0)
-  editor.uv.fs_close(file)
+  local closed, close_error = editor.uv.fs_close(file)
   if content == nil then
     return nil, "could not read forensics record: " .. tostring(read_error)
+  end
+  if not closed then
+    return nil, "could not close forensics record: " .. tostring(close_error)
   end
   local decoded_ok, decoded = pcall(editor.json.decode, content)
   if not decoded_ok then
     return nil, "forensics record is not valid JSON"
   end
   return Record.build(decoded)
+end
+
+---Read a Forensics record and derive current evidence availability without changing it.
+---@param self louiselm.forensics.Store
+---@param path string
+---@return louiselm.forensics.Inspection? inspection
+---@return string? error_message
+function Store:inspect(path)
+  local record, read_error = self:read(path)
+  if record == nil then
+    return nil, read_error
+  end
+  local editor = nvim()
+  local source_availability = {}
+  for index, source in ipairs(record.evidence_sources) do
+    source_availability[index] = current_availability(editor, source)
+  end
+  return Record.with_availability(record, source_availability), nil
 end
 
 return M

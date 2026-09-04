@@ -8,8 +8,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use louiselm_capture::{
-    AttentionDraft, AttentionKind, AttentionStore, AttentionSubjectKind, CaptureDraft,
-    CaptureSource, PairingRegistry, Receiver, Store,
+    AttentionCode, AttentionDraft, AttentionKind, AttentionStore, AttentionSubjectKind,
+    CaptureDraft, CaptureSource, PairingRegistry, Receiver, Store,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -270,11 +270,12 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
         .upsert(AttentionDraft {
             subject_kind: AttentionSubjectKind::Run,
             subject_id: "11111111-2222-4333-8444-555555555555".to_owned(),
-            kind: AttentionKind::RunParked,
+            kind: AttentionKind::SkillUnverified,
             source_operation_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
             created_at_ms: 1765000000000,
             linked_run_id: None,
-            stage: Some("review".to_owned()),
+            stage: None,
+            code: Some(AttentionCode::WitnessMissing),
         })
         .expect("attention");
     let pairing = Arc::new(PairingRegistry::open(temporary.path().join("state")).expect("pairing"));
@@ -318,7 +319,9 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
     )
     .expect("snapshot JSON");
     assert_eq!(snapshot["generation"], 1);
-    assert_eq!(snapshot["items"][0]["reason"], "Run is Parked");
+    assert_eq!(snapshot["items"][0]["kind"], "skill_unverified");
+    assert_eq!(snapshot["items"][0]["code"], "witness_missing");
+    assert_eq!(snapshot["items"][0]["reason"], "Skill supply is unverified");
     assert!(snapshot["items"][0].get("arbitrary_text").is_none());
 
     assert_eq!(

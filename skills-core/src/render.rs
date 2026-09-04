@@ -9,6 +9,7 @@ use crate::{
     diff::{Change, LineKind},
     dossier::{AssessmentState, Dossier},
     inspect::FindingKind,
+    posture::Posture,
 };
 
 /// Renders a Dossier as reviewer-facing text.
@@ -227,4 +228,248 @@ pub fn summary_line(dossier: &Dossier) -> String {
 fn push(out: &mut String, line: &str) {
     out.push_str(line);
     out.push('\n');
+}
+
+/// Renders Generation status as operator-facing text.
+pub fn generation_status(status: &crate::admission::GenerationStatus) -> String {
+    let mut out = String::new();
+    match (&status.generation, status.state) {
+        (Some(generation), Some(state)) => {
+            push(
+                &mut out,
+                &format!(
+                    "Generation {generation}\n  state      {}\n  sequence   {}",
+                    state.name(),
+                    status.sequence.unwrap_or_default(),
+                ),
+            );
+            if let Some(predecessor) = &status.predecessor {
+                push(&mut out, &format!("  follows    {predecessor}"));
+            }
+            if let Some(role) = &status.signer_role {
+                push(&mut out, &format!("  signed by  {role} role"));
+            }
+            match &status.witness {
+                Some(witness) => push(
+                    &mut out,
+                    &format!(
+                        "  witnessed  {} branch {} commit {}",
+                        witness.remote, witness.branch, witness.commit
+                    ),
+                ),
+                None => push(&mut out, "  witnessed  no"),
+            }
+            push(
+                &mut out,
+                &format!("  members    {} in force", status.effective_members.len()),
+            );
+            for member in &status.excluded_members {
+                push(&mut out, &format!("  quarantined {member}"));
+            }
+        }
+        _ => push(&mut out, "No Skill Generation is in force."),
+    }
+    if !status.pending.is_empty() {
+        push(&mut out, "");
+        push(&mut out, "Signed but not in force:");
+        for pending in &status.pending {
+            push(&mut out, &format!("  {pending}"));
+        }
+    }
+    if let Some(failure) = &status.failure {
+        push(&mut out, &format!("Failure: {failure}"));
+    }
+    push(&mut out, "");
+    push(
+        &mut out,
+        &format!(
+            "Next: [{}] {}",
+            status.next_action.id, status.next_action.detail
+        ),
+    );
+    out
+}
+
+/// Renders install status as operator-facing text.
+pub fn install_status(status: &crate::install::InstallStatus) -> String {
+    let mut out = String::new();
+    push(&mut out, &format!("Prefix {}", status.prefix));
+    match &status.installed {
+        Some(state) => {
+            push(&mut out, &format!("  release    {}", state.release_id));
+            push(&mut out, &format!("  commit     {}", state.source_commit));
+            push(&mut out, &format!("  policy     {}", state.policy_version));
+            push(
+                &mut out,
+                &format!("  installed  {} ms", state.installed_at_ms),
+            );
+        }
+        None => push(&mut out, "  release    none installed"),
+    }
+    push(
+        &mut out,
+        &format!(
+            "  ownership  uid {}{}{}",
+            status.ownership.prefix_uid,
+            if status.ownership.root_owned {
+                ", root-owned"
+            } else {
+                ", NOT root-owned"
+            },
+            if status.ownership.world_writable {
+                ", writable beyond root"
+            } else {
+                ""
+            },
+        ),
+    );
+    push(
+        &mut out,
+        &format!("  trusted    {}", if status.trusted { "yes" } else { "no" }),
+    );
+    for component in &status.components {
+        push(
+            &mut out,
+            &format!(
+                "  component  {} sha256:{}",
+                component.name, component.sha256
+            ),
+        );
+    }
+    if let Some(code) = &status.failure_code {
+        push(&mut out, &format!("  failure    {code}"));
+    }
+    push(&mut out, "");
+    push(
+        &mut out,
+        &format!(
+            "Next: [{}] {}",
+            status.next_action.id, status.next_action.detail
+        ),
+    );
+    out
+}
+
+/// Renders privileged launcher authority as operator-facing text.
+pub fn launcher_status(status: &crate::launcher_install::LauncherStatus) -> String {
+    let mut out = String::new();
+    push(
+        &mut out,
+        &format!(
+            "Launcher authority: {}",
+            if status.trusted {
+                "trusted"
+            } else {
+                "NOT trusted"
+            }
+        ),
+    );
+    if let Some(config) = &status.config {
+        push(&mut out, &format!("  release     {}", config.release_id));
+        push(&mut out, &format!("  operator    {}", config.operator));
+        push(
+            &mut out,
+            &format!(
+                "  identities  {} slot(s), uid {}+, gid {}+",
+                config.pool.slots, config.pool.uid_start, config.pool.gid_start
+            ),
+        );
+    } else {
+        push(&mut out, "  configuration  none installed");
+    }
+    push(
+        &mut out,
+        &format!(
+            "  active key  {}",
+            status.active_key_id.as_deref().unwrap_or("none")
+        ),
+    );
+    push(
+        &mut out,
+        &format!(
+            "  retained    {}",
+            if status.retained_key_ids.is_empty() {
+                "none".to_owned()
+            } else {
+                status.retained_key_ids.join(", ")
+            }
+        ),
+    );
+    let occupied = status
+        .occupied_slots
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    push(
+        &mut out,
+        &format!(
+            "  occupied    {}",
+            if occupied.is_empty() {
+                "none"
+            } else {
+                &occupied
+            }
+        ),
+    );
+    for failure in &status.failures {
+        push(
+            &mut out,
+            &format!("Failure [{}]: {}", failure.code, failure.detail),
+        );
+        push(&mut out, &format!("  Next: {}", failure.next_action));
+    }
+    out
+}
+
+/// Renders one normalized Verified posture as operator-facing text.
+pub fn posture(posture: &Posture) -> String {
+    let mut out = String::new();
+    push(
+        &mut out,
+        &format!("Verified posture: {}", posture.state.name()),
+    );
+    push(&mut out, &format!("Session: {}", posture.session_id));
+    push(&mut out, &format!("Run: {}", posture.run_id));
+    push(&mut out, "");
+
+    for (name, dimension) in posture.dimensions.ordered() {
+        let failure = dimension
+            .failure_code
+            .map(|code| format!(" ({})", code.name()))
+            .unwrap_or_default();
+        push(
+            &mut out,
+            &format!(
+                "{}: {}{} [{}]",
+                name.name(),
+                dimension.state.name(),
+                failure,
+                dimension.requirement.name(),
+            ),
+        );
+        for evidence in &dimension.evidence {
+            push(
+                &mut out,
+                &format!("  evidence: {}:{}", evidence.kind.name(), evidence.id),
+            );
+        }
+        push(
+            &mut out,
+            &format!(
+                "  next: {} — {}",
+                dimension.next_action.id, dimension.next_action.detail
+            ),
+        );
+    }
+
+    push(&mut out, "");
+    push(
+        &mut out,
+        &format!(
+            "Provider disclosure: {}",
+            posture.provider_disclosure_notice
+        ),
+    );
+    out
 }

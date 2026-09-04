@@ -40,6 +40,10 @@ pub enum AttentionKind {
     RunParked,
     /// A Session ended with an error while work remains to inspect.
     SessionFailed,
+    /// A Skill candidate awaits the local admission ceremony.
+    SkillApprovalPending,
+    /// Trusted posture evidence does not verify Skill supply.
+    SkillUnverified,
 }
 
 impl AttentionKind {
@@ -51,8 +55,40 @@ impl AttentionKind {
             Self::PermissionRequired => "Permission is required",
             Self::RunParked => "Run is Parked",
             Self::SessionFailed => "Session failed",
+            Self::SkillApprovalPending => "Skill approval is pending",
+            Self::SkillUnverified => "Skill supply is unverified",
         }
     }
+}
+
+/// Closed, non-text detail carried by Skill-related Attention conditions.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionCode {
+    /// A candidate requires the local Skill Admission ceremony.
+    AdmissionRequired,
+    /// The trusted release is absent or not root-owned.
+    RootTrustFailed,
+    /// Trusted bytes do not have a valid signature.
+    SignatureInvalid,
+    /// A signed Skill Generation is not remotely witnessed.
+    WitnessMissing,
+    /// Provider-native instruction sources are not completely controlled.
+    NativeSupplyUncertain,
+    /// Runtime bytes do not match their registered measurement.
+    RuntimeDrift,
+    /// Isolation evidence is absent, contradictory, or failed.
+    IsolationFailed,
+    /// The authenticated local control broker is unavailable.
+    BrokerUnavailable,
+    /// Durable audit persistence is unavailable.
+    AuditPersistenceUnavailable,
+    /// Provider disclosure is absent or incomplete.
+    ProviderDisclosureMissing,
+    /// Required trusted evidence is absent.
+    EvidenceMissing,
+    /// A failure has no recognized typed diagnosis.
+    UnknownFailure,
 }
 
 /// Identity of one retry-safe Attention condition.
@@ -87,6 +123,9 @@ pub struct AttentionDraft {
     pub linked_run_id: Option<String>,
     /// Optional bounded workflow stage name.
     pub stage: Option<String>,
+    /// Optional closed detail code; required for Skill conditions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<AttentionCode>,
 }
 
 impl AttentionDraft {
@@ -122,6 +161,9 @@ pub struct AttentionItem {
     pub linked_run_id: Option<String>,
     /// Optional bounded workflow stage name.
     pub stage: Option<String>,
+    /// Optional closed detail code; required for Skill conditions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<AttentionCode>,
 }
 
 impl AttentionItem {
@@ -258,6 +300,7 @@ impl AttentionStore {
                 reason: draft.kind.reason().to_owned(),
                 linked_run_id: draft.linked_run_id,
                 stage: draft.stage,
+                code: draft.code,
             };
             let key = item.key();
             let changed = match state.items.iter_mut().find(|current| current.key() == key) {
@@ -322,6 +365,33 @@ impl AttentionStore {
             let mut state = store.load()?;
             let previous = state.items.len();
             state.items.retain(|item| item.key() != key);
+            if state.items.len() != previous {
+                advance_generation(&mut state)?;
+                store.persist(&state)?;
+            }
+            Ok(snapshot(state))
+        })
+    }
+
+    /// Clear one condition kind for a Session; repeating a clear is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid Session identifier and reports persistence failures.
+    pub fn clear_session_kind(
+        &self,
+        session_id: &str,
+        kind: AttentionKind,
+    ) -> Result<AttentionSnapshot, AttentionError> {
+        validate_subject_id(session_id)?;
+        self.with_lock(|store| {
+            let mut state = store.load()?;
+            let previous = state.items.len();
+            state.items.retain(|item| {
+                item.subject_kind != AttentionSubjectKind::Session
+                    || item.subject_id != session_id
+                    || item.kind != kind
+            });
             if state.items.len() != previous {
                 advance_generation(&mut state)?;
                 store.persist(&state)?;
@@ -461,7 +531,8 @@ fn validate_draft(draft: &AttentionDraft) -> Result<(), AttentionError> {
         ));
     }
     validate_linked_run(draft.linked_run_id.as_deref())?;
-    validate_stage(draft.stage.as_deref())
+    validate_stage(draft.stage.as_deref())?;
+    validate_code(draft.kind, draft.code, draft.stage.as_deref())
 }
 
 fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
@@ -477,7 +548,38 @@ fn validate_item(item: &AttentionItem) -> Result<(), AttentionError> {
         ));
     }
     validate_linked_run(item.linked_run_id.as_deref())?;
-    validate_stage(item.stage.as_deref())
+    validate_stage(item.stage.as_deref())?;
+    validate_code(item.kind, item.code, item.stage.as_deref())
+}
+
+fn validate_code(
+    kind: AttentionKind,
+    code: Option<AttentionCode>,
+    stage: Option<&str>,
+) -> Result<(), AttentionError> {
+    let valid = match (kind, code) {
+        (AttentionKind::SkillApprovalPending, Some(AttentionCode::AdmissionRequired)) => true,
+        (AttentionKind::SkillUnverified, Some(AttentionCode::AdmissionRequired) | None) => false,
+        (AttentionKind::SkillUnverified, Some(_)) => true,
+        (AttentionKind::SkillApprovalPending, _) => false,
+        (_, None) => true,
+        (_, Some(_)) => false,
+    };
+    if !valid {
+        return Err(AttentionError::Invalid(
+            "Attention code does not match kind".to_owned(),
+        ));
+    }
+    if matches!(
+        kind,
+        AttentionKind::SkillApprovalPending | AttentionKind::SkillUnverified
+    ) && stage.is_some()
+    {
+        return Err(AttentionError::Invalid(
+            "Skill Attention conditions cannot carry stage text".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_key(key: &AttentionKey) -> Result<(), AttentionError> {
@@ -555,6 +657,7 @@ fn same_content(left: &AttentionItem, right: &AttentionItem) -> bool {
         && left.reason == right.reason
         && left.linked_run_id == right.linked_run_id
         && left.stage == right.stage
+        && left.code == right.code
 }
 
 fn advance_generation(state: &mut PersistedAttention) -> Result<(), AttentionError> {

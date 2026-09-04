@@ -19,8 +19,8 @@ mod time;
 mod transcription;
 
 pub use attention::{
-    AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind, AttentionSnapshot,
-    AttentionStore, AttentionSubjectKind, AttentionSummary,
+    AttentionCode, AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind,
+    AttentionSnapshot, AttentionStore, AttentionSubjectKind, AttentionSummary,
 };
 pub use attention_socket::{AttentionSocket, AttentionSocketError, AttentionSocketMessage};
 pub use generation::{

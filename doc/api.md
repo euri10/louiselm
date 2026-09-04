@@ -82,6 +82,7 @@ string|table
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
 - `name: string` -- User-facing session name.
+- `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
 - `status: "cancelling"|"configuring"|"disposed"|"error"|"prompting"...(+3)` -- Lifecycle state.
@@ -131,6 +132,7 @@ string|table
 - `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string)):(string|number)?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
 - `prompt_progress: integer` -- Meaningful updates observed during the active prompt.
+- `prompt_watchdog_revision: integer` -- Invalidates obsolete prompt timeout callbacks.
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
 - `schedule: fun(delay_ms: integer, callback: fun())` -- Testable scheduling boundary.
@@ -307,6 +309,13 @@ louiselm.session.LimitsStatus:
 - `output_tokens: number?`
 - `thought_tokens: number?`
 - `total_tokens: number?`
+
+### louiselm.session.SessionFailure
+
+- `id: string` -- Stable Agent-provided failure identifier.
+- `revision: integer` -- Monotonic revision for this identifier.
+- `severity: "error"|"warning"` -- Agent-provided urgency.
+- `title: string` -- Human-readable status title.
 
 ### louiselm.session.DiscoveredSession
 

@@ -18,6 +18,18 @@ dossier <digest> [--against DIGEST] [--review-depth DEPTH]
                  [--assessment-model M --assessment-prompt P]
 list
 policy [--digest]
+
+trust bootstrap --primary KEY --recovery KEY [--require-hardware]
+trust show | rotation-payload | rotate | reset --confirm
+
+generation admit --member DIGEST[:DEPTH] ... --key PRIVKEY
+generation witness DIGEST --remote URL [--branch B]
+generation activate DIGEST
+generation status | list
+
+quarantine exclude DIGEST... --reason TEXT
+quarantine all --reason TEXT
+quarantine show
 ```
 
 Every command accepts `--store DIR`, `--policy FILE --policy-digest D`, and
@@ -101,6 +113,389 @@ version. An opinion about anything else is treated as absent, not as stale,
 because showing a reviewer an opinion about different bytes is worse than
 showing none.
 
+## Skill Admission
+
+A package that verifies is not a package anyone approved. Skill Admission is
+the local ceremony that turns reviewed packages into a **Skill Generation**: one
+signed record binding the complete admitted set, the Dossier each member was
+approved from, the claimed review depth, the governing policy, the Provider view
+roots, and its place in a chain — sequence and predecessor. The set is admitted
+as a whole, with one touch, so addition, deletion, replacement, policy change,
+and rollback are all visible as changes to a signed record.
+
+Three roles, kept distinct even on one physical token. **Primary** signs routine
+Admissions. **Recovery** exists only to replace key policy or the primary, and
+is refused as an ordinary signer — a recovery key that could also admit skills
+would just be a second primary. **Release** authorizes trusted builds
+(louiselm-d6fv.7). There is no seed phrase and no extractable master secret:
+losing both tokens means an explicit `trust reset` and re-Admission, which is
+the honest cost of not having a secret to steal.
+
+A signed Generation governs nothing until it is **witnessed**. Its exact bytes
+are published to a protected Git branch and read back from the remote before it
+can be activated, so a Generation only takes effect once it exists somewhere the
+operator does not solely control. The witness ledger is append-only per
+Generation: a digest already published with different bytes is refused, never
+overwritten. During a witness outage nothing changes, and the previous
+Generation stays in force. Activation also refuses any sequence at or below what
+is current, so restoring an older signed record is not a rollback path —
+intentional rollback is a newly admitted higher sequence.
+
+The commit to the witness branch is an ordinary commit. Branch protection on the
+remote is the control; a second hardware signature there would cost another
+touch and prove nothing the first one did not.
+
+**Emergency quarantine** narrows authority immediately and needs no token:
+excluded packages drop out of the current Generation the moment the file is
+written. It only ever narrows. Giving authority back requires a newly admitted
+Generation, so `quarantine clear` refuses by design rather than becoming a way
+to re-enable quarantined supply without a touch.
+
+### What v1 trusts
+
+The ceremony trusts the kernel, the root-owned `louiselm-skills` binary, and the
+local TTY. Hardware attestation bytes may be recorded alongside an enrolled key,
+but nothing here validates a manufacturer certificate chain, so the record says
+`validated: false` and the bytes are evidence only — never proof that a key is
+genuine hardware.
+
+Until louiselm-d6fv.7 installs root-owned binaries and protected trust data, the
+trust store and Generation records live in the same store an operator can write.
+That is the gap that release makes real; it is not closed here.
+
+### The manual ceremony
+
+Automated tests cover the chain, the state machine, the witness protocol, and
+signature verification, using software keys. They cannot cover a physical touch.
+Run this once on Linux with the real tokens:
+
+```sh
+# 1. Enrol. Two resident FIDO keys, on two physically separate tokens.
+ssh-keygen -t ed25519-sk -O resident -O verify-required -C admission-primary  -f ~/.ssh/id_admission
+ssh-keygen -t ed25519-sk -O resident -O verify-required -C admission-recovery -f ~/.ssh/id_recovery
+louiselm-skills trust bootstrap \
+  --primary  ~/.ssh/id_admission.pub \
+  --recovery ~/.ssh/id_recovery.pub \
+  --require-hardware
+louiselm-skills trust show
+
+# 2. Admit. One touch for the whole set; ssh-keygen prompts for it.
+louiselm-skills generation admit \
+  --member sha256:<pkg>:read \
+  --key ~/.ssh/id_admission
+louiselm-skills generation witness sha256:<generation> --remote git@your.host:infra/skill-witness.git
+louiselm-skills generation activate sha256:<generation>
+
+# 3. Verify without a token. Nothing below should prompt for a touch.
+louiselm-skills generation status
+
+# 4. Rotate the primary with the recovery key. This is the touch that matters:
+#    it must come from the recovery token, not the primary.
+louiselm-skills trust rotation-payload --role primary --key ~/.ssh/id_admission2.pub > /tmp/change
+ssh-keygen -Y sign -n louiselm.skills.trust/1 -f ~/.ssh/id_recovery /tmp/change
+louiselm-skills trust rotate --role primary --key ~/.ssh/id_admission2.pub --signature /tmp/change.sig
+
+# 5. Confirm the replaced primary is dead. This must fail.
+louiselm-skills generation admit --member sha256:<pkg>:read --key ~/.ssh/id_admission
+```
+
+Check at each touch that the token actually blinked. A ceremony that completes
+without a touch means `--require-hardware` did not reach the enrolled key, and
+the assertion flags in the signature are what the verifier checks.
+
+## The trusted release
+
+Everything above assumes the binary enforcing it is not one the Agent can
+rewrite. Running from the development checkout makes that assumption false: the
+code being confined can edit the code that decides whether confinement worked.
+
+A **release** breaks the circle. `release build` refuses anything but a clean
+commit — untracked files count as dirty, because a file that is not in the
+commit cannot be reviewed by reading the commit and can still be compiled in —
+and binds the commit, the locked dependencies, the toolchain, the policy, the
+schema set, and every resulting byte into one manifest. Its digest is the
+release identity. A separate **release** role signs it, distinct from Admission
+and recovery even on one token, in its own signature namespace.
+
+Installing is content-addressed and atomic. Each release lands in its own
+immutable directory and the prefix's `current` symlink is replaced by a rename,
+the one operation that cannot be observed half-done:
+
+```text
+<prefix>/releases/<release-id>/{bin,policy,schemas,manifest.json,manifest.sig}
+<prefix>/current -> releases/<release-id>
+<prefix>/state.json
+```
+
+A failure anywhere before the rename leaves the previous release exactly as it
+was, and the previous release's files stay on disk and usable. Downgrades are
+refused: the safe path away from a bad release is building a newer one.
+
+The install request supplies a bundle and a prefix and nothing else. Component
+names come from a fixed allowlist, the layout is decided by the tool, and modes
+are set by the tool — an install cannot introduce a new command, a different
+policy path, or a different owner.
+
+**Ownership is reported, not asserted.** This process cannot make a file
+root-owned without being root, so `release status` says what the bytes actually
+are — uid, world-writability, and whether any installed component's hash has
+changed since install — and names the next action. It never claims a trust
+boundary the filesystem does not show.
+
+**A development build says so.** `release identity` reports `unverified` with
+the code `development_build` for anything not running from inside an installed
+release. A store created by a development build is marked untrusted at creation
+and stays that way, and a development build may not activate a Skill Generation
+in a trusted store. Promotion is not offered: an Agent that can write the store
+must not also be able to decide the store is trustworthy.
+
+### Manual release acceptance
+
+Automated tests assemble bundles from fake component files and install into
+temporary prefixes, so they cover identity, signing, tampering, atomicity, and
+downgrade without a nested build or root. Root ownership and the release-role
+touch need a machine. Run this once:
+
+```sh
+# 1. Enrol the release role. Distinct from Admission and recovery.
+ssh-keygen -t ed25519-sk -O resident -O verify-required -C louiselm-release -f ~/.ssh/id_release
+louiselm-skills trust rotation-payload --role release --key ~/.ssh/id_release.pub > /tmp/change
+ssh-keygen -Y sign -n louiselm.skills.trust/1 -f ~/.ssh/id_recovery /tmp/change
+louiselm-skills trust rotate --role release --key ~/.ssh/id_release.pub --signature /tmp/change.sig
+
+# 2. Clean build, then sign. The build refuses a dirty tree; check that first.
+git status --porcelain          # must be empty
+louiselm-skills release build --source skills-core --output /tmp/bundle
+louiselm-skills release sign --bundle /tmp/bundle --key ~/.ssh/id_release
+
+# 3. Install as root, into the fixed prefix.
+sudo louiselm-skills release install --bundle /tmp/bundle
+sudo louiselm-skills release status   # trusted: yes, ownership root-owned
+
+# 4. Upgrade. Build a newer release and install it; `current` flips, the old
+#    release stays on disk.
+sudo louiselm-skills release install --bundle /tmp/bundle-2
+ls /usr/local/lib/louiselm/releases    # both present
+
+# 5. Prove the failure paths. Each must refuse.
+sudo louiselm-skills release install --bundle /tmp/bundle      # downgrade
+sudo sed -i s/x/y/ /usr/local/lib/louiselm/current/bin/louiselm-skills
+sudo louiselm-skills release status                           # release_tampered
+```
+
+No private key material leaves the token at any point in this procedure.
+
+### Manual launcher-authority acceptance
+
+This procedure changes root trust data, subordinate-ID reservations, and
+`sudoers`. Run it only in a disposable VM, using a dedicated operator account,
+and take a snapshot before the destructive digest checks.
+
+#### Installer authority (louiselm-d6fv.4.2)
+
+The installer, status, rotation, and lease primitives in this slice are covered
+by `cargo test --test launcher_install`. The standard release build includes
+the real `louiselm-launch` executable; installation refuses a release that does
+not contain those measured bytes.
+
+Once that component exists, install its signed release at the fixed prefix as
+described above. Run the following as the VM maintainer; choose unused ranges
+if the example ranges collide on the host:
+
+```sh
+operator=louiselm-operator
+uid_start=2000000
+gid_start=3000000
+slots=4
+broker_uid=1500
+broker_gid=1500
+skills=/usr/local/lib/louiselm/current/bin/louiselm-skills
+launcher=/usr/local/lib/louiselm/current/bin/louiselm-launch
+
+test "$(id -u "$operator")" -ne 0
+test -x "$skills"
+test -x "$launcher"
+sudo "$skills" release identity --robot-json | tee /tmp/release-identity.json
+release_id=$(jq -er 'select(.verified == true) | .release_id' \
+  /tmp/release-identity.json)
+launcher_digest="sha256:$(sha256sum "$launcher" | awk '{ print $1 }')"
+sudo "$skills" release status --robot-json | jq -e '.trusted == true'
+
+sudo "$skills" launcher install \
+  --operator "$operator" \
+  --broker-uid "$broker_uid" \
+  --broker-gid "$broker_gid" \
+  --uid-start "$uid_start" \
+  --gid-start "$gid_start" \
+  --slots "$slots" \
+  --robot-json | tee /tmp/launcher-install.json
+jq -e --arg operator "$operator" \
+  --arg release_id "$release_id" \
+  --arg launcher_digest "$launcher_digest" \
+  --argjson uid_start "$uid_start" \
+  --argjson gid_start "$gid_start" \
+  --argjson slots "$slots" '
+    .schema == "louiselm.launch.install.status/1" and
+    .trusted == true and (.failures | length) == 0 and
+    .config.operator == $operator and
+    .config.release_id == $release_id and
+    .config.launcher_digest == $launcher_digest and
+    .config.pool == {
+      uid_start: $uid_start,
+      gid_start: $gid_start,
+      slots: $slots
+    } and
+    (.active_key_id | type) == "string" and
+    .retained_key_ids == [] and .occupied_slots == []
+  ' /tmp/launcher-install.json
+! grep -q 'OPENSSH PRIVATE KEY' /tmp/launcher-install.json
+```
+
+Check the installed ownership and modes. Every displayed owner must be `0:0`:
+
+```sh
+sudo stat -c '%u:%g %a %n' \
+  /usr/local/lib/louiselm/launcher \
+  /usr/local/lib/louiselm/launcher/config.json \
+  /usr/local/lib/louiselm/launcher/keyring.json \
+  /usr/local/lib/louiselm/launcher/private \
+  /usr/local/lib/louiselm/launcher/private/keys \
+  /usr/local/lib/louiselm/launcher/private/scratch \
+  /usr/local/lib/louiselm/launcher/locks \
+  /etc/sudoers.d/louiselm-launch
+sudo find /usr/local/lib/louiselm/launcher/private/keys \
+  -mindepth 2 -maxdepth 2 -name key -exec stat -c '%u:%g %a %n' {} +
+```
+
+The expected modes are `0711` for `launcher`, `0444` for `keyring.json`,
+`0440` for the sudoers fragment, `0600` for `config.json` and private keys,
+and `0700` for all private and lock directories. The installer also records
+exactly one non-overlapping reservation under numeric owner `0` in each
+subordinate-ID ledger:
+
+```sh
+test "$(sudo awk -F: -v s="$uid_start" -v n="$slots" \
+  '$1 == "0" && $2 == s && $3 == n { c++ } END { print c + 0 }' \
+  /etc/subuid)" = 1
+test "$(sudo awk -F: -v s="$gid_start" -v n="$slots" \
+  '$1 == "0" && $2 == s && $3 == n { c++ } END { print c + 0 }' \
+  /etc/subgid)" = 1
+
+sudo awk -F: -v s="$uid_start" -v n="$slots" '
+  !($1 == "0" && $2 == s && $3 == n) && $2 < s + n && s < $2 + $3 { bad = 1 }
+  END { exit bad }
+' /etc/subuid
+sudo awk -F: -v s="$gid_start" -v n="$slots" '
+  !($1 == "0" && $2 == s && $3 == n) && $2 < s + n && s < $2 + $3 { bad = 1 }
+  END { exit bad }
+' /etc/subgid
+
+for uid in $(seq "$uid_start" "$((uid_start + slots - 1))"); do
+  ! /usr/bin/getent passwd "$uid" >/dev/null
+done
+for gid in $(seq "$gid_start" "$((gid_start + slots - 1))"); do
+  ! /usr/bin/getent group "$gid" >/dev/null
+done
+! awk -F: -v s="$gid_start" -v n="$slots" \
+  '$4 >= s && $4 < s + n { found = 1 } END { exit !found }' /etc/passwd
+```
+
+Validate the exact sudo boundary independently. The operator is pinned by
+numeric UID, the component by SHA-256, and the argument vector by the single
+literal `run` argument:
+
+```sh
+operator_uid=$(id -u "$operator")
+launcher_sha256=${launcher_digest#sha256:}
+sudo /usr/sbin/visudo -cf /etc/sudoers.d/louiselm-launch
+sudo grep -Fx "Defaults!$launcher fdexec=digest_only" \
+  /etc/sudoers.d/louiselm-launch
+sudo grep -Fx \
+  "#$operator_uid ALL=(root:root) NOPASSWD: NOSETENV: sha256:$launcher_sha256 $launcher run" \
+  /etc/sudoers.d/louiselm-launch
+```
+
+Prove reinstall and rotation are idempotent, and that rotation retains both
+public and private history without exposing private bytes to the operator:
+
+```sh
+old_key=$(jq -r .active_key_id /tmp/launcher-install.json)
+sudo "$skills" launcher install \
+  --operator "$operator" --broker-uid "$broker_uid" --broker-gid "$broker_gid" \
+  --uid-start "$uid_start" --gid-start "$gid_start" \
+  --slots "$slots" --robot-json > /tmp/launcher-reinstall.json
+test "$(jq -r .active_key_id /tmp/launcher-reinstall.json)" = "$old_key"
+
+rotation_id=vm-acceptance-1
+sudo "$skills" launcher rotate-key \
+  --rotation-id "$rotation_id" --expected-key-id "$old_key" \
+  --robot-json | tee /tmp/launcher-rotation.json
+new_key=$(jq -r .active_key_id /tmp/launcher-rotation.json)
+test "$new_key" != "$old_key"
+jq -e --arg new "$new_key" '.created == true and .key_id == $new' \
+  /tmp/launcher-rotation.json
+
+sudo "$skills" launcher rotate-key \
+  --rotation-id "$rotation_id" --expected-key-id "$old_key" \
+  --robot-json | jq -e --arg new "$new_key" \
+  '.created == false and .active_key_id == $new'
+sudo "$skills" launcher status --robot-json | tee /tmp/launcher-status.json
+jq -e --arg old "$old_key" --arg new "$new_key" '
+  .trusted == true and .active_key_id == $new and
+  (.retained_key_ids | index($old)) != null
+' /tmp/launcher-status.json
+sudo -u "$operator" test -r /usr/local/lib/louiselm/launcher/keyring.json
+! sudo -u "$operator" test -r /usr/local/lib/louiselm/launcher/private
+test "$(sudo find /usr/local/lib/louiselm/launcher/private/keys \
+  -mindepth 2 -maxdepth 2 -name key | wc -l)" -eq 2
+```
+
+#### Runtime acceptance
+
+`cargo test --test launch_supervisor` covers the complete launch transaction
+against a deterministic fake Control broker. A live ceremony additionally
+requires the real broker from louiselm-qbr.5.1.1 at the installed rendezvous.
+Once it is installed, submit one canonical request line as the operator, then
+continue ACP on the same stdin. This is the only privileged invocation the
+sudo rule may admit; there is no release-ID argument:
+
+```sh
+sudo -u "$operator" sudo -n \
+  /usr/local/lib/louiselm/current/bin/louiselm-launch run \
+  < /tmp/launch-request.json
+```
+
+Confirm that `run extra`, a copied launcher at a different path, the exact path
+after changing one byte, and a rule containing a different valid SHA-256 are all
+rejected by `sudo -n`. Roll the VM back after these destructive checks; do not
+repair an immutable release in place.
+
+Capture both receipts from one launch: sequence zero records `Starting`, its
+durable acknowledgement permits startup, and sequence one records `Running`.
+Rotate the launcher key once and capture another pair. Verify both linked
+receipts from each launch. The public keyring must retain both the active and
+retired public keys while no private key is readable by the operator. Verify
+each canonical payload against the public key selected by its `signing_key_id`
+and the fixed namespace:
+
+```sh
+key_id=$(jq -r .signing_key_id /tmp/receipt.payload)
+public_key=$(jq -r --arg key_id "$key_id" \
+  '.keys[] | select(.key_id == $key_id) | .public_key' \
+  /usr/local/lib/louiselm/launcher/keyring.json)
+test -n "$public_key"
+printf 'louiselm-launch %s\n' "$public_key" > /tmp/allowed-signers
+/usr/bin/ssh-keygen -Y verify -f /tmp/allowed-signers -I louiselm-launch \
+  -n louiselm.launch.receipt/2 -s /tmp/receipt.sig \
+  < /tmp/receipt.payload
+```
+
+Finally, hold identity slot *N* through one Session. A second acquisition of
+slot *N* must fail busy while an adjacent slot succeeds; after disposing the
+first Session, slot *N* must be acquirable again. This proves the persistent
+`locks/<slot>.lock` inode coordinates live leases rather than merely recording
+them.
+
 ## Gates
 
 ```sh
@@ -111,7 +506,16 @@ cargo test
 
 ## Scope
 
-This crate stops at the Dossier. Hardware-signed Skill Admission and remote
-witnessing (louiselm-d6fv.2), Provider-scoped views (louiselm-d6fv.3), Session
-launch and containment (louiselm-d6fv.4), and portable Endorsements
-(louiselm-d6fv.8) build on the canonical contract defined here.
+This crate owns packaging, Inspection, the Dossier, Skill Admission, and the
+trusted release. It
+requires `ssh-keygen` for signatures and `git` for witnessing; both are part of
+the trusted base rather than vendored, and this crate implements no
+cryptography of its own.
+
+Provider-scoped views (louiselm-d6fv.3), Session launch and containment
+(louiselm-d6fv.4), and portable Endorsements (louiselm-d6fv.8) build on the
+canonical contract, the Generation chain, and the release identity defined here.
+`louiselm-launch` is built into the signed bundle. The control-service binary
+is still owned by louiselm-qbr.5.1; the bundle format already has a slot for it,
+and a release that declares a component it cannot produce is refused rather
+than shipped short.

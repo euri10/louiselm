@@ -284,6 +284,26 @@ impl Dossier {
         Ok(dossier)
     }
 
+    /// Returns the bytes a Skill Admission binds this Dossier by.
+    ///
+    /// Supply lineage is removed first. Lineage is local — absolute paths and
+    /// capture timestamps — so leaving it in would make the digest differ
+    /// between two machines that reviewed byte-identical bytes, and a
+    /// Generation would stop verifying the moment it left the machine that
+    /// signed it.
+    pub fn portable_bytes(&self) -> Vec<u8> {
+        let mut value = serde_json::to_value(self).expect("a dossier is always serializable");
+        if let Some(object) = value.as_object_mut() {
+            object.remove("lineage");
+        }
+        serde_json::to_vec(&value).expect("a dossier value is always serializable")
+    }
+
+    /// Returns the digest of [`Dossier::portable_bytes`].
+    pub fn portable_digest(&self) -> Digest {
+        Digest::of(&self.portable_bytes())
+    }
+
     /// Reports whether the package may be put in front of a reviewer at all.
     pub fn reviewable(&self) -> bool {
         self.verification.intact && !self.inspection.is_fatal()

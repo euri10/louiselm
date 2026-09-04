@@ -23,6 +23,7 @@ local nvim = vim
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
 ---@field usage? louiselm.session.TurnUsage Latest agent-reported completed-turn usage.
 ---@field activity? string Current generic tool activity.
+---@field session_failure? louiselm.session.SessionFailure Latest Agent-provided Session failure status.
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
 ---@field embedded_context boolean Whether the Agent accepts embedded resource prompt context.
 ---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
@@ -57,6 +58,7 @@ local nvim = vim
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
 ---@field prompt_progress integer Meaningful updates observed during the active prompt.
+---@field prompt_watchdog_revision integer Invalidates obsolete prompt timeout callbacks.
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
@@ -190,11 +192,22 @@ local function set_status(self, status)
 end
 
 ---@param self louiselm.session.Session
+---@return boolean cleared
+local function clear_session_failure(self)
+  if self.state.session_failure == nil then
+    return false
+  end
+  self.state.session_failure = nil
+  return true
+end
+
+---@param self louiselm.session.Session
 ---@param message string
 local function fail(self, message)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  clear_session_failure(self)
   set_status(self, "error")
   self.permission_active = nil
   self.permission_queue = {}
@@ -230,17 +243,22 @@ end
 
 ---@param self louiselm.session.Session
 local function schedule_prompt_timeout(self)
+  self.prompt_watchdog_revision = self.prompt_watchdog_revision + 1
+  local revision = self.prompt_watchdog_revision
   local turn = self.state.current_turn
   local progress = self.prompt_progress
   self.schedule(DEFAULT_PROMPT_TIMEOUT_MS, function()
-    if self.state.current_turn ~= turn or not prompt_active(self) then
+    if self.prompt_watchdog_revision ~= revision or self.state.current_turn ~= turn or not prompt_active(self) then
+      return
+    end
+    if self.permission_active ~= nil or #self.permission_queue > 0 then
       return
     end
     if self.prompt_progress ~= progress then
       schedule_prompt_timeout(self)
       return
     end
-    fail(self, "ACP session/prompt made no progress within " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms")
+    fail(self, "ACP session/prompt made no progress during a " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms watchdog interval")
   end)
 end
 
@@ -252,6 +270,7 @@ local function complete_turn(self, result)
   end
   if self.turn_done_turn ~= self.state.current_turn then
     self.turn_done_turn = self.state.current_turn
+    clear_session_failure(self)
     if self.permission_active == nil and #self.permission_queue == 0 then
       set_status(self, "ready")
     else
@@ -288,16 +307,15 @@ local function handle_notification(self, message)
   end
 
   local update_type = update.sessionUpdate
-  if
-    prompt_active(self)
-    and (
-      update_type == "agent_message_chunk"
-      or update_type == "agent_thought_chunk"
-      or update_type == "tool_call"
-      or update_type == "tool_call_update"
-    )
-  then
+  local is_agent_progress = update_type == "agent_message_chunk"
+    or update_type == "agent_thought_chunk"
+    or update_type == "tool_call"
+    or update_type == "tool_call_update"
+  if prompt_active(self) and is_agent_progress then
     self.prompt_progress = self.prompt_progress + 1
+  end
+  if is_agent_progress and clear_session_failure(self) then
+    emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   end
   if update_type == "agent_message_chunk" then
     emit(self, "chunk", update)
@@ -357,6 +375,20 @@ local function handle_notification(self, message)
     local commands, diagnostics = Validation.available_commands(update.availableCommands)
     self.state.commands = commands
     emit(self, "commands_changed", { commands = nvim.deepcopy(commands), diagnostics = diagnostics })
+  elseif update_type == "session_info_update" then
+    local failure = Validation.session_failure(update._meta)
+    if failure == nil then
+      return
+    end
+    local current = self.state.session_failure
+    if current ~= nil and current.id == failure.id and failure.revision <= current.revision then
+      return
+    end
+    self.state.session_failure = failure
+    if prompt_active(self) then
+      self.prompt_progress = self.prompt_progress + 1
+    end
+    emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   end
 end
 
@@ -381,7 +413,11 @@ local function send_permission(self, entry, result, rpc_error)
   end
   pump_permissions(self)
   if self.permission_active == nil and self.state.status == "waiting_permission" then
-    set_status(self, self.turn_done_turn == self.state.current_turn and "ready" or "prompting")
+    local status = self.turn_done_turn == self.state.current_turn and "ready" or "prompting"
+    set_status(self, status)
+    if status == "prompting" then
+      schedule_prompt_timeout(self)
+    end
   end
   return true
 end
@@ -467,6 +503,7 @@ pump_permissions = function(self)
     end
     if not apply_remembered_permission(self, entry) then
       self.permission_active = entry
+      self.prompt_watchdog_revision = self.prompt_watchdog_revision + 1
       set_status(self, "waiting_permission")
       emit(self, "permission_requested", entry.data, function(result, rpc_error)
         return respond_permission(self, entry, result, rpc_error)
@@ -506,6 +543,7 @@ end
 ---@param respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?
 local function handle_request(self, request, respond)
   if request.method ~= "session/request_permission" then
+    respond(nil, { code = -32601, message = "Method not found" })
     return
   end
   if type(request.params) ~= "table" or request.params.sessionId ~= self.acp_session_id then
@@ -721,6 +759,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     ready_callback_called = false,
     turn_done_turn = nil,
     prompt_progress = 0,
+    prompt_watchdog_revision = 0,
     schedule = options.schedule or function(delay_ms, callback)
       nvim.defer_fn(callback, delay_ms)
     end,
@@ -832,6 +871,7 @@ function Session:prompt(prompt, callback)
   if client == nil then
     return nil, "session has no ACP client"
   end
+  clear_session_failure(self)
   set_status(self, "prompting")
   self.state.current_turn = self.state.current_turn + 1
   self.turn_done_turn = nil
@@ -874,8 +914,13 @@ function Session:cancel()
     fail(self, message)
     return false, message
   end
+  local permission_waiting = self.permission_active ~= nil or #self.permission_queue > 0
   cancel_permissions(self)
+  clear_session_failure(self)
   set_status(self, "cancelling")
+  if permission_waiting then
+    schedule_prompt_timeout(self)
+  end
   return true
 end
 
@@ -973,6 +1018,7 @@ function Session:dispose()
   if self.state.status == "disposed" then
     return true
   end
+  clear_session_failure(self)
   set_status(self, "disposed")
   self.permission_store:clear_session(self.state.id)
   self.permission_active = nil

@@ -20,6 +20,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
@@ -207,6 +208,25 @@ impl VerifyReport {
     }
 }
 
+/// The schema of a store's provenance record.
+pub const PROVENANCE_SCHEMA: &str = "louiselm.skills.store-provenance/1";
+
+/// Whether a store was created by a trusted release.
+///
+/// Recorded once, when the store is created, and never recomputed. A store
+/// created by a development build is a development store forever: letting it
+/// be promoted later would mean an Agent that could write the store could also
+/// decide the store was trustworthy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    /// Schema identifier.
+    pub schema: String,
+    /// Whether a verified release created this store.
+    pub trusted: bool,
+    /// The release that created it, when one did.
+    pub created_by_release: Option<String>,
+}
+
 /// The immutable package store rooted at one directory.
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -223,8 +243,55 @@ impl Store {
                 source,
             })?;
         }
-        Ok(Self {
+        let store = Self {
             root: root.to_path_buf(),
+        };
+        store.record_provenance()?;
+        Ok(store)
+    }
+
+    /// Returns the store's provenance, recording it if this is a new store.
+    pub fn provenance(&self) -> Result<Provenance, StoreError> {
+        let path = self.root.join("provenance.json");
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| StoreError::Metadata {
+                kind: "provenance".to_owned(),
+                digest: self.root.display().to_string(),
+                reason: error.to_string(),
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.record_provenance()?;
+                self.provenance()
+            }
+            Err(source) => Err(StoreError::Io {
+                path: path.display().to_string(),
+                source,
+            }),
+        }
+    }
+
+    /// Reports whether this store may hold supply a verified Session uses.
+    pub fn is_trusted(&self) -> bool {
+        self.provenance()
+            .map(|provenance| provenance.trusted)
+            .unwrap_or(false)
+    }
+
+    fn record_provenance(&self) -> Result<(), StoreError> {
+        let path = self.root.join("provenance.json");
+        if path.exists() {
+            return Ok(());
+        }
+        let identity = crate::release::running_identity();
+        let provenance = Provenance {
+            schema: PROVENANCE_SCHEMA.to_owned(),
+            trusted: identity.verified,
+            created_by_release: identity.release_id,
+        };
+        let bytes = serde_json::to_vec(&provenance).expect("provenance is always serializable");
+        fs::write(&path, bytes).map_err(|source| StoreError::Io {
+            path: path.display().to_string(),
+            source,
         })
     }
 

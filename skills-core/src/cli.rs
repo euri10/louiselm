@@ -20,12 +20,30 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
+    admission::{self, AdmissionError, AdmissionRequest},
     canonical::{Digest, DigestError},
     dossier::{Dossier, DossierError, DossierRequest, ReviewDepth},
+    install::{self, InstallError},
+    launcher_install::{
+        self, IdentityPool, InstallRequest as LauncherInstallRequest, LauncherError, LauncherPaths,
+        RotationRequest, SystemCommandRunner,
+    },
     policy::{Policy, PolicyError},
+    quarantine::{self, QuarantineError},
+    release::{
+        self, AssembleRequest, ComponentInput, ComponentKind, ReleaseError, SourceIdentity,
+        ToolchainIdentity,
+    },
     render, robot,
+    signer::{Signer, SshKeygenSigner},
+    sshsig::{SkPolicy, TRUST_NAMESPACE},
     store::{PublishOutcome, Store, StoreError},
+    trust::{Role, TrustError, TrustStore},
+    witness::GitWitness,
 };
+
+/// The trust domain used when the operator names none.
+pub const DEFAULT_TRUST_DOMAIN: &str = "louiselm/skills";
 
 /// Exit status for a command whose subject is not admissible.
 pub const EXIT_NOT_ADMISSIBLE: i32 = 2;
@@ -51,6 +69,35 @@ pub enum CliError {
     /// Robot output could not be serialized.
     #[error("cannot serialize output: {0}")]
     Serialize(#[from] serde_json::Error),
+    /// A trust operation failed.
+    #[error(transparent)]
+    Trust(#[from] TrustError),
+    /// An Admission or lifecycle step failed.
+    #[error(transparent)]
+    Admission(#[from] AdmissionError),
+    /// A quarantine operation failed.
+    #[error(transparent)]
+    Quarantine(#[from] QuarantineError),
+    /// Signing failed.
+    #[error(transparent)]
+    Signer(#[from] crate::signer::SignerError),
+    /// A release operation failed.
+    #[error(transparent)]
+    Release(#[from] ReleaseError),
+    /// An install operation failed.
+    #[error(transparent)]
+    Install(#[from] InstallError),
+    /// A launcher authority operation failed.
+    #[error(transparent)]
+    Launcher(#[from] LauncherError),
+    /// A file named on the command line could not be read.
+    #[error("cannot read '{path}': {source}")]
+    Read {
+        /// Path the caller named.
+        path: String,
+        /// Underlying failure.
+        source: std::io::Error,
+    },
 }
 
 /// What packaging a candidate produced.
@@ -94,12 +141,43 @@ pub fn run() -> Result<i32, CliError> {
         "dossier" => dossier(&options),
         "list" => list(&options),
         "policy" => policy(&options),
+        "trust" => trust(&options),
+        "generation" => generation(&options),
+        "quarantine" => quarantine_command(&options),
+        "release" => release_command(&options),
+        "launcher" => launcher_command(&options),
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
 }
 
 struct Options {
     positional: Vec<String>,
+    members: Vec<String>,
+    views: Vec<String>,
+    primary: Option<String>,
+    recovery: Option<String>,
+    trust_domain: Option<String>,
+    role: Option<String>,
+    key: Option<String>,
+    signature: Option<PathBuf>,
+    remote: Option<PathBuf>,
+    branch: Option<String>,
+    workdir: Option<PathBuf>,
+    reason: Option<String>,
+    output: Option<PathBuf>,
+    source: Option<PathBuf>,
+    bundle: Option<PathBuf>,
+    prefix: Option<PathBuf>,
+    operator: Option<String>,
+    broker_uid: Option<u32>,
+    broker_gid: Option<u32>,
+    uid_start: Option<u32>,
+    gid_start: Option<u32>,
+    slots: Option<u32>,
+    rotation_id: Option<String>,
+    expected_key_id: Option<String>,
+    require_hardware: bool,
+    confirm: bool,
     store: Option<PathBuf>,
     policy: Option<PathBuf>,
     policy_digest: Option<String>,
@@ -116,6 +194,32 @@ impl Options {
     fn parse(arguments: &[String]) -> Result<Self, CliError> {
         let mut parsed = Self {
             positional: Vec::new(),
+            members: Vec::new(),
+            views: Vec::new(),
+            primary: None,
+            recovery: None,
+            trust_domain: None,
+            role: None,
+            key: None,
+            signature: None,
+            remote: None,
+            branch: None,
+            workdir: None,
+            reason: None,
+            output: None,
+            source: None,
+            bundle: None,
+            prefix: None,
+            operator: None,
+            broker_uid: None,
+            broker_gid: None,
+            uid_start: None,
+            gid_start: None,
+            slots: None,
+            rotation_id: None,
+            expected_key_id: None,
+            require_hardware: false,
+            confirm: false,
             store: None,
             policy: None,
             policy_digest: None,
@@ -139,6 +243,104 @@ impl Options {
             match argument {
                 "--robot-json" => parsed.robot = true,
                 "--digest" => parsed.digest_only = true,
+                "--require-hardware" => parsed.require_hardware = true,
+                "--confirm" => parsed.confirm = true,
+                "--member" => {
+                    parsed.members.push(value("--member")?);
+                    index += 1;
+                }
+                "--view" => {
+                    parsed.views.push(value("--view")?);
+                    index += 1;
+                }
+                "--primary" => {
+                    parsed.primary = Some(value("--primary")?);
+                    index += 1;
+                }
+                "--recovery" => {
+                    parsed.recovery = Some(value("--recovery")?);
+                    index += 1;
+                }
+                "--trust-domain" => {
+                    parsed.trust_domain = Some(value("--trust-domain")?);
+                    index += 1;
+                }
+                "--role" => {
+                    parsed.role = Some(value("--role")?);
+                    index += 1;
+                }
+                "--key" => {
+                    parsed.key = Some(value("--key")?);
+                    index += 1;
+                }
+                "--signature" => {
+                    parsed.signature = Some(PathBuf::from(value("--signature")?));
+                    index += 1;
+                }
+                "--remote" => {
+                    parsed.remote = Some(PathBuf::from(value("--remote")?));
+                    index += 1;
+                }
+                "--branch" => {
+                    parsed.branch = Some(value("--branch")?);
+                    index += 1;
+                }
+                "--workdir" => {
+                    parsed.workdir = Some(PathBuf::from(value("--workdir")?));
+                    index += 1;
+                }
+                "--reason" => {
+                    parsed.reason = Some(value("--reason")?);
+                    index += 1;
+                }
+                "--output" => {
+                    parsed.output = Some(PathBuf::from(value("--output")?));
+                    index += 1;
+                }
+                "--source" => {
+                    parsed.source = Some(PathBuf::from(value("--source")?));
+                    index += 1;
+                }
+                "--bundle" => {
+                    parsed.bundle = Some(PathBuf::from(value("--bundle")?));
+                    index += 1;
+                }
+                "--prefix" => {
+                    parsed.prefix = Some(PathBuf::from(value("--prefix")?));
+                    index += 1;
+                }
+                "--operator" => {
+                    parsed.operator = Some(value("--operator")?);
+                    index += 1;
+                }
+                "--broker-uid" => {
+                    parsed.broker_uid = Some(parse_u32("--broker-uid", &value("--broker-uid")?)?);
+                    index += 1;
+                }
+                "--broker-gid" => {
+                    parsed.broker_gid = Some(parse_u32("--broker-gid", &value("--broker-gid")?)?);
+                    index += 1;
+                }
+                "--uid-start" => {
+                    parsed.uid_start = Some(parse_u32("--uid-start", &value("--uid-start")?)?);
+                    index += 1;
+                }
+                "--gid-start" => {
+                    parsed.gid_start = Some(parse_u32("--gid-start", &value("--gid-start")?)?);
+                    index += 1;
+                }
+                "--slots" => {
+                    parsed.slots = Some(parse_u32("--slots", &value("--slots")?)?);
+                    index += 1;
+                }
+                "--rotation-id" => {
+                    parsed.rotation_id = Some(value("--rotation-id")?);
+                    index += 1;
+                }
+                "--expected-key-id" => {
+                    parsed.expected_key_id = Some(value("--expected-key-id")?);
+                    index += 1;
+                }
                 "--store" => {
                     parsed.store = Some(PathBuf::from(value("--store")?));
                     index += 1;
@@ -216,6 +418,142 @@ impl Options {
             None => default_store_root()?,
         };
         Ok(Store::open(&root)?)
+    }
+
+    fn sk_policy(&self) -> SkPolicy {
+        if self.require_hardware {
+            SkPolicy::require_presence_and_verification()
+        } else {
+            SkPolicy::none()
+        }
+    }
+
+    /// Reads a public key from a file, or takes it literally.
+    ///
+    /// Both spellings appear in practice: `--primary ~/.ssh/id_admission.pub`
+    /// during a ceremony, and a pasted `sk-ssh-ed25519 AAAA...` when the key
+    /// came from somewhere else.
+    fn key_material(&self, flag: &str, value: Option<&str>) -> Result<String, CliError> {
+        let value = value.ok_or_else(|| CliError::Invalid(format!("{flag} needs a public key")))?;
+        let path = Path::new(value);
+        if path.is_file() {
+            return Ok(read_text(path)?.trim().to_owned());
+        }
+        Ok(value.trim().to_owned())
+    }
+
+    fn required_role(&self) -> Result<Role, CliError> {
+        let raw = self
+            .role
+            .as_deref()
+            .ok_or_else(|| CliError::Invalid("--role is required".to_owned()))?;
+        Role::parse(raw).ok_or_else(|| CliError::Invalid(format!("'{raw}' is not a role")))
+    }
+
+    fn required_reason(&self) -> Result<&str, CliError> {
+        self.reason.as_deref().ok_or_else(|| {
+            CliError::Invalid(
+                "--reason is required: a quarantine nobody can explain is a quarantine nobody lifts"
+                    .to_owned(),
+            )
+        })
+    }
+
+    fn required_bundle(&self) -> Result<PathBuf, CliError> {
+        self.bundle
+            .clone()
+            .ok_or_else(|| CliError::Invalid("--bundle is required".to_owned()))
+    }
+
+    fn install_prefix(&self) -> PathBuf {
+        self.prefix
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(install::DEFAULT_PREFIX))
+    }
+
+    fn launcher_install_request(&self) -> Result<LauncherInstallRequest, CliError> {
+        Ok(LauncherInstallRequest {
+            operator: required(&self.operator, "--operator")?.to_owned(),
+            broker_uid: *required(&self.broker_uid, "--broker-uid")?,
+            broker_gid: *required(&self.broker_gid, "--broker-gid")?,
+            pool: IdentityPool {
+                uid_start: *required(&self.uid_start, "--uid-start")?,
+                gid_start: *required(&self.gid_start, "--gid-start")?,
+                slots: *required(&self.slots, "--slots")?,
+            },
+        })
+    }
+
+    fn rotation_request(&self) -> Result<RotationRequest, CliError> {
+        Ok(RotationRequest {
+            rotation_id: required(&self.rotation_id, "--rotation-id")?.to_owned(),
+            expected_active_key_id: required(&self.expected_key_id, "--expected-key-id")?
+                .to_owned(),
+        })
+    }
+
+    fn signing_key(&self) -> Result<PathBuf, CliError> {
+        self.key
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| CliError::Invalid("--key is required to sign".to_owned()))
+    }
+
+    fn generation_digest(&self) -> Result<Digest, CliError> {
+        let raw = self.positional.get(1).ok_or_else(|| {
+            CliError::Invalid("this command needs a generation digest".to_owned())
+        })?;
+        Ok(Digest::parse(raw)?)
+    }
+
+    fn admission_members(&self) -> Result<Vec<(Digest, ReviewDepth)>, CliError> {
+        if self.members.is_empty() {
+            return Err(CliError::Invalid(
+                "generation admit needs at least one --member <digest>[:<review-depth>]".to_owned(),
+            ));
+        }
+        self.members
+            .iter()
+            .map(|raw| {
+                // A digest is spelled `sha256:<hex>`, so splitting on the last
+                // colon would read the hex as a review depth. Try the whole
+                // string as a digest first; only then treat a suffix as depth.
+                if let Ok(digest) = Digest::parse(raw) {
+                    return Ok((digest, ReviewDepth::Unstated));
+                }
+                let (digest, depth) = raw
+                    .rsplit_once(':')
+                    .ok_or_else(|| CliError::Invalid(format!("'{raw}' is not a digest")))?;
+                let depth = ReviewDepth::parse(depth)
+                    .ok_or_else(|| CliError::Invalid(format!("'{depth}' is not a review depth")))?;
+                Ok((Digest::parse(digest)?, depth))
+            })
+            .collect()
+    }
+
+    fn view_roots(&self) -> Result<std::collections::BTreeMap<String, String>, CliError> {
+        self.views
+            .iter()
+            .map(|raw| {
+                raw.split_once('=')
+                    .map(|(provider, root)| (provider.to_owned(), root.to_owned()))
+                    .ok_or_else(|| {
+                        CliError::Invalid(format!("--view expects <provider>=<root>, got '{raw}'"))
+                    })
+            })
+            .collect()
+    }
+
+    fn witness(&self) -> Result<GitWitness, CliError> {
+        let remote = self.remote.as_ref().ok_or_else(|| {
+            CliError::Invalid("--remote is required to witness a Generation".to_owned())
+        })?;
+        let branch = self.branch.as_deref().unwrap_or("skill-generations");
+        let workdir = match &self.workdir {
+            Some(path) => path.clone(),
+            None => self.store()?.root().join("witness-work"),
+        };
+        Ok(GitWitness::new(remote, branch, &workdir))
     }
 
     fn dossier_request<'a>(
@@ -371,6 +709,472 @@ fn policy(options: &Options) -> Result<i32, CliError> {
     Ok(0)
 }
 
+fn trust(options: &Options) -> Result<i32, CliError> {
+    let store = options.store()?;
+    match options.subject("trust")? {
+        "bootstrap" => {
+            let primary = options.key_material("--primary", options.primary.as_deref())?;
+            let recovery = options.key_material("--recovery", options.recovery.as_deref())?;
+            let trust = TrustStore::bootstrap(
+                &store,
+                options
+                    .trust_domain
+                    .as_deref()
+                    .unwrap_or(DEFAULT_TRUST_DOMAIN),
+                &primary,
+                &recovery,
+                options.sk_policy(),
+                now_ms(),
+            )?;
+            report(options, &trust, |trust| {
+                format!("trust bootstrapped for {}", trust.trust_domain)
+            })
+        }
+        "show" => {
+            let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
+            report(options, &trust, |trust| {
+                let mut lines = vec![format!(
+                    "domain {} (change sequence {})",
+                    trust.trust_domain, trust.sequence
+                )];
+                for key in &trust.keys {
+                    lines.push(format!("  {:<9} {}", key.role.name(), key.public_key));
+                }
+                lines.join("\n")
+            })
+        }
+        "rotation-payload" => {
+            let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
+            let change = trust.rotation_payload(
+                options.required_role()?,
+                &options.key_material("--key", options.key.as_deref())?,
+                options.sk_policy(),
+            );
+            // Printed without a trailing newline: these are the exact bytes the
+            // recovery key signs, and a newline would change them.
+            print!("{}", String::from_utf8_lossy(&change.canonical_bytes()));
+            Ok(0)
+        }
+        "rotate" => {
+            let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
+            let change = trust.rotation_payload(
+                options.required_role()?,
+                &options.key_material("--key", options.key.as_deref())?,
+                options.sk_policy(),
+            );
+            let signature_path = options.signature.as_ref().ok_or_else(|| {
+                CliError::Invalid(format!(
+                    "trust rotate needs --signature: sign the rotation payload in the {TRUST_NAMESPACE} namespace with the recovery key"
+                ))
+            })?;
+            let signature = read_text(signature_path)?;
+            let rotated = TrustStore::rotate(&store, &change, &signature, now_ms())?;
+            report(options, &rotated, |trust| {
+                format!("trust change {} applied", trust.sequence)
+            })
+        }
+        "reset" => {
+            if !options.confirm {
+                return Err(CliError::Invalid(
+                    "trust reset discards every enrolled key and invalidates every Generation they signed; pass --confirm".to_owned(),
+                ));
+            }
+            TrustStore::reset(&store)?;
+            println!("trust reset; re-enroll and re-admit before any verified Session");
+            Ok(0)
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown trust command '{other}'"
+        ))),
+    }
+}
+
+fn generation(options: &Options) -> Result<i32, CliError> {
+    let store = options.store()?;
+    let policy = options.policy()?;
+    match options.subject("generation")? {
+        "admit" => {
+            let key = options.signing_key()?;
+            let record = admission::admit(
+                &store,
+                &policy,
+                &AdmissionRequest {
+                    members: options.admission_members()?,
+                    view_roots: options.view_roots()?,
+                    signer: &SshKeygenSigner::new(&key),
+                    admitted_at_ms: now_ms(),
+                },
+            )?;
+            report(options, &record, |record| {
+                format!(
+                    "generation {} signed at sequence {}; witness it before it governs anything",
+                    record.generation, record.payload.sequence
+                )
+            })
+        }
+        "witness" => {
+            let digest = options.generation_digest()?;
+            let record = admission::witness(&store, &digest, &options.witness()?, now_ms())?;
+            report(options, &record, |record| {
+                format!("generation {} witnessed", record.generation)
+            })
+        }
+        "activate" => {
+            let digest = options.generation_digest()?;
+            let record = admission::activate(&store, &digest, now_ms())?;
+            report(options, &record, |record| {
+                format!(
+                    "generation {} is current at sequence {}",
+                    record.generation, record.payload.sequence
+                )
+            })
+        }
+        "status" => {
+            let status = admission::status(&store)?;
+            let admissible = status.state == Some(crate::generation::GenerationState::Current);
+            if options.robot {
+                println!("{}", robot::payload(&status)?);
+            } else {
+                println!("{}", render::generation_status(&status));
+            }
+            Ok(if admissible { 0 } else { EXIT_NOT_ADMISSIBLE })
+        }
+        "list" => {
+            let records = admission::list(&store)?;
+            if options.robot {
+                println!("{}", robot::payload(&records)?);
+            } else {
+                for record in &records {
+                    println!(
+                        "{:>4} {} {}",
+                        record.payload.sequence,
+                        record.state.name(),
+                        record.generation
+                    );
+                }
+            }
+            Ok(0)
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown generation command '{other}'"
+        ))),
+    }
+}
+
+fn quarantine_command(options: &Options) -> Result<i32, CliError> {
+    let store = options.store()?;
+    match options.subject("quarantine")? {
+        "exclude" => {
+            let packages = options.positional[1..].to_vec();
+            if packages.is_empty() {
+                return Err(CliError::Invalid(
+                    "quarantine exclude needs at least one package digest".to_owned(),
+                ));
+            }
+            for package in &packages {
+                Digest::parse(package)?;
+            }
+            let quarantine =
+                quarantine::exclude(&store, &packages, options.required_reason()?, now_ms())?;
+            report(options, &quarantine, |quarantine| {
+                format!("{} package(s) excluded", quarantine.excluded.len())
+            })
+        }
+        "all" => {
+            let quarantine =
+                quarantine::exclude_everything(&store, options.required_reason()?, now_ms())?;
+            report(options, &quarantine, |_| {
+                "every member of the current Generation is excluded".to_owned()
+            })
+        }
+        "show" => match quarantine::load(&store)? {
+            Some(quarantine) => report(options, &quarantine, |quarantine| {
+                let mut lines = vec![format!(
+                    "excluded {} package(s), everything={}",
+                    quarantine.excluded.len(),
+                    quarantine.excludes_everything
+                )];
+                lines.extend(
+                    quarantine
+                        .excluded
+                        .iter()
+                        .map(|digest| format!("  {digest}")),
+                );
+                lines.extend(
+                    quarantine
+                        .reasons
+                        .iter()
+                        .map(|reason| format!("  # {reason}")),
+                );
+                lines.join("\n")
+            }),
+            None => {
+                println!("no quarantine is active");
+                Ok(0)
+            }
+        },
+        "clear" => {
+            quarantine::clear(&store, now_ms())?;
+            Ok(0)
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown quarantine command '{other}'"
+        ))),
+    }
+}
+
+fn release_component_inputs(source: &Path) -> Vec<ComponentInput> {
+    ["louiselm-skills", "louiselm-launch"]
+        .into_iter()
+        .map(|name| ComponentInput {
+            name: name.to_owned(),
+            path: source.join("target/release").join(name),
+            kind: ComponentKind::Executable,
+        })
+        .collect()
+}
+
+fn release_command(options: &Options) -> Result<i32, CliError> {
+    match options.subject("release")? {
+        "build" => {
+            let source = options.source.clone().unwrap_or_else(|| PathBuf::from("."));
+            let output = options.output.clone().ok_or_else(|| {
+                CliError::Invalid("release build needs --output <bundle-dir>".to_owned())
+            })?;
+            let lock = source.join("Cargo.lock");
+            let dependencies =
+                Digest::of(&std::fs::read(&lock).map_err(|error| CliError::Read {
+                    path: lock.display().to_string(),
+                    source: error,
+                })?);
+            let identity = SourceIdentity::of(&source, &dependencies.to_string())?;
+            let toolchain = ToolchainIdentity::detect()?;
+
+            // --locked, so a lockfile that would have been updated is a
+            // refusal rather than a silent difference between what was
+            // reviewed and what was built.
+            let status = std::process::Command::new("cargo")
+                .current_dir(&source)
+                .args(["build", "--release", "--locked"])
+                .status()
+                .map_err(|error| ReleaseError::Tool {
+                    tool: "cargo".to_owned(),
+                    reason: error.to_string(),
+                })?;
+            if !status.success() {
+                return Err(CliError::Release(ReleaseError::Tool {
+                    tool: "cargo".to_owned(),
+                    reason: "release build failed".to_owned(),
+                }));
+            }
+
+            let manifest = release::assemble(
+                &AssembleRequest {
+                    source: identity,
+                    toolchain,
+                    policy: &Policy::embedded(),
+                    components: release_component_inputs(&source),
+                    built_at_ms: now_ms(),
+                },
+                &output,
+            )?;
+            report(options, &manifest, |manifest| {
+                format!(
+                    "release {} built from {} ({} component(s)); sign it before installing",
+                    manifest.release_id,
+                    manifest.source.commit,
+                    manifest.components.len()
+                )
+            })
+        }
+        "sign" => {
+            let bundle = options.required_bundle()?;
+            let key = options.signing_key()?;
+            let manifest_path = bundle.join("manifest.json");
+            let bytes = std::fs::read(&manifest_path).map_err(|error| CliError::Read {
+                path: manifest_path.display().to_string(),
+                source: error,
+            })?;
+            let signature = SshKeygenSigner::new(&key).sign(release::RELEASE_NAMESPACE, &bytes)?;
+            std::fs::write(bundle.join("manifest.sig"), &signature).map_err(|error| {
+                CliError::Read {
+                    path: bundle.join("manifest.sig").display().to_string(),
+                    source: error,
+                }
+            })?;
+            println!("signed {}", bundle.display());
+            Ok(0)
+        }
+        "verify" => {
+            let bundle = options.required_bundle()?;
+            let trust = TrustStore::load(&options.store()?)?.ok_or(TrustError::NotBootstrapped)?;
+            let manifest = release::verify_bundle(&bundle, &trust)?;
+            report(options, &manifest, |manifest| {
+                format!("release {} verifies", manifest.release_id)
+            })
+        }
+        "install" => {
+            let bundle = options.required_bundle()?;
+            let prefix = options.install_prefix();
+            let state = install::install(&options.store()?, &bundle, &prefix, now_ms())?;
+            report(options, &state, |state| {
+                format!(
+                    "release {} installed at {}",
+                    state.release_id,
+                    prefix.display()
+                )
+            })
+        }
+        "status" => {
+            let status = install::status(&options.install_prefix())?;
+            let trusted = status.trusted;
+            if options.robot {
+                println!("{}", robot::payload(&status)?);
+            } else {
+                println!("{}", render::install_status(&status));
+            }
+            Ok(if trusted { 0 } else { EXIT_NOT_ADMISSIBLE })
+        }
+        "identity" => {
+            let identity = release::running_identity();
+            let verified = identity.verified;
+            if options.robot {
+                println!("{}", robot::payload(&identity)?);
+            } else {
+                println!(
+                    "{} — {}",
+                    if verified { "verified" } else { "unverified" },
+                    identity.detail
+                );
+            }
+            Ok(if verified { 0 } else { EXIT_NOT_ADMISSIBLE })
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown release command '{other}'"
+        ))),
+    }
+}
+
+fn launcher_command(options: &Options) -> Result<i32, CliError> {
+    if options.prefix.is_some() {
+        return Err(CliError::Invalid(
+            "launcher paths are fixed; --prefix is not supported".to_owned(),
+        ));
+    }
+    if options.positional.len() != 1 {
+        return Err(CliError::Invalid(
+            "launcher accepts exactly one subcommand".to_owned(),
+        ));
+    }
+    let paths = LauncherPaths::system();
+    match options.subject("launcher")? {
+        "install" => {
+            let request = options.launcher_install_request()?;
+            require_verified_running_release(&paths)?;
+            let status =
+                launcher_install::install(&paths, &SystemCommandRunner, &request, now_ms())?;
+            report_launcher_status(options, &status)
+        }
+        "rotate-key" => {
+            let request = options.rotation_request()?;
+            require_verified_running_release(&paths)?;
+            let outcome =
+                launcher_install::rotate(&paths, &SystemCommandRunner, &request, now_ms())?;
+            report(options, &outcome, |outcome| {
+                format!(
+                    "launcher key {} ({})",
+                    outcome.key_id,
+                    if outcome.created {
+                        "rotated"
+                    } else {
+                        "already rotated"
+                    }
+                )
+            })
+        }
+        "status" => {
+            let status = launcher_install::status(&paths);
+            report_launcher_status(options, &status)
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown launcher command '{other}'"
+        ))),
+    }
+}
+
+fn require_verified_running_release(paths: &LauncherPaths) -> Result<(), CliError> {
+    let identity = release::running_identity();
+    if !identity.verified {
+        return Err(CliError::Invalid(format!(
+            "launcher authority requires the current verified release ({}): {}",
+            identity
+                .failure_code
+                .as_deref()
+                .unwrap_or("unverified_release"),
+            identity.detail
+        )));
+    }
+    let installed = install::load_state(&paths.release_prefix)?.ok_or_else(|| {
+        CliError::Invalid("the fixed launcher prefix has no current release".to_owned())
+    })?;
+    if identity.release_id.as_deref() != Some(installed.release_id.as_str()) {
+        return Err(CliError::Invalid(format!(
+            "running release {} does not match the fixed launcher's current release {}",
+            identity.release_id.as_deref().unwrap_or("unknown"),
+            installed.release_id
+        )));
+    }
+    Ok(())
+}
+
+fn report_launcher_status(
+    options: &Options,
+    status: &launcher_install::LauncherStatus,
+) -> Result<i32, CliError> {
+    if options.robot {
+        println!("{}", robot::payload(status)?);
+    } else {
+        println!("{}", render::launcher_status(status));
+    }
+    Ok(if status.trusted {
+        0
+    } else {
+        EXIT_NOT_ADMISSIBLE
+    })
+}
+
+fn report<T: Serialize>(
+    options: &Options,
+    value: &T,
+    human: impl Fn(&T) -> String,
+) -> Result<i32, CliError> {
+    if options.robot {
+        println!("{}", robot::payload(value)?);
+    } else {
+        println!("{}", human(value));
+    }
+    Ok(0)
+}
+
+fn read_text(path: &Path) -> Result<String, CliError> {
+    std::fs::read_to_string(path).map_err(|source| CliError::Read {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+fn required<'a, T>(value: &'a Option<T>, flag: &str) -> Result<&'a T, CliError> {
+    value
+        .as_ref()
+        .ok_or_else(|| CliError::Invalid(format!("{flag} is required")))
+}
+
+fn parse_u32(flag: &str, value: &str) -> Result<u32, CliError> {
+    value.parse().map_err(|_| {
+        CliError::Invalid(format!("{flag} must be an unsigned integer, not '{value}'"))
+    })
+}
+
 fn default_store_root() -> Result<PathBuf, CliError> {
     if let Ok(explicit) = env::var("LOUISELM_SKILLS_STORE") {
         return Ok(PathBuf::from(explicit));
@@ -395,9 +1199,9 @@ fn now_ms() -> u64 {
 
 fn print_help() {
     println!(
-        "louiselm-skills — package Skill candidates and render canonical Dossiers
+        "louiselm-skills — package Skill candidates, admit Skill Generations
 
-Usage:
+Packaging and review:
   louiselm-skills package <candidate-dir> [--captured-at <ms>]
   louiselm-skills verify <digest>
   louiselm-skills inspect <digest>
@@ -406,17 +1210,125 @@ Usage:
   louiselm-skills list
   louiselm-skills policy [--digest]
 
+Trust roles:
+  louiselm-skills trust bootstrap --primary <key> --recovery <key>
+                                  [--trust-domain <d>] [--require-hardware]
+  louiselm-skills trust show
+  louiselm-skills trust rotation-payload --role primary --key <key>
+  louiselm-skills trust rotate --role primary --key <key> --signature <file>
+  louiselm-skills trust reset --confirm
+
+Skill Generations:
+  louiselm-skills generation admit --member <digest>[:<depth>] ... --key <privkey>
+                                   [--view <provider>=<root>]
+  louiselm-skills generation witness <digest> --remote <url> [--branch <b>]
+  louiselm-skills generation activate <digest>
+  louiselm-skills generation status
+  louiselm-skills generation list
+
+Trusted release:
+  louiselm-skills release build --output <dir> [--source <dir>]
+  louiselm-skills release sign --bundle <dir> --key <privkey>
+  louiselm-skills release verify --bundle <dir>
+  louiselm-skills release install --bundle <dir> [--prefix <dir>]
+  louiselm-skills release status [--prefix <dir>]
+  louiselm-skills release identity
+
+Privileged launcher authority (install/rotation require current verified release):
+  louiselm-skills launcher install --operator <user> --broker-uid <id>
+                                    --broker-gid <id> --uid-start <id>
+                                    --gid-start <id> --slots <count>
+  louiselm-skills launcher rotate-key --rotation-id <id> --expected-key-id <id>
+  louiselm-skills launcher status
+
+Emergency quarantine (narrows only; no token needed):
+  louiselm-skills quarantine exclude <digest>... --reason <text>
+  louiselm-skills quarantine all --reason <text>
+  louiselm-skills quarantine show
+
 Options:
   --store <dir>          Store root; defaults to $LOUISELM_SKILLS_STORE, then
                          $XDG_STATE_HOME/louiselm/skills, then ~/.local/state/louiselm/skills.
   --policy <file>        Replacement Inspection policy. Requires --policy-digest.
   --policy-digest <d>    The digest the replacement policy must have.
   --review-depth <d>     unstated | skimmed | read | reproduced. A recorded claim, not a proof.
+  --require-hardware     Enrolled keys must be FIDO keys that report touch and user verification.
   --robot-json           Emit the machine-readable view instead of the human one.
 
 Exit status:
   0  succeeded; the subject is admissible
   1  failed; nothing was published and nothing is claimed
-  2  succeeded; the subject is NOT admissible (verification failed or a fatal finding)"
+  2  succeeded; the subject is NOT admissible (verification failed, a fatal finding,
+     or no Skill Generation is in force)"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn launcher_install_options_are_explicit_and_numeric() {
+        let options = Options::parse(&arguments(&[
+            "install",
+            "--operator",
+            "louise",
+            "--broker-uid",
+            "1500",
+            "--broker-gid",
+            "1500",
+            "--uid-start",
+            "200000",
+            "--gid-start",
+            "300000",
+            "--slots",
+            "4",
+        ]))
+        .expect("launcher options parse");
+
+        let request = options.launcher_install_request().unwrap();
+        assert_eq!(request.operator, "louise");
+        assert_eq!(request.broker_uid, 1_500);
+        assert_eq!(request.broker_gid, 1_500);
+        assert_eq!(request.pool.uid_start, 200_000);
+        assert_eq!(request.pool.gid_start, 300_000);
+        assert_eq!(request.pool.slots, 4);
+
+        let error = Options::parse(&arguments(&["install", "--slots", "many"]))
+            .err()
+            .expect("non-numeric pool size is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("--slots must be an unsigned integer")
+        );
+    }
+
+    #[test]
+    fn a_development_build_cannot_install_launcher_authority() {
+        let error = require_verified_running_release(&LauncherPaths::system())
+            .expect_err("the test executable is not a current installed release");
+        assert!(error.to_string().contains("current verified release"));
+    }
+
+    #[test]
+    fn release_build_declares_both_installed_executables() {
+        let source = Path::new("/reviewed/source");
+        let components = release_component_inputs(source);
+        assert_eq!(
+            components
+                .iter()
+                .map(|component| component.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["louiselm-skills", "louiselm-launch"]
+        );
+        assert_eq!(
+            components[1].path,
+            source.join("target/release/louiselm-launch")
+        );
+    }
 }

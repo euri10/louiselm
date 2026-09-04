@@ -35,6 +35,10 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field session_failed fun(self: louiselm.ui.Attention, state: table, linked_run_id?: string)
 ---@field run_parked fun(self: louiselm.ui.Attention, run_id: string)
 ---@field run_resumed fun(self: louiselm.ui.Attention, run_id: string)
+---@field skill_approval_pending fun(self: louiselm.ui.Attention, projection: louiselm.ui.SkillAttentionProjection): boolean, string?
+---@field skill_approval_resolved fun(self: louiselm.ui.Attention, projection: louiselm.ui.SkillAttentionProjection): boolean, string?
+---@field skill_unverified fun(self: louiselm.ui.Attention, projection: louiselm.ui.SkillAttentionProjection, code: string): boolean, string?
+---@field skill_verification_resolved fun(self: louiselm.ui.Attention, projection: louiselm.ui.SkillAttentionProjection): boolean, string?
 ---@field session_disposed fun(self: louiselm.ui.Attention, session_id: string)
 ---@field activity fun(self: louiselm.ui.Attention)
 ---@field dispose fun(self: louiselm.ui.Attention): boolean
@@ -46,6 +50,33 @@ Attention.__index = Attention
 local IDLE_DELAY_MS = 30 * 1000
 local enqueue
 
+---@class louiselm.ui.SkillAttentionProjection
+---@field subject_kind "session"|"run" Trusted normalized subject kind.
+---@field subject_id string Trusted normalized Session identifier or Run UUID.
+---@field source_operation_id string Stable canonical operation UUID.
+---@field linked_run_id? string Canonical Run UUID linked to a Session condition.
+
+local SKILL_FAILURE_CODES = {
+  root_trust_failed = true,
+  signature_invalid = true,
+  witness_missing = true,
+  native_supply_uncertain = true,
+  runtime_drift = true,
+  isolation_failed = true,
+  broker_unavailable = true,
+  audit_persistence_unavailable = true,
+  provider_disclosure_missing = true,
+  evidence_missing = true,
+  unknown_failure = true,
+}
+
+local SKILL_PROJECTION_FIELDS = {
+  subject_kind = true,
+  subject_id = true,
+  source_operation_id = true,
+  linked_run_id = true,
+}
+
 local function valid_uuid(value)
   local compact = type(value) == "string" and value:gsub("-", "") or ""
   return type(value) == "string"
@@ -56,6 +87,41 @@ local function valid_uuid(value)
     and value:sub(19, 19) == "-"
     and value:sub(24, 24) == "-"
     and compact:match("^[0-9a-fA-F]+$") ~= nil
+end
+
+local function valid_canonical_uuid(value)
+  return valid_uuid(value) and value == value:lower()
+end
+
+local function validate_skill_projection(projection)
+  if type(projection) ~= "table" then
+    return false, "skill Attention projection must be a table"
+  end
+  for field in pairs(projection) do
+    if SKILL_PROJECTION_FIELDS[field] ~= true then
+      return false, "skill Attention projection has unknown fields"
+    end
+  end
+  if projection.subject_kind ~= "session" and projection.subject_kind ~= "run" then
+    return false, "skill Attention subject kind is invalid"
+  end
+  local valid_subject = type(projection.subject_id) == "string"
+    and #projection.subject_id > 0
+    and #projection.subject_id <= 256
+    and projection.subject_id:match("^[%w_.:-]+$") ~= nil
+  if projection.subject_kind == "run" then
+    valid_subject = valid_canonical_uuid(projection.subject_id)
+  end
+  if not valid_subject or not valid_canonical_uuid(projection.source_operation_id) then
+    return false, "skill Attention identifiers are invalid"
+  end
+  if
+    projection.linked_run_id ~= nil
+    and (projection.subject_kind ~= "session" or not valid_canonical_uuid(projection.linked_run_id))
+  then
+    return false, "skill Attention linked Run is invalid"
+  end
+  return true
 end
 
 local function entry_id(key)
@@ -350,7 +416,7 @@ end
 function Attention:seen(session_id)
   local entries = {}
   for _, entry in pairs(self.entries) do
-    if entry.session_id == session_id then
+    if entry.session_id == session_id and entry.kind == "turn_ready" then
       entries[#entries + 1] = entry
     end
   end
@@ -359,7 +425,7 @@ function Attention:seen(session_id)
   end
   enqueue(self, {
     send = function(client, callback)
-      return client:clear_session(session_id, callback)
+      return client:clear_session_kind(session_id, "turn_ready", callback)
     end,
   })
 end
@@ -508,6 +574,107 @@ function Attention:run_resumed(run_id)
   clear_entries(self, function(entry)
     return entry.kind == "run_parked" and entry.key.subject_id == run_id
   end)
+end
+
+local function skill_key(projection, kind)
+  local valid, error_message = validate_skill_projection(projection)
+  if not valid then
+    return nil, error_message
+  end
+  return {
+    subject_kind = projection.subject_kind,
+    subject_id = projection.subject_id,
+    kind = kind,
+    source_operation_id = projection.source_operation_id,
+  }
+end
+
+local function enqueue_skill_condition(self, projection, kind, code)
+  if self.disposed then
+    return false, "Attention controller is disposed"
+  end
+  local key, error_message = skill_key(projection, kind)
+  if key == nil then
+    return false, error_message
+  end
+  enqueue_entry(self, {
+    session_id = projection.subject_kind == "session" and projection.subject_id or nil,
+    key = key,
+    kind = kind,
+    draft = {
+      subject_kind = key.subject_kind,
+      subject_id = key.subject_id,
+      kind = key.kind,
+      source_operation_id = key.source_operation_id,
+      created_at_ms = self.now_ms(),
+      linked_run_id = projection.linked_run_id,
+      code = code,
+    },
+  })
+  return true
+end
+
+local function clear_skill_condition(self, projection, kind)
+  if self.disposed then
+    return false, "Attention controller is disposed"
+  end
+  local key, error_message = skill_key(projection, kind)
+  if key == nil then
+    return false, error_message
+  end
+  local entry = self.entries[entry_id(key)]
+  if entry ~= nil then
+    forget_entry(self, entry)
+  end
+  enqueue(self, {
+    send = function(client, callback)
+      return client:clear(key, callback)
+    end,
+  })
+  return true
+end
+
+---Record a Skill candidate awaiting the local admission ceremony.
+---@param self louiselm.ui.Attention
+---@param projection louiselm.ui.SkillAttentionProjection Trusted normalized identity only.
+---@return boolean accepted
+---@return string? error_message
+function Attention:skill_approval_pending(projection)
+  return enqueue_skill_condition(self, projection, "skill_approval_pending", "admission_required")
+end
+
+---Clear one Skill approval condition after its authoritative resolution.
+---@param self louiselm.ui.Attention
+---@param projection louiselm.ui.SkillAttentionProjection Trusted normalized identity only.
+---@return boolean accepted
+---@return string? error_message
+function Attention:skill_approval_resolved(projection)
+  return clear_skill_condition(self, projection, "skill_approval_pending")
+end
+
+---Record one failed normalized Verified-posture operation.
+---@param self louiselm.ui.Attention
+---@param projection louiselm.ui.SkillAttentionProjection Trusted normalized identity only.
+---@param code string Closed trusted failure code.
+---@return boolean accepted
+---@return string? error_message
+function Attention:skill_unverified(projection, code)
+  if self.disposed then
+    return false, "Attention controller is disposed"
+  end
+  if SKILL_FAILURE_CODES[code] ~= true then
+    return false, "skill Attention code is invalid"
+  end
+  return enqueue_skill_condition(self, projection, "skill_unverified", code)
+end
+
+---Clear one failed posture operation after trusted evidence resolves it.
+---@param self louiselm.ui.Attention
+---@param projection louiselm.ui.SkillAttentionProjection Trusted normalized identity only.
+---@return boolean accepted
+---@return string? error_message
+function Attention:skill_verification_resolved(projection)
+  return clear_skill_condition(self, projection, "skill_unverified")
 end
 
 ---Clear failure and permission conditions when a Session ends.
