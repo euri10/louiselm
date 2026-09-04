@@ -5,7 +5,11 @@ use std::{
     io::{self, Read, Write},
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, mpsc},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -14,25 +18,29 @@ use crate::{
     Digest,
     launch::LaunchRequest,
     launch_protocol::{
-        LaunchAuthorization, ProtocolMessage, ReceiptAcknowledgement, ResponseResult,
+        BrokerReconnect, ControllerLossAcknowledgement, ControllerLossSettlement,
+        LaunchAuthorization, ProtocolMessage, ProtocolResponse, ReceiptAcknowledgement,
+        ResponseResult,
     },
+    launch_receipt::ProcessExitClassification,
     launch_transport::{
         AuthenticatedPacket, BoundSeqpacketListener, CredentialPin, LauncherPacket,
         SeqpacketChannel, SeqpacketConnector, SeqpacketListener, TransportError,
     },
     launcher_install::{
-        Identity, IdentityLease, LauncherConfig, LauncherPaths, LauncherSigner,
+        Identity, IdentityLease, LauncherConfig, LauncherError, LauncherPaths, LauncherSigner,
         acquire_identity_with_deadline, bwrap_version_with_deadline, require_measured_bwrap,
     },
     sandbox::{
         BubblewrapBackend, Channel, ConfinementPlan, PreparedSession, ProcessTree, SandboxError,
-        SandboxedSession,
+        SandboxMechanicalState, SandboxedSession,
     },
 };
 
 use super::{
     CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker, LaunchPlatform, LaunchSigner,
-    PreparedAgent, ProcessMembership, RunningAgent, SupervisorCompletion, SupervisorError,
+    MechanicFailure, PreparedAgent, ProcessMembership, RunningAgent, RunningAgentEvent,
+    SupervisorCompletion, SupervisorError,
 };
 
 /// Fixed root-owned launch registry read by the production entrypoint.
@@ -46,8 +54,7 @@ pub const SYSTEM_CAPABILITY_ROOT: &str = "/run/louiselm-launch/sessions";
 /// Fixed socket location visible inside each confined Session.
 pub const SYSTEM_CAPABILITY_GUEST_PATH: &str = "/tmp/louiselm-capability.sock";
 
-const RELAY_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const RELAY_EXIT_GRACE: Duration = Duration::from_secs(5);
+const PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SIGNER_CLEANUP_MARGIN: Duration = Duration::from_millis(250);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -66,14 +73,15 @@ pub fn connect_control_broker(
     timeout: Duration,
 ) -> Result<Arc<dyn LaunchBroker>, SupervisorError> {
     let connector = SeqpacketConnector::new().map_err(map_transport)?;
+    let broker_pin = CredentialPin::Identity {
+        uid: config.broker_uid,
+        gid: config.broker_gid,
+    };
     let (sender, receiver) = mpsc::sync_channel(1);
     connector
         .connect(
             &config.broker_socket_path,
-            CredentialPin::Identity {
-                uid: config.broker_uid,
-                gid: config.broker_gid,
-            },
+            broker_pin,
             Box::new(move |result| {
                 let _ = sender.try_send(result);
             }),
@@ -83,17 +91,82 @@ pub fn connect_control_broker(
         .recv_timeout(timeout)
         .map_err(|_| SupervisorError::BrokerTimeout)?
         .map_err(map_transport)?;
-    drop(connector);
-    Ok(Arc::new(SeqpacketLaunchBroker { channel }))
+    Ok(Arc::new(SeqpacketLaunchBroker::new(
+        connector,
+        config.broker_socket_path.clone(),
+        broker_pin,
+        channel,
+    )))
 }
 
 struct SeqpacketLaunchBroker {
+    state: Arc<Mutex<SeqpacketLaunchBrokerState>>,
+}
+
+struct SeqpacketLaunchBrokerState {
+    connector: Option<SeqpacketConnector>,
+    socket_path: PathBuf,
+    broker_pin: CredentialPin,
     channel: SeqpacketChannel,
+    reconnect_generation: u64,
+    reconnect: Option<PendingBrokerReconnect>,
+    controller_loss_pending: Option<PendingControllerLossSettlement>,
+}
+
+struct PendingBrokerReconnect {
+    generation: u64,
+    candidate: Option<SeqpacketChannel>,
+    complete: SupervisorCompletion<BrokerReconnect>,
+}
+
+struct PendingControllerLossSettlement {
+    request: ControllerLossSettlement,
+    complete: SupervisorCompletion<ControllerLossAcknowledgement>,
 }
 
 impl SeqpacketLaunchBroker {
+    fn new(
+        connector: SeqpacketConnector,
+        socket_path: PathBuf,
+        broker_pin: CredentialPin,
+        channel: SeqpacketChannel,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SeqpacketLaunchBrokerState {
+                connector: Some(connector),
+                socket_path,
+                broker_pin,
+                channel,
+                reconnect_generation: 0,
+                reconnect: None,
+                controller_loss_pending: None,
+            })),
+        }
+    }
+
+    fn current_channel(&self) -> Result<SeqpacketChannel, SupervisorError> {
+        let state = lock(&self.state);
+        state
+            .connector
+            .as_ref()
+            .ok_or(SupervisorError::BrokerUnavailable)?;
+        Ok(state.channel.clone())
+    }
+
     fn transact<T>(
         &self,
+        bytes: Vec<u8>,
+        parse: impl FnOnce(AuthenticatedPacket) -> Result<T, SupervisorError> + Send + 'static,
+        complete: SupervisorCompletion<T>,
+    ) -> Result<(), SupervisorError>
+    where
+        T: Send + 'static,
+    {
+        Self::transact_on(self.current_channel()?, bytes, parse, complete)
+    }
+
+    fn transact_on<T>(
+        channel: SeqpacketChannel,
         bytes: Vec<u8>,
         parse: impl FnOnce(AuthenticatedPacket) -> Result<T, SupervisorError> + Send + 'static,
         complete: SupervisorCompletion<T>,
@@ -108,9 +181,9 @@ impl SeqpacketLaunchBroker {
                 complete(result);
             }
         };
-        let receive_channel = self.channel.clone();
+        let receive_channel = channel.clone();
         let send_completion = Arc::clone(&completion);
-        self.channel
+        channel
             .send(
                 bytes,
                 Box::new(move |sent| {
@@ -131,6 +204,111 @@ impl SeqpacketLaunchBroker {
             )
             .map_err(map_transport)
     }
+
+    fn arm_session_receive(
+        state: Arc<Mutex<SeqpacketLaunchBrokerState>>,
+        channel: SeqpacketChannel,
+        completion: Arc<Mutex<Option<SupervisorCompletion<ProtocolMessage>>>>,
+    ) -> Result<(), SupervisorError> {
+        let next_channel = channel.clone();
+        channel
+            .receive(Box::new(move |received| {
+                let packet = match received.map_err(map_transport) {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let pending = lock(&state).controller_loss_pending.take();
+                        if let Some(pending) = pending {
+                            (pending.complete)(Err(error.clone()));
+                        }
+                        if let Some(complete) = lock(&completion).take() {
+                            complete(Err(error));
+                        }
+                        return;
+                    }
+                };
+                if let LauncherPacket::Response(response) = packet.packet {
+                    let pending = lock(&state).controller_loss_pending.take();
+                    if let Some(pending) = pending {
+                        let result = match response.result {
+                            ResponseResult::ControllerLossAcknowledgement { acknowledgement }
+                                if response.request_id == pending.request.request_id =>
+                            {
+                                acknowledgement
+                                    .validate_for(&pending.request)
+                                    .map(|()| acknowledgement)
+                                    .map_err(|_| SupervisorError::DurabilityUnavailable)
+                            }
+                            _ => Err(SupervisorError::DurabilityUnavailable),
+                        };
+                        (pending.complete)(result);
+                        if let Err(error) = Self::arm_session_receive(
+                            Arc::clone(&state),
+                            next_channel,
+                            Arc::clone(&completion),
+                        ) && let Some(complete) = lock(&completion).take()
+                        {
+                            complete(Err(error));
+                        }
+                        return;
+                    }
+                    if let Some(complete) = lock(&completion).take() {
+                        complete(Err(SupervisorError::BrokerUnavailable));
+                    }
+                    return;
+                }
+                let result = match packet.packet {
+                    LauncherPacket::Request(message) => Ok(message),
+                    LauncherPacket::Response(_) => unreachable!("response handled above"),
+                    LauncherPacket::SignedReceipt(_) => Err(SupervisorError::BrokerUnavailable),
+                };
+                if let Some(complete) = lock(&completion).take() {
+                    complete(result);
+                }
+            }))
+            .map_err(map_transport)
+    }
+
+    fn finish_reconnect(
+        state: &Arc<Mutex<SeqpacketLaunchBrokerState>>,
+        generation: u64,
+        result: Result<BrokerReconnect, SupervisorError>,
+    ) {
+        let mut replaced = None;
+        let mut rejected = None;
+        let (complete, result) = {
+            let mut state = lock(state);
+            if !state
+                .reconnect
+                .as_ref()
+                .is_some_and(|pending| pending.generation == generation)
+            {
+                return;
+            }
+            let pending = state.reconnect.take().expect("generation was checked");
+            let candidate = pending.candidate;
+            match (result, candidate) {
+                (Ok(response), Some(candidate)) if state.connector.is_some() => {
+                    replaced = Some(std::mem::replace(&mut state.channel, candidate));
+                    (pending.complete, Ok(response))
+                }
+                (Ok(_), candidate) => {
+                    rejected = candidate;
+                    (pending.complete, Err(SupervisorError::BrokerUnavailable))
+                }
+                (Err(error), candidate) => {
+                    rejected = candidate;
+                    (pending.complete, Err(error))
+                }
+            }
+        };
+        if let Some(channel) = replaced {
+            channel.close();
+        }
+        if let Some(channel) = rejected {
+            channel.close();
+        }
+        complete(result);
+    }
 }
 
 impl LaunchBroker for SeqpacketLaunchBroker {
@@ -146,6 +324,9 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                 LauncherPacket::Response(response) if response.request_id == request_id => {
                     match response.result {
                         ResponseResult::LaunchAuthorization { authorization } => Ok(authorization),
+                        ResponseResult::IdentityExhaustion { exhaustion } => Err(
+                            SupervisorError::SessionIdentityExhausted(Box::new(exhaustion)),
+                        ),
                         ResponseResult::Error { .. } => Err(SupervisorError::AuthorizationRejected),
                         _ => Err(SupervisorError::AuthorizationRejected),
                     }
@@ -173,8 +354,225 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         )
     }
 
+    fn reconnect_session(
+        &self,
+        reconnect: BrokerReconnect,
+        complete: SupervisorCompletion<BrokerReconnect>,
+    ) -> Result<(), SupervisorError> {
+        reconnect
+            .validate()
+            .map_err(|_| SupervisorError::BrokerUnavailable)?;
+        let reconnect_bytes = reconnect.canonical_bytes();
+        let callback_state = Arc::clone(&self.state);
+        let (generation, queued) = {
+            let mut state = lock(&self.state);
+            if state.reconnect.is_some() {
+                return Err(SupervisorError::BrokerUnavailable);
+            }
+            if state.connector.is_none() {
+                return Err(SupervisorError::BrokerUnavailable);
+            }
+            let generation = state
+                .reconnect_generation
+                .checked_add(1)
+                .ok_or(SupervisorError::BrokerUnavailable)?;
+            let socket_path = state.socket_path.clone();
+            let broker_pin = state.broker_pin;
+            state.reconnect_generation = generation;
+            state.reconnect = Some(PendingBrokerReconnect {
+                generation,
+                candidate: None,
+                complete,
+            });
+            let connector = state
+                .connector
+                .as_ref()
+                .expect("an open broker retains its connector");
+            let queued = connector.connect(
+                &socket_path,
+                broker_pin,
+                Box::new(move |connected| {
+                    let candidate = match connected {
+                        Ok(candidate) => candidate,
+                        Err(_) => {
+                            Self::finish_reconnect(
+                                &callback_state,
+                                generation,
+                                Err(SupervisorError::BrokerUnavailable),
+                            );
+                            return;
+                        }
+                    };
+                    {
+                        let mut state = lock(&callback_state);
+                        let current = state.connector.is_some()
+                            && state
+                                .reconnect
+                                .as_ref()
+                                .is_some_and(|pending| pending.generation == generation);
+                        if !current {
+                            drop(state);
+                            candidate.close();
+                            return;
+                        }
+                        state
+                            .reconnect
+                            .as_mut()
+                            .expect("generation was checked")
+                            .candidate = Some(candidate.clone());
+                    }
+                    let request_id = reconnect.request_id.clone();
+                    let response_state = Arc::clone(&callback_state);
+                    let enqueue_state = Arc::clone(&callback_state);
+                    let queued = Self::transact_on(
+                        candidate,
+                        reconnect_bytes,
+                        move |packet| match packet.packet {
+                            LauncherPacket::Response(response)
+                                if response.request_id == request_id =>
+                            {
+                                match response.result {
+                                    ResponseResult::BrokerReconnect { reconnect } => Ok(reconnect),
+                                    _ => Err(SupervisorError::BrokerUnavailable),
+                                }
+                            }
+                            _ => Err(SupervisorError::BrokerUnavailable),
+                        },
+                        Box::new(move |result| {
+                            Self::finish_reconnect(&response_state, generation, result);
+                        }),
+                    );
+                    if let Err(error) = queued {
+                        Self::finish_reconnect(&enqueue_state, generation, Err(error));
+                    }
+                }),
+            );
+            (generation, queued)
+        };
+        if let Err(error) = queued {
+            let mut state = lock(&self.state);
+            if state
+                .reconnect
+                .as_ref()
+                .is_some_and(|pending| pending.generation == generation)
+            {
+                state.reconnect.take();
+            }
+            return Err(map_transport(error));
+        }
+        Ok(())
+    }
+
+    fn cancel_reconnect(&self) {
+        let pending = lock(&self.state).reconnect.take();
+        if let Some(pending) = pending {
+            if let Some(candidate) = pending.candidate {
+                candidate.close();
+            }
+            (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+        }
+    }
+
+    fn settle_controller_loss(
+        &self,
+        settlement: ControllerLossSettlement,
+        complete: SupervisorCompletion<ControllerLossAcknowledgement>,
+    ) -> Result<(), SupervisorError> {
+        settlement
+            .validate()
+            .map_err(|_| SupervisorError::BrokerUnavailable)?;
+        let bytes = settlement.canonical_bytes();
+        let channel = {
+            let mut state = lock(&self.state);
+            if state.connector.is_none() || state.controller_loss_pending.is_some() {
+                return Err(SupervisorError::BrokerUnavailable);
+            }
+            state.controller_loss_pending = Some(PendingControllerLossSettlement {
+                request: settlement,
+                complete,
+            });
+            state.channel.clone()
+        };
+        let callback_state = Arc::clone(&self.state);
+        let queued = channel.send(
+            bytes,
+            Box::new(move |result| {
+                if result.is_err() {
+                    let pending = lock(&callback_state).controller_loss_pending.take();
+                    if let Some(pending) = pending {
+                        (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+                    }
+                }
+            }),
+        );
+        if let Err(error) = queued {
+            lock(&self.state).controller_loss_pending.take();
+            return Err(map_transport(error));
+        }
+        Ok(())
+    }
+
+    fn receive_session_request(
+        &self,
+        complete: SupervisorCompletion<ProtocolMessage>,
+    ) -> Result<(), SupervisorError> {
+        Self::arm_session_receive(
+            Arc::clone(&self.state),
+            self.current_channel()?,
+            Arc::new(Mutex::new(Some(complete))),
+        )
+    }
+
+    fn send_session_receipt(
+        &self,
+        receipt_bytes: Vec<u8>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.current_channel()?
+            .send(
+                receipt_bytes,
+                Box::new(move |result| complete(result.map_err(map_transport))),
+            )
+            .map_err(map_transport)
+    }
+
+    fn send_session_response(
+        &self,
+        response: ProtocolResponse,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        response
+            .validate()
+            .map_err(|_| SupervisorError::BrokerUnavailable)?;
+        self.current_channel()?
+            .send(
+                response.canonical_bytes(),
+                Box::new(move |result| complete(result.map_err(map_transport))),
+            )
+            .map_err(map_transport)
+    }
+
     fn close(&self) {
-        self.channel.close();
+        let (connector, channel, reconnect, controller_loss_pending) = {
+            let mut state = lock(&self.state);
+            (
+                state.connector.take(),
+                state.channel.clone(),
+                state.reconnect.take(),
+                state.controller_loss_pending.take(),
+            )
+        };
+        channel.close();
+        if let Some(pending) = reconnect {
+            if let Some(candidate) = pending.candidate {
+                candidate.close();
+            }
+            (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+        }
+        drop(connector);
+        if let Some(pending) = controller_loss_pending {
+            (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+        }
     }
 }
 
@@ -290,17 +688,24 @@ impl LaunchPlatform for SystemLaunchPlatform {
             .config
             .pool
             .identity(assigned.slot)
-            .map_err(|_| SupervisorError::IdentityUnavailable)?;
+            .map_err(|_| SupervisorError::IdentityAssignmentInvalid)?;
         if expected != assigned {
-            return Err(SupervisorError::IdentityUnavailable);
+            return Err(SupervisorError::IdentityAssignmentInvalid);
         }
         let deadline = Instant::now()
             .checked_add(self.timeout)
             .unwrap_or_else(Instant::now);
-        let lease = acquire_identity_with_deadline(&self.paths, assigned.slot, deadline)
-            .map_err(|_| SupervisorError::IdentityUnavailable)?;
+        let lease = acquire_identity_with_deadline(&self.paths, assigned.slot, deadline).map_err(
+            |error| match error {
+                LauncherError::Occupied { .. } | LauncherError::Poisoned { .. } => {
+                    SupervisorError::IdentityAssignmentInvalid
+                }
+                _ => SupervisorError::IdentityUnavailable,
+            },
+        )?;
         if lease.identity() != assigned {
-            return Err(SupervisorError::IdentityUnavailable);
+            let _ = lease.poison();
+            return Err(SupervisorError::IdentityAssignmentInvalid);
         }
         Ok(Box::new(SystemIdentityGuard { lease: Some(lease) }))
     }
@@ -400,7 +805,12 @@ impl PreparedAgent for SystemPreparedAgent {
             .take()
             .expect("a prepared adapter owns its Session")
             .start()
-            .map(|session| Box::new(SystemRunningAgent { session }) as Box<dyn RunningAgent>)
+            .map(|session| {
+                Box::new(SystemRunningAgent {
+                    session: Arc::new(Mutex::new(session)),
+                    relay_events: None,
+                }) as Box<dyn RunningAgent>
+            })
             .map_err(map_sandbox)
     }
 
@@ -429,69 +839,219 @@ impl ProcessMembership for SystemProcessMembership {
 }
 
 struct SystemRunningAgent {
-    session: SandboxedSession,
+    session: Arc<Mutex<SandboxedSession>>,
+    relay_events: Option<Arc<RelayEventGate>>,
+}
+
+struct RelayEventGate {
+    active: AtomicBool,
+    events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+}
+
+fn classify_exit(code: i32) -> ProcessExitClassification {
+    match code {
+        0 => ProcessExitClassification::Success,
+        value if value < 0 => ProcessExitClassification::Signaled,
+        _ => ProcessExitClassification::Failure,
+    }
+}
+
+fn classify_mechanic_failure(
+    target: Option<SandboxMechanicalState>,
+    observed: Result<SandboxMechanicalState, SandboxError>,
+) -> Result<(), MechanicFailure> {
+    match observed {
+        Ok(state) if Some(state) == target => Ok(()),
+        Ok(SandboxMechanicalState::Running) => Err(MechanicFailure::Running),
+        Ok(SandboxMechanicalState::Parked) => Err(MechanicFailure::Parked),
+        Ok(SandboxMechanicalState::Exited(code)) => {
+            Err(MechanicFailure::Terminal(classify_exit(code)))
+        }
+        Err(_) => Err(MechanicFailure::Ambiguous),
+    }
+}
+
+fn apply_mechanic<T>(
+    session: &Arc<Mutex<SandboxedSession>>,
+    target: Option<SandboxMechanicalState>,
+    apply: impl FnOnce(&mut SandboxedSession) -> Result<T, SandboxError>,
+) -> Result<(), MechanicFailure> {
+    let mut session = lock(session);
+    match apply(&mut session) {
+        Ok(_) => Ok(()),
+        Err(_) => classify_mechanic_failure(target, session.mechanical_state()),
+    }
+}
+
+impl RelayEventGate {
+    fn new(events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>) -> Self {
+        Self {
+            active: AtomicBool::new(true),
+            events,
+        }
+    }
+
+    fn emit(&self, event: RunningAgentEvent) {
+        if self.active.load(Ordering::Acquire) {
+            (self.events)(event);
+        }
+    }
+
+    fn quiesce(&self) {
+        self.active.store(false, Ordering::Release);
+    }
 }
 
 impl RunningAgent for SystemRunningAgent {
-    fn relay(
+    fn start_relay(
         &mut self,
-        mut input: Box<dyn Read + Send>,
-        mut output: Box<dyn Write + Send>,
-    ) -> Result<i32, SupervisorError> {
-        let mut agent_input = self
-            .session
-            .take_stdin()
-            .ok_or(SupervisorError::RelayFailed)?;
-        let mut agent_output = self
-            .session
-            .take_stdout()
-            .ok_or(SupervisorError::RelayFailed)?;
-        let mut agent_error = self
-            .session
-            .take_stderr()
-            .ok_or(SupervisorError::RelayFailed)?;
-        let (input_sender, input_receiver) = mpsc::sync_channel(1);
-        let input_worker = thread::Builder::new()
-            .name("louiselm-launch-acp-input".to_owned())
-            .spawn(move || {
-                let result = io::copy(&mut input, &mut agent_input).map(|_| ());
-                let _ = input_sender.try_send(result);
-            })
-            .map_err(|_| SupervisorError::RelayFailed)?;
-        let error_worker = thread::Builder::new()
-            .name("louiselm-launch-agent-stderr".to_owned())
-            .spawn(move || io::copy(&mut agent_error, &mut io::sink()).map(|_| ()))
-            .map_err(|_| SupervisorError::RelayFailed)?;
-        let (output_sender, output_receiver) = mpsc::sync_channel(1);
-        let output_worker = thread::Builder::new()
-            .name("louiselm-launch-acp-output".to_owned())
-            .spawn(move || {
-                let result = io::copy(&mut agent_output, &mut output)
-                    .and_then(|_| output.flush())
-                    .map(|_| ());
-                let _ = output_sender.try_send(result);
-            })
-            .map_err(|_| SupervisorError::RelayFailed)?;
+        input: Box<dyn Read + Send>,
+        output: Box<dyn Write + Send>,
+        events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+    ) -> Result<(), SupervisorError> {
+        if self.relay_events.is_some() {
+            return Err(SupervisorError::RelayFailed);
+        }
+        let (agent_input, agent_output, agent_error) = {
+            let mut session = lock(&self.session);
+            (
+                session.take_stdin().ok_or(SupervisorError::RelayFailed)?,
+                session.take_stdout().ok_or(SupervisorError::RelayFailed)?,
+                session.take_stderr().ok_or(SupervisorError::RelayFailed)?,
+            )
+        };
+        let events = Arc::new(RelayEventGate::new(events));
+        self.relay_events = Some(Arc::clone(&events));
+        start_relay_workers(
+            Arc::clone(&self.session),
+            input,
+            output,
+            agent_input,
+            agent_output,
+            agent_error,
+            events,
+        )
+    }
 
-        let exit = await_relay_completion(
-            &input_receiver,
-            &output_receiver,
-            RELAY_POLL_INTERVAL,
-            RELAY_EXIT_GRACE,
-            || self.session.try_wait().map_err(map_sandbox),
-        )?;
-        // Controller stdin may remain open after the Agent exits. Neither
-        // worker owns supervisor authority, so cleanup must not wait on an
-        // uncancellable external reader or a descendant-held stderr pipe.
-        drop(input_worker);
-        drop(error_worker);
-        drop(output_worker);
-        Ok(exit)
+    fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
+        if let Some(events) = self.relay_events.take() {
+            events.quiesce();
+        }
+        thread::Builder::new()
+            .name("louiselm-launch-relay-quiescence".to_owned())
+            .spawn(move || complete(Ok(())))
+            .map(drop)
+            .map_err(|_| SupervisorError::RelayFailed)
+    }
+
+    fn park(&mut self) -> Result<(), MechanicFailure> {
+        apply_mechanic(
+            &self.session,
+            Some(SandboxMechanicalState::Parked),
+            SandboxedSession::park,
+        )
+    }
+
+    fn resume(&mut self) -> Result<(), MechanicFailure> {
+        apply_mechanic(
+            &self.session,
+            Some(SandboxMechanicalState::Running),
+            SandboxedSession::resume,
+        )
+    }
+
+    fn interrupt(&mut self) -> Result<(), MechanicFailure> {
+        apply_mechanic(&self.session, None, SandboxedSession::interrupt)
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
-        self.session.dispose().map(|_| ()).map_err(map_sandbox)
+        lock(&self.session)
+            .dispose()
+            .map(|_| ())
+            .map_err(map_sandbox)
     }
+}
+
+fn start_relay_workers(
+    session: Arc<Mutex<SandboxedSession>>,
+    mut input: Box<dyn Read + Send>,
+    mut output: Box<dyn Write + Send>,
+    mut agent_input: std::process::ChildStdin,
+    mut agent_output: std::process::ChildStdout,
+    mut agent_error: std::process::ChildStderr,
+    events: Arc<RelayEventGate>,
+) -> Result<(), SupervisorError> {
+    let input_events = Arc::clone(&events);
+    thread::Builder::new()
+        .name("louiselm-launch-acp-input".to_owned())
+        .spawn(move || {
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                match input.read(&mut buffer) {
+                    Ok(0) => {
+                        input_events.emit(RunningAgentEvent::ControllerEof);
+                        break;
+                    }
+                    Ok(read) if agent_input.write_all(&buffer[..read]).is_ok() => {}
+                    Ok(_) => {
+                        input_events.emit(RunningAgentEvent::RelayFailed);
+                        break;
+                    }
+                    Err(_) => {
+                        input_events.emit(RunningAgentEvent::RelayFailed);
+                        break;
+                    }
+                }
+            }
+        })
+        .map(drop)
+        .map_err(|_| SupervisorError::RelayFailed)?;
+
+    let error_events = Arc::clone(&events);
+    thread::Builder::new()
+        .name("louiselm-launch-agent-stderr".to_owned())
+        .spawn(move || {
+            if io::copy(&mut agent_error, &mut io::sink()).is_err() {
+                error_events.emit(RunningAgentEvent::RelayFailed);
+            }
+        })
+        .map(drop)
+        .map_err(|_| SupervisorError::RelayFailed)?;
+
+    let output_events = Arc::clone(&events);
+    thread::Builder::new()
+        .name("louiselm-launch-acp-output".to_owned())
+        .spawn(move || {
+            if io::copy(&mut agent_output, &mut output)
+                .and_then(|_| output.flush())
+                .is_err()
+            {
+                output_events.emit(RunningAgentEvent::RelayFailed);
+            }
+        })
+        .map(drop)
+        .map_err(|_| SupervisorError::RelayFailed)?;
+
+    thread::Builder::new()
+        .name("louiselm-launch-process-exit".to_owned())
+        .spawn(move || {
+            loop {
+                match lock(&session).try_wait().map_err(map_sandbox) {
+                    Ok(Some(code)) => {
+                        let classification = classify_exit(code);
+                        events.emit(RunningAgentEvent::ProcessExited(classification));
+                        break;
+                    }
+                    Ok(None) => thread::sleep(PROCESS_EXIT_POLL_INTERVAL),
+                    Err(_) => {
+                        events.emit(RunningAgentEvent::RelayFailed);
+                        break;
+                    }
+                }
+            }
+        })
+        .map(drop)
+        .map_err(|_| SupervisorError::RelayFailed)
 }
 
 fn map_sandbox(error: SandboxError) -> SupervisorError {
@@ -503,6 +1063,7 @@ fn map_sandbox(error: SandboxError) -> SupervisorError {
     }
 }
 
+#[cfg(test)]
 fn await_relay_completion(
     input: &mpsc::Receiver<io::Result<()>>,
     output: &mpsc::Receiver<io::Result<()>>,
@@ -564,6 +1125,7 @@ fn await_relay_completion(
 enum ListenerState {
     Bound(BoundSeqpacketListener),
     Enabled(SeqpacketListener),
+    Revoked(SeqpacketListener),
 }
 
 struct SystemCapabilityGate {
@@ -583,6 +1145,7 @@ struct SystemCapabilityGate {
 #[derive(Default)]
 struct AcceptedCapability {
     closed: bool,
+    generation: u64,
     channel: Option<SeqpacketChannel>,
 }
 
@@ -590,6 +1153,7 @@ fn accept_capability(
     result: Result<SeqpacketChannel, TransportError>,
     accepted: Arc<Mutex<AcceptedCapability>>,
     membership: Arc<dyn ProcessMembership>,
+    generation: u64,
 ) {
     let Ok(channel) = result else {
         return;
@@ -599,7 +1163,7 @@ fn accept_capability(
         return;
     }
     let mut accepted = lock(&accepted);
-    if accepted.closed {
+    if accepted.closed || accepted.generation != generation {
         channel.close();
     } else {
         accepted.channel = Some(channel);
@@ -664,6 +1228,20 @@ impl SystemCapabilityGate {
             let _ = fs::remove_file(&self.path);
         }
     }
+
+    fn set_owned_mode(&self, mode: u32) -> Result<(), SupervisorError> {
+        let metadata =
+            fs::symlink_metadata(&self.path).map_err(|_| SupervisorError::CapabilityUnavailable)?;
+        if !metadata.file_type().is_socket()
+            || metadata.file_type().is_symlink()
+            || metadata.dev() != self.device
+            || metadata.ino() != self.inode
+        {
+            return Err(SupervisorError::CapabilityUnavailable);
+        }
+        fs::set_permissions(&self.path, fs::Permissions::from_mode(mode))
+            .map_err(|_| SupervisorError::CapabilityUnavailable)
+    }
 }
 
 impl CapabilityGate for SystemCapabilityGate {
@@ -698,12 +1276,42 @@ impl CapabilityGate for SystemCapabilityGate {
         if self.binding.is_none() {
             return Err(SupervisorError::CapabilityUnavailable);
         }
-        let Some(ListenerState::Bound(bound)) = self.state.take() else {
-            return Err(SupervisorError::CapabilityUnavailable);
+        let (listener, was_revoked) = match self.state.take() {
+            Some(ListenerState::Bound(bound)) => (
+                bound
+                    .enable()
+                    .map_err(|_| SupervisorError::CapabilityUnavailable)?,
+                false,
+            ),
+            Some(ListenerState::Revoked(listener)) => {
+                if let Err(error) = self.set_owned_mode(0o600) {
+                    self.state = Some(ListenerState::Revoked(listener));
+                    return Err(error);
+                }
+                (listener, true)
+            }
+            Some(ListenerState::Enabled(listener)) => {
+                self.state = Some(ListenerState::Enabled(listener));
+                return Ok(());
+            }
+            None => return Err(SupervisorError::CapabilityUnavailable),
         };
-        let listener = bound
-            .enable()
-            .map_err(|_| SupervisorError::CapabilityUnavailable)?;
+        let generation = {
+            let mut accepted = lock(&self.accepted);
+            let Some(generation) = accepted.generation.checked_add(1) else {
+                accepted.closed = true;
+                if was_revoked {
+                    let _ = self.set_owned_mode(0o000);
+                    self.state = Some(ListenerState::Revoked(listener));
+                } else {
+                    listener.close();
+                }
+                return Err(SupervisorError::CapabilityUnavailable);
+            };
+            accepted.generation = generation;
+            accepted.closed = false;
+            generation
+        };
         let accepted = Arc::clone(&self.accepted);
         let membership = Arc::clone(
             self.membership
@@ -716,20 +1324,56 @@ impl CapabilityGate for SystemCapabilityGate {
                     uid: self.expected_identity.uid,
                     gid: self.expected_identity.gid,
                 },
-                Box::new(move |result| accept_capability(result, accepted, membership)),
+                Box::new(move |result| accept_capability(result, accepted, membership, generation)),
             )
             .is_err()
         {
-            listener.close();
+            lock(&self.accepted).closed = true;
+            if was_revoked {
+                let _ = self.set_owned_mode(0o000);
+                self.state = Some(ListenerState::Revoked(listener));
+            } else {
+                listener.close();
+            }
             return Err(SupervisorError::CapabilityUnavailable);
         }
         self.state = Some(ListenerState::Enabled(listener));
         Ok(())
     }
 
+    fn revoke(&mut self) -> Result<(), SupervisorError> {
+        let channel = {
+            let mut accepted = lock(&self.accepted);
+            accepted.closed = true;
+            accepted.channel.take()
+        };
+        if let Some(channel) = channel {
+            channel.close();
+        }
+        match self.state.take() {
+            Some(ListenerState::Enabled(listener)) => {
+                let result = self.set_owned_mode(0o000);
+                self.state = Some(ListenerState::Revoked(listener));
+                result
+            }
+            Some(ListenerState::Revoked(listener)) => {
+                self.state = Some(ListenerState::Revoked(listener));
+                Ok(())
+            }
+            Some(ListenerState::Bound(bound)) => {
+                self.state = Some(ListenerState::Bound(bound));
+                Ok(())
+            }
+            None => Err(SupervisorError::CapabilityUnavailable),
+        }
+    }
+
     fn close(&mut self) {
-        if let Some(ListenerState::Enabled(listener)) = self.state.take() {
-            listener.close();
+        match self.state.take() {
+            Some(ListenerState::Enabled(listener) | ListenerState::Revoked(listener)) => {
+                listener.close();
+            }
+            Some(ListenerState::Bound(_)) | None => {}
         }
         self.state = None;
         let channel = {
@@ -834,7 +1478,72 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::launch_protocol::{
+        BROKER_RECONNECT_SCHEMA, CONTROLLER_LOSS_ACK_SCHEMA, CONTROLLER_LOSS_SETTLEMENT_SCHEMA,
+        ControllerLossDisposition, ErrorCode, PROTOCOL_VERSION, ProtocolError, RESPONSE_SCHEMA,
+        STATUS_REQUEST_SCHEMA, StatusRequest,
+    };
+    use crate::launch_receipt::ReceiptHead;
+
     use super::*;
+
+    #[test]
+    fn mechanic_failure_normalizes_a_proven_park_or_resume_target() {
+        assert_eq!(
+            classify_mechanic_failure(
+                Some(SandboxMechanicalState::Parked),
+                Ok(SandboxMechanicalState::Parked),
+            ),
+            Ok(()),
+        );
+        assert_eq!(
+            classify_mechanic_failure(
+                Some(SandboxMechanicalState::Running),
+                Ok(SandboxMechanicalState::Running),
+            ),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn mechanic_failure_preserves_known_terminal_and_ambiguous_state() {
+        assert_eq!(
+            classify_mechanic_failure(
+                Some(SandboxMechanicalState::Parked),
+                Ok(SandboxMechanicalState::Running),
+            ),
+            Err(MechanicFailure::Running),
+        );
+        assert_eq!(
+            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Parked)),
+            Err(MechanicFailure::Parked),
+        );
+        assert_eq!(
+            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Exited(-1))),
+            Err(MechanicFailure::Terminal(
+                ProcessExitClassification::Signaled,
+            )),
+        );
+        assert_eq!(
+            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Exited(0))),
+            Err(MechanicFailure::Terminal(
+                ProcessExitClassification::Success,
+            )),
+        );
+        assert_eq!(
+            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Exited(7))),
+            Err(MechanicFailure::Terminal(
+                ProcessExitClassification::Failure,
+            )),
+        );
+        assert_eq!(
+            classify_mechanic_failure(
+                Some(SandboxMechanicalState::Running),
+                Err(SandboxError::NoCgroup("unavailable".to_owned())),
+            ),
+            Err(MechanicFailure::Ambiguous),
+        );
+    }
 
     struct FixedMembership(bool);
 
@@ -902,6 +1611,165 @@ mod tests {
         (server, client)
     }
 
+    fn broker_fixture() -> (
+        TempDir,
+        SeqpacketListener,
+        SeqpacketLaunchBroker,
+        SeqpacketChannel,
+        CredentialPin,
+    ) {
+        let directory = TempDir::new().expect("socket fixture opens");
+        let path = directory.path().join("broker.sock");
+        let listener = SeqpacketListener::bind(&path).expect("listener binds");
+        let connector = SeqpacketConnector::new().expect("connector starts");
+        let pin = CredentialPin::Identity {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        };
+        let accepted = accept_channel(&listener, pin);
+        let (connected, connection) = mpsc::sync_channel(1);
+        connector
+            .connect(
+                &path,
+                pin,
+                Box::new(move |result| {
+                    connected.send(result).expect("connect result received");
+                }),
+            )
+            .expect("connect queues");
+        let client = connection
+            .recv_timeout(Duration::from_secs(2))
+            .expect("connect completes")
+            .expect("client authenticates");
+        let server = accepted
+            .recv_timeout(Duration::from_secs(2))
+            .expect("accept completes")
+            .expect("server authenticates");
+        let broker = SeqpacketLaunchBroker::new(connector, path, pin, client);
+        (directory, listener, broker, server, pin)
+    }
+
+    fn accept_channel(
+        listener: &SeqpacketListener,
+        pin: CredentialPin,
+    ) -> mpsc::Receiver<Result<SeqpacketChannel, TransportError>> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        listener
+            .accept(
+                pin,
+                Box::new(move |result| {
+                    sender.send(result).expect("accept result received");
+                }),
+            )
+            .expect("accept queues");
+        receiver
+    }
+
+    fn receive_packet(channel: &SeqpacketChannel) -> AuthenticatedPacket {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        channel
+            .receive(Box::new(move |result| {
+                sender.send(result).expect("receive result received");
+            }))
+            .expect("receive queues");
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive completes")
+            .expect("packet authenticates")
+    }
+
+    fn send_packet(channel: &SeqpacketChannel, bytes: Vec<u8>) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        channel
+            .send(
+                bytes,
+                Box::new(move |result| {
+                    sender.send(result).expect("send result received");
+                }),
+            )
+            .expect("send queues");
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("send completes")
+            .expect("packet sends");
+    }
+
+    fn reconnect_request() -> BrokerReconnect {
+        BrokerReconnect {
+            schema: BROKER_RECONNECT_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "reconnect-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            envelope_revision: 7,
+            sequence: 3,
+            receipt_digest: Digest::of(b"launcher-head").to_string(),
+        }
+    }
+
+    fn status_request(request_id: &str) -> StatusRequest {
+        StatusRequest {
+            schema: STATUS_REQUEST_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request_id.to_owned(),
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+        }
+    }
+
+    fn controller_loss_settlement() -> ControllerLossSettlement {
+        ControllerLossSettlement {
+            schema: CONTROLLER_LOSS_SETTLEMENT_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "controller-loss-settlement-1".to_owned(),
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            envelope_revision: 7,
+            parked_head: ReceiptHead {
+                sequence: 4,
+                digest: Digest::of(b"parked-head").to_string(),
+            },
+        }
+    }
+
+    fn arm_broker_receive(
+        broker: &SeqpacketLaunchBroker,
+    ) -> mpsc::Receiver<Result<ProtocolMessage, SupervisorError>> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        broker
+            .receive_session_request(Box::new(move |result| {
+                sender.send(result).expect("broker result received");
+            }))
+            .expect("broker receive queues");
+        receiver
+    }
+
+    fn start_reconnect(
+        broker: &SeqpacketLaunchBroker,
+        listener: &SeqpacketListener,
+        pin: CredentialPin,
+        reconnect: BrokerReconnect,
+    ) -> (
+        SeqpacketChannel,
+        mpsc::Receiver<Result<BrokerReconnect, SupervisorError>>,
+    ) {
+        let accepted = accept_channel(listener, pin);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        broker
+            .reconnect_session(
+                reconnect,
+                Box::new(move |result| {
+                    sender.send(result).expect("reconnect result received");
+                }),
+            )
+            .expect("reconnect queues");
+        let candidate = accepted
+            .recv_timeout(Duration::from_secs(2))
+            .expect("candidate accept completes")
+            .expect("candidate authenticates");
+        (candidate, receiver)
+    }
+
     fn assert_disconnected(channel: SeqpacketChannel) {
         let (sender, receiver) = mpsc::sync_channel(1);
         let queued = channel.receive(Box::new(move |result| {
@@ -921,6 +1789,110 @@ mod tests {
         ));
     }
 
+    fn connect_channel(path: &Path, pin: CredentialPin) -> SeqpacketChannel {
+        let connector = SeqpacketConnector::new().expect("connector starts");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        connector
+            .connect(
+                path,
+                pin,
+                Box::new(move |result| sender.send(result).expect("connect result received")),
+            )
+            .expect("connect queues");
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("connect completes")
+            .expect("client authenticates")
+    }
+
+    fn wait_for_accepted(gate: &SystemCapabilityGate) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lock(&gate.accepted).channel.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "capability connection was never accepted"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn capability_revoke_disconnects_and_preserves_a_reenableable_rendezvous() {
+        let directory = TempDir::new().expect("socket fixture opens");
+        let path = directory.path().join("capability.sock");
+        let bound = SeqpacketListener::bind_disabled(&path).expect("listener binds disabled");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("capability mode is fixed");
+        let metadata = fs::symlink_metadata(&path).expect("capability metadata reads");
+        let identity = Identity {
+            slot: 3,
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        };
+        let pin = CredentialPin::Identity {
+            uid: identity.uid,
+            gid: identity.gid,
+        };
+        let mut gate = SystemCapabilityGate {
+            state: Some(ListenerState::Bound(bound)),
+            path: path.clone(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            channel: Channel::UnixSocket {
+                id: "agent-capability".to_owned(),
+                host_path: path.clone(),
+                guest_path: PathBuf::from(SYSTEM_CAPABILITY_GUEST_PATH),
+            },
+            binding: None,
+            membership: None,
+            expected_session_id: "session-1".to_owned(),
+            expected_envelope_revision: 7,
+            expected_identity: identity,
+            accepted: Arc::new(Mutex::new(AcceptedCapability::default())),
+        };
+        gate.bind(
+            CapabilityBinding {
+                session_id: "session-1".to_owned(),
+                channel_id: "agent-capability".to_owned(),
+                envelope_revision: 7,
+                identity_slot: identity.slot,
+                assigned_uid: identity.uid,
+                assigned_gid: identity.gid,
+                sandbox_leader_pid: 42,
+            },
+            Arc::new(FixedMembership(true)),
+        )
+        .expect("capability binding is valid");
+
+        gate.enable().expect("capability enables");
+        let first = connect_channel(&path, pin);
+        wait_for_accepted(&gate);
+        gate.revoke().expect("capability revokes");
+        assert_eq!(
+            fs::symlink_metadata(&path)
+                .expect("revoked path remains")
+                .mode()
+                & 0o777,
+            0,
+        );
+        assert!(matches!(gate.state, Some(ListenerState::Revoked(_))));
+        assert_disconnected(first);
+
+        gate.enable().expect("revoked capability re-enables");
+        assert_eq!(
+            fs::symlink_metadata(&path)
+                .expect("re-enabled path remains")
+                .mode()
+                & 0o777,
+            0o600,
+        );
+        let second = connect_channel(&path, pin);
+        wait_for_accepted(&gate);
+        gate.close();
+        assert_disconnected(second);
+        assert!(!path.exists());
+    }
+
     #[test]
     fn capability_accept_rejects_a_peer_outside_the_session_process_tree() {
         let (server, client) = channel_pair();
@@ -930,6 +1902,7 @@ mod tests {
             Ok(server),
             Arc::clone(&accepted),
             Arc::new(FixedMembership(false)),
+            0,
         );
 
         assert!(lock(&accepted).channel.is_none());
@@ -948,7 +1921,7 @@ mod tests {
         });
         let worker_accepted = Arc::clone(&accepted);
         let worker = thread::spawn(move || {
-            accept_capability(Ok(server), worker_accepted, membership);
+            accept_capability(Ok(server), worker_accepted, membership, 0);
         });
         entered_receiver
             .recv_timeout(Duration::from_secs(2))
@@ -959,6 +1932,334 @@ mod tests {
 
         assert!(lock(&accepted).channel.is_none());
         assert_disconnected(client);
+    }
+
+    #[test]
+    fn capability_reenable_rejects_an_accept_from_the_revoked_generation() {
+        let (server, client) = channel_pair();
+        let accepted = Arc::new(Mutex::new(AcceptedCapability::default()));
+        let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let membership = Arc::new(BlockingMembership {
+            entered: entered_sender,
+            release: Mutex::new(release_receiver),
+        });
+        lock(&accepted).generation = 1;
+        let worker_accepted = Arc::clone(&accepted);
+        let worker = thread::spawn(move || {
+            accept_capability(Ok(server), worker_accepted, membership, 1);
+        });
+        entered_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("membership check starts");
+        {
+            let mut state = lock(&accepted);
+            state.closed = true;
+            state.generation = 2;
+            state.closed = false;
+        }
+        release_sender.send(()).expect("membership check releases");
+        worker.join().expect("accept callback finishes");
+
+        assert!(
+            lock(&accepted).channel.is_none(),
+            "re-enable cannot revive an accept authorized before revoke"
+        );
+        assert_disconnected(client);
+    }
+
+    #[test]
+    fn broker_reconnect_swaps_only_after_a_correlated_head_response() {
+        let (_directory, listener, broker, old_server, pin) = broker_fixture();
+        let request = reconnect_request();
+        let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+
+        let offered = receive_packet(&candidate);
+        assert_eq!(offered.bytes, request.canonical_bytes());
+        assert_eq!(
+            offered.packet,
+            LauncherPacket::Request(ProtocolMessage::BrokerReconnect(request.clone()))
+        );
+
+        let old_receive = arm_broker_receive(&broker);
+        let before_swap = status_request("before-swap");
+        send_packet(&old_server, before_swap.canonical_bytes());
+        assert_eq!(
+            old_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("old channel receive completes")
+                .expect("old channel remains active until validation"),
+            ProtocolMessage::Status(before_swap),
+        );
+
+        let mut broker_head = request.clone();
+        broker_head.sequence = 1;
+        broker_head.receipt_digest = Digest::of(b"broker-head").to_string();
+        let response = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            result: ResponseResult::BrokerReconnect {
+                reconnect: broker_head.clone(),
+            },
+        };
+        send_packet(&candidate, response.canonical_bytes());
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reconnect completes")
+                .expect("correlated broker head is accepted"),
+            broker_head,
+        );
+
+        let new_receive = arm_broker_receive(&broker);
+        let after_swap = status_request("after-swap");
+        send_packet(&candidate, after_swap.canonical_bytes());
+        assert_eq!(
+            new_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("new channel receive completes")
+                .expect("new channel owns later traffic"),
+            ProtocolMessage::Status(after_swap),
+        );
+        assert_disconnected(old_server);
+    }
+
+    #[test]
+    fn cancelled_reconnect_cannot_clear_or_replace_a_newer_attempt() {
+        let (_directory, listener, broker, old_server, pin) = broker_fixture();
+        let request = reconnect_request();
+        let (stale_candidate, stale_completed) =
+            start_reconnect(&broker, &listener, pin, request.clone());
+        assert_eq!(
+            receive_packet(&stale_candidate).bytes,
+            request.canonical_bytes()
+        );
+
+        broker.cancel_reconnect();
+        assert_eq!(
+            stale_completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("cancelled reconnect completes"),
+            Err(SupervisorError::BrokerUnavailable),
+        );
+
+        let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+        assert_eq!(receive_packet(&candidate).bytes, request.canonical_bytes());
+        assert_disconnected(stale_candidate);
+
+        let response = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            result: ResponseResult::BrokerReconnect {
+                reconnect: request.clone(),
+            },
+        };
+        send_packet(&candidate, response.canonical_bytes());
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("newer reconnect completes"),
+            Ok(request),
+        );
+
+        broker.cancel_reconnect();
+        let new_receive = arm_broker_receive(&broker);
+        let after_swap = status_request("after-cancelled-reconnect-retry");
+        send_packet(&candidate, after_swap.canonical_bytes());
+        assert_eq!(
+            new_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("new channel receive completes")
+                .expect("stale reconnect callback cannot replace the new channel"),
+            ProtocolMessage::Status(after_swap),
+        );
+        assert_disconnected(old_server);
+    }
+
+    #[test]
+    fn broker_reconnect_rejects_wrong_outer_correlation_or_result_without_replacing_the_channel() {
+        let (_directory, listener, broker, old_server, pin) = broker_fixture();
+        let request = reconnect_request();
+        let mut wrong_request = request.clone();
+        wrong_request.request_id = "another-request".to_owned();
+        let responses = [
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: wrong_request.request_id.clone(),
+                result: ResponseResult::BrokerReconnect {
+                    reconnect: wrong_request,
+                },
+            },
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: request.request_id.clone(),
+                result: ResponseResult::Error {
+                    error: ProtocolError::new(ErrorCode::BrokerUnavailable, None, None),
+                },
+            },
+        ];
+
+        for response in responses {
+            let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+            let offered = receive_packet(&candidate);
+            assert_eq!(offered.bytes, request.canonical_bytes());
+            send_packet(&candidate, response.canonical_bytes());
+            assert_eq!(
+                completed
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("reconnect rejection completes"),
+                Err(SupervisorError::BrokerUnavailable),
+            );
+            assert_disconnected(candidate);
+        }
+
+        let old_receive = arm_broker_receive(&broker);
+        let retained = status_request("retained-old-channel");
+        send_packet(&old_server, retained.canonical_bytes());
+        assert_eq!(
+            old_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("retained channel receive completes")
+                .expect("invalid reconnect never replaces the channel"),
+            ProtocolMessage::Status(retained),
+        );
+    }
+
+    #[test]
+    fn broker_reconnect_forwards_nested_subject_and_envelope_for_owner_classification() {
+        let request = reconnect_request();
+        let mut wrong_subject = request.clone();
+        wrong_subject.session_id = "another-session".to_owned();
+        let mut wrong_envelope = request.clone();
+        wrong_envelope.envelope_revision += 1;
+
+        for broker_head in [wrong_subject, wrong_envelope] {
+            let (_directory, listener, broker, old_server, pin) = broker_fixture();
+            let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+            assert_eq!(receive_packet(&candidate).bytes, request.canonical_bytes());
+            let response = ProtocolResponse {
+                schema: RESPONSE_SCHEMA.to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: request.request_id.clone(),
+                result: ResponseResult::BrokerReconnect {
+                    reconnect: broker_head.clone(),
+                },
+            };
+            send_packet(&candidate, response.canonical_bytes());
+            assert_eq!(
+                completed
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("reconnect classification reaches its owner")
+                    .expect("transport accepts a structurally valid nested checkpoint"),
+                broker_head,
+            );
+
+            let new_receive = arm_broker_receive(&broker);
+            let after_swap = status_request("nested-conflict-reaches-owner");
+            send_packet(&candidate, after_swap.canonical_bytes());
+            assert_eq!(
+                new_receive
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("candidate receive completes")
+                    .expect("candidate becomes the authenticated current channel"),
+                ProtocolMessage::Status(after_swap),
+            );
+            assert_disconnected(old_server);
+        }
+    }
+
+    #[test]
+    fn controller_loss_ack_is_demultiplexed_without_stealing_session_requests() {
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let first_receive = arm_broker_receive(&broker);
+        let settlement = controller_loss_settlement();
+        let (settled_sender, settled_receiver) = mpsc::sync_channel(1);
+        broker
+            .settle_controller_loss(
+                settlement.clone(),
+                Box::new(move |result| {
+                    settled_sender
+                        .send(result)
+                        .expect("settlement result received");
+                }),
+            )
+            .expect("settlement send queues");
+        let offered = receive_packet(&server);
+        assert_eq!(offered.bytes, settlement.canonical_bytes());
+
+        let before = status_request("status-before-settlement-ack");
+        send_packet(&server, before.canonical_bytes());
+        assert_eq!(
+            first_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("ordinary request remains deliverable")
+                .expect("ordinary request authenticates"),
+            ProtocolMessage::Status(before),
+        );
+
+        let second_receive = arm_broker_receive(&broker);
+        let acknowledgement = ControllerLossAcknowledgement {
+            schema: CONTROLLER_LOSS_ACK_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: settlement.request_id.clone(),
+            session_id: settlement.session_id.clone(),
+            run_id: settlement.run_id.clone(),
+            envelope_revision: settlement.envelope_revision,
+            parked_head: settlement.parked_head.clone(),
+            disposition: ControllerLossDisposition::Recoverable {
+                acp_recovery_reference: "acp-recovery-1".to_owned(),
+                attention_projection_id: "attention-1".to_owned(),
+            },
+        };
+        let response = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: settlement.request_id.clone(),
+            result: ResponseResult::ControllerLossAcknowledgement {
+                acknowledgement: acknowledgement.clone(),
+            },
+        };
+        send_packet(&server, response.canonical_bytes());
+        assert_eq!(
+            settled_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("settlement completes"),
+            Ok(acknowledgement),
+        );
+        assert!(second_receive.try_recv().is_err());
+
+        let after = status_request("status-after-settlement-ack");
+        send_packet(&server, after.canonical_bytes());
+        assert_eq!(
+            second_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("logical receive remains armed after demultiplexing")
+                .expect("later request authenticates"),
+            ProtocolMessage::Status(after),
+        );
+    }
+
+    #[test]
+    fn closing_the_broker_cancels_a_pending_reconnect_channel() {
+        let (_directory, listener, broker, old_server, pin) = broker_fixture();
+        let request = reconnect_request();
+        let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+        assert_eq!(receive_packet(&candidate).bytes, request.canonical_bytes());
+
+        broker.close();
+
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reconnect cancellation completes"),
+            Err(SupervisorError::BrokerUnavailable),
+        );
+        assert_disconnected(candidate);
+        assert_disconnected(old_server);
     }
 
     #[test]

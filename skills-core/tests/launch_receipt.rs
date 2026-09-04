@@ -2,10 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use louiselm_skills::{
     canonical::Digest,
+    launch_protocol::MAX_BROKER_LOSS_GRACE_MS,
     launch_receipt::{
-        Authorization, ChainAnchor, Completion, LaunchEvidence, RECEIPT_SCHEMA, ReceiptAppender,
-        ReceiptAuthority, ReceiptCause, ReceiptError, ReceiptOutcome, ReceiptPayload,
-        ReceiptSigner, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
+        Authorization, ChainAnchor, Completion, LaunchEvidence, ProcessExitClassification,
+        RECEIPT_SCHEMA, ReceiptAppender, ReceiptAuthority, ReceiptCause, ReceiptError,
+        ReceiptOutcome, ReceiptPayload, ReceiptSigner, SIGNED_RECEIPT_SCHEMA, SessionState,
+        SignedReceipt,
     },
 };
 
@@ -38,6 +40,7 @@ fn launch_evidence() -> LaunchEvidence {
         isolation_backend_id: "bubblewrap-0_12".to_owned(),
         kernel_identity: "linux-6_18".to_owned(),
         isolation_evidence_digest: digest("isolation"),
+        broker_loss_grace_ms: MAX_BROKER_LOSS_GRACE_MS,
         capability_channel_ids: vec!["acp".to_owned(), "broker".to_owned()],
     }
 }
@@ -136,8 +139,8 @@ fn chain() -> Vec<SignedReceipt> {
         4,
         "request-4",
         ReceiptOutcome::Disposal {
-            authority: ReceiptAuthority::Cause {
-                cause: ReceiptCause::ProcessExited,
+            authority: ReceiptAuthority::ProcessExited {
+                classification: ProcessExitClassification::Failure,
             },
         },
         SessionState::Terminal,
@@ -168,7 +171,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/2\",",
+                "{{\"schema\":\"louiselm.launch.receipt/3\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -184,6 +187,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"isolation_backend_id\":\"bubblewrap-0_12\",",
                 "\"kernel_identity\":\"linux-6_18\",",
                 "\"isolation_evidence_digest\":\"{}\",",
+                "\"broker_loss_grace_ms\":5000,",
                 "\"capability_channel_ids\":[\"acp\",\"broker\"]}}}},",
                 "\"resulting_state\":\"starting\"}}"
             ),
@@ -200,7 +204,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
     assert_eq!(
         String::from_utf8(envelope_bytes.clone()).unwrap(),
         format!(
-            "{{\"schema\":\"louiselm.launch.signed-receipt/2\",\"payload\":{},\"signature\":\"{}\"}}",
+            "{{\"schema\":\"louiselm.launch.signed-receipt/3\",\"payload\":{},\"signature\":\"{}\"}}",
             String::from_utf8(payload_bytes.clone()).unwrap(),
             receipt.signature,
         ),
@@ -219,7 +223,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(start.payload.canonical_bytes()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/2\",",
+                "{{\"schema\":\"louiselm.launch.receipt/3\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-start\",\"envelope_revision\":3,",
                 "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
@@ -269,6 +273,125 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
             "authority": { "kind": "cause", "cause": "broker_lost" }
         }))
         .is_err()
+    );
+}
+
+#[test]
+fn launch_evidence_binds_the_exact_broker_loss_grace() {
+    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/3");
+    assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
+
+    let maximum = chain().remove(0).payload;
+    maximum
+        .validate()
+        .expect("the maximum broker-loss grace is valid launch evidence");
+    let maximum_bytes = maximum.canonical_bytes();
+
+    let mut immediate = maximum.clone();
+    let ReceiptOutcome::Launch { evidence, .. } = &mut immediate.outcome else {
+        panic!("sequence zero is launch evidence");
+    };
+    evidence.broker_loss_grace_ms = 0;
+    immediate
+        .validate()
+        .expect("zero grace commits to immediate fail-closed handling");
+    assert_ne!(
+        immediate.canonical_bytes(),
+        maximum_bytes,
+        "the signed genesis bytes bind the exact grace"
+    );
+
+    let mut excessive = maximum.clone();
+    let ReceiptOutcome::Launch { evidence, .. } = &mut excessive.outcome else {
+        panic!("sequence zero is launch evidence");
+    };
+    evidence.broker_loss_grace_ms = MAX_BROKER_LOSS_GRACE_MS + 1;
+    excessive
+        .validate()
+        .expect_err("launch evidence cannot authorize a grace above five seconds");
+
+    let without_grace = String::from_utf8(maximum_bytes)
+        .expect("receipt JSON is UTF-8")
+        .replace(
+            &format!(r#","broker_loss_grace_ms":{}"#, MAX_BROKER_LOSS_GRACE_MS),
+            "",
+        );
+    assert!(matches!(
+        ReceiptPayload::parse_canonical(without_grace.as_bytes()),
+        Err(ReceiptError::Malformed(_))
+    ));
+}
+
+#[test]
+fn process_exit_receipts_are_classified_sanitized_and_generation_bound() {
+    for classification in [
+        ProcessExitClassification::Success,
+        ProcessExitClassification::Failure,
+        ProcessExitClassification::Signaled,
+    ] {
+        let mut receipt = chain().remove(5);
+        receipt.payload.outcome = ReceiptOutcome::Disposal {
+            authority: ReceiptAuthority::ProcessExited { classification },
+        };
+        receipt
+            .payload
+            .validate()
+            .expect("each closed exit classification is a terminal Disposal authority");
+    }
+
+    let receipt = chain().remove(5);
+    let canonical = String::from_utf8(receipt.payload.canonical_bytes()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    assert_eq!(
+        value["outcome"]["authority"],
+        serde_json::json!({
+            "kind": "process_exited",
+            "classification": "failure",
+        }),
+    );
+
+    let unknown_classification = canonical.replace(
+        r#""classification":"failure""#,
+        r#""classification":"exit_137""#,
+    );
+    assert!(matches!(
+        ReceiptPayload::parse_canonical(unknown_classification.as_bytes()),
+        Err(ReceiptError::Malformed(_))
+    ));
+
+    let raw_detail = canonical.replace(
+        r#""classification":"failure""#,
+        r#""classification":"failure","exit_code":137"#,
+    );
+    assert!(matches!(
+        ReceiptPayload::parse_canonical(raw_detail.as_bytes()),
+        Err(ReceiptError::Malformed(_))
+    ));
+
+    let unclassified = canonical.replace(
+        r#""authority":{"kind":"process_exited","classification":"failure"}"#,
+        r#""authority":{"kind":"cause","cause":"process_exited"}"#,
+    );
+    assert!(matches!(
+        ReceiptPayload::parse_canonical(unclassified.as_bytes()),
+        Err(ReceiptError::Malformed(_))
+    ));
+
+    assert_eq!(
+        ReceiptPayload::parse_canonical(
+            br#"{"schema":"louiselm.launch.receipt/2","legacy_shape":true}"#,
+        ),
+        Err(ReceiptError::UnsupportedSchema(
+            "louiselm.launch.receipt/2".to_owned(),
+        )),
+    );
+    assert_eq!(
+        SignedReceipt::parse_canonical(
+            br#"{"schema":"louiselm.launch.signed-receipt/2","legacy_shape":true}"#,
+        ),
+        Err(ReceiptError::UnsupportedSchema(
+            "louiselm.launch.signed-receipt/2".to_owned(),
+        )),
     );
 }
 
@@ -434,8 +557,8 @@ fn payload_validation_rejects_each_contradictory_shape() {
 
     let mut impossible_cause = chain().remove(2).payload;
     impossible_cause.outcome = ReceiptOutcome::Park {
-        authority: ReceiptAuthority::Cause {
-            cause: ReceiptCause::ProcessExited,
+        authority: ReceiptAuthority::ProcessExited {
+            classification: ProcessExitClassification::Failure,
         },
     };
     assert_eq!(
@@ -491,6 +614,29 @@ fn a_complete_chain_and_a_suffix_from_a_trusted_head_verify() {
         louiselm_skills::launch_receipt::verify_suffix(&[], &trusted, verifies).unwrap(),
         trusted,
     );
+}
+
+#[test]
+fn parked_interrupt_preserves_state_and_cannot_forge_a_resume() {
+    let base = chain();
+    let mut receipts = base[..3].to_vec();
+    let mut interrupt = base[4].clone();
+    interrupt.payload.sequence = 3;
+    interrupt.payload.previous_receipt_digest = Some(receipts[2].digest().to_string());
+    interrupt.payload.resulting_state = SessionState::Parked;
+    interrupt.signature = Digest::of(&interrupt.payload.canonical_bytes()).to_string();
+    receipts.push(interrupt);
+
+    let head = louiselm_skills::launch_receipt::verify_chain(&receipts, &anchor(), verifies)
+        .expect("Interrupt may preserve Parked state");
+    assert_eq!(head.state(), SessionState::Parked);
+
+    receipts[3].payload.resulting_state = SessionState::Running;
+    receipts[3].signature = Digest::of(&receipts[3].payload.canonical_bytes()).to_string();
+    assert!(matches!(
+        louiselm_skills::launch_receipt::verify_chain(&receipts, &anchor(), verifies),
+        Err(ReceiptError::InvalidTransition { sequence: 3 })
+    ));
 }
 
 #[test]

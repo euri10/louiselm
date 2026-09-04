@@ -1,4 +1,4 @@
-//! One-shot orchestration for an authorized, receipt-gated Session launch.
+//! Privileged launch and lifecycle orchestration for one receipt-gated Session.
 //!
 //! The supervisor owns the order at the privilege boundary: consume one
 //! broker authorization, reserve its assigned host identity, prepare a
@@ -30,18 +30,25 @@ use crate::{
     Digest,
     isolation::{CONTRACT_VERSION, IsolationEvidence},
     launch::{LaunchRequest, MAX_REQUEST_BYTES, resolve},
-    launch_protocol::{LaunchAuthorization, ReceiptAcknowledgement},
+    launch_protocol::{
+        BrokerReconnect, ControllerLossAcknowledgement, ControllerLossSettlement,
+        IdentityExhaustion, LaunchAuthorization, ProtocolMessage, ProtocolResponse,
+        ReceiptAcknowledgement, ReceiptDisposition,
+    },
     launch_receipt::{
-        Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptCause, ReceiptHead,
-        ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
+        Authorization, LaunchEvidence, ProcessExitClassification, RECEIPT_SCHEMA, ReceiptAuthority,
+        ReceiptCause, ReceiptHead, ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA,
+        SessionState, SignedReceipt,
     },
     launcher_install::Identity,
     registry::Registry,
     sandbox::{Channel, ConfinementPlan},
 };
 
+mod lifecycle;
 mod system;
 
+pub use lifecycle::LaunchedSession;
 pub use system::{
     InstalledLaunchSigner, SYSTEM_CAPABILITY_GUEST_PATH, SYSTEM_CAPABILITY_ROOT,
     SYSTEM_CGROUP_ROOT, SYSTEM_REGISTRY_ROOT, SYSTEM_SESSIONS_ROOT, SystemLaunchPlatform,
@@ -54,6 +61,66 @@ pub type LaunchCompletion =
 
 /// Completion used by broker and signer ports.
 pub type SupervisorCompletion<T> = Box<dyn FnOnce(Result<T, SupervisorError>) + Send + 'static>;
+
+/// Sanitized observations emitted by an Agent relay without lifecycle authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunningAgentEvent {
+    /// The controller side of ACP stdin reached EOF.
+    ControllerEof,
+    /// The supervised process ended with a bounded public classification.
+    ProcessExited(ProcessExitClassification),
+    /// An opaque relay worker failed without exposing payload or process details.
+    RelayFailed,
+}
+
+/// Sanitized process-tree observation after a lifecycle mechanic did not complete normally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MechanicFailure {
+    /// The live process tree is settled and able to execute.
+    Running,
+    /// The live process tree is settled and completely frozen.
+    Parked,
+    /// The supervised process exited while the mechanic was being applied.
+    Terminal(ProcessExitClassification),
+    /// No stable live or terminal state could be proved.
+    Ambiguous,
+}
+
+/// Callback scheduler used for bounded lifecycle operations.
+pub trait SupervisorTimer: Send + Sync {
+    /// Returns the scheduler's monotonic time source.
+    fn now(&self) -> Instant;
+
+    /// Runs `complete` once after the monotonic `delay` has elapsed.
+    fn schedule(
+        &self,
+        delay: Duration,
+        complete: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<(), SupervisorError>;
+}
+
+struct ThreadSupervisorTimer;
+
+impl SupervisorTimer for ThreadSupervisorTimer {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn schedule(
+        &self,
+        delay: Duration,
+        complete: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<(), SupervisorError> {
+        thread::Builder::new()
+            .name("louiselm-launch-lifecycle-timer".to_owned())
+            .spawn(move || {
+                thread::sleep(delay);
+                complete();
+            })
+            .map(drop)
+            .map_err(|_| SupervisorError::WorkerUnavailable)
+    }
+}
 
 /// Metadata fixed to the capability listener before it becomes reachable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +159,55 @@ pub trait LaunchBroker: Send + Sync {
         &self,
         receipt_bytes: Vec<u8>,
         complete: SupervisorCompletion<ReceiptAcknowledgement>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Reconnects to the install-pinned broker and exchanges exact receipt checkpoints.
+    fn reconnect_session(
+        &self,
+        reconnect: BrokerReconnect,
+        complete: SupervisorCompletion<BrokerReconnect>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Cancels the current reconnect attempt so a later attempt can start.
+    ///
+    /// A pending completion receives [`SupervisorError::BrokerUnavailable`];
+    /// cancellation is otherwise a no-op.
+    fn cancel_reconnect(&self);
+
+    /// Requests one durable broker decision for an exact controller-loss Park.
+    fn settle_controller_loss(
+        &self,
+        settlement: ControllerLossSettlement,
+        complete: SupervisorCompletion<ControllerLossAcknowledgement>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Arms one receive for the next authenticated Session request or receipt ACK.
+    ///
+    /// Delivery of a lifecycle request certifies that the broker durably stored
+    /// its authorization before sending it; the supervisor never treats a
+    /// capability-channel or Agent message as equivalent authority.
+    ///
+    /// Exactly one receive may be outstanding. The supervisor assigns the
+    /// connection epoch captured by `complete`; peers never supply epochs.
+    fn receive_session_request(
+        &self,
+        complete: SupervisorCompletion<ProtocolMessage>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Sends one exact signed lifecycle receipt without starting another receive.
+    ///
+    /// Its durable acknowledgement arrives through [`Self::receive_session_request`].
+    fn send_session_receipt(
+        &self,
+        receipt_bytes: Vec<u8>,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Sends one correlated lifecycle or status response asynchronously.
+    fn send_session_response(
+        &self,
+        response: ProtocolResponse,
+        complete: SupervisorCompletion<()>,
     ) -> Result<(), SupervisorError>;
 
     /// Cancels outstanding broker I/O and closes the authenticated channel.
@@ -147,6 +263,14 @@ pub trait CapabilityGate: Send {
     /// Makes the listener reachable after the exact receipt is durable.
     fn enable(&mut self) -> Result<(), SupervisorError>;
 
+    /// Immediately revokes live and future capability use without destroying
+    /// the rendezvous needed by a later authorized Resume.
+    ///
+    /// An error reports that the reversible revocation could not be fully
+    /// proved, but implementations must still make existing and future uses
+    /// unreachable before returning it.
+    fn revoke(&mut self) -> Result<(), SupervisorError>;
+
     /// Revokes the listener and its owned rendezvous path. Idempotent.
     fn close(&mut self);
 }
@@ -181,14 +305,37 @@ pub trait PreparedAgent: Send {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
-    /// Relays ACP bytes without parsing, logging, or copying them into receipts.
+    /// Starts relaying ACP bytes without parsing, logging, or copying them into receipts.
     ///
-    /// Implementations also drain Agent stderr without presenting its content.
-    fn relay(
+    /// Implementations also drain Agent stderr without presenting its content
+    /// and complete asynchronously so the lifecycle owner retains mechanics.
+    fn start_relay(
         &mut self,
         input: Box<dyn Read + Send>,
         output: Box<dyn Write + Send>,
-    ) -> Result<i32, SupervisorError>;
+        events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Revokes every relay worker's authority to publish further lifecycle events.
+    ///
+    /// Completion is asynchronous because production workers may be concurrently
+    /// observing controller or process I/O when terminal cleanup begins.
+    fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError>;
+
+    /// Freezes the whole process tree while retaining its identity lease.
+    ///
+    /// Failure reports the settled post-attempt state or that no state was provable.
+    fn park(&mut self) -> Result<(), MechanicFailure>;
+
+    /// Thaws the whole process tree after durable broker authorization.
+    ///
+    /// Failure reports the settled post-attempt state or that no state was provable.
+    fn resume(&mut self) -> Result<(), MechanicFailure>;
+
+    /// Interrupts the whole process tree and restores its prior freeze state.
+    ///
+    /// Failure reports the settled post-attempt state or that no state was provable.
+    fn interrupt(&mut self) -> Result<(), MechanicFailure>;
 
     /// Disposes the whole process tree and proves it empty.
     fn dispose(&mut self) -> Result<(), SupervisorError>;
@@ -215,7 +362,7 @@ pub trait LaunchPlatform: Send + Sync {
 
 /// Stable launch failures. Variants deliberately carry no prompts, environment,
 /// credentials, tool payloads, or external-process output.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SupervisorError {
     /// The stdin launch frame was absent, malformed, noncanonical, or oversized.
     #[error("launch document rejected")]
@@ -229,9 +376,15 @@ pub enum SupervisorError {
     /// A broker operation did not complete within the fixed deadline.
     #[error("Control broker deadline expired")]
     BrokerTimeout,
-    /// The assigned identity was invalid, occupied, poisoned, or unavailable.
+    /// Local identity acquisition failed for a reason unrelated to broker assignment validity.
     #[error("Session identity unavailable")]
     IdentityUnavailable,
+    /// The broker proved the installed identity pool is exhausted.
+    #[error("no session identity is available")]
+    SessionIdentityExhausted(Box<IdentityExhaustion>),
+    /// The broker assigned an occupied, poisoned, or mismatched identity.
+    #[error("broker-assigned session identity is invalid")]
+    IdentityAssignmentInvalid,
     /// Trusted registry resolution failed before process creation.
     #[error("launch registry resolution failed")]
     ResolutionFailed,
@@ -256,6 +409,9 @@ pub enum SupervisorError {
     /// Broker acknowledgement did not name the exact signed envelope.
     #[error("launcher receipt acknowledgement mismatched")]
     AcknowledgementMismatch,
+    /// A lifecycle mechanic failed without a safe continuation state.
+    #[error("Session lifecycle mechanic failed")]
+    LifecycleMechanicUnavailable,
     /// Tree cleanup could not prove zero survivors; the identity is poisoned.
     #[error("Session cleanup could not be proved")]
     CleanupUnproven,
@@ -277,6 +433,7 @@ struct SupervisorInner {
     registry: Arc<Registry>,
     sessions_root: PathBuf,
     timeout: Duration,
+    timer: Arc<dyn SupervisorTimer>,
     launched: AtomicBool,
 }
 
@@ -296,6 +453,30 @@ impl LaunchSupervisor {
         sessions_root: PathBuf,
         timeout: Duration,
     ) -> Self {
+        Self::new_with_timer(
+            broker,
+            signer,
+            platform,
+            registry,
+            sessions_root,
+            timeout,
+            Arc::new(ThreadSupervisorTimer),
+        )
+    }
+
+    /// Creates a coordinator with an explicit monotonic callback scheduler.
+    ///
+    /// This keeps lifecycle deadline tests deterministic without weakening the
+    /// production constructor's fixed thread-backed clock.
+    pub fn new_with_timer(
+        broker: Arc<dyn LaunchBroker>,
+        signer: Arc<dyn LaunchSigner>,
+        platform: Arc<dyn LaunchPlatform>,
+        registry: Arc<Registry>,
+        sessions_root: PathBuf,
+        timeout: Duration,
+        timer: Arc<dyn SupervisorTimer>,
+    ) -> Self {
         Self {
             inner: Arc::new(SupervisorInner {
                 broker,
@@ -304,6 +485,7 @@ impl LaunchSupervisor {
                 registry,
                 sessions_root,
                 timeout,
+                timer,
                 launched: AtomicBool::new(false),
             }),
         }
@@ -385,6 +567,7 @@ fn run_launch(
     authorization
         .validate_for(&request, controller_uid, now_ms.saturating_add(elapsed_ms))
         .map_err(|_| SupervisorError::AuthorizationRejected)?;
+    let broker_loss_grace_ms = authorization.broker_loss_grace_ms;
     let assigned = Identity {
         slot: authorization.identity_slot,
         uid: authorization.assigned_uid,
@@ -395,7 +578,7 @@ fn run_launch(
     if identity.identity() != assigned {
         return Err(release_identity(
             identity,
-            SupervisorError::IdentityUnavailable,
+            SupervisorError::IdentityAssignmentInvalid,
         ));
     }
     let mut capability = match inner.platform.create_capability(&request, assigned) {
@@ -506,6 +689,7 @@ fn run_launch(
         prepared.evidence(),
         prepared.backend_id(),
         &receipt_channels,
+        broker_loss_grace_ms,
     ) {
         Ok(evidence) => evidence,
         Err(error) => {
@@ -584,14 +768,17 @@ fn run_launch(
         }
     };
 
-    Ok(LaunchedSession {
-        process: Some(running),
-        capability: Some(capability),
-        identity: Some(identity),
-        broker: Some(Arc::clone(&inner.broker)),
-        receipt,
+    let resources =
+        lifecycle::SessionResources::new(running, capability, identity, Arc::clone(&inner.broker));
+    LaunchedSession::new(
+        resources,
+        Arc::clone(&inner.signer),
+        vec![launch_receipt, receipt],
         binding,
-    })
+        inner.timeout,
+        Arc::clone(&inner.timer),
+        Duration::from_millis(u64::from(broker_loss_grace_ms)),
+    )
 }
 
 fn launch_evidence(
@@ -600,6 +787,7 @@ fn launch_evidence(
     isolation: &IsolationEvidence,
     backend_id: &str,
     channels: &[Channel],
+    broker_loss_grace_ms: u32,
 ) -> Result<LaunchEvidence, SupervisorError> {
     let runtime_bytes = serde_json::to_vec(runtime).map_err(|_| SupervisorError::ReceiptInvalid)?;
     let isolation_bytes =
@@ -623,6 +811,7 @@ fn launch_evidence(
         isolation_backend_id: backend_id.to_owned(),
         kernel_identity: Digest::of(&kernel_bytes).to_string(),
         isolation_evidence_digest: Digest::of(&isolation_bytes).to_string(),
+        broker_loss_grace_ms,
         capability_channel_ids: channel_ids,
     };
     let probe = ReceiptPayload {
@@ -681,8 +870,10 @@ fn transact_receipt(
         SupervisorError::BrokerTimeout => SupervisorError::BrokerTimeout,
         _ => SupervisorError::DurabilityUnavailable,
     })?;
-    if !acknowledgement.matches(&session_id, &run_id, &head) {
-        return Err(SupervisorError::AcknowledgementMismatch);
+    match acknowledgement.exact_disposition(&session_id, &run_id, &head) {
+        Some(ReceiptDisposition::DurablyStored) => {}
+        Some(ReceiptDisposition::Rejected) => return Err(SupervisorError::DurabilityUnavailable),
+        None => return Err(SupervisorError::AcknowledgementMismatch),
     }
     Ok(receipt)
 }
@@ -763,83 +954,6 @@ fn release_identity(
         original
     } else {
         SupervisorError::CleanupUnproven
-    }
-}
-
-/// Successfully launched Session plus every authority retained until cleanup.
-pub struct LaunchedSession {
-    process: Option<Box<dyn RunningAgent>>,
-    capability: Option<Box<dyn CapabilityGate>>,
-    identity: Option<Box<dyn IdentityGuard>>,
-    broker: Option<Arc<dyn LaunchBroker>>,
-    receipt: SignedReceipt,
-    binding: CapabilityBinding,
-}
-
-impl LaunchedSession {
-    /// Latest exact receipt durably acknowledged before this value existed.
-    #[must_use]
-    pub fn receipt(&self) -> &SignedReceipt {
-        &self.receipt
-    }
-
-    /// Capability metadata fixed before its listener was enabled.
-    #[must_use]
-    pub fn capability_binding(&self) -> &CapabilityBinding {
-        &self.binding
-    }
-
-    /// Relays opaque ACP bytes, then closes channels and proves the tree empty.
-    pub fn relay_stdio(
-        mut self,
-        input: Box<dyn Read + Send>,
-        output: Box<dyn Write + Send>,
-    ) -> Result<i32, SupervisorError> {
-        let result = self
-            .process
-            .as_mut()
-            .ok_or(SupervisorError::RelayFailed)?
-            .relay(input, output);
-        let cleanup = self.cleanup();
-        match (result, cleanup) {
-            (_, Err(error)) => Err(error),
-            (result, Ok(())) => result,
-        }
-    }
-
-    /// Revokes the capability channel, disposes the tree, and releases or
-    /// poisons the identity according to the cleanup proof.
-    pub fn dispose(mut self) -> Result<(), SupervisorError> {
-        self.cleanup()
-    }
-
-    fn cleanup(&mut self) -> Result<(), SupervisorError> {
-        if let Some(mut capability) = self.capability.take() {
-            capability.close();
-        }
-        if let Some(broker) = self.broker.take() {
-            broker.close();
-        }
-        let process_result = self
-            .process
-            .as_mut()
-            .map_or(Ok(()), |process| process.dispose());
-        self.process = None;
-        let Some(identity) = self.identity.take() else {
-            return process_result;
-        };
-        if process_result.is_ok() {
-            identity.release()
-        } else {
-            let _ = identity.poison();
-            Err(SupervisorError::CleanupUnproven)
-        }
-    }
-}
-
-impl Drop for LaunchedSession {
-    fn drop(&mut self) {
-        let _ = self.cleanup();
     }
 }
 

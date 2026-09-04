@@ -35,6 +35,9 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Longest accepted encoded launch request.
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
+/// Largest broker-loss grace interval accepted by launch authority and evidence.
+pub const MAX_BROKER_LOSS_GRACE_MS: u32 = 5_000;
+
 /// The longest an identifier field may be.
 ///
 /// Generous enough for any UUID or descriptive name a registry would use;

@@ -11,13 +11,13 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{canonical::Digest, isolation::CONTRACT_VERSION};
+use crate::{canonical::Digest, isolation::CONTRACT_VERSION, launch::MAX_BROKER_LOSS_GRACE_MS};
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/2";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/3";
 
 /// Schema for the payload plus its launcher signature.
-pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/2";
+pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/3";
 
 /// Largest canonical payload or signed envelope accepted at the trust boundary.
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
@@ -37,6 +37,18 @@ pub enum SessionState {
     Parked,
     /// The process tree has ended and cannot resume.
     Terminal,
+}
+
+/// Bounded classification of a confirmed supervised process exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessExitClassification {
+    /// The supervised process reported successful completion.
+    Success,
+    /// The supervised process reported a non-zero completion status.
+    Failure,
+    /// The supervised process ended because of a signal.
+    Signaled,
 }
 
 /// Durable broker authorization bound into a privileged result.
@@ -61,8 +73,6 @@ pub enum ReceiptCause {
     BrokerLost,
     /// The owning controller disappeared.
     ControllerLost,
-    /// The supervised process tree ended on its own.
-    ProcessExited,
     /// A success receipt was not durably acknowledged in time.
     AcknowledgementFailed,
 }
@@ -77,6 +87,11 @@ pub enum ReceiptAuthority {
     Cause {
         /// Cause that required the action.
         cause: ReceiptCause,
+    },
+    /// The supervised process ended independently of a lifecycle request.
+    ProcessExited {
+        /// Sanitized outcome; raw status and signal values never enter receipts.
+        classification: ProcessExitClassification,
     },
 }
 
@@ -100,6 +115,8 @@ pub struct LaunchEvidence {
     pub kernel_identity: String,
     /// Digest of the complete isolation evidence.
     pub isolation_evidence_digest: String,
+    /// Signed interval allowed for authenticated broker reattachment.
+    pub broker_loss_grace_ms: u32,
     /// Capability channel identities, in ascending byte order.
     pub capability_channel_ids: Vec<String>,
 }
@@ -159,14 +176,13 @@ impl ReceiptOutcome {
         }
     }
 
-    fn expected_result(&self) -> SessionState {
+    fn result_matches(&self, state: SessionState) -> bool {
         match self {
-            Self::Launch { .. } => SessionState::Starting,
-            Self::Start { .. } | Self::Resume { .. } | Self::Interrupt { .. } => {
-                SessionState::Running
-            }
-            Self::Park { .. } => SessionState::Parked,
-            Self::Disposal { .. } => SessionState::Terminal,
+            Self::Launch { .. } => state == SessionState::Starting,
+            Self::Start { .. } | Self::Resume { .. } => state == SessionState::Running,
+            Self::Interrupt { .. } => matches!(state, SessionState::Running | SessionState::Parked),
+            Self::Park { .. } => state == SessionState::Parked,
+            Self::Disposal { .. } => state == SessionState::Terminal,
         }
     }
 }
@@ -209,6 +225,7 @@ impl ReceiptPayload {
     /// Parses and validates exact canonical payload bytes.
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ReceiptError> {
         check_size(bytes)?;
+        preflight_schema(bytes, RECEIPT_SCHEMA)?;
         let payload: Self = serde_json::from_slice(bytes)
             .map_err(|error| ReceiptError::Malformed(error.to_string()))?;
         if payload.canonical_bytes() != bytes {
@@ -263,25 +280,29 @@ impl ReceiptPayload {
             {
                 return Err(ReceiptError::ContradictoryCause);
             }
-            ReceiptOutcome::Park {
-                authority: ReceiptAuthority::Cause { cause },
-            } if !matches!(
-                cause,
-                ReceiptCause::BrokerLost
-                    | ReceiptCause::ControllerLost
-                    | ReceiptCause::AcknowledgementFailed
-            ) =>
+            ReceiptOutcome::Park { authority }
+                if !matches!(
+                    authority,
+                    ReceiptAuthority::Authorized(_)
+                        | ReceiptAuthority::Cause {
+                            cause: ReceiptCause::BrokerLost
+                                | ReceiptCause::ControllerLost
+                                | ReceiptCause::AcknowledgementFailed
+                        }
+                ) =>
             {
                 return Err(ReceiptError::ContradictoryCause);
             }
-            ReceiptOutcome::Disposal {
-                authority: ReceiptAuthority::Cause { cause },
-            } if !matches!(
-                cause,
-                ReceiptCause::ControllerLost
-                    | ReceiptCause::ProcessExited
-                    | ReceiptCause::AcknowledgementFailed
-            ) =>
+            ReceiptOutcome::Disposal { authority }
+                if !matches!(
+                    authority,
+                    ReceiptAuthority::Authorized(_)
+                        | ReceiptAuthority::Cause {
+                            cause: ReceiptCause::ControllerLost
+                                | ReceiptCause::AcknowledgementFailed
+                        }
+                        | ReceiptAuthority::ProcessExited { .. }
+                ) =>
             {
                 return Err(ReceiptError::ContradictoryCause);
             }
@@ -293,7 +314,7 @@ impl ReceiptPayload {
             }
         }
 
-        if self.outcome.expected_result() != self.resulting_state {
+        if !self.outcome.result_matches(self.resulting_state) {
             return Err(ReceiptError::ContradictoryResult);
         }
         Ok(())
@@ -322,6 +343,7 @@ impl SignedReceipt {
     /// Parses and validates exact canonical signed-envelope bytes.
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ReceiptError> {
         check_size(bytes)?;
+        preflight_schema(bytes, SIGNED_RECEIPT_SCHEMA)?;
         let receipt: Self = serde_json::from_slice(bytes)
             .map_err(|error| ReceiptError::Malformed(error.to_string()))?;
         if receipt.canonical_bytes() != bytes {
@@ -506,7 +528,11 @@ where
                 sequence,
             });
         }
-        if !valid_transition(head.state, &receipt.payload.outcome) {
+        if !valid_transition(
+            head.state,
+            &receipt.payload.outcome,
+            receipt.payload.resulting_state,
+        ) {
             return Err(ReceiptError::InvalidTransition { sequence });
         }
         if !head.request_ids.insert(receipt.payload.request_id.clone()) {
@@ -539,15 +565,38 @@ where
     Ok(())
 }
 
-fn valid_transition(state: SessionState, outcome: &ReceiptOutcome) -> bool {
+fn valid_transition(
+    state: SessionState,
+    outcome: &ReceiptOutcome,
+    resulting_state: SessionState,
+) -> bool {
     matches!(
-        (state, outcome),
-        (SessionState::Starting, ReceiptOutcome::Start { .. })
-            | (SessionState::Running, ReceiptOutcome::Park { .. })
-            | (SessionState::Parked, ReceiptOutcome::Resume { .. })
-            | (SessionState::Running, ReceiptOutcome::Interrupt { .. })
-            | (SessionState::Running, ReceiptOutcome::Disposal { .. })
-            | (SessionState::Parked, ReceiptOutcome::Disposal { .. })
+        (state, outcome, resulting_state),
+        (
+            SessionState::Starting,
+            ReceiptOutcome::Start { .. },
+            SessionState::Running
+        ) | (
+            SessionState::Running,
+            ReceiptOutcome::Park { .. },
+            SessionState::Parked
+        ) | (
+            SessionState::Parked,
+            ReceiptOutcome::Resume { .. },
+            SessionState::Running
+        ) | (
+            SessionState::Running,
+            ReceiptOutcome::Interrupt { .. },
+            SessionState::Running
+        ) | (
+            SessionState::Parked,
+            ReceiptOutcome::Interrupt { .. },
+            SessionState::Parked
+        ) | (
+            SessionState::Running | SessionState::Parked,
+            ReceiptOutcome::Disposal { .. },
+            SessionState::Terminal
+        )
     )
 }
 
@@ -655,6 +704,9 @@ fn validate_launch_evidence(evidence: &LaunchEvidence) -> Result<(), ReceiptErro
             evidence.isolation_contract.clone(),
         ));
     }
+    if evidence.broker_loss_grace_ms > MAX_BROKER_LOSS_GRACE_MS {
+        return Err(ReceiptError::InvalidBrokerLossGrace);
+    }
     validate_token("isolation_backend_id", &evidence.isolation_backend_id)?;
     validate_token("kernel_identity", &evidence.kernel_identity)?;
     if evidence.capability_channel_ids.is_empty() {
@@ -681,6 +733,21 @@ fn check_size(bytes: &[u8]) -> Result<(), ReceiptError> {
         Err(ReceiptError::Oversized)
     } else {
         Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct ReceiptSchemaHeader {
+    schema: String,
+}
+
+fn preflight_schema(bytes: &[u8], expected: &str) -> Result<(), ReceiptError> {
+    let header: ReceiptSchemaHeader = serde_json::from_slice(bytes)
+        .map_err(|error| ReceiptError::Malformed(error.to_string()))?;
+    if header.schema == expected {
+        Ok(())
+    } else {
+        Err(ReceiptError::UnsupportedSchema(header.schema))
     }
 }
 
@@ -768,6 +835,9 @@ pub enum ReceiptError {
     /// Launch evidence answers an unsupported isolation contract.
     #[error("unsupported isolation contract '{0}'")]
     UnsupportedIsolationContract(String),
+    /// Launch evidence grants more broker-loss grace than the launcher accepts.
+    #[error("broker-loss grace exceeds the fixed limit")]
+    InvalidBrokerLossGrace,
     /// Launch evidence listed no capability channel.
     #[error("launch evidence requires at least one capability channel")]
     MissingChannel,

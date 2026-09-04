@@ -893,8 +893,8 @@ fn park_freezes_the_whole_tree_and_resume_thaws_it() {
     assert!(!session.is_parked());
     session.park().expect("park freezes the tree");
     assert!(
-        wait_for(Duration::from_secs(2), || session.is_parked()),
-        "the cgroup never reported frozen",
+        session.is_parked(),
+        "Park must not return before the cgroup reports frozen",
     );
 
     session.resume().expect("resume thaws the tree");

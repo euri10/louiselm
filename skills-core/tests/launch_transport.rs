@@ -16,8 +16,9 @@ use std::{
 use louiselm_skills::{
     canonical::Digest,
     launch_protocol::{
-        self, ErrorCode, PROTOCOL_VERSION, ProtocolError, ProtocolMessage, ProtocolResponse,
-        RESPONSE_SCHEMA, ResponseResult, STATUS_REQUEST_SCHEMA, StatusRequest,
+        self, ErrorCode, MAX_BROKER_LOSS_GRACE_MS, PROTOCOL_VERSION, ProtocolError,
+        ProtocolMessage, ProtocolResponse, RESPONSE_SCHEMA, ResponseResult, STATUS_REQUEST_SCHEMA,
+        StatusRequest,
     },
     launch_receipt::{
         Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptError, ReceiptOutcome,
@@ -118,6 +119,7 @@ fn signed_receipt() -> SignedReceipt {
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),
                 kernel_identity: "linux-6_18".to_owned(),
                 isolation_evidence_digest: digest("isolation"),
+                broker_loss_grace_ms: MAX_BROKER_LOSS_GRACE_MS,
                 capability_channel_ids: vec!["acp".to_owned()],
             }),
         },

@@ -3,7 +3,7 @@
 //! This module describes bytes and pure compare-and-swap decisions. It does
 //! not own transport, authorization policy, persistence, or process mechanics.
 
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,10 +13,12 @@ use crate::{
     canonical::Digest,
     launch::{LaunchError, LaunchRequest, REQUEST_SCHEMA},
     launch_receipt::{
-        Authorization, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptError, ReceiptHead, ReceiptOutcome,
-        ReceiptPayload, SessionState, SignedReceipt,
+        Authorization, ProcessExitClassification, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptError,
+        ReceiptHead, ReceiptOutcome, ReceiptPayload, SessionState, SignedReceipt,
     },
 };
+
+pub use crate::launch::MAX_BROKER_LOSS_GRACE_MS;
 
 /// Longest accepted encoded protocol message.
 pub const MAX_PROTOCOL_MESSAGE_BYTES: usize = 64 * 1024;
@@ -24,26 +26,41 @@ pub const MAX_PROTOCOL_MESSAGE_BYTES: usize = 64 * 1024;
 /// Longest accepted opaque identifier.
 pub const MAX_IDENTIFIER_BYTES: usize = 128;
 
+/// Most receipt intents or exact envelopes retained while durability is unavailable.
+pub const MAX_PENDING_RECEIPTS: u32 = 8;
+
+/// Most cross-Session identity occupants disclosed on an operator-only result.
+pub const MAX_IDENTITY_OCCUPANTS: usize = 32;
+
 /// Schema for an authorized lifecycle mutation.
 pub const LIFECYCLE_REQUEST_SCHEMA: &str = "louiselm.launch.lifecycle-request/1";
 
 /// Schema for a read-only status request.
 pub const STATUS_REQUEST_SCHEMA: &str = "louiselm.launch.status-request/1";
 
-/// Schema for durable receipt acknowledgement.
-pub const RECEIPT_ACK_SCHEMA: &str = "louiselm.launch.receipt-ack/1";
+/// Schema for an exact durable receipt disposition.
+pub const RECEIPT_ACK_SCHEMA: &str = "louiselm.launch.receipt-ack/2";
 
 /// Schema for a broker-consumed single-use launch authorization.
-pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/1";
+pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/2";
+
+/// Schema for exact receipt-head exchange during authenticated broker reattachment.
+pub const BROKER_RECONNECT_SCHEMA: &str = "louiselm.launch.broker-reconnect/1";
+
+/// Schema for the supervisor's exact controller-loss settlement request.
+pub const CONTROLLER_LOSS_SETTLEMENT_SCHEMA: &str = "louiselm.launch.controller-loss-settlement/1";
+
+/// Schema for a broker's durable controller-loss settlement acknowledgement.
+pub const CONTROLLER_LOSS_ACK_SCHEMA: &str = "louiselm.launch.controller-loss-ack/1";
 
 /// Schema for the mechanical supervisor status.
-pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/1";
+pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/3";
 
 /// Schema for broker-composed canonical Session status.
-pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/1";
+pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/3";
 
 /// Schema for a response to a request.
-pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/1";
+pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/2";
 
 /// An authorized public lifecycle mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -183,6 +200,8 @@ pub enum ErrorCode {
     EnvelopeRevisionMismatch,
     /// The requested action is not valid from the current state.
     InvalidTransition,
+    /// The authorized whole-tree lifecycle mechanic failed.
+    LifecycleMechanicUnavailable,
     /// Receipt bytes or their chain do not verify.
     ReceiptChainInvalid,
     /// Receipt signing is temporarily unavailable.
@@ -193,6 +212,8 @@ pub enum ErrorCode {
     BrokerUnavailable,
     /// No isolated host identity is currently free for a new Session.
     SessionIdentityExhausted,
+    /// The broker assigned a slot that the installed launcher cannot safely use.
+    IdentityAssignmentInvalid,
 }
 
 /// Stable recovery direction for a protocol failure.
@@ -368,7 +389,348 @@ impl StatusRequest {
     }
 }
 
-/// Confirmation that one exact signed receipt is durably stored.
+/// Exact receipt checkpoint exchanged while reattaching an authenticated broker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrokerReconnect {
+    /// Message schema.
+    pub schema: String,
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// Correlation identifier shared by request and response.
+    pub request_id: String,
+    /// Reattaching Session.
+    pub session_id: String,
+    /// Owning Run.
+    pub run_id: String,
+    /// Capability-envelope revision that must remain unchanged.
+    pub envelope_revision: u64,
+    /// Exact receipt sequence held by this side.
+    pub sequence: u64,
+    /// Digest of the exact canonical signed receipt envelope at `sequence`.
+    pub receipt_digest: String,
+}
+
+impl BrokerReconnect {
+    /// Serializes this checkpoint deterministically.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a broker reconnect is always serializable")
+    }
+
+    /// Validates the closed checkpoint shape.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_schema(&self.schema, BROKER_RECONNECT_SCHEMA)?;
+        validate_version(self.protocol_version)?;
+        validate_identifier(&self.request_id)?;
+        validate_identifier(&self.session_id)?;
+        validate_identifier(&self.run_id)?;
+        validate_digest(&self.receipt_digest)
+    }
+
+    /// Checks that a broker checkpoint answers this exact launcher request.
+    pub fn validate_response_to(&self, request: &Self) -> Result<(), ProtocolError> {
+        self.validate()?;
+        request.validate()?;
+        if self.request_id == request.request_id
+            && self.session_id == request.session_id
+            && self.run_id == request.run_id
+            && self.envelope_revision == request.envelope_revision
+        {
+            Ok(())
+        } else {
+            Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None))
+        }
+    }
+
+    /// Parses one bounded exact canonical checkpoint.
+    pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
+            return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
+        }
+        validate_message_header(bytes, BROKER_RECONNECT_SCHEMA)?;
+        let reconnect: Self = decode_closed(bytes)?;
+        if reconnect.canonical_bytes() != bytes {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        reconnect.validate()?;
+        Ok(reconnect)
+    }
+}
+
+/// Exact frozen checkpoint offered to the broker after controller loss.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerLossSettlement {
+    /// Message schema.
+    pub schema: String,
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// Correlation identifier for this settlement.
+    pub request_id: String,
+    /// Frozen Session.
+    pub session_id: String,
+    /// Owning Run.
+    pub run_id: String,
+    /// Capability-envelope revision fixed for the Session.
+    pub envelope_revision: u64,
+    /// Exact durable Park receipt that proves the old tree is frozen.
+    pub parked_head: ReceiptHead,
+}
+
+impl ControllerLossSettlement {
+    /// Serializes the settlement request deterministically.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a controller-loss settlement is always serializable")
+    }
+
+    /// Validates the closed request shape.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_schema(&self.schema, CONTROLLER_LOSS_SETTLEMENT_SCHEMA)?;
+        validate_version(self.protocol_version)?;
+        validate_identifier(&self.request_id)?;
+        validate_identifier(&self.session_id)?;
+        validate_identifier(&self.run_id)?;
+        if self.envelope_revision == 0 {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        validate_digest(&self.parked_head.digest)
+    }
+
+    /// Parses one exact canonical settlement request.
+    pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
+            return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
+        }
+        validate_message_header(bytes, CONTROLLER_LOSS_SETTLEMENT_SCHEMA)?;
+        let settlement: Self = decode_closed(bytes)?;
+        if settlement.canonical_bytes() != bytes {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        settlement.validate()?;
+        Ok(settlement)
+    }
+}
+
+/// Durable broker decision after a controller-loss Park was recorded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControllerLossDisposition {
+    /// The broker durably retained recovery material and projected Attention.
+    Recoverable {
+        /// Opaque broker-owned ACP recovery reference.
+        acp_recovery_reference: String,
+        /// Opaque identifier for the durable Attention projection.
+        attention_projection_id: String,
+    },
+    /// Recovery is unavailable, but the abnormal loss projection is durable.
+    NoRecovery {
+        /// Opaque identifier for the durable Attention projection.
+        attention_projection_id: String,
+    },
+}
+
+impl ControllerLossDisposition {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        match self {
+            Self::Recoverable {
+                acp_recovery_reference,
+                attention_projection_id,
+            } => {
+                validate_identifier(acp_recovery_reference)?;
+                validate_identifier(attention_projection_id)
+            }
+            Self::NoRecovery {
+                attention_projection_id,
+            } => validate_identifier(attention_projection_id),
+        }
+    }
+}
+
+/// Broker proof that controller-loss recovery policy and projection are durable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerLossAcknowledgement {
+    /// Message schema.
+    pub schema: String,
+    /// Protocol version.
+    pub protocol_version: u32,
+    /// Correlation identifier shared with the settlement request.
+    pub request_id: String,
+    /// Frozen Session.
+    pub session_id: String,
+    /// Owning Run.
+    pub run_id: String,
+    /// Capability-envelope revision fixed for the Session.
+    pub envelope_revision: u64,
+    /// Exact durable Park receipt accepted by the broker.
+    pub parked_head: ReceiptHead,
+    /// Broker-owned durable recovery decision.
+    pub disposition: ControllerLossDisposition,
+}
+
+impl ControllerLossAcknowledgement {
+    /// Serializes the acknowledgement deterministically.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a controller-loss acknowledgement is always serializable")
+    }
+
+    /// Validates the closed acknowledgement shape.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_schema(&self.schema, CONTROLLER_LOSS_ACK_SCHEMA)?;
+        validate_version(self.protocol_version)?;
+        validate_identifier(&self.request_id)?;
+        validate_identifier(&self.session_id)?;
+        validate_identifier(&self.run_id)?;
+        if self.envelope_revision == 0 {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        validate_digest(&self.parked_head.digest)?;
+        self.disposition.validate()
+    }
+
+    /// Requires every authority-bearing field to match the frozen request.
+    pub fn validate_for(&self, settlement: &ControllerLossSettlement) -> Result<(), ProtocolError> {
+        self.validate()?;
+        settlement.validate()?;
+        if self.request_id == settlement.request_id
+            && self.session_id == settlement.session_id
+            && self.run_id == settlement.run_id
+            && self.envelope_revision == settlement.envelope_revision
+            && self.parked_head == settlement.parked_head
+        {
+            Ok(())
+        } else {
+            Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None))
+        }
+    }
+
+    /// Parses one exact canonical acknowledgement.
+    pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
+            return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
+        }
+        validate_message_header(bytes, CONTROLLER_LOSS_ACK_SCHEMA)?;
+        let acknowledgement: Self = decode_closed(bytes)?;
+        if acknowledgement.canonical_bytes() != bytes {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        acknowledgement.validate()?;
+        Ok(acknowledgement)
+    }
+}
+
+/// Minimal broker-owned occupancy fact disclosed only to authenticated operators.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OccupiedSessionIdentity {
+    /// Session holding the installed identity.
+    pub session_id: String,
+    /// Current nonterminal Session state.
+    pub state: SessionState,
+    /// Installed identity-pool slot.
+    pub slot: u32,
+}
+
+impl OccupiedSessionIdentity {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_identifier(&self.session_id)?;
+        if matches!(
+            self.state,
+            SessionState::Starting | SessionState::Running | SessionState::Parked
+        ) {
+            Ok(())
+        } else {
+            Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None))
+        }
+    }
+}
+
+/// Bounded operator-only evidence explaining identity-pool exhaustion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityExhaustion {
+    /// Stable exhaustion failure safe to expose without occupancy details.
+    pub error: ProtocolError,
+    /// Canonically slot-sorted live occupants.
+    pub occupied_sessions: Vec<OccupiedSessionIdentity>,
+    /// Whether higher-slot occupants were omitted to enforce the disclosure bound.
+    pub truncated: bool,
+}
+
+impl IdentityExhaustion {
+    /// Sorts and bounds broker-owned occupancy evidence for operator delivery.
+    pub fn compose(
+        mut occupied_sessions: Vec<OccupiedSessionIdentity>,
+    ) -> Result<Self, ProtocolError> {
+        for occupant in &occupied_sessions {
+            occupant.validate()?;
+        }
+        occupied_sessions.sort_by_key(|occupant| occupant.slot);
+        let mut session_ids = BTreeSet::new();
+        for pair in occupied_sessions.windows(2) {
+            if pair[0].slot == pair[1].slot {
+                return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+            }
+        }
+        if occupied_sessions
+            .iter()
+            .any(|occupant| !session_ids.insert(occupant.session_id.as_str()))
+        {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        let truncated = occupied_sessions.len() > MAX_IDENTITY_OCCUPANTS;
+        occupied_sessions.truncate(MAX_IDENTITY_OCCUPANTS);
+        let exhaustion = Self {
+            error: ProtocolError::new(ErrorCode::SessionIdentityExhausted, None, None),
+            occupied_sessions,
+            truncated,
+        };
+        exhaustion.validate()?;
+        Ok(exhaustion)
+    }
+
+    /// Validates received evidence without silently sorting or truncating it.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.error != ProtocolError::new(ErrorCode::SessionIdentityExhausted, None, None)
+            || self.occupied_sessions.len() > MAX_IDENTITY_OCCUPANTS
+        {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
+        let mut session_ids = BTreeSet::new();
+        let mut previous_slot = None;
+        for occupant in &self.occupied_sessions {
+            occupant.validate()?;
+            if previous_slot.is_some_and(|slot| slot >= occupant.slot)
+                || !session_ids.insert(occupant.session_id.as_str())
+            {
+                return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+            }
+            previous_slot = Some(occupant.slot);
+        }
+        Ok(())
+    }
+
+    /// Returns the cross-Session-safe failure used by Agent/self status.
+    #[must_use]
+    pub fn redacted_error(&self) -> ProtocolError {
+        ProtocolError::new(ErrorCode::SessionIdentityExhausted, None, None)
+    }
+}
+
+/// Broker disposition for one exact signed receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptDisposition {
+    /// The exact signed envelope is durably stored.
+    DurablyStored,
+    /// The broker refused to store the exact signed envelope.
+    Rejected,
+}
+
+/// Disposition of one exact signed receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReceiptAcknowledgement {
@@ -384,6 +746,8 @@ pub struct ReceiptAcknowledgement {
     pub sequence: u64,
     /// Digest of the exact canonical signed envelope.
     pub receipt_digest: String,
+    /// Whether the exact envelope was durably stored or rejected.
+    pub disposition: ReceiptDisposition,
 }
 
 impl ReceiptAcknowledgement {
@@ -402,14 +766,20 @@ impl ReceiptAcknowledgement {
         validate_digest(&self.receipt_digest)
     }
 
-    /// Whether this acknowledgement names one exact expected receipt head.
+    /// Returns the disposition only when this message names the exact expected head.
     #[must_use]
-    pub fn matches(&self, session_id: &str, run_id: &str, head: &ReceiptHead) -> bool {
-        self.validate().is_ok()
+    pub fn exact_disposition(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        head: &ReceiptHead,
+    ) -> Option<ReceiptDisposition> {
+        (self.validate().is_ok()
             && self.session_id == session_id
             && self.run_id == run_id
             && self.sequence == head.sequence
-            && self.receipt_digest == head.digest
+            && self.receipt_digest == head.digest)
+            .then_some(self.disposition)
     }
 }
 
@@ -447,6 +817,8 @@ pub struct LaunchAuthorization {
     pub assigned_gid: u32,
     /// Exclusive millisecond expiry; `now >= expires_at_ms` is expired.
     pub expires_at_ms: u64,
+    /// Signed fail-closed interval allowed for authenticated broker reattachment.
+    pub broker_loss_grace_ms: u32,
 }
 
 impl LaunchAuthorization {
@@ -463,6 +835,7 @@ impl LaunchAuthorization {
             || self.assigned_uid == 0
             || self.assigned_gid == 0
             || self.expires_at_ms == 0
+            || self.broker_loss_grace_ms > MAX_BROKER_LOSS_GRACE_MS
         {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
         }
@@ -506,6 +879,10 @@ pub enum ProtocolMessage {
     Lifecycle(LifecycleRequest),
     /// Read-only status request.
     Status(StatusRequest),
+    /// Exact checkpoint offered while reconnecting an authenticated broker.
+    BrokerReconnect(BrokerReconnect),
+    /// Frozen receipt checkpoint offered for durable controller-loss settlement.
+    ControllerLossSettlement(ControllerLossSettlement),
     /// Durable receipt acknowledgement.
     ReceiptAcknowledgement(ReceiptAcknowledgement),
 }
@@ -533,6 +910,16 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
             let request: StatusRequest = decode_closed(bytes)?;
             request.validate()?;
             Ok(ProtocolMessage::Status(request))
+        }
+        BROKER_RECONNECT_SCHEMA => {
+            let reconnect: BrokerReconnect = decode_closed(bytes)?;
+            reconnect.validate()?;
+            Ok(ProtocolMessage::BrokerReconnect(reconnect))
+        }
+        CONTROLLER_LOSS_SETTLEMENT_SCHEMA => {
+            let settlement: ControllerLossSettlement = decode_closed(bytes)?;
+            settlement.validate()?;
+            Ok(ProtocolMessage::ControllerLossSettlement(settlement))
         }
         RECEIPT_ACK_SCHEMA => {
             let acknowledgement: ReceiptAcknowledgement = decode_closed(bytes)?;
@@ -588,9 +975,15 @@ pub struct SupervisorStatus {
     /// Aggregate capability-channel state.
     pub channel_state: ChannelState,
     /// Latest signed receipt known to this supervisor.
-    pub receipt_head: Option<ReceiptHead>,
+    pub launcher_head: Option<ReceiptHead>,
+    /// Latest exact receipt durably acknowledged by the Control broker.
+    pub broker_head: Option<ReceiptHead>,
+    /// Ordered receipt intents or exact envelopes awaiting durable storage.
+    pub pending_receipt_count: u32,
     /// Serialized operation still in progress.
     pub pending_operation: Option<PendingOperation>,
+    /// Sanitized process result when natural exit caused terminal cleanup.
+    pub process_exit: Option<ProcessExitClassification>,
     /// Latest stable failure, if any.
     pub last_failure: Option<ProtocolError>,
 }
@@ -608,14 +1001,17 @@ impl SupervisorStatus {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
-        validate_status_shape(
-            self.state,
-            self.broker_connection,
-            self.channel_state,
-            self.receipt_head.as_ref(),
-            self.pending_operation.as_ref(),
-            self.last_failure.as_ref(),
-        )
+        validate_status_shape(StatusShape {
+            state: self.state,
+            broker_connection: self.broker_connection,
+            channel_state: self.channel_state,
+            launcher_head: self.launcher_head.as_ref(),
+            broker_head: self.broker_head.as_ref(),
+            pending_receipt_count: self.pending_receipt_count,
+            pending_operation: self.pending_operation.as_ref(),
+            process_exit: self.process_exit,
+            last_failure: self.last_failure.as_ref(),
+        })
     }
 
     /// Parses exact canonical status bytes.
@@ -623,6 +1019,7 @@ impl SupervisorStatus {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
         }
+        validate_message_header(bytes, SUPERVISOR_STATUS_SCHEMA)?;
         let status: Self = decode_closed(bytes)?;
         if status.canonical_bytes() != bytes {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
@@ -654,12 +1051,18 @@ pub struct SessionStatus {
     pub envelope_revision: u64,
     /// Aggregate capability-channel state.
     pub channel_state: ChannelState,
-    /// Latest signed receipt.
-    pub receipt_head: Option<ReceiptHead>,
+    /// Latest signed receipt known to the Launch supervisor.
+    pub launcher_head: Option<ReceiptHead>,
+    /// Latest exact receipt durably acknowledged by the Control broker.
+    pub broker_head: Option<ReceiptHead>,
+    /// Ordered receipt intents or exact envelopes awaiting durable storage.
+    pub pending_receipt_count: u32,
     /// Serialized operation still in progress.
     pub pending_operation: Option<PendingOperation>,
     /// Actor- and policy-filtered lifecycle actions.
     pub allowed_actions: Vec<LifecycleAction>,
+    /// Sanitized process result when natural exit caused terminal cleanup.
+    pub process_exit: Option<ProcessExitClassification>,
     /// Latest stable failure, if any.
     pub last_failure: Option<ProtocolError>,
 }
@@ -677,7 +1080,7 @@ impl SessionStatus {
             return Err(ProtocolError::new(
                 ErrorCode::InvalidRequest,
                 Some(supervisor.state),
-                supervisor.receipt_head.as_ref().map(|head| head.sequence),
+                supervisor.broker_head.as_ref().map(|head| head.sequence),
             ));
         }
         let status = Self {
@@ -690,9 +1093,12 @@ impl SessionStatus {
             broker_connection: supervisor.broker_connection,
             envelope_revision: supervisor.envelope_revision,
             channel_state: supervisor.channel_state,
-            receipt_head: supervisor.receipt_head,
+            launcher_head: supervisor.launcher_head,
+            broker_head: supervisor.broker_head,
+            pending_receipt_count: supervisor.pending_receipt_count,
             pending_operation: supervisor.pending_operation,
             allowed_actions,
+            process_exit: supervisor.process_exit,
             last_failure: supervisor.last_failure,
         };
         status.validate()?;
@@ -711,16 +1117,19 @@ impl SessionStatus {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
-        validate_status_shape(
-            self.state,
-            self.broker_connection,
-            self.channel_state,
-            self.receipt_head.as_ref(),
-            self.pending_operation.as_ref(),
-            self.last_failure.as_ref(),
-        )?;
+        validate_status_shape(StatusShape {
+            state: self.state,
+            broker_connection: self.broker_connection,
+            channel_state: self.channel_state,
+            launcher_head: self.launcher_head.as_ref(),
+            broker_head: self.broker_head.as_ref(),
+            pending_receipt_count: self.pending_receipt_count,
+            pending_operation: self.pending_operation.as_ref(),
+            process_exit: self.process_exit,
+            last_failure: self.last_failure.as_ref(),
+        })?;
         if self.pending_operation.is_some() && !self.allowed_actions.is_empty() {
-            return Err(invalid_status(self.state, self.receipt_head.as_ref()));
+            return Err(invalid_status(self.state, self.broker_head.as_ref()));
         }
         if self
             .allowed_actions
@@ -731,7 +1140,7 @@ impl SessionStatus {
                 .iter()
                 .any(|action| transition(self.state, *action).is_err())
         {
-            return Err(invalid_status(self.state, self.receipt_head.as_ref()));
+            return Err(invalid_status(self.state, self.broker_head.as_ref()));
         }
         Ok(())
     }
@@ -741,6 +1150,7 @@ impl SessionStatus {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
         }
+        validate_message_header(bytes, SESSION_STATUS_SCHEMA)?;
         let status: Self = decode_closed(bytes)?;
         if status.canonical_bytes() != bytes {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
@@ -885,7 +1295,7 @@ pub fn evaluate_request(
 ) -> Result<RequestDisposition, ProtocolError> {
     status.validate()?;
     request.validate()?;
-    let current_sequence = status.receipt_head.as_ref().map(|head| head.sequence);
+    let current_sequence = status.broker_head.as_ref().map(|head| head.sequence);
     if request.session_id != status.session_id || request.run_id != status.run_id {
         return Err(ProtocolError::new(
             ErrorCode::SubjectMismatch,
@@ -919,6 +1329,15 @@ pub fn evaluate_request(
             current_sequence,
         ));
     }
+    if request.action == LifecycleAction::Resume
+        && (status.pending_receipt_count != 0 || status.launcher_head != status.broker_head)
+    {
+        return Err(ProtocolError::new(
+            ErrorCode::DurabilityUnavailable,
+            Some(status.state),
+            current_sequence,
+        ));
+    }
     if request.expected_state != status.state {
         return Err(ProtocolError::new(
             ErrorCode::StateMismatch,
@@ -947,7 +1366,7 @@ pub fn evaluate_request(
             current_sequence,
         )
     })?;
-    let head = status.receipt_head.as_ref().ok_or_else(|| {
+    let head = status.launcher_head.as_ref().ok_or_else(|| {
         ProtocolError::new(ErrorCode::ReceiptSequenceMismatch, Some(status.state), None)
     })?;
     let sequence = head.sequence.checked_add(1).ok_or_else(|| {
@@ -1064,6 +1483,7 @@ pub fn transition(
     match (state, action) {
         (SessionState::Running, LifecycleAction::Park) => Ok(SessionState::Parked),
         (SessionState::Running, LifecycleAction::Interrupt) => Ok(SessionState::Running),
+        (SessionState::Parked, LifecycleAction::Interrupt) => Ok(SessionState::Parked),
         (SessionState::Running, LifecycleAction::Disposal)
         | (SessionState::Parked, LifecycleAction::Disposal) => Ok(SessionState::Terminal),
         (SessionState::Parked, LifecycleAction::Resume) => Ok(SessionState::Running),
@@ -1093,6 +1513,21 @@ pub enum ResponseResult {
     SessionStatus {
         /// Status value.
         status: SessionStatus,
+    },
+    /// Broker's exact durable checkpoint during authenticated reattachment.
+    BrokerReconnect {
+        /// Broker-owned receipt head and request correlation.
+        reconnect: BrokerReconnect,
+    },
+    /// Broker proof that controller-loss recovery state and Attention are durable.
+    ControllerLossAcknowledgement {
+        /// Exact settlement acknowledgement.
+        acknowledgement: ControllerLossAcknowledgement,
+    },
+    /// Operator-only bounded evidence that no installed identity is free.
+    IdentityExhaustion {
+        /// Broker-composed occupancy evidence.
+        exhaustion: IdentityExhaustion,
     },
     /// Signed lifecycle receipt.
     Receipt {
@@ -1145,6 +1580,21 @@ impl ProtocolResponse {
             }
             ResponseResult::SupervisorStatus { status } => status.validate(),
             ResponseResult::SessionStatus { status } => status.validate(),
+            ResponseResult::BrokerReconnect { reconnect } => {
+                reconnect.validate()?;
+                if reconnect.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
+            ResponseResult::ControllerLossAcknowledgement { acknowledgement } => {
+                acknowledgement.validate()?;
+                if acknowledgement.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
+            ResponseResult::IdentityExhaustion { exhaustion } => exhaustion.validate(),
             ResponseResult::Receipt { receipt } => {
                 receipt
                     .validate()
@@ -1154,7 +1604,13 @@ impl ProtocolResponse {
                 }
                 Ok(())
             }
-            ResponseResult::Error { error } => error.validate(),
+            ResponseResult::Error { error } => {
+                error.validate()?;
+                if error.code == ErrorCode::SessionIdentityExhausted {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1163,6 +1619,7 @@ impl ProtocolResponse {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
         }
+        validate_message_header(bytes, RESPONSE_SCHEMA)?;
         let response: Self = decode_closed(bytes)?;
         if response.canonical_bytes() != bytes {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
@@ -1212,21 +1669,76 @@ fn validate_digest(value: &str) -> Result<(), ProtocolError> {
     }
 }
 
-fn validate_status_shape(
+fn validate_message_header(bytes: &[u8], expected_schema: &str) -> Result<(), ProtocolError> {
+    let header: MessageHeader = decode_closed(bytes)?;
+    validate_schema(&header.schema, expected_schema)?;
+    validate_version(header.protocol_version)
+}
+
+struct StatusShape<'a> {
     state: SessionState,
     broker_connection: BrokerConnection,
     channel_state: ChannelState,
-    receipt_head: Option<&ReceiptHead>,
-    pending_operation: Option<&PendingOperation>,
-    last_failure: Option<&ProtocolError>,
-) -> Result<(), ProtocolError> {
-    if let Some(head) = receipt_head {
+    launcher_head: Option<&'a ReceiptHead>,
+    broker_head: Option<&'a ReceiptHead>,
+    pending_receipt_count: u32,
+    pending_operation: Option<&'a PendingOperation>,
+    process_exit: Option<ProcessExitClassification>,
+    last_failure: Option<&'a ProtocolError>,
+}
+
+fn validate_status_shape(shape: StatusShape<'_>) -> Result<(), ProtocolError> {
+    let StatusShape {
+        state,
+        broker_connection,
+        channel_state,
+        launcher_head,
+        broker_head,
+        pending_receipt_count,
+        pending_operation,
+        process_exit,
+        last_failure,
+    } = shape;
+    if let Some(head) = launcher_head {
         validate_digest(&head.digest)?;
+    }
+    if let Some(head) = broker_head {
+        validate_digest(&head.digest)?;
+    }
+    let signed_gap = match (launcher_head, broker_head) {
+        (None, None) => 0,
+        (Some(launcher), None) => launcher
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid_status(state, broker_head))?,
+        (Some(launcher), Some(broker)) if launcher.sequence > broker.sequence => {
+            launcher.sequence - broker.sequence
+        }
+        (Some(launcher), Some(broker))
+            if launcher.sequence == broker.sequence && launcher.digest == broker.digest =>
+        {
+            0
+        }
+        _ => return Err(invalid_status(state, broker_head)),
+    };
+    if pending_receipt_count > MAX_PENDING_RECEIPTS || u64::from(pending_receipt_count) < signed_gap
+    {
+        return Err(invalid_status(state, broker_head));
     }
     if let Some(pending) = pending_operation {
         validate_identifier(&pending.request_id)?;
-        if pending.phase == PendingPhase::AwaitingDurableAck && receipt_head.is_none() {
-            return Err(invalid_status(state, receipt_head));
+        let process_exited_after_mechanic = state == SessionState::Terminal
+            && process_exit.is_some()
+            && pending.phase != PendingPhase::Applying;
+        let phase_receipt_matches = match pending.phase {
+            PendingPhase::Applying => u64::from(pending_receipt_count) >= signed_gap,
+            PendingPhase::Signing => u64::from(pending_receipt_count) > signed_gap,
+            PendingPhase::AwaitingDurableAck => {
+                signed_gap > 0 && u64::from(pending_receipt_count) >= signed_gap
+            }
+        };
+        if !phase_receipt_matches {
+            return Err(invalid_status(state, broker_head));
         }
         let pending_state_matches = match (pending.action, pending.phase) {
             (PendingAction::Launch, PendingPhase::Applying) => state == SessionState::Starting,
@@ -1235,10 +1747,16 @@ fn validate_status_shape(
             }
             (PendingAction::Park, PendingPhase::Applying) => state == SessionState::Running,
             (PendingAction::Park, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
-                state == SessionState::Parked
+                state == SessionState::Parked || process_exited_after_mechanic
             }
-            (PendingAction::Resume, _) => state == SessionState::Parked,
-            (PendingAction::Interrupt, _) => state == SessionState::Running,
+            (PendingAction::Resume, PendingPhase::Applying) => state == SessionState::Parked,
+            (PendingAction::Resume, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
+                state == SessionState::Running || process_exited_after_mechanic
+            }
+            (PendingAction::Interrupt, _) => {
+                matches!(state, SessionState::Running | SessionState::Parked)
+                    || process_exited_after_mechanic
+            }
             (PendingAction::Disposal, PendingPhase::Applying) => {
                 matches!(state, SessionState::Running | SessionState::Parked)
             }
@@ -1247,42 +1765,48 @@ fn validate_status_shape(
             }
         };
         if !pending_state_matches {
-            return Err(invalid_status(state, receipt_head));
+            return Err(invalid_status(state, broker_head));
         }
-        let head_sequence = receipt_head.map(|head| head.sequence);
+        let launcher_sequence = launcher_head.map(|head| head.sequence);
+        let broker_sequence = broker_head.map(|head| head.sequence);
         let launch_head_matches = match (state, pending.action, pending.phase) {
             (SessionState::Starting, PendingAction::Launch, PendingPhase::Applying) => {
-                matches!(head_sequence, None | Some(0))
+                matches!(launcher_sequence, None | Some(0))
             }
             (SessionState::Starting, PendingAction::Launch, PendingPhase::Signing) => {
-                head_sequence.is_none()
+                launcher_sequence.is_none() && broker_sequence.is_none()
             }
             (SessionState::Starting, PendingAction::Launch, PendingPhase::AwaitingDurableAck) => {
-                head_sequence == Some(0)
+                launcher_sequence == Some(0) && broker_sequence.is_none()
             }
             (SessionState::Running, PendingAction::Launch, PendingPhase::Signing) => {
-                head_sequence == Some(0)
+                launcher_sequence == Some(0) && broker_sequence == Some(0)
             }
             (SessionState::Running, PendingAction::Launch, PendingPhase::AwaitingDurableAck) => {
-                head_sequence == Some(1)
+                launcher_sequence == Some(1) && broker_sequence == Some(0)
             }
             (_, PendingAction::Launch, _) => false,
             _ => true,
         };
         if !launch_head_matches {
-            return Err(invalid_status(state, receipt_head));
+            return Err(invalid_status(state, broker_head));
         }
+    } else if pending_receipt_count == 0 && launcher_head != broker_head {
+        return Err(invalid_status(state, broker_head));
     }
     if let Some(failure) = last_failure {
         failure.validate()?;
     }
+    if process_exit.is_some() && state != SessionState::Terminal {
+        return Err(invalid_status(state, broker_head));
+    }
     let state_matches = match state {
         SessionState::Starting => {
             channel_state == ChannelState::Disabled
-                && receipt_head.is_none_or(|head| head.sequence == 0)
+                && launcher_head.is_none_or(|head| head.sequence == 0)
         }
         SessionState::Running => {
-            let receipt_head_matches = receipt_head.is_some_and(|head| {
+            let receipt_head_matches = launcher_head.is_some_and(|head| {
                 head.sequence > 0
                     || matches!(
                         pending_operation,
@@ -1299,11 +1823,11 @@ fn validate_status_shape(
             matches!(
                 channel_state,
                 ChannelState::Disabled | ChannelState::Revoked
-            ) && receipt_head.is_some()
+            ) && launcher_head.is_some()
         }
         SessionState::Terminal => {
             channel_state == ChannelState::Closed
-                && (receipt_head.is_some()
+                && (launcher_head.is_some()
                     || (pending_operation.is_none() && last_failure.is_some()))
         }
     };
@@ -1312,7 +1836,7 @@ fn validate_status_shape(
     if state_matches && connection_matches {
         Ok(())
     } else {
-        Err(invalid_status(state, receipt_head))
+        Err(invalid_status(state, broker_head))
     }
 }
 
@@ -1374,6 +1898,11 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
             false,
             NextAction::RefreshStatus,
         ),
+        ErrorCode::LifecycleMechanicUnavailable => (
+            "Session lifecycle mechanic is unavailable",
+            false,
+            NextAction::ContactOperator,
+        ),
         ErrorCode::ReceiptChainInvalid => (
             "launcher receipt chain is invalid",
             false,
@@ -1397,5 +1926,10 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
         ErrorCode::SessionIdentityExhausted => {
             ("no session identity is available", true, NextAction::Wait)
         }
+        ErrorCode::IdentityAssignmentInvalid => (
+            "broker-assigned session identity is invalid",
+            false,
+            NextAction::ContactOperator,
+        ),
     }
 }

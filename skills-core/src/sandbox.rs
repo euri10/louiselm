@@ -51,6 +51,9 @@ use crate::{
 /// How long disposal waits for a process tree to actually be gone.
 pub const DISPOSAL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a lifecycle call waits for the kernel to confirm a cgroup state.
+const LIFECYCLE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long `interrupt` waits, once frozen, for the tree's membership to stop
 /// growing before it enumerates who to signal.
 const SIGNAL_SETTLE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -276,11 +279,43 @@ impl Cgroup {
 
     /// Reports whether every process in the cgroup is currently frozen.
     pub fn is_frozen(&self) -> bool {
-        fs::read_to_string(self.path.join("cgroup.events"))
-            .unwrap_or_default()
+        self.frozen_state().unwrap_or(false)
+    }
+
+    fn requested_frozen_state(&self) -> Result<bool, SandboxError> {
+        let path = self.path.join("cgroup.freeze");
+        let value = fs::read_to_string(&path).map_err(|source| SandboxError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        match value.trim() {
+            "0" => Ok(false),
+            "1" => Ok(true),
+            _ => Err(SandboxError::SpawnFailed {
+                backend: "cgroup v2",
+                reason: "cgroup.freeze did not report a requested freeze state".to_owned(),
+            }),
+        }
+    }
+
+    fn frozen_state(&self) -> Result<bool, SandboxError> {
+        let path = self.path.join("cgroup.events");
+        let contents = fs::read_to_string(&path).map_err(|source| SandboxError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let value = contents
             .lines()
             .find_map(|line| line.strip_prefix("frozen "))
-            .is_some_and(|value| value.trim() == "1")
+            .map(str::trim);
+        match value {
+            Some("0") => Ok(false),
+            Some("1") => Ok(true),
+            _ => Err(SandboxError::SpawnFailed {
+                backend: "cgroup v2",
+                reason: "cgroup.events did not report freeze state".to_owned(),
+            }),
+        }
     }
 
     fn preflight_lifecycle(&self) -> Result<(), SandboxError> {
@@ -300,6 +335,39 @@ impl Cgroup {
     /// Freezes every process in the cgroup, including ones forked since.
     pub fn freeze(&self) -> Result<(), SandboxError> {
         self.write("cgroup.freeze", "1")
+    }
+
+    fn request_freeze_and_wait(&self, timeout: Duration) -> Result<(), SandboxError> {
+        self.request_frozen_state_and_wait(true, timeout)
+    }
+
+    fn request_thaw_and_wait(&self, timeout: Duration) -> Result<(), SandboxError> {
+        self.request_frozen_state_and_wait(false, timeout)
+    }
+
+    fn request_frozen_state_and_wait(
+        &self,
+        frozen: bool,
+        timeout: Duration,
+    ) -> Result<(), SandboxError> {
+        self.write("cgroup.freeze", if frozen { "1" } else { "0" })?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.frozen_state()? == frozen {
+                return Ok(());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(SandboxError::SpawnFailed {
+                    backend: "cgroup v2",
+                    reason: format!(
+                        "the kernel did not confirm the {} state before its deadline",
+                        if frozen { "frozen" } else { "running" },
+                    ),
+                });
+            }
+            thread::sleep(Duration::from_millis(20).min(deadline - now));
+        }
     }
 
     /// Thaws a frozen cgroup.
@@ -381,6 +449,17 @@ pub struct SandboxedSession {
     _status_guard: Option<UnixStream>,
 }
 
+/// Kernel-proved execution state of one live sandbox process tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SandboxMechanicalState {
+    /// The live process tree may execute.
+    Running,
+    /// The live process tree is completely frozen.
+    Parked,
+    /// The supervised process exited with this sanitized launcher-side code.
+    Exited(i32),
+}
+
 /// A confined process tree whose workload is still blocked before `exec`.
 #[derive(Debug)]
 pub struct PreparedSession {
@@ -459,24 +538,126 @@ impl SandboxedSession {
         self.child.stderr.take()
     }
 
+    /// Observes a settled process-tree state without guessing through a kernel transition.
+    ///
+    /// Fails when membership, exit, requested freeze, and observed freeze cannot prove one state.
+    pub fn mechanical_state(&mut self) -> Result<SandboxMechanicalState, SandboxError> {
+        if let Some(code) = self.try_wait()? {
+            return Ok(SandboxMechanicalState::Exited(code));
+        }
+        let cgroup = self
+            .cgroup
+            .as_ref()
+            .ok_or_else(|| SandboxError::NoCgroup("this Session has no cgroup".to_owned()))?;
+        if cgroup.processes()?.is_empty() {
+            return Err(SandboxError::SpawnFailed {
+                backend: self.backend,
+                reason: "the Session tree is empty without an observed process exit".to_owned(),
+            });
+        }
+        let requested = cgroup.requested_frozen_state()?;
+        let observed = cgroup.frozen_state()?;
+        if requested != observed {
+            return Err(SandboxError::SpawnFailed {
+                backend: "cgroup v2",
+                reason: "the Session freeze transition is not settled".to_owned(),
+            });
+        }
+        Ok(if observed {
+            SandboxMechanicalState::Parked
+        } else {
+            SandboxMechanicalState::Running
+        })
+    }
+
     /// Freezes the whole tree, preserving in-flight work.
     ///
     /// Freezing rather than stopping the direct child is the point: a Park that
     /// only stopped the process the launcher knows about would leave every
     /// descendant running.
-    pub fn park(&self) -> Result<(), SandboxError> {
-        self.cgroup
+    pub fn park(&mut self) -> Result<(), SandboxError> {
+        let cgroup = self
+            .cgroup
             .as_ref()
-            .ok_or_else(|| SandboxError::NoCgroup("this Session has no cgroup".to_owned()))?
-            .freeze()
+            .ok_or_else(|| SandboxError::NoCgroup("this Session has no cgroup".to_owned()))?;
+        cgroup.request_freeze_and_wait(LIFECYCLE_CONFIRM_TIMEOUT)?;
+        if cgroup.processes()?.is_empty() {
+            return Err(SandboxError::SpawnFailed {
+                backend: self.backend,
+                reason: "the Session tree exited while Park was being applied".to_owned(),
+            });
+        }
+        match self.child.try_wait().map_err(|source| SandboxError::Io {
+            path: "child".to_owned(),
+            source,
+        })? {
+            None => Ok(()),
+            Some(_) => Err(SandboxError::SpawnFailed {
+                backend: self.backend,
+                reason: "the Session exited while Park was being applied".to_owned(),
+            }),
+        }
     }
 
     /// Thaws a parked Session.
-    pub fn resume(&self) -> Result<(), SandboxError> {
-        self.cgroup
+    pub fn resume(&mut self) -> Result<(), SandboxError> {
+        self.resume_with_timeout(LIFECYCLE_CONFIRM_TIMEOUT)
+    }
+
+    fn resume_with_timeout(&mut self, timeout: Duration) -> Result<(), SandboxError> {
+        let cgroup = self
+            .cgroup
             .as_ref()
-            .ok_or_else(|| SandboxError::NoCgroup("this Session has no cgroup".to_owned()))?
-            .thaw()
+            .ok_or_else(|| SandboxError::NoCgroup("this Session has no cgroup".to_owned()))?;
+        let resumed = (|| {
+            if !cgroup.frozen_state()? {
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session tree was not frozen before Resume".to_owned(),
+                });
+            }
+            if cgroup.processes()?.is_empty() {
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session tree exited before Resume was applied".to_owned(),
+                });
+            }
+            if self
+                .child
+                .try_wait()
+                .map_err(|source| SandboxError::Io {
+                    path: "child".to_owned(),
+                    source,
+                })?
+                .is_some()
+            {
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session exited before Resume was applied".to_owned(),
+                });
+            }
+            cgroup.request_thaw_and_wait(timeout)?;
+            if cgroup.processes()?.is_empty() {
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session tree exited while Resume was being applied".to_owned(),
+                });
+            }
+            match self.child.try_wait().map_err(|source| SandboxError::Io {
+                path: "child".to_owned(),
+                source,
+            })? {
+                None => Ok(()),
+                Some(_) => Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session exited while Resume was being applied".to_owned(),
+                }),
+            }
+        })();
+        if resumed.is_err() {
+            let _ = cgroup.request_freeze_and_wait(timeout);
+        }
+        resumed
     }
 
     /// Reports whether a parked Session is currently frozen.
@@ -509,20 +690,53 @@ impl SandboxedSession {
     /// Session. The Agent and anything it forked are not namespace-init and
     /// die normally. Call [`SandboxedSession::dispose`] for an actual
     /// zero-survivors guarantee.
-    pub fn interrupt(&self) -> Result<usize, SandboxError> {
-        let cgroup = self.cgroup.as_ref();
+    pub fn interrupt(&mut self) -> Result<usize, SandboxError> {
+        self.interrupt_with_timeout(LIFECYCLE_CONFIRM_TIMEOUT)
+    }
+
+    fn interrupt_with_timeout(&mut self, timeout: Duration) -> Result<usize, SandboxError> {
+        let cgroup = self
+            .cgroup
+            .as_ref()
+            .filter(|cgroup| cgroup.supports_freeze())
+            .cloned();
+        let was_frozen = cgroup.as_ref().map(Cgroup::frozen_state).transpose()?;
         let outcome = (|| {
-            let processes = if let Some(cgroup) = cgroup.filter(|cgroup| cgroup.supports_freeze()) {
-                cgroup.freeze()?;
+            let processes = if let Some(cgroup) = &cgroup {
+                cgroup.request_freeze_and_wait(timeout)?;
                 wait_for_stable_membership(cgroup)?
             } else {
                 self.processes()?
             };
+            if processes.is_empty() {
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session tree exited before Interrupt was applied".to_owned(),
+                });
+            }
+            if self
+                .child
+                .try_wait()
+                .map_err(|source| SandboxError::Io {
+                    path: "child".to_owned(),
+                    source,
+                })?
+                .is_some()
+            {
+                return Err(SandboxError::SpawnFailed {
+                    backend: self.backend,
+                    reason: "the Session exited before Interrupt was applied".to_owned(),
+                });
+            }
             signal(&processes, "-INT", self.backend)
         })();
-
-        if let Some(cgroup) = cgroup {
-            let _ = cgroup.thaw();
+        if let Some(cgroup) = &cgroup {
+            let restored = if was_frozen == Some(true) {
+                cgroup.request_freeze_and_wait(timeout)
+            } else {
+                cgroup.request_thaw_and_wait(timeout)
+            };
+            restored?;
         }
         outcome
     }
@@ -1421,6 +1635,423 @@ pub fn default_system_roots() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn freeze_wait_requires_kernel_confirmation() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.freeze"), "0")
+            .expect("freeze control fixture writes");
+        fs::write(
+            fixture.path().join("cgroup.events"),
+            "populated 1\nfrozen 1\n",
+        )
+        .expect("event fixture writes");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+
+        cgroup
+            .request_freeze_and_wait(Duration::ZERO)
+            .expect("reported kernel freeze completes");
+        assert_eq!(
+            fs::read_to_string(fixture.path().join("cgroup.freeze")).expect("freeze request reads"),
+            "1",
+        );
+
+        fs::write(
+            fixture.path().join("cgroup.events"),
+            "populated 1\nfrozen 0\n",
+        )
+        .expect("unfrozen event fixture writes");
+        assert!(matches!(
+            cgroup.request_freeze_and_wait(Duration::ZERO),
+            Err(SandboxError::SpawnFailed { .. }),
+        ));
+    }
+
+    #[test]
+    fn mechanical_state_requires_live_membership_and_a_settled_freeze_request() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let mut session = test_session("mechanical-state", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+        fs::write(fixture.path().join("cgroup.freeze"), "1")
+            .expect("freeze request fixture writes");
+        fs::write(
+            fixture.path().join("cgroup.events"),
+            "populated 1\nfrozen 0\n",
+        )
+        .expect("freeze event fixture writes");
+
+        assert!(
+            session.mechanical_state().is_err(),
+            "an accepted but incomplete kernel transition is ambiguous",
+        );
+
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("empty membership fixture writes");
+        fs::write(fixture.path().join("cgroup.freeze"), "0")
+            .expect("running request fixture writes");
+        assert!(
+            session.mechanical_state().is_err(),
+            "a live launcher child outside the proven tree is ambiguous",
+        );
+        clean_up_test_child(&mut session);
+    }
+
+    #[test]
+    fn mechanical_state_reports_settled_running_parked_and_exit() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        let events = fixture.path().join("cgroup.events");
+        let mut session = test_session("mechanical-state", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+
+        fs::write(&freeze, "0").expect("running request fixture writes");
+        fs::write(&events, "populated 1\nfrozen 0\n").expect("running event fixture writes");
+        assert_eq!(
+            session.mechanical_state().expect("running state proves"),
+            SandboxMechanicalState::Running,
+        );
+
+        fs::write(&freeze, "1").expect("park request fixture writes");
+        fs::write(&events, "populated 1\nfrozen 1\n").expect("park event fixture writes");
+        assert_eq!(
+            session.mechanical_state().expect("parked state proves"),
+            SandboxMechanicalState::Parked,
+        );
+
+        session.child.kill().expect("child exits");
+        session.child.wait().expect("child is reaped");
+        assert_eq!(
+            session.mechanical_state().expect("exit state proves"),
+            SandboxMechanicalState::Exited(-1),
+        );
+    }
+
+    #[test]
+    fn resume_waits_for_kernel_thaw_confirmation_and_refreezes_on_timeout() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "1").expect("freeze control fixture writes");
+        fs::write(
+            fixture.path().join("cgroup.events"),
+            "populated 1\nfrozen 1\n",
+        )
+        .expect("event fixture writes");
+        let mut session = test_session("resume-timeout", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+
+        let error = session
+            .resume_with_timeout(Duration::ZERO)
+            .expect_err("Resume waits for the kernel to report frozen=0");
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        session.child.kill().expect("child can be cleaned up");
+        session.child.wait().expect("child is reaped");
+
+        assert!(
+            matches!(error, SandboxError::SpawnFailed { backend: "cgroup v2", ref reason }
+                if reason.contains("running")),
+            "unexpected error: {error}",
+        );
+        assert_eq!(
+            final_request, "1",
+            "a failed thaw must request and confirm a re-freeze",
+        );
+    }
+
+    #[test]
+    fn resume_rejects_an_empty_tree_without_thawing_it() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "1").expect("freeze control fixture writes");
+        fs::write(
+            fixture.path().join("cgroup.events"),
+            "populated 0\nfrozen 1\n",
+        )
+        .expect("event fixture writes");
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("empty membership fixture writes");
+        let mut session = test_session("resume-empty", fixture.path(), None);
+
+        let error = session
+            .resume_with_timeout(Duration::ZERO)
+            .expect_err("an empty Session tree cannot Resume");
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        session.child.kill().expect("child can be cleaned up");
+        session.child.wait().expect("child is reaped");
+
+        assert!(
+            matches!(error, SandboxError::SpawnFailed { backend: "test", ref reason }
+                if reason.contains("tree exited")),
+            "unexpected error: {error}",
+        );
+        assert_eq!(final_request, "1", "an empty tree must remain frozen");
+    }
+
+    #[test]
+    fn resume_rejects_an_exited_launcher_child_without_thawing_the_tree() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "1").expect("freeze control fixture writes");
+        fs::write(
+            fixture.path().join("cgroup.events"),
+            "populated 1\nfrozen 1\n",
+        )
+        .expect("event fixture writes");
+        let mut session = test_session("resume-exited", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+        session.child.kill().expect("child exits");
+        session.child.wait().expect("child is reaped");
+
+        let error = session
+            .resume_with_timeout(Duration::ZERO)
+            .expect_err("an exited Session cannot Resume");
+
+        assert!(
+            matches!(error, SandboxError::SpawnFailed { backend: "test", ref reason }
+                if reason.contains("Session exited")),
+            "unexpected error: {error}",
+        );
+        assert_eq!(
+            fs::read_to_string(freeze).expect("freeze request reads"),
+            "1",
+            "an exited Session tree must remain frozen",
+        );
+    }
+
+    fn replace_freeze_event(cgroup_path: &Path, frozen: bool) {
+        let pending = cgroup_path.join("cgroup.events.next");
+        fs::write(
+            &pending,
+            format!("populated 1\nfrozen {}\n", u8::from(frozen)),
+        )
+        .expect("next event fixture writes");
+        fs::rename(pending, cgroup_path.join("cgroup.events"))
+            .expect("event fixture changes atomically");
+    }
+
+    fn wait_for_freeze_request(path: &Path, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while fs::read_to_string(path).ok().as_deref() != Some(expected) {
+            assert!(
+                Instant::now() < deadline,
+                "freeze control never received request {expected}",
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn clean_up_test_child(session: &mut SandboxedSession) {
+        let _ = session.child.kill();
+        session.child.wait().expect("child is reaped");
+    }
+
+    #[test]
+    fn interrupt_restores_and_confirms_a_running_tree() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "0").expect("freeze control fixture writes");
+        replace_freeze_event(fixture.path(), false);
+        let mut session = test_session("interrupt-running", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+        let kernel_path = fixture.path().to_owned();
+        let kernel_freeze = freeze.clone();
+        let kernel = thread::spawn(move || {
+            wait_for_freeze_request(&kernel_freeze, "1");
+            replace_freeze_event(&kernel_path, true);
+            wait_for_freeze_request(&kernel_freeze, "0");
+            replace_freeze_event(&kernel_path, false);
+        });
+
+        let result = session.interrupt_with_timeout(Duration::from_secs(1));
+        kernel.join().expect("kernel fixture completes");
+        let is_parked = session.is_parked();
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        clean_up_test_child(&mut session);
+
+        assert_eq!(result.expect("interrupt succeeds"), 1);
+        assert!(
+            !is_parked,
+            "a Running tree must return to confirmed running"
+        );
+        assert_eq!(final_request, "0");
+    }
+
+    #[test]
+    fn interrupt_keeps_a_parked_tree_confirmed_frozen() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "1").expect("freeze control fixture writes");
+        replace_freeze_event(fixture.path(), true);
+        let mut session = test_session("interrupt-parked", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+
+        let result = session.interrupt_with_timeout(Duration::ZERO);
+        let is_parked = session.is_parked();
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        clean_up_test_child(&mut session);
+
+        assert_eq!(result.expect("interrupt succeeds"), 1);
+        assert!(is_parked, "a Parked tree must remain confirmed frozen");
+        assert_eq!(final_request, "1");
+    }
+
+    #[test]
+    fn interrupt_rejects_an_empty_tree_and_restores_running_state() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "0").expect("freeze control fixture writes");
+        replace_freeze_event(fixture.path(), false);
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("empty membership fixture writes");
+        let mut session = test_session("interrupt-empty", fixture.path(), None);
+        let kernel_path = fixture.path().to_owned();
+        let kernel_freeze = freeze.clone();
+        let kernel = thread::spawn(move || {
+            wait_for_freeze_request(&kernel_freeze, "1");
+            replace_freeze_event(&kernel_path, true);
+            wait_for_freeze_request(&kernel_freeze, "0");
+            replace_freeze_event(&kernel_path, false);
+        });
+
+        let result = session.interrupt_with_timeout(Duration::from_secs(1));
+        kernel.join().expect("kernel fixture completes");
+        let is_parked = session.is_parked();
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        clean_up_test_child(&mut session);
+        let error = result.expect_err("an empty Session tree cannot be interrupted");
+
+        assert!(
+            matches!(error, SandboxError::SpawnFailed { backend: "test", ref reason }
+                if reason.contains("tree exited")),
+            "unexpected error: {error}",
+        );
+        assert!(!is_parked, "the prior Running state must be restored");
+        assert_eq!(final_request, "0");
+    }
+
+    #[test]
+    fn interrupt_rejects_an_exited_launcher_child_without_signalling_members() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "1").expect("freeze control fixture writes");
+        replace_freeze_event(fixture.path(), true);
+        let mut session = test_session("interrupt-exited", fixture.path(), None);
+        session.child.kill().expect("launcher child exits");
+        session.child.wait().expect("launcher child is reaped");
+        let mut member = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("membership fixture process starts");
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", member.id()),
+        )
+        .expect("membership fixture writes");
+
+        let result = session.interrupt_with_timeout(Duration::ZERO);
+        let is_parked = session.is_parked();
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        let member_was_running = member
+            .try_wait()
+            .expect("membership fixture process can be observed")
+            .is_none();
+        let _ = member.kill();
+        member.wait().expect("membership fixture process is reaped");
+        let error = result.expect_err("an exited Session cannot be interrupted");
+
+        assert!(
+            matches!(error, SandboxError::SpawnFailed { backend: "test", ref reason }
+                if reason.contains("Session exited")),
+            "unexpected error: {error}",
+        );
+        assert!(
+            member_was_running,
+            "an unrelated member must not be signalled after the launcher child exited",
+        );
+        assert!(is_parked, "the prior Parked state must be preserved");
+        assert_eq!(final_request, "1");
+    }
+
+    #[test]
+    fn interrupt_reports_mechanic_failure_after_restoring_state() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "1").expect("freeze control fixture writes");
+        replace_freeze_event(fixture.path(), true);
+        fs::write(fixture.path().join("cgroup.procs"), "not-a-pid\n")
+            .expect("malformed membership fixture writes");
+        let mut session = test_session("interrupt-mechanic-error", fixture.path(), None);
+
+        let error = session
+            .interrupt_with_timeout(Duration::ZERO)
+            .expect_err("malformed membership fails interrupt");
+        let is_parked = session.is_parked();
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        clean_up_test_child(&mut session);
+
+        assert!(matches!(error, SandboxError::Io { .. }));
+        assert!(is_parked, "mechanic failure restores the original state");
+        assert_eq!(final_request, "1");
+    }
+
+    #[test]
+    fn interrupt_reports_unconfirmed_restoration() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let freeze = fixture.path().join("cgroup.freeze");
+        fs::write(&freeze, "0").expect("freeze control fixture writes");
+        replace_freeze_event(fixture.path(), false);
+        let mut session = test_session("interrupt-restore-error", fixture.path(), None);
+        fs::write(
+            fixture.path().join("cgroup.procs"),
+            format!("{}\n", session.child.id()),
+        )
+        .expect("membership fixture writes");
+        let kernel_path = fixture.path().to_owned();
+        let kernel_freeze = freeze.clone();
+        let kernel = thread::spawn(move || {
+            wait_for_freeze_request(&kernel_freeze, "1");
+            replace_freeze_event(&kernel_path, true);
+        });
+
+        let error = session
+            .interrupt_with_timeout(Duration::from_secs(1))
+            .expect_err("unconfirmed running restoration fails interrupt");
+        kernel.join().expect("kernel fixture completes");
+        let final_request = fs::read_to_string(&freeze).expect("freeze request reads");
+        clean_up_test_child(&mut session);
+
+        assert!(
+            matches!(error, SandboxError::SpawnFailed { backend: "cgroup v2", ref reason }
+                if reason.contains("running")),
+            "unexpected error: {error}",
+        );
+        assert_eq!(final_request, "0", "restoration was requested");
+    }
+
     fn test_session(
         session_id: &str,
         cgroup_path: &Path,
@@ -1890,12 +2521,22 @@ mod tests {
     fn interrupt_thaws_after_membership_read_failure() {
         let fixture = tempfile::tempdir().expect("fixture opens");
         let freeze = fixture.path().join("cgroup.freeze");
-        fs::write(&freeze, "").expect("freeze fixture writes");
+        fs::write(&freeze, "0").expect("freeze fixture writes");
+        replace_freeze_event(fixture.path(), false);
         let mut session = test_session("interrupt-error", fixture.path(), None);
+        let kernel_path = fixture.path().to_owned();
+        let kernel_freeze = freeze.clone();
+        let kernel = thread::spawn(move || {
+            wait_for_freeze_request(&kernel_freeze, "1");
+            replace_freeze_event(&kernel_path, true);
+            wait_for_freeze_request(&kernel_freeze, "0");
+            replace_freeze_event(&kernel_path, false);
+        });
 
         let error = session
-            .interrupt()
+            .interrupt_with_timeout(Duration::from_secs(1))
             .expect_err("unreadable membership fails the interrupt");
+        kernel.join().expect("kernel fixture completes");
         match error {
             SandboxError::Io { path, source } => {
                 assert_eq!(Path::new(&path), fixture.path().join("cgroup.procs"));
