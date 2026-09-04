@@ -1,31 +1,18 @@
 include:
-  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform@9.4.0
+  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform@fef22b89d78f356aeac7b7357fd8e5984d05bbca
     inputs:
-      image: ghcr.io/opentofu/opentofu:1.12.3
+      image: ghcr.io/opentofu/opentofu:1.12.3@sha256:a0766d12f07b43e66f2ed40d7a8babe97d581d20339c68ad0ab561737af9a5b3
       project-dir: infra/firebase
-      gitlab-backend-disabled: false
+      gitlab-backend-disabled: true
       fmt-enabled: true
       validate-enabled: true
-      prod-enabled: true
-      prod-plan-enabled: true
-  - component: $CI_SERVER_FQDN/to-be-continuous/terraform/gitlab-ci-terraform-gcp@9.4.0
-    inputs:
-      gcp-oidc-aud: $CI_SERVER_URL
-      gcp-prod-oidc-provider: $GCP_OIDC_PROVIDER
-      gcp-prod-oidc-account: $GCP_OIDC_ACCOUNT
+      tflint-image: ghcr.io/terraform-linters/tflint@sha256:1c595f42d794c32c45a6ea8b58655fd66433d4ca3b1bc631c574a48d120bd19f
+      prod-enabled: false
+      prod-plan-enabled: false
 
 variables:
   # Public validation does not receive backend credentials or an ID token.
-  TF_PROD_ENABLED: "true"
-  TF_PROD_PLAN_ENABLED: "true"
-  TF_PROD_APPLY_OPTS: "-refresh=false"
-  TF_VAR_gitlab_project_id: $CI_PROJECT_ID
-  TF_VAR_gitlab_default_branch: $CI_DEFAULT_BRANCH
-
-# The GCP variant adds an ID token to .tf-base. Remove it from public jobs;
-# only the protected production plan/apply jobs re-add it below.
-.tf-base:
-  id_tokens: null
+  LOUISELM_PRODUCTION_READY: "false"
 
 tf-fmt:
   id_tokens: null
@@ -37,39 +24,220 @@ tf-validate:
   rules:
     - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
 
-tf-plan-production:
-  id_tokens:
-    GCP_JWT:
-      aud: "$CI_SERVER_URL"
+tf-tflint:
+  id_tokens: null
+  variables:
+    TFLINT_GOOGLE_VERSION: "0.39.0"
+    TFLINT_GOOGLE_SHA256: "e5034d2c25c2ed94b131897904614ea8b575fb1fc7a0619b14a874d8cb9adec1"
+  before_script:
+    - !reference [.tf-base, before_script]
+    - |
+      test "$(uname -m)" = "x86_64"
+      plugin="$TFLINT_PLUGIN_DIR/tflint-ruleset-google"
+      if [ ! -x "$plugin" ]; then
+        mkdir -p "$TFLINT_PLUGIN_DIR"
+        archive="$(mktemp)"
+        wget -qO "$archive" "https://github.com/terraform-linters/tflint-ruleset-google/releases/download/v${TFLINT_GOOGLE_VERSION}/tflint-ruleset-google_linux_amd64.zip"
+        printf '%s  %s\n' "$TFLINT_GOOGLE_SHA256" "$archive" | sha256sum -c -
+        unzip -p "$archive" tflint-ruleset-google > "$plugin"
+        chmod 0755 "$plugin"
+        find "$archive" -maxdepth 0 -type f -delete
+      fi
+  script:
+    - mkdir -p -m 777 reports
+    - tflint --init
+    - tflint --format=junit $TF_TFLINT_ARGS > reports/tflint.xunit.xml || true
+    - TFLINT_LOG=${TRACE+debug} tflint $TF_TFLINT_ARGS
   rules:
-    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
-      when: never
-    - if: '$CI_COMMIT_REF_PROTECTED != "true"'
-      when: never
-    - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
-      when: never
-    - when: on_success
-  artifacts:
-    name: "Reviewed OpenTofu production plan $CI_COMMIT_SHA"
-    expire_in: 1 day
-    access: developer
-    paths:
-      - $TF_PROJECT_DIR/production.tfplan
-      - $TF_PROJECT_DIR/production-plan.json
-    reports:
-      terraform: $TF_PROJECT_DIR/production-plan.json
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+tf-trivy:
+  id_tokens: null
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+tf-test-static:
+  image:
+    name: ghcr.io/opentofu/opentofu:1.12.3@sha256:a0766d12f07b43e66f2ed40d7a8babe97d581d20339c68ad0ab561737af9a5b3
+    entrypoint: [""]
+  stage: test
+  id_tokens: null
+  script:
+    - cd infra/firebase
+    - ./tf-pre-init.sh
+    - tofu init -backend=false -lockfile=readonly -input=false
+    - tofu test
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+# The pinned component defines optional and stateful jobs even when its inputs
+# are false. Unconditional rules keep higher-precedence CI variables from
+# reviving work outside this repository's static-validation boundary.
+tf-tfsec:
+  rules:
+    - when: never
+
+tf-checkov:
+  rules:
+    - when: never
+
+tf-infracost:
+  rules:
+    - when: never
+
+tf-docs:
+  rules:
+    - when: never
+
+tf-publish-module:
+  rules:
+    - when: never
+
+tf-plan-review:
+  rules:
+    - when: never
+
+tf-test-review:
+  rules:
+    - when: never
+
+tf-review:
+  rules:
+    - when: never
+
+tf-destroy-review:
+  rules:
+    - when: never
+
+tf-plan-integration:
+  rules:
+    - when: never
+
+tf-test-integration:
+  rules:
+    - when: never
+
+tf-integration:
+  rules:
+    - when: never
+
+tf-destroy-integration:
+  rules:
+    - when: never
+
+tf-plan-staging:
+  rules:
+    - when: never
+
+tf-test-staging:
+  rules:
+    - when: never
+
+tf-staging:
+  rules:
+    - when: never
+
+tf-destroy-staging:
+  rules:
+    - when: never
+
+tf-plan-production:
+  rules:
+    - when: never
+
+tf-test-production:
+  rules:
+    - when: never
 
 tf-production:
+  rules:
+    - when: never
+
+site-build:
+  image: node:24.18.0-bookworm@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059
+  stage: build
+  id_tokens: null
+  variables:
+    HOST: "127.0.0.1"
+  script:
+    - npm ci
+    - ./scripts/test-public-artifact.sh
+    - npm run site:build
+  artifacts:
+    name: "Public site $CI_COMMIT_SHA"
+    access: developer
+    expire_in: 7 days
+    paths:
+      - _build/html
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+site-deploy:
+  image:
+    name: us-docker.pkg.dev/firebase-cli/us/firebase:15.29.0@sha256:62ec2c68e1e7de6941f7bc14ba01590ce85d40c4172cd11b7708e4563c3c8482
+    entrypoint: [""]
+  stage: production
+  needs:
+    - job: site-build
+      artifacts: true
   id_tokens:
     GCP_JWT:
       aud: "$CI_SERVER_URL"
-  dependencies:
-    - tf-plan-production
+  resource_group: firebase-hosting-production
+  environment:
+    name: site-production
+    url: https://${TF_VAR_project_id}.web.app
+  script:
+    - ./scripts/check-public-artifact _build/html .
+    - |
+      set -eu
+      : "${GCP_JWT:?GCP_JWT is required}"
+      : "${GCP_OIDC_PROVIDER:?GCP_OIDC_PROVIDER is required}"
+      : "${GCP_HOSTING_OIDC_ACCOUNT:?GCP_HOSTING_OIDC_ACCOUNT is required}"
+      : "${TF_VAR_project_id:?TF_VAR_project_id is required}"
+      unset FIREBASE_TOKEN
+      umask 077
+      auth_dir="$(mktemp -d)"
+      trap 'find "$auth_dir" -depth -delete' EXIT
+      token_file="$auth_dir/gitlab.jwt"
+      export GCP_TOKEN_FILE="$token_file"
+      export GOOGLE_APPLICATION_CREDENTIALS="$auth_dir/gcp-credentials.json"
+      printf '%s' "$GCP_JWT" > "$token_file"
+      node -e '
+        const fs = require("node:fs");
+        const provider = process.env.GCP_OIDC_PROVIDER;
+        const account = process.env.GCP_HOSTING_OIDC_ACCOUNT;
+        fs.writeFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, JSON.stringify({
+          type: "external_account",
+          audience: `//iam.googleapis.com/${provider}`,
+          subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+          token_url: "https://sts.googleapis.com/v1/token",
+          credential_source: { file: process.env.GCP_TOKEN_FILE },
+          service_account_impersonation_url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${account}:generateAccessToken`,
+        }));
+      '
+      firebase --version
+      firebase deploy --config firebase.json --project "$TF_VAR_project_id" --only hosting --public _build/html --message "GitLab ${CI_PROJECT_PATH}@${CI_COMMIT_SHA}" --non-interactive --json > firebase-deploy.json
+      node -e '
+        const deployment = require("./firebase-deploy.json");
+        if (deployment.status !== "success" || typeof deployment.result?.hosting !== "string") {
+          throw new Error("Firebase Hosting deploy did not report success");
+        }
+      '
+  artifacts:
+    when: always
+    name: "Firebase Hosting release $CI_COMMIT_SHA"
+    access: developer
+    expire_in: 1 year
+    paths:
+      - firebase-deploy.json
+  manual_confirmation: "Deploy this commit's reviewed public artifact to Firebase Hosting?"
   rules:
+    - if: '$LOUISELM_PRODUCTION_READY != "true"'
+      when: never
     - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
       when: never
     - if: '$CI_COMMIT_REF_PROTECTED != "true"'
       when: never
-    - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
-      when: never
     - when: manual
+      allow_failure: false

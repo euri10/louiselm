@@ -1,27 +1,63 @@
 locals {
+  project_parent_valid = var.org_id == null || var.folder_id == null
+
   required_services = toset([
     "apikeys.googleapis.com",
     "cloudbilling.googleapis.com",
     "cloudresourcemanager.googleapis.com",
+    "compute.googleapis.com",
     "fcm.googleapis.com",
+    "fcmregistrations.googleapis.com",
     "firebase.googleapis.com",
+    "firebasehosting.googleapis.com",
     "firebaseinstallations.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "logging.googleapis.com",
     "serviceusage.googleapis.com",
+    "sts.googleapis.com",
   ])
 }
 
 resource "google_project" "notifications" {
-  project_id      = var.project_id
-  name            = var.project_name
-  billing_account = var.billing_account_id
-  org_id          = var.org_id
-  folder_id       = var.folder_id
-  deletion_policy = "PREVENT"
+  project_id          = var.project_id
+  name                = "LouiseLM"
+  billing_account     = var.billing_account_id
+  org_id              = local.project_parent_valid ? var.org_id : null
+  folder_id           = local.project_parent_valid ? var.folder_id : null
+  auto_create_network = false
+  deletion_policy     = "PREVENT"
 
   lifecycle {
     prevent_destroy = true
+
+    precondition {
+      condition     = local.project_parent_valid
+      error_message = "At most one of org_id or folder_id may be supplied to create the dedicated project."
+    }
+  }
+}
+
+resource "google_project_iam_audit_config" "notifications" {
+  project = google_project.notifications.project_id
+  service = "allServices"
+
+  depends_on = [google_firebase_project.notifications]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  audit_log_config {
+    log_type = "ADMIN_READ"
+  }
+
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+
+  audit_log_config {
+    log_type = "DATA_WRITE"
   }
 }
 
@@ -34,6 +70,14 @@ resource "google_project_service" "required" {
   deletion_policy    = "PREVENT"
 }
 
+resource "google_project_default_service_accounts" "app" {
+  project        = google_project.notifications.project_id
+  action         = "DEPRIVILEGE"
+  restore_policy = "NONE"
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_firebase_project" "notifications" {
   provider = google-beta
   project  = google_project.notifications.project_id
@@ -42,7 +86,38 @@ resource "google_firebase_project" "notifications" {
     prevent_destroy = true
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [google_project_default_service_accounts.app]
+}
+
+resource "google_firebase_hosting_site" "public" {
+  provider = google-beta
+
+  project         = google_project.notifications.project_id
+  site_id         = google_project.notifications.project_id
+  deletion_policy = "PREVENT"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [
+    google_firebase_project.notifications,
+    google_project_service.required,
+  ]
+}
+
+resource "google_firebase_hosting_custom_domain" "public" {
+  provider = google-beta
+
+  project               = google_project.notifications.project_id
+  site_id               = google_firebase_hosting_site.public.site_id
+  custom_domain         = "louiselm.com"
+  wait_dns_verification = false
+  deletion_policy       = "PREVENT"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_apikeys_key" "android" {
@@ -66,7 +141,15 @@ resource "google_apikeys_key" "android" {
     }
 
     api_targets {
-      service = "fcm.googleapis.com"
+      service = "fcmregistrations.googleapis.com"
+    }
+
+    api_targets {
+      service = "firebaseinstallations.googleapis.com"
+    }
+
+    api_targets {
+      service = "logging.googleapis.com"
     }
   }
 
@@ -104,6 +187,8 @@ resource "google_service_account" "sender" {
   display_name    = "LouiseLM FCM sender"
   deletion_policy = "PREVENT"
 
+  depends_on = [google_project_service.required]
+
   lifecycle {
     prevent_destroy = true
   }
@@ -118,6 +203,8 @@ resource "google_project_iam_custom_role" "sender" {
   stage           = "GA"
   deletion_policy = "PREVENT"
 
+  depends_on = [google_project_service.required]
+
   lifecycle {
     prevent_destroy = true
   }
@@ -127,15 +214,19 @@ resource "google_project_iam_member" "sender" {
   project = google_project.notifications.project_id
   role    = google_project_iam_custom_role.sender.name
   member  = "serviceAccount:${google_service_account.sender.email}"
+
+  depends_on = [google_firebase_project.notifications]
 }
 
 resource "google_iam_workload_identity_pool" "gitlab" {
   project                   = google_project.notifications.project_id
   workload_identity_pool_id = var.gitlab_workload_identity_pool_id
   display_name              = "LouiseLM GitLab CI"
-  description               = "Keyless protected-main CI access for LouiseLM infrastructure."
+  description               = "Keyless protected-main deployment access for the LouiseLM site."
   disabled                  = false
   deletion_policy           = "PREVENT"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
@@ -148,9 +239,10 @@ resource "google_iam_workload_identity_pool_provider" "gitlab" {
   workload_identity_pool_provider_id = var.gitlab_workload_identity_provider_id
   display_name                       = "LouiseLM self-managed GitLab"
   deletion_policy                    = "PREVENT"
-  attribute_condition                = "assertion.project_id == '${var.gitlab_project_id}' && assertion.ref == '${var.gitlab_default_branch}' && assertion.ref_protected == 'true'"
+  attribute_condition                = "assertion.project_id == '${var.gitlab_project_id}' && assertion.ref_type == 'branch' && assertion.ref == '${var.gitlab_default_branch}' && assertion.ref_protected == 'true' && assertion.environment == 'site-production'"
   attribute_mapping = {
     "google.subject"          = "assertion.sub"
+    "attribute.environment"   = "assertion.environment"
     "attribute.project_id"    = "assertion.project_id"
     "attribute.ref"           = "assertion.ref"
     "attribute.ref_protected" = "assertion.ref_protected"
@@ -166,11 +258,13 @@ resource "google_iam_workload_identity_pool_provider" "gitlab" {
   }
 }
 
-resource "google_service_account" "ci" {
+resource "google_service_account" "hosting_deployer" {
   project         = google_project.notifications.project_id
-  account_id      = "louiselm-infra-ci"
-  display_name    = "LouiseLM infrastructure CI"
+  account_id      = "louiselm-hosting-deployer"
+  display_name    = "LouiseLM Firebase Hosting deployer"
   deletion_policy = "PREVENT"
+
+  depends_on = [google_project_service.required]
 
   lifecycle {
     prevent_destroy = true
@@ -178,28 +272,24 @@ resource "google_service_account" "ci" {
 }
 
 locals {
-  ci_roles = toset([
-    "roles/apikeys.admin",
-    "roles/firebase.admin",
-    "roles/iam.roleAdmin",
-    "roles/iam.serviceAccountAdmin",
-    "roles/iam.workloadIdentityPoolAdmin",
-    "roles/resourcemanager.projectIamAdmin",
-    "roles/serviceusage.serviceUsageAdmin",
-    "roles/viewer",
+  hosting_deployer_roles = toset([
+    "roles/firebasehosting.admin",
+    "roles/serviceusage.apiKeysViewer",
   ])
 }
 
-resource "google_project_iam_member" "ci" {
-  for_each = local.ci_roles
+resource "google_project_iam_member" "hosting_deployer" {
+  for_each = local.hosting_deployer_roles
 
   project = google_project.notifications.project_id
   role    = each.value
-  member  = "serviceAccount:${google_service_account.ci.email}"
+  member  = "serviceAccount:${google_service_account.hosting_deployer.email}"
+
+  depends_on = [google_firebase_project.notifications]
 }
 
-resource "google_service_account_iam_member" "ci_workload_identity" {
-  service_account_id = google_service_account.ci.name
+resource "google_service_account_iam_member" "hosting_deployer_workload_identity" {
+  service_account_id = google_service_account.hosting_deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.gitlab.name}/attribute.project_id/${var.gitlab_project_id}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.gitlab.name}/attribute.environment/site-production"
 }

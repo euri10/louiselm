@@ -2,7 +2,10 @@
 title: louiselm blog
 ---
 
-# louiselm blog
+# LouiseLM blog
 
-Personal blog scaffold. Posts live under `post-<name>/blog.md`; the project
-config discovers them automatically (see `myst.yml`).
+Published notes about building LouiseLM.
+
+:::{toc}
+:context: children
+:::

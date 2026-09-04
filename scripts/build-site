@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+public_origin=https://louiselm.com
+
+command -v myst >/dev/null 2>&1 || {
+	echo "error: myst not found on PATH" >&2
+	exit 1
+}
+
+(
+	cd "$repo_root"
+	# Clear both the intermediate content graph and final HTML. Cleaning only
+	# HTML lets pages removed from the public TOC survive in MyST's site cache.
+	myst clean --site --html --yes
+	myst build --html --strict --ci
+)
+
+# MyST renders static pages by requesting its temporary localhost server and
+# preserves that request origin in generated metadata. Static apex hosting has
+# no BASE_URL, so replace only those generated origin fields after rendering.
+while IFS= read -r -d '' path; do
+	sed -i -E "s#\"domain\":\"http://localhost:[0-9]+\"#\"domain\":\"$public_origin\"#g" "$path"
+done < <(find "$repo_root/_build/html" -type f \( -name '*.html' -o -name '*.json' \) -print0)
+
+for path in "$repo_root/_build/html/robots.txt" "$repo_root/_build/html/sitemap.xml"; do
+	sed -i -E "s#http://localhost:[0-9]+#$public_origin#g" "$path"
+done
+
+"$script_dir/check-public-artifact" "$repo_root/_build/html" "$repo_root"

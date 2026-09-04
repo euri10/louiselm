@@ -1,0 +1,10 @@
+{
+  "name": "louiselm-site",
+  "private": true,
+  "scripts": {
+    "site:build": "./scripts/build-site"
+  },
+  "devDependencies": {
+    "mystmd": "1.10.1"
+  }
+}

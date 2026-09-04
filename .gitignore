@@ -2,7 +2,10 @@
 capture-service/target/
 skills-core/target/
 blog/_build/
+/_build/
+/node_modules/
 /public/
+/firebase-deploy.json
 # bvr's static site export (`bvr --robot-*` / graph views), regenerated on demand
 /site/
 android/.gradle/
