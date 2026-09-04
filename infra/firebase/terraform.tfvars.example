@@ -1,8 +1,8 @@
 # Copy to terraform.tfvars outside version control and fill with operator-owned values.
 project_id                    = "replace-with-dedicated-project-id"
-project_name                  = "LouiseLM Notifications"
+project_name                  = "LouiseLM"
 billing_account_id            = "000000-000000-000000"
-org_id                        = "000000000000"
+# org_id                      = "000000000000"
 # folder_id                   = "000000000000"
 android_package_name          = "dev.louiselm.capture"
 android_sha1_fingerprint      = "0000000000000000000000000000000000000000"

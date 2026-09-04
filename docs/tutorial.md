@@ -25,7 +25,7 @@ Run:
 
 Health checks tell you whether LouiseLM can find your configured Agents and
 their executables. If no Agent is configured, finish the setup instructions in
-the README or `docs/onboarding.md`, then run the health check again.
+the README or [onboarding guide](onboarding.md), then run the health check again.
 
 ## 3. Try a first prompt
 

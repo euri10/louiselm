@@ -73,3 +73,90 @@ tf-production:
     - if: '$TF_PROD_ENABLED != "true" || $TF_PROD_PLAN_ENABLED != "true"'
       when: never
     - when: manual
+
+site-build:
+  image: node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+  stage: build
+  id_tokens: null
+  variables:
+    HOST: "127.0.0.1"
+  script:
+    - npm ci
+    - ./scripts/test-public-artifact.sh
+    - npm run site:build
+  artifacts:
+    name: "Public site $CI_COMMIT_SHA"
+    access: developer
+    expire_in: 7 days
+    paths:
+      - _build/html
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+site-deploy:
+  image:
+    name: us-docker.pkg.dev/firebase-cli/us/firebase:15.29.0@sha256:62ec2c68e1e7de6941f7bc14ba01590ce85d40c4172cd11b7708e4563c3c8482
+    entrypoint: [""]
+  stage: production
+  needs:
+    - job: site-build
+      artifacts: true
+  id_tokens:
+    GCP_JWT:
+      aud: "$CI_SERVER_URL"
+  resource_group: firebase-hosting-production
+  environment:
+    name: site-production
+    url: https://${TF_VAR_project_id}.web.app
+  script:
+    - ./scripts/check-public-artifact _build/html .
+    - |
+      set -eu
+      : "${GCP_JWT:?GCP_JWT is required}"
+      : "${GCP_OIDC_PROVIDER:?GCP_OIDC_PROVIDER is required}"
+      : "${GCP_HOSTING_OIDC_ACCOUNT:?GCP_HOSTING_OIDC_ACCOUNT is required}"
+      : "${TF_VAR_project_id:?TF_VAR_project_id is required}"
+      unset FIREBASE_TOKEN
+      umask 077
+      auth_dir="$(mktemp -d)"
+      trap 'find "$auth_dir" -depth -delete' EXIT
+      token_file="$auth_dir/gitlab.jwt"
+      export GCP_TOKEN_FILE="$token_file"
+      export GOOGLE_APPLICATION_CREDENTIALS="$auth_dir/gcp-credentials.json"
+      printf '%s' "$GCP_JWT" > "$token_file"
+      node -e '
+        const fs = require("node:fs");
+        const provider = process.env.GCP_OIDC_PROVIDER;
+        const account = process.env.GCP_HOSTING_OIDC_ACCOUNT;
+        fs.writeFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, JSON.stringify({
+          type: "external_account",
+          audience: `//iam.googleapis.com/${provider}`,
+          subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+          token_url: "https://sts.googleapis.com/v1/token",
+          credential_source: { file: process.env.GCP_TOKEN_FILE },
+          service_account_impersonation_url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${account}:generateAccessToken`,
+        }));
+      '
+      firebase --version
+      firebase deploy --config firebase.json --project "$TF_VAR_project_id" --only hosting --public _build/html --message "GitLab ${CI_PROJECT_PATH}@${CI_COMMIT_SHA}" --non-interactive --json > firebase-deploy.json
+      node -e '
+        const deployment = require("./firebase-deploy.json");
+        if (deployment.status !== "success" || typeof deployment.result?.hosting !== "string") {
+          throw new Error("Firebase Hosting deploy did not report success");
+        }
+      '
+  artifacts:
+    when: always
+    name: "Firebase Hosting release $CI_COMMIT_SHA"
+    access: developer
+    expire_in: 1 year
+    paths:
+      - firebase-deploy.json
+  manual_confirmation: "Deploy this commit's reviewed public artifact to Firebase Hosting?"
+  rules:
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH'
+      when: never
+    - if: '$CI_COMMIT_REF_PROTECTED != "true"'
+      when: never
+    - when: manual
+      allow_failure: false

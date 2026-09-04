@@ -41,4 +41,6 @@ the merge policy can change too.
   points are especially unlikely to survive independent implementation while
   LouiseLM has no external users.
 
-The development contract and required checks are in [AGENTS.md](AGENTS.md).
+The repository's internal development contract and required checks live in
+`AGENTS.md`; that operator-facing file is intentionally not part of the public
+site.
