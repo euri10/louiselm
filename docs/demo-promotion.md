@@ -9,7 +9,7 @@ in the release record.
 
 | Asset | Version | Commit | Archive SHA256 |
 | --- | --- | --- | --- |
-| Neovim WASM | `v0.13.0-dev-1511+g5209695703` | `5209695703db4096923c203f235d78aec0cbdec8` | `9c0fa6c5639e8893b327129b6fea4abeda0397d4f0657b706d8fd7023b3c3271` |
+| Neovim WASM | `v0.13.0-dev-1531+g48864161cd` | `48864161cd75ae4b58f7af94d6c9add0ba876107` | `851e16a89a159750af9d4d85cc0edcc309090fd9b453c74294bfa1161238e2b2` |
 | Snacks | `v2.31.0` | `e6fd58c82f2f3fcddd3fe81703d47d6d48fc7b9f` | `171fa47c5751d07d1e5b2fbde24327e9a94bf84e2ca400601f8ec39699de6cd5` |
 | which-key | `v3.17.0` | `fcbf4eea17cb299c02557d576f0d568878e354a4` | `6059cef541dd8d13abb19d6465a76bf447ca23b9b5f17dbbf5a4c251852b9941` |
 
@@ -18,6 +18,11 @@ license digest and writes hashes for every published demo file to
 `demo/asset-manifest.json`. Snacks receives only the two recorded
 LuaJIT-to-Neovim OS-check substitutions needed by the WASM build; source-shape
 drift fails the build.
+
+The Neovim archive is copied from the recorded upstream asset into the
+commit-addressed project package because upstream replaces numeric assets on
+every nightly release. CI authenticates with `CI_JOB_TOKEN`; local builds need
+`LOUISELM_DEMO_PACKAGE_TOKEN` with package-read access.
 
 ## Deployed journey matrix
 

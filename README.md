@@ -166,6 +166,8 @@ graph without operator decisions.
   gates.
 
 Build the checked documentation site with `npm ci && npm run site:build`.
+Local builds must set `LOUISELM_DEMO_PACKAGE_TOKEN` to a GitLab token with
+package-read access; CI uses its same-project job token.
 
 ## License and project policies
 

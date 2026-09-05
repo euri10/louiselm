@@ -26,6 +26,7 @@ const runtimeMembers = [
 	'nvim.wasm',
 	'rpc.js',
 ];
+const neovimPackagePrefix = 'https://gitlab.bartab.fr/api/v4/projects/163/packages/generic/neovim-wasm/';
 
 function fail(message) {
 	throw new Error(`build-demo: ${message}`);
@@ -40,13 +41,13 @@ function verify(bytes, expected, name) {
 	if (actual !== expected) fail(`${name} checksum mismatch: expected ${expected}, got ${actual}`);
 }
 
-async function download(url, headers = {}) {
+async function download(url, headers = {}, redirect = 'follow') {
 	let lastError;
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		try {
 			const response = await fetch(url, {
 				headers: { 'user-agent': 'louiselm-site-build', ...headers },
-				redirect: 'follow',
+				redirect,
 			});
 			if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
 			return Buffer.from(await response.arrayBuffer());
@@ -55,6 +56,15 @@ async function download(url, headers = {}) {
 		}
 	}
 	fail(`could not download ${url}: ${lastError}`);
+}
+
+function neovimPackageHeaders(url) {
+	if (!url.startsWith(neovimPackagePrefix)) fail(`Neovim archive must use ${neovimPackagePrefix}`);
+	if (process.env.CI_JOB_TOKEN) return { 'job-token': process.env.CI_JOB_TOKEN };
+	if (process.env.LOUISELM_DEMO_PACKAGE_TOKEN) {
+		return { 'private-token': process.env.LOUISELM_DEMO_PACKAGE_TOKEN };
+	}
+	fail('Neovim package download requires CI_JOB_TOKEN or LOUISELM_DEMO_PACKAGE_TOKEN');
 }
 
 function run(command, args, options = {}) {
@@ -202,7 +212,11 @@ async function main() {
 	mkdirSync(runtimeRoot, { recursive: true });
 
 	try {
-		const neovimArchive = await download(lock.neovim.url, { accept: 'application/octet-stream' });
+		const neovimArchive = await download(
+			lock.neovim.url,
+			{ accept: 'application/octet-stream', ...neovimPackageHeaders(lock.neovim.url) },
+			'error',
+		);
 		verify(neovimArchive, lock.neovim.sha256, 'Neovim WASM archive');
 		const neovimArchivePath = join(scratch, 'nvim-wasm-emscripten.zip');
 		writeFileSync(neovimArchivePath, neovimArchive);

@@ -1,12 +1,13 @@
 {
   "neovim": {
-    "version": "v0.13.0-dev-1511+g5209695703",
-    "commit": "5209695703db4096923c203f235d78aec0cbdec8",
-    "asset_id": 543842099,
-    "url": "https://api.github.com/repos/neovim/neovim/releases/assets/543842099",
-    "sha256": "9c0fa6c5639e8893b327129b6fea4abeda0397d4f0657b706d8fd7023b3c3271",
+    "version": "v0.13.0-dev-1531+g48864161cd",
+    "commit": "48864161cd75ae4b58f7af94d6c9add0ba876107",
+    "upstream_asset_id": 545428374,
+    "url": "https://gitlab.bartab.fr/api/v4/projects/163/packages/generic/neovim-wasm/48864161cd75ae4b58f7af94d6c9add0ba876107/nvim-wasm-emscripten.zip",
+    "upstream_url": "https://api.github.com/repos/neovim/neovim/releases/assets/545428374",
+    "sha256": "851e16a89a159750af9d4d85cc0edcc309090fd9b453c74294bfa1161238e2b2",
     "license": "Apache-2.0",
-    "license_url": "https://raw.githubusercontent.com/neovim/neovim/5209695703db4096923c203f235d78aec0cbdec8/LICENSE.txt",
+    "license_url": "https://raw.githubusercontent.com/neovim/neovim/48864161cd75ae4b58f7af94d6c9add0ba876107/LICENSE.txt",
     "license_sha256": "de23202ef9a51f5e654034190539739a4abece5505f2ce75e780791106707011"
   },
   "msgpackr": {

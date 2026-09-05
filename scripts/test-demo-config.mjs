@@ -23,7 +23,14 @@ assert.equal(headers['cross-origin-opener-policy'], 'same-origin');
 assert.equal(headers['cross-origin-embedder-policy'], 'require-corp');
 
 assert.match(lock.neovim.commit, /^[0-9a-f]{40}$/);
-assert.match(lock.neovim.url, /\/releases\/assets\/\d+$/);
+assert.equal(
+	lock.neovim.url,
+	`https://gitlab.bartab.fr/api/v4/projects/163/packages/generic/neovim-wasm/${lock.neovim.commit}/nvim-wasm-emscripten.zip`,
+);
+assert.equal(
+	lock.neovim.upstream_url,
+	`https://api.github.com/repos/neovim/neovim/releases/assets/${lock.neovim.upstream_asset_id}`,
+);
 assert.match(lock.neovim.sha256, /^[0-9a-f]{64}$/);
 assert.match(lock.msgpackr.url, /msgpackr-\d+\.\d+\.\d+\.tgz$/);
 assert.match(lock.msgpackr.sha256, /^[0-9a-f]{64}$/);
@@ -65,6 +72,8 @@ assert.match(bootstrap, /which-key/);
 assert.match(bootstrap, /snacks/);
 assert.doesNotMatch(bootstrap, /vim\.(?:system|loop\.spawn)|vim\.fn\.(?:executable|system)/);
 assert.match(buildDemo, /replace two LuaJIT-only Windows checks with vim\.fn\.has for Neovim WASM/);
+assert.match(buildDemo, /CI_JOB_TOKEN/);
+assert.match(buildDemo, /LOUISELM_DEMO_PACKAGE_TOKEN/);
 assert(!bootstrap.includes('localStorage'), 'demo progress must not persist');
 
 assert.match(readme, /\[Try LouiseLM in your browser\]\((?:https:\/\/louiselm\.com)?\/demo\/\)/);
