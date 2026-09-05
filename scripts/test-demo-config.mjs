@@ -53,6 +53,8 @@ assert.match(bootstrap, /scripted demo—no Agent or Provider connected/i);
 assert.match(bootstrap, /LouiselmHandOff/);
 assert.match(bootstrap, /LouiselmSessionSwitch/);
 assert.match(bootstrap, /LouiselmResume/);
+assert.match(bootstrap, /LouiselmDemoLanguage/);
+assert.match(bootstrap, /project_root = "\/demo-project", language = language/);
 assert.match(bootstrap, /loadScript/);
 assert.match(bootstrap, /vendor-bundle\.js/);
 assert.match(bootstrap, /state\.profile === 'enhanced'\) scripts\.push\('vendor-bundle\.js'\)/);

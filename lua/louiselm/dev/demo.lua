@@ -13,7 +13,34 @@ local AGENTS = {
   ["your-codex-here"] = true,
   ["your-claude-here"] = true,
 }
-local SCRIPTED_LABEL = "[scripted demo — no Agent or Provider connected]"
+local COPY = {
+  en = {
+    label = "[scripted demo — no Agent or Provider connected]",
+    already_fixed = "The calculator is already fixed.",
+    proposal = "I inspected the attached calculator and found `add` subtracting its right operand. Review this one-line fix.",
+    allowed = "The in-memory file now returns `left + right`.",
+    rejected = "No file changed. Send another prompt whenever you want to retry.",
+    cancelled = "The scripted turn was cancelled.",
+    handoff = "Handoff received. I have the reviewed context and takeover task in this separate Session.",
+    seeded_user_first = "Inspect the calculator test failure.",
+    seeded_reply_first = "The failing assertion points at `calculator.add`; inspect its implementation next.",
+    seeded_user_second = "Keep this Session for later.",
+    seeded_reply_second = "Session saved. Resume can restore this history.",
+  },
+  ["zh-CN"] = {
+    label = "[脚本化演示——未连接任何 Agent 或 Provider]",
+    already_fixed = "计算器已经修复。",
+    proposal = "我检查了已附加的计算器，发现 `add` 错把右操作数相减。请审查这一行修改。",
+    allowed = "内存文件现在会返回 `left + right`。",
+    rejected = "文件没有变化。你可以随时再发一条提示重试。",
+    cancelled = "脚本化回合已取消。",
+    handoff = "已收到 Handoff。我已在这个独立 Session 中取得审查后的上下文和接管任务。",
+    seeded_user_first = "检查计算器测试为何失败。",
+    seeded_reply_first = "失败的断言指向 `calculator.add`；下一步请检查它的实现。",
+    seeded_user_second = "保留这个 Session，稍后继续。",
+    seeded_reply_second = "Session 已保存；Resume 可以恢复这段历史。",
+  },
+}
 local BROKEN_EXPRESSION = "return left - right"
 local FIXED_EXPRESSION = "return left + right"
 local SEEDED_SESSION_ID = "scripted-resume-1"
@@ -135,9 +162,9 @@ local function finish_turn(self, revision, outcome)
     title = "Fix calculator.add",
     status = status,
   })
-  local message = outcome == "allowed" and "The in-memory file now returns `left + right`."
-    or outcome == "rejected" and "No file changed. Send another prompt whenever you want to retry."
-    or "The scripted turn was cancelled."
+  local message = outcome == "allowed" and self.api.copy.allowed
+    or outcome == "rejected" and self.api.copy.rejected
+    or self.api.copy.cancelled
   emit(self, "chunk", { content = { type = "text", text = message } })
   self.pending_permission = nil
   set_status(self, "ready")
@@ -159,7 +186,7 @@ local function propose_edit(self, revision)
   local start = content:find(BROKEN_EXPRESSION, 1, true)
   if start == nil then
     emit(self, "chunk", {
-      content = { type = "text", text = SCRIPTED_LABEL .. "\n\nThe calculator is already fixed." },
+      content = { type = "text", text = self.api.copy.label .. "\n\n" .. self.api.copy.already_fixed },
     })
     set_status(self, "ready")
     emit(self, "turn_done", { stopReason = "end_turn" })
@@ -178,8 +205,7 @@ local function propose_edit(self, revision)
   emit(self, "chunk", {
     content = {
       type = "text",
-      text = SCRIPTED_LABEL
-        .. "\n\nI inspected the attached calculator and found `add` subtracting its right operand. Review this one-line fix.",
+      text = self.api.copy.label .. "\n\n" .. self.api.copy.proposal,
     },
   })
   emit(self, "tool_call_started", {
@@ -260,8 +286,7 @@ local function acknowledge_handoff(self, revision)
   emit(self, "chunk", {
     content = {
       type = "text",
-      text = SCRIPTED_LABEL
-        .. "\n\nHandoff received. I have the reviewed context and takeover task in this separate Session.",
+      text = self.api.copy.label .. "\n\n" .. self.api.copy.handoff,
     },
   })
   set_status(self, "ready")
@@ -506,17 +531,16 @@ function Api:load_session(agent_name, acp_session_id, options, ready_callback)
     if session:inspect().status == "disposed" then
       return
     end
-    emit(session, "user_chunk", { content = { type = "text", text = "Inspect the calculator test failure." } })
+    emit(session, "user_chunk", { content = { type = "text", text = self.copy.seeded_user_first } })
     emit(session, "chunk", {
       content = {
         type = "text",
-        text = SCRIPTED_LABEL
-          .. "\n\nThe failing assertion points at `calculator.add`; inspect its implementation next.",
+        text = self.copy.label .. "\n\n" .. self.copy.seeded_reply_first,
       },
     })
-    emit(session, "user_chunk", { content = { type = "text", text = "Keep this Session for later." } })
+    emit(session, "user_chunk", { content = { type = "text", text = self.copy.seeded_user_second } })
     emit(session, "chunk", {
-      content = { type = "text", text = SCRIPTED_LABEL .. "\n\nSession saved. Resume can restore this history." },
+      content = { type = "text", text = self.copy.label .. "\n\n" .. self.copy.seeded_reply_second },
     })
     set_status(session, "ready")
     if ready_callback ~= nil then
@@ -632,6 +656,19 @@ function Api:list_permissions()
   return {}
 end
 
+---Select the language used by future scripted demo transcript content.
+---@param language "en"|"zh-CN"
+---@return boolean selected
+---@return string? error_message
+function Api:set_language(language)
+  if COPY[language] == nil then
+    return false, "unknown demo language '" .. tostring(language) .. "'"
+  end
+  self.language = language
+  self.copy = COPY[language]
+  return true
+end
+
 ---Reject permission revocation because the demo persists no choices.
 ---@return boolean revoked
 ---@return string error_message
@@ -658,7 +695,7 @@ function Api:dispose()
 end
 
 ---Create the browser-local demo API. It never starts a process or Provider connection.
----@param options table `{ project_root, schedule? }`.
+---@param options table `{ project_root, schedule?, language? }`.
 ---@return table? api
 ---@return string? error_message
 function M.new(options)
@@ -666,7 +703,7 @@ function M.new(options)
     return nil, "demo options must be a table"
   end
   for key in pairs(options) do
-    if key ~= "project_root" and key ~= "schedule" then
+    if key ~= "project_root" and key ~= "schedule" and key ~= "language" then
       return nil, "unknown demo option '" .. tostring(key) .. "'"
     end
   end
@@ -676,9 +713,15 @@ function M.new(options)
   if options.schedule ~= nil and type(options.schedule) ~= "function" then
     return nil, "demo schedule must be a function"
   end
+  local language = options.language or "en"
+  if COPY[language] == nil then
+    return nil, "unknown demo language '" .. tostring(language) .. "'"
+  end
   local project_root = nvim.fs.normalize(nvim.fn.fnamemodify(options.project_root, ":p"))
   local api = setmetatable({
     project_root = project_root,
+    language = language,
+    copy = COPY[language],
     schedule = options.schedule or function(_, callback)
       nvim.schedule(callback)
     end,
@@ -702,6 +745,10 @@ end
 ---@param api table
 ---@param chat louiselm.ui.Chat
 local function register_commands(api, chat)
+  nvim.api.nvim_create_user_command("LouiselmDemoLanguage", function(command)
+    local _, language_error = api:set_language(command.args)
+    report_error(language_error)
+  end, { desc = "Select scripted demo transcript language", force = true, nargs = 1 })
   nvim.api.nvim_create_user_command("LouiselmSessionNew", function()
     local _, session_error = chat:new_session()
     report_error(session_error)
@@ -737,7 +784,7 @@ local function register_commands(api, chat)
 end
 
 ---Open LouiseLM's real chat UI on a disposable browser-local Session.
----@param options table `{ project_root }`.
+---@param options table `{ project_root, language? }`.
 ---@return table? runtime
 ---@return string? error_message
 function M.start(options)

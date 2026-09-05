@@ -87,6 +87,35 @@ T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted f
   nvim.fn.delete(root, "rf")
 end
 
+T["demo API"]["localizes scripted responses for an existing Session"] = function()
+  local root = fixture()
+  local queued, schedule = scheduler()
+  local api = assert(Demo.new({ project_root = root, schedule = schedule }))
+  local session = assert(api:create_session("your-codex-here"))
+  local messages = {}
+  local permission
+  session:on(function(event)
+    if event.type == "chunk" then
+      messages[#messages + 1] = event.data.content.text
+    elseif event.type == "permission_requested" then
+      permission = event
+    end
+  end)
+
+  MiniTest.expect.equality({ api:set_language("fr") }, { false, "unknown demo language 'fr'" })
+  assert(api:set_language("zh-CN"))
+  assert(session:prompt("修复计算器"))
+  drain(queued)
+  MiniTest.expect.equality(messages[1]:find("我检查了已附加的计算器", 1, true) ~= nil, true)
+
+  assert(permission.respond({ outcome = { outcome = "selected", optionId = "reject-once" } }))
+  drain(queued)
+  MiniTest.expect.equality(messages[2]:find("文件没有变化", 1, true) ~= nil, true)
+
+  assert(api:dispose())
+  nvim.fn.delete(root, "rf")
+end
+
 T["demo API"]["rejects without editing and permits a later retry"] = function()
   local root, path = fixture()
   local queued, schedule = scheduler()

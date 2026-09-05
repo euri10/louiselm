@@ -58,6 +58,11 @@
 			statusLabel: 'Status',
 			install: 'Install LouiseLM locally',
 			type: 'Type it for me',
+			firstPrompt: 'Find and fix the calculator bug.',
+			retryPrompt: 'Try the calculator fix again.',
+			scriptedProposal: 'I inspected the attached calculator',
+			scriptedRejected: 'No file changed.',
+			scriptedHandoff: 'Handoff received.',
 			skip: 'Skip',
 			reset: 'Reset',
 			replay: 'Replay from the start',
@@ -159,6 +164,11 @@
 			statusLabel: '状态',
 			install: '在本机安装 LouiseLM',
 			type: '帮我输入',
+			firstPrompt: '查找并修复计算器错误。',
+			retryPrompt: '请再次尝试修复计算器。',
+			scriptedProposal: '我检查了已附加的计算器',
+			scriptedRejected: '文件没有变化。',
+			scriptedHandoff: '已收到 Handoff。',
 			skip: '跳过',
 			reset: '重置',
 			replay: '从头再来',
@@ -256,15 +266,17 @@
 	};
 	const requestedProfile = new URLSearchParams(location.search).get('profile');
 	if (requestedProfile === 'core') state.profile = 'core';
+	const requestedLanguage = new URLSearchParams(location.search).get('language');
+	if (requestedLanguage === 'zh-CN') state.language = 'zh-CN';
 	globalThis.__louiselmDemo = state;
 	const BROKEN_EXPRESSION = 'return left - right';
 	const FIXED_EXPRESSION = 'return left + right';
 	const stepDefinitions = [
-		{ prefill: { kind: 'prompt', value: 'Find and fix the calculator bug.' }, check: (view) => view.current.startsWith('louiselm-diff://') },
-		{ check: (view) => view.file.includes(BROKEN_EXPRESSION) && view.allText.includes('No file changed.') },
+		{ prefill: { kind: 'prompt', value: () => text().firstPrompt }, check: (view) => view.current.startsWith('louiselm-diff://') },
+		{ check: (view) => view.file.includes(BROKEN_EXPRESSION) && view.allText.includes(text().scriptedRejected) },
 		{
-			prefill: { kind: 'prompt', value: 'Try the calculator fix again.' },
-			check: (view) => view.current.startsWith('louiselm-diff://') && occurrences(view.allText, 'I inspected the attached calculator') >= 2,
+			prefill: { kind: 'prompt', value: () => text().retryPrompt },
+			check: (view) => view.current.startsWith('louiselm-diff://') && occurrences(view.allText, text().scriptedProposal) >= 2,
 		},
 		{ check: (view) => view.file.includes(FIXED_EXPRESSION) },
 		{ prefill: { kind: 'command', value: 'LouiselmResume' }, check: (view) => view.currentText.includes('source=loaded') && view.currentText.includes('scripted-resume-1') },
@@ -278,7 +290,7 @@
 		{
 			prefill: { kind: 'command', value: 'LouiselmHandOff' },
 			enter: () => requestLua('if vim.api.nvim_buf_get_name(0):match("^louiselm://limits/") then vim.api.nvim_buf_delete(0, { force = true }) end; return true'),
-			check: (view) => view.allText.includes('Handoff received. I have the reviewed context'),
+			check: (view) => view.allText.includes(text().scriptedHandoff),
 		},
 		{ prefill: { kind: 'command', value: 'LouiselmSessionSwitch' }, check: (view) => view.current === state.initialBuffer },
 	];
@@ -456,10 +468,10 @@ return true`,
 
 	async function initializeLouiseLM() {
 		return requestLua(
-			`local root, profile = ...
+			`local root, profile, language = ...
 vim.opt.runtimepath:prepend(root)
 vim.api.nvim_set_current_dir("/demo-project")
-local runtime, runtime_error = require("louiselm.dev.demo").start({ project_root = "/demo-project" })
+local runtime, runtime_error = require("louiselm.dev.demo").start({ project_root = "/demo-project", language = language })
 if not runtime then error(runtime_error or "LouiseLM demo failed") end
 if profile == "enhanced" then
   local vendor_root = "/home/user/.local/share/nvim/site/pack/louiselm/opt"
@@ -502,7 +514,7 @@ return {
   current_buffer = vim.api.nvim_buf_get_name(0),
   profile = profile,
 }`,
-			[root, state.profile],
+			[root, state.profile, state.language],
 		);
 	}
 
@@ -605,8 +617,9 @@ return true`,
 		const prefill = stepDefinitions[state.step]?.prefill;
 		if (!prefill || state.phase !== 'ready') return;
 		try {
-			if (prefill.kind === 'prompt') await prefillPrompt(prefill.value);
-			else prefillCommand(prefill.value);
+			const value = typeof prefill.value === 'function' ? prefill.value() : prefill.value;
+			if (prefill.kind === 'prompt') await prefillPrompt(value);
+			else prefillCommand(value);
 		} catch (error) {
 			elements.stepCheck.textContent = error instanceof Error ? error.message : String(error);
 		}
@@ -616,6 +629,7 @@ return true`,
 		if (profile !== 'core' && profile !== 'enhanced') return;
 		const url = new URL(location.href);
 		url.searchParams.set('profile', profile);
+		url.searchParams.set('language', state.language);
 		location.assign(url);
 	}
 
@@ -638,9 +652,17 @@ return true`,
 	}
 
 	for (const button of document.querySelectorAll('[data-language]')) {
-		button.addEventListener('click', () => {
-			state.language = button.dataset.language;
-			renderLanguage();
+		button.addEventListener('click', async () => {
+			const language = button.dataset.language;
+			try {
+				if (state.phase === 'ready') {
+					await requestLua('local language = ...; vim.api.nvim_cmd({ cmd = "LouiselmDemoLanguage", args = { language } }, {}); return true', [language]);
+				}
+				state.language = language;
+				renderLanguage();
+			} catch (error) {
+				elements.stepCheck.textContent = error instanceof Error ? error.message : String(error);
+			}
 		});
 	}
 	for (const button of document.querySelectorAll('[data-profile]')) {
