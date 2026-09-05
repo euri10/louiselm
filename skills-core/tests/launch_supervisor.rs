@@ -8135,13 +8135,19 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
             ));
     }
     drop(controller_input);
-    relay_receiver
+    let exit_code = relay_receiver
         .recv_timeout(PRIVILEGED_TIMEOUT)
         .expect("terminal privileged relay completes")
         .expect("terminal privileged supervisor cleanup succeeds");
     relay_worker
         .join()
         .expect("terminal privileged relay worker finishes");
+    assert_eq!(
+        exit_code,
+        0,
+        "the real Agent exited abnormally; events: {:?}",
+        event_snapshot(&setup.events),
+    );
     assert!(
         echoed_before_eof,
         "the real Agent did not echo before controller EOF; events: {:?}",
