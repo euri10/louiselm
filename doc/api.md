@@ -12,12 +12,6 @@ API reference.
 
 ## Headless Session API
 
-### louiselm.session.Module
-
-- `dispose_all: fun():boolean, string?` -- Dispose every live Session in this Neovim process.
-- `exit_verdict: fun():louiselm.session.ExitVerdict[]` -- Inspect live Sessions across every headless API.
-- `new: fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions):(louiselm.session.Api)?, louiselm.agent.ConfigError[]` -- Create a headless session API.
-
 ### louiselm.session.Api
 
 - `collect_forensics: fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: fun(path?: string, error_message?: string)):boolean, string?`
@@ -31,7 +25,6 @@ API reference.
 - `load_session: fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session?: louiselm.session.Session, error?: string)):(louiselm.session.Session)?, string?`
 - `on_agent_limits: fun(self: louiselm.session.Api, callback: fun(state: louiselm.session.LimitsState)):fun()?, string?`
 - `refresh_agent_limits: fun(self: louiselm.session.Api, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)):boolean, string?`
-- `registry: louiselm.session.Registry` -- Session owner.
 - `revoke_permission: fun(self: louiselm.session.Api, id: string):boolean, string?`
 
 ### louiselm.session.ApiOptions
@@ -48,6 +41,12 @@ API reference.
 ```lua
 fun(path?: string, error_message?: string)
 ```
+
+### louiselm.session.Module
+
+- `dispose_all: fun():boolean, string?` -- Dispose every live Session in this Neovim process.
+- `exit_verdict: fun():louiselm.session.ExitVerdict[]` -- Inspect live Sessions across every headless API.
+- `new: fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions):(louiselm.session.Api)?, louiselm.agent.ConfigError[]` -- Create a headless session API.
 
 ### louiselm.session.Status
 

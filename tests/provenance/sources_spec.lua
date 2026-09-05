@@ -84,6 +84,29 @@ T["git log"]["reports process failure as structured callback error"] = function(
   assert(ok, error_message)
 end
 
+T["git log"]["schedules real process completion onto the main loop"] = function()
+  local temp_dir = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(temp_dir, "p") == 1)
+  local ok, error_message = pcall(function()
+    local completed
+    -- A local non-repository exercises process failure without history or network.
+    assert(Sources.git_log(temp_dir, "HEAD", function(commits, callback_error)
+      completed = { commits = commits, error_value = callback_error, fast = nvim.in_fast_event() }
+    end))
+    MiniTest.expect.equality(
+      nvim.wait(1000, function()
+        return completed ~= nil
+      end),
+      true
+    )
+    MiniTest.expect.equality(completed.fast, false)
+    MiniTest.expect.equality(completed.commits, nil)
+    MiniTest.expect.equality(completed.error_value.code, "git_failed")
+  end)
+  nvim.fn.delete(temp_dir, "rf")
+  assert(ok, error_message)
+end
+
 -- Captured from `git log -s --format=fuller` and `git log --format=%H%x00%B%x00%x1e`
 -- against 097bcd6d2f5c6cb021a0ff31f78280d9c02a3d5e in this repository
 -- (louiselm-wi0y). Git appends its own newline after every formatted record,

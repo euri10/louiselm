@@ -28,7 +28,7 @@ local nvim = vim
 ---@field callback louiselm.session.DiscoveryCallback
 ---@field done boolean
 
----@class louiselm.session.Registry
+---@class louiselm.session.Registry: louiselm.session.Api
 ---@field definitions louiselm.agent.Definitions Normalized named definitions.
 ---@field sessions table<string, louiselm.session.Session> Live sessions by local id.
 ---@field order string[] Session ids in creation order.

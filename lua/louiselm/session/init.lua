@@ -1,4 +1,25 @@
-local Api = require("louiselm.session.api")
+---@class louiselm.session.Api
+---@field create_session fun(self: louiselm.session.Api, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
+---@field load_session fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
+---@field discover_sessions fun(self: louiselm.session.Api, options: louiselm.session.DiscoveryOptions?, callback: louiselm.session.DiscoveryCallback): boolean, string?
+---@field get_session fun(self: louiselm.session.Api, id: string): louiselm.session.Session?
+---@field list_sessions fun(self: louiselm.session.Api): string[]
+---@field inspect_agent_limits fun(self: louiselm.session.Api, agent_name: string): louiselm.session.LimitsState?, string?
+---@field refresh_agent_limits fun(self: louiselm.session.Api, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)): boolean, string?
+---@field on_agent_limits fun(self: louiselm.session.Api, callback: fun(state: louiselm.session.LimitsState)): fun()?, string?
+---@field list_permissions fun(self: louiselm.session.Api): louiselm.permission.Rule[]?, string?
+---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
+---@field collect_forensics fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string?
+---@field dispose fun(self: louiselm.session.Api): boolean, string?
+
+---@class louiselm.session.ApiOptions
+---@field permission_store? louiselm.permission.Store Explicit remembered-permission store.
+---@field forensics_directory? string Override the private Session Forensics directory.
+
+---@class louiselm.session.ForensicsOptions
+---@field diagnosing_session_id? string Durable identity of the diagnosing Session.
+
+---@alias louiselm.session.ForensicsCallback fun(path: string?, error_message: string?)
 
 ---@class louiselm.session.Module
 ---@field new fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions): louiselm.session.Api?, louiselm.agent.ConfigError[] Create a headless session API.
@@ -15,7 +36,7 @@ local Registry = require("louiselm.session.registry")
 ---@return louiselm.session.Api? api
 ---@return louiselm.agent.ConfigError[] errors
 function M.new(definitions, default_skills_policy, options)
-  return Api.new(definitions, default_skills_policy, options)
+  return Registry.new(definitions, default_skills_policy, options)
 end
 
 ---Return a process-wide snapshot of live Sessions relevant to editor exit.

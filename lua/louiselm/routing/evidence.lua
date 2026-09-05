@@ -1,3 +1,5 @@
+local PrivateFile = require("louiselm.private_file")
+
 ---@class louiselm.routing.EvidenceTarget
 ---@field phase? louiselm.routing.PhaseName Phase the observation belongs to; absent means global.
 ---@field agent string Configured Agent name.
@@ -271,34 +273,7 @@ local function write_records(path, records)
   if not encoded_ok then
     return false, "could not encode routing evidence"
   end
-  local file, temporary_or_error = editor.uv.fs_mkstemp(path .. ".tmp-XXXXXX")
-  if file == nil then
-    return false, "could not create temporary routing evidence: " .. tostring(temporary_or_error)
-  end
-  local temporary = temporary_or_error
-  local written, write_error = editor.uv.fs_write(file, content, 0)
-  if written ~= #content then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return false, "could not write routing evidence: " .. tostring(write_error or "short write")
-  end
-  local synced, sync_error = editor.uv.fs_fsync(file)
-  if not synced then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return false, "could not sync routing evidence: " .. tostring(sync_error)
-  end
-  local closed, close_error = editor.uv.fs_close(file)
-  if not closed then
-    editor.uv.fs_unlink(temporary)
-    return false, "could not close routing evidence: " .. tostring(close_error)
-  end
-  local renamed, rename_error = editor.uv.fs_rename(temporary, path)
-  if not renamed then
-    editor.uv.fs_unlink(temporary)
-    return false, "could not replace routing evidence: " .. tostring(rename_error)
-  end
-  return true, nil
+  return PrivateFile.write(editor.uv, path, content, "routing evidence", "replace")
 end
 
 ---@param left louiselm.routing.EvidenceRecord

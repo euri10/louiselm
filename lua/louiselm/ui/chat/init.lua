@@ -1156,38 +1156,22 @@ end
 
 ---@param view louiselm.ui.ChatView
 ---@param win integer
-local function apply_context_folds(view, win)
+---@param folds louiselm.ui.ContextFold[]
+---@param counts table<integer, integer>
+local function apply_incremental_folds(view, win, folds, counts)
   if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
     return
   end
   nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
   nvim.api.nvim_set_option_value("foldenable", true, { win = win })
-  local applied = view.fold_counts[win] or 0
+  local applied = counts[win] or 0
   nvim.api.nvim_win_call(win, function()
-    for index = applied + 1, #view.context_folds do
-      local fold = view.context_folds[index]
+    for index = applied + 1, #folds do
+      local fold = folds[index]
       nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
     end
   end)
-  view.fold_counts[win] = #view.context_folds
-end
-
----@param view louiselm.ui.ChatView
----@param win integer
-local function apply_tool_folds(view, win)
-  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
-    return
-  end
-  nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
-  nvim.api.nvim_set_option_value("foldenable", true, { win = win })
-  local applied = view.tool_fold_counts[win] or 0
-  nvim.api.nvim_win_call(win, function()
-    for index = applied + 1, #view.tool_folds do
-      local fold = view.tool_folds[index]
-      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
-    end
-  end)
-  view.tool_fold_counts[win] = #view.tool_folds
+  counts[win] = #folds
 end
 
 ---@param view louiselm.ui.ChatView
@@ -1211,7 +1195,7 @@ local function close_tool_fold_run(view)
     end
   end
   if added then
-    apply_tool_folds(view, view.window)
+    apply_incremental_folds(view, view.window, view.tool_folds, view.tool_fold_counts)
   end
   view.tool_fold_run = nil
 end
@@ -1389,7 +1373,7 @@ local function replace_submitted_prompt(view, text, contexts)
   end
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
   mark_submitted_prompt(view, first_prompt_line, view.prompt_line + #lines)
-  apply_context_folds(view, view.window)
+  apply_incremental_folds(view, view.window, view.context_folds, view.fold_counts)
   return #lines
 end
 
@@ -3628,8 +3612,8 @@ function Chat:switch(session_id)
     nvim.cmd.startinsert()
     nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
   end
-  apply_context_folds(view, view.window)
-  apply_tool_folds(view, view.window)
+  apply_incremental_folds(view, view.window, view.context_folds, view.fold_counts)
+  apply_incremental_folds(view, view.window, view.tool_folds, view.tool_fold_counts)
   render_winbars(self)
   return true
 end

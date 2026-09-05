@@ -359,6 +359,36 @@ function M.parse_beads_questions(output)
   return issues, nil
 end
 
+---@generic T
+---@param cwd string
+---@param command string[]
+---@param failure_message string
+---@param parse fun(output: string): T?, louiselm.provenance.SourceError?
+---@param callback fun(value: T?, error_value: louiselm.provenance.SourceError?)
+---@return boolean started
+---@return louiselm.provenance.SourceError? error_value
+local function run_source(cwd, command, failure_message, parse, callback)
+  local source = command[1]
+  local call_ok, handle_or_error = pcall(nvim.system, command, { cwd = cwd, text = true }, function(result)
+    nvim.schedule(function()
+      if result.code ~= 0 then
+        local detail = nvim.trim(result.stderr or "")
+        callback(nil, make_error(source .. "_failed", failure_message, detail ~= "" and detail or nil, result.code))
+        return
+      end
+      local value, parse_error = parse(result.stdout or "")
+      callback(value, parse_error)
+    end)
+  end)
+  if not call_ok then
+    return false, make_error(source .. "_launch_failed", tostring(handle_or_error))
+  end
+  if handle_or_error == nil then
+    return false, make_error(source .. "_launch_failed", "vim.system did not return a process handle")
+  end
+  return true, nil
+end
+
 ---Collect commits from git and parse their commit messages.
 ---The completion callback is always scheduled out of vim.system's fast event.
 ---@param cwd string Absolute repository working directory.
@@ -377,32 +407,14 @@ function M.git_log(cwd, revision_range, callback)
     return false, make_error("invalid_callback", "git source requires a callback")
   end
 
-  local call_ok, handle_or_error = pcall(nvim.system, {
+  return run_source(cwd, {
     "git",
     "log",
     "--no-decorate",
     "--no-color",
     "--format=" .. LOG_FORMAT,
     revision_range,
-  }, { cwd = cwd, text = true }, function(result)
-    local function finish()
-      if result.code ~= 0 then
-        local detail = nvim.trim(result.stderr or "")
-        callback(nil, make_error("git_failed", "git log failed", detail ~= "" and detail or nil, result.code))
-        return
-      end
-      local commits, parse_error = M.parse_git_log(result.stdout or "")
-      callback(commits, parse_error)
-    end
-    nvim.schedule(finish)
-  end)
-  if not call_ok then
-    return false, make_error("git_launch_failed", tostring(handle_or_error))
-  end
-  if handle_or_error == nil then
-    return false, make_error("git_launch_failed", "vim.system did not return a process handle")
-  end
-  return true, nil
+  }, "git log failed", M.parse_git_log, callback)
 end
 
 ---Collect one issue's commit correlations from bvr.
@@ -423,34 +435,24 @@ function M.bvr_history(cwd, bead_id, callback)
     return false, make_error("invalid_callback", "bvr source requires a callback")
   end
 
-  local call_ok, handle_or_error = pcall(nvim.system, {
-    "bvr",
-    "--robot-history",
-    "--bead-history",
-    bead_id,
-    "--history-since",
-    HISTORY_SINCE,
-    "--history-limit",
-    HISTORY_LIMIT,
-  }, { cwd = cwd, text = true }, function(result)
-    local function finish()
-      if result.code ~= 0 then
-        local detail = nvim.trim(result.stderr or "")
-        callback(nil, make_error("bvr_failed", "bvr history failed", detail ~= "" and detail or nil, result.code))
-        return
-      end
-      local history, parse_error = M.parse_bvr_history(result.stdout or "", bead_id)
-      callback(history, parse_error)
-    end
-    nvim.schedule(finish)
-  end)
-  if not call_ok then
-    return false, make_error("bvr_launch_failed", tostring(handle_or_error))
-  end
-  if handle_or_error == nil then
-    return false, make_error("bvr_launch_failed", "vim.system did not return a process handle")
-  end
-  return true, nil
+  return run_source(
+    cwd,
+    {
+      "bvr",
+      "--robot-history",
+      "--bead-history",
+      bead_id,
+      "--history-since",
+      HISTORY_SINCE,
+      "--history-limit",
+      HISTORY_LIMIT,
+    },
+    "bvr history failed",
+    function(output)
+      return M.parse_bvr_history(output, bead_id)
+    end,
+    callback
+  )
 end
 
 ---Collect one issue's actor fields from Beads.
@@ -471,30 +473,9 @@ function M.beads_issue(cwd, bead_id, callback)
     return false, make_error("invalid_callback", "br source requires a callback")
   end
 
-  local call_ok, handle_or_error = pcall(
-    nvim.system,
-    { "br", "show", bead_id, "--json" },
-    { cwd = cwd, text = true },
-    function(result)
-      local function finish()
-        if result.code ~= 0 then
-          local detail = nvim.trim(result.stderr or "")
-          callback(nil, make_error("br_failed", "br issue lookup failed", detail ~= "" and detail or nil, result.code))
-          return
-        end
-        local issue, parse_error = M.parse_beads_issue(result.stdout or "", bead_id)
-        callback(issue, parse_error)
-      end
-      nvim.schedule(finish)
-    end
-  )
-  if not call_ok then
-    return false, make_error("br_launch_failed", tostring(handle_or_error))
-  end
-  if handle_or_error == nil then
-    return false, make_error("br_launch_failed", "vim.system did not return a process handle")
-  end
-  return true, nil
+  return run_source(cwd, { "br", "show", bead_id, "--json" }, "br issue lookup failed", function(output)
+    return M.parse_beads_issue(output, bead_id)
+  end, callback)
 end
 
 ---Collect all Beads issues and their actor fields.
@@ -511,30 +492,13 @@ function M.beads_issues(cwd, callback)
     return false, make_error("invalid_callback", "br source requires a callback")
   end
 
-  local call_ok, handle_or_error = pcall(
-    nvim.system,
+  return run_source(
+    cwd,
     { "br", "list", "--status", "all", "--json" },
-    { cwd = cwd, text = true },
-    function(result)
-      local function finish()
-        if result.code ~= 0 then
-          local detail = nvim.trim(result.stderr or "")
-          callback(nil, make_error("br_failed", "br issue list failed", detail ~= "" and detail or nil, result.code))
-          return
-        end
-        local issues, parse_error = M.parse_beads_issues(result.stdout or "")
-        callback(issues, parse_error)
-      end
-      nvim.schedule(finish)
-    end
+    "br issue list failed",
+    M.parse_beads_issues,
+    callback
   )
-  if not call_ok then
-    return false, make_error("br_launch_failed", tostring(handle_or_error))
-  end
-  if handle_or_error == nil then
-    return false, make_error("br_launch_failed", "vim.system did not return a process handle")
-  end
-  return true, nil
 end
 
 ---Collect all question issues with their Decision-relevant fields.
@@ -551,30 +515,13 @@ function M.beads_questions(cwd, callback)
     return false, make_error("invalid_callback", "br source requires a callback")
   end
 
-  local call_ok, handle_or_error = pcall(
-    nvim.system,
+  return run_source(
+    cwd,
     { "br", "list", "--type", "question", "--status", "all", "--json" },
-    { cwd = cwd, text = true },
-    function(result)
-      local function finish()
-        if result.code ~= 0 then
-          local detail = nvim.trim(result.stderr or "")
-          callback(nil, make_error("br_failed", "br question list failed", detail ~= "" and detail or nil, result.code))
-          return
-        end
-        local issues, parse_error = M.parse_beads_questions(result.stdout or "")
-        callback(issues, parse_error)
-      end
-      nvim.schedule(finish)
-    end
+    "br question list failed",
+    M.parse_beads_questions,
+    callback
   )
-  if not call_ok then
-    return false, make_error("br_launch_failed", tostring(handle_or_error))
-  end
-  if handle_or_error == nil then
-    return false, make_error("br_launch_failed", "vim.system did not return a process handle")
-  end
-  return true, nil
 end
 
 return M

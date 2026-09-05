@@ -3,6 +3,8 @@
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+local Socket = require("louiselm.workflow.socket")
+
 local M = {}
 local Client = {}
 Client.__index = Client
@@ -31,24 +33,9 @@ Client.__index = Client
 ---@field clear_session fun(self: louiselm.workflow.AttentionClient, session_id: string, callback: fun(snapshot: table?, error_message?: string)): boolean, string?
 ---@field clear_session_kind fun(self: louiselm.workflow.AttentionClient, session_id: string, kind: string, callback: fun(snapshot: table?, error_message?: string)): boolean, string?
 
-local function close_pipe(pipe)
-  if pipe ~= nil and not pipe:is_closing() then
-    pipe:read_stop()
-    pipe:close()
-  end
-end
-
 local function report_error(client, message)
   if not client.disposed and client.on_error ~= nil then
     client.on_error(message)
-  end
-end
-
-local function fail_pending(client, message)
-  local pending = client.pending
-  client.pending = {}
-  for _, callback in pairs(pending) do
-    callback(nil, message)
   end
 end
 
@@ -110,21 +97,6 @@ local function handle_line(client, line)
     return
   end
   report_error(client, "Attention socket returned an invalid message")
-end
-
-local function consume(client, chunk)
-  client.buffer = client.buffer .. chunk
-  while true do
-    local newline = client.buffer:find("\n", 1, true)
-    if newline == nil then
-      return
-    end
-    local line = client.buffer:sub(1, newline - 1)
-    client.buffer = client.buffer:sub(newline + 1)
-    nvim.schedule(function()
-      handle_line(client, line)
-    end)
-  end
 end
 
 local function send(client, message, callback)
@@ -197,7 +169,7 @@ function M.connect(path, on_snapshot, options)
   }, Client)
   pipe:connect(path, function(connect_error)
     if connect_error ~= nil then
-      close_pipe(pipe)
+      Socket.close_pipe(pipe)
       nvim.schedule(function()
         report_error(client, "could not connect to Attention socket")
       end)
@@ -205,18 +177,18 @@ function M.connect(path, on_snapshot, options)
     end
     pipe:read_start(function(read_error, data)
       if read_error ~= nil or data == nil then
-        close_pipe(pipe)
+        Socket.close_pipe(pipe)
         nvim.schedule(function()
           if client.disposed then
             return
           end
           client.ready = false
-          fail_pending(client, "Attention socket disconnected")
+          Socket.fail_pending(client, "Attention socket disconnected")
           report_error(client, "Attention socket disconnected")
         end)
         return
       end
-      consume(client, data)
+      Socket.consume(client, data, handle_line)
     end)
   end)
   return client
@@ -283,8 +255,8 @@ function Client:dispose()
   end
   self.disposed = true
   self.ready = false
-  fail_pending(self, "Attention socket client is disposed")
-  close_pipe(self.pipe)
+  Socket.fail_pending(self, "Attention socket client is disposed")
+  Socket.close_pipe(self.pipe)
   return true
 end
 

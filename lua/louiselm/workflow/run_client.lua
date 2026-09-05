@@ -1,5 +1,7 @@
 ---Asynchronous local client for authoritative durable Run snapshots.
 
+local Socket = require("louiselm.workflow.socket")
+
 local M = {}
 local Client = {}
 Client.__index = Client
@@ -69,26 +71,11 @@ local function normalize_optional_fields(run)
   end
 end
 
-local function close_pipe(pipe)
-  if pipe ~= nil and not pipe:is_closing() then
-    pipe:read_stop()
-    pipe:close()
-  end
-end
-
 local function report_error(client, message)
   if client.disposed or client.on_error == nil then
     return
   end
   client.on_error(message)
-end
-
-local function fail_pending(client, message)
-  local pending = client.pending
-  client.pending = {}
-  for _, callback in pairs(pending) do
-    callback(nil, message)
-  end
 end
 
 local function request_snapshot(client)
@@ -157,21 +144,6 @@ local function handle_line(client, line)
     return
   end
   report_error(client, "Run socket returned an invalid message")
-end
-
-local function consume(client, chunk)
-  client.buffer = client.buffer .. chunk
-  while true do
-    local newline = client.buffer:find("\n", 1, true)
-    if newline == nil then
-      return
-    end
-    local line = client.buffer:sub(1, newline - 1)
-    client.buffer = client.buffer:sub(newline + 1)
-    nvim.schedule(function()
-      handle_line(client, line)
-    end)
-  end
 end
 
 ---Read the daemon-managed operator capability asynchronously without exposing it to Agent config.
@@ -285,14 +257,14 @@ function M.connect(path, on_snapshot, options)
   client.pipe = pipe
   pipe:connect(path, function(error_message)
     if client.disposed then
-      close_pipe(pipe)
+      Socket.close_pipe(pipe)
       return
     end
     if error_message ~= nil then
       nvim.schedule(function()
         report_error(client, error_message)
       end)
-      close_pipe(pipe)
+      Socket.close_pipe(pipe)
       return
     end
     pipe:read_start(function(read_error, chunk)
@@ -301,15 +273,15 @@ function M.connect(path, on_snapshot, options)
       end
       if read_error ~= nil then
         nvim.schedule(function()
-          fail_pending(client, read_error)
+          Socket.fail_pending(client, read_error)
           report_error(client, read_error)
         end)
       elseif chunk ~= nil then
-        consume(client, chunk)
+        Socket.consume(client, chunk, handle_line)
       else
-        close_pipe(pipe)
+        Socket.close_pipe(pipe)
         nvim.schedule(function()
-          fail_pending(client, "Run socket disconnected")
+          Socket.fail_pending(client, "Run socket disconnected")
           report_error(client, "Run socket disconnected")
         end)
       end
@@ -413,8 +385,8 @@ function Client:dispose()
     return true
   end
   self.disposed = true
-  fail_pending(self, "Run client is disposed")
-  close_pipe(self.pipe)
+  Socket.fail_pending(self, "Run client is disposed")
+  Socket.close_pipe(self.pipe)
   self.pipe = nil
   return true
 end

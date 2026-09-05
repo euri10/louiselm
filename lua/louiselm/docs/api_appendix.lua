@@ -9,7 +9,6 @@ M.SECTIONS = {
     title = "Headless Session API",
     files = {
       "lua/louiselm/session/init.lua",
-      "lua/louiselm/session/api.lua",
       "lua/louiselm/session/lifecycle.lua",
       "lua/louiselm/session/registry.lua",
       "lua/louiselm/session/limits.lua",

@@ -1,3 +1,4 @@
+local PrivateFile = require("louiselm.private_file")
 local Record = require("louiselm.forensics.record")
 
 ---@class louiselm.forensics.Store
@@ -87,32 +88,9 @@ function Store:write(record)
     return nil, "could not encode forensics record"
   end
   local path = editor.fs.joinpath(self.directory, record_name(checked.id))
-  local file, temporary_or_error = editor.uv.fs_mkstemp(path .. ".tmp-XXXXXX")
-  if file == nil then
-    return nil, "could not create temporary forensics record: " .. tostring(temporary_or_error)
-  end
-  local temporary = temporary_or_error
-  local written, write_error = editor.uv.fs_write(file, content, 0)
-  if written ~= #content then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return nil, "could not write forensics record: " .. tostring(write_error or "short write")
-  end
-  local synced, sync_error = editor.uv.fs_fsync(file)
-  if not synced then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return nil, "could not sync forensics record: " .. tostring(sync_error)
-  end
-  local closed, close_error = editor.uv.fs_close(file)
-  if not closed then
-    editor.uv.fs_unlink(temporary)
-    return nil, "could not close forensics record: " .. tostring(close_error)
-  end
-  local renamed, rename_error = editor.uv.fs_rename(temporary, path)
-  if not renamed then
-    editor.uv.fs_unlink(temporary)
-    return nil, "could not publish forensics record: " .. tostring(rename_error)
+  local written, write_error = PrivateFile.write(editor.uv, path, content, "forensics record", "publish")
+  if not written then
+    return nil, write_error
   end
   editor.uv.fs_chmod(path, 384)
   return path, nil

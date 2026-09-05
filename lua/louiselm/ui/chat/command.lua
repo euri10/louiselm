@@ -293,6 +293,19 @@ function M.register()
     end
   end
 
+  ---@param method "switch_session"|"hand_off"|"inspect_tool"|"close_session"|"cancel"|"session_options"|"pick_skill"|"mention_buffer"|"send_selection"|"mention_diagnostics"
+  ---@return fun()
+  local function chat_command(method)
+    return function()
+      if chat == nil then
+        report_error("no chat session is open")
+        return
+      end
+      local _, command_error = chat[method](chat)
+      report_error(command_error)
+    end
+  end
+
   local function open_tutor()
     local paths = nvim.api.nvim_get_runtime_file("docs/tutorial.md", false)
     local path = paths[1]
@@ -508,23 +521,17 @@ function M.register()
     report_error(park_error)
   end, { desc = "Cold-Park the current louiselm Session", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmSessionSwitch", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, switch_error = chat:switch_session()
-    report_error(switch_error)
-  end, { desc = "Switch between louiselm sessions", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmSessionSwitch",
+    chat_command("switch_session"),
+    { desc = "Switch between louiselm sessions", force = true }
+  )
 
-  nvim.api.nvim_create_user_command("LouiselmHandOff", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, hand_off_error = chat:hand_off()
-    report_error(hand_off_error)
-  end, { desc = "Hand the current session's reviewed transcript off to another agent", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmHandOff",
+    chat_command("hand_off"),
+    { desc = "Hand the current session's reviewed transcript off to another agent", force = true }
+  )
 
   nvim.api.nvim_create_user_command("LouiselmSessionRename", function()
     if chat == nil then
@@ -646,41 +653,29 @@ function M.register()
     force = true,
   })
 
-  nvim.api.nvim_create_user_command("LouiselmInspectTool", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, inspect_error = chat:inspect_tool()
-    report_error(inspect_error)
-  end, { desc = "Inspect the raw payload under the cursor", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmInspectTool",
+    chat_command("inspect_tool"),
+    { desc = "Inspect the raw payload under the cursor", force = true }
+  )
 
-  nvim.api.nvim_create_user_command("LouiselmSessionClose", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, close_error = chat:close_session()
-    report_error(close_error)
-  end, { desc = "Close the current louiselm session", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmSessionClose",
+    chat_command("close_session"),
+    { desc = "Close the current louiselm session", force = true }
+  )
 
-  nvim.api.nvim_create_user_command("LouiselmCancel", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, cancel_error = chat:cancel()
-    report_error(cancel_error)
-  end, { desc = "Cancel the current louiselm turn", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmCancel",
+    chat_command("cancel"),
+    { desc = "Cancel the current louiselm turn", force = true }
+  )
 
-  nvim.api.nvim_create_user_command("LouiselmSessionOptions", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, options_error = chat:session_options()
-    report_error(options_error)
-  end, { desc = "Configure the current idle louiselm session", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmSessionOptions",
+    chat_command("session_options"),
+    { desc = "Configure the current idle louiselm session", force = true }
+  )
 
   nvim.api.nvim_create_user_command("LouiselmLimits", function(arguments)
     local current = ensure_chat()
@@ -709,14 +704,11 @@ function M.register()
     report_error(permissions_error)
   end, { desc = "Inspect and revoke remembered louiselm permissions", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmPickSkill", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, pick_error = chat:pick_skill()
-    report_error(pick_error)
-  end, { desc = "Pick a louiselm skill to invoke", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmPickSkill",
+    chat_command("pick_skill"),
+    { desc = "Pick a louiselm skill to invoke", force = true }
+  )
 
   nvim.api.nvim_create_user_command("LouiselmPickFile", function(arguments)
     if chat == nil then
@@ -728,32 +720,23 @@ function M.register()
     report_error(pick_error)
   end, { nargs = "?", desc = "Pick a file to queue as louiselm context", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmMentionBuffer", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, mention_error = chat:mention_buffer()
-    report_error(mention_error)
-  end, { desc = "Queue the source buffer as louiselm context", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmMentionBuffer",
+    chat_command("mention_buffer"),
+    { desc = "Queue the source buffer as louiselm context", force = true }
+  )
 
-  nvim.api.nvim_create_user_command("LouiselmSendSelection", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, selection_error = chat:send_selection()
-    report_error(selection_error)
-  end, { desc = "Queue the visual selection as louiselm context", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmSendSelection",
+    chat_command("send_selection"),
+    { desc = "Queue the visual selection as louiselm context", force = true }
+  )
 
-  nvim.api.nvim_create_user_command("LouiselmDiagnostics", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local _, diagnostics_error = chat:mention_diagnostics()
-    report_error(diagnostics_error)
-  end, { desc = "Queue the source buffer's diagnostics as louiselm context", force = true })
+  nvim.api.nvim_create_user_command(
+    "LouiselmDiagnostics",
+    chat_command("mention_diagnostics"),
+    { desc = "Queue the source buffer's diagnostics as louiselm context", force = true }
+  )
 
   nvim.api.nvim_create_user_command("LouiselmInline", function()
     if inline == nil then

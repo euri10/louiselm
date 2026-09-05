@@ -220,22 +220,11 @@ local function copy_options(value)
   return options
 end
 
----@param value unknown
+---@param value table
 ---@param path string
 ---@param errors louiselm.agent.ConfigError[]
----@return louiselm.agent.CommandCheck? check
-local function parse_command_check(value, path, errors)
-  if type(value) ~= "table" then
-    add_error(errors, path, "wrong_type", "expected table, got " .. value_type(value), "table", value_type(value))
-    return nil
-  end
-
-  for _, key in ipairs(sorted_keys(value)) do
-    if type(key) ~= "string" or not command_check_allowed_keys[key] then
-      add_error(errors, child_path(path, tostring(key)), "unknown_key", "unknown version-check configuration key")
-    end
-  end
-
+---@return louiselm.agent.CommandCheck fields
+local function parse_process_fields(value, path, errors)
   local command = value.command
   if command == nil then
     add_error(errors, child_path(path, "command"), "missing_required", "required command is missing", "string", "nil")
@@ -285,6 +274,24 @@ local function parse_command_check(value, path, errors)
   end
 
   return { command = command, args = args, env = env }
+end
+
+---@param value unknown
+---@param path string
+---@param errors louiselm.agent.ConfigError[]
+---@return louiselm.agent.CommandCheck? check
+local function parse_command_check(value, path, errors)
+  if type(value) ~= "table" then
+    add_error(errors, path, "wrong_type", "expected table, got " .. value_type(value), "table", value_type(value))
+    return nil
+  end
+
+  for _, key in ipairs(sorted_keys(value)) do
+    if type(key) ~= "string" or not command_check_allowed_keys[key] then
+      add_error(errors, child_path(path, tostring(key)), "unknown_key", "unknown version-check configuration key")
+    end
+  end
+  return parse_process_fields(value, path, errors)
 end
 
 ---@param value unknown
@@ -363,60 +370,7 @@ function M.normalize(definitions, default_skills_policy)
         end
       end
 
-      local command = definition.command
-      if command == nil then
-        add_error(
-          errors,
-          child_path(path, "command"),
-          "missing_required",
-          "required command is missing",
-          "string",
-          "nil"
-        )
-      elseif type(command) ~= "string" then
-        add_error(
-          errors,
-          child_path(path, "command"),
-          "wrong_type",
-          "expected string, got " .. value_type(command),
-          "string",
-          value_type(command)
-        )
-      elseif command == "" then
-        add_error(errors, child_path(path, "command"), "invalid_value", "command must be a non-empty string")
-      end
-
-      local args = {}
-      if definition.args ~= nil then
-        if type(definition.args) ~= "table" then
-          add_error(
-            errors,
-            child_path(path, "args"),
-            "wrong_type",
-            "expected table, got " .. value_type(definition.args),
-            "string[]",
-            value_type(definition.args)
-          )
-        else
-          args = copy_args(definition.args, child_path(path, "args"), errors) or {}
-        end
-      end
-
-      local env
-      if definition.env ~= nil then
-        if type(definition.env) ~= "table" then
-          add_error(
-            errors,
-            child_path(path, "env"),
-            "wrong_type",
-            "expected table, got " .. value_type(definition.env),
-            "table<string, string>",
-            value_type(definition.env)
-          )
-        else
-          env = copy_env(definition.env, child_path(path, "env"), errors)
-        end
-      end
+      local process = parse_process_fields(definition, path, errors)
 
       local options
       if definition.options ~= nil then
@@ -476,9 +430,9 @@ function M.normalize(definitions, default_skills_policy)
         version = parse_command_check(definition.version, child_path(path, "version"), errors)
       end
       normalized[name] = {
-        command = command,
-        args = args,
-        env = env,
+        command = process.command,
+        args = process.args,
+        env = process.env,
         options = options,
         capabilities = capabilities,
         transcript_layout = transcript_layout,

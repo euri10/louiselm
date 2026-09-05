@@ -47,8 +47,9 @@ T["schedules snapshots and rereads after generation invalidation"] = function()
   local async
   async = nvim.uv.new_async(function()
     MiniTest.expect.equality(nvim.in_fast_event(), true)
-    pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(1) }) .. "\n")
-    pipe.read_callback(nil, nvim.json.encode({ type = "attention_changed", generation = 2 }) .. "\n")
+    local frame = nvim.json.encode({ type = "snapshot", snapshot = snapshot(1) }) .. "\n"
+    pipe.read_callback(nil, frame:sub(1, 10))
+    pipe.read_callback(nil, frame:sub(11) .. nvim.json.encode({ type = "attention_changed", generation = 2 }) .. "\n")
     async:close()
   end)
   async:send()
@@ -61,6 +62,38 @@ T["schedules snapshots and rereads after generation invalidation"] = function()
   MiniTest.expect.equality(#snapshots, 1)
   MiniTest.expect.equality(pipe.writes, { '{"type":"snapshot"}\n' })
   assert(client:dispose())
+end
+
+T["fails pending requests once and ignores frames queued before disposal"] = function()
+  local pipe = fake_pipe()
+  local snapshots, completions = {}, {}
+  local client = assert(AttentionClient.connect("/tmp/attention.sock", function(value)
+    snapshots[#snapshots + 1] = value
+  end, {
+    operator_capability = "operator-secret",
+    pipe_factory = function()
+      return pipe
+    end,
+  }))
+  pipe.connect_callback()
+  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(0) }) .. "\n")
+  assert(nvim.wait(1000, function()
+    return #snapshots == 1
+  end))
+  assert(client:clear_session("session", function(value, error_message)
+    completions[#completions + 1] = { value = value, error_message = error_message }
+  end))
+  pipe.read_callback(
+    nil,
+    nvim.json.encode({ type = "mutation_result", request_id = "1", snapshot = snapshot(1) }) .. "\n"
+  )
+  assert(client:dispose())
+  assert(client:dispose())
+  pipe.read_callback(nil, nil)
+  nvim.wait(20)
+  MiniTest.expect.equality(snapshots, { snapshot(0) })
+  MiniTest.expect.equality(completions, { { error_message = "Attention socket client is disposed" } })
+  MiniTest.expect.equality(pipe.closing, true)
 end
 
 T["correlates mutation results and ignores late callbacks after disposal"] = function()

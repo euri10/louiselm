@@ -1,3 +1,5 @@
+local PrivateFile = require("louiselm.private_file")
+
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
@@ -61,34 +63,7 @@ local function write_private(path, data)
   if nvim.fn.mkdir(directory, "p", 448) == 0 and nvim.fn.isdirectory(directory) ~= 1 then
     return false, "could not create abandonment state directory"
   end
-  local file, temporary_or_error = nvim.uv.fs_mkstemp(path .. ".tmp-XXXXXX")
-  if file == nil then
-    return false, "could not create temporary abandonment breadcrumb: " .. tostring(temporary_or_error)
-  end
-  local temporary = temporary_or_error
-  local written, write_error = nvim.uv.fs_write(file, data, 0)
-  if written ~= #data then
-    nvim.uv.fs_close(file)
-    nvim.uv.fs_unlink(temporary)
-    return false, "could not write abandonment breadcrumb: " .. tostring(write_error or "short write")
-  end
-  local synced, sync_error = nvim.uv.fs_fsync(file)
-  if not synced then
-    nvim.uv.fs_close(file)
-    nvim.uv.fs_unlink(temporary)
-    return false, "could not sync abandonment breadcrumb: " .. tostring(sync_error)
-  end
-  local closed, close_error = nvim.uv.fs_close(file)
-  if not closed then
-    nvim.uv.fs_unlink(temporary)
-    return false, "could not close abandonment breadcrumb: " .. tostring(close_error)
-  end
-  local renamed, rename_error = nvim.uv.fs_rename(temporary, path)
-  if not renamed then
-    nvim.uv.fs_unlink(temporary)
-    return false, "could not publish abandonment breadcrumb: " .. tostring(rename_error)
-  end
-  return true
+  return PrivateFile.write(nvim.uv, path, data, "abandonment breadcrumb", "publish")
 end
 
 ---Persist the live Sessions ended by editor exit.

@@ -1,3 +1,5 @@
+local PrivateFile = require("louiselm.private_file")
+
 ---@class louiselm.routing.UsageOption
 ---@field id string ACP option identifier.
 ---@field current_value string|boolean Value active for a completed turn.
@@ -384,34 +386,7 @@ local function write_store(path, records, turns)
   if not encoded_ok then
     return false, "could not encode usage history"
   end
-  local file, temporary_or_error = editor.uv.fs_mkstemp(path .. ".tmp-XXXXXX")
-  if file == nil then
-    return false, "could not create temporary usage history: " .. tostring(temporary_or_error)
-  end
-  local temporary = temporary_or_error
-  local written, write_error = editor.uv.fs_write(file, content, 0)
-  if written ~= #content then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return false, "could not write usage history: " .. tostring(write_error or "short write")
-  end
-  local synced, sync_error = editor.uv.fs_fsync(file)
-  if not synced then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return false, "could not sync usage history: " .. tostring(sync_error)
-  end
-  local closed, close_error = editor.uv.fs_close(file)
-  if not closed then
-    editor.uv.fs_unlink(temporary)
-    return false, "could not close usage history: " .. tostring(close_error)
-  end
-  local renamed, rename_error = editor.uv.fs_rename(temporary, path)
-  if not renamed then
-    editor.uv.fs_unlink(temporary)
-    return false, "could not replace usage history: " .. tostring(rename_error)
-  end
-  return true, nil
+  return PrivateFile.write(editor.uv, path, content, "usage history", "replace")
 end
 
 ---@param left louiselm.routing.UsageRecord

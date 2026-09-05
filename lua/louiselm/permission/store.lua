@@ -1,3 +1,5 @@
+local PrivateFile = require("louiselm.private_file")
+
 ---@alias louiselm.permission.Lifetime "session"|"always"
 
 ---@class louiselm.permission.Context
@@ -322,34 +324,7 @@ local function write_rules(path, rules)
   if not encoded_ok then
     return false, "could not encode permission state"
   end
-  local file, temporary_or_error = editor.uv.fs_mkstemp(path .. ".tmp-XXXXXX")
-  if file == nil then
-    return false, "could not create temporary permission state: " .. tostring(temporary_or_error)
-  end
-  local temporary = temporary_or_error
-  local written, write_error = editor.uv.fs_write(file, content, 0)
-  if written ~= #content then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return false, "could not write permission state: " .. tostring(write_error or "short write")
-  end
-  local synced, sync_error = editor.uv.fs_fsync(file)
-  if not synced then
-    editor.uv.fs_close(file)
-    editor.uv.fs_unlink(temporary)
-    return false, "could not sync permission state: " .. tostring(sync_error)
-  end
-  local closed, close_error = editor.uv.fs_close(file)
-  if not closed then
-    editor.uv.fs_unlink(temporary)
-    return false, "could not close permission state: " .. tostring(close_error)
-  end
-  local renamed, rename_error = editor.uv.fs_rename(temporary, path)
-  if not renamed then
-    editor.uv.fs_unlink(temporary)
-    return false, "could not replace permission state: " .. tostring(rename_error)
-  end
-  return true, nil
+  return PrivateFile.write(editor.uv, path, content, "permission state", "replace")
 end
 
 ---@param left louiselm.permission.Adapter

@@ -41,11 +41,10 @@ T["schedules snapshots from a real fast-event boundary and rereads on newer hint
   local async
   async = nvim.uv.new_async(function()
     MiniTest.expect.equality(nvim.in_fast_event(), true)
-    pipe.read_callback(
-      nil,
+    local frame =
       '{"type":"snapshot","runs":[{"id":"run","revision":1,"state":"active","generated_work_ceiling":3,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"park_expires_at_ms":0}]}\n'
-    )
-    pipe.read_callback(nil, '{"type":"run_changed","id":"run","revision":2}\n')
+    pipe.read_callback(nil, frame:sub(1, 10))
+    pipe.read_callback(nil, frame:sub(11) .. '{"type":"run_changed","id":"run","revision":2}\n')
     async:close()
   end)
   async:send()
