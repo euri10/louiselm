@@ -11,3 +11,7 @@ article {
   font-family: Georgia, 'Times New Roman', serif;
   color: #7a2e2e;
 }
+
+.myst-home-link-logo > img {
+  height: 3rem;
+}
