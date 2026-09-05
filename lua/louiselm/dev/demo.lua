@@ -234,6 +234,11 @@ local function propose_edit(self, revision)
             set_status(self, "ready")
             return
           end
+          local buffer = nvim.fn.bufnr(self.calculator_path)
+          if buffer ~= -1 and nvim.api.nvim_buf_is_loaded(buffer) then
+            nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, nvim.fn.readfile(self.calculator_path))
+            nvim.bo[buffer].modified = false
+          end
           finish_turn(self, revision, "allowed")
         elseif selected == "reject-once" then
           finish_turn(self, revision, "rejected")

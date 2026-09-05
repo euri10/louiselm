@@ -39,6 +39,8 @@ T["demo API"] = MiniTest.new_set()
 
 T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted file-edit turn"] = function()
   local root, path = fixture()
+  nvim.cmd.edit(nvim.fn.fnameescape(path))
+  local buffer = nvim.api.nvim_get_current_buf()
   local queued, schedule = scheduler()
   local api = assert(Demo.new({ project_root = root, schedule = schedule }))
   local session = assert(api:create_session("your-codex-here", { cwd = root }))
@@ -73,6 +75,7 @@ T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted f
   MiniTest.expect.equality(nvim.fn.readfile(path)[4], "  return left - right")
   drain(queued)
   MiniTest.expect.equality(nvim.fn.readfile(path)[4], "  return left + right")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, 3, 4, false)[1], "  return left + right")
   MiniTest.expect.equality(session:inspect().status, "ready")
   MiniTest.expect.equality(events[#events - 1].type, "state_changed")
   MiniTest.expect.equality(events[#events].type, "turn_done")
@@ -80,6 +83,7 @@ T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted f
   MiniTest.expect.equality({ responded, response_error }, { false, "permission request was already answered" })
 
   assert(api:dispose())
+  nvim.api.nvim_buf_delete(buffer, { force = true })
   nvim.fn.delete(root, "rf")
 end
 
