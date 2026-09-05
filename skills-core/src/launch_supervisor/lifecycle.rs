@@ -116,7 +116,7 @@ impl LaunchedSession {
         timeout: Duration,
         timer: Arc<dyn SupervisorTimer>,
         broker_loss_grace: Duration,
-    ) -> Result<Self, SupervisorError> {
+    ) -> Result<(Self, mpsc::Receiver<()>), SupervisorError> {
         debug_assert!(!receipts.is_empty());
         let receipt = receipts
             .last()
@@ -124,7 +124,7 @@ impl LaunchedSession {
             .clone();
         let input = Arc::new(DeferredAttachment::new());
         let output = Arc::new(DeferredAttachment::new());
-        let mut owner = SessionOwner::new(
+        let owner = SessionOwner::new(
             resources,
             signer,
             receipts,
@@ -137,9 +137,14 @@ impl LaunchedSession {
         let owner_input = DeferredReader::new(Arc::clone(&input));
         let owner_output = DeferredWriter::new(Arc::clone(&output));
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let (coordinator_lifetime, owner_finished) = mpsc::channel::<()>();
         let worker = thread::Builder::new()
             .name("louiselm-launch-session-owner".to_owned())
             .spawn(move || {
+                // Disconnect only after this worker's resources have been cleaned up,
+                // including during unwinding, so the spawning coordinator stays alive.
+                let _coordinator_lifetime = coordinator_lifetime;
+                let mut owner = owner;
                 let result = owner.run(Box::new(owner_input), Box::new(owner_output), ready_sender);
                 let cleanup = owner.resources.cleanup();
                 match (result, cleanup) {
@@ -149,14 +154,17 @@ impl LaunchedSession {
             })
             .map_err(|_| SupervisorError::WorkerUnavailable)?;
         match ready_receiver.recv() {
-            Ok(Ok(())) => Ok(Self {
-                owner: Some(worker),
-                sender,
-                input,
-                output,
-                receipt,
-                binding,
-            }),
+            Ok(Ok(())) => Ok((
+                Self {
+                    owner: Some(worker),
+                    sender,
+                    input,
+                    output,
+                    receipt,
+                    binding,
+                },
+                owner_finished,
+            )),
             Ok(Err(error)) => {
                 let _ = worker.join();
                 Err(error)

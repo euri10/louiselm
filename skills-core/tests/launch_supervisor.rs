@@ -8,8 +8,13 @@ use std::{
     env, fs,
     io::{self, BufReader, Cursor, Read, Write},
     net::Shutdown,
-    os::unix::{fs::PermissionsExt, net::UnixStream},
+    os::unix::{
+        fs::PermissionsExt,
+        net::UnixStream,
+        process::{CommandExt, ExitStatusExt},
+    },
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
@@ -1398,7 +1403,10 @@ impl RunningAgent for BubblewrapRunningAgent {
                         .map_err(|_| SupervisorError::RelayFailed)?;
                     let error_worker = thread::Builder::new()
                         .name("louiselm-test-agent-stderr".to_owned())
-                        .spawn(move || io::copy(&mut agent_error, &mut io::sink()))
+                        .spawn(move || {
+                            io::copy(&mut agent_error.by_ref().take(4 * 1024), &mut io::stderr())?;
+                            io::copy(&mut agent_error, &mut io::sink())
+                        })
                         .map_err(|_| SupervisorError::RelayFailed)?;
                     io::copy(&mut agent_output, &mut output)?;
                     output.flush()?;
@@ -7928,6 +7936,80 @@ fn initial_user_namespace() -> bool {
 }
 
 #[test]
+fn launch_keeps_parent_death_bound_children_alive_until_lifecycle_cleanup() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let (sender, receiver) = mpsc::sync_channel(1);
+    setup
+        .supervisor
+        .launch(
+            setup.request.clone(),
+            CONTROLLER_UID,
+            NOW_MS,
+            Box::new(move |result| {
+                // Completion runs on the same coordinator that prepares Bubblewrap.
+                // Arm its kernel parent-thread death contract without requiring root.
+                let mut command = Command::new("/bin/cat");
+                command.stdin(Stdio::piped()).stdout(Stdio::null());
+                // SAFETY: only the async-signal-safe prctl syscall runs after fork.
+                unsafe {
+                    command.pre_exec(|| {
+                        rustix::process::set_parent_process_death_signal(Some(
+                            rustix::process::Signal::KILL,
+                        ))
+                        .map_err(io::Error::from)
+                    });
+                }
+                let mut child = command.spawn().expect("parent-death probe starts");
+                let input = child.stdin.take().expect("probe stdin stays open");
+                let (exit_sender, exit_receiver) = mpsc::sync_channel(1);
+                let waiter = thread::spawn(move || {
+                    exit_sender
+                        .send(child.wait().expect("parent-death probe is reaped"))
+                        .expect("test receives probe exit");
+                });
+                sender
+                    .send((result, input, exit_receiver, waiter))
+                    .expect("test receives launch completion");
+            }),
+        )
+        .expect("launch registers");
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    setup.broker.acknowledge();
+    let (session, probe_input, probe_exit, probe_waiter) = receiver
+        .recv_timeout(CALLBACK_TIMEOUT)
+        .expect("launch completes");
+    let (controller_input, relay_receiver, relay_worker) =
+        begin_session_relay(session.expect("launch succeeds"));
+    let early_exit = probe_exit.recv_timeout(Duration::from_millis(100));
+
+    // Always settle the Session and reap the probe, including on regression failure.
+    finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
+    let terminal_exit = probe_exit.recv_timeout(CALLBACK_TIMEOUT);
+    drop(probe_input);
+    probe_waiter.join().expect("probe waiter finishes");
+
+    assert!(
+        matches!(early_exit, Err(mpsc::RecvTimeoutError::Timeout)),
+        "launch completion killed the still-owned child: {early_exit:?}",
+    );
+    assert_eq!(
+        terminal_exit
+            .expect("the spawning coordinator exits after lifecycle cleanup")
+            .signal(),
+        Some(9),
+        "the parent-death safety contract remains enabled",
+    );
+}
+
+#[test]
 fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     let Some(assigned) = env::var_os("LOUISELM_TEST_HOST_ID") else {
         eprintln!("skipping: set LOUISELM_TEST_HOST_ID in the privileged fixture");
@@ -8034,25 +8116,24 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         .write_all(&acp)
         .expect("ACP bytes reach the real Agent");
     let output_deadline = Instant::now() + PRIVILEGED_TIMEOUT;
-    while *lock(&output) != acp {
-        assert!(
-            Instant::now() < output_deadline,
-            "the real Agent never echoed the ACP bytes",
-        );
+    while *lock(&output) != acp && !relay_worker.is_finished() && Instant::now() < output_deadline {
         thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(*lock(&output), acp);
+    let echoed_before_eof = *lock(&output) == acp;
+    // Close input and settle the terminal receipt even when the echo is missing.
     controller_input
         .shutdown(Shutdown::Write)
         .expect("the real Agent receives ACP EOF");
 
-    setup.broker.wait_for_session_receipt(0);
-    setup.broker.wait_for_session_request();
-    setup
-        .broker
-        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
-            setup.broker.session_receipt_acknowledgement(0),
-        ));
+    if !relay_worker.is_finished() {
+        setup.broker.wait_for_session_receipt(0);
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+                setup.broker.session_receipt_acknowledgement(0),
+            ));
+    }
     drop(controller_input);
     relay_receiver
         .recv_timeout(PRIVILEGED_TIMEOUT)
@@ -8061,6 +8142,17 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     relay_worker
         .join()
         .expect("terminal privileged relay worker finishes");
+    assert!(
+        echoed_before_eof,
+        "the real Agent did not echo before controller EOF; events: {:?}",
+        event_snapshot(&setup.events),
+    );
+    assert_eq!(
+        *lock(&output),
+        acp,
+        "the real Agent never echoed the ACP bytes; events: {:?}",
+        event_snapshot(&setup.events),
+    );
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
 
     let observed = lock(&observation)
