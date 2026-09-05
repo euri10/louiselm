@@ -21,17 +21,22 @@ a {
 }
 
 .demo-shell {
-  display: grid;
-  grid-template-columns: minmax(19rem, 26rem) minmax(46rem, 1fr);
-  gap: 1.25rem;
   min-height: 100vh;
   padding: 1.25rem;
+}
+
+.demo-shell > .editor-panel {
+  margin-top: 1.25rem;
 }
 
 .demo-shell.-fallback {
   display: block;
   max-width: 48rem;
   margin: 0 auto;
+}
+
+.demo-shell.-fallback > .demo-guide {
+  display: block;
 }
 
 .demo-shell.-fallback > .editor-panel,
@@ -47,12 +52,52 @@ a {
 }
 
 .demo-guide {
-  align-self: start;
+  display: grid;
+  grid-template-columns: minmax(20rem, 2fr) minmax(32rem, 3fr);
+  column-gap: 1.25rem;
   padding: 1.5rem;
   border: 1px solid #47383c;
   border-radius: 1rem;
   background: rgb(26 21 23 / 94%);
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 30%);
+}
+
+.demo-guide > .topline,
+.demo-guide > .title,
+.demo-guide > .summary,
+.demo-guide > .profile-choice,
+.demo-guide > .disclosure-box {
+  grid-column: 1;
+}
+
+.demo-guide > .topline {
+  grid-row: 1;
+}
+
+.demo-guide > .title {
+  grid-row: 2;
+}
+
+.demo-guide > .summary {
+  grid-row: 3;
+}
+
+.demo-guide > .profile-choice {
+  grid-row: 4;
+}
+
+.demo-guide > .disclosure-box {
+  grid-row: 5;
+}
+
+.demo-guide > .guide-stage {
+  grid-column: 2;
+  grid-row: 1 / span 5;
+  min-width: 0;
+}
+
+.demo-guide > .fallback-panel {
+  grid-column: 1 / -1;
 }
 
 .demo-guide > .topline {
@@ -172,6 +217,10 @@ a {
   border: 1px solid #47383c;
   border-radius: 0.75rem;
   background: #171315;
+}
+
+.guide-stage > .guide-step {
+  margin-top: 0;
 }
 
 .guide-step > .progress {
@@ -354,12 +403,16 @@ noscript {
 
 @media (max-width: 63.99rem) {
   .demo-shell {
-    display: block;
     min-height: auto;
     padding: 0.75rem;
   }
 
+  .demo-shell > .editor-panel {
+    margin-top: 0;
+  }
+
   .demo-guide {
+    display: block;
     padding: 1rem;
   }
 

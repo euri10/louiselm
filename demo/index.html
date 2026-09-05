@@ -39,29 +39,31 @@
         <div id="demo-disclosure" class="disclosure-box" role="note">
           Scripted demo—no Agent or Provider connected.
         </div>
-        <section id="guide-step" class="guide-step" aria-live="polite" aria-labelledby="step-title">
-          <p id="step-progress" class="progress">Step 1 of 10 · about 7 minutes</p>
-          <h2 id="step-title" class="title">Ask about the bug</h2>
-          <p id="step-body" class="body">A disposable Lua project is already attached to this Session.</p>
-          <p id="step-action" class="action">Focus Neovim, press i, type anything about the bug, then press Enter.</p>
-          <p id="step-check" class="check">Waiting for the real diff review…</p>
-        </section>
-        <div class="guide-actions">
-          <button id="type-action" class="action-button -primary" type="button">Type it for me</button>
-          <button id="skip-step" class="action-button" type="button">Skip</button>
-          <button id="reset-demo" class="action-button" type="button">Reset</button>
+        <div class="guide-stage">
+          <section id="guide-step" class="guide-step" aria-live="polite" aria-labelledby="step-title">
+            <p id="step-progress" class="progress">Step 1 of 10 · about 7 minutes</p>
+            <h2 id="step-title" class="title">Ask about the bug</h2>
+            <p id="step-body" class="body">A disposable Lua project is already attached to this Session.</p>
+            <p id="step-action" class="action">Focus Neovim, press i, type anything about the bug, then press Enter.</p>
+            <p id="step-check" class="check">Waiting for the real diff review…</p>
+          </section>
+          <div class="guide-actions">
+            <button id="type-action" class="action-button -primary" type="button">Type it for me</button>
+            <button id="skip-step" class="action-button" type="button">Skip</button>
+            <button id="reset-demo" class="action-button" type="button">Reset</button>
+          </div>
+          <section id="completion-panel" class="completion-panel" hidden aria-live="polite">
+            <h2 id="completion-title">You completed the LouiseLM tour</h2>
+            <p id="completion-body">You used real Session, permission, Resume, limit, and Handoff UI—without installing anything.</p>
+            <a id="completion-install-link" class="action-button -primary" href="/docs/onboarding/">Install LouiseLM locally</a>
+            <button id="replay-demo" class="action-button" type="button">Replay from the start</button>
+            <button id="replay-other-profile" class="action-button" type="button">Replay in Core</button>
+          </section>
+          <p class="status-banner" aria-live="polite">
+            <span id="status-label" class="label">Status</span>
+            <span id="demo-status" class="value">Preparing browser runtime…</span>
+          </p>
         </div>
-        <section id="completion-panel" class="completion-panel" hidden aria-live="polite">
-          <h2 id="completion-title">You completed the LouiseLM tour</h2>
-          <p id="completion-body">You used real Session, permission, Resume, limit, and Handoff UI—without installing anything.</p>
-          <a id="completion-install-link" class="action-button -primary" href="/docs/onboarding/">Install LouiseLM locally</a>
-          <button id="replay-demo" class="action-button" type="button">Replay from the start</button>
-          <button id="replay-other-profile" class="action-button" type="button">Replay in Core</button>
-        </section>
-        <p class="status-banner" aria-live="polite">
-          <span id="status-label" class="label">Status</span>
-          <span id="demo-status" class="value">Preparing browser runtime…</span>
-        </p>
         <section id="fallback-panel" class="fallback-panel" hidden>
           <h2 id="fallback-title">Read the static tour</h2>
           <p id="fallback-body">The interactive demo needs a desktop browser, cross-origin isolation, and a physical keyboard.</p>
