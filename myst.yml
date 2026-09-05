@@ -33,4 +33,6 @@ site:
   template: https://github.com/myst-templates/book-theme/archive/45706bcb9ac02b6713270785e3fc22eda348ed3b.zip
   options:
     folders: true
+    logo: ./android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+    logo_alt: LouiseLM
     style: ./blog/blog.css
