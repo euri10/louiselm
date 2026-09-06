@@ -426,4 +426,5 @@ jobs:
               tail -n 1
           )"
           test -n "$registry_test"
-          sudo /bin/bash -c 'umask 077; exec "$1" trusted_registry_requires_root_owned_immutable_documents_and_runtime --nocapture' bash "$registry_test"
+          sudo env LOUISELM_REQUIRE_ROOT_REGISTRY=1 \
+            /bin/bash -c 'umask 077; exec "$1" --nocapture' bash "$registry_test"

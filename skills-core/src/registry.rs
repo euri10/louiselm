@@ -230,9 +230,13 @@ impl Registry {
     /// fixtures. A privileged launcher must use this entrypoint: matching a
     /// digest does not stop an unprivileged owner from replacing the pathname
     /// between measurement and execution.
+    /// The entire runtime tree is checked, including unlisted files, because
+    /// the sandbox mounts that directory rather than only measured files.
     ///
     /// # Errors
-    /// Returns registry-loading errors or refuses untrusted path ownership, permissions, symlinks, or file kinds along registry/runtime paths.
+    /// Returns registry-loading or runtime-enumeration errors, or refuses
+    /// untrusted ownership, permissions, symlinks, or non-file/directory entries
+    /// anywhere in the runtime trees or registry/runtime ancestry.
     pub fn open_trusted(root: &Path) -> Result<Self, RegistryError> {
         require_trusted_path(root, TrustedKind::Directory)?;
         for kind in ["agents", "runtimes", "envelopes"] {
@@ -251,7 +255,7 @@ impl Registry {
 
         let registry = Self::open(root)?;
         for runtime in &registry.runtimes {
-            require_trusted_path(&runtime.root, TrustedKind::Directory)?;
+            require_trusted_tree(&runtime.root)?;
             require_trusted_path(&runtime.executable_path(), TrustedKind::File)?;
             for adapter in &runtime.adapters {
                 require_trusted_path(&runtime.root.join(&adapter.path), TrustedKind::File)?;
@@ -576,6 +580,36 @@ enum TrustedKind {
     File,
 }
 
+fn require_trusted_tree(root: &Path) -> Result<(), RegistryError> {
+    require_trusted_path(root, TrustedKind::Directory)?;
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        // Each directory and its ancestors were validated before enumeration;
+        // an unprivileged writer cannot replace the entries being inspected.
+        let directory_error = |source| RegistryError::Io {
+            path: directory.display().to_string(),
+            source,
+        };
+        for entry in fs::read_dir(&directory).map_err(&directory_error)? {
+            let path = entry.map_err(&directory_error)?.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|source| RegistryError::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+            let kind = if metadata.is_dir() {
+                TrustedKind::Directory
+            } else {
+                TrustedKind::File
+            };
+            require_trusted_metadata(&path, &metadata, kind)?;
+            if metadata.is_dir() {
+                directories.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn require_trusted_path(path: &Path, kind: TrustedKind) -> Result<(), RegistryError> {
     validate_absolute_path("launch path", path)?;
 
@@ -596,28 +630,31 @@ fn require_trusted_path(path: &Path, kind: TrustedKind) -> Result<(), RegistryEr
         } else {
             TrustedKind::Directory
         };
-        let right_type = match expected_type {
-            TrustedKind::Directory => metadata.is_dir(),
-            TrustedKind::File => metadata.is_file(),
-        };
-        if metadata.file_type().is_symlink() || !right_type {
-            return Err(RegistryError::Untrusted {
-                path: current.display().to_string(),
-                reason: "must not contain symlinks or unexpected file types",
-            });
-        }
-        if metadata.uid() != 0 {
-            return Err(RegistryError::Untrusted {
-                path: current.display().to_string(),
-                reason: "must be owned by root",
-            });
-        }
-        if metadata.mode() & 0o022 != 0 {
-            return Err(RegistryError::Untrusted {
-                path: current.display().to_string(),
-                reason: "must not be writable by group or other users",
-            });
-        }
+        require_trusted_metadata(&current, &metadata, expected_type)?;
     }
     Ok(())
+}
+
+fn require_trusted_metadata(
+    path: &Path,
+    metadata: &fs::Metadata,
+    kind: TrustedKind,
+) -> Result<(), RegistryError> {
+    let right_type = match kind {
+        TrustedKind::Directory => metadata.is_dir(),
+        TrustedKind::File => metadata.is_file(),
+    };
+    let reason = if metadata.file_type().is_symlink() || !right_type {
+        "must not contain symlinks or unexpected file types"
+    } else if metadata.uid() != 0 {
+        "must be owned by root"
+    } else if metadata.mode() & 0o022 != 0 {
+        "must not be writable by group or other users"
+    } else {
+        return Ok(());
+    };
+    Err(RegistryError::Untrusted {
+        path: path.display().to_string(),
+        reason,
+    })
 }

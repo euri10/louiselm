@@ -90,6 +90,13 @@ Existing privileged CI recipes are in `.github/workflows/ci.yml`, under
 under `/var/tmp/louiselm-skills-target`, mode `0755`, so the assigned test UID
 can traverse them (louiselm-4p9v).
 
+The privileged registry step runs the entire registry integration binary with
+`LOUISELM_REQUIRE_ROOT_REGISTRY=1`. It rejects missing root/initial-user-namespace
+authority instead of skipping. Runtime trees must contain only root-owned
+regular files and directories, without group/other write permission; even
+internal symlinks, FIFOs and sockets are refused. Unlisted immutable files are
+supported, but their contents are not added to the existing measurement format.
+
 Prove initial-user-namespace identity with
 `LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1`; a passing test that printed a
 skip is not conformance evidence. Fake-broker tests do not prove the installed
