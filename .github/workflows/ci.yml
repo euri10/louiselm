@@ -2,8 +2,8 @@
 #
 # Scope: this runs the gates AGENTS.md section 4 declares authoritative --
 # StyLua for formatting, lua-language-server for static analysis, and
-# mini.test for tests on the Lua side, plus cargo fmt/clippy/test/doc for each
-# Rust crate. It deliberately does NOT
+# mini.test for tests on the Lua side, cargo fmt/clippy/test/doc for each
+# Rust crate, and Gradle test/lint/assemble for Android. It deliberately does NOT
 # build or publish blog/, which is pages.yml's job (runs only when
 # blog/ changes). The two pipelines are disjoint on purpose: pages.yml
 # owns publishing, this one owns correctness.
@@ -18,6 +18,9 @@
 #   cargo clippy (all targets/features, locked)  0 clean / 101 on a lint
 #   cargo test (all features, locked)           0 clean / 101 on test failure
 #   cargo doc (no deps, warnings denied)        0 clean / 101 on a doc warning
+#   Gradle Kotlin compilation                   0 clean / 1 on a warning
+#   Gradle test                                 0 clean / 1 on a regression
+#   Gradle lint                                 0 clean / 1 on a lint error
 #
 # The Rust gates cover capture-service/ and skills-core/ as separate jobs;
 # they are separate crates with separate lockfiles, not a workspace, so one
@@ -28,8 +31,9 @@
 # defect these tests exist to keep fixed. skills-core's was exercised the same
 # way, by disabling the hardlink-ambiguity refusal in capture and the
 # digest-conflict refusal in the store and watching each guard's test go red.
-# android/ is out of scope: it needs Gradle and the Android SDK, and is not
-# wired here.
+# Android runs JVM/Robolectric tests without a device or live credentials.
+# Failure probes: displaced pending-count update, deprecated Kotlin call, and
+# incomplete translation resources. Existing lint warnings: louiselm-16a6.
 #
 # Tool versions are pinned rather than floated so an upstream release
 # cannot silently turn this pipeline red (or, worse, green).
@@ -67,6 +71,26 @@ env:
   RUST_VERSION: 1.97.1
 
 jobs:
+  android:
+    name: Android tests, lint, and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      # Use the runner's installed JDK/SDK, not another setup dependency.
+      - name: Test, lint, and assemble
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_25_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0"
+          ./gradlew --no-daemon test lint assembleDebug
+
   format:
     name: stylua
     runs-on: ubuntu-latest

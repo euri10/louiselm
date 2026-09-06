@@ -281,8 +281,9 @@ These went unenforced for `capture-service`'s whole life until
 `louiselm-ci-missing-rust-gates-5o5h`: the 56 tests included the three
 regressions guarding `louiselm-capture-receiver-reachability-rnjc`, a defect that
 cost a multi-hour physical Android QA round to verify, and CI would have stayed
-green through a reintroduction. `android/` still has no gate here; it needs
-Gradle and the Android SDK.
+green through a reintroduction. `android/` runs its separate
+`./gradlew test lint assembleDebug` gate in CI; Kotlin/Android policy and
+Robolectric requirements live in `android/AGENTS.md`.
 
 `generate-luacats --check` fails whenever `config.lua`'s schema changed without
 regenerating `lua/louiselm/types.lua`, the `louiselm.Config` class that gives

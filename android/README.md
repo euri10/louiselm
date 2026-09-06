@@ -21,6 +21,23 @@ Connect an API 28+ device, then run:
 ./gradlew installDebug
 ```
 
+`test` includes pure JUnit tests and Robolectric Activity/View/lifecycle tests
+on the JVM; no device is needed for those tests. The Activity fixtures use
+Android 14/API 34, matching the physical regression evidence, isolated app
+storage, a shadow recorder, and separately controlled background/UI queues.
+Run just that regression with:
+
+```sh
+./gradlew :app:testDebugUnitTest --tests dev.louiselm.capture.MainActivityTest
+```
+
+Kotlin warnings and Android Lint errors fail the build. Existing lint warnings
+remain visible; their review and warnings-as-errors gate are tracked in
+`louiselm-16a6`. CI uses JDK 25 and runs `test lint assembleDebug`;
+physical checks remain necessary for hardware, pairing/Keystore and real
+background scheduling. Development rules are in
+[AGENTS.md](AGENTS.md).
+
 The app uses the system camera to take a full-resolution image of the terminal
 QR and bundled ML Kit to decode it offline. Pairing and uploads use HTTPS with
 the stable receiver public-key identity carried by the version-2 one-time QR;
