@@ -324,7 +324,22 @@ jobs:
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
+        id: skills-tests
         run: cargo test --all-features --locked
+
+      - name: Trace failed bootstrap handshake
+        if: failure() && steps.skills-tests.outcome == 'failure'
+        run: |
+          artifacts=$(cargo test --all-features --locked --test bootstrap --no-run --message-format=json)
+          bootstrap_test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "bootstrap" and .profile.test) | .executable // empty' <<< "$artifacts")
+          strace -ff -e trace=execve,openat,close,fcntl,dup,dup2,dup3,newfstatat,statx \
+            -o "$RUNNER_TEMP/bootstrap.trace" \
+            "$bootstrap_test" --exact bootstrap_waits_for_complete_parent_release_before_exec --nocapture || true
+          for trace in "$RUNNER_TEMP"/bootstrap.trace.*; do
+            if grep -q '"__sandbox_bootstrap"' "$trace"; then
+              cat "$trace"
+            fi
+          done
 
       - name: Documentation
         env:
