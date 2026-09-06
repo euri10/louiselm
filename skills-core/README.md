@@ -307,6 +307,9 @@ This procedure changes root trust data, subordinate-ID reservations, and
 `sudoers`. Run it only in a disposable VM, using a dedicated operator account,
 and take a snapshot before the destructive digest checks.
 
+For the rootless host-side QEMU/KVM setup and disposable reset procedure, see
+[the launcher acceptance VM runbook](../docs/launcher-vm.md).
+
 #### Installer authority (louiselm-d6fv.4.2)
 
 The installer, status, rotation, and lease primitives in this slice are covered

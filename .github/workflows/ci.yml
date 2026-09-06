@@ -71,6 +71,13 @@ env:
   RUST_VERSION: 1.97.1
 
 jobs:
+  launcher-vm-contract:
+    name: Launcher VM safety contract (no VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/launcher-vm && ./scripts/test-launcher-vm.sh
+
   android:
     name: Android tests, lint, and build
     runs-on: ubuntu-24.04

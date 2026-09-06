@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+die() { echo "launcher-vm: $*" >&2; exit 1; }
+usage() {
+  echo 'Usage: launcher-vm {plan|prepare|start|status|logs|stop|reset --discard|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
+}
+action=${1:-help}
+shift || true
+case $action in
+  help|--help|-h) usage; exit 0 ;;
+  plan|prepare|start|status|logs|stop) [[ $# == 0 ]] || { usage >&2; exit 64; } ;;
+  reset) [[ $# == 1 && $1 == --discard ]] || { usage >&2; exit 64; } ;;
+  exec) [[ $# -gt 0 ]] || { usage >&2; exit 64; } ;;
+  put|get) [[ $# == 2 ]] || { usage >&2; exit 64; } ;;
+  *) usage >&2; exit 64 ;;
+esac
+(( UID != 0 )) || die 'never run this host wrapper as root'
+cache=${XDG_CACHE_HOME:-"$HOME/.cache"}
+[[ $cache == /* && $cache != *[,$'\n\r']* ]] || die 'cache path must be absolute and contain no comma or newline'
+state="$cache/louiselm-launcher-vm"
+[[ $(realpath -m -- "$state") == "$state" ]] || die 'state path must have no symlink or dot components'
+unit=louiselm-launcher-vm.service
+image=debian-13-genericcloud-amd64-20260831-2587.qcow2
+image_url="https://cloud.debian.org/images/cloud/trixie/20260831-2587/$image"
+image_sha=8ea9faae810043a0b35b0149f05014f26705c2339ffb11ead308f33e844a87cc3ef46ec81d5262b38817b6a88af404874d48a5857ebe072ef6a31dfb6e371f50
+
+qemu_args() {
+  qemu=(/usr/bin/qemu-system-x86_64
+    -machine q35,accel=kvm -cpu host -smp 2 -m 4096
+    -nodefaults -no-user-config -no-reboot -display none -monitor none
+    -serial "file:$state/serial.log"
+    -sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny
+    -drive file=/usr/share/OVMF/OVMF_CODE_4M.fd,format=raw,if=pflash,readonly=on
+    -drive "file=$1.vars.fd,format=raw,if=pflash"
+    -drive "file=$1,format=qcow2,if=none,id=root"
+    -device virtio-blk-pci,drive=root
+    -drive "file=$state/seed.iso,format=raw,if=none,id=seed,readonly=on"
+    -device virtio-blk-pci,drive=seed
+    -device virtio-rng-pci
+    -netdev "user,id=net0,restrict=$2,hostfwd=tcp:127.0.0.1:22554-:22"
+    -device virtio-net-pci,netdev=net0)
+  service=(systemd-run --user --unit="$unit" --collect --service-type=exec
+    --property=MemoryMax=5G --property=MemorySwapMax=0
+    --property=CPUQuota=200% --property=TasksMax=128
+    --property=RuntimeMaxSec=3600 --property=TimeoutStopSec=20
+    --property=KillMode=control-group --property=NoNewPrivileges=yes
+    --property=Nice=10 --property=UMask=0077)
+}
+if [[ $action == plan ]]; then
+  qemu_args "$state/run.qcow2" on
+  qemu_json=$(printf '%s\n' "${qemu[@]}" | jq -R . | jq -s .)
+  service_json=$(printf '%s\n' "${service[@]}" | jq -R 'sub("^--property="; "")' | jq -s .)
+  jq -n --arg state "$state" --arg url "$image_url" --arg sha "$image_sha" \
+    --argjson qemu "$qemu_json" --argjson systemd "$service_json" \
+    '{schema:"louiselm.launcher-vm.plan/1",state_dir:$state,network:"restricted",image_url:$url,image_sha512:$sha,qemu:$qemu,systemd:$systemd}'
+  exit 0
+fi
+
+if [[ ! -d $state && $action == prepare ]]; then
+  [[ -d $cache && $(stat -c %u -- "$cache") == "$UID" ]] || die 'cache must be an existing directory owned by you'
+  cache_mode=$(stat -c %a -- "$cache")
+  (( (8#$cache_mode & 0022) == 0 )) || die 'cache must not be group/world writable'
+  mkdir -m 700 -- "$state"
+fi
+[[ -d $state && $(stat -c '%u:%a' -- "$state") == "$UID:700" ]] || die 'prepare a private, owned VM directory first'
+if [[ $action != status && $action != logs ]]; then
+  exec 9>"$state/control.lock"
+  flock -n 9 || die 'another VM command is running'
+fi
+ssh_options=(-F /dev/null -i "$state/client-key" -o IdentitiesOnly=yes -o IdentityAgent=none
+  -o ForwardAgent=no -o BatchMode=yes -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$state/known_hosts" -o GlobalKnownHostsFile=/dev/null
+  -o HostKeyAlias=louiselm-launcher-vm -o ConnectTimeout=3
+  -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+guest() {
+  local quoted
+  printf -v quoted '%q ' "$@"
+  timeout --foreground 900 ssh "${ssh_options[@]}" -p 22554 vm@127.0.0.1 "$quoted"
+}
+active() { systemctl --user is-active --quiet "$unit"; }
+stopped() {
+  local load
+  load=$(systemctl --user show "$unit" -p LoadState --value)
+  [[ $load == not-found ]] || die "VM unit still exists ($load); inspect status/logs and stop it first"
+}
+wait_ready() {
+  local end=$((SECONDS + 180))
+  until guest true 2>/dev/null; do
+    active || die 'VM stopped before SSH readiness; inspect logs'
+    (( SECONDS < end )) || die 'SSH readiness timed out after 180s; inspect logs'
+    echo "launcher-vm: waiting for SSH (${SECONDS}s)" >&2
+    sleep 3
+  done
+}
+start_image() {
+  stopped
+  [[ -r /dev/kvm && -w /dev/kvm ]] || die '/dev/kvm is inaccessible; no sudo fallback'
+  qemu_args "$1" "$2"
+  "${service[@]}" -- "${qemu[@]}"
+  wait_ready
+}
+stop_vm() {
+  if active; then
+    if ! guest sudo -n poweroff; then
+      echo 'launcher-vm: graceful shutdown unconfirmed; stopping only its user unit' >&2
+    fi
+    local end=$((SECONDS + 20))
+    while active && (( SECONDS < end )); do sleep 1; done
+    if [[ $(systemctl --user show "$unit" -p LoadState --value) != not-found ]]; then
+      systemctl --user stop "$unit"
+    fi
+  fi
+  # Failed transient units remain inspectable until explicitly reset.
+  if systemctl --user is-failed --quiet "$unit"; then
+    systemctl --user reset-failed "$unit"
+  fi
+  stopped
+}
+
+case $action in
+  prepare)
+    for tool in curl sha512sum qemu-img qemu-system-x86_64 xorriso ssh ssh-keygen scp jq systemd-run rustup; do
+      command -v "$tool" >/dev/null || die "missing existing host prerequisite: $tool"
+    done
+    stopped
+    [[ ! -f $state/prepared.qcow2 ]] || { echo 'launcher-vm: already prepared'; exit 0; }
+    [[ -r /usr/share/OVMF/OVMF_CODE_4M.fd && -r /usr/share/OVMF/OVMF_VARS_4M.fd ]] || die 'existing OVMF firmware is required; no host install fallback'
+    if [[ ! -f $state/$image ]]; then
+      curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 900 --retry 2 \
+        --output "$state/$image.partial" "$image_url"
+      printf '%s  %s\n' "$image_sha" "$state/$image.partial" | sha512sum --check --status || die 'downloaded image SHA-512 mismatch; VM not started'
+      mv -- "$state/$image.partial" "$state/$image"
+      chmod 400 -- "$state/$image"
+    fi
+    printf '%s  %s\n' "$image_sha" "$state/$image" | sha512sum --check --status || die 'cached image SHA-512 mismatch; VM not started'
+    if [[ ! -f $state/client-key ]]; then
+      ssh-keygen -q -t ed25519 -N '' -C launcher-vm-client -f "$state/client-key"
+      ssh-keygen -q -t ed25519 -N '' -C launcher-vm-host -f "$state/host-key"
+    fi
+    printf 'louiselm-launcher-vm %s\n' "$(cut -d ' ' -f 1,2 "$state/host-key.pub")" >"$state/known_hosts"
+    mkdir -p -- "$state/seed"
+    printf 'instance-id: louiselm-launcher-vm-1\nlocal-hostname: louiselm-launcher-vm\n' >"$state/seed/meta-data"
+    {
+      printf '#cloud-config\nusers:\n  - name: vm\n    shell: /bin/bash\n    lock_passwd: true\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    ssh_authorized_keys:\n      - %s\n' "$(<"$state/client-key.pub")"
+      printf 'disable_root: true\nssh_pwauth: false\nssh_deletekeys: false\nssh_keys:\n  ed25519_private: |\n'
+      sed 's/^/    /' "$state/host-key"
+      printf '  ed25519_public: %s\n' "$(<"$state/host-key.pub")"
+    } >"$state/seed/user-data"
+    xorriso -as mkisofs -quiet -output "$state/seed.iso" -volid cidata -joliet -rock "$state/seed"
+    [[ -f $state/build.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/$image" "$state/build.qcow2" 32G
+    [[ -f $state/build.qcow2.vars.fd ]] || cp -- /usr/share/OVMF/OVMF_VARS_4M.fd "$state/build.qcow2.vars.fd"
+    # Only trusted distro provisioning gets egress; test guests always use restrict=on.
+    trap 'stop_vm' EXIT
+    start_image "$state/build.qcow2" off
+    guest sudo -n cloud-init status --wait
+    guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      bubblewrap build-essential pkg-config jq git curl ca-certificates strace
+    scp "${ssh_options[@]}" -P 22554 -- "$(command -v rustup)" vm@127.0.0.1:/home/vm/rustup-init
+    guest chmod 700 /home/vm/rustup-init
+    guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.97.1 --component rustfmt,clippy
+    guest sudo -n install -d -o vm -g vm -m 0755 /var/tmp/louiselm-skills-target
+    project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+    git -C "$project_root" archive HEAD skills-core tests/fixtures/verified_posture_v1.json | guest tar -x -C /home/vm
+    guest /home/vm/.cargo/bin/cargo fetch --manifest-path /home/vm/skills-core/Cargo.toml --locked
+    guest env CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target CARGO_BUILD_JOBS=2 \
+      /home/vm/.cargo/bin/cargo test --manifest-path /home/vm/skills-core/Cargo.toml \
+      --all-features --locked --offline --no-run
+    guest sudo -n sync
+    stop_vm
+    trap - EXIT
+    mv -- "$state/build.qcow2" "$state/prepared.qcow2"
+    mv -- "$state/build.qcow2.vars.fd" "$state/prepared.qcow2.vars.fd"
+    chmod 400 -- "$state/prepared.qcow2"
+    chmod 400 -- "$state/prepared.qcow2.vars.fd"
+    echo 'launcher-vm: prepared; next: launcher-vm start'
+    ;;
+  start)
+    [[ -f $state/prepared.qcow2 ]] || die 'run prepare first'
+    if active; then wait_ready; exit 0; fi
+    stopped
+    [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/prepared.qcow2" "$state/run.qcow2"
+    [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
+    trap 'stop_vm' EXIT
+    start_image "$state/run.qcow2" on
+    trap - EXIT
+    ;;
+  status)
+    systemctl --user show "$unit" -p LoadState -p ActiveState -p SubState -p MainPID \
+      -p MemoryCurrent -p MemoryMax -p MemorySwapMax -p CPUQuotaPerSecUSec -p RuntimeMaxUSec |
+      jq -Rn '[inputs | capture("^(?<key>[^=]+)=(?<value>.*)$")] | from_entries'
+    ;;
+  logs) journalctl --user -u "$unit" --no-pager -n 50; tail -n 60 -- "$state/serial.log" ;;
+  stop) stop_vm ;;
+  reset)
+    stopped
+    [[ -f $state/prepared.qcow2 ]] || die 'run prepare first'
+    # Keep the discarded overlay recoverable; never recursively delete user data.
+    if [[ -f $state/run.qcow2 ]]; then
+      archive=$(mktemp -d "$state/discarded.XXXXXX")
+      mv -- "$state/run.qcow2" "$archive/run.qcow2"
+      mv -- "$state/run.qcow2.vars.fd" "$archive/run.qcow2.vars.fd"
+      echo "launcher-vm: old overlay retained at $archive/run.qcow2" >&2
+    fi
+    qemu-img create -f qcow2 -F qcow2 -b "$state/prepared.qcow2" "$state/run.qcow2"
+    install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
+    ;;
+  exec) active || die 'VM is not running'; guest "$@" ;;
+  put) active || die 'VM is not running'; timeout 300 scp "${ssh_options[@]}" -P 22554 -- "$1" "vm@127.0.0.1:$2" ;;
+  get) active || die 'VM is not running'; timeout 300 scp "${ssh_options[@]}" -P 22554 -- "vm@127.0.0.1:$1" "$2" ;;
+esac
