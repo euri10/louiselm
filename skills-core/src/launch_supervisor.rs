@@ -584,7 +584,7 @@ impl LaunchSupervisor {
     ///
     /// Registration errors are returned synchronously and do not invoke
     /// `complete`. Once accepted, `complete` runs exactly once on the
-    /// coordinator thread.
+    /// coordinator thread, which remains alive until Session cleanup completes.
     ///
     /// # Errors
     /// Returns `AlreadyLaunched` or `WorkerUnavailable` before admission. Launch-transaction failures are delivered to `complete`.
@@ -609,11 +609,18 @@ impl LaunchSupervisor {
             .name("louiselm-launch-supervisor".to_owned())
             .spawn(move || {
                 let broker = Arc::clone(&inner.broker);
-                let result = run_launch(&inner, &request, controller_uid, now_ms, validation_clock);
-                if result.is_err() {
-                    broker.close();
+                match run_launch(&inner, &request, controller_uid, now_ms, validation_clock) {
+                    Ok((session, owner_finished)) => {
+                        complete(Ok(session));
+                        // Bubblewrap's parent-death signal follows its spawning thread,
+                        // even after process ownership moves to the lifecycle worker.
+                        let _ = owner_finished.recv();
+                    }
+                    Err(error) => {
+                        broker.close();
+                        complete(Err(error));
+                    }
                 }
-                complete(result);
             })
             .map(drop)
             .map_err(|_| SupervisorError::WorkerUnavailable)
@@ -653,7 +660,7 @@ fn run_launch(
     controller_uid: u32,
     now_ms: u64,
     validation_clock: Instant,
-) -> Result<LaunchedSession, SupervisorError> {
+) -> Result<(LaunchedSession, mpsc::Receiver<()>), SupervisorError> {
     request
         .validate()
         .map_err(|_| SupervisorError::LaunchDocumentRejected)?;

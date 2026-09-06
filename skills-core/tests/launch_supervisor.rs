@@ -17,9 +17,14 @@ use std::{
     net::Shutdown,
     os::{
         fd::OwnedFd,
-        unix::{fs::PermissionsExt, net::UnixStream},
+        unix::{
+            fs::PermissionsExt,
+            net::{UnixListener, UnixStream},
+            process::{CommandExt, ExitStatusExt},
+        },
     },
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -7990,6 +7995,111 @@ fn launch_frame_is_one_bounded_canonical_line_and_preserves_buffered_acp_bytes()
     }
 }
 
+#[test]
+fn parent_death_probe_helper() {
+    let Some(ready) = env::var_os("LOUISELM_PARENT_DEATH_PROBE") else {
+        return;
+    };
+    // This is a separate process, not a post-fork closure in the launcher.
+    rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
+        .expect("the kernel arms the parent-thread death signal");
+    let _ready = UnixStream::connect(ready).expect("report the armed signal before handoff");
+    let error = Command::new("/bin/cat").stdout(Stdio::null()).exec();
+    panic!("parent-death probe exec failed: {error}");
+}
+
+fn spawn_parent_death_probe(ready: &Path) -> Child {
+    let listener = UnixListener::bind(ready).expect("probe readiness socket opens");
+    listener.set_nonblocking(true).unwrap();
+    let mut child = Command::new(env::current_exe().unwrap())
+        .args(["--exact", "parent_death_probe_helper", "--nocapture"])
+        .env("LOUISELM_PARENT_DEATH_PROBE", ready)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("parent-death probe starts");
+    let deadline = Instant::now() + CALLBACK_TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok(_) => return child,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                child.wait().expect("failed probe is reaped");
+                panic!("parent-death probe did not become ready: {error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn launch_keeps_parent_death_bound_children_alive_until_lifecycle_cleanup() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let probe_ready = setup.fixture.path("parent-death-ready.sock");
+    setup
+        .supervisor
+        .launch(
+            setup.request.clone(),
+            CONTROLLER_UID,
+            NOW_MS,
+            Box::new(move |result| {
+                // Ported from 7ccb05a: preserve both sides of the kernel lifetime
+                // check without its now-forbidden unsafe pre_exec hook.
+                let mut child = spawn_parent_death_probe(&probe_ready);
+                let input = child.stdin.take().expect("probe stdin stays open");
+                let (exit_sender, exit_receiver) = mpsc::sync_channel(1);
+                let waiter = thread::spawn(move || {
+                    exit_sender
+                        .send(child.wait().expect("parent-death probe is reaped"))
+                        .expect("test receives probe exit");
+                });
+                sender
+                    .send((result, input, exit_receiver, waiter))
+                    .expect("test receives launch completion");
+            }),
+        )
+        .expect("launch registers");
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    setup.broker.acknowledge();
+    let (session, probe_input, probe_exit, probe_waiter) = receiver
+        .recv_timeout(CALLBACK_TIMEOUT)
+        .expect("launch completes");
+    let (controller_input, relay_receiver, relay_worker) =
+        begin_session_relay(session.expect("launch succeeds"));
+    let early_exit = probe_exit.recv_timeout(Duration::from_millis(100));
+
+    // Always settle the Session and reap the probe, including on regression failure.
+    finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
+    let terminal_exit = probe_exit.recv_timeout(CALLBACK_TIMEOUT);
+    drop(probe_input);
+    probe_waiter.join().expect("probe waiter finishes");
+
+    assert!(
+        matches!(early_exit, Err(mpsc::RecvTimeoutError::Timeout)),
+        "launch completion killed the still-owned child: {early_exit:?}",
+    );
+    assert_eq!(
+        terminal_exit
+            .expect("the spawning coordinator exits after lifecycle cleanup")
+            .signal(),
+        Some(9),
+        "the parent-death safety contract remains enabled",
+    );
+}
+
 fn initial_user_namespace() -> bool {
     fs::read_to_string("/proc/self/uid_map")
         .ok()
@@ -8010,11 +8120,17 @@ fn initial_user_namespace() -> bool {
 }
 
 #[test]
+fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
+    for exits_after_echo in [true, false] {
+        privileged_supervisor_case(exits_after_echo);
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One privileged supervisor launches agent under the assigned outer identity scenario keeps its causal steps and assertions together."
 )]
-fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
+fn privileged_supervisor_case(exits_after_echo: bool) {
     let Some(assigned) = env::var_os("LOUISELM_TEST_HOST_ID") else {
         eprintln!("skipping: set LOUISELM_TEST_HOST_ID in the privileged fixture");
         return;
@@ -8040,7 +8156,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         "outer credential acceptance must run in the initial user namespace",
     );
 
-    let setup = setup(
+    let mut setup = setup(
         true,
         |authorization| {
             authorization.controller_uid = operator_uid;
@@ -8051,6 +8167,19 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         PlatformBehavior::default(),
         PRIVILEGED_TIMEOUT,
     );
+    if exits_after_echo {
+        // Natural exit must not depend on controller EOF, which means loss to
+        // the production relay and can freeze cat before it observes pipe EOF.
+        write_file(
+            &setup.fixture.path("runtime/bin/agent"),
+            "#!/bin/sh\nIFS= read -r frame || exit 1\nprintf '%s\\n' \"$frame\"\n",
+        );
+        write_registry(
+            &setup.fixture.path("registry"),
+            &setup.fixture.path("runtime"),
+        );
+        setup.registry = Arc::new(Registry::open(&setup.fixture.path("registry")).unwrap());
+    }
     for path in [
         setup.fixture.path(""),
         setup.fixture.path("runtime"),
@@ -8120,37 +8249,76 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
                 .expect("test receives privileged relay completion");
         })
         .expect("privileged relay worker starts");
-    controller_input
-        .write_all(&acp)
-        .expect("ACP bytes reach the real Agent");
+    let controller_write = controller_input.write_all(&acp);
     let output_deadline = Instant::now() + PRIVILEGED_TIMEOUT;
-    while *lock(&output) != acp {
-        assert!(
-            Instant::now() < output_deadline,
-            "the real Agent never echoed the ACP bytes",
-        );
+    while *lock(&output) != acp && !relay_worker.is_finished() && Instant::now() < output_deadline {
         thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(*lock(&output), acp);
-    controller_input
-        .shutdown(Shutdown::Write)
-        .expect("the real Agent receives ACP EOF");
-
-    setup.broker.wait_for_session_receipt(0);
-    setup.broker.wait_for_session_request();
-    setup
-        .broker
-        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
-            setup.broker.session_receipt_acknowledgement(0),
-        ));
+    let echoed_before_eof = *lock(&output) == acp;
+    let mut receipts = Vec::new();
+    let ended_before_eof = if exits_after_echo {
+        settle_privileged_relay(&setup, &relay_worker, &mut receipts);
+        relay_worker.is_finished()
+    } else {
+        false
+    };
+    // Also settle cleanup on failure; keep the pre-EOF observations for verdicts.
+    let _ = controller_input.shutdown(Shutdown::Write);
+    settle_privileged_relay(&setup, &relay_worker, &mut receipts);
     drop(controller_input);
-    relay_receiver
+    let exit_code = relay_receiver
         .recv_timeout(PRIVILEGED_TIMEOUT)
-        .expect("terminal privileged relay completes")
+        .unwrap_or_else(|error| {
+            panic!(
+                "terminal privileged relay failed: {error:?}; receipts: {receipts:?}; events: {:?}",
+                event_snapshot(&setup.events),
+            )
+        })
         .expect("terminal privileged supervisor cleanup succeeds");
     relay_worker
         .join()
         .expect("terminal privileged relay worker finishes");
+    controller_write.expect("ACP bytes reached the real Agent");
+    let running = SignedReceipt::parse_canonical(&setup.broker.receipts()[1]).unwrap();
+    let mut previous = &running;
+    for receipt in &receipts {
+        assert_eq!(receipt.payload.sequence, previous.payload.sequence + 1);
+        assert_eq!(
+            receipt.payload.previous_receipt_digest,
+            Some(previous.digest().to_string()),
+        );
+        previous = receipt;
+    }
+    let terminal = receipts
+        .last()
+        .expect("a terminal receipt was acknowledged");
+    assert_eq!(terminal.payload.resulting_state, SessionState::Terminal);
+    if exits_after_echo {
+        assert!(
+            ended_before_eof,
+            "natural Agent exit must precede controller EOF"
+        );
+        assert_eq!(
+            terminal.payload.outcome,
+            ReceiptOutcome::Disposal {
+                authority: ReceiptAuthority::ProcessExited {
+                    classification: ProcessExitClassification::Success,
+                },
+            },
+        );
+    }
+    assert_eq!(
+        exit_code,
+        0,
+        "the real Agent exited abnormally; events: {:?}",
+        event_snapshot(&setup.events),
+    );
+    assert!(
+        echoed_before_eof,
+        "the real Agent did not echo before controller EOF; events: {:?}",
+        event_snapshot(&setup.events),
+    );
+    assert_eq!(*lock(&output), acp);
     assert_eq!(completion_count.load(Ordering::SeqCst), 1);
 
     let observed = lock(&observation)
@@ -8163,6 +8331,50 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         observed.groups.is_empty(),
         "the Agent inherited no supplementary host groups",
     );
+}
+
+fn settle_privileged_relay(
+    setup: &Setup,
+    worker: &thread::JoinHandle<()>,
+    receipts: &mut Vec<SignedReceipt>,
+) {
+    let deadline = Instant::now() + PRIVILEGED_TIMEOUT;
+    while !worker.is_finished() && Instant::now() < deadline {
+        let (receipt_ready, settlement) = {
+            let state = lock(&setup.broker.state);
+            (
+                state.session_receipts.len() > receipts.len()
+                    && state.pending_session_request.is_some(),
+                state
+                    .pending_controller_loss_settlement
+                    .as_ref()
+                    .and_then(|_| state.controller_loss_settlements.last().cloned()),
+            )
+        };
+        if receipt_ready {
+            let index = receipts.len();
+            receipts.push(
+                SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(index)).unwrap(),
+            );
+            setup
+                .broker
+                .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+                    setup.broker.session_receipt_acknowledgement(index),
+                ));
+        }
+        if let Some(settlement) = settlement {
+            setup
+                .broker
+                .complete_controller_loss_settlement(Ok(controller_loss_acknowledgement(
+                    &settlement,
+                    ControllerLossDisposition::Recoverable {
+                        acp_recovery_reference: "privileged-controller-recovery".to_owned(),
+                        attention_projection_id: "privileged-controller-attention".to_owned(),
+                    },
+                )));
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]

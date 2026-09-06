@@ -105,6 +105,13 @@ quiescence and direct Disposal close controller I/O after a positive-control
 echo, with the controller left open. These NamespaceOnly fixtures do not prove
 assigned outer identity or end-to-end Verified posture.
 
+The privileged supervisor composition runs two scenarios through the production
+relay: an Agent exits successfully after echo while its controller remains open;
+and a controller closes stdin, with the fake broker acknowledging the receipt
+chain and settling any controller-loss Park before Disposal. Both check actual
+outer credentials. The ordinary kernel-signal regression separately proves
+handoff survival and retained parent-death protection, without root or unsafe code.
+
 Prove initial-user-namespace identity with
 `LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1`; a passing test that printed a
 skip is not conformance evidence. Fake-broker tests do not prove the installed

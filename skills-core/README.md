@@ -483,6 +483,9 @@ open or stops reading. Disposal requires both relay and process-tree cleanup
 before the identity lease can be released. Event callbacks must return promptly;
 `false` requests retry under backpressure. This does not make uninterruptible
 kernel/filesystem faults cancellable, or prove the installed authority ceremony.
+The spawning coordinator remains alive through lifecycle cleanup: handing a
+sandbox to another Rust thread does not transfer its kernel parent-death binding.
+Parent-death protection stays enabled.
 
 `cargo test --test launch_supervisor` covers the complete launch transaction
 against a deterministic fake Control broker. A live ceremony additionally
