@@ -3872,11 +3872,13 @@ function Chat:close_session()
   then
     local prompt = has_queued_prompt and "close active louiselm session and discard queued prompt? "
       or "close active louiselm session? "
-    Picker.select({ "Close", "Keep" }, { prompt = prompt }, function(choice)
-      if choice == "Close" and not self.disposed and self.views[view.session:inspect().id] == view then
-        close_view(self, view)
-      end
-    end)
+    -- A second ui.select can toggle away the permission picker without opening
+    -- a confirmation. Native confirm leaves that decision alone on Keep/Escape.
+    nvim.cmd.stopinsert()
+    local choice = nvim.fn.confirm(prompt, "&Close\n&Keep", 2)
+    if choice == 1 and not self.disposed and self.views[view.session:inspect().id] == view then
+      close_view(self, view)
+    end
     return true
   end
   close_view(self, view)

@@ -123,6 +123,9 @@ Close the current Session when you are done:
 :LouiselmSessionClose
 ```
 
+Active Sessions use a native Close/Keep confirmation, even while a permission
+picker is open. Press `c` to close; `k`, Enter, or Escape keeps the Session open.
+
 Default shortcuts:
 
 - `<leader>lsn` creates a Session.

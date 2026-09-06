@@ -194,6 +194,7 @@ end
 local original_schedule = nvim.schedule
 local original_select = nvim.ui.select
 local original_input = nvim.ui.input
+local original_confirm = nvim.fn.confirm
 local original_treesitter_start = nvim.treesitter.start
 
 T["chat"] = MiniTest.new_set({
@@ -203,6 +204,7 @@ T["chat"] = MiniTest.new_set({
       rawset(nvim, "schedule", original_schedule)
       nvim.ui.select = original_select
       nvim.ui.input = original_input
+      nvim.fn.confirm = original_confirm
       nvim.treesitter.start = original_treesitter_start
       nvim.cmd.normal({ args = { "<Esc>" }, bang = true })
       for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
@@ -3241,15 +3243,14 @@ T["chat"]["warns that closing an active session discards its queued prompt"] = f
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(first))
   assert(chat:submit("discard me"))
-  local original_select = nvim.ui.select
   local close_prompt
-  nvim.ui.select = function(_, options, callback)
-    close_prompt = options.prompt
-    callback("Close")
+  nvim.fn.confirm = function(prompt)
+    close_prompt = prompt
+    return 1
   end
 
   assert(chat:close_session())
-  nvim.ui.select = original_select
+  nvim.fn.confirm = original_confirm
 
   MiniTest.expect.equality(close_prompt, "close active louiselm session and discard queued prompt? ")
   MiniTest.expect.equality(first.disposed, true)
@@ -3267,14 +3268,13 @@ T["chat"]["clears Session Attention when closing an active session"] = function(
   chat.attention.session_disposed = function(_, session_id)
     seen_session_id = session_id
   end
-  local original_select = nvim.ui.select
-  nvim.ui.select = function(_, _, callback)
-    callback("Close")
+  nvim.fn.confirm = function()
+    return 1
   end
 
   assert(chat:close_session())
 
-  nvim.ui.select = original_select
+  nvim.fn.confirm = original_confirm
   MiniTest.expect.equality(seen_session_id, "acp-session")
   chat:dispose()
 end
@@ -4367,6 +4367,72 @@ T["chat"]["cancels permission decisions still queued when the chat is disposed"]
   MiniTest.expect.equality(responses[2], { id = "first", result = { outcome = { outcome = "cancelled" } } })
 end
 
+T["chat"]["confirms Session close without replacing its permission picker"] = function()
+  local first = fake_session("session-1", "opencode")
+  first.state.status = "waiting_permission"
+  first.state.acp_session_id = "acp-session"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  local buffer = chat:buffer()
+  local request, run_scheduled, pickers, responses = permission_harness()
+  local select = nvim.ui.select
+  local confirm = nvim.fn.confirm
+  local active
+  local choice = 2
+  local confirmations = {}
+  local attention_cleared
+  chat.attention.session_disposed = function(_, id)
+    attention_cleared = id
+  end
+  -- Installed Snacks toggles an active source=select instead of replacing it.
+  -- Observed 2026-09-06: opencode/ses_f8ae71566ffefRwvK2xZM2k3Fa;
+  -- proxy sessions/<id>/log.jsonl: permission -> SessionClose -> cancelled.
+  nvim.ui.select = function(items, options, callback)
+    if active ~= nil then
+      local previous = active
+      active = nil
+      nvim.schedule(previous)
+      return
+    end
+    active = callback
+    select(items, options, callback)
+  end
+  nvim.fn.confirm = function(message, choices, default)
+    confirmations[#confirmations + 1] = { message, choices, default }
+    return choice
+  end
+  MiniTest.finally(function()
+    nvim.fn.confirm = confirm
+    chat:dispose()
+  end)
+
+  request(first, "first")
+  run_scheduled()
+  for _, answer in ipairs({ 2, 0 }) do
+    choice = answer
+    assert(chat:close_session())
+    run_scheduled()
+    MiniTest.expect.equality(responses, {})
+    MiniTest.expect.equality(first.disposed, false)
+    MiniTest.expect.equality(chat:buffer(), buffer)
+    MiniTest.expect.equality(attention_cleared, nil)
+    MiniTest.expect.equality(#pickers, 1)
+  end
+  MiniTest.expect.equality(confirmations[1], { "close active louiselm session? ", "&Close\n&Keep", 2 })
+
+  choice = 1
+  assert(chat:close_session())
+  MiniTest.expect.equality(first.disposed, true)
+  MiniTest.expect.equality(chat:buffer("session-1"), nil)
+  MiniTest.expect.equality(attention_cleared, "acp-session")
+  -- A provider's delayed dismissal after buffer teardown cannot restore the view.
+  nvim.schedule(active)
+  run_scheduled()
+  MiniTest.expect.equality(chat:buffer("session-1"), nil)
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(responses, { { id = "first", result = { outcome = { outcome = "cancelled" } } } })
+end
+
 T["chat"]["refuses command pickers while a permission decision is open"] = function()
   local first = fake_session("session-1", "claude")
   first.state.status = "waiting_permission"
@@ -4397,9 +4463,14 @@ T["chat"]["refuses command pickers while a permission decision is open"] = funct
   MiniTest.expect.equality(#pickers, 1)
 
   -- Closing the session stays reachable: it is the way out when a decision is stuck.
+  local close_prompt
+  nvim.fn.confirm = function(prompt)
+    close_prompt = prompt
+    return 2
+  end
   assert(chat:close_session())
-  MiniTest.expect.equality(#pickers, 2)
-  MiniTest.expect.equality(pickers[2].prompt, "close active louiselm session? ")
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(close_prompt, "close active louiselm session? ")
 
   pickers[1].callback(pickers[1].items[2], 2)
   run_scheduled()
@@ -5402,6 +5473,10 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   nvim.ui.select = function(items, options, callback)
     prompts[#prompts + 1] = options
     callback(items[1])
+  end
+  nvim.fn.confirm = function(prompt)
+    prompts[#prompts + 1] = { prompt = prompt }
+    return 1
   end
 
   assert(chat:switch_session())
