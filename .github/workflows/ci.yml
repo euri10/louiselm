@@ -274,6 +274,10 @@ jobs:
   skills-core:
     name: cargo (skills-core)
     runs-on: ubuntu-latest
+    env:
+      # The bootstrap executes as UID 60000, which cannot traverse the runner's
+      # private home. Keep all Cargo artifacts outside the checkout ancestry.
+      CARGO_TARGET_DIR: /var/tmp/louiselm-skills-target
     defaults:
       run:
         working-directory: skills-core
@@ -303,8 +307,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            skills-core/target
-          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
+            ${{ env.CARGO_TARGET_DIR }}
+          key: cargo-skills-var-tmp-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
 
       - name: Format
         run: cargo fmt --check
