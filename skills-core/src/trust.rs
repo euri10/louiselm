@@ -10,8 +10,13 @@
 //! Bootstrap requires both a primary and a recovery key. Enrolling a primary
 //! alone would produce a trust store with no path out of a lost token, which
 //! is a state the operator cannot leave without an explicit trust reset.
+//!
+//! Mutations hold a nonblocking process lock, re-read enrollment, and publish
+//! by atomic rename after syncing the new file. Success follows directory sync.
+//! The store root must be protected from untrusted writers; the lock coordinates
+//! tools, not an attacker who can edit that root. Never delete `trust/roles.lock`.
 
-use std::{fs, io, path::PathBuf};
+use std::io;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -21,6 +26,8 @@ use crate::{
     sshsig::{self, SkPolicy, TRUST_NAMESPACE},
     store::Store,
 };
+
+mod persistence;
 
 /// The trust store schema this build reads and writes.
 pub const TRUST_SCHEMA: &str = "louiselm.skills.trust/1";
@@ -149,10 +156,16 @@ pub struct TrustStore {
     pub retired: Vec<EnrolledKey>,
 }
 
-/// A trust operation that was refused.
+/// A trust operation that could not report success.
 #[derive(Debug, Error)]
 pub enum TrustError {
-    /// The trust store could not be read or written.
+    /// Another process is changing this trust store; retry after it finishes.
+    #[error("trust store is busy at '{0}'; another trust change is in progress")]
+    Busy(String),
+    /// The trust store could not be read, written, or synced.
+    ///
+    /// A directory-sync failure can follow publication or removal. Inspect the
+    /// current state before retrying; failure does not imply it is unchanged.
     #[error("trust store I/O failed at '{path}': {source}")]
     Io {
         /// Path being operated on.
@@ -184,7 +197,7 @@ impl TrustStore {
     /// Enrolls the first primary and recovery keys for a domain.
     ///
     /// # Errors
-    /// Refuses an already-bootstrapped store; propagates trust read/JSON and persistence errors.
+    /// Refuses a busy or already-bootstrapped store; propagates trust read/JSON and persistence errors.
     pub fn bootstrap(
         store: &Store,
         trust_domain: &str,
@@ -193,7 +206,8 @@ impl TrustStore {
         sk_policy: SkPolicy,
         enrolled_at_ms: u64,
     ) -> Result<Self, TrustError> {
-        if Self::load(store)?.is_some() {
+        let locked = persistence::LockedTrust::acquire(store)?;
+        if locked.load()?.is_some() {
             return Err(TrustError::AlreadyBootstrapped(trust_domain.to_owned()));
         }
         let trust = Self {
@@ -220,29 +234,18 @@ impl TrustStore {
                 },
             ],
         };
-        trust.write(store)?;
+        locked.write(&trust)?;
         Ok(trust)
     }
 
     /// Reads the trust store, when one exists.
     ///
     /// # Errors
-    /// Returns read/JSON errors; absent enrollment is `Ok(None)`.
+    /// Returns read/JSON errors, including aliased or non-regular files;
+    /// absent enrollment is `Ok(None)`. Concurrent publication yields a complete
+    /// old or new snapshot, without waiting for the writer.
     pub fn load(store: &Store) -> Result<Option<Self>, TrustError> {
-        let path = Self::path(store);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(source) => {
-                return Err(TrustError::Io {
-                    path: path.display().to_string(),
-                    source,
-                });
-            }
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| TrustError::Malformed(error.to_string()))
+        persistence::load(store)
     }
 
     /// Returns the key enrolled for `role`, when there is one.
@@ -312,14 +315,16 @@ impl TrustStore {
     /// Applies a recovery-signed change to the enrolled keys.
     ///
     /// # Errors
-    /// Refuses missing trust/recovery keys, an inapplicable change, recovery-role rotation, or an invalid recovery signature; propagates persistence errors.
+    /// Refuses a busy store, missing trust/recovery keys, an inapplicable change,
+    /// recovery-role rotation, or an invalid recovery signature; propagates persistence errors.
     pub fn rotate(
         store: &Store,
         change: &TrustChange,
         signature: &str,
         applied_at_ms: u64,
     ) -> Result<Self, TrustError> {
-        let mut trust = Self::load(store)?.ok_or(TrustError::NotBootstrapped)?;
+        let locked = persistence::LockedTrust::acquire(store)?;
+        let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
         if change.schema != TRUST_CHANGE_SCHEMA {
             return Err(TrustError::DoesNotApply(format!(
                 "unsupported schema '{}'",
@@ -381,7 +386,7 @@ impl TrustStore {
         });
         trust.keys.sort_by_key(|key| key.role.name());
         trust.sequence = change.sequence;
-        trust.write(store)?;
+        locked.write(&trust)?;
         Ok(trust)
     }
 
@@ -392,37 +397,11 @@ impl TrustStore {
     /// master secret, so recovery is re-enrollment plus re-Admission.
     ///
     /// # Errors
-    /// Returns a removal error; already-absent enrollment is a success.
+    /// Refuses a busy store or an aliased/non-regular file; propagates removal
+    /// and directory-sync errors. Already-absent enrollment is a success.
+    /// Explicit reset may discard malformed JSON but retains the shared lock file.
     pub fn reset(store: &Store) -> Result<(), TrustError> {
-        let path = Self::path(store);
-        match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(TrustError::Io {
-                path: path.display().to_string(),
-                source,
-            }),
-        }
-    }
-
-    fn write(&self, store: &Store) -> Result<(), TrustError> {
-        let path = Self::path(store);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| TrustError::Io {
-                path: parent.display().to_string(),
-                source,
-            })?;
-        }
-        let bytes =
-            serde_json::to_vec(self).map_err(|error| TrustError::Malformed(error.to_string()))?;
-        fs::write(&path, bytes).map_err(|source| TrustError::Io {
-            path: path.display().to_string(),
-            source,
-        })
-    }
-
-    fn path(store: &Store) -> PathBuf {
-        store.root().join("trust/roles.json")
+        persistence::LockedTrust::acquire(store)?.reset()
     }
 }
 
