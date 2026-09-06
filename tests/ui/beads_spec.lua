@@ -368,6 +368,130 @@ T["beads"]["falls back to the manual prompt when a bare-suffix guess does not re
   MiniTest.expect.equality(calls[3].command, { "br", "show", "louiselm-zmab", "--json" })
 end
 
+for _, entry in ipairs({ "bare cursor", "prefixed cursor", "manual prompt" }) do
+  T["beads"]["opens the canonical slugged issue from a short reference: " .. entry] = function()
+    local line = entry == "bare cursor" and "w1ez" or "louiselm-w1ez"
+    local buffer = source_buffer({ entry == "manual prompt" and "" or line }, 0)
+    local calls = fake_system()
+    local scheduled = {}
+    local errors = {}
+    local prompts = 0
+    rawset(nvim, "schedule", function(callback)
+      scheduled[#scheduled + 1] = callback
+    end)
+    nvim.ui.input = function(_, callback)
+      prompts = prompts + 1
+      if entry == "manual prompt" and prompts == 1 then
+        callback("w1ez")
+      end
+    end
+
+    assert(Beads.inspect(buffer, {
+      on_error = function(message)
+        errors[#errors + 1] = message
+      end,
+    }))
+    complete_where(calls, scheduled, "louiselm")
+    MiniTest.expect.equality(calls[2].command, { "br", "show", "louiselm-w1ez", "--json" })
+
+    -- Captured from br 0.5.10 `show louiselm-w1ez --json`, 2026-09-06,
+    -- codex/01a07709-0512-7a31-a9ec-9770ffa13fba (louiselm-6dpl).
+    -- Omit unconsumed fields; preserve the requested/resolved ID difference.
+    local callback_was_fast
+    local timer = assert(nvim.uv.new_timer())
+    timer:start(0, 0, function()
+      timer:stop()
+      timer:close()
+      callback_was_fast = nvim.in_fast_event()
+      calls[2].on_exit({
+        code = 0,
+        signal = 0,
+        stdout = '[{"id":"louiselm-relay-failure-terminal-receipt-w1ez","title":"Record a causal terminal receipt for relay failure","status":"in_progress","priority":2,"labels":["rust","security"]}]',
+        stderr = "",
+      })
+    end)
+    assert(nvim.wait(1000, function()
+      return #scheduled == 2
+    end))
+    MiniTest.expect.equality(callback_was_fast, true)
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+    scheduled[2]()
+
+    MiniTest.expect.equality(errors, {})
+    MiniTest.expect.equality(prompts, entry == "manual prompt" and 1 or 0)
+    local popup = assert(find_buffer("louiselm://beads/louiselm-relay-failure-terminal-receipt-w1ez"))
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), popup)
+    MiniTest.expect.equality(
+      nvim.api.nvim_buf_get_lines(popup, 2, 3, false),
+      { "ID: louiselm-relay-failure-terminal-receipt-w1ez" }
+    )
+  end
+end
+
+for _, returned_id in ipairs({
+  "louiselm-unrelated-abcd",
+  "foreign-relay-w1ez",
+  "louiselm-relay-aw1ez",
+  "louiselm-relay-w1ez1",
+  "louiselm-relay-w1ez.1",
+}) do
+  T["beads"]["rejects an unrelated canonical issue: " .. returned_id] = function()
+    local buffer = source_buffer({ "louiselm-w1ez" }, 0)
+    local calls = fake_system()
+    local scheduled = {}
+    local error_message
+    rawset(nvim, "schedule", function(callback)
+      scheduled[#scheduled + 1] = callback
+    end)
+
+    assert(Beads.inspect(buffer, {
+      on_error = function(message)
+        error_message = message
+      end,
+    }))
+    complete_where(calls, scheduled, "louiselm")
+    calls[2].on_exit({
+      code = 0,
+      signal = 0,
+      stdout = nvim.json.encode({ { id = returned_id, title = "Unrelated", status = "open", priority = 2 } }),
+      stderr = "",
+    })
+    scheduled[2]()
+
+    MiniTest.expect.equality(error_message, "br returned malformed issue data")
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+    MiniTest.expect.equality(find_buffer("louiselm://beads/" .. returned_id), nil)
+  end
+end
+
+T["beads"]["ignores a resolved short reference queued before chat disposal"] = function()
+  local buffer = source_buffer({ "louiselm-w1ez" }, 0)
+  local calls = fake_system()
+  local scheduled = {}
+  local active = true
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+
+  assert(Beads.inspect(buffer, {
+    is_active = function()
+      return active
+    end,
+  }))
+  complete_where(calls, scheduled, "louiselm")
+  calls[2].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '[{"id":"louiselm-relay-failure-terminal-receipt-w1ez","title":"Relay failure","status":"in_progress","priority":2}]',
+    stderr = "",
+  })
+  active = false
+  scheduled[2]()
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  MiniTest.expect.equality(find_buffer("louiselm://beads/louiselm-relay-failure-terminal-receipt-w1ez"), nil)
+end
+
 T["beads"]["does not guess a bare suffix for a token that is already a full prefixed ID"] = function()
   -- Ambiguous multi-ID lines must keep prompting, not silently retry the
   -- cursor's own full ID as if it were a bare suffix (which would double it

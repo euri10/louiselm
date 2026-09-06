@@ -29,6 +29,17 @@ local function valid_issue_id(value, prefix)
   return value:match(pattern .. "$") ~= nil or value:match(pattern .. "[a-z0-9%.%-]*[a-z0-9]$") ~= nil
 end
 
+---@param issue_id string Canonical ID already validated against the workspace prefix.
+---@param requested_id string Workspace-prefixed lookup ID.
+---@param prefix string
+---@return boolean matches
+local function matches_issue_id(issue_id, requested_id, prefix)
+  -- br resolves short references to slugged IDs; compare the whole suffix,
+  -- including its hyphen boundary, rather than rejecting the canonical ID.
+  local suffix = requested_id:sub(#prefix + 1)
+  return issue_id == requested_id or issue_id:sub(-#suffix) == suffix
+end
+
 ---@param line string
 ---@param column integer Zero-based byte column.
 ---@param prefix string
@@ -264,7 +275,7 @@ local function show_issue(issue_id, prefix, options)
       report_error(options, "could not read Beads issue " .. issue_id)
       return
     end
-    if issue == nil or issue.id ~= issue_id then
+    if issue == nil or not matches_issue_id(issue.id, issue_id, prefix) then
       report_error(options, "br returned malformed issue data")
       return
     end
@@ -416,7 +427,7 @@ local function inspect_with_prefix(buffer, prefix, options)
   -- found or malformed) falls through to the manual prompt instead of
   -- reporting an error -- unlike show_issue's confident exact-prefix callers.
   local _, lookup_error = run_show({ "br", "show", bare_id, "--json" }, prefix, options, function(issue)
-    if issue == nil or issue.id ~= bare_id then
+    if issue == nil or not matches_issue_id(issue.id, bare_id, prefix) then
       prompt_for_issue_id(prefix, options)
       return
     end
