@@ -1661,6 +1661,76 @@ T["new"]["does not reopen a completed turn for late permission responses"] = fun
   restore_processes(original_system)
 end
 
+T["new"]["keeps the Session usable after a cancelled prompt reports null usage"] = function()
+  -- Observed order and shapes: codex/01a074b2-a152-70b1-81eb-21ed37d04e7d,
+  -- ~/.local/state/acp-llm-adapter/proxy/sessions/01a074b2-a152-70b1-81eb-21ed37d04e7d/log.jsonl:70-73.
+  -- The account-limits notification between cancel and idle is unrelated and omitted.
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    timer:stop()
+    timer:close()
+    api:dispose()
+    restore_processes(original_system)
+  end)
+  local completions, turns, errors = {}, {}, {}
+  session:on(function(event)
+    if event.type == "turn_done" then
+      turns[#turns + 1] = event.data.stopReason
+    elseif event.type == "error" then
+      errors[#errors + 1] = event.data.message
+    end
+  end)
+  local request_id = assert(session:prompt("hello", function(result, err)
+    completions[#completions + 1] = { result = result, error = err }
+  end))
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).method, "session/cancel")
+
+  local result = {
+    stopReason = "cancelled",
+    usage = nvim.NIL,
+    _meta = { quota = { token_count = nvim.NIL, model_usage = {} } },
+  }
+  local response_was_fast = false
+  timer:start(0, 0, function()
+    response_was_fast = nvim.in_fast_event()
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = { sessionUpdate = "session_info_update", _meta = { codex = { threadStatus = { type = "idle" } } } },
+    })
+    respond(process, request_id, result)
+  end)
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return #completions > 0
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(response_was_fast, true)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().usage, nil)
+  MiniTest.expect.equality(process.closed, false)
+  MiniTest.expect.equality(completions, { { result = result } })
+  MiniTest.expect.equality(turns, { "cancelled" })
+  MiniTest.expect.equality(errors, {})
+
+  local next_id = assert(session:prompt("one more thing", function(next_result, err)
+    completions[#completions + 1] = { result = next_result, error = err }
+  end))
+  respond(process, next_id, { stopReason = "end_turn", usage = { totalTokens = 5 } })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().usage, { total_tokens = 5 })
+  MiniTest.expect.equality(session:inspect().acp_session_id, "agent-acp")
+  MiniTest.expect.equality(#completions, 2)
+  MiniTest.expect.equality(turns, { "cancelled", "end_turn" })
+  MiniTest.expect.equality(errors, {})
+  MiniTest.expect.equality(process.closed, false)
+end
+
 T["new"]["cancels and disposes without allowing late process results"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { command = "agent", args = {} } }))

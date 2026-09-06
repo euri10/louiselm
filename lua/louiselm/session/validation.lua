@@ -377,12 +377,13 @@ local USAGE_FIELDS = {
 
 ---Validate and copy optional agent-reported turn usage fields.
 ---The ACP wire shape is camelCase; the internal TurnUsage shape is snake_case.
+---Absent or JSON-null usage means no usage was reported.
 ---Unknown optional fields are ignored; malformed known fields fail.
 ---@param value unknown
 ---@return louiselm.session.TurnUsage? usage
 ---@return boolean valid
 function M.turn_usage(value)
-  if value == nil then
+  if value == nil or value == nvim.NIL then
     return nil, true
   end
   if type(value) ~= "table" then
