@@ -366,7 +366,7 @@ pub(crate) fn ownership_of(prefix: &Path) -> OwnershipEvidence {
     OwnershipEvidence {
         root_owned,
         world_writable,
-        writable_by_invoker: prefix_uid == unsafe_current_uid(),
+        writable_by_invoker: prefix_uid == rustix::process::geteuid().as_raw(),
         prefix_uid,
     }
 }
@@ -384,20 +384,6 @@ fn walk(path: &Path, visit: &mut impl FnMut(&fs::Metadata)) {
             walk(&entry.path(), visit);
         }
     }
-}
-
-/// Returns the effective uid by asking the filesystem rather than libc.
-///
-/// The crate takes no C dependency for one number: a file this process just
-/// created is owned by this process's effective uid.
-fn unsafe_current_uid() -> u32 {
-    let probe = std::env::temp_dir().join(format!("louiselm-skills-uid-{}", std::process::id()));
-    let uid = fs::write(&probe, b"")
-        .ok()
-        .and_then(|()| fs::metadata(&probe).ok())
-        .map_or(u32::MAX, |metadata| metadata.uid());
-    let _ = fs::remove_file(&probe);
-    uid
 }
 
 fn remove(path: &Path) -> Result<(), InstallError> {

@@ -439,6 +439,36 @@ fn status_reports_ownership_as_evidence_rather_than_claiming_it() {
 }
 
 #[test]
+fn status_preserves_a_preexisting_uid_probe_and_its_target() {
+    let fixture = Fixture::new();
+    let sentinel = fixture.path("must-survive");
+    write_file(&sentinel, "preserve this file\n");
+    let probe = std::env::temp_dir().join(format!("louiselm-skills-uid-{}", std::process::id()));
+    // symlink refuses an existing path; never overwrite another process's data.
+    std::os::unix::fs::symlink(&sentinel, &probe).expect("the probe path is unused");
+
+    let status = install::status(&fixture.path(""));
+    let remaining_link = fs::read_link(&probe);
+    if remaining_link.is_ok() {
+        fs::remove_file(&probe).expect("the test removes its own symlink");
+    }
+
+    assert!(
+        status.is_ok(),
+        "an empty prefix still has a readable status"
+    );
+    assert_eq!(
+        fs::read_to_string(&sentinel).expect("the sentinel remains readable"),
+        "preserve this file\n",
+        "status must not truncate a file while discovering the invoker UID",
+    );
+    assert_eq!(
+        remaining_link.expect("status must not remove a pre-existing path"),
+        sentinel,
+    );
+}
+
+#[test]
 fn a_development_build_is_labeled_unverified_and_says_why() {
     let identity = release::running_identity();
 
