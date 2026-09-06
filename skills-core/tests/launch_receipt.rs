@@ -335,6 +335,48 @@ fn launch_evidence_binds_the_exact_broker_loss_grace() {
 }
 
 #[test]
+fn relay_failure_is_a_closed_terminal_cause_only() {
+    let mut receipts = chain();
+    let receipt = &mut receipts[5];
+    let authority = ReceiptAuthority::Cause {
+        cause: ReceiptCause::RelayFailed,
+    };
+    receipt.payload.outcome = ReceiptOutcome::Disposal {
+        authority: authority.clone(),
+    };
+    receipt.signature = Digest::of(&receipt.payload.canonical_bytes()).to_string();
+    let canonical = receipt.payload.canonical_bytes();
+    assert_eq!(
+        ReceiptPayload::parse_canonical(&canonical).unwrap(),
+        receipt.payload
+    );
+    louiselm_skills::launch_receipt::verify_chain(&receipts, &anchor(), verifies)
+        .expect("relay failure preserves the signed chain");
+    let mut payload = receipts[5].payload.clone();
+    for (outcome, state) in [
+        (
+            ReceiptOutcome::Park {
+                authority: authority.clone(),
+            },
+            SessionState::Parked,
+        ),
+        (ReceiptOutcome::Start { authority }, SessionState::Running),
+    ] {
+        payload.outcome = outcome;
+        payload.resulting_state = state;
+        assert_eq!(payload.validate(), Err(ReceiptError::ContradictoryCause));
+    }
+    let raw_detail = String::from_utf8(canonical).unwrap().replace(
+        r#""cause":"relay_failed""#,
+        r#""cause":"relay_failed","error":"private-path""#,
+    );
+    assert!(matches!(
+        ReceiptPayload::parse_canonical(raw_detail.as_bytes()),
+        Err(ReceiptError::Malformed(_))
+    ));
+}
+
+#[test]
 fn process_exit_receipts_are_classified_sanitized_and_generation_bound() {
     for classification in [
         ProcessExitClassification::Success,

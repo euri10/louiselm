@@ -324,7 +324,7 @@ struct ActiveOperation {
     receipt: Option<SignedReceipt>,
     payload_override: Option<ReceiptPayload>,
     respond: bool,
-    finish_code: Option<i32>,
+    finish: Option<Result<i32, SupervisorError>>,
 }
 
 enum DeferredReceipt {
@@ -387,8 +387,14 @@ struct ActiveControllerLossSettlement {
     request: ControllerLossSettlement,
 }
 
-struct QueuedProcessExit {
-    classification: ProcessExitClassification,
+#[derive(Clone, Copy)]
+enum TerminalEvent {
+    ProcessExited(ProcessExitClassification),
+    RelayFailed,
+}
+
+struct QueuedTerminalEvent {
+    event: TerminalEvent,
     previous_state: SessionState,
 }
 
@@ -437,7 +443,7 @@ struct SessionOwner {
     controller_loss_settlement: Option<ActiveControllerLossSettlement>,
     cleanup_unproven: bool,
     quarantined: bool,
-    queued_process_exit: Option<QueuedProcessExit>,
+    queued_terminal_event: Option<QueuedTerminalEvent>,
     widening_blocked: bool,
     operation_epoch: u64,
     process_epoch: u64,
@@ -501,7 +507,7 @@ impl SessionOwner {
             controller_loss_settlement: None,
             cleanup_unproven: false,
             quarantined: false,
-            queued_process_exit: None,
+            queued_terminal_event: None,
             widening_blocked: false,
             operation_epoch: 0,
             process_epoch: 1,
@@ -894,7 +900,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: None,
             respond: true,
-            finish_code: None,
+            finish: None,
         });
         let deadline_armed = self.schedule_operation_deadline(operation_epoch).is_ok();
 
@@ -961,7 +967,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: None,
             respond: true,
-            finish_code: None,
+            finish: None,
         });
         if self.schedule_operation_deadline(operation_epoch).is_err() {
             self.fail_mechanic();
@@ -1020,7 +1026,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: None,
             respond: true,
-            finish_code: None,
+            finish: None,
         });
         let deadline_armed = self.schedule_operation_deadline(operation_epoch).is_ok();
         let previous_state = self.state;
@@ -1100,7 +1106,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: None,
             respond: true,
-            finish_code: Some(0),
+            finish: Some(Ok(0)),
         });
         let deadline_armed = self.schedule_operation_deadline(operation_epoch).is_ok();
         if self.resources.terminate_session().is_err() {
@@ -1143,6 +1149,10 @@ impl SessionOwner {
     }
 
     fn begin_process_exit(&mut self, classification: ProcessExitClassification) {
+        self.begin_terminal_event(TerminalEvent::ProcessExited(classification));
+    }
+
+    fn begin_terminal_event(&mut self, event: TerminalEvent) {
         if self.state == SessionState::Terminal {
             return;
         }
@@ -1154,28 +1164,28 @@ impl SessionOwner {
         self.begin_terminal_relay_quiescence();
         let cleanup = self.resources.terminate_session();
         self.cleanup_unproven = cleanup.is_err();
-        self.state = SessionState::Terminal;
-        self.process_exit = Some(classification);
-        self.channel_state = ChannelState::Closed;
         if cleanup.is_err() {
+            self.widening_blocked = true;
+            self.channel_state = ChannelState::Revoked;
             self.request_finish(Err(SupervisorError::CleanupUnproven));
             return;
         }
+        self.state = SessionState::Terminal;
+        self.channel_state = ChannelState::Closed;
+        if let TerminalEvent::ProcessExited(classification) = event {
+            self.process_exit = Some(classification);
+        }
         if self.pending.is_some() {
-            self.queued_process_exit = Some(QueuedProcessExit {
-                classification,
+            self.queued_terminal_event = Some(QueuedTerminalEvent {
+                event,
                 previous_state,
             });
             return;
         }
-        self.begin_process_exit_receipt(classification, previous_state);
+        self.begin_terminal_receipt(event, previous_state);
     }
 
-    fn begin_process_exit_receipt(
-        &mut self,
-        classification: ProcessExitClassification,
-        previous_state: SessionState,
-    ) {
+    fn begin_terminal_receipt(&mut self, event: TerminalEvent, previous_state: SessionState) {
         let receipt_backlog = self.has_receipt_backlog();
         let Some(operation_epoch) = self.operation_epoch.checked_add(1) else {
             self.request_finish(Err(SupervisorError::CleanupUnproven));
@@ -1186,14 +1196,30 @@ impl SessionOwner {
             self.request_finish(Err(SupervisorError::CleanupUnproven));
             return;
         };
-        let request_id = format!("exit-{}", head.digest().hex());
+        let (event_id, authority, finish) = match event {
+            TerminalEvent::ProcessExited(classification) => (
+                "exit",
+                ReceiptAuthority::ProcessExited { classification },
+                Ok(i32::from(
+                    classification != ProcessExitClassification::Success,
+                )),
+            ),
+            TerminalEvent::RelayFailed => (
+                "relay-failed",
+                ReceiptAuthority::Cause {
+                    cause: ReceiptCause::RelayFailed,
+                },
+                Err(SupervisorError::RelayFailed),
+            ),
+        };
+        let request_id = format!("{event_id}-{}", head.digest().hex());
         let request = LifecycleRequest {
             schema: LIFECYCLE_REQUEST_SCHEMA.to_owned(),
             protocol_version: PROTOCOL_VERSION,
             request_id: request_id.clone(),
             session_id: self.binding.session_id.clone(),
             run_id: head.payload.run_id.clone(),
-            authorization_id: "process-exit".to_owned(),
+            authorization_id: event_id.to_owned(),
             action: LifecycleAction::Disposal,
             expected_state: previous_state,
             expected_receipt_sequence: Some(head.payload.sequence),
@@ -1202,7 +1228,7 @@ impl SessionOwner {
         let intent = ReceiptIntent {
             session_id: self.binding.session_id.clone(),
             run_id: head.payload.run_id.clone(),
-            authorization_id: "process-exit".to_owned(),
+            authorization_id: event_id.to_owned(),
             request_id: request_id.clone(),
             request_digest: request.digest().to_string(),
             action: LifecycleAction::Disposal,
@@ -1221,9 +1247,7 @@ impl SessionOwner {
             previous_receipt_digest: Some(head.digest().to_string()),
             release_id: self.signer.release_id().to_owned(),
             signing_key_id: self.signer.signing_key_id().to_owned(),
-            outcome: ReceiptOutcome::Disposal {
-                authority: ReceiptAuthority::ProcessExited { classification },
-            },
+            outcome: ReceiptOutcome::Disposal { authority },
             resulting_state: SessionState::Terminal,
         };
         self.operation_epoch = operation_epoch;
@@ -1235,9 +1259,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: Some(payload),
             respond: false,
-            finish_code: Some(i32::from(
-                classification != ProcessExitClassification::Success,
-            )),
+            finish: Some(finish),
         });
         if receipt_backlog {
             self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
@@ -1261,7 +1283,7 @@ impl SessionOwner {
                 self.begin_process_exit(classification);
             }
             RunningAgentEvent::RelayFailed => {
-                self.finished = Some(Err(SupervisorError::RelayFailed));
+                self.begin_terminal_event(TerminalEvent::RelayFailed);
             }
         }
     }
@@ -1457,7 +1479,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: Some(payload),
             respond: false,
-            finish_code: None,
+            finish: None,
         });
         if receipt_backlog {
             self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
@@ -1684,7 +1706,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: Some(payload),
             respond: false,
-            finish_code: Some(0),
+            finish: Some(Ok(0)),
         });
         let deadline_armed = self.schedule_operation_deadline(operation_epoch).is_ok();
         if self.resources.terminate_session().is_err() {
@@ -1932,15 +1954,15 @@ impl SessionOwner {
         }
         if pending.respond {
             let response = receipt_response(pending.request.request_id, receipt);
-            self.send_response_with_finish(response, pending.finish_code.map(Ok));
-        } else if let Some(code) = pending.finish_code {
-            self.request_finish(Ok(code));
+            self.send_response_with_finish(response, pending.finish);
+        } else if let Some(finish) = pending.finish {
+            self.request_finish(finish);
         }
         if starts_controller_loss_settlement {
             self.controller_loss_park_request_id = None;
         }
-        if let Some(exit) = self.queued_process_exit.take() {
-            self.begin_process_exit_receipt(exit.classification, exit.previous_state);
+        if let Some(terminal) = self.queued_terminal_event.take() {
+            self.begin_terminal_receipt(terminal.event, terminal.previous_state);
         } else if starts_controller_loss_settlement {
             self.maybe_begin_controller_loss_settlement();
         }
@@ -2109,7 +2131,7 @@ impl SessionOwner {
         self.controller_loss_unresolved = false;
         self.controller_loss_park_request_id = None;
         self.controller_loss_settlement = None;
-        self.queued_process_exit = None;
+        self.queued_terminal_event = None;
         self.finish_when_backlog_drained = None;
         self.process_epoch = self.process_epoch.saturating_add(1);
         self.begin_terminal_relay_quiescence();
@@ -2144,7 +2166,7 @@ impl SessionOwner {
             return;
         };
         let resume_failed = pending.request.action == LifecycleAction::Resume;
-        let finish = pending.finish_code.map(Ok);
+        let finish = pending.finish.clone();
         self.widening_blocked = true;
         if self.channel_state == ChannelState::Enabled {
             if let Some(capability) = self.resources.capability.as_mut() {
@@ -2158,7 +2180,9 @@ impl SessionOwner {
             .then(|| self.operation_payload(&pending));
         let mut receipt_retained = pending.receipt.is_some();
         let mut resume_park_result = None;
-        if resume_failed {
+        // Terminal cleanup already closed the channel and disposed the tree.
+        // Retain the earlier Resume audit without attempting a fictitious Park.
+        if resume_failed && self.state != SessionState::Terminal {
             resume_park_result = Some(self.repark_after_failed_resume());
             if let Some(Ok(payload)) = unsigned_payload {
                 receipt_retained |= self.defer(DeferredReceipt::Payload(Box::new(payload)));
@@ -2202,10 +2226,10 @@ impl SessionOwner {
             self.request_finish(finish);
         }
         if let Some(classification) = terminal_classification {
-            self.queued_process_exit = None;
+            self.queued_terminal_event = None;
             self.begin_process_exit(classification);
-        } else if let Some(exit) = self.queued_process_exit.take() {
-            self.begin_process_exit_receipt(exit.classification, exit.previous_state);
+        } else if let Some(terminal) = self.queued_terminal_event.take() {
+            self.begin_terminal_receipt(terminal.event, terminal.previous_state);
         }
     }
 
@@ -2707,7 +2731,7 @@ impl SessionOwner {
             receipt: None,
             payload_override: Some(payload),
             respond: false,
-            finish_code: None,
+            finish: None,
         });
         if receipt_backlog {
             self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);

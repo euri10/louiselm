@@ -1890,9 +1890,10 @@ fn validate_status_shape(shape: StatusShape<'_>) -> Result<(), ProtocolError> {
     }
     if let Some(pending) = pending_operation {
         validate_identifier(&pending.request_id)?;
-        let process_exited_after_mechanic = state == SessionState::Terminal
-            && process_exit.is_some()
-            && pending.phase != PendingPhase::Applying;
+        // A relay failure can also prove terminal cleanup while an earlier
+        // mechanic's receipt is pending. Its process_exit remains unset.
+        let terminated_after_mechanic =
+            state == SessionState::Terminal && pending.phase != PendingPhase::Applying;
         let phase_receipt_matches = match pending.phase {
             PendingPhase::Applying => u64::from(pending_receipt_count) >= signed_gap,
             PendingPhase::Signing => u64::from(pending_receipt_count) > signed_gap,
@@ -1910,15 +1911,15 @@ fn validate_status_shape(shape: StatusShape<'_>) -> Result<(), ProtocolError> {
             }
             (PendingAction::Park, PendingPhase::Applying) => state == SessionState::Running,
             (PendingAction::Park, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
-                state == SessionState::Parked || process_exited_after_mechanic
+                state == SessionState::Parked || terminated_after_mechanic
             }
             (PendingAction::Resume, PendingPhase::Applying) => state == SessionState::Parked,
             (PendingAction::Resume, PendingPhase::Signing | PendingPhase::AwaitingDurableAck) => {
-                state == SessionState::Running || process_exited_after_mechanic
+                state == SessionState::Running || terminated_after_mechanic
             }
             (PendingAction::Interrupt, _) => {
                 matches!(state, SessionState::Running | SessionState::Parked)
-                    || process_exited_after_mechanic
+                    || terminated_after_mechanic
             }
             (PendingAction::Disposal, PendingPhase::Applying) => {
                 matches!(state, SessionState::Running | SessionState::Parked)

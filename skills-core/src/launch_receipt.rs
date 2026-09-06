@@ -75,6 +75,8 @@ pub enum ReceiptCause {
     ControllerLost,
     /// A success receipt was not durably acknowledged in time.
     AcknowledgementFailed,
+    /// The supervisor's ACP relay failed; no raw I/O detail is retained.
+    RelayFailed,
 }
 
 /// Why the supervisor performed one non-launch lifecycle action.
@@ -313,6 +315,7 @@ impl ReceiptPayload {
                         | ReceiptAuthority::Cause {
                             cause: ReceiptCause::ControllerLost
                                 | ReceiptCause::AcknowledgementFailed
+                                | ReceiptCause::RelayFailed
                         }
                         | ReceiptAuthority::ProcessExited { .. }
                 ) =>

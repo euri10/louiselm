@@ -720,6 +720,50 @@ fn lifecycle_transition_matrix_is_closed() {
 }
 
 #[test]
+fn terminal_audit_can_follow_a_mechanic_without_a_process_exit_classification() {
+    for action in [
+        PendingAction::Park,
+        PendingAction::Resume,
+        PendingAction::Interrupt,
+    ] {
+        for phase in [PendingPhase::Signing, PendingPhase::AwaitingDurableAck] {
+            let mut status = supervisor(SessionState::Terminal);
+            status.pending_receipt_count = 1;
+            status.pending_operation = Some(PendingOperation {
+                request_id: "earlier-mechanic".to_owned(),
+                action,
+                phase,
+            });
+            if phase == PendingPhase::AwaitingDurableAck {
+                status.launcher_head = Some(ReceiptHead {
+                    sequence: 2,
+                    digest: digest(b"pending-receipt"),
+                });
+            }
+            status
+                .validate()
+                .expect("cleanup can precede the earlier mechanic's audit");
+            let composed =
+                SessionStatus::compose(status.clone(), PostureSummary::Unverified, Vec::new())
+                    .unwrap();
+            assert!(composed.allowed_actions.is_empty());
+            assert_eq!(composed.process_exit, None);
+            status.pending_operation.as_mut().unwrap().phase = PendingPhase::Applying;
+            assert!(
+                status.validate().is_err(),
+                "terminal cleanup cannot still apply a live mechanic"
+            );
+            status.pending_operation.as_mut().unwrap().phase = phase;
+            status.channel_state = ChannelState::Enabled;
+            assert!(
+                status.validate().is_err(),
+                "terminal means closed capabilities"
+            );
+        }
+    }
+}
+
+#[test]
 fn process_exit_classification_is_terminal_only_and_composes_without_raw_status() {
     let mut exited = supervisor(SessionState::Terminal);
     exited.process_exit = Some(ProcessExitClassification::Signaled);

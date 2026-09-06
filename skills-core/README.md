@@ -487,6 +487,15 @@ The spawning coordinator remains alive through lifecycle cleanup: handing a
 sandbox to another Rust thread does not transfer its kernel parent-death binding.
 Parent-death protection stays enabled.
 
+An ACP relay failure closes capabilities and proves Disposal before signing a
+terminal receipt with the closed `relay_failed` cause. It is not a fabricated
+process-exit classification. Earlier lifecycle receipts remain ordered, and
+failed signing/storage retains audit intent or exact signed bytes for broker
+reconciliation. The owner returns `RelayFailed` only after the terminal receipt
+is durably acknowledged; unproven cleanup fails without a successful Disposal
+receipt or identity release. This uses the existing receipt schema, with no raw
+I/O errors or controller payloads in the new cause.
+
 `cargo test --test launch_supervisor` covers the complete launch transaction
 against a deterministic fake Control broker. A live ceremony additionally
 requires the real broker from louiselm-qbr.5.1.1 at the installed rendezvous.

@@ -105,11 +105,14 @@ quiescence and direct Disposal close controller I/O after a positive-control
 echo, with the controller left open. These NamespaceOnly fixtures do not prove
 assigned outer identity or end-to-end Verified posture.
 
-The privileged supervisor composition runs two scenarios through the production
+The privileged supervisor composition runs three scenarios through the production
 relay: an Agent exits successfully after echo while its controller remains open;
 and a controller closes stdin, with the fake broker acknowledging the receipt
-chain and settling any controller-loss Park before Disposal. Both check actual
-outer credentials. The ordinary kernel-signal regression separately proves
+chain and settling any controller-loss Park before Disposal; and, after a
+positive-control echo, the controller closes its output read half while keeping
+input open. The resulting real relay write failure must produce a causal
+`relay_failed` terminal receipt before returning its error. All three check
+actual outer credentials. The ordinary kernel-signal regression separately proves
 handoff survival and retained parent-death protection, without root or unsafe code.
 
 Prove initial-user-namespace identity with

@@ -411,7 +411,9 @@ impl FakeBroker {
             .expect("broker condition variable remains usable");
         assert!(
             !timeout.timed_out(),
-            "supervisor never sent response {occurrence} for {request_id}"
+            "supervisor never sent response {occurrence} for {request_id}; events: {:?}; responses: {:?}",
+            event_snapshot(&self.events),
+            state.session_responses,
         );
         state
             .session_responses
@@ -4185,6 +4187,410 @@ fn failed_authorized_disposal_retains_process_control_for_cleanup_retry() {
 }
 
 #[test]
+fn relay_failure_is_receipted_after_cleanup_and_waits_for_durable_ack() {
+    for parked in [false, true] {
+        relay_failure_after_cleanup(parked);
+    }
+}
+
+fn relay_failure_after_cleanup(parked: bool) {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    let (controller_input, receiver, worker, previous) = if parked {
+        park_launched_session(&setup, session)
+    } else {
+        let running = session.receipt().clone();
+        let (input, receiver, worker) = begin_session_relay(session);
+        (input, receiver, worker, running)
+    };
+    let receipt_index = setup.broker.session_receipt_count();
+    setup.broker.wait_for_session_request();
+    setup
+        .platform
+        .send_running_event(RunningAgentEvent::RelayFailed);
+    setup.broker.wait_for_session_receipt(receipt_index);
+    let receipt =
+        SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(receipt_index)).unwrap();
+    assert_eq!(receipt.payload.resulting_state, SessionState::Terminal);
+    assert_eq!(receipt.payload.sequence, previous.payload.sequence + 1);
+    assert_eq!(
+        receipt.payload.previous_receipt_digest,
+        Some(previous.digest().to_string())
+    );
+    assert_eq!(
+        serde_json::to_value(&receipt.payload.outcome).unwrap(),
+        serde_json::json!({
+            "action": "disposal", "authority": {"kind": "cause", "cause": "relay_failed"}
+        })
+    );
+    let events = event_snapshot(&setup.events);
+    let position = |name| events.iter().rposition(|event| event == name).unwrap();
+    assert!(position("agent.event.relay_failed") < position("capability.close"));
+    assert!(position("capability.close") < position("agent.dispose"));
+    assert!(position("agent.dispose") < position("identity.release"));
+    assert!(position("identity.release") < position("signer.sign"));
+    let status = request_supervisor_status(&setup, "relay-failed-status");
+    assert_eq!(status.state, SessionState::Terminal);
+    assert_eq!(status.channel_state, ChannelState::Closed);
+    assert_eq!(status.process_exit, None);
+    for event in [
+        RunningAgentEvent::RelayFailed,
+        RunningAgentEvent::ControllerEof,
+        RunningAgentEvent::ProcessExited(ProcessExitClassification::Success),
+    ] {
+        setup.platform.send_running_event(event);
+    }
+    let late = request_supervisor_status(&setup, "late-relay-events-are-inert");
+    assert_eq!(late.state, SessionState::Terminal);
+    assert_eq!(late.process_exit, None);
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(receipt_index),
+        ));
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+        Err(SupervisorError::RelayFailed)
+    );
+    drop(controller_input);
+    worker.join().unwrap();
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    assert_eq!(event_count(&setup.events, "identity.release"), 1);
+}
+
+#[test]
+fn relay_failure_reconciles_its_failed_terminal_audit_before_returning_error() {
+    for failure in [PendingAudit::FailedSigning, PendingAudit::RejectedAck] {
+        let setup = setup(
+            true,
+            |_| {},
+            AppendBehavior::Hold,
+            PlatformBehavior::default(),
+            SUPERVISOR_TIMEOUT,
+        );
+        let session = complete_launch(&setup);
+        let head = session.receipt().clone();
+        let (input, receiver, worker) = begin_session_relay(session);
+        let sign_call = setup.signer.payloads().len();
+        setup.signer.hold_on_call(sign_call);
+        if failure == PendingAudit::FailedSigning {
+            setup.signer.fail_on_call(sign_call);
+        }
+        setup.broker.wait_for_session_request();
+        setup
+            .platform
+            .send_running_event(RunningAgentEvent::RelayFailed);
+        setup.signer.wait_for_held_call();
+        setup.signer.release_held_call();
+        if failure == PendingAudit::RejectedAck {
+            setup.broker.wait_for_session_receipt(0);
+            let mut ack = setup.broker.session_receipt_acknowledgement(0);
+            ack.disposition = ReceiptDisposition::Rejected;
+            setup.broker.wait_for_session_request();
+            setup
+                .broker
+                .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(ack));
+        }
+        let status = request_supervisor_status(&setup, "failed-terminal-audit");
+        assert_eq!(status.pending_receipt_count, 1);
+        assert_eq!(status.state, SessionState::Terminal);
+        assert_eq!(status.channel_state, ChannelState::Closed);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        setup.signer.fail_on_call(usize::MAX);
+        setup.broker.wait_for_session_request();
+        setup.broker.disconnect_session();
+        setup.broker.wait_for_reconnect(0);
+        let mut reconnect = setup.broker.reconnect(0);
+        reconnect.sequence = head.payload.sequence;
+        reconnect.receipt_digest = head.digest().to_string();
+        setup.broker.complete_reconnect(reconnect);
+        let index = usize::from(failure == PendingAudit::RejectedAck);
+        setup.broker.wait_for_session_receipt(index);
+        if failure == PendingAudit::RejectedAck {
+            assert_eq!(
+                setup.broker.session_receipt_bytes(1),
+                setup.broker.session_receipt_bytes(0)
+            );
+        }
+        let receipt =
+            SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(index)).unwrap();
+        assert_eq!(receipt.payload.sequence, head.payload.sequence + 1);
+        assert_eq!(
+            receipt.payload.previous_receipt_digest,
+            Some(head.digest().to_string())
+        );
+        assert_eq!(
+            receipt.payload.outcome,
+            ReceiptOutcome::Disposal {
+                authority: ReceiptAuthority::Cause {
+                    cause: ReceiptCause::RelayFailed
+                }
+            }
+        );
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+                setup.broker.session_receipt_acknowledgement(index),
+            ));
+        assert_eq!(
+            receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+            Err(SupervisorError::RelayFailed)
+        );
+        drop(input);
+        worker.join().unwrap();
+        assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+        assert_eq!(event_count(&setup.events, "identity.release"), 1);
+    }
+}
+
+#[test]
+fn relay_failure_with_unproven_cleanup_never_signs_or_releases_identity() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            dispose_fails: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    setup.platform.hold_relay_quiescence();
+    let session = complete_launch(&setup);
+    let (input, receiver, worker) = begin_session_relay(session);
+    setup.broker.wait_for_session_request();
+    setup
+        .platform
+        .send_running_event(RunningAgentEvent::RelayFailed);
+    setup.platform.wait_for_relay_quiescence();
+    let status = request_supervisor_status(&setup, "relay-cleanup-unproven");
+    assert_eq!(status.state, SessionState::Running);
+    assert_eq!(status.channel_state, ChannelState::Revoked);
+    assert_eq!(status.process_exit, None);
+    setup.platform.complete_relay_quiescence();
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+        Err(SupervisorError::CleanupUnproven)
+    );
+    drop(input);
+    worker.join().unwrap();
+    assert_eq!(setup.signer.payloads().len(), 2);
+    assert_eq!(setup.broker.session_receipt_count(), 0);
+    assert_eq!(event_count(&setup.events, "identity.release"), 0);
+    assert_eq!(event_count(&setup.events, "identity.poison"), 1);
+}
+
+#[test]
+fn relay_failure_preserves_pending_interrupt_and_resume_receipts() {
+    for action in [LifecycleAction::Interrupt, LifecycleAction::Resume] {
+        for pending in [
+            PendingAudit::Signing,
+            PendingAudit::FailedSigning,
+            PendingAudit::RejectedAck,
+        ] {
+            terminal_event_during_pending_receipt(action, pending, RunningAgentEvent::RelayFailed);
+        }
+    }
+}
+
+#[test]
+fn failed_resume_signature_after_process_exit_preserves_terminal_audit() {
+    for pending in [PendingAudit::FailedSigning, PendingAudit::RejectedAck] {
+        terminal_event_during_pending_receipt(
+            LifecycleAction::Resume,
+            pending,
+            RunningAgentEvent::ProcessExited(ProcessExitClassification::Success),
+        );
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingAudit {
+    Signing,
+    FailedSigning,
+    RejectedAck,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "One ordered terminal race fixture preserves the prior mechanic and both successful/failed audit phases through reconnect."
+)]
+fn terminal_event_during_pending_receipt(
+    action: LifecycleAction,
+    pending: PendingAudit,
+    event: RunningAgentEvent,
+) {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    let (input, receiver, worker, head) = if action == LifecycleAction::Resume {
+        park_launched_session(&setup, session)
+    } else {
+        let head = session.receipt().clone();
+        let (input, receiver, worker) = begin_session_relay(session);
+        (input, receiver, worker, head)
+    };
+    let receipt_index = setup.broker.session_receipt_count();
+    let request = if action == LifecycleAction::Resume {
+        resume_request(&setup, "resume-before-relay-failure")
+    } else {
+        interrupt_request(
+            &setup,
+            "interrupt-before-relay-failure",
+            SessionState::Running,
+            head.payload.sequence,
+        )
+    };
+    let sign_call = setup.signer.payloads().len();
+    setup.signer.hold_on_call(sign_call);
+    if pending == PendingAudit::FailedSigning {
+        setup.signer.fail_on_call(sign_call);
+    }
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(request.clone()));
+    setup.signer.wait_for_held_call();
+    if pending == PendingAudit::RejectedAck {
+        setup.signer.release_held_call();
+        setup.broker.wait_for_session_receipt(receipt_index);
+    }
+    setup.platform.send_running_event(event);
+    let terminal = request_supervisor_status(&setup, "queued-relay-failure");
+    assert_eq!(terminal.state, SessionState::Terminal);
+    let (authority, classification, finish) = match event {
+        RunningAgentEvent::ProcessExited(classification) => (
+            ReceiptAuthority::ProcessExited { classification },
+            Some(classification),
+            Ok(0),
+        ),
+        RunningAgentEvent::RelayFailed => (
+            ReceiptAuthority::Cause {
+                cause: ReceiptCause::RelayFailed,
+            },
+            None,
+            Err(SupervisorError::RelayFailed),
+        ),
+        RunningAgentEvent::ControllerEof => panic!("only terminal events in this fixture"),
+    };
+    assert_eq!(terminal.process_exit, classification);
+    if pending == PendingAudit::RejectedAck {
+        let mut ack = setup.broker.session_receipt_acknowledgement(receipt_index);
+        ack.disposition = ReceiptDisposition::Rejected;
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(ack));
+    } else {
+        setup.signer.release_held_call();
+    }
+    if pending != PendingAudit::Signing {
+        let response = setup
+            .broker
+            .wait_for_session_response(&request.request_id, 0);
+        let ResponseResult::Error { error } = response.result else {
+            panic!("signing failed");
+        };
+        assert_eq!(
+            error.code,
+            if pending == PendingAudit::FailedSigning {
+                ErrorCode::SigningUnavailable
+            } else {
+                ErrorCode::DurabilityUnavailable
+            }
+        );
+        let status = request_supervisor_status(&setup, "relay-failure-retained-for-repair");
+        assert_eq!(status.pending_receipt_count, 2);
+        assert_eq!(status.channel_state, ChannelState::Closed);
+        setup.signer.fail_on_call(usize::MAX);
+        setup.broker.wait_for_session_request();
+        setup.broker.disconnect_session();
+        setup.broker.wait_for_reconnect(0);
+        let mut reconnect = setup.broker.reconnect(0);
+        reconnect.sequence = head.payload.sequence;
+        reconnect.receipt_digest = head.digest().to_string();
+        setup.broker.complete_reconnect(reconnect);
+    }
+    let receipt_index = receipt_index + usize::from(pending == PendingAudit::RejectedAck);
+    setup.broker.wait_for_session_receipt(receipt_index);
+    if pending == PendingAudit::RejectedAck {
+        assert_eq!(
+            setup.broker.session_receipt_bytes(receipt_index),
+            setup.broker.session_receipt_bytes(receipt_index - 1),
+            "replay exact signed bytes"
+        );
+    }
+    let first =
+        SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(receipt_index)).unwrap();
+    assert_eq!(
+        first.payload.previous_receipt_digest,
+        Some(head.digest().to_string())
+    );
+    assert!(matches!(
+        (&first.payload.outcome, action),
+        (ReceiptOutcome::Interrupt { .. }, LifecycleAction::Interrupt)
+            | (ReceiptOutcome::Resume { .. }, LifecycleAction::Resume)
+    ));
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(receipt_index),
+        ));
+    setup.broker.wait_for_session_receipt(receipt_index + 1);
+    let terminal =
+        SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(receipt_index + 1))
+            .unwrap();
+    assert_eq!(
+        terminal.payload.previous_receipt_digest,
+        Some(first.digest().to_string())
+    );
+    assert_eq!(terminal.payload.sequence, first.payload.sequence + 1);
+    assert_eq!(
+        terminal.payload.outcome,
+        ReceiptOutcome::Disposal { authority }
+    );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup
+                .broker
+                .session_receipt_acknowledgement(receipt_index + 1),
+        ));
+    assert_eq!(receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(), finish);
+    drop(input);
+    worker.join().unwrap();
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    assert_eq!(event_count(&setup.events, "identity.release"), 1);
+    assert_eq!(event_count(&setup.events, "capability.enable"), 1);
+}
+
+#[test]
 fn natural_process_exit_is_sanitized_and_receipted_after_exactly_once_cleanup() {
     for classification in [
         ProcessExitClassification::Success,
@@ -4275,6 +4681,15 @@ fn natural_process_exit_is_sanitized_and_receipted_after_exactly_once_cleanup() 
 
 #[test]
 fn authorized_disposal_wins_a_process_exit_race_exactly_once() {
+    for event in [
+        RunningAgentEvent::ProcessExited(ProcessExitClassification::Failure),
+        RunningAgentEvent::RelayFailed,
+    ] {
+        authorized_disposal_wins_terminal_race(event);
+    }
+}
+
+fn authorized_disposal_wins_terminal_race(event: RunningAgentEvent) {
     let setup = setup(
         true,
         |_| {},
@@ -4292,11 +4707,7 @@ fn authorized_disposal_wins_a_process_exit_race_exactly_once() {
         .broker
         .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
     setup.signer.wait_for_held_call();
-    setup
-        .platform
-        .send_running_event(RunningAgentEvent::ProcessExited(
-            ProcessExitClassification::Failure,
-        ));
+    setup.platform.send_running_event(event);
     setup.signer.release_held_call();
     setup.broker.wait_for_session_receipt(0);
 
@@ -8121,16 +8532,27 @@ fn initial_user_namespace() -> bool {
 
 #[test]
 fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
-    for exits_after_echo in [true, false] {
-        privileged_supervisor_case(exits_after_echo);
+    for ending in [
+        PrivilegedEnding::NaturalExit,
+        PrivilegedEnding::ControllerEof,
+        PrivilegedEnding::RelayFailure,
+    ] {
+        privileged_supervisor_case(ending);
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrivilegedEnding {
+    NaturalExit,
+    ControllerEof,
+    RelayFailure,
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "One privileged supervisor launches agent under the assigned outer identity scenario keeps its causal steps and assertions together."
 )]
-fn privileged_supervisor_case(exits_after_echo: bool) {
+fn privileged_supervisor_case(ending: PrivilegedEnding) {
     let Some(assigned) = env::var_os("LOUISELM_TEST_HOST_ID") else {
         eprintln!("skipping: set LOUISELM_TEST_HOST_ID in the privileged fixture");
         return;
@@ -8167,7 +8589,7 @@ fn privileged_supervisor_case(exits_after_echo: bool) {
         PlatformBehavior::default(),
         PRIVILEGED_TIMEOUT,
     );
-    if exits_after_echo {
+    if ending == PrivilegedEnding::NaturalExit {
         // Natural exit must not depend on controller EOF, which means loss to
         // the production relay and can freeze cat before it observes pipe EOF.
         write_file(
@@ -8234,14 +8656,20 @@ fn privileged_supervisor_case(exits_after_echo: bool) {
     let (mut controller_input, supervisor_input) =
         UnixStream::pair().expect("privileged relay socket pair opens");
     let worker_output = Arc::clone(&output);
+    let (mut output_reader, output_writer) = UnixStream::pair().unwrap();
+    let output_fault = output_reader.try_clone().unwrap();
     let (relay_sender, relay_receiver) = mpsc::sync_channel(1);
     let relay_worker = thread::Builder::new()
         .name("privileged-launch-relay".to_owned())
         .spawn(move || {
-            let (stdio, output_worker) = capture_stdio(
-                fs::File::from(OwnedFd::from(supervisor_input)),
-                worker_output,
-            );
+            let output_worker = thread::spawn(move || {
+                io::copy(&mut output_reader, &mut SharedWriter(worker_output)).unwrap();
+            });
+            let stdio = RelayStdio::new(
+                BufReader::new(fs::File::from(OwnedFd::from(supervisor_input))),
+                fs::File::from(OwnedFd::from(output_writer)),
+            )
+            .unwrap();
             let result = session.relay_stdio(stdio);
             output_worker.join().expect("output observer finishes");
             relay_sender
@@ -8256,29 +8684,39 @@ fn privileged_supervisor_case(exits_after_echo: bool) {
     }
     let echoed_before_eof = *lock(&output) == acp;
     let mut receipts = Vec::new();
-    let ended_before_eof = if exits_after_echo {
+    let fault_write = if ending == PrivilegedEnding::RelayFailure {
+        // The real relay now hits EPIPE on its next output write, while the
+        // controller input stays open and the Agent remains alive in cat.
+        output_fault.shutdown(Shutdown::Read).unwrap();
+        Some(controller_input.write_all(b"trigger broken output\n"))
+    } else {
+        None
+    };
+    let ended_before_eof = if ending == PrivilegedEnding::ControllerEof {
+        false
+    } else {
         settle_privileged_relay(&setup, &relay_worker, &mut receipts);
         relay_worker.is_finished()
-    } else {
-        false
     };
     // Also settle cleanup on failure; keep the pre-EOF observations for verdicts.
     let _ = controller_input.shutdown(Shutdown::Write);
     settle_privileged_relay(&setup, &relay_worker, &mut receipts);
     drop(controller_input);
-    let exit_code = relay_receiver
+    let relay_result = relay_receiver
         .recv_timeout(PRIVILEGED_TIMEOUT)
         .unwrap_or_else(|error| {
             panic!(
                 "terminal privileged relay failed: {error:?}; receipts: {receipts:?}; events: {:?}",
                 event_snapshot(&setup.events),
             )
-        })
-        .expect("terminal privileged supervisor cleanup succeeds");
+        });
     relay_worker
         .join()
         .expect("terminal privileged relay worker finishes");
     controller_write.expect("ACP bytes reached the real Agent");
+    if let Some(result) = fault_write {
+        result.expect("fault trigger reached the real Agent");
+    }
     let running = SignedReceipt::parse_canonical(&setup.broker.receipts()[1]).unwrap();
     let mut previous = &running;
     for receipt in &receipts {
@@ -8293,7 +8731,7 @@ fn privileged_supervisor_case(exits_after_echo: bool) {
         .last()
         .expect("a terminal receipt was acknowledged");
     assert_eq!(terminal.payload.resulting_state, SessionState::Terminal);
-    if exits_after_echo {
+    if ending == PrivilegedEnding::NaturalExit {
         assert!(
             ended_before_eof,
             "natural Agent exit must precede controller EOF"
@@ -8307,10 +8745,28 @@ fn privileged_supervisor_case(exits_after_echo: bool) {
             },
         );
     }
+    if ending == PrivilegedEnding::RelayFailure {
+        assert!(
+            ended_before_eof,
+            "broken output must terminate before controller EOF"
+        );
+        assert_eq!(
+            terminal.payload.outcome,
+            ReceiptOutcome::Disposal {
+                authority: ReceiptAuthority::Cause {
+                    cause: ReceiptCause::RelayFailed
+                },
+            }
+        );
+    }
     assert_eq!(
-        exit_code,
-        0,
-        "the real Agent exited abnormally; events: {:?}",
+        relay_result,
+        if ending == PrivilegedEnding::RelayFailure {
+            Err(SupervisorError::RelayFailed)
+        } else {
+            Ok(0)
+        },
+        "unexpected production relay outcome; events: {:?}",
         event_snapshot(&setup.events),
     );
     assert!(
