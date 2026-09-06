@@ -4,6 +4,9 @@ Use `scripts/launcher-vm` for privileged launcher checks, never host `sudo`.
 This is one headless QEMU/KVM guest, not an installed desktop launcher or a
 replacement for the real Control broker acceptance in `skills-core/README.md`.
 
+See the [launcher acceptance audit](launcher-acceptance.md) for the AC-by-AC
+evidence map, confirmed gaps, and remaining privileged acceptance work.
+
 ## Host boundary
 
 - Run as the operator, with existing access to `/dev/kvm`. There is no sudo
