@@ -1,4 +1,5 @@
 //! Behavioral coverage for launch transport.
+#![forbid(unsafe_code)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -9,10 +10,7 @@
 
 use std::{
     io::{Read, Write},
-    os::{
-        fd::{AsRawFd, BorrowedFd, OwnedFd},
-        unix::process::CommandExt,
-    },
+    os::fd::OwnedFd,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -37,7 +35,6 @@ use louiselm_skills::{
     },
 };
 use rustix::{
-    io::{FdFlags, fcntl_dupfd_cloexec, fcntl_getfd, fcntl_setfd},
     net::{
         AddressFamily, SendFlags, SocketAddrUnix, SocketFlags, SocketType, bind, connect, listen,
         send, socket_with,
@@ -47,7 +44,6 @@ use rustix::{
 use tempfile::TempDir;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
-const HELPER_FD: &str = "LOUISELM_TEST_SEQPACKET_FD";
 const HELPER_PACKET: &str = "LOUISELM_TEST_SEQPACKET_PACKET";
 
 fn current_credentials() -> KernelCredentials {
@@ -769,46 +765,29 @@ fn dropping_a_channel_never_waits_for_a_user_callback() {
 }
 
 fn spawn_inherited_sender(peer: &OwnedFd, bytes: &[u8]) -> Child {
-    let peer = fcntl_dupfd_cloexec(peer, 3).expect("helper owns a non-stdio socket descriptor");
-    let raw_fd = peer.as_raw_fd();
-    let mut command = Command::new(std::env::current_exe().expect("test executable is known"));
-    command
+    let peer = peer.try_clone().expect("helper owns its socket descriptor");
+    // Stderr carries the socket; stdin remains the release gate and stdout
+    // carries the test harness output.
+    Command::new(std::env::current_exe().expect("test executable is known"))
         .args(["--exact", "inherited_sender_helper", "--nocapture"])
-        .env(HELPER_FD, raw_fd.to_string())
         .env(
             HELPER_PACKET,
             String::from_utf8(bytes.to_vec()).expect("test packet is UTF-8"),
         )
-        .stdin(Stdio::piped());
-    #[expect(
-        unsafe_code,
-        reason = "This credential test needs the child to inherit the parent's connected socket across exec."
-    )]
-    // SAFETY: the closure owns a descriptor above stdio through spawn. Only
-    // async-signal-safe fcntl calls and stack-only flag/OS-error conversions run
-    // between fork and exec; no allocation, locks or environment access occur.
-    unsafe {
-        command.pre_exec(move || {
-            let mut flags = fcntl_getfd(&peer).map_err(std::io::Error::from)?;
-            flags.remove(FdFlags::CLOEXEC);
-            fcntl_setfd(&peer, flags).map_err(std::io::Error::from)
-        });
-    }
-    command.spawn().expect("sender helper starts")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::from(peer))
+        .spawn()
+        .expect("sender helper starts")
 }
 
 #[test]
 fn inherited_sender_helper() {
-    let Some(raw_fd) = std::env::var_os(HELPER_FD) else {
+    let Some(bytes) = std::env::var_os(HELPER_PACKET) else {
         return;
     };
-    let raw_fd = raw_fd
+    let bytes = bytes
         .into_string()
-        .expect("helper fd is UTF-8")
-        .parse()
-        .expect("helper fd is numeric");
-    let bytes = std::env::var(HELPER_PACKET)
-        .expect("helper packet is present")
+        .expect("helper packet is UTF-8")
         .into_bytes();
     let mut release = [0_u8; 2];
     std::io::stdin()
@@ -816,15 +795,8 @@ fn inherited_sender_helper() {
         .expect("parent releases helper");
     assert_eq!(&release, b"go");
 
-    #[expect(
-        unsafe_code,
-        reason = "The subprocess test receives a raw inherited descriptor from its trusted parent fixture."
-    )]
-    // SAFETY: the parent deliberately inherited this live socket descriptor
-    // into only this helper, and the borrow ends before the helper exits.
-    let peer = unsafe { BorrowedFd::borrow_raw(raw_fd) };
     assert_eq!(
-        send(peer, &bytes, SendFlags::NOSIGNAL).expect("helper packet sends"),
+        send(std::io::stderr(), &bytes, SendFlags::NOSIGNAL).expect("helper packet sends"),
         bytes.len(),
     );
 }
