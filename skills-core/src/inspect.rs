@@ -96,6 +96,7 @@ pub enum FindingKind {
 
 impl FindingKind {
     /// Returns the identifier used in finding ids and robot output.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::UnicodeHidden => "unicode_hidden",
@@ -117,6 +118,7 @@ impl FindingKind {
     }
 
     /// Returns the sentence shown above a finding's occurrences.
+    #[must_use]
     pub fn message(self) -> &'static str {
         match self {
             Self::UnicodeHidden => {
@@ -237,6 +239,9 @@ pub struct Inspection {
 
 impl Inspection {
     /// Inspects every byte of `package` under `policy`.
+    ///
+    /// # Errors
+    /// Returns a package-read error if a manifest entry cannot be inspected. Detected policy violations are findings in the returned Inspection.
     pub fn run(package: &Package, policy: &Policy) -> Result<Self, StoreError> {
         let mut inspection = Self {
             schema: INSPECTION_SCHEMA.to_owned(),
@@ -322,16 +327,19 @@ impl Inspection {
     }
 
     /// Reports whether the package is reviewable at all.
+    #[must_use]
     pub fn is_fatal(&self) -> bool {
         !self.fatal.is_empty()
     }
 
     /// Returns the facts recorded for one path.
+    #[must_use]
     pub fn file(&self, path: &str) -> Option<&FileFacts> {
         self.files.iter().find(|facts| facts.path == path)
     }
 
     /// Returns every executable path, in package order.
+    #[must_use]
     pub fn executables(&self) -> Vec<&str> {
         self.files
             .iter()
@@ -341,6 +349,7 @@ impl Inspection {
     }
 
     /// Counts findings of one kind across the package.
+    #[must_use]
     pub fn count(&self, kind: FindingKind) -> u64 {
         self.findings
             .iter()
@@ -350,6 +359,7 @@ impl Inspection {
     }
 
     /// Summarizes finding counts by kind, for the Dossier header.
+    #[must_use]
     pub fn counts_by_kind(&self) -> BTreeMap<&'static str, u64> {
         let mut counts = BTreeMap::new();
         for finding in &self.findings {

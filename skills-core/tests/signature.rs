@@ -1,3 +1,11 @@
+//! Behavioral coverage for signature.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! SSH signature parsing and verification, including FIDO assertion flags.
 //!
 //! The signatures here are real: the tests generate software keys and sign

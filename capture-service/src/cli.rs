@@ -61,7 +61,9 @@ pub enum CliError {
     /// Ambiguous generated work can be retried with the same safe mutation identity.
     #[error("{source}; retry with LOUISELM_MUTATION_ID={mutation_id}")]
     GenerationRetry {
+        /// Retry identity that prevents duplicate generated work.
         mutation_id: String,
+        /// Failure that left the mutation outcome uncertain.
         source: GenerationError,
     },
     /// Pairing operation failed.
@@ -287,7 +289,7 @@ fn generate(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     );
     let command = request.command.clone();
     let issue = generator
-        .generate(&RunStore::new(paths.runs())?, request, now_ms())
+        .generate(&RunStore::new(paths.runs())?, &request, now_ms())
         .map_err(|source| match source {
             GenerationError::Ambiguous(_) => CliError::GenerationRetry {
                 mutation_id,
@@ -315,14 +317,13 @@ fn required_environment(name: &str) -> Result<String, CliError> {
 
 fn ingest_local(store: &Store, arguments: &[String]) -> Result<(), CliError> {
     let path = PathBuf::from(required_option(arguments, "--file")?);
-    let id = option(arguments, "--id")
-        .map(str::to_owned)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let id =
+        option(arguments, "--id").map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
     let recorded_at_ms = positive_integer(arguments, "--recorded-at-ms")?;
     let duration_ms = positive_integer(arguments, "--duration-ms")?;
     let mime_type = required_option(arguments, "--mime")?.to_owned();
     let outcome = store.ingest(
-        CaptureDraft {
+        &CaptureDraft {
             id: id.clone(),
             source: CaptureSource::Neovim,
             recorded_at_ms,

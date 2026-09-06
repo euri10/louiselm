@@ -1,3 +1,11 @@
+//! Behavioral coverage for fuzz.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Property sweeps over the parsers hostile input reaches first.
 //!
 //! These are deterministic: the generator is a fixed-seed LCG, so a failure
@@ -30,7 +38,7 @@ impl Corpus {
     }
 
     fn below(&mut self, bound: usize) -> usize {
-        (self.next() % bound as u64) as usize
+        usize::try_from(self.next() % bound as u64).expect("remainder fits the usize bound")
     }
 
     /// Builds a string from an alphabet chosen to hit every rejection path.
@@ -95,7 +103,7 @@ fn manifest_parsing_never_panics_and_only_accepts_canonical_bytes() {
         let mutations = 1 + corpus.below(3);
         for _ in 0..mutations {
             let index = corpus.below(bytes.len());
-            bytes[index] = (corpus.next() % 256) as u8;
+            bytes[index] = corpus.next().to_le_bytes()[0];
         }
 
         if let Ok(manifest) = Manifest::parse(&bytes, false) {

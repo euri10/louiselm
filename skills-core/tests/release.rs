@@ -1,3 +1,11 @@
+//! Behavioral coverage for release.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The trusted release: what may become one, and what may install one.
 //!
 //! Bundles here are assembled from fake component files rather than by running

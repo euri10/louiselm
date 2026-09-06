@@ -108,6 +108,10 @@ pub struct LaunchedSession {
 }
 
 impl LaunchedSession {
+    #[expect(
+        clippy::expect_used,
+        reason = "run_launch hands off only after collecting durable genesis and start receipts."
+    )]
     pub(super) fn new(
         resources: SessionResources,
         signer: Arc<dyn LaunchSigner>,
@@ -140,7 +144,8 @@ impl LaunchedSession {
         let worker = thread::Builder::new()
             .name("louiselm-launch-session-owner".to_owned())
             .spawn(move || {
-                let result = owner.run(Box::new(owner_input), Box::new(owner_output), ready_sender);
+                let result =
+                    owner.run(Box::new(owner_input), Box::new(owner_output), &ready_sender);
                 let cleanup = owner.resources.cleanup();
                 match (result, cleanup) {
                     (_, Err(error)) => Err(error),
@@ -181,6 +186,9 @@ impl LaunchedSession {
     }
 
     /// Relays opaque ACP bytes while one serialized owner services broker lifecycle requests.
+    ///
+    /// # Errors
+    /// Returns the lifecycle owner's terminal failure, or `WorkerUnavailable` if it cannot be joined.
     pub fn relay_stdio(
         mut self,
         input: Box<dyn Read + Send>,
@@ -192,6 +200,9 @@ impl LaunchedSession {
     }
 
     /// Ends controller ownership and waits for the broker-settled terminal outcome.
+    ///
+    /// # Errors
+    /// Returns the lifecycle owner's terminal failure, or `WorkerUnavailable` if it cannot be joined.
     pub fn dispose(mut self) -> Result<(), SupervisorError> {
         self.detach_controller();
         self.join_owner().map(drop)
@@ -244,7 +255,7 @@ impl<T> DeferredAttachment<T> {
         let mut state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !matches!(*state, DeferredAttachmentState::Waiting) {
             return Err(value);
         }
@@ -257,12 +268,12 @@ impl<T> DeferredAttachment<T> {
         let mut state = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while matches!(*state, DeferredAttachmentState::Waiting) {
             state = self
                 .changed
                 .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         match mem::replace(&mut *state, DeferredAttachmentState::Closed) {
             DeferredAttachmentState::Ready(value) => Some(value),
@@ -491,6 +502,10 @@ enum ParkResult {
     Ambiguous,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Owner flags track independent I/O, timer, and terminal obligations, not one exclusive state."
+)]
 struct SessionOwner {
     resources: SessionResources,
     signer: Arc<dyn LaunchSigner>,
@@ -539,6 +554,10 @@ struct SessionOwner {
 }
 
 impl SessionOwner {
+    #[expect(
+        clippy::expect_used,
+        reason = "LaunchedSession supplies a nonempty receipt chain; the owner only appends to it."
+    )]
     fn new(
         resources: SessionResources,
         signer: Arc<dyn LaunchSigner>,
@@ -598,11 +617,15 @@ impl SessionOwner {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One serialized event-dispatch loop makes the owner ordering explicit."
+    )]
     fn run(
         &mut self,
         input: Box<dyn Read + Send>,
         output: Box<dyn Write + Send>,
-        ready: mpsc::SyncSender<Result<(), SupervisorError>>,
+        ready: &mpsc::SyncSender<Result<(), SupervisorError>>,
     ) -> Result<i32, SupervisorError> {
         if let Err(error) = self.start_relay(input, output) {
             let _ = ready.send(Err(error.clone()));
@@ -628,7 +651,7 @@ impl SessionOwner {
                 OwnerEvent::ReceiptSent {
                     operation_epoch,
                     result,
-                } => self.handle_receipt_sent(operation_epoch, result),
+                } => self.handle_receipt_sent(operation_epoch, &result),
                 OwnerEvent::OperationDeadline { operation_epoch } => {
                     self.handle_operation_deadline(operation_epoch);
                 }
@@ -661,7 +684,7 @@ impl SessionOwner {
                     connection_epoch,
                     reconciliation_epoch,
                     receipt_index,
-                    result,
+                    &result,
                 ),
                 OwnerEvent::ReconciliationReceiptDeadline {
                     connection_epoch,
@@ -681,7 +704,7 @@ impl SessionOwner {
                     connection_epoch,
                     operation_epoch,
                     result,
-                } => self.handle_deferred_receipt_sent(connection_epoch, operation_epoch, result),
+                } => self.handle_deferred_receipt_sent(connection_epoch, operation_epoch, &result),
                 OwnerEvent::DeferredReceiptDeadline {
                     connection_epoch,
                     operation_epoch,
@@ -689,7 +712,7 @@ impl SessionOwner {
                 OwnerEvent::ControllerLossSettled {
                     settlement_epoch,
                     result,
-                } => self.handle_controller_loss_settled(settlement_epoch, result),
+                } => self.handle_controller_loss_settled(settlement_epoch, &result),
                 OwnerEvent::ControllerLossDeadline { settlement_epoch } => {
                     self.handle_controller_loss_deadline(settlement_epoch);
                 }
@@ -798,7 +821,7 @@ impl SessionOwner {
                 );
             }
             ProtocolMessage::ReceiptAcknowledgement(acknowledgement) => {
-                self.handle_receipt_acknowledgement(acknowledgement);
+                self.handle_receipt_acknowledgement(&acknowledgement);
             }
             ProtocolMessage::LaunchAuthorization(request) => {
                 self.send_error(
@@ -821,6 +844,10 @@ impl SessionOwner {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Request validation and compare-and-swap admission are one ordered state-machine boundary."
+    )]
     fn handle_lifecycle(&mut self, request: LifecycleRequest) {
         if let Some(failed) = self
             .failed
@@ -1151,6 +1178,10 @@ impl SessionOwner {
         self.start_signing(operation_epoch);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "This method sets pending before calling the mechanic; callbacks only enqueue events and cannot remove it here."
+    )]
     fn begin_disposal(&mut self, request: LifecycleRequest, intent: ReceiptIntent) {
         let receipt_backlog = self.has_receipt_backlog();
         self.controller_loss_unresolved = false;
@@ -1313,11 +1344,9 @@ impl SessionOwner {
             receipt: None,
             payload_override: Some(payload),
             respond: false,
-            finish_code: Some(if classification == ProcessExitClassification::Success {
-                0
-            } else {
-                1
-            }),
+            finish_code: Some(i32::from(
+                classification != ProcessExitClassification::Success,
+            )),
         });
         if receipt_backlog {
             self.fail_receipt_operation(ErrorCode::DurabilityUnavailable);
@@ -1427,8 +1456,7 @@ impl SessionOwner {
             self.attempt_park()
         };
         match park {
-            ParkResult::Parked => {}
-            ParkResult::Running => {}
+            ParkResult::Parked | ParkResult::Running => {}
             ParkResult::Terminal(classification) => {
                 self.begin_process_exit(classification);
                 return;
@@ -1608,7 +1636,7 @@ impl SessionOwner {
     fn handle_controller_loss_settled(
         &mut self,
         settlement_epoch: u64,
-        result: Result<ControllerLossAcknowledgement, SupervisorError>,
+        result: &Result<ControllerLossAcknowledgement, SupervisorError>,
     ) {
         let Some(active) = self.controller_loss_settlement.as_ref() else {
             return;
@@ -1675,6 +1703,10 @@ impl SessionOwner {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Controller loss follows one fail-closed sequence through relay shutdown, disposal and receipt settlement."
+    )]
     fn begin_controller_loss_disposal(&mut self) {
         let receipt_backlog = self.has_receipt_backlog();
         let Some(operation_epoch) = self.operation_epoch.checked_add(1) else {
@@ -1805,18 +1837,11 @@ impl SessionOwner {
     }
 
     fn start_signing(&mut self, operation_epoch: u64) {
-        let payload = match self.pending.as_ref().and_then(|pending| {
+        let Some(Ok(payload)) = self.pending.as_ref().and_then(|pending| {
             (pending.epoch == operation_epoch).then(|| self.operation_payload(pending))
-        }) {
-            Some(Ok(payload)) => payload,
-            Some(Err(_)) => {
-                self.fail_receipt_operation(ErrorCode::SigningUnavailable);
-                return;
-            }
-            _ => {
-                self.fail_receipt_operation(ErrorCode::SigningUnavailable);
-                return;
-            }
+        }) else {
+            self.fail_receipt_operation(ErrorCode::SigningUnavailable);
+            return;
         };
         let sender = self.sender.clone();
         if self
@@ -1840,23 +1865,17 @@ impl SessionOwner {
         if !self.pending_matches(operation_epoch, PendingPhase::Signing) {
             return;
         }
-        let signature = match result {
-            Ok(signature) => signature,
-            Err(_) => {
-                self.fail_receipt_operation(ErrorCode::SigningUnavailable);
-                return;
-            }
+        let Ok(signature) = result else {
+            self.fail_receipt_operation(ErrorCode::SigningUnavailable);
+            return;
         };
-        let payload = match self
+        let Some(payload) = self
             .pending
             .as_ref()
             .and_then(|pending| self.operation_payload(pending).ok())
-        {
-            Some(payload) => payload,
-            None => {
-                self.fail_receipt_operation(ErrorCode::SigningUnavailable);
-                return;
-            }
+        else {
+            self.fail_receipt_operation(ErrorCode::SigningUnavailable);
+            return;
         };
         let receipt = SignedReceipt {
             schema: SIGNED_RECEIPT_SCHEMA.to_owned(),
@@ -1891,11 +1910,11 @@ impl SessionOwner {
                 )
             });
         if let Err(error) = result {
-            self.handle_receipt_sent(operation_epoch, Err(error));
+            self.handle_receipt_sent(operation_epoch, &Err(error));
         }
     }
 
-    fn handle_receipt_sent(&mut self, operation_epoch: u64, result: Result<(), SupervisorError>) {
+    fn handle_receipt_sent(&mut self, operation_epoch: u64, result: &Result<(), SupervisorError>) {
         if !self.pending_matches(operation_epoch, PendingPhase::AwaitingDurableAck) {
             return;
         }
@@ -1914,7 +1933,11 @@ impl SessionOwner {
         }
     }
 
-    fn handle_receipt_acknowledgement(&mut self, acknowledgement: ReceiptAcknowledgement) {
+    #[expect(
+        clippy::expect_used,
+        reason = "AwaitingDurableAck is entered only after handle_signature stores the signed receipt."
+    )]
+    fn handle_receipt_acknowledgement(&mut self, acknowledgement: &ReceiptAcknowledgement) {
         if self.deferred_reconciliation.is_some() {
             self.handle_deferred_receipt_acknowledgement(acknowledgement);
             return;
@@ -1955,6 +1978,10 @@ impl SessionOwner {
         self.complete_pending_receipt(true);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "Both callers first prove a pending signed receipt matches the acknowledged broker head."
+    )]
     fn complete_pending_receipt(&mut self, permit_resume_enable: bool) {
         let pending = self.pending.take().expect("pending operation was checked");
         let starts_controller_loss_settlement = self
@@ -2133,6 +2160,10 @@ impl SessionOwner {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "Only an admitted pending lifecycle mechanic calls this handler; owner events are serialized."
+    )]
     fn fail_mechanic_in_state(&mut self, current_state: Option<SessionState>) {
         let request = self
             .pending
@@ -2155,6 +2186,10 @@ impl SessionOwner {
         self.cache_and_send_error(request, error);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "Only an admitted pending lifecycle mechanic calls this ambiguity handler; owner events are serialized."
+    )]
     fn quarantine_pending_mechanic(&mut self) {
         let pending = self
             .pending
@@ -2288,8 +2323,7 @@ impl SessionOwner {
                 .saturating_sub(self.broker_head.sequence),
         )
         .unwrap_or(usize::MAX);
-        if signed_gap.saturating_add(self.deferred.len())
-            < usize::try_from(MAX_PENDING_RECEIPTS).expect("receipt bound fits usize")
+        if (signed_gap.saturating_add(self.deferred.len()) as u64) < u64::from(MAX_PENDING_RECEIPTS)
         {
             self.deferred.push_back(receipt);
             true
@@ -2887,12 +2921,9 @@ impl SessionOwner {
         if active.operation_epoch != operation_epoch {
             return;
         }
-        let signature = match result {
-            Ok(signature) => signature,
-            Err(_) => {
-                self.fail_deferred_receipt_reconciliation(ErrorCode::SigningUnavailable);
-                return;
-            }
+        let Ok(signature) = result else {
+            self.fail_deferred_receipt_reconciliation(ErrorCode::SigningUnavailable);
+            return;
         };
         let receipt = SignedReceipt {
             schema: SIGNED_RECEIPT_SCHEMA.to_owned(),
@@ -2929,7 +2960,7 @@ impl SessionOwner {
                 )
             });
         if let Err(error) = result {
-            self.handle_deferred_receipt_sent(connection_epoch, operation_epoch, Err(error));
+            self.handle_deferred_receipt_sent(connection_epoch, operation_epoch, &Err(error));
         }
     }
 
@@ -2937,7 +2968,7 @@ impl SessionOwner {
         &mut self,
         connection_epoch: u64,
         operation_epoch: u64,
-        result: Result<(), SupervisorError>,
+        result: &Result<(), SupervisorError>,
     ) {
         if connection_epoch != self.connection_epoch
             || self
@@ -2952,7 +2983,10 @@ impl SessionOwner {
         }
     }
 
-    fn handle_deferred_receipt_acknowledgement(&mut self, acknowledgement: ReceiptAcknowledgement) {
+    fn handle_deferred_receipt_acknowledgement(
+        &mut self,
+        acknowledgement: &ReceiptAcknowledgement,
+    ) {
         let Some(receipt_index) =
             self.deferred_reconciliation
                 .as_ref()
@@ -3067,7 +3101,7 @@ impl SessionOwner {
                 connection_epoch,
                 reconciliation_epoch,
                 receipt_index,
-                Err(error),
+                &Err(error),
             );
         }
     }
@@ -3077,7 +3111,7 @@ impl SessionOwner {
         connection_epoch: u64,
         reconciliation_epoch: u64,
         receipt_index: usize,
-        result: Result<(), SupervisorError>,
+        result: &Result<(), SupervisorError>,
     ) {
         if connection_epoch != self.connection_epoch
             || self.reconciliation.as_ref().is_none_or(|reconciliation| {
@@ -3108,7 +3142,7 @@ impl SessionOwner {
         }
     }
 
-    fn handle_reconciliation_acknowledgement(&mut self, acknowledgement: ReceiptAcknowledgement) {
+    fn handle_reconciliation_acknowledgement(&mut self, acknowledgement: &ReceiptAcknowledgement) {
         let Some(receipt_index) = self
             .reconciliation
             .as_ref()
@@ -3313,6 +3347,10 @@ impl SessionOwner {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "Construction requires a nonempty receipt chain, which is only appended to and never cleared."
+    )]
     fn receipt(&self) -> &SignedReceipt {
         self.receipts
             .last()

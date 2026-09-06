@@ -127,6 +127,9 @@ pub enum InstallError {
 }
 
 /// Verifies `bundle` and installs it into `prefix`, atomically.
+///
+/// # Errors
+/// Rejects missing trust, invalid bundles, already-current releases, or downgrades; propagates staging, permission, and installation-state I/O errors.
 pub fn install(
     store: &Store,
     bundle: &Path,
@@ -205,12 +208,16 @@ pub fn install(
         source_commit: manifest.source.commit.clone(),
         policy_version: manifest.policy.version.clone(),
     };
-    let bytes = serde_json::to_vec(&state).expect("installed state is always serializable");
+    let bytes =
+        serde_json::to_vec(&state).map_err(|error| InstallError::Malformed(error.to_string()))?;
     release::write(&prefix.join("state.json"), &bytes)?;
     Ok(state)
 }
 
 /// Reports what is installed in `prefix` and whether it may be trusted.
+///
+/// # Errors
+/// Returns installed-state read/JSON errors. Trust, ownership, or manifest problems are reported in the returned status.
 pub fn status(prefix: &Path) -> Result<InstallStatus, InstallError> {
     let installed = load_state(prefix)?;
     let manifest = installed.as_ref().and_then(|state| {
@@ -294,6 +301,9 @@ pub fn status(prefix: &Path) -> Result<InstallStatus, InstallError> {
 }
 
 /// Reads the installed state, when a prefix has one.
+///
+/// # Errors
+/// Returns read/JSON errors; an absent state file is `Ok(None)`.
 pub fn load_state(prefix: &Path) -> Result<Option<InstalledState>, InstallError> {
     let path = prefix.join("state.json");
     let bytes = match fs::read(&path) {
@@ -312,6 +322,9 @@ pub fn load_state(prefix: &Path) -> Result<Option<InstalledState>, InstallError>
 }
 
 /// Returns the manifest of whatever release a prefix currently points at.
+///
+/// # Errors
+/// Returns installed-state read/JSON errors. An absent state or unreadable manifest is `Ok(None)`.
 pub fn current_manifest(prefix: &Path) -> Result<Option<ReleaseManifest>, InstallError> {
     let Some(state) = load_state(prefix)? else {
         return Ok(None);
@@ -382,8 +395,7 @@ fn unsafe_current_uid() -> u32 {
     let uid = fs::write(&probe, b"")
         .ok()
         .and_then(|()| fs::metadata(&probe).ok())
-        .map(|metadata| metadata.uid())
-        .unwrap_or(u32::MAX);
+        .map_or(u32::MAX, |metadata| metadata.uid());
     let _ = fs::remove_file(&probe);
     uid
 }

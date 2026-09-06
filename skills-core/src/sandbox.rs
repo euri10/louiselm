@@ -97,10 +97,10 @@ pub enum Channel {
 
 impl Channel {
     /// Returns the channel identifier.
+    #[must_use]
     pub fn id(&self) -> &str {
         match self {
-            Self::AcpStdio { id } => id,
-            Self::UnixSocket { id, .. } => id,
+            Self::AcpStdio { id } | Self::UnixSocket { id, .. } => id,
         }
     }
 }
@@ -202,11 +202,17 @@ pub struct ProcessTree {
 
 impl ProcessTree {
     /// Returns every process currently enclosed in this Session's cgroup.
+    ///
+    /// # Errors
+    /// Returns cgroup membership read or malformed-PID errors.
     pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
         self.cgroup.processes()
     }
 
     /// Reports whether `pid` is currently enclosed in this Session's cgroup.
+    ///
+    /// # Errors
+    /// Returns cgroup membership read or malformed-PID errors; a nonmember is `Ok(false)`.
     pub fn contains(&self, pid: u32) -> Result<bool, SandboxError> {
         Ok(self.processes()?.contains(&pid))
     }
@@ -218,6 +224,7 @@ impl Cgroup {
     /// Under a systemd user session the user's own scope is delegated, which
     /// is what lets an unprivileged conformance run exercise freeze and kill
     /// for real instead of skipping them.
+    #[must_use]
     pub fn delegated_parent() -> Option<PathBuf> {
         let own = fs::read_to_string("/proc/self/cgroup").ok()?;
         let relative = own
@@ -230,6 +237,9 @@ impl Cgroup {
     }
 
     /// Creates a child cgroup named for one Session.
+    ///
+    /// # Errors
+    /// Returns `NoCgroup` when the Session directory cannot be created.
     pub fn create(parent: &Path, session_id: &str) -> Result<Self, SandboxError> {
         let path = parent.join(format!("louiselm-session-{session_id}"));
         if path.exists() {
@@ -242,6 +252,7 @@ impl Cgroup {
     }
 
     /// Returns the cgroup directory.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -249,6 +260,9 @@ impl Cgroup {
     /// Returns every process currently in the cgroup.
     ///
     /// Fails when `cgroup.procs` cannot be read or contains a malformed PID.
+    ///
+    /// # Errors
+    /// Returns cgroup membership read or malformed-PID errors.
     pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
         let path = self.path.join("cgroup.procs");
         self.try_processes().map_err(|source| SandboxError::Io {
@@ -273,11 +287,13 @@ impl Cgroup {
     }
 
     /// Reports whether the cgroup supports freezing.
+    #[must_use]
     pub fn supports_freeze(&self) -> bool {
         self.path.join("cgroup.freeze").is_file()
     }
 
     /// Reports whether every process in the cgroup is currently frozen.
+    #[must_use]
     pub fn is_frozen(&self) -> bool {
         self.frozen_state().unwrap_or(false)
     }
@@ -333,6 +349,9 @@ impl Cgroup {
     }
 
     /// Freezes every process in the cgroup, including ones forked since.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the kernel freeze request cannot be written.
     pub fn freeze(&self) -> Result<(), SandboxError> {
         self.write("cgroup.freeze", "1")
     }
@@ -371,11 +390,17 @@ impl Cgroup {
     }
 
     /// Thaws a frozen cgroup.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the kernel thaw request cannot be written.
     pub fn thaw(&self) -> Result<(), SandboxError> {
         self.write("cgroup.freeze", "0")
     }
 
     /// Kills every process in the cgroup, including ones forked since.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the kernel whole-cgroup kill request cannot be written.
     pub fn kill_all(&self) -> Result<(), SandboxError> {
         self.write("cgroup.kill", "1")
     }
@@ -446,7 +471,7 @@ pub struct SandboxedSession {
     cgroup: Option<Cgroup>,
     sandbox_leader_pid: Option<u32>,
     // Keep Bubblewrap's status reader alive for its terminal status write.
-    _status_guard: Option<UnixStream>,
+    status_guard: Option<UnixStream>,
 }
 
 /// Kernel-proved execution state of one live sandbox process tree.
@@ -482,6 +507,7 @@ pub struct DisposalReport {
 
 impl SandboxedSession {
     /// Returns the host PID of Bubblewrap's outer monitor process.
+    #[must_use]
     pub fn monitor_pid(&self) -> u32 {
         self.child.id()
     }
@@ -489,6 +515,7 @@ impl SandboxedSession {
     /// Returns Bubblewrap's host-view PID-namespace leader, when observed.
     ///
     /// This is Bubblewrap's reaper, not necessarily the Agent process itself.
+    #[must_use]
     pub fn sandbox_leader_pid(&self) -> Option<u32> {
         self.sandbox_leader_pid
     }
@@ -496,6 +523,9 @@ impl SandboxedSession {
     /// Returns every process in the Session's tree.
     ///
     /// Fails when the Session's cgroup membership cannot be read.
+    ///
+    /// # Errors
+    /// Returns cgroup membership read or malformed-PID errors. Namespace-only Sessions without a cgroup return an empty list.
     pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
         match &self.cgroup {
             Some(cgroup) => cgroup.processes(),
@@ -507,11 +537,9 @@ impl SandboxedSession {
     ///
     /// Namespace-only Sessions without lifecycle cgroup control return
     /// `None`; a verified host-identity Session always has one.
+    #[must_use]
     pub fn process_tree(&self) -> Option<ProcessTree> {
-        self.cgroup
-            .as_ref()
-            .cloned()
-            .map(|cgroup| ProcessTree { cgroup })
+        self.cgroup.clone().map(|cgroup| ProcessTree { cgroup })
     }
 
     /// Borrows the Session's stdin, when the ACP channel is stdio.
@@ -541,6 +569,9 @@ impl SandboxedSession {
     /// Observes a settled process-tree state without guessing through a kernel transition.
     ///
     /// Fails when membership, exit, requested freeze, and observed freeze cannot prove one state.
+    ///
+    /// # Errors
+    /// Returns child/cgroup observation errors or refuses absent, empty, or unsettled process-tree state.
     pub fn mechanical_state(&mut self) -> Result<SandboxMechanicalState, SandboxError> {
         if let Some(code) = self.try_wait()? {
             return Ok(SandboxMechanicalState::Exited(code));
@@ -575,6 +606,9 @@ impl SandboxedSession {
     /// Freezing rather than stopping the direct child is the point: a Park that
     /// only stopped the process the launcher knows about would leave every
     /// descendant running.
+    ///
+    /// # Errors
+    /// Returns missing-cgroup, freeze/confirmation, membership-read, or child-exit errors.
     pub fn park(&mut self) -> Result<(), SandboxError> {
         let cgroup = self
             .cgroup
@@ -600,6 +634,9 @@ impl SandboxedSession {
     }
 
     /// Thaws a parked Session.
+    ///
+    /// # Errors
+    /// Returns missing-cgroup, precondition, thaw/confirmation, or process-exit errors; failed attempts try to restore the frozen boundary.
     pub fn resume(&mut self) -> Result<(), SandboxError> {
         self.resume_with_timeout(LIFECYCLE_CONFIRM_TIMEOUT)
     }
@@ -690,6 +727,9 @@ impl SandboxedSession {
     /// Session. The Agent and anything it forked are not namespace-init and
     /// die normally. Call [`SandboxedSession::dispose`] for an actual
     /// zero-survivors guarantee.
+    ///
+    /// # Errors
+    /// Returns membership, signalling, child-exit, or freeze/restoration errors. Interrupt is not a zero-survivors guarantee.
     pub fn interrupt(&mut self) -> Result<usize, SandboxError> {
         self.interrupt_with_timeout(LIFECYCLE_CONFIRM_TIMEOUT)
     }
@@ -742,6 +782,9 @@ impl SandboxedSession {
     }
 
     /// Terminates the whole tree and releases the Session's identity.
+    ///
+    /// # Errors
+    /// Returns process/cgroup observation or kill/reap failures, survivors, or unproven cleanup by the deadline. No success is returned without zero survivors.
     pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
         let deadline = Instant::now() + DISPOSAL_TIMEOUT;
         let processes_before = self.processes().map(|processes| processes.len());
@@ -826,20 +869,26 @@ impl SandboxedSession {
                 reason: "launcher-side child did not exit before the disposal deadline".to_owned(),
             });
         }
+        let processes_before = processes_before.ok_or_else(|| SandboxError::CleanupUnproven {
+            session_id: self.session_id.clone(),
+            reason: "initial Session process count was not observed".to_owned(),
+        })?;
         if let Some(cgroup) = self.cgroup.take() {
             cgroup.remove();
         }
-        self._status_guard = None;
+        self.status_guard = None;
         Ok(DisposalReport {
             session_id: self.session_id.clone(),
-            processes_before: processes_before
-                .expect("successful disposal observed the initial process count"),
+            processes_before,
             survivors: 0,
             identity_released: true,
         })
     }
 
     /// Waits for the Session to exit on its own.
+    ///
+    /// # Errors
+    /// Returns a child-wait I/O error. Signal termination is represented by exit code -1.
     pub fn wait(&mut self) -> Result<i32, SandboxError> {
         self.child
             .wait()
@@ -851,6 +900,9 @@ impl SandboxedSession {
     }
 
     /// Reports the Session's exit status without waiting.
+    ///
+    /// # Errors
+    /// Returns a child-poll I/O error. A running child is `Ok(None)`; signal termination is exit code -1.
     pub fn try_wait(&mut self) -> Result<Option<i32>, SandboxError> {
         self.child
             .try_wait()
@@ -863,6 +915,10 @@ impl SandboxedSession {
 }
 
 impl PreparedSession {
+    #[expect(
+        clippy::expect_used,
+        reason = "Only successful disposal clears the owned Session; observing a disposed PreparedSession is documented API misuse."
+    )]
     fn session(&self) -> &SandboxedSession {
         self.session
             .as_ref()
@@ -870,48 +926,79 @@ impl PreparedSession {
     }
 
     /// Returns the Session identifier.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session().session_id
     }
 
     /// Returns the backend that prepared the Session.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    #[must_use]
     pub fn backend(&self) -> &'static str {
         self.session().backend
     }
 
     /// Returns the confinement evidence established before the workload runs.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    #[must_use]
     pub fn evidence(&self) -> &IsolationEvidence {
         &self.session().evidence
     }
 
     /// Returns the host PID of Bubblewrap's outer monitor process.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    #[must_use]
     pub fn monitor_pid(&self) -> u32 {
         self.session().monitor_pid()
     }
 
     /// Returns Bubblewrap's verified host-view PID-namespace leader, when available.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    #[must_use]
     pub fn sandbox_leader_pid(&self) -> Option<u32> {
         self.session().sandbox_leader_pid()
     }
 
     /// Returns every process currently enclosed in the Session cgroup.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    ///
+    /// # Errors
+    /// Returns cgroup membership read or malformed-PID errors.
     pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
         self.session().processes()
     }
 
     /// Returns a dynamic read-only handle to the still-blocked process tree.
+    ///
+    /// # Panics
+    /// Panics if this prepared Session has already been successfully disposed.
+    #[must_use]
     pub fn process_tree(&self) -> Option<ProcessTree> {
         self.session().process_tree()
     }
 
     /// Releases the startup gate and returns the now-running Session.
+    ///
+    /// # Errors
+    /// Returns `Refused` after disposal, startup-gate failure after disposing the failed prepared tree, or `CleanupUnproven` if zero survivors cannot be established.
     pub fn start(mut self) -> Result<SandboxedSession, SandboxError> {
-        let release = self
-            .startup_gate
-            .as_mut()
-            .expect("a prepared Session owns its startup gate")
-            .release();
-        if let Err(source) = release {
+        let mut gate = self.startup_gate.take().ok_or_else(|| {
+            SandboxError::Refused("prepared Session is already disposed".to_owned())
+        })?;
+        if let Err(source) = gate.release() {
             let session_id = self.session_id().to_owned();
             return match self.dispose() {
                 Ok(_) => Err(SandboxError::SpawnFailed {
@@ -925,19 +1012,17 @@ impl PreparedSession {
             };
         }
 
-        let gate = self
-            .startup_gate
-            .take()
-            .expect("the released startup gate remains owned");
-        let mut session = self
-            .session
-            .take()
-            .expect("the prepared Session remains owned");
-        session._status_guard = Some(gate.into_status());
+        let mut session = self.session.take().ok_or_else(|| {
+            SandboxError::Refused("prepared Session is already disposed".to_owned())
+        })?;
+        session.status_guard = Some(gate.into_status());
         Ok(session)
     }
 
     /// Kills the still-blocked process tree and proves it has no survivors.
+    ///
+    /// # Errors
+    /// Returns an already-disposed refusal or any process-tree cleanup error from [`SandboxedSession::dispose`].
     pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
         let report = self
             .session
@@ -1006,7 +1091,7 @@ fn identity_start_failed(
     session_id: &str,
     child: &mut Child,
     cgroup: &Cgroup,
-    source: io::Error,
+    source: &io::Error,
 ) -> SandboxError {
     let deadline = Instant::now() + DISPOSAL_TIMEOUT;
     let _ = cgroup.thaw();
@@ -1107,13 +1192,14 @@ fn materialize_writable(path: &Path, identity: Option<(u32, u32)>) -> Result<(),
 }
 
 fn materialize_session_root(home: &Path, workspace: &Path) -> Result<(), SandboxError> {
-    let home_parent = home.parent();
-    if home_parent.is_none() || home_parent != workspace.parent() {
+    let Some(root) = home
+        .parent()
+        .filter(|parent| Some(*parent) == workspace.parent())
+    else {
         return Err(SandboxError::Refused(
             "HostIdentity home and workspace must share one Session root".to_owned(),
         ));
-    }
-    let root = home_parent.expect("the Session root was checked above");
+    };
     let parent = root.parent().ok_or_else(|| {
         SandboxError::Refused("HostIdentity Session root has no parent".to_owned())
     })?;
@@ -1173,12 +1259,18 @@ pub trait Backend {
     fn name(&self) -> &'static str;
 
     /// The backend's version, as it reports it.
+    ///
+    /// # Errors
+    /// Returns helper-start/query errors or refuses an unavailable backend.
     fn version(&self) -> Result<String, SandboxError>;
 
     /// What the kernel offers this backend right now.
     fn prerequisites(&self) -> KernelPrerequisites;
 
     /// Starts a confined Session.
+    ///
+    /// # Errors
+    /// Returns confinement validation/setup, spawn, startup-gate, or cleanup-proof errors.
     fn spawn(&self, plan: &ConfinementPlan) -> Result<SandboxedSession, SandboxError>;
 }
 
@@ -1202,6 +1294,7 @@ impl Default for BubblewrapBackend {
 
 impl BubblewrapBackend {
     /// Uses `bwrap` from the system.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             program: PathBuf::from("bwrap"),
@@ -1211,6 +1304,7 @@ impl BubblewrapBackend {
     }
 
     /// Uses a specific `bwrap` binary.
+    #[must_use]
     pub fn at(program: &Path) -> Self {
         Self {
             program: program.to_path_buf(),
@@ -1261,11 +1355,7 @@ impl BubblewrapBackend {
         )))
     }
 
-    fn arguments(
-        &self,
-        plan: &ConfinementPlan,
-        identity_gate: Option<&HostIdentityGate>,
-    ) -> Vec<String> {
+    fn arguments(plan: &ConfinementPlan, identity_gate: Option<&HostIdentityGate>) -> Vec<String> {
         let mut arguments = vec![
             "--unshare-all".to_owned(),
             "--die-with-parent".to_owned(),
@@ -1337,6 +1427,20 @@ impl BubblewrapBackend {
     }
 
     /// Materializes a confined Session while keeping its workload blocked.
+    ///
+    /// # Errors
+    /// Refuses invalid confinement/identity plans or unavailable prerequisites; returns directory/cgroup/gate setup, spawn, or host-identity proof errors.
+    ///
+    /// # Panics
+    /// Panics only if an internal change bypasses the pre-spawn `HostIdentity` cgroup requirement.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Preparation is one fail-closed spawn, containment and host-identity verification transaction."
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "preflight_cgroup rejects HostIdentity without a cgroup before any spawn; the local Option is never cleared."
+    )]
     pub fn prepare(&self, plan: &ConfinementPlan) -> Result<PreparedSession, SandboxError> {
         if plan.network != NetworkPolicy::Denied {
             return Err(SandboxError::Refused(
@@ -1383,7 +1487,7 @@ impl BubblewrapBackend {
 
         let mut command = Command::new(&self.program);
         command
-            .args(self.arguments(plan, Some(&startup_gate)))
+            .args(Self::arguments(plan, Some(&startup_gate)))
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1412,6 +1516,14 @@ impl BubblewrapBackend {
             // after spawn would leave a window in which the child could fork a
             // descendant that never joins, and disposal could not prove it
             // gone.
+            #[expect(
+                unsafe_code,
+                reason = "Join containment before exec can fork descendants."
+            )]
+            // SAFETY: the closure owns the already-open File through spawn.
+            // It writes static bytes using write(2), retrying interrupted/short
+            // writes without allocation, locks, environment access, or formatting.
+            // I/O failures abort spawn; no child-side Rust destructor is required.
             unsafe {
                 command.pre_exec(move || {
                     (&file).write_all(b"0\n")?;
@@ -1432,7 +1544,9 @@ impl BubblewrapBackend {
                 });
             }
         };
-        startup_gate.child_spawned();
+        // The pre-exec hooks own the child's descriptors. Close the parent's
+        // copies now so status EOF and gate lifetime retain their spawn boundary.
+        drop(command);
 
         let (identity, sandbox_leader_pid) = if let Some((uid, gid)) = host_identity {
             let cgroup = cgroup
@@ -1446,7 +1560,7 @@ impl BubblewrapBackend {
                         &plan.session_id,
                         &mut child,
                         cgroup,
-                        error,
+                        &error,
                     ));
                 }
             };
@@ -1463,7 +1577,7 @@ impl BubblewrapBackend {
                 child,
                 cgroup,
                 sandbox_leader_pid,
-                _status_guard: None,
+                status_guard: None,
             }),
             startup_gate: Some(startup_gate),
         })
@@ -1632,6 +1746,12 @@ pub fn default_system_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use super::*;
 
@@ -2052,6 +2172,24 @@ mod tests {
         assert_eq!(final_request, "0", "restoration was requested");
     }
 
+    #[test]
+    fn disposed_prepared_session_refuses_start_without_panicking() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("empty membership fixture writes");
+        fs::write(fixture.path().join("cgroup.kill"), "0").expect("kill control fixture writes");
+        let mut prepared = PreparedSession {
+            session: Some(test_session("disposed-before-start", fixture.path(), None)),
+            startup_gate: Some(HostIdentityGate::new().expect("startup gate opens")),
+        };
+
+        prepared
+            .dispose()
+            .expect("prepared child is killed and reaped");
+
+        assert!(matches!(prepared.start(), Err(SandboxError::Refused(_))));
+    }
+
     fn test_session(
         session_id: &str,
         cgroup_path: &Path,
@@ -2081,7 +2219,7 @@ mod tests {
                 path: cgroup_path.to_owned(),
             }),
             sandbox_leader_pid: None,
-            _status_guard: status_guard,
+            status_guard,
         }
     }
 
@@ -2159,7 +2297,19 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One pinned root cgroup prevents operator migration of a session process scenario keeps its causal steps and assertions together."
+    )]
     fn pinned_root_cgroup_prevents_operator_migration_of_a_session_process() {
+        struct CgroupFixture(PathBuf);
+
+        impl Drop for CgroupFixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+
         if std::env::var_os("LOUISELM_TEST_PINNED_CGROUP_ESCAPE").is_none() {
             return;
         }
@@ -2174,19 +2324,14 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{name} must be numeric: {error}"))
         };
         let operator_uid = parse_id("LOUISELM_TEST_OPERATOR_UID");
-        let operator_gid = parse_id("LOUISELM_TEST_OPERATOR_GID");
+        let operator_primary_gid = parse_id("LOUISELM_TEST_OPERATOR_GID");
         let session_identity = parse_id("LOUISELM_TEST_HOST_ID");
         assert_ne!(operator_uid, 0, "the operator must be non-root");
-        assert_ne!(operator_gid, 0, "the operator group must be non-root");
+        assert_ne!(
+            operator_primary_gid, 0,
+            "the operator group must be non-root"
+        );
         assert_ne!(session_identity, 0, "the Session identity must be non-root");
-
-        struct CgroupFixture(PathBuf);
-
-        impl Drop for CgroupFixture {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir(&self.0);
-            }
-        }
 
         let cgroup_root = Path::new("/sys/fs/cgroup");
         assert!(
@@ -2203,13 +2348,21 @@ mod tests {
         let operator_cgroup = cgroup_root.join(format!("louiselm-operator-test-{suffix}"));
         fs::create_dir(&operator_cgroup).expect("the operator cgroup creates");
         let _operator_cgroup_guard = CgroupFixture(operator_cgroup.clone());
-        chown(&operator_cgroup, Some(operator_uid), Some(operator_gid))
-            .expect("the operator owns its cgroup");
+        chown(
+            &operator_cgroup,
+            Some(operator_uid),
+            Some(operator_primary_gid),
+        )
+        .expect("the operator owns its cgroup");
         fs::set_permissions(&operator_cgroup, fs::Permissions::from_mode(0o700))
             .expect("the operator cgroup becomes private");
         let operator_procs = operator_cgroup.join("cgroup.procs");
-        chown(&operator_procs, Some(operator_uid), Some(operator_gid))
-            .expect("the operator can manage its own cgroup membership");
+        chown(
+            &operator_procs,
+            Some(operator_uid),
+            Some(operator_primary_gid),
+        )
+        .expect("the operator can manage its own cgroup membership");
 
         let fixture = tempfile::tempdir().expect("Session fixture opens");
         fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755))
@@ -2272,7 +2425,7 @@ mod tests {
             .env_clear()
             .env("DESTINATION", &operator_procs)
             .uid(operator_uid)
-            .gid(operator_gid)
+            .gid(operator_primary_gid)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -2470,7 +2623,7 @@ mod tests {
         }
         assert!(session.cgroup.is_some(), "the cgroup handle stays owned");
         assert!(
-            session._status_guard.is_some(),
+            session.status_guard.is_some(),
             "the identity-lifetime handle stays owned",
         );
 
@@ -2503,7 +2656,7 @@ mod tests {
         }
         assert!(session.cgroup.is_some(), "the cgroup handle stays owned");
         assert!(
-            session._status_guard.is_some(),
+            session.status_guard.is_some(),
             "the identity-lifetime handle stays owned",
         );
 
@@ -2514,7 +2667,7 @@ mod tests {
         assert!(disposal.identity_released);
         assert!(session.cgroup.is_none(), "the empty cgroup is released");
         assert!(
-            session._status_guard.is_none(),
+            session.status_guard.is_none(),
             "the identity-lifetime handle is released",
         );
     }

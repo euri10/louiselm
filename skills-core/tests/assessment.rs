@@ -1,3 +1,11 @@
+//! Behavioral coverage for assessment.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Assessment: a model's advisory opinion, with no authority and no reach.
 
 mod support;

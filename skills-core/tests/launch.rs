@@ -1,3 +1,11 @@
+//! Behavioral coverage for launch.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Resolving a closed [`LaunchRequest`] into a plan a backend can spawn.
 
 mod support;
@@ -70,9 +78,12 @@ fn resolve_builds_a_plan_from_registered_agent_runtime_and_envelope() {
         resolution.plan.environment.get("LOUISELM_SESSION"),
         Some(&"1".to_owned()),
     );
-    let session_root = sessions_root.join(&request.session_id);
-    assert_eq!(resolution.plan.home, session_root.join("home"));
-    assert_eq!(resolution.plan.workspace, session_root.join("workspace"));
+    let session_directory = sessions_root.join(&request.session_id);
+    assert_eq!(resolution.plan.home, session_directory.join("home"));
+    assert_eq!(
+        resolution.plan.workspace,
+        session_directory.join("workspace")
+    );
     assert_eq!(resolution.plan.network, NetworkPolicy::Denied);
     assert_eq!(resolution.runtime.runtime_id, "demo-runtime");
 }

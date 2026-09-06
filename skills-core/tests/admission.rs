@@ -1,3 +1,11 @@
+//! Behavioral coverage for admission.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Skill Admission: the local ceremony, the signed chain, and what it refuses.
 //!
 //! Signing uses a real software key here. That covers the chain, the state
@@ -67,7 +75,7 @@ impl Ceremony {
             &Policy::embedded(),
             &AdmissionRequest {
                 members: members.to_vec(),
-                view_roots: Default::default(),
+                view_roots: std::collections::BTreeMap::default(),
                 signer: &SshKeygenSigner::new(key.private_key_path()),
                 admitted_at_ms: 1_756_800_000_000,
             },

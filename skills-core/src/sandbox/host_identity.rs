@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{self, BufRead, BufReader, Read},
     os::{
-        fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd},
+        fd::{AsFd, AsRawFd, OwnedFd, RawFd},
         unix::{
             net::{UnixDatagram, UnixStream},
             process::CommandExt,
@@ -69,6 +69,10 @@ impl Gate {
         })
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "The private prepare path builds descriptor arguments before inherit_fds transfers ownership."
+    )]
     pub fn status_fd(&self) -> RawFd {
         self.status_child
             .as_ref()
@@ -76,6 +80,10 @@ impl Gate {
             .as_raw_fd()
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "The private prepare path builds descriptor arguments before inherit_fds transfers ownership."
+    )]
     pub fn block_fd(&self) -> RawFd {
         self.block_child
             .as_ref()
@@ -87,14 +95,25 @@ impl Gate {
     ///
     /// Changing the flags in the child avoids a parent-side window in which an
     /// unrelated concurrent spawn could inherit either descriptor.
-    pub fn inherit_fds(&self, command: &mut Command) {
-        inherit_fd(command, self.status_fd());
-        inherit_fd(command, self.block_fd());
-    }
-
-    pub fn child_spawned(&mut self) {
-        self.status_child = None;
-        self.block_child = None;
+    /// Transfers ownership into `command`; drop it after spawn to close the
+    /// parent's copies. Descriptor arguments must be built before this call.
+    #[expect(
+        clippy::expect_used,
+        reason = "The private prepare path transfers both descriptors once, after building arguments."
+    )]
+    pub fn inherit_fds(&mut self, command: &mut Command) {
+        inherit_fd(
+            command,
+            self.status_child
+                .take()
+                .expect("status fd not yet transferred"),
+        );
+        inherit_fd(
+            command,
+            self.block_child
+                .take()
+                .expect("block fd not yet transferred"),
+        );
     }
 
     pub fn verify(
@@ -137,7 +156,7 @@ impl Gate {
     pub fn release(&mut self) -> io::Result<()> {
         self.unblock
             .as_ref()
-            .expect("the startup gate is released once")
+            .ok_or_else(|| invalid("startup gate was already released"))?
             .send(b"1")?;
         self.unblock = None;
         Ok(())
@@ -172,15 +191,21 @@ fn duplicate_for_child(fd: &impl AsFd) -> io::Result<OwnedFd> {
     fcntl_dupfd_cloexec(fd, 3).map_err(io::Error::from)
 }
 
-fn inherit_fd(command: &mut Command, raw_fd: RawFd) {
-    // SAFETY: `fcntl(F_GETFD/F_SETFD)` is async-signal-safe, the borrowed fd
-    // remains open through `spawn`, and the hook performs no allocation.
+fn inherit_fd(command: &mut Command, fd: OwnedFd) {
+    #[expect(
+        unsafe_code,
+        reason = "CLOEXEC must be cleared only in the post-fork child."
+    )]
+    // SAFETY: the closure owns the fd, allocated above stdio by duplicate_for_child,
+    // so spawn's stdio setup cannot replace it. Only async-signal-safe fcntl
+    // operations and stack-only flag/error conversions run after fork; no
+    // allocation, locks, formatting, or environment access. CLOEXEC changes
+    // affect only the child's descriptor table, never concurrent parent spawns.
     unsafe {
         command.pre_exec(move || {
-            let fd = BorrowedFd::borrow_raw(raw_fd);
-            let mut flags = fcntl_getfd(fd).map_err(io::Error::from)?;
+            let mut flags = fcntl_getfd(&fd).map_err(io::Error::from)?;
             flags.remove(FdFlags::CLOEXEC);
-            fcntl_setfd(fd, flags).map_err(io::Error::from)
+            fcntl_setfd(&fd, flags).map_err(io::Error::from)
         });
     }
 }
@@ -322,9 +347,59 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn command_owns_inherited_descriptors_after_gate_drop() {
+        let mut gate = Gate::new().expect("startup gate opens");
+        let status_path = format!("/proc/self/fd/{}", gate.status_fd());
+        let block_path = format!("/proc/self/fd/{}", gate.block_fd());
+        let status_target = fs::read_link(&status_path).expect("status descriptor is open");
+        let block_target = fs::read_link(&block_path).expect("block descriptor is open");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "test -S /proc/self/fd/$1 && test -S /proc/self/fd/$2",
+                "gate-test",
+            ])
+            .arg(gate.status_fd().to_string())
+            .arg(gate.block_fd().to_string());
+        gate.inherit_fds(&mut command);
+        drop(gate);
+
+        // Inspect ownership without executing a hook that might borrow a closed fd.
+        assert_eq!(fs::read_link(status_path).ok(), Some(status_target));
+        assert_eq!(fs::read_link(block_path).ok(), Some(block_target));
+        assert!(
+            command
+                .status()
+                .expect("owned descriptors survive exec")
+                .success()
+        );
+    }
+
+    #[test]
+    fn dropping_command_closes_parent_status_endpoint() {
+        let mut gate = Gate::new().expect("startup gate opens");
+        gate.status
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("timeout set");
+        let mut command = Command::new("/bin/true");
+        gate.inherit_fds(&mut command);
+        assert!(command.status().expect("child runs").success());
+        drop(command);
+        let mut byte = [0];
+        assert_eq!(gate.status.read(&mut byte).expect("status reaches EOF"), 0);
+    }
 
     #[test]
     fn status_reader_ignores_unknown_objects_and_fields() {

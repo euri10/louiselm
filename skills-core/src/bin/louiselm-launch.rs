@@ -1,3 +1,5 @@
+//! Privileged Session launcher command-line entrypoint.
+
 use std::{
     ffi::OsStr,
     io::{self, BufReader},
@@ -26,8 +28,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     match run() {
-        Ok(code) if (0..=255).contains(&code) => ExitCode::from(code as u8),
-        Ok(_) => ExitCode::FAILURE,
+        Ok(code) => u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from),
         Err(message) => {
             eprintln!("louiselm-launch: {message}");
             ExitCode::FAILURE

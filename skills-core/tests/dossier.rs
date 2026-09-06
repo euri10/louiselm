@@ -1,3 +1,11 @@
+//! Behavioral coverage for dossier.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The Dossier: everything a reviewer sees, recomputed from bytes every time.
 
 mod support;

@@ -74,9 +74,17 @@ pub enum WitnessError {
 /// A place that can hold and return signed Generation bytes.
 pub trait Witness {
     /// Returns the bytes the witness holds for `digest`, when it holds any.
+    ///
+    /// # Errors
+    /// Returns backend-specific setup or lookup errors; no record is `Ok(None)`.
+    /// Currently [`GitWitness`] also reports unsuccessful branch fetches as absence,
+    /// including transport failures (tracked by louiselm-7k9w).
     fn fetch(&self, digest: &Digest) -> Result<Option<(Vec<u8>, WitnessEvidence)>, WitnessError>;
 
     /// Publishes `bytes` for `digest`.
+    ///
+    /// # Errors
+    /// Returns transport/persistence failures or refuses conflicting bytes already published for this digest.
     fn publish(&self, digest: &Digest, bytes: &[u8]) -> Result<WitnessEvidence, WitnessError>;
 
     /// Describes the witness for robot output.
@@ -92,6 +100,7 @@ pub struct GitWitness {
 
 impl GitWitness {
     /// Witnesses on `branch` of `remote`, working inside `workdir`.
+    #[must_use]
     pub fn new(remote: &Path, branch: &str, workdir: &Path) -> Self {
         Self {
             remote: remote.display().to_string(),
@@ -116,16 +125,16 @@ impl GitWitness {
             path: path.display().to_string(),
             source,
         })?;
-        self.git(&path, &["init", "-q", "-b", "witness"])?;
-        self.git(&path, &["config", "user.name", "louiselm-skills"])?;
-        self.git(
+        Self::git(&path, &["init", "-q", "-b", "witness"])?;
+        Self::git(&path, &["config", "user.name", "louiselm-skills"])?;
+        Self::git(
             &path,
             &["config", "user.email", "louiselm-skills@localhost"],
         )?;
         Ok(path)
     }
 
-    fn git(&self, directory: &Path, arguments: &[&str]) -> Result<String, WitnessError> {
+    fn git(directory: &Path, arguments: &[&str]) -> Result<String, WitnessError> {
         let output = Command::new("git")
             .current_dir(directory)
             .args(arguments)
@@ -140,21 +149,19 @@ impl GitWitness {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
-    fn fetch_branch(&self, directory: &Path) -> Result<bool, WitnessError> {
-        Ok(self
-            .git(directory, &["fetch", "-q", &self.remote, &self.branch])
-            .is_ok())
+    fn fetch_branch(&self, directory: &Path) -> bool {
+        Self::git(directory, &["fetch", "-q", &self.remote, &self.branch]).is_ok()
     }
 }
 
 impl Witness for GitWitness {
     fn fetch(&self, digest: &Digest) -> Result<Option<(Vec<u8>, WitnessEvidence)>, WitnessError> {
         let directory = self.scratch()?;
-        if !self.fetch_branch(&directory)? {
+        if !self.fetch_branch(&directory) {
             return Ok(None);
         }
         let path = Self::record_path(digest);
-        let Ok(commit) = self.git(&directory, &["rev-parse", "FETCH_HEAD"]) else {
+        let Ok(commit) = Self::git(&directory, &["rev-parse", "FETCH_HEAD"]) else {
             return Ok(None);
         };
         let object = format!("FETCH_HEAD:{path}");
@@ -180,8 +187,8 @@ impl Witness for GitWitness {
 
     fn publish(&self, digest: &Digest, bytes: &[u8]) -> Result<WitnessEvidence, WitnessError> {
         let directory = self.scratch()?;
-        if self.fetch_branch(&directory)? {
-            self.git(
+        if self.fetch_branch(&directory) {
+            Self::git(
                 &directory,
                 &["checkout", "-q", "-B", "witness", "FETCH_HEAD"],
             )?;
@@ -198,13 +205,13 @@ impl Witness for GitWitness {
             path: absolute.display().to_string(),
             source,
         })?;
-        self.git(&directory, &["add", &path])?;
-        self.git(
+        Self::git(&directory, &["add", &path])?;
+        Self::git(
             &directory,
             &["commit", "-q", "-m", &format!("witness {digest}")],
         )?;
-        let commit = self.git(&directory, &["rev-parse", "HEAD"])?;
-        self.git(
+        let commit = Self::git(&directory, &["rev-parse", "HEAD"])?;
+        Self::git(
             &directory,
             &[
                 "push",

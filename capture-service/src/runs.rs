@@ -28,11 +28,17 @@ pub struct RunAdmission {
 /// Initialized ACP Session identity attached after Agent startup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunSession {
+    /// Admitted Run UUID.
     pub id: String,
+    /// Agent-scoped Session actor that owns the Run.
     pub session_id: String,
+    /// Configured Agent name used for reconstruction.
     pub agent: String,
+    /// Agent-side ACP Session identifier.
     pub acp_session_id: String,
+    /// Working directory used for reconstruction.
     pub working_dir: String,
+    /// Whether admission confirmed ACP `session/load` support.
     pub load_session: bool,
 }
 
@@ -66,27 +72,39 @@ struct GeneratedOutput {
 /// One caller request to reserve generated-work capacity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedWorkReservation {
+    /// Admitted Run authorizing this reservation.
     pub run_id: String,
+    /// Secret generation capability issued at admission.
     pub token: String,
+    /// Stable UUID reused for retries of the same mutation.
     pub mutation_id: String,
+    /// Kind of output being generated, currently `beads_issue`.
     pub kind: String,
+    /// Positive amount of capacity to reserve.
     pub units: u64,
 }
 
 /// Idempotent result of attempting a generated-work reservation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReserveResult {
+    /// Capacity was newly reserved; execution may begin.
     Reserved,
+    /// This mutation already has a reservation awaiting reconciliation.
     Pending,
+    /// This mutation's output was already confirmed.
     Consumed,
+    /// Capacity is exhausted and the Run is Parked.
     Exhausted,
 }
 
 /// Idempotent result of an operator resume request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResumeResult {
+    /// The Run is active and may continue.
     Active,
+    /// A cold Session is being reconstructed under a bounded lease.
     Resuming,
+    /// Reconstruction failed; the Run remains cold-Parked.
     ColdParked,
 }
 
@@ -155,17 +173,29 @@ pub struct Run {
 /// Non-sensitive authoritative Run projection for local observers.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct RunView {
+    /// Run UUID.
     pub id: String,
+    /// Monotonic durable revision for optimistic concurrency.
     pub revision: u64,
+    /// Durable lifecycle state, as in [`Run::state`].
     pub state: String,
+    /// Agent-scoped actor, when a Session is attached.
     pub session_id: Option<String>,
+    /// Operator-approved absolute capacity ceiling.
     pub generated_work_ceiling: u64,
+    /// Capacity consumed by confirmed outputs.
     pub generated_work_consumed: u64,
+    /// Capacity held for pending mutations.
     pub generated_work_reserved: u64,
+    /// Mutations awaiting reconciliation.
     pub pending_mutation_ids: Vec<String>,
+    /// Refused mutation that caused the Run to Park.
     pub triggering_mutation_id: Option<String>,
+    /// Park expiry as Unix epoch milliseconds; zero when no expiry is set.
     pub park_expires_at_ms: u64,
+    /// Most recent resume attempt's stable identifier, if any.
     pub resume_operation_id: Option<String>,
+    /// Resume lease deadline as Unix epoch milliseconds, if any.
     pub resume_deadline_ms: Option<u64>,
 }
 
@@ -213,7 +243,9 @@ struct CleanupEntry {
 /// One pre-authorized claim-release action for the Beads adapter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReapAction {
+    /// Previously recorded issue whose claim may be released.
     pub issue_id: String,
+    /// Attributable reaper actor derived from the Run's Session identity.
     pub actor: String,
 }
 
@@ -241,6 +273,9 @@ impl BeadsCleanup {
     /// the caller's `PATH`: a long-running daemon's `PATH` is not guaranteed to contain `br`
     /// (e.g. a systemd unit's minimal default), and a bare-name lookup fails silently when the
     /// caller discards this method's `Result` (louiselm-hvot).
+    ///
+    /// # Errors
+    /// Rejects a workspace without a `.beads` directory.
     pub fn new(
         workspace: impl AsRef<Path>,
         executable: impl Into<PathBuf>,
@@ -258,6 +293,9 @@ impl BeadsCleanup {
     }
 
     /// Release exactly the supplied claim; it cannot create or select work.
+    ///
+    /// # Errors
+    /// Returns the process-start error or Beads stderr on a nonzero exit.
     pub fn release(&self, action: &ReapAction) -> Result<(), String> {
         let output = Command::new(&self.executable)
             .args(self.arguments(action))
@@ -308,6 +346,9 @@ pub struct RunStore {
 
 impl RunStore {
     /// Open or create the Run-record root.
+    ///
+    /// # Errors
+    /// Returns filesystem or permission errors while securing the root directory.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, RunStoreError> {
         fs::create_dir_all(root.as_ref())?;
         set_private_permissions(root.as_ref(), true)?;
@@ -317,6 +358,10 @@ impl RunStore {
     }
 
     /// Persist one admitted Run before any stage may generate work.
+    ///
+    /// # Errors
+    /// Rejects invalid admission data, capability tokens, or conflicting Run UUIDs;
+    /// propagates lock, stored-record, and persistence errors.
     pub fn admit(&self, admission: RunAdmission, token: &str) -> Result<(), RunStoreError> {
         validate_admission(&admission)?;
         validate_token(token)?;
@@ -361,6 +406,10 @@ impl RunStore {
     }
 
     /// Attach the initialized ACP Session before the Run can generate work.
+    ///
+    /// # Errors
+    /// Rejects invalid Session identities or a Run outside admission (except an
+    /// identical active retry); propagates storage and revision-overflow errors.
     pub fn attach(&self, session: RunSession) -> Result<(), RunStoreError> {
         validate_session(&session)?;
         self.locked(|| {
@@ -383,13 +432,17 @@ impl RunStore {
             run.acp_session_id = Some(session.acp_session_id);
             run.working_dir = Some(session.working_dir);
             run.load_session = Some(session.load_session);
-            run.state = "active".to_owned();
+            "active".clone_into(&mut run.state);
             advance_revision(&mut run)?;
             write_atomic(&self.path(&run.id), &run)
         })
     }
 
     /// Reserve generated-work capacity before an external mutation begins.
+    ///
+    /// # Errors
+    /// Rejects invalid reservations, capabilities, lifecycle state, or accounting
+    /// overflow; propagates storage errors. Exhaustion is a [`ReserveResult`], not an error.
     pub fn reserve_generated_work(
         &self,
         reservation: GeneratedWorkReservation,
@@ -433,7 +486,7 @@ impl RunStore {
                     RunStoreError::Invalid("generated-work accounting overflow".to_owned())
                 })?;
             if occupied > run.generated_work.ceiling {
-                run.state = "parked".to_owned();
+                "parked".clone_into(&mut run.state);
                 run.parked_at_ms = Some(now_ms);
                 run.park_expires_at_ms = now_ms.checked_add(run.park_ttl_ms).ok_or_else(|| {
                     RunStoreError::Invalid("Park expiry overflows epoch milliseconds".to_owned())
@@ -462,6 +515,10 @@ impl RunStore {
     }
 
     /// Convert one unit of a pending reservation into a durable generated output.
+    ///
+    /// # Errors
+    /// Rejects invalid identifiers, capabilities, absent reservations, or accounting
+    /// overflow; propagates lock, stored-record, and persistence errors.
     pub fn confirm_generated_work(
         &self,
         run_id: &str,
@@ -514,6 +571,10 @@ impl RunStore {
     }
 
     /// Release one reservation after a mutation definitely did not start.
+    ///
+    /// # Errors
+    /// Rejects invalid identifiers or capabilities; propagates storage and revision
+    /// errors. A reservation that is already absent is an idempotent success.
     pub fn release_generated_work(
         &self,
         run_id: &str,
@@ -541,6 +602,9 @@ impl RunStore {
     }
 
     /// Resolve the attached Session actor for a generate capability.
+    ///
+    /// # Errors
+    /// Returns record-loading, capability-validation, or missing-Session errors.
     pub fn generation_actor(&self, run_id: &str, token: &str) -> Result<String, RunStoreError> {
         let run = self.run(run_id)?;
         verify_token(&run, token)?;
@@ -549,6 +613,9 @@ impl RunStore {
     }
 
     /// List pending mutation identities for crash reconciliation.
+    ///
+    /// # Errors
+    /// Returns record-loading or capability-validation errors.
     pub fn pending_generation_ids(
         &self,
         run_id: &str,
@@ -565,6 +632,10 @@ impl RunStore {
     }
 
     /// Persist one cold Park for an admitted Run. Repeating the same Park is safe.
+    ///
+    /// # Errors
+    /// Rejects invalid or mismatched Session data, an incompatible lifecycle state,
+    /// or timestamp/revision overflow; propagates storage errors.
     pub fn park_cold(&self, draft: RunDraft, now_ms: u64) -> Result<(), RunStoreError> {
         validate_draft(&draft)?;
         self.locked(|| {
@@ -595,7 +666,7 @@ impl RunStore {
                     "only an active or Parked admitted Run can be cold-Parked".to_owned(),
                 ));
             }
-            run.state = "cold_parked".to_owned();
+            "cold_parked".clone_into(&mut run.state);
             run.parked_at_ms = Some(now_ms);
             run.park_expires_at_ms = now_ms
                 .checked_add(run.park_ttl_ms)
@@ -607,6 +678,10 @@ impl RunStore {
     }
 
     /// Load one retained Run record.
+    ///
+    /// # Errors
+    /// Rejects an invalid UUID, absent record, malformed JSON, or inconsistent
+    /// stored schema/identity/accounting metadata; propagates file-read errors.
     pub fn run(&self, id: &str) -> Result<Run, RunStoreError> {
         validate_id(id)?;
         let path = self.path(id);
@@ -626,6 +701,9 @@ impl RunStore {
     }
 
     /// Return every durable Run through a non-sensitive observer projection.
+    ///
+    /// # Errors
+    /// Returns directory-read errors or [`Self::run`] errors for a retained record.
     pub fn snapshot(&self) -> Result<Vec<RunView>, RunStoreError> {
         let mut views = Vec::new();
         for entry in fs::read_dir(&self.root)? {
@@ -673,11 +751,18 @@ impl RunStore {
     }
 
     /// Load one non-sensitive authoritative Run projection.
+    ///
+    /// # Errors
+    /// Returns [`Self::run`] errors when the record cannot be loaded or validated.
     pub fn view(&self, id: &str) -> Result<RunView, RunStoreError> {
         Ok(run_view(self.run(id)?))
     }
 
     /// Raise only the generated-work ceiling of a Parked Run using optimistic concurrency.
+    ///
+    /// # Errors
+    /// Rejects a stale revision, non-Parked Run, non-increasing ceiling, or invalid
+    /// identifier; propagates storage and revision-overflow errors.
     pub fn raise_generated_work_ceiling(
         &self,
         id: &str,
@@ -706,6 +791,10 @@ impl RunStore {
     }
 
     /// Begin an idempotent operator resume attempt.
+    ///
+    /// # Errors
+    /// Rejects invalid identifiers/lease, stale revisions, incompatible lifecycle
+    /// states, or deadline/revision overflow; propagates storage errors.
     pub fn begin_resume(
         &self,
         id: &str,
@@ -738,7 +827,7 @@ impl RunStore {
                 .checked_add(lease_ms)
                 .ok_or_else(|| RunStoreError::Invalid("resume deadline overflowed".to_owned()))?;
             let cold = run.state == "cold_parked";
-            run.state = if cold { "resuming" } else { "active" }.to_owned();
+            if cold { "resuming" } else { "active" }.clone_into(&mut run.state);
             run.resume_attempt = Some(ResumeAttempt {
                 operation_id: operation_id.to_owned(),
                 deadline_ms,
@@ -755,6 +844,10 @@ impl RunStore {
     }
 
     /// Finalize one cold reconstruction attempt without extending its lease.
+    ///
+    /// # Errors
+    /// Rejects invalid identifiers, an absent or different attempt, stale revisions,
+    /// or invalid persisted state; propagates storage and revision-overflow errors.
     pub fn finalize_resume(
         &self,
         id: &str,
@@ -780,7 +873,7 @@ impl RunStore {
             }
             require_revision(&run, expected_revision)?;
             let deadline_ms = attempt.deadline_ms;
-            run.state = if succeeded { "active" } else { "cold_parked" }.to_owned();
+            if succeeded { "active" } else { "cold_parked" }.clone_into(&mut run.state);
             run.park_expires_at_ms = if succeeded { 0 } else { deadline_ms };
             run.resume_attempt = Some(ResumeAttempt {
                 operation_id: operation_id.to_owned(),
@@ -798,6 +891,10 @@ impl RunStore {
     }
 
     /// List unexpired cold-Parked Runs without exposing cleanup journals.
+    ///
+    /// # Errors
+    /// Returns directory/record-read errors or missing reconstruction metadata in
+    /// a retained cold-Parked Run.
     pub fn list_resumable(&self, now_ms: u64) -> Result<Vec<RunSummary>, RunStoreError> {
         let mut summaries = Vec::new();
         for entry in fs::read_dir(&self.root)? {
@@ -858,6 +955,10 @@ impl RunStore {
     /// unreachable `br`) must not block reaping for the rest of the store forever
     /// (louiselm-hvot). An adapter must make releasing a claim idempotent because a crash after
     /// its external effect and before this journal is written can replay that one action.
+    ///
+    /// # Errors
+    /// Returns lock, directory, record, revision, or journal-write errors. Adapter
+    /// failures are retained in [`ReapSummary::failed`] and remain retryable.
     pub fn reap_expired(
         &self,
         now_ms: u64,
@@ -921,7 +1022,7 @@ impl RunStore {
                     summary.failed.push((id, error));
                     continue;
                 }
-                run.state = "disposed".to_owned();
+                "disposed".clone_into(&mut run.state);
                 advance_revision(&mut run)?;
                 write_atomic(&self.path(&id), &run)?;
                 summary.disposed += 1;
@@ -1021,7 +1122,10 @@ fn validate_draft(draft: &RunDraft) -> Result<(), RunStoreError> {
         || draft.acp_session_id.is_empty()
         || draft.working_dir.is_empty()
         || !draft.load_session
-        || draft.claimed_issue_ids.iter().any(|id| id.is_empty())
+        || draft
+            .claimed_issue_ids
+            .iter()
+            .any(std::string::String::is_empty)
     {
         return Err(RunStoreError::Invalid(
             "Run fields must be non-empty and reloadable".to_owned(),

@@ -58,6 +58,9 @@ pub enum QuarantineError {
 }
 
 /// Reads the active quarantine, when there is one.
+///
+/// # Errors
+/// Returns read/JSON errors; a missing quarantine file is `Ok(None)`.
 pub fn load(store: &Store) -> Result<Option<Quarantine>, QuarantineError> {
     let path = path(store);
     let bytes = match fs::read(&path) {
@@ -76,6 +79,9 @@ pub fn load(store: &Store) -> Result<Option<Quarantine>, QuarantineError> {
 }
 
 /// Excludes `packages` from the current Generation, immediately.
+///
+/// # Errors
+/// Returns quarantine read/JSON or persistence errors.
 pub fn exclude(
     store: &Store,
     packages: &[String],
@@ -108,6 +114,9 @@ pub fn exclude(
 }
 
 /// Excludes every member of whatever Generation is current.
+///
+/// # Errors
+/// Returns quarantine read/JSON or persistence errors.
 pub fn exclude_everything(
     store: &Store,
     reason: &str,
@@ -120,6 +129,9 @@ pub fn exclude_everything(
 }
 
 /// Always refuses: restoring authority is a Skill Admission, not a delete.
+///
+/// # Errors
+/// Returns a quarantine-loading error or always `WouldWiden`; authority cannot be restored by deleting quarantine.
 pub fn clear(store: &Store, _at_ms: u64) -> Result<(), QuarantineError> {
     let quarantine = load(store)?;
     let count = quarantine
@@ -130,6 +142,7 @@ pub fn clear(store: &Store, _at_ms: u64) -> Result<(), QuarantineError> {
 }
 
 /// Splits `members` into what the quarantine still allows and what it excludes.
+#[must_use]
 pub fn partition(
     quarantine: Option<&Quarantine>,
     members: &[String],
@@ -149,7 +162,8 @@ pub fn partition(
 
 fn write(store: &Store, quarantine: &Quarantine) -> Result<(), QuarantineError> {
     let path = path(store);
-    let bytes = serde_json::to_vec(quarantine).expect("a quarantine is always serializable");
+    let bytes = serde_json::to_vec(quarantine)
+        .map_err(|error| QuarantineError::Malformed(error.to_string()))?;
     fs::write(&path, bytes).map_err(|source| QuarantineError::Io {
         path: path.display().to_string(),
         source,

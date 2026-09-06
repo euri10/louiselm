@@ -1,3 +1,11 @@
+//! Behavioral coverage for capture.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Capture behaviour: what becomes a package, and what is refused outright.
 //!
 //! Every refusal here is a case where the tree cannot be described

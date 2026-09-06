@@ -1,3 +1,11 @@
+//! Behavioral coverage for receiver.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -19,10 +27,16 @@ fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
-        .as_millis() as u64
+        .as_millis()
+        .try_into()
+        .expect("current timestamp fits u64")
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One end-to-end pairing/upload/retry scenario shares an authenticated device."
+)]
 async fn pairing_then_authenticated_upload_is_retry_safe() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = Store::new(temporary.path().join("captures")).expect("store");
@@ -198,7 +212,7 @@ async fn failed_uploads_do_not_record_device_delivery() {
 
     store
         .ingest(
-            CaptureDraft {
+            &CaptureDraft {
                 id: id.clone(),
                 source: CaptureSource::Android,
                 recorded_at_ms: 1_765_000_000_000,
@@ -272,7 +286,7 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
             subject_id: "11111111-2222-4333-8444-555555555555".to_owned(),
             kind: AttentionKind::SkillUnverified,
             source_operation_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned(),
-            created_at_ms: 1765000000000,
+            created_at_ms: 1_765_000_000_000,
             linked_run_id: None,
             stage: None,
             code: Some(AttentionCode::WitnessMissing),

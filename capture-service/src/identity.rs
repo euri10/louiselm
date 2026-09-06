@@ -94,7 +94,7 @@ impl TlsIdentity {
         &self.private_key_path
     }
 
-    /// Lowercase SHA-256 fingerprint of the SubjectPublicKeyInfo DER.
+    /// Lowercase SHA-256 fingerprint of the `SubjectPublicKeyInfo` DER.
     #[must_use]
     pub fn public_key_sha256(&self) -> &str {
         &self.public_key_sha256

@@ -53,6 +53,9 @@ pub struct NetworkProfile {
 
 impl NetworkProfile {
     /// Validate one deliberately configured private network profile.
+    ///
+    /// # Errors
+    /// Rejects unsupported bind addresses or an advertised URL inconsistent with the profile.
     pub fn new(
         profile: NetworkProfileKind,
         bind: SocketAddr,
@@ -69,6 +72,9 @@ impl NetworkProfile {
     }
 
     /// Load a configured profile.
+    ///
+    /// # Errors
+    /// Returns file-read, JSON, or profile-validation errors.
     pub fn load(path: &Path) -> Result<Self, NetworkProfileError> {
         let profile: Self = serde_json::from_reader(File::open(path)?)?;
         profile.validate()?;
@@ -76,6 +82,9 @@ impl NetworkProfile {
     }
 
     /// Load a profile or return the safe loopback-only state when none exists.
+    ///
+    /// # Errors
+    /// Returns [`Self::load`] errors when the profile exists but cannot be loaded or validated.
     pub fn load_or_default(path: &Path) -> Result<Self, NetworkProfileError> {
         if !path.exists() {
             return Ok(Self::default());
@@ -84,6 +93,9 @@ impl NetworkProfile {
     }
 
     /// Persist a configured profile atomically.
+    ///
+    /// # Errors
+    /// Returns validation, missing-parent, serialization, permission, or persistence errors.
     pub fn save(&self, path: &Path) -> Result<(), NetworkProfileError> {
         self.validate()?;
         let parent = path.parent().ok_or_else(|| {

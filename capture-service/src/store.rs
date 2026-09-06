@@ -92,15 +92,15 @@ impl Store {
     /// removed before returning.
     pub fn ingest(
         &self,
-        draft: CaptureDraft,
+        draft: &CaptureDraft,
         mut audio: impl Read,
     ) -> Result<IngestOutcome, StoreError> {
-        let extension = validate_draft(&draft)?;
+        let extension = validate_draft(draft)?;
         let incoming = self.root.join(format!(".incoming-{}", Uuid::new_v4()));
         fs::create_dir(&incoming)?;
         set_private_permissions(&incoming, true)?;
 
-        let result = self.ingest_into(&draft, extension, &mut audio, &incoming);
+        let result = self.ingest_into(draft, extension, &mut audio, &incoming);
         if result.is_err() || incoming.exists() {
             let _ = fs::remove_dir_all(&incoming);
         }
@@ -308,7 +308,7 @@ impl Store {
         if state.transcription.status == "completed" {
             return Ok(());
         }
-        state.transcription.status = "pending".to_owned();
+        "pending".clone_into(&mut state.transcription.status);
         state.transcription.last_error = None;
         state.transcription.next_attempt_at_ms = None;
         self.write_state(id, &state)
@@ -328,10 +328,10 @@ impl Store {
         if retry {
             let shift = state.transcription.attempts.saturating_sub(1).min(9);
             let delay_ms = 5_000_u64.saturating_mul(1_u64 << shift);
-            state.transcription.status = "retrying".to_owned();
+            "retrying".clone_into(&mut state.transcription.status);
             state.transcription.next_attempt_at_ms = Some(now_ms.saturating_add(delay_ms));
         } else {
-            state.transcription.status = "failed".to_owned();
+            "failed".clone_into(&mut state.transcription.status);
             state.transcription.next_attempt_at_ms = None;
         }
         self.write_state(id, &state)
@@ -340,7 +340,7 @@ impl Store {
     pub(crate) fn mark_completed(&self, id: &str) -> Result<(), StoreError> {
         let capture = self.capture(id)?;
         let mut state = capture.state;
-        state.transcription.status = "completed".to_owned();
+        "completed".clone_into(&mut state.transcription.status);
         state.transcription.last_error = None;
         state.transcription.next_attempt_at_ms = None;
         self.write_state(id, &state)

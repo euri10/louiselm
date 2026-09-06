@@ -228,7 +228,7 @@ async fn upload(
     let ingest_path = temporary.clone();
     let task = tokio::task::spawn_blocking(move || {
         let audio = std::fs::File::open(ingest_path)?;
-        store.ingest(draft, audio)
+        store.ingest(&draft, audio)
     })
     .await;
     let _ = tokio::fs::remove_file(&temporary).await;

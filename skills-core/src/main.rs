@@ -1,3 +1,5 @@
+//! Trusted Skill tool command-line entrypoint.
+
 fn main() {
     match louiselm_skills::cli::run() {
         Ok(status) => std::process::exit(status),

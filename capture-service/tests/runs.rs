@@ -1,3 +1,11 @@
+//! Behavioral coverage for runs.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use louiselm_capture::{
     BeadsCleanup, GeneratedWorkReservation, ReapAction, ReserveResult, ResumeResult, RunAdmission,
     RunDraft, RunSession, RunStore,

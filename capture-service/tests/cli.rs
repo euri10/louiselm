@@ -1,3 +1,11 @@
+//! Behavioral coverage for cli.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::{fs, process::Command};
 
 #[cfg(unix)]
@@ -381,7 +389,7 @@ fn generator_reservations_round_trip_through_the_cli_and_replay_safely() {
             .env("LOUISELM_RUN_TOKEN", &token)
             .output()
             .expect("ledger command");
-        assert!(output.status.success(), "{:?}", output);
+        assert!(output.status.success(), "{output:?}");
         serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("ledger JSON")
     };
 
@@ -471,7 +479,7 @@ fn a_cli_reservation_beyond_the_ceiling_reports_exhausted_and_parks() {
             .env("LOUISELM_RUN_TOKEN", &token)
             .output()
             .expect("reserve");
-        assert!(output.status.success(), "{:?}", output);
+        assert!(output.status.success(), "{output:?}");
         serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("reserve JSON")
     };
 

@@ -143,7 +143,15 @@ pub enum LaunchError {
 
 impl LaunchRequest {
     /// Serializes this request to its deterministic wire bytes.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a launch request is always serializable")
     }
@@ -155,6 +163,9 @@ impl LaunchRequest {
     }
 
     /// Validates the closed request without consulting launch authority.
+    ///
+    /// # Errors
+    /// Rejects oversized requests, unsupported schema/protocol versions, or invalid identifiers/digests.
     pub fn validate(&self) -> Result<(), LaunchError> {
         if self.canonical_bytes().len() > MAX_REQUEST_BYTES {
             return Err(LaunchError::RequestTooLarge {
@@ -185,6 +196,9 @@ impl LaunchRequest {
     }
 
     /// Parses one bounded exact canonical launch request.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, or noncanonical JSON and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, LaunchError> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err(LaunchError::RequestTooLarge {
@@ -208,6 +222,9 @@ impl LaunchRequest {
 /// request's own validated `session_id`. `identity` is likewise the
 /// launcher's decision, not the request's — assigning a distinct host uid is
 /// a privilege and allocation policy this crate does not own.
+///
+/// # Errors
+/// Returns request-validation or registry lookup/runtime-measurement errors.
 pub fn resolve(
     request: &LaunchRequest,
     registry: &Registry,
@@ -221,15 +238,15 @@ pub fn resolve(
     let measurement = runtime.measure()?;
     let envelope = registry.envelope(&request.envelope_id)?;
 
-    let session_root = sessions_root.join(&request.session_id);
+    let session_directory = sessions_root.join(&request.session_id);
     let plan = ConfinementPlan {
         session_id: request.session_id.clone(),
         runtime_root: runtime.root.clone(),
         executable: runtime.executable_path(),
         arguments: agent.arguments.clone(),
         environment: agent.environment.clone(),
-        home: session_root.join("home"),
-        workspace: session_root.join("workspace"),
+        home: session_directory.join("home"),
+        workspace: session_directory.join("workspace"),
         system_roots: default_system_roots(),
         network: envelope.network,
         identity,

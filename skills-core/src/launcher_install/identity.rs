@@ -61,6 +61,9 @@ impl IdentityPool {
     }
 
     /// Resolves one bounded slot to its host identity.
+    ///
+    /// # Errors
+    /// Rejects invalid/overflowing pools or a slot outside the installed bounds.
     pub fn identity(&self, slot: u32) -> Result<Identity, LauncherError> {
         self.validate()?;
         if slot >= self.slots {
@@ -100,11 +103,15 @@ pub struct IdentityLease {
 
 impl IdentityLease {
     /// Returns the identity held for this lease's whole lifetime.
+    #[must_use]
     pub fn identity(&self) -> Identity {
         self.identity
     }
 
     /// Releases this slot after its process tree is proved empty.
+    ///
+    /// # Errors
+    /// Returns marker truncation/sync or unlock errors; failure preserves a fail-closed marker or retains the kernel lock.
     pub fn release(mut self) -> Result<(), LauncherError> {
         let released = self
             .lock
@@ -141,6 +148,9 @@ impl IdentityLease {
     ///
     /// Repair requires an operator to prove the old tree gone and truncate the
     /// root-owned lock file; ordinary install and acquisition never clear it.
+    ///
+    /// # Errors
+    /// Returns an unlock error. The durable fail-closed marker remains intact regardless.
     pub fn poison(self) -> Result<(), LauncherError> {
         // Acquisition already wrote and fsynced the fail-closed marker. The
         // important action here is *not* clearing it before unlocking.
@@ -538,18 +548,18 @@ fn validate_identity_authority(
     validate_subid_backend(&paths.nsswitch)?;
     let uid_ranges = parse_subids(&paths.subuid)?;
     let gid_ranges = parse_subids(&paths.subgid)?;
-    let requested_uid = SubidRange {
+    let user_reservation = SubidRange {
         owner: SUBID_OWNER.to_owned(),
         start: pool.uid_start,
         count: pool.slots,
     };
-    let requested_gid = SubidRange {
+    let group_reservation = SubidRange {
         owner: SUBID_OWNER.to_owned(),
         start: pool.gid_start,
         count: pool.slots,
     };
-    validate_subid_ranges(&uid_ranges, &requested_uid, "UID", reservation_required)?;
-    validate_subid_ranges(&gid_ranges, &requested_gid, "GID", reservation_required)?;
+    validate_subid_ranges(&uid_ranges, &user_reservation, "UID", reservation_required)?;
+    validate_subid_ranges(&gid_ranges, &group_reservation, "GID", reservation_required)?;
     validate_effective_identity_pool(paths, runner, pool)?;
     for offset in 0..pool.slots {
         if accounts.uids.contains(&(pool.uid_start + offset)) {
@@ -957,6 +967,12 @@ pub(super) fn check_secure_tool(path: &Path, failures: &mut Vec<LauncherFailure>
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use std::{
         os::unix::fs::{PermissionsExt, symlink},
@@ -989,6 +1005,10 @@ mod tests {
     }
 
     impl DeadlineIdentityFixture {
+        #[expect(
+            clippy::too_many_lines,
+            reason = "The fixture materializes one coherent measured installation and identity environment."
+        )]
         fn new() -> Self {
             let root = tempfile::tempdir().expect("temporary launcher root");
             let root_path = root.path();
@@ -1152,7 +1172,7 @@ mod tests {
 
         match &error {
             LauncherError::Io { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::TimedOut)
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut);
             }
             _ => panic!("deadline must remain an I/O timeout: {error}"),
         }
@@ -1196,7 +1216,7 @@ mod tests {
 
         match &error {
             LauncherError::Io { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::TimedOut)
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut);
             }
             _ => panic!("deadline must remain an I/O timeout: {error}"),
         }

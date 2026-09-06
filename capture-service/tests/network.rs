@@ -1,3 +1,11 @@
+//! Behavioral coverage for network.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::net::SocketAddr;
 
 use louiselm_capture::{NetworkProfile, NetworkProfileKind};

@@ -63,6 +63,7 @@ pub struct SupplyLineage {
 
 impl SupplyLineage {
     /// Starts an empty lineage for `package_digest`.
+    #[must_use]
     pub fn new(package_digest: &str) -> Self {
         Self {
             schema: LINEAGE_SCHEMA.to_owned(),
@@ -79,6 +80,7 @@ impl SupplyLineage {
     }
 
     /// Returns every recorded link origin that escaped its candidate root.
+    #[must_use]
     pub fn escaping_links(&self) -> Vec<&LineageLink> {
         self.captures
             .iter()

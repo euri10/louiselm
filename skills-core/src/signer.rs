@@ -1,6 +1,6 @@
 //! Producing an Admission signature.
 //!
-//! The signer is an interface so the ceremony can be driven by a YubiKey in
+//! The signer is an interface so the ceremony can be driven by a `YubiKey` in
 //! production and by a software key in tests, without the verification path
 //! ever learning which one it was: a signature is checked against the enrolled
 //! key and its assertion policy regardless of what produced it.
@@ -33,10 +33,13 @@ pub enum SignerError {
 /// Something that can authorize bytes in a namespace.
 pub trait Signer {
     /// Signs `payload` in `namespace`, returning an armored SSH signature.
+    ///
+    /// # Errors
+    /// Returns signer/tool failures, including key access, input/output, or signing refusal.
     fn sign(&self, namespace: &str, payload: &[u8]) -> Result<String, SignerError>;
 }
 
-/// Signs with `ssh-keygen -Y sign`, which drives a YubiKey when the key is one.
+/// Signs with `ssh-keygen -Y sign`, which drives a `YubiKey` when the key is one.
 ///
 /// For a FIDO key, `ssh-keygen` prompts for the touch itself. Nothing in this
 /// crate can fake that, and nothing here tries to: the assertion flags in the
@@ -47,6 +50,7 @@ pub struct SshKeygenSigner {
 
 impl SshKeygenSigner {
     /// Signs with the private key at `key_path`.
+    #[must_use]
     pub fn new(key_path: &Path) -> Self {
         Self {
             key_path: key_path.to_path_buf(),

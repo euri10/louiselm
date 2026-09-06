@@ -162,16 +162,15 @@ pub enum ReceiptOutcome {
 impl ReceiptOutcome {
     fn authorization(&self) -> Option<&Authorization> {
         match self {
-            Self::Launch { authorization, .. } => Some(authorization),
-            Self::Park {
+            Self::Launch { authorization, .. }
+            | Self::Park {
                 authority: ReceiptAuthority::Authorized(authorization),
             }
             | Self::Disposal {
                 authority: ReceiptAuthority::Authorized(authorization),
-            } => Some(authorization),
-            Self::Resume { authorization } | Self::Interrupt { authorization } => {
-                Some(authorization)
             }
+            | Self::Resume { authorization }
+            | Self::Interrupt { authorization } => Some(authorization),
             _ => None,
         }
     }
@@ -217,12 +216,23 @@ pub struct ReceiptPayload {
 
 impl ReceiptPayload {
     /// Returns the exact bytes the launcher signs.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a receipt payload is always serializable")
     }
 
     /// Parses and validates exact canonical payload bytes.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ReceiptError> {
         check_size(bytes)?;
         preflight_schema(bytes, RECEIPT_SCHEMA)?;
@@ -236,6 +246,9 @@ impl ReceiptPayload {
     }
 
     /// Validates all invariants that do not require the preceding receipt.
+    ///
+    /// # Errors
+    /// Rejects size/schema/identifier/digest violations, invalid genesis/predecessor shape, inconsistent authorization/evidence, or an outcome incompatible with the resulting state.
     pub fn validate(&self) -> Result<(), ReceiptError> {
         check_size(&self.canonical_bytes())?;
         if self.schema != RECEIPT_SCHEMA {
@@ -335,12 +348,23 @@ pub struct SignedReceipt {
 
 impl SignedReceipt {
     /// Returns the exact envelope bytes stored and hashed by the next receipt.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a signed receipt is always serializable")
     }
 
     /// Parses and validates exact canonical signed-envelope bytes.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ReceiptError> {
         check_size(bytes)?;
         preflight_schema(bytes, SIGNED_RECEIPT_SCHEMA)?;
@@ -360,6 +384,9 @@ impl SignedReceipt {
     }
 
     /// Validates envelope and payload shape without asserting cryptography.
+    ///
+    /// # Errors
+    /// Rejects envelope size/schema, absent/oversized signatures, or any payload-shape violation.
     pub fn validate(&self) -> Result<(), ReceiptError> {
         check_size(&self.canonical_bytes())?;
         if self.schema != SIGNED_RECEIPT_SCHEMA {
@@ -453,6 +480,9 @@ impl VerifiedReceiptHead {
 }
 
 /// Verifies a complete chain beginning at its trusted sequence-zero anchor.
+///
+/// # Errors
+/// Rejects an invalid anchor, empty or discontinuous chain, failed signatures, changed pinned identities, repeated request IDs, revision regression, or invalid lifecycle transitions.
 pub fn verify_chain<F>(
     receipts: &[SignedReceipt],
     anchor: &ChainAnchor,
@@ -482,6 +512,9 @@ where
 ///
 /// An empty suffix is an equal-prefix reconciliation and returns the unchanged
 /// head. A caller must not construct `trusted_head` from unverified input.
+///
+/// # Errors
+/// Rejects an invalid trusted head, discontinuous sequence/predecessor, failed signatures, changed pinned identities, repeated request IDs, revision regression, or invalid lifecycle transitions.
 pub fn verify_suffix<F>(
     receipts: &[SignedReceipt],
     trusted_head: &VerifiedReceiptHead,

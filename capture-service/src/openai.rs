@@ -7,7 +7,7 @@ use crate::{Transcriber, TranscriptRequest, TranscriptionError};
 
 const TRANSCRIPTIONS_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
 
-/// Accuracy-first OpenAI transcription provider.
+/// Accuracy-first `OpenAI` transcription provider.
 #[derive(Clone)]
 pub struct OpenAiTranscriber {
     api_key: String,
@@ -16,7 +16,7 @@ pub struct OpenAiTranscriber {
 }
 
 impl OpenAiTranscriber {
-    /// Configure OpenAI transcription with a separate API credential.
+    /// Configure `OpenAI` transcription with a separate API credential.
     ///
     /// # Errors
     ///
@@ -32,7 +32,7 @@ impl OpenAiTranscriber {
         }
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(180))
+            .timeout(Duration::from_mins(3))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| "OpenAI HTTP client could not be created".to_owned())?;
@@ -45,7 +45,7 @@ impl OpenAiTranscriber {
 }
 
 impl Transcriber for OpenAiTranscriber {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "openai"
     }
 
@@ -118,6 +118,12 @@ fn status_error(status: StatusCode) -> TranscriptionError {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use super::*;
     use crate::TranscriptionErrorKind;

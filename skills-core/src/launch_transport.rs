@@ -50,6 +50,11 @@ use crate::{
 pub const MAX_PACKET_BYTES: usize = MAX_PROTOCOL_MESSAGE_BYTES;
 
 const COMMAND_QUEUE_CAPACITY: usize = 8;
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "The fixed queue capacity is eight, representable by i32 on every target."
+)]
 const LISTEN_BACKLOG: i32 = COMMAND_QUEUE_CAPACITY as i32;
 // Linux reports doubled SO_SNDBUF/SO_RCVBUF values, and Unix seqpacket
 // payloads consume a small amount of that space for kernel bookkeeping.
@@ -70,6 +75,13 @@ pub struct KernelCredentials {
 }
 
 impl From<UCred> for KernelCredentials {
+    /// # Panics
+    /// Panics if passed a fabricated negative PID, outside rustix's documented
+    /// positive-PID contract. Kernel credential records supply valid PIDs.
+    #[expect(
+        clippy::expect_used,
+        reason = "A valid rustix Pid is positive; negative fabricated PIDs are API misuse."
+    )]
     fn from(credentials: UCred) -> Self {
         Self {
             pid: u32::try_from(credentials.pid.as_raw_pid())
@@ -247,7 +259,7 @@ fn decode_packet(bytes: &[u8]) -> Result<LauncherPacket, TransportError> {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn complete<T>(completion: TransportCompletion<T>, result: Result<T, TransportError>) {
@@ -407,16 +419,13 @@ impl SeqpacketChannel {
             .spawn(move || send_loop(send_fd, send_receiver, send_core))
             .map_err(|_| TransportError::WorkerUnavailable)?;
         let receive_core = Arc::clone(&core);
-        let receive_worker = match thread::Builder::new()
+        let Ok(receive_worker) = thread::Builder::new()
             .name("louiselm-launch-receive".to_owned())
             .spawn(move || receive_loop(receive_fd, receive_receiver, receive_core))
-        {
-            Ok(worker) => worker,
-            Err(_) => {
-                core.close();
-                drop(send_worker);
-                return Err(TransportError::WorkerUnavailable);
-            }
+        else {
+            core.close();
+            drop(send_worker);
+            return Err(TransportError::WorkerUnavailable);
         };
         drop(send_worker);
         drop(receive_worker);
@@ -436,6 +445,9 @@ impl SeqpacketChannel {
     ///
     /// Queue admission errors are returned synchronously. The completion runs
     /// on the channel's fixed send worker exactly once.
+    ///
+    /// # Errors
+    /// Returns `Closed` or `QueueFull` on admission failure. Packet-validation and send errors are delivered through the completion.
     pub fn send(
         &self,
         bytes: Vec<u8>,
@@ -464,6 +476,9 @@ impl SeqpacketChannel {
     ///
     /// Queue admission errors are returned synchronously. The completion runs
     /// on the channel's fixed receive worker exactly once.
+    ///
+    /// # Errors
+    /// Returns `Closed` or `QueueFull` on admission failure. Receive, credential, and packet-validation errors are delivered through the completion.
     pub fn receive(
         &self,
         completion: TransportCompletion<AuthenticatedPacket>,
@@ -481,6 +496,11 @@ impl SeqpacketChannel {
     }
 
     /// Closes this channel and wakes both fixed I/O workers.
+    /// Returns whether this call changed its state; observing that flag is optional.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "Closing is the primary side effect; callers need not observe prior close state."
+    )]
     pub fn close(&self) -> bool {
         self.inner.core.close()
     }
@@ -492,6 +512,10 @@ impl SeqpacketChannel {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Failed queue admission transfers ownership here; dropping the rejected command releases its callback and payload."
+)]
 fn map_send_admission(error: TrySendError<SendCommand>) -> TransportError {
     match error {
         TrySendError::Full(_) => TransportError::QueueFull,
@@ -499,6 +523,10 @@ fn map_send_admission(error: TrySendError<SendCommand>) -> TransportError {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Failed queue admission transfers ownership here; dropping the rejected command releases its callback and payload."
+)]
 fn map_receive_admission(error: TrySendError<ReceiveCommand>) -> TransportError {
     match error {
         TrySendError::Full(_) => TransportError::QueueFull,
@@ -506,6 +534,10 @@ fn map_receive_admission(error: TrySendError<ReceiveCommand>) -> TransportError 
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The worker owns its descriptor, receiver and shared core until the loop exits."
+)]
 fn send_loop(fd: OwnedFd, commands: Receiver<SendCommand>, core: Arc<ChannelCore>) {
     while let Ok(command) = commands.recv() {
         if core.is_closed() {
@@ -534,7 +566,7 @@ fn send_one(fd: &OwnedFd, bytes: &[u8]) -> Result<(), TransportError> {
     let _ = decode_packet(bytes)?;
     let sent = loop {
         match send(fd, bytes, SendFlags::NOSIGNAL) {
-            Err(Errno::INTR) => continue,
+            Err(Errno::INTR) => {}
             Err(error) if is_disconnected(error) => return Err(TransportError::Disconnected),
             Err(_) => return Err(TransportError::SendFailed),
             Ok(sent) => break sent,
@@ -546,6 +578,10 @@ fn send_one(fd: &OwnedFd, bytes: &[u8]) -> Result<(), TransportError> {
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The worker owns its descriptor, receiver and shared core until the loop exits."
+)]
 fn receive_loop(fd: OwnedFd, commands: Receiver<ReceiveCommand>, core: Arc<ChannelCore>) {
     while let Ok(command) = commands.recv() {
         if core.is_closed() {
@@ -584,7 +620,7 @@ fn receive_one(
             &mut ancillary,
             RecvFlags::TRUNC | RecvFlags::CMSG_CLOEXEC,
         ) {
-            Err(Errno::INTR) => continue,
+            Err(Errno::INTR) => {}
             Err(error) if is_disconnected(error) => return Err(TransportError::Disconnected),
             Err(_) => return Err(TransportError::ReceiveFailed),
             Ok(received) => break received,
@@ -707,6 +743,9 @@ pub struct BoundSeqpacketListener {
 
 impl BoundSeqpacketListener {
     /// Starts listening and returns the enabled listener.
+    ///
+    /// # Errors
+    /// Returns listen, descriptor-duplication, or worker-start errors.
     pub fn enable(self) -> Result<SeqpacketListener, TransportError> {
         listen(&self.fd, LISTEN_BACKLOG).map_err(|_| TransportError::ListenFailed)?;
         SeqpacketListener::from_listening(self.fd)
@@ -721,6 +760,9 @@ pub struct SeqpacketListener {
 
 impl SeqpacketListener {
     /// Binds without listening, so connections remain impossible until enabled.
+    ///
+    /// # Errors
+    /// Returns invalid-address, socket creation/configuration, or bind errors. Existing paths are never replaced.
     pub fn bind_disabled(path: &Path) -> Result<BoundSeqpacketListener, TransportError> {
         let address = SocketAddrUnix::new(path).map_err(|_| TransportError::InvalidAddress)?;
         let fd = socket_with(
@@ -737,6 +779,9 @@ impl SeqpacketListener {
     }
 
     /// Binds and immediately enables a listener without replacing an existing path.
+    ///
+    /// # Errors
+    /// Returns any failure from [`Self::bind_disabled`] or [`BoundSeqpacketListener::enable`].
     pub fn bind(path: &Path) -> Result<Self, TransportError> {
         Self::bind_disabled(path)?.enable()
     }
@@ -762,6 +807,9 @@ impl SeqpacketListener {
     }
 
     /// Queues one authenticated accept operation.
+    ///
+    /// # Errors
+    /// Returns `Closed` or `QueueFull` on admission failure. Accept, credential, and channel-setup errors are delivered through the completion.
     pub fn accept(
         &self,
         pin: CredentialPin,
@@ -783,6 +831,11 @@ impl SeqpacketListener {
     }
 
     /// Closes the listener without unlinking its rendezvous path.
+    /// Returns whether this call changed its state; observing that flag is optional.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "Closing is the primary side effect; callers need not observe prior close state."
+    )]
     pub fn close(&self) -> bool {
         self.inner.core.close()
     }
@@ -794,6 +847,10 @@ impl SeqpacketListener {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The worker owns its descriptor, receiver and shared core until the loop exits."
+)]
 fn accept_loop(fd: OwnedFd, commands: Receiver<AcceptCommand>, core: Arc<ListenerCore>) {
     while let Ok(command) = commands.recv() {
         if core.closed.load(Ordering::Acquire) {
@@ -818,7 +875,7 @@ fn drain_accepts(commands: &Receiver<AcceptCommand>) {
 fn accept_one(fd: &OwnedFd, pin: CredentialPin) -> Result<SeqpacketChannel, TransportError> {
     let accepted = loop {
         match accept_with(fd, SocketFlags::CLOEXEC) {
-            Err(Errno::INTR) => continue,
+            Err(Errno::INTR) => {}
             Err(_) => return Err(TransportError::AcceptFailed),
             Ok(accepted) => break accepted,
         }
@@ -890,6 +947,9 @@ pub struct SeqpacketConnector {
 
 impl SeqpacketConnector {
     /// Starts the connector's single fixed worker.
+    ///
+    /// # Errors
+    /// Returns `WorkerUnavailable` if the connector worker cannot start.
     pub fn new() -> Result<Self, TransportError> {
         let (commands, receiver) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let core = Arc::new(ConnectorCore {
@@ -909,6 +969,9 @@ impl SeqpacketConnector {
     }
 
     /// Queues one connection and authenticates its kernel peer identity.
+    ///
+    /// # Errors
+    /// Returns `Closed` or `QueueFull` on admission failure. Connect, credential, and channel-setup errors are delivered through the completion.
     pub fn connect(
         &self,
         path: &Path,
@@ -935,6 +998,10 @@ impl SeqpacketConnector {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The worker owns its receiver and shared core until the loop exits."
+)]
 fn connect_loop(commands: Receiver<ConnectCommand>, core: Arc<ConnectorCore>) {
     while let Ok(command) = commands.recv() {
         if core.closed.load(Ordering::Acquire) {
@@ -967,7 +1034,7 @@ fn connect_one(path: &Path, pin: CredentialPin) -> Result<SeqpacketChannel, Tran
     configure_packet_buffers(&fd)?;
     loop {
         match connect(&fd, &address) {
-            Err(Errno::INTR) => continue,
+            Err(Errno::INTR) => {}
             Err(Errno::AGAIN | Errno::INPROGRESS | Errno::ALREADY) => {
                 return Err(TransportError::ConnectBusy);
             }

@@ -149,11 +149,21 @@ impl Policy {
     ///
     /// Printing these is how an operator obtains a starting point for a pinned
     /// replacement, and how the digest in a Dossier can be checked by hand.
+    #[must_use]
     pub fn embedded_bytes() -> &'static [u8] {
         DEFAULT_POLICY.as_bytes()
     }
 
     /// Returns the policy compiled into this build.
+    ///
+    /// # Panics
+    /// Panics if the trusted, compile-time `policy_default.json` is malformed or
+    /// names an unsupported schema; caller-supplied policy bytes never reach this path.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Only the versioned include_str policy asset is parsed; tests validate that asset."
+    )]
     pub fn embedded() -> Self {
         Self::from_bytes(DEFAULT_POLICY.as_bytes())
             .expect("the embedded policy is validated by tests")
@@ -163,6 +173,9 @@ impl Policy {
     ///
     /// `expected` is mandatory by design: a policy accepted because it parsed
     /// is a policy an attacker may rewrite.
+    ///
+    /// # Errors
+    /// Returns file-read errors, a digest mismatch, or [`Self::from_bytes`] errors.
     pub fn load(path: &Path, expected: &Digest) -> Result<Self, PolicyError> {
         let bytes = fs::read(path).map_err(|source| PolicyError::Read {
             path: path.display().to_string(),
@@ -179,6 +192,9 @@ impl Policy {
     }
 
     /// Parses policy bytes and binds them to their digest.
+    ///
+    /// # Errors
+    /// Rejects malformed JSON or an unsupported policy schema.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PolicyError> {
         let document: PolicyDocument = serde_json::from_slice(bytes)
             .map_err(|error| PolicyError::Malformed(error.to_string()))?;
@@ -199,26 +215,31 @@ impl Policy {
     }
 
     /// Borrows the policy document.
+    #[must_use]
     pub fn document(&self) -> &PolicyDocument {
         &self.document
     }
 
     /// Returns the content address of the exact policy bytes in force.
+    #[must_use]
     pub fn digest(&self) -> &Digest {
         &self.digest
     }
 
     /// Borrows the limits.
+    #[must_use]
     pub fn limits(&self) -> &Limits {
         &self.document.limits
     }
 
     /// Reports whether capture may admit non-ASCII paths.
+    #[must_use]
     pub fn allows_non_ascii_paths(&self) -> bool {
         self.document.paths.allow_non_ascii
     }
 
     /// Returns the class name for `codepoint`, when the profile names one.
+    #[must_use]
     pub fn unicode_class(&self, codepoint: u32) -> Option<&str> {
         self.document
             .unicode
@@ -234,11 +255,13 @@ impl Policy {
     }
 
     /// Returns the ASCII character `character` imitates, when it imitates one.
+    #[must_use]
     pub fn confusable_target(&self, character: char) -> Option<char> {
         self.confusables.get(&character).copied()
     }
 
     /// Reports whether `extension` declares compiled or archived content.
+    #[must_use]
     pub fn is_declared_binary_extension(&self, extension: &str) -> bool {
         self.document
             .declared_binary_extensions
@@ -247,6 +270,7 @@ impl Policy {
     }
 
     /// Reports whether `extension` declares image content.
+    #[must_use]
     pub fn is_image_extension(&self, extension: &str) -> bool {
         self.document
             .image_extensions

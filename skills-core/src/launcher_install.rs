@@ -86,6 +86,7 @@ pub struct LauncherPaths {
 
 impl LauncherPaths {
     /// Returns the fixed production paths.
+    #[must_use]
     pub fn system() -> Self {
         let release_prefix = PathBuf::from(install::DEFAULT_PREFIX);
         Self {
@@ -227,11 +228,13 @@ pub struct PublicKeyring {
 
 impl PublicKeyring {
     /// Looks up a public key by stable ID.
+    #[must_use]
     pub fn key(&self, key_id: &str) -> Option<&LauncherKey> {
         self.keys.iter().find(|key| key.key_id == key_id)
     }
 
     /// Returns every retired key ID in creation order.
+    #[must_use]
     pub fn retained_key_ids(&self) -> Vec<String> {
         self.keys
             .iter()
@@ -330,6 +333,7 @@ pub struct CommandOutput {
 
 impl CommandOutput {
     /// Constructs a successful empty result, primarily for deterministic tests.
+    #[must_use]
     pub fn success() -> Self {
         Self {
             success: true,
@@ -340,6 +344,7 @@ impl CommandOutput {
     }
 
     /// Constructs a failed result with a diagnostic.
+    #[must_use]
     pub fn failure(reason: &str) -> Self {
         Self {
             success: false,
@@ -353,6 +358,9 @@ impl CommandOutput {
 /// Narrow process seam used only for key generation, signing, and validation.
 pub trait CommandRunner {
     /// Runs one fixed-structure invocation.
+    ///
+    /// # Errors
+    /// Returns process-start, pipe I/O, deadline, or cleanup errors when the invocation cannot complete.
     fn run(&self, invocation: &CommandInvocation) -> io::Result<CommandOutput>;
 }
 
@@ -384,6 +392,14 @@ impl CommandRunner for BoundedSystemCommandRunner {
 
 type BytesWorker = JoinHandle<io::Result<Vec<u8>>>;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One bounded subprocess transaction owns pipe readers, the deadline and process-group cleanup."
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "Command always pipes stdout and stderr; a deadline always configures a process group before spawn."
+)]
 fn run_system_command(
     invocation: &CommandInvocation,
     deadline: Option<Instant>,
@@ -407,10 +423,7 @@ fn run_system_command(
         command.process_group(0);
     }
     let mut child = command.spawn()?;
-    let process_group = deadline.map(|_| {
-        rustix::process::Pid::from_raw(child.id().cast_signed())
-            .expect("a spawned command has a positive process ID")
-    });
+    let process_group = deadline.map(|_| rustix::process::Pid::from_child(&child));
     let cleanup_deadline = deadline.unwrap_or_else(|| Instant::now() + COMMAND_CLEANUP_TIMEOUT);
     let execution_deadline = deadline.map(command_execution_deadline);
     let stdin_worker = child.stdin.take().map(|mut stdin| {
@@ -498,7 +511,7 @@ fn run_system_command(
 
     if execution_deadline.is_some_and(|execution_deadline| {
         !wait_for_command_io(
-            &stdin_worker,
+            stdin_worker.as_ref(),
             &stdout_worker,
             &stderr_worker,
             execution_deadline,
@@ -573,15 +586,13 @@ fn wait_until_exit(child: rustix::process::Pid, deadline: Instant) -> io::Result
 }
 
 fn wait_for_command_io(
-    stdin: &Option<JoinHandle<io::Result<()>>>,
+    stdin: Option<&JoinHandle<io::Result<()>>>,
     stdout: &BytesWorker,
     stderr: &BytesWorker,
     deadline: Instant,
 ) -> bool {
     loop {
-        if stdin.as_ref().is_none_or(JoinHandle::is_finished)
-            && stdout.is_finished()
-            && stderr.is_finished()
+        if stdin.is_none_or(JoinHandle::is_finished) && stdout.is_finished() && stderr.is_finished()
         {
             return Instant::now() < deadline;
         }
@@ -627,7 +638,7 @@ fn ensure_child_waitable(child: rustix::process::Pid) -> io::Result<()> {
                 | rustix::process::WaitIdOptions::NOHANG,
         ) {
             Ok(_) => return Ok(()),
-            Err(rustix::io::Errno::INTR) => continue,
+            Err(rustix::io::Errno::INTR) => {}
             // ECHILD means SIGCHLD was ignored or another reaper won; never signal a stale PGID.
             Err(error) => return Err(waitable_child_error(error)),
         }
@@ -791,6 +802,9 @@ impl Drop for InstallLock {
 
 /// Installs or refreshes the launcher authority without silently changing its
 /// operator, identity pool, or signing key.
+///
+/// # Errors
+/// Refuses invalid paths/operator/pool, unsafe existing authority, changed installation identity, or untrusted tools/releases; propagates lock, helper, key, and persistence errors.
 pub fn install(
     paths: &LauncherPaths,
     runner: &impl CommandRunner,
@@ -870,24 +884,21 @@ pub fn install(
 
     identity::reserve_install_authority(paths, runner, &request.pool)?;
 
-    match existing_keyring {
-        Some(_) => {}
-        None => {
-            let generated = recover_or_generate_initial_key(paths, runner, &config)?;
-            let keyring = PublicKeyring {
-                schema: KEYRING_SCHEMA.to_owned(),
-                active_key_id: generated.key_id.clone(),
-                keys: vec![LauncherKey {
-                    key_id: generated.key_id,
-                    public_key: generated.public_key,
-                    created_at_ms: now_ms,
-                    retired_at_ms: None,
-                    rotation_id: None,
-                    replaces: None,
-                }],
-            };
-            write_json_atomic(&paths.keyring(), &keyring, 0o444)?;
-        }
+    if existing_keyring.is_none() {
+        let generated = recover_or_generate_initial_key(paths, runner, &config)?;
+        let keyring = PublicKeyring {
+            schema: KEYRING_SCHEMA.to_owned(),
+            active_key_id: generated.key_id.clone(),
+            keys: vec![LauncherKey {
+                key_id: generated.key_id,
+                public_key: generated.public_key,
+                created_at_ms: now_ms,
+                retired_at_ms: None,
+                rotation_id: None,
+                replaces: None,
+            }],
+        };
+        write_json_atomic(&paths.keyring(), &keyring, 0o444)?;
     }
 
     identity::ensure_slot_files(paths, request.pool.slots)?;
@@ -898,6 +909,9 @@ pub fn install(
 }
 
 /// Rotates the launcher software key exactly once for one idempotency identity.
+///
+/// # Errors
+/// Refuses invalid/conflicting rotation identities, a stale active-key expectation, or untrusted installed authority; propagates key-generation, lock, journal, and persistence errors.
 pub fn rotate(
     paths: &LauncherPaths,
     runner: &impl CommandRunner,
@@ -953,12 +967,11 @@ pub fn rotate(
         )));
     }
 
-    let mut pending = match read_optional_json::<PendingRotation>(&paths.pending_rotation())? {
-        Some(pending) => {
+    let mut pending =
+        if let Some(pending) = read_optional_json::<PendingRotation>(&paths.pending_rotation())? {
             validate_pending_rotation(paths, request, &pending)?;
             pending
-        }
-        None => {
+        } else {
             let pending = PendingRotation {
                 schema: PENDING_ROTATION_SCHEMA.to_owned(),
                 rotation_id: request.rotation_id.clone(),
@@ -969,14 +982,13 @@ pub fn rotate(
             };
             write_json_atomic(&paths.pending_rotation(), &pending, 0o600)?;
             pending
-        }
-    };
+        };
     let generated = materialize_pending_rotation_key(paths, runner, &config, &mut pending)?;
     let active = keyring
         .keys
         .iter_mut()
         .find(|key| key.key_id == keyring.active_key_id)
-        .expect("validated keyring contains its active key");
+        .ok_or_else(|| LauncherError::Malformed("keyring has no active key".to_owned()))?;
     active.retired_at_ms = Some(pending.created_at_ms);
     keyring.keys.push(LauncherKey {
         key_id: generated.key_id.clone(),
@@ -986,7 +998,7 @@ pub fn rotate(
         rotation_id: Some(request.rotation_id.clone()),
         replaces: Some(request.expected_active_key_id.clone()),
     });
-    keyring.active_key_id = generated.key_id.clone();
+    keyring.active_key_id.clone_from(&generated.key_id);
     write_json_atomic(&paths.keyring(), &keyring, 0o444)?;
     clear_pending_rotation(paths)?;
     Ok(RotationOutcome {
@@ -997,6 +1009,9 @@ pub fn rotate(
 }
 
 /// Reads and validates the public keyring without exposing private paths.
+///
+/// # Errors
+/// Returns ownership/permission, file/JSON, or keyring-consistency errors.
 pub fn public_keyring(paths: &LauncherPaths) -> Result<PublicKeyring, LauncherError> {
     require_system_public_keyring(paths)?;
     let keyring = read_required_json(&paths.keyring())?;
@@ -1005,6 +1020,9 @@ pub fn public_keyring(paths: &LauncherPaths) -> Result<PublicKeyring, LauncherEr
 }
 
 /// Acquires one pool identity until the returned lease is dropped.
+///
+/// # Errors
+/// Refuses invalid/untrusted pool authority, out-of-range slots, busy or poisoned leases; propagates helper, lock, and marker persistence errors.
 pub fn acquire_identity(paths: &LauncherPaths, slot: u32) -> Result<IdentityLease, LauncherError> {
     identity::acquire(paths, slot)
 }
@@ -1021,12 +1039,18 @@ pub(crate) fn acquire_identity_with_deadline(
 ///
 /// Unlike [`status`], this fails on the first trust violation and therefore
 /// cannot be mistaken for permission to launch.
+///
+/// # Errors
+/// Returns configuration/ownership, release/tool measurement, installed identity authority, or keyring/private-key verification errors.
 pub fn runtime_config(paths: &LauncherPaths) -> Result<LauncherConfig, LauncherError> {
     runtime_config_with_runner(paths, &SystemCommandRunner)
 }
 
 /// Loads the fixed runtime authority while bounding every NSS helper by one
 /// absolute operation deadline.
+///
+/// # Errors
+/// Returns the same authority failures as [`runtime_config`], including helper deadline or cleanup errors.
 pub fn runtime_config_with_deadline(
     paths: &LauncherPaths,
     deadline: Instant,
@@ -1049,6 +1073,7 @@ fn runtime_config_with_runner(
 }
 
 /// Builds the exact documented non-interactive launcher invocation.
+#[must_use]
 pub fn sudo_invocation(config: &LauncherConfig) -> CommandInvocation {
     CommandInvocation {
         program: PathBuf::from(SUDO_PATH),
@@ -1063,6 +1088,10 @@ pub fn sudo_invocation(config: &LauncherConfig) -> CommandInvocation {
 }
 
 /// Reports every launcher trust failure without returning private bytes or paths.
+#[expect(
+    clippy::too_many_lines,
+    reason = "One ordered authority snapshot reports each installation prerequisite and its diagnostic together."
+)]
 pub fn status(paths: &LauncherPaths) -> LauncherStatus {
     let mut failures = Vec::new();
     let mut config_valid = false;
@@ -1333,6 +1362,9 @@ pub struct LauncherSigner {
 
 impl LauncherSigner {
     /// Opens the installed root-only signer after revalidating its authority.
+    ///
+    /// # Errors
+    /// Returns installed configuration, ownership/permission, release/tool measurement, keyring, or private/public-key consistency errors.
     pub fn open(paths: &LauncherPaths) -> Result<Self, LauncherError> {
         Self::open_with(paths, &SystemCommandRunner)
     }
@@ -1376,6 +1408,9 @@ impl LauncherSigner {
     ///
     /// Both active and retired keys are usable; retired private keys are kept so
     /// a chain can retain the key named by its genesis receipt.
+    ///
+    /// # Errors
+    /// Refuses unknown keys or invalid receipt bindings; returns tool measurement, scratch I/O, signing, or signature-verification errors.
     pub fn sign_receipt(&self, key_id: &str, payload: &[u8]) -> Result<String, LauncherError> {
         self.sign_receipt_with(&SystemCommandRunner, key_id, payload)
     }
@@ -1390,15 +1425,21 @@ impl LauncherSigner {
     }
 
     /// Release identity fixed by the validated launcher installation.
+    #[must_use]
     pub fn release_id(&self) -> &str {
         &self.release_id
     }
 
     /// Key used for a new receipt chain.
+    #[must_use]
     pub fn active_key_id(&self) -> &str {
         &self.keyring.active_key_id
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Validation, signing, verification and private-scratch cleanup form one transaction."
+    )]
     fn sign_receipt_with(
         &self,
         runner: &impl CommandRunner,
@@ -1570,6 +1611,10 @@ fn require_system_install_context(paths: &LauncherPaths) -> Result<(), LauncherE
     identity::require_system_install_context(paths)
 }
 
+#[expect(
+    clippy::verbose_bit_mask,
+    reason = "Octal permission masks directly express the Unix group and other access bits under review."
+)]
 fn inspect_system_existing_state_dirs(paths: &LauncherPaths) -> Result<(), LauncherError> {
     if *paths != LauncherPaths::system() {
         return Ok(());
@@ -1726,12 +1771,12 @@ fn validate_broker_identity(
         .pool
         .uid_start
         .checked_add(request.pool.slots)
-        .expect("validated identity pool does not overflow");
+        .ok_or_else(|| LauncherError::Invalid("identity UID pool overflows u32".to_owned()))?;
     let gid_end = request
         .pool
         .gid_start
         .checked_add(request.pool.slots)
-        .expect("validated identity pool does not overflow");
+        .ok_or_else(|| LauncherError::Invalid("identity GID pool overflows u32".to_owned()))?;
     if request.broker_uid == 0
         || request.broker_gid == 0
         || request.broker_uid == operator_uid
@@ -1980,7 +2025,7 @@ fn generate_key(
         let destination = private_key_path(&paths.keys(), &key_id)?;
         let key_dir = destination
             .parent()
-            .expect("private key path always has a parent");
+            .ok_or_else(|| LauncherError::Invalid("private key path has no parent".to_owned()))?;
         if key_dir.exists() {
             return Err(LauncherError::Malformed(
                 "generated launcher key identity already exists".to_owned(),
@@ -2142,7 +2187,7 @@ fn materialize_initial_key(
     let destination = private_key_path(&paths.keys(), &generated.key_id)?;
     let key_dir = destination
         .parent()
-        .expect("private key path always has a parent");
+        .ok_or_else(|| LauncherError::Invalid("private key path has no parent".to_owned()))?;
     match fs::symlink_metadata(key_dir) {
         Ok(_) => {
             require_private_directory(paths, key_dir, "pending launcher key destination")?;
@@ -2216,6 +2261,10 @@ fn run_keygen(
     sync_dir(directory)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One crash-recoverable key rotation sequence validates existing state before advancing it."
+)]
 fn materialize_pending_rotation_key(
     paths: &LauncherPaths,
     runner: &impl CommandRunner,
@@ -2313,7 +2362,7 @@ fn materialize_pending_rotation_key(
     let destination = private_key_path(&paths.keys(), &generated.key_id)?;
     let key_dir = destination
         .parent()
-        .expect("private key path always has a parent");
+        .ok_or_else(|| LauncherError::Invalid("private key path has no parent".to_owned()))?;
     match fs::symlink_metadata(key_dir) {
         Ok(_) => {
             require_private_directory(paths, key_dir, "pending launcher key destination")?;
@@ -2840,8 +2889,7 @@ fn finish_private_scratch<T>(
     let cleanup = fs::remove_dir_all(path).map_err(|source| io_error("private scratch", source));
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (_, Err(error)) => Err(error),
+        (Err(error), Ok(())) | (_, Err(error)) => Err(error),
     }
 }
 
@@ -2980,6 +3028,12 @@ fn tool_error(tool: &'static str, stderr: &[u8]) -> LauncherError {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use std::{
         cell::RefCell,
@@ -3027,7 +3081,7 @@ mod tests {
 
         match error {
             LauncherError::Io { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::TimedOut)
+                assert_eq!(source.kind(), io::ErrorKind::TimedOut);
             }
             other => panic!("deadline must remain an I/O timeout: {other}"),
         }
@@ -3324,6 +3378,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One signer uses measured absolute tool fixed namespace and retired key scenario keeps its causal steps and assertions together."
+    )]
     fn signer_uses_measured_absolute_tool_fixed_namespace_and_retired_key() {
         let root = TempDir::new().expect("scratch root is creatable");
         let paths = signer_paths(root.path());

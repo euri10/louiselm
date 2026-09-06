@@ -1,3 +1,11 @@
+//! Behavioral coverage for run socket.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::{fs, time::Duration};
 
 use louiselm_capture::{
@@ -123,6 +131,10 @@ async fn bind_refuses_live_or_non_socket_paths() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One operator conversation proves capability, revision, and resume ordering."
+)]
 async fn operator_mutations_require_the_private_capability_and_current_revision() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = RunStore::new(temporary.path().join("runs")).expect("store");

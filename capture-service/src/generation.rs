@@ -11,41 +11,57 @@ use crate::{GeneratedWorkReservation, ReserveResult, RunStore, RunStoreError};
 /// One brokered Beads command from a Run-owned Agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GenerateRequest {
+    /// Admitted Run authorizing the mutation.
     pub run_id: String,
+    /// Secret generation capability issued at Run admission.
     pub token: String,
+    /// Stable UUID reused when retrying the same mutation.
     pub mutation_id: String,
+    /// Allowed Beads mutation subcommand.
     pub command: String,
+    /// Subcommand arguments, checked before execution.
     pub arguments: Vec<String>,
 }
 
 /// Captured subprocess result used by production and deterministic tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandOutput {
+    /// Whether the subprocess exited successfully.
     pub success: bool,
+    /// Captured standard output.
     pub stdout: String,
+    /// Captured standard error.
     pub stderr: String,
 }
 
 /// Confirmed generated issue plus the original Beads output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedIssue {
+    /// Confirmed Beads issue identifier.
     pub id: String,
+    /// Original success output; empty for an already-confirmed retry.
     pub stdout: String,
 }
 
 /// Generated-work broker failure.
 #[derive(Debug, Error)]
 pub enum GenerationError {
+    /// Run authorization, accounting, or persistence failed.
     #[error(transparent)]
     Run(#[from] RunStoreError),
+    /// The request violates the constrained mutation contract.
     #[error("invalid generated-work command: {0}")]
     Invalid(String),
+    /// No capacity remains; the Run has been Parked.
     #[error("generated-work budget is exhausted; the Run is Parked")]
     Exhausted,
+    /// A prior attempt still holds this mutation's reservation.
     #[error("generated-work mutation is pending reconciliation")]
     Pending,
+    /// Process execution failed before a mutation could be confirmed.
     #[error("could not start br: {0}")]
     Start(#[from] io::Error),
+    /// Execution may have mutated Beads; retain capacity until reconciliation.
     #[error("br mutation outcome is ambiguous; capacity remains reserved: {0}")]
     Ambiguous(String),
 }
@@ -58,6 +74,7 @@ pub struct BeadsGenerator {
 }
 
 impl BeadsGenerator {
+    /// Bind the broker to an explicit executable and canonical database.
     #[must_use]
     pub fn new(executable: impl Into<PathBuf>, database: impl Into<PathBuf>) -> Self {
         Self {
@@ -67,10 +84,14 @@ impl BeadsGenerator {
     }
 
     /// Reconcile pending mutations, reserve capacity, execute Beads, and confirm success.
+    ///
+    /// # Errors
+    /// Returns authorization, validation, capacity, storage, or subprocess errors.
+    /// Ambiguous outcomes retain their reservation for reconciliation on retry.
     pub fn generate(
         &self,
         store: &RunStore,
-        request: GenerateRequest,
+        request: &GenerateRequest,
         now_ms: u64,
     ) -> Result<GeneratedIssue, GenerationError> {
         self.generate_with(store, request, now_ms, |arguments| {
@@ -84,14 +105,17 @@ impl BeadsGenerator {
     }
 
     /// Testable broker boundary with caller-supplied process execution.
+    ///
+    /// # Errors
+    /// Returns the same failures as [`Self::generate`], including errors from `execute`.
     pub fn generate_with(
         &self,
         store: &RunStore,
-        request: GenerateRequest,
+        request: &GenerateRequest,
         now_ms: u64,
         mut execute: impl FnMut(&[String]) -> io::Result<CommandOutput>,
     ) -> Result<GeneratedIssue, GenerationError> {
-        validate_request(&request)?;
+        validate_request(request)?;
         self.reconcile_with(store, &request.run_id, &request.token, &mut execute)?;
         let actor = store.generation_actor(&request.run_id, &request.token)?;
         let reservation = GeneratedWorkReservation {
@@ -189,6 +213,7 @@ impl BeadsGenerator {
     }
 }
 
+/// Stable external reference used to reconcile a Run's Beads mutation.
 #[must_use]
 pub fn mutation_external_ref(run_id: &str, mutation_id: &str) -> String {
     format!("louiselm-run/{run_id}/mutation/{mutation_id}")

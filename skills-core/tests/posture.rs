@@ -1,3 +1,11 @@
+//! Behavioral coverage for posture.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::collections::BTreeSet;
 
 use louiselm_skills::{

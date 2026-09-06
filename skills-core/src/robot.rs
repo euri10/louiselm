@@ -8,11 +8,17 @@
 use crate::dossier::Dossier;
 
 /// Serializes a Dossier as the robot view.
+///
+/// # Errors
+/// Returns a JSON serialization error if the Dossier schema cannot be encoded.
 pub fn json(dossier: &Dossier) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(dossier)
 }
 
 /// Serializes any robot payload with the same conventions.
+///
+/// # Errors
+/// Returns errors from `T`'s serializer, including map keys JSON cannot represent.
 pub fn payload<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(value)
 }

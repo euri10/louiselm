@@ -13,6 +13,11 @@ use crate::{
 };
 
 /// Renders a Dossier as reviewer-facing text.
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Sequential report sections preserve their display order without splitting presentation into forwarding helpers."
+)]
 pub fn human(dossier: &Dossier) -> String {
     let mut out = String::new();
     let package = &dossier.package;
@@ -210,6 +215,7 @@ pub fn human(dossier: &Dossier) -> String {
 }
 
 /// Renders the one-line summary used when listing packages.
+#[must_use]
 pub fn summary_line(dossier: &Dossier) -> String {
     format!(
         "{} {} {} finding(s){}",
@@ -231,6 +237,7 @@ fn push(out: &mut String, line: &str) {
 }
 
 /// Renders Generation status as operator-facing text.
+#[must_use]
 pub fn generation_status(status: &crate::admission::GenerationStatus) -> String {
     let mut out = String::new();
     match (&status.generation, status.state) {
@@ -291,6 +298,7 @@ pub fn generation_status(status: &crate::admission::GenerationStatus) -> String 
 }
 
 /// Renders install status as operator-facing text.
+#[must_use]
 pub fn install_status(status: &crate::install::InstallStatus) -> String {
     let mut out = String::new();
     push(&mut out, &format!("Prefix {}", status.prefix));
@@ -423,6 +431,7 @@ pub fn launcher_status(status: &crate::launcher_install::LauncherStatus) -> Stri
 }
 
 /// Renders one normalized Verified posture as operator-facing text.
+#[must_use]
 pub fn posture(posture: &Posture) -> String {
     let mut out = String::new();
     push(

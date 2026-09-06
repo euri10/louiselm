@@ -276,6 +276,9 @@ impl ProtocolError {
     }
 
     /// Rejects a serialized error whose derived fields contradict its code.
+    ///
+    /// # Errors
+    /// Rejects an error whose message, retryability, or next action contradicts its code and context.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         let expected = Self::new(self.code, self.current_state, self.expected_sequence);
         if *self == expected {
@@ -322,7 +325,15 @@ pub struct LifecycleRequest {
 
 impl LifecycleRequest {
     /// Serializes the request to deterministic bytes used for idempotency.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a lifecycle request is always serializable")
     }
@@ -334,6 +345,9 @@ impl LifecycleRequest {
     }
 
     /// Validates version, schema, bounded identifiers, and CAS shape.
+    ///
+    /// # Errors
+    /// Rejects unsupported schema/version, invalid identifiers, or inconsistent compare-and-swap fields.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, LIFECYCLE_REQUEST_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -374,12 +388,23 @@ pub struct StatusRequest {
 
 impl StatusRequest {
     /// Serializes the request in declaration order without whitespace.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a status request is always serializable")
     }
 
     /// Validates schema, version, and bounded identifiers.
+    ///
+    /// # Errors
+    /// Rejects unsupported schema/version or invalid request, Session, or Run identifiers.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, STATUS_REQUEST_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -413,12 +438,23 @@ pub struct BrokerReconnect {
 
 impl BrokerReconnect {
     /// Serializes this checkpoint deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a broker reconnect is always serializable")
     }
 
     /// Validates the closed checkpoint shape.
+    ///
+    /// # Errors
+    /// Rejects unsupported schema/version, invalid identifiers, or a noncanonical receipt digest.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, BROKER_RECONNECT_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -429,6 +465,9 @@ impl BrokerReconnect {
     }
 
     /// Checks that a broker checkpoint answers this exact launcher request.
+    ///
+    /// # Errors
+    /// Rejects invalid checkpoints or mismatched request, Session, Run, or envelope-revision bindings.
     pub fn validate_response_to(&self, request: &Self) -> Result<(), ProtocolError> {
         self.validate()?;
         request.validate()?;
@@ -444,6 +483,9 @@ impl BrokerReconnect {
     }
 
     /// Parses one bounded exact canonical checkpoint.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -480,12 +522,23 @@ pub struct ControllerLossSettlement {
 
 impl ControllerLossSettlement {
     /// Serializes the settlement request deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a controller-loss settlement is always serializable")
     }
 
     /// Validates the closed request shape.
+    ///
+    /// # Errors
+    /// Rejects unsupported schema/version, invalid identifiers/digest, or a zero envelope revision.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, CONTROLLER_LOSS_SETTLEMENT_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -499,6 +552,9 @@ impl ControllerLossSettlement {
     }
 
     /// Parses one exact canonical settlement request.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -572,12 +628,23 @@ pub struct ControllerLossAcknowledgement {
 
 impl ControllerLossAcknowledgement {
     /// Serializes the acknowledgement deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a controller-loss acknowledgement is always serializable")
     }
 
     /// Validates the closed acknowledgement shape.
+    ///
+    /// # Errors
+    /// Rejects invalid schema/version, identifiers, receipt digest, envelope revision, or disposition.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, CONTROLLER_LOSS_ACK_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -592,6 +659,9 @@ impl ControllerLossAcknowledgement {
     }
 
     /// Requires every authority-bearing field to match the frozen request.
+    ///
+    /// # Errors
+    /// Rejects invalid messages or any request, subject, envelope, or Park-head mismatch.
     pub fn validate_for(&self, settlement: &ControllerLossSettlement) -> Result<(), ProtocolError> {
         self.validate()?;
         settlement.validate()?;
@@ -608,6 +678,9 @@ impl ControllerLossAcknowledgement {
     }
 
     /// Parses one exact canonical acknowledgement.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -662,6 +735,9 @@ pub struct IdentityExhaustion {
 
 impl IdentityExhaustion {
     /// Sorts and bounds broker-owned occupancy evidence for operator delivery.
+    ///
+    /// # Errors
+    /// Rejects invalid/terminal occupants or duplicate slots/Session identifiers before bounding disclosure.
     pub fn compose(
         mut occupied_sessions: Vec<OccupiedSessionIdentity>,
     ) -> Result<Self, ProtocolError> {
@@ -693,6 +769,9 @@ impl IdentityExhaustion {
     }
 
     /// Validates received evidence without silently sorting or truncating it.
+    ///
+    /// # Errors
+    /// Rejects the wrong error code, excessive or unsorted occupancy, duplicate slots/Session IDs, or invalid occupants.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.error != ProtocolError::new(ErrorCode::SessionIdentityExhausted, None, None)
             || self.occupied_sessions.len() > MAX_IDENTITY_OCCUPANTS
@@ -752,12 +831,23 @@ pub struct ReceiptAcknowledgement {
 
 impl ReceiptAcknowledgement {
     /// Serializes the acknowledgement deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a receipt acknowledgement is always serializable")
     }
 
     /// Validates schema, version, subject, and canonical digest spelling.
+    ///
+    /// # Errors
+    /// Rejects unsupported schema/version, invalid subjects, or a noncanonical receipt digest.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, RECEIPT_ACK_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -823,6 +913,9 @@ pub struct LaunchAuthorization {
 
 impl LaunchAuthorization {
     /// Validates the closed authorization's own wire shape.
+    ///
+    /// # Errors
+    /// Rejects invalid schema/version, identifiers/digest, privileged/zero identities, expiry, or excessive broker-loss grace.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, LAUNCH_AUTHORIZATION_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -847,6 +940,9 @@ impl LaunchAuthorization {
     /// Single-use consumption is the broker's atomic storage operation. This
     /// method checks the consumed record the supervisor received, including
     /// the exclusive expiry boundary, without weakening that storage rule.
+    ///
+    /// # Errors
+    /// Rejects invalid requests/authorizations, mismatched bindings, or an authorization at or beyond its exclusive expiry.
     pub fn validate_for(
         &self,
         request: &LaunchRequest,
@@ -888,6 +984,9 @@ pub enum ProtocolMessage {
 }
 
 /// Decodes one bounded, closed, versioned inbound message.
+///
+/// # Errors
+/// Rejects oversized, malformed, unsupported-version/schema, noncanonical, or structurally invalid inbound messages.
 pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
     if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
         return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -941,6 +1040,10 @@ fn decode_closed<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtocolE
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Result::map_err transfers ownership of the error into this conversion."
+)]
 fn protocol_error_from_launch(error: LaunchError) -> ProtocolError {
     let code = match error {
         LaunchError::RequestTooLarge { .. } => ErrorCode::MessageTooLarge,
@@ -990,12 +1093,23 @@ pub struct SupervisorStatus {
 
 impl SupervisorStatus {
     /// Serializes the mechanical status deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("supervisor status is always serializable")
     }
 
     /// Validates a closed supervisor status value.
+    ///
+    /// # Errors
+    /// Rejects schema/version/subject errors or contradictory mechanical state, channel reachability, receipt heads, pending work, exit, or failure fields.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, SUPERVISOR_STATUS_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -1015,6 +1129,9 @@ impl SupervisorStatus {
     }
 
     /// Parses exact canonical status bytes.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -1069,6 +1186,9 @@ pub struct SessionStatus {
 
 impl SessionStatus {
     /// Composes broker-owned posture/actions with mechanical supervisor facts.
+    ///
+    /// # Errors
+    /// Rejects invalid supervisor state, duplicate actions, or actions inconsistent with the resulting Session status.
     pub fn compose(
         supervisor: SupervisorStatus,
         posture: PostureSummary,
@@ -1106,12 +1226,23 @@ impl SessionStatus {
     }
 
     /// Serializes canonical Session status deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("Session status is always serializable")
     }
 
     /// Validates subject, head, errors, and allowed-action mechanics.
+    ///
+    /// # Errors
+    /// Rejects invalid status fields, pending work with allowed actions, or unsorted/duplicate/mechanically invalid actions.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, SESSION_STATUS_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -1146,6 +1277,9 @@ impl SessionStatus {
     }
 
     /// Parses exact canonical status bytes.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -1216,6 +1350,9 @@ impl ReceiptIntent {
     ///
     /// The caller supplies identities measured at the trusted launcher
     /// boundary; malformed identities are rejected by receipt validation.
+    ///
+    /// # Errors
+    /// Returns receipt-validation errors for invalid pinned release/key identities or inconsistent intent/outcome fields.
     pub fn receipt_payload(
         &self,
         release_id: &str,
@@ -1288,6 +1425,9 @@ impl RequestDisposition {
 /// `completed` is the durable broker lookup for `request.request_id`. Exact
 /// replay is deliberately decided before pending/CAS checks so a retry still
 /// returns its original bytes after the Session advances.
+///
+/// # Errors
+/// Rejects invalid status/request/receipt data, subject or request-ID conflicts, pending work, stale compare-and-swap fields, invalid transitions, or receipt-sequence overflow.
 pub fn evaluate_request(
     status: &SupervisorStatus,
     completed: Option<&CompletedRequest>,
@@ -1476,17 +1616,21 @@ fn authorized_lifecycle_outcome(
 }
 
 /// Computes the only legal public transition for `state` and `action`.
+///
+/// # Errors
+/// Returns `InvalidTransition` when the action is not defined for the current mechanical state.
 pub fn transition(
     state: SessionState,
     action: LifecycleAction,
 ) -> Result<SessionState, ProtocolError> {
     match (state, action) {
-        (SessionState::Running, LifecycleAction::Park) => Ok(SessionState::Parked),
-        (SessionState::Running, LifecycleAction::Interrupt) => Ok(SessionState::Running),
-        (SessionState::Parked, LifecycleAction::Interrupt) => Ok(SessionState::Parked),
-        (SessionState::Running, LifecycleAction::Disposal)
-        | (SessionState::Parked, LifecycleAction::Disposal) => Ok(SessionState::Terminal),
-        (SessionState::Parked, LifecycleAction::Resume) => Ok(SessionState::Running),
+        (SessionState::Running, LifecycleAction::Park)
+        | (SessionState::Parked, LifecycleAction::Interrupt) => Ok(SessionState::Parked),
+        (SessionState::Running, LifecycleAction::Interrupt)
+        | (SessionState::Parked, LifecycleAction::Resume) => Ok(SessionState::Running),
+        (SessionState::Running | SessionState::Parked, LifecycleAction::Disposal) => {
+            Ok(SessionState::Terminal)
+        }
         _ => Err(ProtocolError::new(
             ErrorCode::InvalidTransition,
             Some(state),
@@ -1557,12 +1701,23 @@ pub struct ProtocolResponse {
 
 impl ProtocolResponse {
     /// Serializes the response deterministically.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a protocol response is always serializable")
     }
 
     /// Validates every nested response value.
+    ///
+    /// # Errors
+    /// Rejects oversized/invalid response headers, invalid nested payloads, or mismatched correlation identifiers.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.canonical_bytes().len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -1615,6 +1770,9 @@ impl ProtocolResponse {
     }
 
     /// Parses one exact canonical response.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, unsupported-schema/version, or noncanonical bytes and any failure from [`Self::validate`].
     pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -1675,6 +1833,7 @@ fn validate_message_header(bytes: &[u8], expected_schema: &str) -> Result<(), Pr
     validate_version(header.protocol_version)
 }
 
+#[derive(Clone, Copy)]
 struct StatusShape<'a> {
     state: SessionState,
     broker_connection: BrokerConnection,
@@ -1687,6 +1846,10 @@ struct StatusShape<'a> {
     last_failure: Option<&'a ProtocolError>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Cross-field state, head, channel and pending-operation invariants form one validation boundary."
+)]
 fn validate_status_shape(shape: StatusShape<'_>) -> Result<(), ProtocolError> {
     let StatusShape {
         state,

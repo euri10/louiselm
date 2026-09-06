@@ -1,3 +1,11 @@
+//! Behavioral coverage for sandbox.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The bubblewrap backend: real confinement, not a mock of one.
 //!
 //! These tests spawn real sandboxed processes through the system `bwrap` and
@@ -38,9 +46,8 @@ use support::{Fixture, write_file};
 /// those is the whole point of this check: a broken launch that spawns nothing
 /// must not be able to satisfy a test by leaving a corpse behind.
 fn is_alive(pid: u32) -> bool {
-    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(text) => text,
-        Err(_) => return false,
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
     };
     match stat.rsplit_once(')') {
         Some((_, rest)) => rest.trim_start().split(' ').next() != Some("Z"),
@@ -68,17 +75,21 @@ fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
     fs::create_dir_all(&sessions_root).expect("Sessions root is creatable");
     fs::set_permissions(&sessions_root, fs::Permissions::from_mode(0o711))
         .expect("Sessions root has its fixed mode");
-    let runtime_root = runtimes_root.join(id);
-    let agent = runtime_root.join("bin/agent");
+    let runtime_directory = runtimes_root.join(id);
+    let agent = runtime_directory.join("bin/agent");
     executable_script(&agent, script);
-    for path in [&runtimes_root, &runtime_root, &runtime_root.join("bin")] {
+    for path in [
+        &runtimes_root,
+        &runtime_directory,
+        &runtime_directory.join("bin"),
+    ] {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .expect("the runtime fixture is traversable");
     }
 
     ConfinementPlan {
         session_id: id.to_owned(),
-        runtime_root,
+        runtime_root: runtime_directory,
         executable: agent,
         arguments: Vec::new(),
         environment: BTreeMap::new(),
@@ -113,11 +124,12 @@ fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
 /// not guaranteed in every CI container. Skipping with a reason is honest;
 /// asserting a fact the environment cannot back up is not.
 fn cgroup_available() -> bool {
+    static NEXT_PROBE: AtomicU64 = AtomicU64::new(0);
+
     let Some(parent) = Cgroup::delegated_parent() else {
         eprintln!("skipping: no delegated cgroup v2 hierarchy in this environment");
         return false;
     };
-    static NEXT_PROBE: AtomicU64 = AtomicU64::new(0);
     let id = format!(
         "lifecycle-probe-{}-{}",
         std::process::id(),
@@ -519,6 +531,10 @@ fn host_identity_refuses_a_root_uid_or_gid() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One host identity changes outer credentials and owns private directories scenario keeps its causal steps and assertions together."
+)]
 fn host_identity_changes_outer_credentials_and_owns_private_directories() {
     let Some(session_identity) = host_identity_test_id() else {
         eprintln!("skipping: run in a mapped root namespace or set LOUISELM_TEST_HOST_ID as root");
@@ -576,9 +592,9 @@ fn host_identity_changes_outer_credentials_and_owns_private_directories() {
     );
 
     let outer_uids = process_status_values(session.monitor_pid(), "Uid:");
-    let outer_gids = process_status_values(session.monitor_pid(), "Gid:");
+    let monitor_groups = process_status_values(session.monitor_pid(), "Gid:");
     assert!(outer_uids.iter().all(|&uid| uid == session_identity));
-    assert!(outer_gids.iter().all(|&gid| gid == session_identity));
+    assert!(monitor_groups.iter().all(|&gid| gid == session_identity));
     assert!(process_status_values(session.monitor_pid(), "Groups:").is_empty());
     let sandbox_leader_pid = session
         .sandbox_leader_pid()

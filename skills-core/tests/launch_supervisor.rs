@@ -1,3 +1,10 @@
+//! Behavioral coverage for launch supervisor.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 #![cfg(target_os = "linux")]
 
 //! One authorized launch through fake broker, signer, and privileged platform ports.
@@ -66,7 +73,7 @@ type Events = Arc<Mutex<Vec<String>>>;
 fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn record(events: &Events, event: &str) {
@@ -1062,6 +1069,10 @@ impl CapabilityGate for FakeCapabilityGate {
 }
 
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent failure injections and observed effects must be independently selectable in this test double."
+)]
 struct AgentState {
     started: bool,
     parked: bool,
@@ -1074,6 +1085,10 @@ struct AgentState {
     relay_quiescence: Option<SupervisorCompletion<()>>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent failure injections and observed effects must be independently selectable in this test double."
+)]
 struct FakePreparedAgent {
     events: Events,
     state: Arc<Mutex<AgentState>>,
@@ -1159,6 +1174,10 @@ impl Drop for FakePreparedAgent {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent failure injections and observed effects must be independently selectable in this test double."
+)]
 struct FakeRunningAgent {
     events: Events,
     state: Arc<Mutex<AgentState>>,
@@ -1541,6 +1560,10 @@ impl LaunchPlatform for BubblewrapLaunchPlatform {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Result::map_err transfers ownership of the error into this test conversion."
+)]
 fn map_test_sandbox(error: SandboxError) -> SupervisorError {
     match error {
         SandboxError::CleanupUnproven { .. } | SandboxError::Survivors { .. } => {
@@ -1588,6 +1611,10 @@ fn process_status_values(pid: u32, field: &str) -> Option<Vec<u32>> {
 }
 
 #[derive(Clone, Copy, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent failure injections and observed effects must be independently selectable in this test double."
+)]
 struct PlatformBehavior {
     identity_unavailable: bool,
     identity_occupied: bool,
@@ -1804,7 +1831,7 @@ fn isolation_evidence(verified: bool) -> IsolationEvidence {
 }
 
 struct Setup {
-    _fixture: Fixture,
+    fixture: Fixture,
     request: LaunchRequest,
     broker: Arc<FakeBroker>,
     signer: Arc<FakeSigner>,
@@ -1928,7 +1955,7 @@ fn setup(
         timeout,
     );
     Setup {
-        _fixture: fixture,
+        fixture,
         request,
         broker,
         signer,
@@ -2149,6 +2176,10 @@ fn begin_session_relay(
     (controller_input, receiver, worker)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Terminal fixture cleanup consumes the relay resources, including the completion receiver, after observing the result."
+)]
 fn finish_session_relay(
     setup: &Setup,
     controller_input: UnixStream,
@@ -2273,6 +2304,10 @@ fn finish_session_relay_after_reconciling_backlog(
     finish_terminal_session_relay(controller_input, receiver, worker);
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Terminal fixture cleanup consumes the relay resources, including the completion receiver, after observing the result."
+)]
 fn finish_terminal_session_relay(
     controller_input: UnixStream,
     receiver: Receiver<Result<i32, SupervisorError>>,
@@ -2408,6 +2443,10 @@ fn begin_controller_loss_settlement(
     )
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Terminal fixture cleanup consumes the relay resources, including the completion receiver, after observing the result."
+)]
 fn dispose_retained_controller_loss_session(
     setup: &Setup,
     request_id: &str,
@@ -2456,6 +2495,10 @@ fn dispose_retained_controller_loss_session(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One launch acks starting then starts and acks linked running before success scenario keeps its causal steps and assertions together."
+)]
 fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
     let setup = setup(
         true,
@@ -2703,6 +2746,10 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One authenticated park is serialized and status keeps actual and durable heads separate scenario keeps its causal steps and assertions together."
+)]
 fn authenticated_park_is_serialized_and_status_keeps_actual_and_durable_heads_separate() {
     let setup = setup(
         true,
@@ -3125,6 +3172,10 @@ fn failed_interrupt_audit_revokes_channels_without_signalling_twice() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One failed interrupt retry remains idempotent at the receipt backlog bound scenario keeps its causal steps and assertions together."
+)]
 fn failed_interrupt_retry_remains_idempotent_at_the_receipt_backlog_bound() {
     let setup = setup(
         true,
@@ -3274,6 +3325,10 @@ fn failed_interrupt_retry_remains_idempotent_at_the_receipt_backlog_bound() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One terminal disposal waits behind the full ordered receipt backlog scenario keeps its causal steps and assertions together."
+)]
 fn terminal_disposal_waits_behind_the_full_ordered_receipt_backlog() {
     let setup = setup(
         true,
@@ -3445,36 +3500,40 @@ fn terminal_disposal_waits_behind_the_full_ordered_receipt_backlog() {
             receipt.payload.previous_receipt_digest.as_deref(),
             Some(previous_head.digest.as_str())
         );
-        if index < ordinary_intent_capacity {
-            let ReceiptOutcome::Interrupt { authorization } = &receipt.payload.outcome else {
-                panic!("ordinary backlog entry {index} remains an Interrupt");
-            };
-            assert_eq!(
-                authorization.request_id,
-                interrupts
-                    .get(index)
-                    .expect("ordinary backlog entry has its source request")
-                    .request_id,
-            );
-            assert_eq!(receipt.payload.resulting_state, SessionState::Running);
-        } else if index == ordinary_intent_capacity {
-            let ReceiptOutcome::Park {
-                authority: ReceiptAuthority::Authorized(authorization),
-            } = &receipt.payload.outcome
-            else {
-                panic!("the first reserved backlog entry remains its authorized Park");
-            };
-            assert_eq!(authorization.request_id, park.request_id);
-            assert_eq!(receipt.payload.resulting_state, SessionState::Parked);
-        } else {
-            let ReceiptOutcome::Disposal {
-                authority: ReceiptAuthority::Authorized(authorization),
-            } = &receipt.payload.outcome
-            else {
-                panic!("the last reserved backlog entry remains its authorized Disposal");
-            };
-            assert_eq!(authorization.request_id, disposal.request_id);
-            assert_eq!(receipt.payload.resulting_state, SessionState::Terminal);
+        match index.cmp(&ordinary_intent_capacity) {
+            std::cmp::Ordering::Less => {
+                let ReceiptOutcome::Interrupt { authorization } = &receipt.payload.outcome else {
+                    panic!("ordinary backlog entry {index} remains an Interrupt");
+                };
+                assert_eq!(
+                    authorization.request_id,
+                    interrupts
+                        .get(index)
+                        .expect("ordinary backlog entry has its source request")
+                        .request_id,
+                );
+                assert_eq!(receipt.payload.resulting_state, SessionState::Running);
+            }
+            std::cmp::Ordering::Equal => {
+                let ReceiptOutcome::Park {
+                    authority: ReceiptAuthority::Authorized(authorization),
+                } = &receipt.payload.outcome
+                else {
+                    panic!("the first reserved backlog entry remains its authorized Park");
+                };
+                assert_eq!(authorization.request_id, park.request_id);
+                assert_eq!(receipt.payload.resulting_state, SessionState::Parked);
+            }
+            std::cmp::Ordering::Greater => {
+                let ReceiptOutcome::Disposal {
+                    authority: ReceiptAuthority::Authorized(authorization),
+                } = &receipt.payload.outcome
+                else {
+                    panic!("the last reserved backlog entry remains its authorized Disposal");
+                };
+                assert_eq!(authorization.request_id, disposal.request_id);
+                assert_eq!(receipt.payload.resulting_state, SessionState::Terminal);
+            }
         }
         previous_head = ReceiptHead {
             sequence: receipt.payload.sequence,
@@ -3589,6 +3648,10 @@ fn terminal_disposal_waits_behind_the_full_ordered_receipt_backlog() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One exact head reconnect drains an unsigned park intent once scenario keeps its causal steps and assertions together."
+)]
 fn exact_head_reconnect_drains_an_unsigned_park_intent_once() {
     let setup = setup(
         true,
@@ -3733,6 +3796,10 @@ fn exact_head_reconnect_drains_an_unsigned_park_intent_once() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One exact head reconnect freezes an unsigned running intent before repair scenario keeps its causal steps and assertions together."
+)]
 fn exact_head_reconnect_freezes_an_unsigned_running_intent_before_repair() {
     let setup = setup(
         true,
@@ -4558,6 +4625,10 @@ fn process_exit_waits_for_an_interrupt_ack_and_preserves_both_receipts() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One authenticated resume thaws once and enables only after its exact receipt ack scenario keeps its causal steps and assertions together."
+)]
 fn authenticated_resume_thaws_once_and_enables_only_after_its_exact_receipt_ack() {
     let setup = setup(
         true,
@@ -4689,6 +4760,10 @@ enum ResumeFailure {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One resume failures never enable and audit post thaw failure before reparking scenario keeps its causal steps and assertions together."
+)]
 fn resume_failures_never_enable_and_audit_post_thaw_failure_before_reparking() {
     for failure in [
         ResumeFailure::Thaw,
@@ -4952,6 +5027,10 @@ fn rejected_exact_resume_ack_reparks_and_replays_failure_without_another_thaw() 
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One reconnect drains rejected resume truth before its causal park once scenario keeps its causal steps and assertions together."
+)]
 fn reconnect_drains_rejected_resume_truth_before_its_causal_park_once() {
     let setup = setup(
         true,
@@ -5793,6 +5872,10 @@ enum ReconnectConflict {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One conflicting reconnect heads park revoke and report receipt chain invalid scenario keeps its causal steps and assertions together."
+)]
 fn conflicting_reconnect_heads_park_revoke_and_report_receipt_chain_invalid() {
     for conflict in [
         ReconnectConflict::BrokerAhead,
@@ -6071,6 +6154,10 @@ fn reconnect_conflict_with_failed_park_reports_mechanic_failure_and_allows_dispo
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One failed reconnect retry schedule fails closed and remains controllable scenario keeps its causal steps and assertions together."
+)]
 fn failed_reconnect_retry_schedule_fails_closed_and_remains_controllable() {
     let setup = setup(
         true,
@@ -6315,6 +6402,10 @@ fn rejected_suffix_ack_remains_parked_and_reports_receipt_chain_invalid() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One grace expiry during mixed receipt repair never auto thaws and allows explicit resume scenario keeps its causal steps and assertions together."
+)]
 fn grace_expiry_during_mixed_receipt_repair_never_auto_thaws_and_allows_explicit_resume() {
     let setup = setup(
         true,
@@ -6572,6 +6663,10 @@ fn grace_expiry_during_mixed_receipt_repair_never_auto_thaws_and_allows_explicit
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One controller loss backlog starts settlement after its deferred park is durable scenario keeps its causal steps and assertions together."
+)]
 fn controller_loss_backlog_starts_settlement_after_its_deferred_park_is_durable() {
     let setup = setup(
         true,
@@ -6921,6 +7016,10 @@ fn no_recovery_settlement_becomes_terminal_without_exposing_cold_park() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One invalid failed and late controller loss settlements retain the frozen lease scenario keeps its causal steps and assertions together."
+)]
 fn invalid_failed_and_late_controller_loss_settlements_retain_the_frozen_lease() {
     for callback_error in [false, true] {
         let setup = setup(
@@ -7326,17 +7425,17 @@ fn every_missing_expired_or_mismatched_authorization_fails_before_root_mechanics
                 AuthorizationRejection::Missing => {}
                 AuthorizationRejection::Expired => authorization.expires_at_ms = NOW_MS,
                 AuthorizationRejection::AuthorizationId => {
-                    authorization.authorization_id = "another-authorization".to_owned()
+                    authorization.authorization_id = "another-authorization".to_owned();
                 }
                 AuthorizationRejection::RequestId => {
-                    authorization.request_id = "another-request".to_owned()
+                    authorization.request_id = "another-request".to_owned();
                 }
                 AuthorizationRejection::RequestDigest => {
-                    authorization.request_digest = Digest::of(b"another-request").to_string()
+                    authorization.request_digest = Digest::of(b"another-request").to_string();
                 }
                 AuthorizationRejection::ControllerUid => authorization.controller_uid += 1,
                 AuthorizationRejection::Session => {
-                    authorization.session_id = "another-session".to_owned()
+                    authorization.session_id = "another-session".to_owned();
                 }
                 AuthorizationRejection::Run => authorization.run_id = "another-run".to_owned(),
                 AuthorizationRejection::EnvelopeRevision => authorization.envelope_revision += 1,
@@ -7928,6 +8027,10 @@ fn initial_user_namespace() -> bool {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One privileged supervisor launches agent under the assigned outer identity scenario keeps its causal steps and assertions together."
+)]
 fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     let Some(assigned) = env::var_os("LOUISELM_TEST_HOST_ID") else {
         eprintln!("skipping: set LOUISELM_TEST_HOST_ID in the privileged fixture");
@@ -7966,10 +8069,10 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         PRIVILEGED_TIMEOUT,
     );
     for path in [
-        setup._fixture.path(""),
-        setup._fixture.path("runtime"),
-        setup._fixture.path("runtime/bin"),
-        setup._fixture.path("runtime/lib"),
+        setup.fixture.path(""),
+        setup.fixture.path("runtime"),
+        setup.fixture.path("runtime/bin"),
+        setup.fixture.path("runtime/lib"),
     ] {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .expect("the assigned identity can traverse the runtime fixture");
@@ -7990,7 +8093,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         expected_identity,
         backend: BubblewrapBackend::at(bwrap),
         backend_id: Digest::of(&fs::read(bwrap).expect("Bubblewrap is installed")).to_string(),
-        capability_root: setup._fixture.path("real-capability"),
+        capability_root: setup.fixture.path("real-capability"),
         observation: Arc::clone(&observation),
     });
     let supervisor = LaunchSupervisor::new(
@@ -8165,6 +8268,10 @@ enum InterruptedReconciliation {
     DeferredReceipt,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One assert disconnect during reconciliation starts a new epoch scenario keeps its causal steps and assertions together."
+)]
 fn assert_disconnect_during_reconciliation_starts_a_new_epoch(case: InterruptedReconciliation) {
     let setup = setup(
         true,
@@ -8248,7 +8355,9 @@ fn assert_disconnect_during_reconciliation_starts_a_new_epoch(case: InterruptedR
         Digest::of(&first_repair_bytes).to_string(),
     );
     second_reconnect.sequence = initial_head.sequence;
-    second_reconnect.receipt_digest = initial_head.digest.clone();
+    second_reconnect
+        .receipt_digest
+        .clone_from(&initial_head.digest);
     setup.broker.complete_reconnect(second_reconnect);
 
     let second_repair_index = first_repair_index + 1;
@@ -8292,6 +8401,10 @@ fn disconnect_while_awaiting_a_deferred_receipt_ack_starts_a_new_reconnect_epoch
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One resume ack cannot reopen a session while its process exit receipt is signing scenario keeps its causal steps and assertions together."
+)]
 fn resume_ack_cannot_reopen_a_session_while_its_process_exit_receipt_is_signing() {
     let setup = setup(
         true,
@@ -8729,6 +8842,10 @@ fn evicted_successful_request_id_remains_a_conflict_without_repeating_its_mechan
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One controller settlement cleanup failure stays parked and blocks resume after reconnect scenario keeps its causal steps and assertions together."
+)]
 fn controller_settlement_cleanup_failure_stays_parked_and_blocks_resume_after_reconnect() {
     let setup = setup(
         true,
@@ -9479,6 +9596,10 @@ fn unattached_drop_and_explicit_dispose_use_the_controller_loss_settlement_path(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One terminal repark after resume audit failure preserves resume before exit scenario keeps its causal steps and assertions together."
+)]
 fn terminal_repark_after_resume_audit_failure_preserves_resume_before_exit() {
     let setup = setup(
         true,

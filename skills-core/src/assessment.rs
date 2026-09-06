@@ -61,16 +61,19 @@ pub struct CapabilityEnvelope {
 
 impl CapabilityEnvelope {
     /// Returns the only envelope an assessor may run under.
+    #[must_use]
     pub fn empty() -> Self {
         Self::default()
     }
 
     /// Reports whether the envelope grants nothing.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         !self.network && !self.filesystem && !self.process
     }
 
     /// Names the granted capabilities, for a refusal message.
+    #[must_use]
     pub fn granted(&self) -> Vec<&'static str> {
         let mut granted = Vec::new();
         if self.network {
@@ -117,6 +120,7 @@ impl Assessment {
     ///
     /// A mismatch is absence, not staleness: showing a reviewer an opinion
     /// about different bytes is worse than showing none.
+    #[must_use]
     pub fn current_for(&self, key: &AssessmentKey) -> Option<&Self> {
         (&self.key == key).then_some(self)
     }
@@ -136,10 +140,16 @@ pub enum AssessmentError {
 /// A source of advisory opinions.
 pub trait Assessor {
     /// Returns a verdict and its rationale for `request`.
+    ///
+    /// # Errors
+    /// Returns an assessor-specific failure when no advisory opinion can be produced.
     fn assess(&self, request: &AssessmentRequest) -> Result<(Verdict, String), AssessmentError>;
 }
 
 /// Runs `assessor` against `request`, refusing any granted capability.
+///
+/// # Errors
+/// Refuses a nonempty capability envelope before calling the assessor; otherwise propagates the assessor's failure.
 pub fn run(
     assessor: &dyn Assessor,
     request: &AssessmentRequest,

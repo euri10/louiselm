@@ -1,3 +1,11 @@
+//! Behavioral coverage for canonical.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Golden vectors and rejection cases for the canonical contract.
 //!
 //! The digests pinned here are the identity of every package this tool will

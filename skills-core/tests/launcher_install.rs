@@ -1,3 +1,11 @@
+//! Behavioral coverage for launcher install.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Persistent authority needed by the fixed privileged launcher entrypoint.
 
 use std::{
@@ -36,6 +44,10 @@ struct Fixture {
 }
 
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One fixture constructs a coherent measured installation and all of its authority records."
+    )]
     fn new() -> Self {
         let root = TempDir::new().expect("temporary root is creatable");
         let root_path = root.path();
@@ -174,7 +186,7 @@ impl Fixture {
         }
     }
 
-    fn request(&self) -> InstallRequest {
+    fn request() -> InstallRequest {
         InstallRequest {
             operator: "louise".to_owned(),
             broker_uid: 1_500,
@@ -218,6 +230,10 @@ impl FakeRunner {
 }
 
 impl CommandRunner for FakeRunner {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One test-double dispatch implements the fixed command grammar and its independent failure injections."
+    )]
     fn run(&self, invocation: &CommandInvocation) -> io::Result<CommandOutput> {
         self.calls.borrow_mut().push(invocation.clone());
         let arguments = argument_strings(invocation);
@@ -347,6 +363,10 @@ fn mode(path: &Path) -> u32 {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One install pins one release key pool and exact sudo command idempotently scenario keeps its causal steps and assertions together."
+)]
 fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
@@ -354,7 +374,7 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     let first = install(
         &fixture.paths,
         &runner,
-        &fixture.request(),
+        &Fixture::request(),
         1_756_800_100_000,
     )
     .expect("first install succeeds");
@@ -362,7 +382,7 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     let second = install(
         &fixture.paths,
         &runner,
-        &fixture.request(),
+        &Fixture::request(),
         1_756_800_200_000,
     )
     .expect("reinstall succeeds");
@@ -390,7 +410,7 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     assert_eq!(config.broker_uid, 1_500);
     assert_eq!(config.broker_gid, 1_500);
     assert_eq!(config.broker_socket_path, fixture.paths.broker_socket);
-    assert_eq!(config.pool, fixture.request().pool);
+    assert_eq!(config.pool, Fixture::request().pool);
     assert_eq!(config.bwrap_path, fixture.paths.bwrap);
     assert_eq!(
         config.bwrap_digest,
@@ -477,7 +497,7 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
 fn measured_bubblewrap_and_dedicated_broker_identity_are_required() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
 
     fs::write(&fixture.paths.bwrap, "replaced bubblewrap\n").unwrap();
     assert!(
@@ -495,7 +515,7 @@ fn measured_bubblewrap_and_dedicated_broker_identity_are_required() {
         (1_500, 300_001),
     ] {
         let other = Fixture::new();
-        let mut request = other.request();
+        let mut request = Fixture::request();
         request.broker_uid = broker_uid;
         request.broker_gid = broker_gid;
         let error = install(&other.paths, &FakeRunner::default(), &request, 10)
@@ -526,7 +546,7 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
     install(
         &fixture.paths,
         &FakeRunner::default(),
-        &fixture.request(),
+        &Fixture::request(),
         10,
     )
     .expect("launcher authority installs");
@@ -548,7 +568,7 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
         runtime_root: fixture.root().join("runtime"),
         executable: PathBuf::from("/bin/true"),
         arguments: Vec::new(),
-        environment: Default::default(),
+        environment: std::collections::BTreeMap::default(),
         home: fixture.root().join("sessions/changed-bwrap/home"),
         workspace: fixture.root().join("sessions/changed-bwrap/workspace"),
         system_roots: Vec::new(),
@@ -568,7 +588,7 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
 fn rotation_replays_once_and_keeps_every_old_public_and_private_key() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    let installed = install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    let installed = install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let first = installed.active_key_id.expect("first key exists");
     let request = RotationRequest {
         rotation_id: "incident-2026-09".to_owned(),
@@ -609,7 +629,7 @@ fn rotation_replays_once_and_keeps_every_old_public_and_private_key() {
 fn rotation_resumes_the_same_key_after_post_generation_failure() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    let installed = install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    let installed = install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let request = RotationRequest {
         rotation_id: "fault-injected-rotation".to_owned(),
         expected_active_key_id: installed.active_key_id.unwrap(),
@@ -655,7 +675,7 @@ fn rotation_resumes_the_same_key_after_post_generation_failure() {
 fn rotation_reuses_an_empty_destination_after_a_crash_before_key_move() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    let installed = install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    let installed = install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let request = RotationRequest {
         rotation_id: "fault-before-key-move".to_owned(),
         expected_active_key_id: installed.active_key_id.unwrap(),
@@ -705,7 +725,7 @@ fn conflicting_or_non_file_identity_authority_fails_before_publication() {
             _ => unreachable!(),
         }
 
-        let error = install(&fixture.paths, &runner, &fixture.request(), 10)
+        let error = install(&fixture.paths, &runner, &Fixture::request(), 10)
             .expect_err("unsafe identity authority is refused");
 
         assert!(
@@ -737,7 +757,7 @@ fn operator_is_pinned_to_one_non_root_uid() {
         let fixture = Fixture::new();
         let runner = FakeRunner::default();
         fs::write(&fixture.paths.passwd, passwd).unwrap();
-        let mut request = fixture.request();
+        let mut request = Fixture::request();
         if passwd.contains("toor:") {
             request.operator = "toor".to_owned();
         }
@@ -760,7 +780,7 @@ fn effective_nss_collisions_fail_without_forbidding_systemd_or_sss_sources() {
     )
     .unwrap();
 
-    install(&fixture.paths, &runner, &fixture.request(), 10)
+    install(&fixture.paths, &runner, &Fixture::request(), 10)
         .expect("additional NSS sources are safe when effective IDs do not collide");
 
     let collision = Fixture::new();
@@ -771,13 +791,8 @@ fn effective_nss_collisions_fail_without_forbidding_systemd_or_sss_sources() {
         "passwd: files sss\ngroup: files sss\nsubid: files\n",
     )
     .unwrap();
-    let error = install(
-        &collision.paths,
-        &collision_runner,
-        &collision.request(),
-        10,
-    )
-    .expect_err("an effective NSS identity collision is refused");
+    let error = install(&collision.paths, &collision_runner, &Fixture::request(), 10)
+        .expect_err("an effective NSS identity collision is refused");
 
     assert!(error.to_string().contains("effective NSS"), "{error}");
     assert!(!collision.paths.sudoers.exists());
@@ -805,7 +820,7 @@ fn effective_nss_collisions_fail_without_forbidding_systemd_or_sss_sources() {
         let fixture = Fixture::new();
         let runner = FakeRunner::default();
         *runner.getent_response.borrow_mut() = Some(output);
-        install(&fixture.paths, &runner, &fixture.request(), 10)
+        install(&fixture.paths, &runner, &Fixture::request(), 10)
             .expect_err("only getent exit 2 with empty output proves no collision");
         assert!(!fixture.paths.sudoers.exists());
     }
@@ -815,19 +830,19 @@ fn effective_nss_collisions_fail_without_forbidding_systemd_or_sss_sources() {
 fn validator_failure_leaves_the_prior_sudo_boundary_and_identity_files_untouched() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 5).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 5).unwrap();
     let before_uid = fs::read(&fixture.paths.subuid).unwrap();
-    let before_gid = fs::read(&fixture.paths.subgid).unwrap();
+    let saved_groups = fs::read(&fixture.paths.subgid).unwrap();
     let before_sudoers = fs::read(&fixture.paths.sudoers).unwrap();
     let before_config = fs::read(fixture.paths.state_root.join("config.json")).unwrap();
     runner.fail_visudo.set(true);
 
-    let error = install(&fixture.paths, &runner, &fixture.request(), 10)
+    let error = install(&fixture.paths, &runner, &Fixture::request(), 10)
         .expect_err("invalid sudoers is refused");
 
     assert!(error.to_string().contains("visudo"), "{error}");
     assert_eq!(fs::read(&fixture.paths.subuid).unwrap(), before_uid);
-    assert_eq!(fs::read(&fixture.paths.subgid).unwrap(), before_gid);
+    assert_eq!(fs::read(&fixture.paths.subgid).unwrap(), saved_groups);
     assert_eq!(fs::read(&fixture.paths.sudoers).unwrap(), before_sudoers);
     assert_eq!(
         fs::read(fixture.paths.state_root.join("config.json")).unwrap(),
@@ -857,7 +872,7 @@ fn subordinate_id_rewrite_preserves_supported_file_metadata() {
     install(
         &fixture.paths,
         &FakeRunner::default(),
-        &fixture.request(),
+        &Fixture::request(),
         10,
     )
     .unwrap();
@@ -882,7 +897,7 @@ fn subordinate_id_rewrite_preserves_supported_file_metadata() {
 fn identity_lease_is_bounded_exclusive_and_survives_reinstall() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
 
     let first = acquire_identity(&fixture.paths, 0).expect("first slot is leasable");
     let lock_path = fixture.paths.state_root.join("locks/0.lock");
@@ -896,7 +911,7 @@ fn identity_lease_is_bounded_exclusive_and_survives_reinstall() {
 
     let occupied = status(&fixture.paths).occupied_slots;
     assert_eq!(occupied, vec![0, 1]);
-    install(&fixture.paths, &runner, &fixture.request(), 20).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 20).unwrap();
     assert_eq!(fs::metadata(&lock_path).unwrap().ino(), inode);
     assert!(acquire_identity(&fixture.paths, 0).is_err());
     first
@@ -916,7 +931,7 @@ fn writable_identity_lock_blocks_status_and_leasing() {
     install(
         &fixture.paths,
         &FakeRunner::default(),
-        &fixture.request(),
+        &Fixture::request(),
         10,
     )
     .unwrap();
@@ -938,7 +953,7 @@ fn writable_identity_lock_blocks_status_and_leasing() {
 fn status_is_actionable_and_never_serializes_private_key_material() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     fs::write(&fixture.paths.ssh_keygen, "changed tool\n").unwrap();
 
     let status = status(&fixture.paths);
@@ -970,7 +985,7 @@ fn status_is_actionable_and_never_serializes_private_key_material() {
 fn changed_private_key_never_reports_a_trusted_authority() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    let installed = install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    let installed = install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let key_id = installed.active_key_id.expect("installed key exists");
     let private = fixture
         .paths
@@ -1009,7 +1024,7 @@ fn changed_private_key_never_reports_a_trusted_authority() {
 fn missing_identity_reservation_blocks_status_and_leasing() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     fs::write(&fixture.paths.subuid, "existing:100000:1000\n").unwrap();
 
     let report = status(&fixture.paths);
@@ -1035,7 +1050,7 @@ fn retry_after_key_generation_failure_recovers_without_duplicate_reservations() 
     let runner = FakeRunner::default();
     runner.fail_keygen.set(true);
 
-    let error = install(&fixture.paths, &runner, &fixture.request(), 10)
+    let error = install(&fixture.paths, &runner, &Fixture::request(), 10)
         .expect_err("failed key generation leaves no sudo authority");
     assert!(error.to_string().contains("ssh-keygen"), "{error}");
     assert!(!fixture.paths.sudoers.exists());
@@ -1050,7 +1065,7 @@ fn retry_after_key_generation_failure_recovers_without_duplicate_reservations() 
     }));
     runner.fail_keygen.set(false);
 
-    install(&fixture.paths, &runner, &fixture.request(), 20)
+    install(&fixture.paths, &runner, &Fixture::request(), 20)
         .expect("retry completes the partial install");
     assert_eq!(
         fs::read_to_string(&fixture.paths.subuid)
@@ -1074,7 +1089,7 @@ fn retry_after_keyring_publication_failure_reuses_the_generated_key() {
     let runner = FakeRunner::default();
     *runner.make_state_readonly_after_keygen.borrow_mut() = Some(fixture.paths.state_root.clone());
 
-    install(&fixture.paths, &runner, &fixture.request(), 10)
+    install(&fixture.paths, &runner, &Fixture::request(), 10)
         .expect_err("keyring publication fails after the private key is durable");
     let keys = fixture.paths.state_root.join("private/keys");
     let generated = fs::read_dir(&keys)
@@ -1086,11 +1101,11 @@ fn retry_after_keyring_publication_failure_reuses_the_generated_key() {
     fs::set_permissions(&fixture.paths.state_root, fs::Permissions::from_mode(0o711)).unwrap();
     let unexpected = keys.join(&generated[0]).join("unexpected");
     fs::write(&unexpected, b"not key material").unwrap();
-    install(&fixture.paths, &runner, &fixture.request(), 20)
+    install(&fixture.paths, &runner, &Fixture::request(), 20)
         .expect_err("retry refuses ambiguous un-enrolled key contents");
     fs::remove_file(unexpected).unwrap();
 
-    let report = install(&fixture.paths, &runner, &fixture.request(), 30)
+    let report = install(&fixture.paths, &runner, &Fixture::request(), 30)
         .expect("retry enrolls the already-durable key");
 
     assert_eq!(
@@ -1106,7 +1121,7 @@ fn bootstrap_resumes_a_pending_key_after_a_crash_before_key_move() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
     runner.fail_keygen.set(true);
-    install(&fixture.paths, &runner, &fixture.request(), 10)
+    install(&fixture.paths, &runner, &Fixture::request(), 10)
         .expect_err("failed key generation leaves bootstrap intent without authority");
     runner.fail_keygen.set(false);
 
@@ -1130,7 +1145,7 @@ fn bootstrap_resumes_a_pending_key_after_a_crash_before_key_move() {
     fs::create_dir(&destination).unwrap();
     fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
 
-    let report = install(&fixture.paths, &runner, &fixture.request(), 20)
+    let report = install(&fixture.paths, &runner, &Fixture::request(), 20)
         .expect("retry publishes the durable pending key through its empty destination");
 
     assert_eq!(report.active_key_id.as_deref(), Some(key_id.as_str()));
@@ -1142,7 +1157,7 @@ fn bootstrap_resumes_a_pending_key_after_a_crash_before_key_move() {
 fn malformed_config_is_reported_instead_of_panicking() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let config_path = fixture.paths.state_root.join("config.json");
     let mut config: serde_json::Value =
         serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
@@ -1166,7 +1181,7 @@ fn malformed_config_is_reported_instead_of_panicking() {
 fn non_executable_launcher_bytes_are_not_a_trusted_release() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let launcher = fixture
         .paths
         .release_prefix
@@ -1189,7 +1204,7 @@ fn non_executable_launcher_bytes_are_not_a_trusted_release() {
     install(
         &symlinked.paths,
         &FakeRunner::default(),
-        &symlinked.request(),
+        &Fixture::request(),
         10,
     )
     .unwrap();
@@ -1218,7 +1233,7 @@ fn shadow_locks_reclaim_dead_pids_but_refuse_live_owners() {
         format!("{}\0", i32::MAX),
     )
     .unwrap();
-    install(&stale.paths, &runner, &stale.request(), 10)
+    install(&stale.paths, &runner, &Fixture::request(), 10)
         .expect("a dead shadow-utils lock is reclaimed");
     assert!(!PathBuf::from(format!("{}.lock", stale.paths.subuid.display())).exists());
 
@@ -1228,7 +1243,7 @@ fn shadow_locks_reclaim_dead_pids_but_refuse_live_owners() {
         format!("{}\0", std::process::id()),
     )
     .unwrap();
-    let error = install(&live.paths, &runner, &live.request(), 10)
+    let error = install(&live.paths, &runner, &Fixture::request(), 10)
         .expect_err("a live shadow-utils lock is never stolen");
     assert!(error.to_string().contains("busy"), "{error}");
     assert!(!live.paths.sudoers.exists());
@@ -1239,7 +1254,7 @@ fn shadow_locks_reclaim_dead_pids_but_refuse_live_owners() {
         b"not-a-pid\0",
     )
     .unwrap();
-    let error = install(&malformed.paths, &runner, &malformed.request(), 10)
+    let error = install(&malformed.paths, &runner, &Fixture::request(), 10)
         .expect_err("a malformed shadow-utils lock is never reclaimed");
     assert!(error.to_string().contains("malformed"), "{error}");
     assert!(!malformed.paths.sudoers.exists());
@@ -1249,7 +1264,7 @@ fn shadow_locks_reclaim_dead_pids_but_refuse_live_owners() {
 fn simultaneous_different_slots_leave_no_shadow_lock_behind() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
-    install(&fixture.paths, &runner, &fixture.request(), 10).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
     let paths = Arc::new(fixture.paths.clone());
     let acquired = Arc::new(Barrier::new(3));
     let release = Arc::new(Barrier::new(3));
@@ -1288,7 +1303,7 @@ fn dropping_an_unreleased_lease_fails_closed_across_reacquisition() {
     install(
         &fixture.paths,
         &FakeRunner::default(),
-        &fixture.request(),
+        &Fixture::request(),
         10,
     )
     .unwrap();
@@ -1307,7 +1322,7 @@ fn an_unproven_cleanup_durably_poisons_the_identity_slot() {
     install(
         &fixture.paths,
         &FakeRunner::default(),
-        &fixture.request(),
+        &Fixture::request(),
         10,
     )
     .unwrap();

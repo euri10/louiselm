@@ -1,3 +1,11 @@
+//! Behavioral coverage for inspect.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Inspection: the deterministic, model-free examination of package bytes.
 //!
 //! Inspection decides nothing about whether a skill is safe. It decides what a

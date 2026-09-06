@@ -1,3 +1,11 @@
+//! Behavioral coverage for generation.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::{
     cell::RefCell,
     io,
@@ -60,7 +68,7 @@ fn broker_reserves_before_create_and_enforces_actor_database_and_external_ref() 
     let issue = generator
         .generate_with(
             &store,
-            request(
+            &request(
                 run_id,
                 mutation_id,
                 "create",
@@ -112,7 +120,7 @@ fn exhaustion_parks_before_the_second_process_can_start() {
     generator
         .generate_with(
             &store,
-            request(
+            &request(
                 run_id,
                 "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
                 "create",
@@ -132,7 +140,7 @@ fn exhaustion_parks_before_the_second_process_can_start() {
     let error = generator
         .generate_with(
             &store,
-            request(
+            &request(
                 run_id,
                 "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",
                 "create",
@@ -159,7 +167,7 @@ fn ambiguous_success_reconciles_by_external_ref_without_repeating_create() {
     let generator = BeadsGenerator::new("br", temporary.path().join("beads.db"));
     let first = generator.generate_with(
         &store,
-        request(run_id, mutation_id, "create", &["--title", "Maybe"]),
+        &request(run_id, mutation_id, "create", &["--title", "Maybe"]),
         1_000,
         |_| {
             Ok(CommandOutput {
@@ -179,7 +187,7 @@ fn ambiguous_success_reconciles_by_external_ref_without_repeating_create() {
     let reconciled = generator
         .generate_with(
             &store,
-            request(run_id, mutation_id, "create", &["--title", "Maybe"]),
+            &request(run_id, mutation_id, "create", &["--title", "Maybe"]),
             2_000,
             |_| {
                 calls += 1;
@@ -214,7 +222,7 @@ fn process_start_failure_releases_capacity_and_q_maps_to_create() {
     let generator = BeadsGenerator::new("br", temporary.path().join("beads.db"));
     let failure = generator.generate_with(
         &store,
-        request(
+        &request(
             run_id,
             "eeeeeeee-ffff-4aaa-8bbb-cccccccccccc",
             "create",
@@ -232,7 +240,7 @@ fn process_start_failure_releases_capacity_and_q_maps_to_create() {
     let quick = generator
         .generate_with(
             &store,
-            request(
+            &request(
                 run_id,
                 "ffffffff-aaaa-4bbb-8ccc-dddddddddddd",
                 "q",

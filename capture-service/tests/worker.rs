@@ -1,3 +1,11 @@
+//! Behavioral coverage for worker.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::{collections::VecDeque, io::Cursor, sync::Mutex};
 
 use louiselm_capture::{
@@ -10,11 +18,11 @@ struct FakeTranscriber {
 }
 
 impl Transcriber for FakeTranscriber {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "fake"
     }
 
-    fn model(&self) -> &str {
+    fn model(&self) -> &'static str {
         "accurate"
     }
 
@@ -31,7 +39,7 @@ impl Transcriber for FakeTranscriber {
 fn ingest(store: &Store, id: &str) {
     store
         .ingest(
-            CaptureDraft {
+            &CaptureDraft {
                 id: id.to_owned(),
                 source: CaptureSource::Android,
                 recorded_at_ms: 1_765_000_000_000,

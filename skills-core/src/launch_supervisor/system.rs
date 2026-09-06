@@ -60,7 +60,7 @@ const SIGNER_CLEANUP_MARGIN: Duration = Duration::from_millis(250);
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn map_transport(_: TransportError) -> SupervisorError {
@@ -68,6 +68,9 @@ fn map_transport(_: TransportError) -> SupervisorError {
 }
 
 /// Connects only to the install-pinned broker rendezvous and kernel identity.
+///
+/// # Errors
+/// Returns `BrokerUnavailable` for transport/credential failures or `BrokerTimeout` when the bounded connection attempt expires.
 pub fn connect_control_broker(
     config: &LauncherConfig,
     timeout: Duration,
@@ -162,11 +165,11 @@ impl SeqpacketLaunchBroker {
     where
         T: Send + 'static,
     {
-        Self::transact_on(self.current_channel()?, bytes, parse, complete)
+        Self::transact_on(&self.current_channel()?, bytes, parse, complete)
     }
 
     fn transact_on<T>(
-        channel: SeqpacketChannel,
+        channel: &SeqpacketChannel,
         bytes: Vec<u8>,
         parse: impl FnOnce(AuthenticatedPacket) -> Result<T, SupervisorError> + Send + 'static,
         complete: SupervisorCompletion<T>,
@@ -207,7 +210,7 @@ impl SeqpacketLaunchBroker {
 
     fn arm_session_receive(
         state: Arc<Mutex<SeqpacketLaunchBrokerState>>,
-        channel: SeqpacketChannel,
+        channel: &SeqpacketChannel,
         completion: Arc<Mutex<Option<SupervisorCompletion<ProtocolMessage>>>>,
     ) -> Result<(), SupervisorError> {
         let next_channel = channel.clone();
@@ -243,7 +246,7 @@ impl SeqpacketLaunchBroker {
                         (pending.complete)(result);
                         if let Err(error) = Self::arm_session_receive(
                             Arc::clone(&state),
-                            next_channel,
+                            &next_channel,
                             Arc::clone(&completion),
                         ) && let Some(complete) = lock(&completion).take()
                         {
@@ -268,6 +271,10 @@ impl SeqpacketLaunchBroker {
             .map_err(map_transport)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "The same held mutex protects the generation check and taking its pending reconnect."
+    )]
     fn finish_reconnect(
         state: &Arc<Mutex<SeqpacketLaunchBrokerState>>,
         generation: u64,
@@ -277,10 +284,10 @@ impl SeqpacketLaunchBroker {
         let mut rejected = None;
         let (complete, result) = {
             let mut state = lock(state);
-            if !state
+            if state
                 .reconnect
                 .as_ref()
-                .is_some_and(|pending| pending.generation == generation)
+                .is_none_or(|pending| pending.generation != generation)
             {
                 return;
             }
@@ -327,7 +334,6 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                         ResponseResult::IdentityExhaustion { exhaustion } => Err(
                             SupervisorError::SessionIdentityExhausted(Box::new(exhaustion)),
                         ),
-                        ResponseResult::Error { .. } => Err(SupervisorError::AuthorizationRejected),
                         _ => Err(SupervisorError::AuthorizationRejected),
                     }
                 }
@@ -354,6 +360,10 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         )
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "Each connector or generation presence check and subsequent access share one uninterrupted mutex guard."
+    )]
     fn reconnect_session(
         &self,
         reconnect: BrokerReconnect,
@@ -392,16 +402,13 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                 &socket_path,
                 broker_pin,
                 Box::new(move |connected| {
-                    let candidate = match connected {
-                        Ok(candidate) => candidate,
-                        Err(_) => {
-                            Self::finish_reconnect(
-                                &callback_state,
-                                generation,
-                                Err(SupervisorError::BrokerUnavailable),
-                            );
-                            return;
-                        }
+                    let Ok(candidate) = connected else {
+                        Self::finish_reconnect(
+                            &callback_state,
+                            generation,
+                            Err(SupervisorError::BrokerUnavailable),
+                        );
+                        return;
                     };
                     {
                         let mut state = lock(&callback_state);
@@ -425,7 +432,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                     let response_state = Arc::clone(&callback_state);
                     let enqueue_state = Arc::clone(&callback_state);
                     let queued = Self::transact_on(
-                        candidate,
+                        &candidate,
                         reconnect_bytes,
                         move |packet| match packet.packet {
                             LauncherPacket::Response(response)
@@ -518,7 +525,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
     ) -> Result<(), SupervisorError> {
         Self::arm_session_receive(
             Arc::clone(&self.state),
-            self.current_channel()?,
+            &self.current_channel()?,
             Arc::new(Mutex::new(Some(complete))),
         )
     }
@@ -586,6 +593,9 @@ pub struct InstalledLaunchSigner {
 
 impl InstalledLaunchSigner {
     /// Opens the installed signing authority for a new receipt chain.
+    ///
+    /// # Errors
+    /// Returns `SigningUnavailable` if installed authority validation/opening fails or exceeds its deadline.
     pub fn open(paths: &LauncherPaths, timeout: Duration) -> Result<Self, SupervisorError> {
         let deadline = Instant::now()
             .checked_add(timeout)
@@ -649,6 +659,9 @@ pub struct SystemLaunchPlatform {
 
 impl SystemLaunchPlatform {
     /// Creates the production platform after materializing only fixed roots.
+    ///
+    /// # Errors
+    /// Returns root-directory/cgroup setup errors or `SpawnFailed` when the pinned Bubblewrap binary cannot be measured or queried.
     pub fn new(
         paths: LauncherPaths,
         config: LauncherConfig,
@@ -707,7 +720,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
             let _ = lease.poison();
             return Err(SupervisorError::IdentityAssignmentInvalid);
         }
-        Ok(Box::new(SystemIdentityGuard { lease: Some(lease) }))
+        Ok(Box::new(SystemIdentityGuard { lease }))
     }
 
     fn create_capability(
@@ -723,52 +736,42 @@ impl LaunchPlatform for SystemLaunchPlatform {
         require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
         let prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
         Ok(Box::new(SystemPreparedAgent {
-            prepared: Some(prepared),
+            prepared,
             backend_id: self.config.bwrap_digest.clone(),
         }))
     }
 }
 
 struct SystemIdentityGuard {
-    lease: Option<IdentityLease>,
+    lease: IdentityLease,
 }
 
 impl IdentityGuard for SystemIdentityGuard {
     fn identity(&self) -> Identity {
-        self.lease
-            .as_ref()
-            .expect("an identity guard owns its lease")
-            .identity()
+        self.lease.identity()
     }
 
-    fn release(mut self: Box<Self>) -> Result<(), SupervisorError> {
+    fn release(self: Box<Self>) -> Result<(), SupervisorError> {
         self.lease
-            .take()
-            .expect("an identity guard owns its lease")
             .release()
             .map_err(|_| SupervisorError::CleanupUnproven)
     }
 
-    fn poison(mut self: Box<Self>) -> Result<(), SupervisorError> {
+    fn poison(self: Box<Self>) -> Result<(), SupervisorError> {
         self.lease
-            .take()
-            .expect("an identity guard owns its lease")
             .poison()
             .map_err(|_| SupervisorError::CleanupUnproven)
     }
 }
 
 struct SystemPreparedAgent {
-    prepared: Option<PreparedSession>,
+    prepared: PreparedSession,
     backend_id: String,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
     fn evidence(&self) -> &crate::isolation::IsolationEvidence {
-        self.prepared
-            .as_ref()
-            .expect("a prepared adapter owns its Session")
-            .evidence()
+        self.prepared.evidence()
     }
 
     fn backend_id(&self) -> &str {
@@ -776,34 +779,21 @@ impl PreparedAgent for SystemPreparedAgent {
     }
 
     fn sandbox_leader_pid(&self) -> Option<u32> {
-        self.prepared
-            .as_ref()
-            .expect("a prepared adapter owns its Session")
-            .sandbox_leader_pid()
+        self.prepared.sandbox_leader_pid()
     }
 
     fn processes(&self) -> Result<Vec<u32>, SupervisorError> {
-        self.prepared
-            .as_ref()
-            .expect("a prepared adapter owns its Session")
-            .processes()
-            .map_err(map_sandbox)
+        self.prepared.processes().map_err(map_sandbox)
     }
 
     fn process_membership(&self) -> Arc<dyn ProcessMembership> {
         Arc::new(SystemProcessMembership {
-            tree: self
-                .prepared
-                .as_ref()
-                .expect("a prepared adapter owns its Session")
-                .process_tree(),
+            tree: self.prepared.process_tree(),
         })
     }
 
-    fn start(mut self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
+    fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
         self.prepared
-            .take()
-            .expect("a prepared adapter owns its Session")
             .start()
             .map(|session| {
                 Box::new(SystemRunningAgent {
@@ -815,12 +805,7 @@ impl PreparedAgent for SystemPreparedAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
-        self.prepared
-            .as_mut()
-            .expect("a prepared adapter owns its Session")
-            .dispose()
-            .map(|_| ())
-            .map_err(map_sandbox)
+        self.prepared.dispose().map(|_| ()).map_err(map_sandbox)
     }
 }
 
@@ -858,14 +843,14 @@ fn classify_exit(code: i32) -> ProcessExitClassification {
 
 fn classify_mechanic_failure(
     target: Option<SandboxMechanicalState>,
-    observed: Result<SandboxMechanicalState, SandboxError>,
+    observed: &Result<SandboxMechanicalState, SandboxError>,
 ) -> Result<(), MechanicFailure> {
     match observed {
-        Ok(state) if Some(state) == target => Ok(()),
+        Ok(state) if Some(*state) == target => Ok(()),
         Ok(SandboxMechanicalState::Running) => Err(MechanicFailure::Running),
         Ok(SandboxMechanicalState::Parked) => Err(MechanicFailure::Parked),
         Ok(SandboxMechanicalState::Exited(code)) => {
-            Err(MechanicFailure::Terminal(classify_exit(code)))
+            Err(MechanicFailure::Terminal(classify_exit(*code)))
         }
         Err(_) => Err(MechanicFailure::Ambiguous),
     }
@@ -879,7 +864,7 @@ fn apply_mechanic<T>(
     let mut session = lock(session);
     match apply(&mut session) {
         Ok(_) => Ok(()),
-        Err(_) => classify_mechanic_failure(target, session.mechanical_state()),
+        Err(_) => classify_mechanic_failure(target, &session.mechanical_state()),
     }
 }
 
@@ -993,11 +978,7 @@ fn start_relay_workers(
                         break;
                     }
                     Ok(read) if agent_input.write_all(&buffer[..read]).is_ok() => {}
-                    Ok(_) => {
-                        input_events.emit(RunningAgentEvent::RelayFailed);
-                        break;
-                    }
-                    Err(_) => {
+                    Ok(_) | Err(_) => {
                         input_events.emit(RunningAgentEvent::RelayFailed);
                         break;
                     }
@@ -1054,6 +1035,10 @@ fn start_relay_workers(
         .map_err(|_| SupervisorError::RelayFailed)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Result::map_err transfers ownership of the error into this conversion."
+)]
 fn map_sandbox(error: SandboxError) -> SupervisorError {
     match error {
         SandboxError::CleanupUnproven { .. } | SandboxError::Survivors { .. } => {
@@ -1151,8 +1136,8 @@ struct AcceptedCapability {
 
 fn accept_capability(
     result: Result<SeqpacketChannel, TransportError>,
-    accepted: Arc<Mutex<AcceptedCapability>>,
-    membership: Arc<dyn ProcessMembership>,
+    accepted: &Mutex<AcceptedCapability>,
+    membership: &dyn ProcessMembership,
     generation: u64,
 ) {
     let Ok(channel) = result else {
@@ -1162,7 +1147,7 @@ fn accept_capability(
         channel.close();
         return;
     }
-    let mut accepted = lock(&accepted);
+    let mut accepted = lock(accepted);
     if accepted.closed || accepted.generation != generation {
         channel.close();
     } else {
@@ -1179,13 +1164,10 @@ impl SystemCapabilityGate {
         let configured = fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
             .and_then(|()| chown(&path, Some(assigned.uid), Some(assigned.gid)))
             .and_then(|()| fs::symlink_metadata(&path));
-        let metadata = match configured {
-            Ok(metadata) => metadata,
-            Err(_) => {
-                drop(bound);
-                let _ = fs::remove_file(&path);
-                return Err(SupervisorError::CapabilityUnavailable);
-            }
+        let Ok(metadata) = configured else {
+            drop(bound);
+            let _ = fs::remove_file(&path);
+            return Err(SupervisorError::CapabilityUnavailable);
         };
         if !metadata.file_type().is_socket()
             || metadata.file_type().is_symlink()
@@ -1324,7 +1306,9 @@ impl CapabilityGate for SystemCapabilityGate {
                     uid: self.expected_identity.uid,
                     gid: self.expected_identity.gid,
                 },
-                Box::new(move |result| accept_capability(result, accepted, membership, generation)),
+                Box::new(move |result| {
+                    accept_capability(result, &accepted, membership.as_ref(), generation);
+                }),
             )
             .is_err()
         {
@@ -1473,6 +1457,12 @@ fn ensure_system_cgroup_root() -> Result<(), SupervisorError> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use std::sync::mpsc;
 
@@ -1492,14 +1482,14 @@ mod tests {
         assert_eq!(
             classify_mechanic_failure(
                 Some(SandboxMechanicalState::Parked),
-                Ok(SandboxMechanicalState::Parked),
+                &Ok(SandboxMechanicalState::Parked),
             ),
             Ok(()),
         );
         assert_eq!(
             classify_mechanic_failure(
                 Some(SandboxMechanicalState::Running),
-                Ok(SandboxMechanicalState::Running),
+                &Ok(SandboxMechanicalState::Running),
             ),
             Ok(()),
         );
@@ -1510,28 +1500,28 @@ mod tests {
         assert_eq!(
             classify_mechanic_failure(
                 Some(SandboxMechanicalState::Parked),
-                Ok(SandboxMechanicalState::Running),
+                &Ok(SandboxMechanicalState::Running),
             ),
             Err(MechanicFailure::Running),
         );
         assert_eq!(
-            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Parked)),
+            classify_mechanic_failure(None, &Ok(SandboxMechanicalState::Parked)),
             Err(MechanicFailure::Parked),
         );
         assert_eq!(
-            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Exited(-1))),
+            classify_mechanic_failure(None, &Ok(SandboxMechanicalState::Exited(-1))),
             Err(MechanicFailure::Terminal(
                 ProcessExitClassification::Signaled,
             )),
         );
         assert_eq!(
-            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Exited(0))),
+            classify_mechanic_failure(None, &Ok(SandboxMechanicalState::Exited(0))),
             Err(MechanicFailure::Terminal(
                 ProcessExitClassification::Success,
             )),
         );
         assert_eq!(
-            classify_mechanic_failure(None, Ok(SandboxMechanicalState::Exited(7))),
+            classify_mechanic_failure(None, &Ok(SandboxMechanicalState::Exited(7))),
             Err(MechanicFailure::Terminal(
                 ProcessExitClassification::Failure,
             )),
@@ -1539,7 +1529,7 @@ mod tests {
         assert_eq!(
             classify_mechanic_failure(
                 Some(SandboxMechanicalState::Running),
-                Err(SandboxError::NoCgroup("unavailable".to_owned())),
+                &Err(SandboxError::NoCgroup("unavailable".to_owned())),
             ),
             Err(MechanicFailure::Ambiguous),
         );
@@ -1770,6 +1760,10 @@ mod tests {
         (candidate, receiver)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This terminal assertion consumes and releases the channel after proving disconnection."
+    )]
     fn assert_disconnected(channel: SeqpacketChannel) {
         let (sender, receiver) = mpsc::sync_channel(1);
         let queued = channel.receive(Box::new(move |result| {
@@ -1898,12 +1892,7 @@ mod tests {
         let (server, client) = channel_pair();
         let accepted = Arc::new(Mutex::new(AcceptedCapability::default()));
 
-        accept_capability(
-            Ok(server),
-            Arc::clone(&accepted),
-            Arc::new(FixedMembership(false)),
-            0,
-        );
+        accept_capability(Ok(server), &accepted, &FixedMembership(false), 0);
 
         assert!(lock(&accepted).channel.is_none());
         assert_disconnected(client);
@@ -1921,7 +1910,7 @@ mod tests {
         });
         let worker_accepted = Arc::clone(&accepted);
         let worker = thread::spawn(move || {
-            accept_capability(Ok(server), worker_accepted, membership, 0);
+            accept_capability(Ok(server), &worker_accepted, membership.as_ref(), 0);
         });
         entered_receiver
             .recv_timeout(Duration::from_secs(2))
@@ -1947,7 +1936,7 @@ mod tests {
         lock(&accepted).generation = 1;
         let worker_accepted = Arc::clone(&accepted);
         let worker = thread::spawn(move || {
-            accept_capability(Ok(server), worker_accepted, membership, 1);
+            accept_capability(Ok(server), &worker_accepted, membership.as_ref(), 1);
         });
         entered_receiver
             .recv_timeout(Duration::from_secs(2))

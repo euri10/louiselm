@@ -68,11 +68,13 @@ pub struct SkPolicy {
 
 impl SkPolicy {
     /// Accepts a software key; used for tests and for enrollment bootstrap.
+    #[must_use]
     pub fn none() -> Self {
         Self::default()
     }
 
     /// Requires a hardware key that reports both touch and user verification.
+    #[must_use]
     pub fn require_presence_and_verification() -> Self {
         Self {
             require_hardware: true,
@@ -99,6 +101,7 @@ pub struct SshSignature {
 
 impl SshSignature {
     /// Returns the signing key in `authorized_keys` form.
+    #[must_use]
     pub fn openssh_public_key(&self) -> String {
         format!(
             "{} {}",
@@ -108,6 +111,7 @@ impl SshSignature {
     }
 
     /// Reports whether the signature came from a hardware-backed key.
+    #[must_use]
     pub fn is_hardware_backed(&self) -> bool {
         self.sk_flags.is_some()
     }
@@ -157,6 +161,9 @@ pub enum SignatureError {
 }
 
 /// Parses an armored SSH signature without verifying it.
+///
+/// # Errors
+/// Rejects malformed armor/base64, truncated or unsupported SSH envelopes, invalid strings, and malformed algorithm-specific signature data.
 pub fn parse(armored: &str) -> Result<SshSignature, SignatureError> {
     let blob = dearmor(armored)?;
     let mut reader = Reader::new(&blob);
@@ -215,6 +222,9 @@ pub fn parse(armored: &str) -> Result<SshSignature, SignatureError> {
 /// assertion flags are all decided before `ssh-keygen` is asked anything, so
 /// each refusal names the reason a reviewer needs rather than the first one a
 /// verifier happened to hit.
+///
+/// # Errors
+/// Returns parsing, namespace/key mismatch, hardware/assertion-policy, cryptographic, missing-tool, or scratch/process I/O errors.
 pub fn verify(
     armored: &str,
     namespace: &str,
@@ -296,7 +306,9 @@ fn verify_cryptographically(
     }
     let mut reason = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if reason.is_empty() {
-        reason = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .clone_into(&mut reason);
     }
     Err(SignatureError::Cryptographic(crate::scan::escape(&reason)))
 }
@@ -435,7 +447,7 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, SignatureError> {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
-            decoded.push((accumulator >> bits) as u8);
+            decoded.push((accumulator >> bits).to_le_bytes()[0]);
         }
     }
     Ok(decoded)

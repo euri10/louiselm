@@ -87,6 +87,9 @@ pub enum ManifestError {
 
 impl Manifest {
     /// Builds a manifest from unsorted entries, enforcing the path contract.
+    ///
+    /// # Errors
+    /// Rejects invalid paths, duplicate/colliding entries, malformed digests, or unsupported manifest metadata.
     pub fn new(
         mut entries: Vec<ManifestEntry>,
         allow_non_ascii: bool,
@@ -101,16 +104,29 @@ impl Manifest {
     }
 
     /// Serializes the manifest to the bytes its digest covers.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("manifest is always serializable")
     }
 
     /// Returns the package digest: the content address of the canonical bytes.
+    #[must_use]
     pub fn digest(&self) -> Digest {
         Digest::of(&self.canonical_bytes())
     }
 
     /// Parses manifest bytes, rejecting anything not in canonical form.
+    ///
+    /// # Errors
+    /// Rejects malformed/noncanonical JSON and any manifest entry or schema that violates the canonical contract.
     pub fn parse(bytes: &[u8], allow_non_ascii: bool) -> Result<Self, ManifestError> {
         let manifest: Self = serde_json::from_slice(bytes)
             .map_err(|error| ManifestError::Malformed(error.to_string()))?;
@@ -122,11 +138,13 @@ impl Manifest {
     }
 
     /// Finds an entry by exact path.
+    #[must_use]
     pub fn entry(&self, path: &str) -> Option<&ManifestEntry> {
         self.entries.iter().find(|entry| entry.path == path)
     }
 
     /// Returns the total size of the package's content in bytes.
+    #[must_use]
     pub fn total_size(&self) -> u64 {
         self.entries.iter().map(|entry| entry.size).sum()
     }

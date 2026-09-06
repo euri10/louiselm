@@ -37,16 +37,29 @@ pub enum AttentionSocketError {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AttentionSocketMessage {
     /// Complete current state, without the operator capability.
-    Snapshot { snapshot: AttentionSnapshot },
+    Snapshot {
+        /// Complete current observer state.
+        snapshot: AttentionSnapshot,
+    },
     /// Invalidation containing only the new generation.
-    AttentionChanged { generation: u64 },
+    AttentionChanged {
+        /// New generation clients should fetch.
+        generation: u64,
+    },
     /// Result of one accepted or idempotent mutation.
     MutationResult {
+        /// Client-supplied correlation identifier.
         request_id: String,
+        /// Authoritative state after the accepted mutation.
         snapshot: AttentionSnapshot,
     },
     /// Rejected mutation with a sanitized message.
-    MutationError { request_id: String, message: String },
+    MutationError {
+        /// Client-supplied correlation identifier.
+        request_id: String,
+        /// Sanitized reason the mutation was refused.
+        message: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -137,6 +150,10 @@ impl AttentionSocket {
     }
 
     /// Accept clients until the owning task is cancelled.
+    ///
+    /// # Errors
+    /// Returns an I/O error if accepting a client fails. Individual client failures
+    /// close that connection without terminating the listener.
     pub async fn serve(self) -> Result<(), AttentionSocketError> {
         loop {
             let (stream, _) = self.listener.accept().await?;
@@ -238,8 +255,8 @@ async fn handle_mutation(
     }
     let result = match request {
         ClientMessage::Upsert { attention, .. } => store.upsert(attention),
-        ClientMessage::SetEligible { key, eligible, .. } => store.set_eligible(key, eligible),
-        ClientMessage::Clear { key, .. } => store.clear(key),
+        ClientMessage::SetEligible { key, eligible, .. } => store.set_eligible(&key, eligible),
+        ClientMessage::Clear { key, .. } => store.clear(&key),
         ClientMessage::ClearSession { session_id, .. } => store.clear_session(&session_id),
         ClientMessage::ClearSessionKind {
             session_id, kind, ..

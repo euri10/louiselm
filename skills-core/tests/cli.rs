@@ -1,3 +1,11 @@
+//! Behavioral coverage for cli.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The command line: the surface an operator and an Agent both drive.
 
 mod support;

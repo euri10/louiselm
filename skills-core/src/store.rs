@@ -108,11 +108,15 @@ pub struct Package {
 
 impl Package {
     /// Returns the absolute path of one packaged file.
+    #[must_use]
     pub fn file_path(&self, package_relative: &str) -> PathBuf {
         self.root.join("files").join(package_relative)
     }
 
     /// Reads one packaged file's bytes.
+    ///
+    /// # Errors
+    /// Returns file-open/read errors for the requested packaged path.
     pub fn read(&self, package_relative: &str) -> Result<Vec<u8>, StoreError> {
         let path = self.file_path(package_relative);
         fs::read(&path).map_err(|source| StoreError::Io {
@@ -157,6 +161,7 @@ pub enum VerifyFailure {
 
 impl VerifyFailure {
     /// Renders the failure as one line of reviewer-facing text.
+    #[must_use]
     pub fn summary(&self) -> String {
         match self {
             Self::Missing { path } => format!("'{path}' is missing"),
@@ -188,6 +193,7 @@ pub struct VerifyReport {
 
 impl VerifyReport {
     /// Reports whether the stored bytes are exactly what the digest names.
+    #[must_use]
     pub fn is_intact(&self) -> bool {
         self.failures.is_empty() && self.digest == self.recomputed_digest
     }
@@ -235,6 +241,9 @@ pub struct Store {
 
 impl Store {
     /// Opens, creating the store layout when it does not exist yet.
+    ///
+    /// # Errors
+    /// Returns directory-creation or provenance-write errors.
     pub fn open(root: &Path) -> Result<Self, StoreError> {
         for directory in ["packages", "lineage", "staging", "assessments"] {
             let path = root.join(directory);
@@ -251,6 +260,9 @@ impl Store {
     }
 
     /// Returns the store's provenance, recording it if this is a new store.
+    ///
+    /// # Errors
+    /// Returns provenance read/JSON errors or persistence errors while recording a new store.
     pub fn provenance(&self) -> Result<Provenance, StoreError> {
         let path = self.root.join("provenance.json");
         match fs::read(&path) {
@@ -271,10 +283,9 @@ impl Store {
     }
 
     /// Reports whether this store may hold supply a verified Session uses.
+    #[must_use]
     pub fn is_trusted(&self) -> bool {
-        self.provenance()
-            .map(|provenance| provenance.trusted)
-            .unwrap_or(false)
+        self.provenance().is_ok_and(|provenance| provenance.trusted)
     }
 
     fn record_provenance(&self) -> Result<(), StoreError> {
@@ -288,7 +299,11 @@ impl Store {
             trusted: identity.verified,
             created_by_release: identity.release_id,
         };
-        let bytes = serde_json::to_vec(&provenance).expect("provenance is always serializable");
+        let bytes = serde_json::to_vec(&provenance).map_err(|error| StoreError::Metadata {
+            kind: "provenance".to_owned(),
+            digest: self.root.display().to_string(),
+            reason: error.to_string(),
+        })?;
         fs::write(&path, bytes).map_err(|source| StoreError::Io {
             path: path.display().to_string(),
             source,
@@ -296,6 +311,7 @@ impl Store {
     }
 
     /// Returns the store root.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -305,6 +321,9 @@ impl Store {
     /// `captured_at_ms` is supplied by the caller rather than read from the
     /// clock so that packaging is reproducible under test and the timestamp
     /// stays out of the package bytes.
+    ///
+    /// # Errors
+    /// Returns staging/capture validation or I/O errors, or any publication failure from [`Self::publish`].
     pub fn capture(
         &self,
         source: &Path,
@@ -325,6 +344,13 @@ impl Store {
     }
 
     /// Publishes a staged package and appends its lineage record.
+    ///
+    /// # Errors
+    /// Refuses a digest collision with different stored bytes; propagates verification, copy/rename, lineage-write, and manifest-loading errors.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Publishing consumes the staged handle because its directory is moved or removed and must not be reused."
+    )]
     pub fn publish(
         &self,
         staged: StagedPackage,
@@ -370,6 +396,9 @@ impl Store {
     }
 
     /// Opens a published package, re-parsing its manifest from stored bytes.
+    ///
+    /// # Errors
+    /// Returns `UnknownPackage`, manifest-read errors, or canonical manifest validation errors.
     pub fn open_package(&self, digest: &Digest, policy: &Policy) -> Result<Package, StoreError> {
         let root = self.package_path(digest);
         let manifest_path = root.join("manifest.json");
@@ -389,6 +418,9 @@ impl Store {
     }
 
     /// Recomputes a package from its stored bytes and reports every mismatch.
+    ///
+    /// # Errors
+    /// Returns package-open, content-read, or directory-listing errors. Missing files and content/mode mismatches are findings in the returned report.
     pub fn verify(&self, digest: &Digest, policy: &Policy) -> Result<VerifyReport, StoreError> {
         let package = self.open_package(digest, policy)?;
         let recomputed_digest = Digest::of(&package.manifest.canonical_bytes());
@@ -437,6 +469,9 @@ impl Store {
     }
 
     /// Lists every published package digest, in store order.
+    ///
+    /// # Errors
+    /// Returns package-directory read errors; non-digest filenames are ignored.
     pub fn list(&self) -> Result<Vec<Digest>, StoreError> {
         let packages = self.root.join("packages");
         let mut digests = Vec::new();
@@ -459,6 +494,9 @@ impl Store {
     }
 
     /// Reads the Supply lineage recorded for a package, when there is any.
+    ///
+    /// # Errors
+    /// Returns lineage read/JSON errors; no lineage record is `Ok(None)`.
     pub fn lineage(&self, digest: &Digest) -> Result<Option<SupplyLineage>, StoreError> {
         let path = self.lineage_path(digest);
         let bytes = match fs::read(&path) {
@@ -484,6 +522,9 @@ impl Store {
     ///
     /// Assessments are local, advisory, and replaceable; unlike package bytes
     /// they carry no authority, so overwriting one is not a trust event.
+    ///
+    /// # Errors
+    /// Rejects an invalid package digest; returns Assessment serialization or file-write errors.
     pub fn record_assessment(&self, assessment: &Assessment) -> Result<(), StoreError> {
         let digest = Digest::parse(&assessment.key.package_digest)?;
         let path = self.metadata_path("assessments", &digest);
@@ -502,6 +543,9 @@ impl Store {
     ///
     /// The caller still has to check it describes the Model and prompt in use;
     /// see [`Assessment::current_for`].
+    ///
+    /// # Errors
+    /// Returns Assessment read/JSON errors; a missing record is `Ok(None)`.
     pub fn assessment(&self, digest: &Digest) -> Result<Option<Assessment>, StoreError> {
         let path = self.metadata_path("assessments", digest);
         let bytes = match fs::read(&path) {

@@ -14,7 +14,7 @@
 //!   and the remaining permission bits never reach a manifest.
 //! * Content is addressed by SHA-256, rendered as `sha256:<64 lowercase hex>`.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -66,6 +66,9 @@ impl CanonicalPath {
     /// admitted, [`CanonicalPath::collision_key`] no longer detects Unicode
     /// normalization collisions on its own — capture must then reject the
     /// package (louiselm-u530).
+    ///
+    /// # Errors
+    /// Rejects empty/absolute paths, empty or relative components, controls, excessive length, and non-ASCII bytes when disallowed.
     pub fn parse(raw: &str, allow_non_ascii: bool) -> Result<Self, PathError> {
         if raw.is_empty() {
             return Err(PathError::Empty);
@@ -76,7 +79,7 @@ impl CanonicalPath {
         if raw.len() > MAX_PATH_BYTES {
             return Err(PathError::TooLong(raw.to_owned()));
         }
-        if raw.chars().any(|character| character.is_control()) {
+        if raw.chars().any(char::is_control) {
             return Err(PathError::ControlCharacter(raw.to_owned()));
         }
         if !allow_non_ascii && !raw.is_ascii() {
@@ -98,6 +101,7 @@ impl CanonicalPath {
     }
 
     /// Borrows the path as it appears in a manifest.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -107,16 +111,19 @@ impl CanonicalPath {
     /// ASCII case folding covers the practical collision — a case-insensitive
     /// or case-preserving filesystem materializing `Skill.md` and `skill.md`
     /// as one file — for the ASCII-only paths the default policy admits.
+    #[must_use]
     pub fn collision_key(&self) -> String {
         self.0.to_ascii_lowercase()
     }
 
     /// Returns the final component, which names the file itself.
+    #[must_use]
     pub fn file_name(&self) -> &str {
         self.0.rsplit('/').next().unwrap_or(&self.0)
     }
 
     /// Returns the lowercase extension without its dot, when the name has one.
+    #[must_use]
     pub fn extension(&self) -> Option<String> {
         let name = self.file_name();
         let (stem, extension) = name.rsplit_once('.')?;
@@ -144,6 +151,7 @@ pub struct DigestError(String);
 
 impl Digest {
     /// Computes the digest of `bytes`.
+    #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
@@ -151,6 +159,9 @@ impl Digest {
     }
 
     /// Parses `sha256:<hex>`, `sha256-<hex>`, or a bare lowercase hex digest.
+    ///
+    /// # Errors
+    /// Rejects any digest whose payload is not exactly 64 lowercase hexadecimal characters.
     pub fn parse(raw: &str) -> Result<Self, DigestError> {
         let hex_part = raw
             .strip_prefix("sha256:")
@@ -167,6 +178,7 @@ impl Digest {
     }
 
     /// Borrows the bare lowercase hex digest.
+    #[must_use]
     pub fn hex(&self) -> &str {
         &self.0
     }
@@ -176,11 +188,13 @@ impl Digest {
     /// `:` is legal on Linux but hostile to shell completion, tarballs, and
     /// Windows-formatted removable media, so the store spells the separator
     /// `-` while every human- and robot-facing surface keeps `sha256:`.
+    #[must_use]
     pub fn directory_name(&self) -> String {
         format!("sha256-{}", self.0)
     }
 
     /// Returns the first `length` hex characters, for compact display only.
+    #[must_use]
     pub fn short(&self, length: usize) -> &str {
         &self.0[..length.min(self.0.len())]
     }
@@ -198,6 +212,7 @@ pub struct Hasher(Sha256);
 
 impl Hasher {
     /// Starts an empty hash.
+    #[must_use]
     pub fn new() -> Self {
         Self(Sha256::new())
     }
@@ -208,6 +223,7 @@ impl Hasher {
     }
 
     /// Consumes the hasher and returns the content address.
+    #[must_use]
     pub fn finish(self) -> Digest {
         Digest(hex(&self.0.finalize()))
     }
@@ -216,7 +232,11 @@ impl Hasher {
 fn hex(bytes: &[u8]) -> String {
     let mut rendered = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        rendered.push_str(&format!("{byte:02x}"));
+        #[expect(
+            clippy::expect_used,
+            reason = "Formatting a u8 into String is infallible."
+        )]
+        write!(rendered, "{byte:02x}").expect("integer formatting into String is infallible");
     }
     rendered
 }

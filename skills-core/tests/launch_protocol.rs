@@ -1,3 +1,11 @@
+//! Behavioral coverage for launch protocol.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The closed broker/supervisor lifecycle protocol.
 
 use louiselm_skills::{
@@ -147,6 +155,10 @@ fn signed_receipt(request: &LifecycleRequest) -> SignedReceipt {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One messages are closed versioned and bounded scenario keeps its causal steps and assertions together."
+)]
 fn messages_are_closed_versioned_and_bounded() {
     let launch_request = launch_request();
     assert_eq!(
@@ -283,6 +295,10 @@ fn messages_are_closed_versioned_and_bounded() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One launch authorization is correlated closed and exactly bound scenario keeps its causal steps and assertions together."
+)]
 fn launch_authorization_is_correlated_closed_and_exactly_bound() {
     let request = launch_request();
     let authorization = launch_authorization(&request);
@@ -349,7 +365,7 @@ fn launch_authorization_is_correlated_closed_and_exactly_bound() {
     let without_grace = String::from_utf8(response.canonical_bytes())
         .expect("JSON is UTF-8")
         .replace(
-            &format!(r#","broker_loss_grace_ms":{}"#, MAX_BROKER_LOSS_GRACE_MS),
+            &format!(r#","broker_loss_grace_ms":{MAX_BROKER_LOSS_GRACE_MS}"#),
             "",
         );
     assert_eq!(
@@ -447,6 +463,10 @@ fn launch_authorization_is_correlated_closed_and_exactly_bound() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One broker reconnect is closed correlated and compares exact heads scenario keeps its causal steps and assertions together."
+)]
 fn broker_reconnect_is_closed_correlated_and_compares_exact_heads() {
     assert_eq!(
         BROKER_RECONNECT_SCHEMA,
@@ -729,6 +749,10 @@ fn process_exit_classification_is_terminal_only_and_composes_without_raw_status(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One launch status represents both receipt commit points scenario keeps its causal steps and assertions together."
+)]
 fn launch_status_represents_both_receipt_commit_points() {
     let mut signing_launch = supervisor(SessionState::Starting);
     signing_launch.launcher_head = None;
@@ -1103,6 +1127,10 @@ fn identical_retry_replays_exact_receipt_before_stale_cas() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One status and errors have pinned safe wire shapes scenario keeps its causal steps and assertions together."
+)]
 fn status_and_errors_have_pinned_safe_wire_shapes() {
     let pending_supervisor = SupervisorStatus {
         pending_operation: Some(PendingOperation {

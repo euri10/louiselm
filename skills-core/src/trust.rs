@@ -42,6 +42,7 @@ pub enum Role {
 
 impl Role {
     /// Returns the name used in payloads and robot output.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Primary => "primary",
@@ -51,6 +52,7 @@ impl Role {
     }
 
     /// Parses the name accepted on the command line.
+    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "primary" => Some(Self::Primary),
@@ -113,6 +115,15 @@ pub struct TrustChange {
 
 impl TrustChange {
     /// Serializes the change to the bytes a recovery key signs.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a trust change is always serializable")
     }
@@ -171,6 +182,9 @@ pub enum TrustError {
 
 impl TrustStore {
     /// Enrolls the first primary and recovery keys for a domain.
+    ///
+    /// # Errors
+    /// Refuses an already-bootstrapped store; propagates trust read/JSON and persistence errors.
     pub fn bootstrap(
         store: &Store,
         trust_domain: &str,
@@ -211,6 +225,9 @@ impl TrustStore {
     }
 
     /// Reads the trust store, when one exists.
+    ///
+    /// # Errors
+    /// Returns read/JSON errors; absent enrollment is `Ok(None)`.
     pub fn load(store: &Store) -> Result<Option<Self>, TrustError> {
         let path = Self::path(store);
         let bytes = match fs::read(&path) {
@@ -229,6 +246,7 @@ impl TrustStore {
     }
 
     /// Returns the key enrolled for `role`, when there is one.
+    #[must_use]
     pub fn key_for(&self, role: Role) -> Option<&EnrolledKey> {
         self.keys.iter().find(|key| key.role == role)
     }
@@ -236,6 +254,7 @@ impl TrustStore {
     /// Returns every key whose signature may verify a stored Generation.
     ///
     /// The current primary plus retired primaries, newest first.
+    #[must_use]
     pub fn admission_verification_keys(&self) -> Vec<&EnrolledKey> {
         self.key_for(Role::Primary)
             .into_iter()
@@ -249,17 +268,30 @@ impl TrustStore {
     }
 
     /// Returns the key that may sign a routine Skill Admission.
+    ///
+    /// # Errors
+    /// Returns `NoKeyForRole` when no primary key is enrolled.
     pub fn admission_key(&self) -> Result<&EnrolledKey, TrustError> {
         self.key_for(Role::Primary)
             .ok_or(TrustError::NoKeyForRole("primary"))
     }
 
     /// Returns the digest of the trust store's canonical bytes.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn digest(&self) -> Digest {
         Digest::of(&serde_json::to_vec(self).expect("a trust store is always serializable"))
     }
 
     /// Builds the change that would replace `role` with `public_key`.
+    #[must_use]
     pub fn rotation_payload(
         &self,
         role: Role,
@@ -278,6 +310,9 @@ impl TrustStore {
     }
 
     /// Applies a recovery-signed change to the enrolled keys.
+    ///
+    /// # Errors
+    /// Refuses missing trust/recovery keys, an inapplicable change, recovery-role rotation, or an invalid recovery signature; propagates persistence errors.
     pub fn rotate(
         store: &Store,
         change: &TrustChange,
@@ -355,6 +390,9 @@ impl TrustStore {
     /// This is the documented path out of losing both tokens. It is explicit
     /// and destructive by design: there is no seed phrase and no extractable
     /// master secret, so recovery is re-enrollment plus re-Admission.
+    ///
+    /// # Errors
+    /// Returns a removal error; already-absent enrollment is a success.
     pub fn reset(store: &Store) -> Result<(), TrustError> {
         let path = Self::path(store);
         match fs::remove_file(&path) {
@@ -375,7 +413,8 @@ impl TrustStore {
                 source,
             })?;
         }
-        let bytes = serde_json::to_vec(self).expect("a trust store is always serializable");
+        let bytes =
+            serde_json::to_vec(self).map_err(|error| TrustError::Malformed(error.to_string()))?;
         fs::write(&path, bytes).map_err(|source| TrustError::Io {
             path: path.display().to_string(),
             source,

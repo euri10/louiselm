@@ -175,6 +175,9 @@ pub struct GenerationStatus {
 }
 
 /// Runs the Admission ceremony and stores the signed Generation.
+///
+/// # Errors
+/// Returns trust/signature, package review, predecessor-loading, or record-write errors.
 pub fn admit(
     store: &Store,
     policy: &Policy,
@@ -256,6 +259,9 @@ pub fn admit(
 }
 
 /// Checks a stored record against the chain and the enrolled keys.
+///
+/// # Errors
+/// Rejects schema, digest, trust-domain, signer, or predecessor/sequence inconsistencies; propagates trust, signature, and stored-chain read errors.
 pub fn verify_record(
     store: &Store,
     record: &GenerationRecord,
@@ -336,6 +342,9 @@ fn verify_chain_position(store: &Store, record: &GenerationRecord) -> Result<(),
 }
 
 /// Publishes and confirms a Generation's exact bytes on the witness remote.
+///
+/// # Errors
+/// Returns verification or remote transport failures; refuses missing or byte-different witness data and propagates record-write errors.
 pub fn witness(
     store: &Store,
     digest: &Digest,
@@ -345,12 +354,11 @@ pub fn witness(
     let mut record = load_verified(store, digest)?;
     let bytes = record.witness_bytes();
 
-    let held = match witness.fetch(digest)? {
-        Some(held) => Some(held),
-        None => {
-            witness.publish(digest, &bytes)?;
-            witness.fetch(digest)?
-        }
+    let held = if let Some(held) = witness.fetch(digest)? {
+        Some(held)
+    } else {
+        witness.publish(digest, &bytes)?;
+        witness.fetch(digest)?
     };
     let Some((found, mut evidence)) = held else {
         return Err(AdmissionError::WitnessMismatch {
@@ -369,6 +377,9 @@ pub fn witness(
 }
 
 /// Makes a witnessed Generation the supply in force.
+///
+/// # Errors
+/// Rejects an untrusted running release, unwitnessed or invalid Generation, or rollback; propagates trust, chain-read, and persistence errors.
 pub fn activate(
     store: &Store,
     digest: &Digest,
@@ -406,6 +417,9 @@ pub fn activate(
 }
 
 /// Returns the Generation in force, when there is one.
+///
+/// # Errors
+/// Returns record-listing or decoding errors. No current Generation is `Ok(None)`.
 pub fn current(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError> {
     Ok(list(store)?
         .into_iter()
@@ -413,6 +427,9 @@ pub fn current(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError
 }
 
 /// Reads a stored record without verifying it.
+///
+/// # Errors
+/// Returns `Unknown` for an absent record, otherwise I/O or malformed-record errors.
 pub fn load(store: &Store, digest: &Digest) -> Result<GenerationRecord, AdmissionError> {
     let path = record_path(store, digest);
     let bytes = fs::read(&path).map_err(|source| match source.kind() {
@@ -426,6 +443,9 @@ pub fn load(store: &Store, digest: &Digest) -> Result<GenerationRecord, Admissio
 }
 
 /// Reads a stored record and verifies it against trust and the chain.
+///
+/// # Errors
+/// Returns record/trust loading errors or any failure from [`verify_record`].
 pub fn load_verified(store: &Store, digest: &Digest) -> Result<GenerationRecord, AdmissionError> {
     let record = load(store, digest)?;
     let trust = TrustStore::load(store)?.ok_or(TrustError::NotBootstrapped)?;
@@ -434,6 +454,9 @@ pub fn load_verified(store: &Store, digest: &Digest) -> Result<GenerationRecord,
 }
 
 /// Reads every stored record, ordered by sequence.
+///
+/// # Errors
+/// Returns directory/record read or JSON errors. An absent Generations directory is empty.
 pub fn list(store: &Store) -> Result<Vec<GenerationRecord>, AdmissionError> {
     let directory = store.root().join("generations");
     let listing = match fs::read_dir(&directory) {
@@ -465,6 +488,7 @@ pub fn list(store: &Store) -> Result<Vec<GenerationRecord>, AdmissionError> {
 }
 
 /// Returns the path a Generation record is stored at.
+#[must_use]
 pub fn record_path(store: &Store, digest: &Digest) -> PathBuf {
     store
         .root()
@@ -473,6 +497,9 @@ pub fn record_path(store: &Store, digest: &Digest) -> PathBuf {
 }
 
 /// Reports the chain's state and the one safe next step.
+///
+/// # Errors
+/// Returns Generation-listing or quarantine-loading errors.
 pub fn status(store: &Store) -> Result<GenerationStatus, AdmissionError> {
     let records = list(store)?;
     let quarantine = quarantine::load(store)?;
@@ -562,7 +589,8 @@ fn write_record(store: &Store, record: &GenerationRecord) -> Result<(), Admissio
             source,
         })?;
     }
-    let bytes = serde_json::to_vec(record).expect("a generation record is always serializable");
+    let bytes =
+        serde_json::to_vec(record).map_err(|error| AdmissionError::Malformed(error.to_string()))?;
     fs::write(&path, bytes).map_err(|source| AdmissionError::Io {
         path: path.display().to_string(),
         source,
@@ -592,7 +620,8 @@ fn record_pin(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionE
         member_root: &record.payload.member_root,
         activated_at_ms: record.admitted_at_ms,
     };
-    let mut line = serde_json::to_string(&pin).expect("a pin is always serializable");
+    let mut line = serde_json::to_string(&pin)
+        .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
     line.push('\n');
     let mut existing = fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&line);

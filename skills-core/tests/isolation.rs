@@ -1,3 +1,11 @@
+//! Behavioral coverage for isolation.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The isolation contract: what a backend must prove, and how it fails closed.
 //!
 //! The contract is Provider-neutral and versioned on purpose. An adapter must

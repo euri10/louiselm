@@ -149,6 +149,9 @@ struct Capture<'a> {
 /// On success `staging` holds `files/` and `manifest.json`, and every captured
 /// file is read-only. On failure the caller is expected to discard `staging`
 /// entirely: a partially captured tree is never a package.
+///
+/// # Errors
+/// Refuses unsupported or ambiguous paths/links, changing source files, non-regular entries, and policy-limit violations; propagates source/staging I/O and manifest errors.
 pub fn stage(
     source: &Path,
     staging: &Path,
@@ -541,6 +544,12 @@ fn restore_writability(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use std::{thread, time::Duration};
 

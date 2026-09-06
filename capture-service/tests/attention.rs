@@ -1,3 +1,11 @@
+//! Behavioral coverage for attention.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::{fs, time::Duration};
 
 use louiselm_capture::{
@@ -153,14 +161,14 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
     assert_eq!(store.upsert(draft()).expect("replay").generation, 1);
     assert_eq!(
         store
-            .set_eligible(key(), true)
+            .set_eligible(&key(), true)
             .expect("eligible")
             .generation,
         2
     );
     assert_eq!(
         store
-            .set_eligible(key(), true)
+            .set_eligible(&key(), true)
             .expect("replay eligible")
             .generation,
         2
@@ -203,9 +211,9 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
             .generation,
         4
     );
-    assert_eq!(reopened.clear(key()).expect("clear").generation, 4);
+    assert_eq!(reopened.clear(&key()).expect("clear").generation, 4);
     assert!(reopened.snapshot().expect("cleared").items.is_empty());
-    assert_eq!(reopened.clear(key()).expect("replay clear").generation, 4);
+    assert_eq!(reopened.clear(&key()).expect("replay clear").generation, 4);
 }
 
 #[test]
@@ -232,6 +240,10 @@ fn attention_validation_rejects_untrusted_fields_before_state_changes() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One socket conversation proves authorization and retry generation semantics."
+)]
 async fn attention_socket_requires_capability_and_retries_without_new_generation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = AttentionStore::new(temporary.path().join("attention")).expect("store");

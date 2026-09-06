@@ -1,3 +1,11 @@
+//! Behavioral coverage for store.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Store behaviour: a digest names one sequence of bytes, and nothing else.
 
 mod support;

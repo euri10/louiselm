@@ -25,10 +25,13 @@ const RESUME_LEASE_MS: u64 = 5 * 60 * 1_000;
 /// Failure while binding or serving the local Run socket.
 #[derive(Debug, Error)]
 pub enum RunSocketError {
+    /// Binding, accepting, or communicating with a client failed.
     #[error("Run socket I/O failed: {0}")]
     Io(#[from] io::Error),
+    /// Reading or mutating durable Run state failed.
     #[error(transparent)]
     Run(#[from] RunStoreError),
+    /// A protocol message could not be encoded or decoded.
     #[error("Run socket protocol failed: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -37,10 +40,32 @@ pub enum RunSocketError {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunSocketMessage {
-    Snapshot { runs: Vec<RunView> },
-    RunChanged { id: String, revision: u64 },
-    MutationResult { request_id: String, run: RunView },
-    MutationError { request_id: String, message: String },
+    /// Complete current observer state.
+    Snapshot {
+        /// All retained Run projections.
+        runs: Vec<RunView>,
+    },
+    /// Invalidate a previously observed Run revision.
+    RunChanged {
+        /// Changed Run UUID.
+        id: String,
+        /// New durable revision.
+        revision: u64,
+    },
+    /// Accepted operator mutation.
+    MutationResult {
+        /// Client-supplied correlation identifier.
+        request_id: String,
+        /// Authoritative state after the mutation.
+        run: RunView,
+    },
+    /// Refused operator mutation.
+    MutationError {
+        /// Client-supplied correlation identifier.
+        request_id: String,
+        /// Sanitized refusal reason.
+        message: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -81,6 +106,10 @@ pub struct RunSocket {
 
 impl RunSocket {
     /// Bind an owner-only listener, refusing live or non-socket collisions.
+    ///
+    /// # Errors
+    /// Returns lock, capability-file, socket, or permission errors; an occupied
+    /// address or non-socket collision is refused without replacing it.
     pub async fn bind(
         path: impl AsRef<Path>,
         capability_path: impl AsRef<Path>,
@@ -116,6 +145,10 @@ impl RunSocket {
     }
 
     /// Accept clients until the owning task is cancelled.
+    ///
+    /// # Errors
+    /// Returns an I/O error if accepting a client fails. Individual client failures
+    /// close that connection without terminating the listener.
     pub async fn serve(self) -> Result<(), RunSocketError> {
         loop {
             let (stream, _) = self.listener.accept().await?;

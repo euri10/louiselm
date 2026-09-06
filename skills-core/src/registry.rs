@@ -209,6 +209,9 @@ pub struct Registry {
 
 impl Registry {
     /// Opens the registries under `root`.
+    ///
+    /// # Errors
+    /// Returns registry I/O/JSON errors or invalid/duplicate registrations.
     pub fn open(root: &Path) -> Result<Self, RegistryError> {
         let registry = Self {
             root: root.to_path_buf(),
@@ -227,6 +230,9 @@ impl Registry {
     /// fixtures. A privileged launcher must use this entrypoint: matching a
     /// digest does not stop an unprivileged owner from replacing the pathname
     /// between measurement and execution.
+    ///
+    /// # Errors
+    /// Returns registry-loading errors or refuses untrusted path ownership, permissions, symlinks, or file kinds along registry/runtime paths.
     pub fn open_trusted(root: &Path) -> Result<Self, RegistryError> {
         require_trusted_path(root, TrustedKind::Directory)?;
         for kind in ["agents", "runtimes", "envelopes"] {
@@ -255,11 +261,15 @@ impl Registry {
     }
 
     /// Returns the directory the registries were read from.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// Resolves a registered Agent.
+    ///
+    /// # Errors
+    /// Returns `Unknown` when the Agent identifier is not registered.
     pub fn agent(&self, id: &str) -> Result<AgentRegistration, RegistryError> {
         self.agents
             .iter()
@@ -272,6 +282,9 @@ impl Registry {
     }
 
     /// Resolves a registered runtime package.
+    ///
+    /// # Errors
+    /// Returns `Unknown` when the runtime identifier is not registered.
     pub fn runtime(&self, id: &str) -> Result<RuntimePackage, RegistryError> {
         self.runtimes
             .iter()
@@ -284,6 +297,9 @@ impl Registry {
     }
 
     /// Resolves a registered capability envelope.
+    ///
+    /// # Errors
+    /// Returns `Unknown` when the envelope identifier is not registered.
     pub fn envelope(&self, id: &str) -> Result<EnvelopeRegistration, RegistryError> {
         self.envelopes
             .iter()
@@ -296,6 +312,7 @@ impl Registry {
     }
 
     /// Lists every registered Agent identifier.
+    #[must_use]
     pub fn agent_ids(&self) -> Vec<String> {
         self.agents.iter().map(|agent| agent.id.clone()).collect()
     }
@@ -337,6 +354,7 @@ impl Registry {
 
 impl RuntimePackage {
     /// Returns the absolute path of the runtime executable.
+    #[must_use]
     pub fn executable_path(&self) -> PathBuf {
         self.root.join(&self.executable)
     }
@@ -346,6 +364,9 @@ impl RuntimePackage {
     /// This is where "no self-update" is enforced. A Provider runtime that
     /// rewrote itself between registration and launch is not the runtime that
     /// was registered, whatever its version string still says.
+    ///
+    /// # Errors
+    /// Refuses missing or changed executable/adapter files; propagates file-hashing errors.
     pub fn measure(&self) -> Result<RuntimeMeasurement, RegistryError> {
         let executable = self.executable_path();
         let found = self.hash(&executable, &self.executable)?;
@@ -400,6 +421,9 @@ impl RuntimePackage {
 }
 
 /// Computes the digest a runtime file should be registered with.
+///
+/// # Errors
+/// Returns a file-open/read error when the digest cannot be computed.
 pub fn measure_file(path: &Path) -> Result<Digest, RegistryError> {
     release::hash(path)
         .map(|(digest, _)| digest)

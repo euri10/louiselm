@@ -1,3 +1,11 @@
+//! Behavioral coverage for registry.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! The production launch registry is pathname authority, not merely JSON.
 
 mod support;

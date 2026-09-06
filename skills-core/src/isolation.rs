@@ -59,6 +59,7 @@ impl Dimension {
     ];
 
     /// Returns the name used in evidence and robot output.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::FilesystemVisibility => "filesystem_visibility",
@@ -74,6 +75,7 @@ impl Dimension {
     }
 
     /// Returns what a backend has to establish for this dimension.
+    #[must_use]
     pub fn requirement(self) -> &'static str {
         match self {
             Self::FilesystemVisibility => {
@@ -116,6 +118,10 @@ pub struct DimensionEvidence {
 
 /// Kernel features a backend depends on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each flag independently reports one kernel mechanism; arbitrary combinations are meaningful."
+)]
 pub struct KernelPrerequisites {
     /// Whether unprivileged user namespaces are available.
     pub user_namespaces: bool,
@@ -131,6 +137,7 @@ pub struct KernelPrerequisites {
 
 impl KernelPrerequisites {
     /// Names every prerequisite that is absent.
+    #[must_use]
     pub fn missing(&self) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if !self.user_namespaces {
@@ -195,6 +202,9 @@ impl IsolationEvidence {
     /// Checks run in a fixed order — contract, kernel, contradictions,
     /// omissions, admissions — so a caller always learns the most fundamental
     /// reason rather than whichever happened to be noticed first.
+    ///
+    /// # Errors
+    /// Refuses the wrong contract version, absent kernel prerequisites, or contradictory, missing, or unsatisfied dimension evidence.
     pub fn check(&self) -> Result<(), IsolationFailure> {
         if self.contract_version != CONTRACT_VERSION {
             return Err(IsolationFailure::ContractVersion {
@@ -241,6 +251,7 @@ impl IsolationEvidence {
     }
 
     /// Returns the dimensions this evidence establishes.
+    #[must_use]
     pub fn satisfied_dimensions(&self) -> Vec<Dimension> {
         Dimension::ALL
             .iter()

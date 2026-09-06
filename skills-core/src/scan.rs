@@ -37,6 +37,7 @@ pub enum Magic {
 
 impl Magic {
     /// Returns the short name used in findings.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Elf => "elf",
@@ -53,6 +54,7 @@ impl Magic {
     }
 
     /// Reports whether the format is an image format.
+    #[must_use]
     pub fn is_image(self) -> bool {
         matches!(
             self,
@@ -62,6 +64,7 @@ impl Magic {
 }
 
 /// Identifies `bytes` by its leading bytes, when the format is known.
+#[must_use]
 pub fn magic_of(bytes: &[u8]) -> Option<Magic> {
     const SIGNATURES: [(&[u8], Magic); 9] = [
         (b"\x7fELF", Magic::Elf),
@@ -86,6 +89,7 @@ pub fn magic_of(bytes: &[u8]) -> Option<Magic> {
 }
 
 /// Reports whether `bytes` look like SVG markup.
+#[must_use]
 pub fn looks_like_svg(bytes: &[u8]) -> bool {
     let prefix = &bytes[..bytes.len().min(1024)];
     let Ok(text) = std::str::from_utf8(prefix) else {
@@ -96,6 +100,7 @@ pub fn looks_like_svg(bytes: &[u8]) -> bool {
 }
 
 /// Reports whether `bytes` contain a NUL in the region a reader would sample.
+#[must_use]
 pub fn contains_nul(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)
 }
@@ -126,8 +131,10 @@ pub struct TextScan<'a> {
 
 impl<'a> TextScan<'a> {
     /// Prepares `text`, scanning at most `limit` bytes of it.
+    #[must_use]
     pub fn new(text: &'a str, limit: u64) -> Self {
-        let mut end = text.len().min(limit as usize);
+        // A limit larger than the address space cannot truncate an existing str.
+        let mut end = text.len().min(usize::try_from(limit).unwrap_or(usize::MAX));
         while end < text.len() && !text.is_char_boundary(end) {
             end -= 1;
         }
@@ -148,11 +155,13 @@ impl<'a> TextScan<'a> {
     }
 
     /// Borrows the region being scanned.
+    #[must_use]
     pub fn region(&self) -> &str {
         self.text
     }
 
     /// Returns the one-based line number containing `offset`.
+    #[must_use]
     pub fn line_of(&self, offset: u64) -> u64 {
         match self.line_starts.binary_search(&offset) {
             Ok(index) => index as u64 + 1,
@@ -161,6 +170,10 @@ impl<'a> TextScan<'a> {
     }
 
     /// Builds a located match at `offset`, describing it with `detail`.
+    ///
+    /// # Panics
+    /// Panics unless `offset` is a UTF-8 character boundary within the scanned region.
+    #[must_use]
     pub fn located(&self, offset: u64, detail: &str) -> Match {
         Match {
             byte_offset: offset,
@@ -174,6 +187,7 @@ impl<'a> TextScan<'a> {
     ///
     /// Needles are compared against an ASCII-lowercased copy, so a policy
     /// entry must itself be lowercase; the policy tests assert that.
+    #[must_use]
     pub fn find_any(&self, needles: &[String]) -> Vec<Match> {
         let mut matches = Vec::new();
         for needle in needles {
@@ -189,10 +203,16 @@ impl<'a> TextScan<'a> {
     }
 
     /// Finds every URL beginning with one of `schemes`.
+    #[must_use]
     pub fn find_urls(&self, schemes: &[String]) -> Vec<Match> {
         let mut matches = self.find_any(schemes);
         for found in &mut matches {
-            found.evidence = escape(&url_at(self.text, found.byte_offset as usize));
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "find_any widens this scan's usize offsets to u64; narrowing them is lossless."
+            )]
+            let offset = found.byte_offset as usize;
+            found.evidence = escape(&url_at(self.text, offset));
         }
         matches
     }
@@ -221,7 +241,11 @@ impl<'a> TextScan<'a> {
     }
 
     fn snippet(&self, offset: u64) -> String {
-        let offset = offset as usize;
+        #[expect(
+            clippy::expect_used,
+            reason = "located requires an offset into this str; an unrepresentable index is API misuse."
+        )]
+        let offset = usize::try_from(offset).expect("offset must index the scanned region");
         let line_start = self.text[..offset].rfind('\n').map_or(0, |index| index + 1);
         let line_end = self.text[offset..]
             .find('\n')
@@ -232,11 +256,13 @@ impl<'a> TextScan<'a> {
 }
 
 /// Reports whether `byte` may appear in a base64 payload.
+#[must_use]
 pub fn is_base64_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
 }
 
 /// Reports whether `byte` may appear in a hexadecimal payload.
+#[must_use]
 pub fn is_hex_byte(byte: u8) -> bool {
     byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || (b'A'..=b'F').contains(&byte)
 }
@@ -246,6 +272,7 @@ pub fn is_hex_byte(byte: u8) -> bool {
 /// Every character outside printable ASCII becomes `\u{...}`, including the
 /// homoglyphs and hidden characters Inspection exists to expose: showing a
 /// zero-width space as itself would hide the finding inside the report of it.
+#[must_use]
 pub fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
@@ -254,13 +281,14 @@ pub fn escape(text: &str) -> String {
         } else if (' '..='~').contains(&character) {
             escaped.push(character);
         } else {
-            escaped.push_str(&format!("\\u{{{:x}}}", character as u32));
+            escaped.extend(character.escape_unicode());
         }
     }
     escaped
 }
 
 /// Returns every code point in `text` the policy names, with its class.
+#[must_use]
 pub fn hidden_characters(text: &str, policy: &Policy) -> Vec<(u64, char, String)> {
     text.char_indices()
         .filter_map(|(offset, character)| {
@@ -272,6 +300,7 @@ pub fn hidden_characters(text: &str, policy: &Policy) -> Vec<(u64, char, String)
 }
 
 /// Returns every code point in `text` that imitates an ASCII character.
+#[must_use]
 pub fn confusable_characters(text: &str, policy: &Policy) -> Vec<(u64, char, char)> {
     text.char_indices()
         .filter_map(|(offset, character)| {
@@ -283,6 +312,7 @@ pub fn confusable_characters(text: &str, policy: &Policy) -> Vec<(u64, char, cha
 }
 
 /// Returns every control character in `text` other than tab, newline, return.
+#[must_use]
 pub fn control_characters(text: &str) -> Vec<(u64, char)> {
     text.char_indices()
         .filter(|(_, character)| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))

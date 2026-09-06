@@ -1,3 +1,11 @@
+//! Behavioral coverage for launch receipt.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::sync::{Arc, Mutex};
 
 use louiselm_skills::{
@@ -162,6 +170,10 @@ fn verifies(key_id: &str, bytes: &[u8], signature: &str) -> bool {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One payload and signed envelope have one canonical encoding scenario keeps its causal steps and assertions together."
+)]
 fn payload_and_signed_envelope_have_one_canonical_encoding() {
     let receipt = chain().remove(0);
     let payload_bytes = receipt.payload.canonical_bytes();
@@ -313,7 +325,7 @@ fn launch_evidence_binds_the_exact_broker_loss_grace() {
     let without_grace = String::from_utf8(maximum_bytes)
         .expect("receipt JSON is UTF-8")
         .replace(
-            &format!(r#","broker_loss_grace_ms":{}"#, MAX_BROKER_LOSS_GRACE_MS),
+            &format!(r#","broker_loss_grace_ms":{MAX_BROKER_LOSS_GRACE_MS}"#),
             "",
         );
     assert!(matches!(
@@ -442,6 +454,10 @@ fn canonical_parsers_reject_oversize_and_noncanonical_digests() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One payload validation rejects each contradictory shape scenario keeps its causal steps and assertions together."
+)]
 fn payload_validation_rejects_each_contradictory_shape() {
     let launch = chain().remove(0);
 
@@ -818,8 +834,8 @@ fn signing_and_persistence_ports_can_complete_after_the_call_returns() {
     };
 
     let appender = DeferredAppender::default();
-    let appended = Arc::new(Mutex::new(false));
-    let capture = Arc::clone(&appended);
+    let append_observed = Arc::new(Mutex::new(false));
+    let capture = Arc::clone(&append_observed);
     let receipt_bytes = receipt.canonical_bytes();
     appender.append(
         receipt_bytes.clone(),
@@ -828,12 +844,12 @@ fn signing_and_persistence_ports_can_complete_after_the_call_returns() {
             *capture.lock().unwrap() = true;
         }),
     );
-    assert!(!*appended.lock().unwrap());
+    assert!(!*append_observed.lock().unwrap());
     assert_eq!(
         appender.pending.lock().unwrap().as_ref().unwrap().0,
         receipt_bytes,
         "the appender receives exact canonical signed-envelope bytes",
     );
     appender.complete();
-    assert!(*appended.lock().unwrap());
+    assert!(*append_observed.lock().unwrap());
 }

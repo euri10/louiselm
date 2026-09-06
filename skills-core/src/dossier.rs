@@ -46,6 +46,7 @@ pub enum ReviewDepth {
 
 impl ReviewDepth {
     /// Parses the value accepted on the command line.
+    #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "unstated" => Some(Self::Unstated),
@@ -57,6 +58,7 @@ impl ReviewDepth {
     }
 
     /// Returns the value as it is spelled on the command line.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Unstated => "unstated",
@@ -145,6 +147,7 @@ pub struct DossierRequest<'a> {
 
 impl<'a> DossierRequest<'a> {
     /// Reviews the package named by `digest`.
+    #[must_use]
     pub fn new(digest: &'a Digest) -> Self {
         Self {
             digest,
@@ -155,18 +158,21 @@ impl<'a> DossierRequest<'a> {
     }
 
     /// Compares the package against the one it would replace.
+    #[must_use]
     pub fn against(mut self, base: &'a Digest) -> Self {
         self.against = Some(base);
         self
     }
 
     /// Records the reviewer's claimed review depth.
+    #[must_use]
     pub fn with_review_depth(mut self, depth: ReviewDepth) -> Self {
         self.review_depth = depth;
         self
     }
 
     /// Asks for the Assessment produced by `model` under `prompt_version`.
+    #[must_use]
     pub fn with_assessment_key(mut self, model: &str, prompt_version: &str) -> Self {
         self.assessment_key = Some((model.to_owned(), prompt_version.to_owned()));
         self
@@ -206,6 +212,9 @@ pub struct Dossier {
 
 impl Dossier {
     /// Recomputes everything a reviewer needs about one package.
+    ///
+    /// # Errors
+    /// Returns package open/verification, Inspection, diff, lineage, or Assessment read errors. Verification findings themselves remain in the Dossier.
     pub fn build(
         store: &Store,
         policy: &Policy,
@@ -291,6 +300,15 @@ impl Dossier {
     /// between two machines that reviewed byte-identical bytes, and a
     /// Generation would stop verifying the moment it left the machine that
     /// signed it.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn portable_bytes(&self) -> Vec<u8> {
         let mut value = serde_json::to_value(self).expect("a dossier is always serializable");
         if let Some(object) = value.as_object_mut() {
@@ -300,16 +318,19 @@ impl Dossier {
     }
 
     /// Returns the digest of [`Dossier::portable_bytes`].
+    #[must_use]
     pub fn portable_digest(&self) -> Digest {
         Digest::of(&self.portable_bytes())
     }
 
     /// Reports whether the package may be put in front of a reviewer at all.
+    #[must_use]
     pub fn reviewable(&self) -> bool {
         self.verification.intact && !self.inspection.is_fatal()
     }
 
     /// Returns every link origin that reached outside the candidate root.
+    #[must_use]
     pub fn escaping_link_count(&self) -> usize {
         self.lineage.escaping_links().len()
     }

@@ -92,6 +92,9 @@ pub trait SupervisorTimer: Send + Sync {
     fn now(&self) -> Instant;
 
     /// Runs `complete` once after the monotonic `delay` has elapsed.
+    ///
+    /// # Errors
+    /// Returns a scheduler/worker admission error if the callback cannot be registered.
     fn schedule(
         &self,
         delay: Duration,
@@ -148,6 +151,9 @@ pub struct CapabilityBinding {
 /// Broker operations needed by the one-shot launch transaction.
 pub trait LaunchBroker: Send + Sync {
     /// Atomically consumes the pending authorization for `request`.
+    ///
+    /// # Errors
+    /// Returns broker admission/unavailability errors; authorization/refusal and transport failures after admission arrive through `complete`.
     fn consume_authorization(
         &self,
         request: LaunchRequest,
@@ -155,6 +161,9 @@ pub trait LaunchBroker: Send + Sync {
     ) -> Result<(), SupervisorError>;
 
     /// Durably appends exact canonical signed-envelope bytes.
+    ///
+    /// # Errors
+    /// Returns broker admission/unavailability errors; durable append failures after admission arrive through `complete`.
     fn append_receipt(
         &self,
         receipt_bytes: Vec<u8>,
@@ -162,6 +171,9 @@ pub trait LaunchBroker: Send + Sync {
     ) -> Result<(), SupervisorError>;
 
     /// Reconnects to the install-pinned broker and exchanges exact receipt checkpoints.
+    ///
+    /// # Errors
+    /// Returns broker admission/unavailability errors; connection and checkpoint failures after admission arrive through `complete`.
     fn reconnect_session(
         &self,
         reconnect: BrokerReconnect,
@@ -175,6 +187,9 @@ pub trait LaunchBroker: Send + Sync {
     fn cancel_reconnect(&self);
 
     /// Requests one durable broker decision for an exact controller-loss Park.
+    ///
+    /// # Errors
+    /// Returns broker admission/unavailability errors; settlement refusal or transport failures after admission arrive through `complete`.
     fn settle_controller_loss(
         &self,
         settlement: ControllerLossSettlement,
@@ -189,6 +204,9 @@ pub trait LaunchBroker: Send + Sync {
     ///
     /// Exactly one receive may be outstanding. The supervisor assigns the
     /// connection epoch captured by `complete`; peers never supply epochs.
+    ///
+    /// # Errors
+    /// Returns admission errors for unavailable/busy broker I/O; authenticated receive failures after admission arrive through `complete`.
     fn receive_session_request(
         &self,
         complete: SupervisorCompletion<ProtocolMessage>,
@@ -197,6 +215,9 @@ pub trait LaunchBroker: Send + Sync {
     /// Sends one exact signed lifecycle receipt without starting another receive.
     ///
     /// Its durable acknowledgement arrives through [`Self::receive_session_request`].
+    ///
+    /// # Errors
+    /// Returns broker admission/unavailability errors; send failures after admission arrive through `complete`.
     fn send_session_receipt(
         &self,
         receipt_bytes: Vec<u8>,
@@ -204,6 +225,9 @@ pub trait LaunchBroker: Send + Sync {
     ) -> Result<(), SupervisorError>;
 
     /// Sends one correlated lifecycle or status response asynchronously.
+    ///
+    /// # Errors
+    /// Returns broker admission/unavailability errors; send failures after admission arrive through `complete`.
     fn send_session_response(
         &self,
         response: ProtocolResponse,
@@ -223,6 +247,9 @@ pub trait LaunchSigner: Send + Sync {
     fn signing_key_id(&self) -> &str;
 
     /// Signs exact canonical [`ReceiptPayload`] bytes asynchronously.
+    ///
+    /// # Errors
+    /// Returns signing-worker admission errors; signing failures after admission arrive through `complete`.
     fn sign(
         &self,
         payload_bytes: Vec<u8>,
@@ -236,15 +263,24 @@ pub trait IdentityGuard: Send {
     fn identity(&self) -> Identity;
 
     /// Clears the fail-closed lease marker after zero survivors are proved.
+    ///
+    /// # Errors
+    /// Returns an identity-release failure; the identity must not become reusable without a proved release.
     fn release(self: Box<Self>) -> Result<(), SupervisorError>;
 
     /// Permanently prevents reuse after cleanup could not be proved.
+    ///
+    /// # Errors
+    /// Returns a persistence failure if permanently withholding the identity cannot be recorded.
     fn poison(self: Box<Self>) -> Result<(), SupervisorError>;
 }
 
 /// Dynamic proof that a host PID remains inside one Session's process tree.
 pub trait ProcessMembership: Send + Sync {
     /// Re-reads the authoritative process boundary for `pid`.
+    ///
+    /// # Errors
+    /// Returns a process-boundary read/validation error when membership cannot be established.
     fn contains(&self, pid: u32) -> Result<bool, SupervisorError>;
 }
 
@@ -254,6 +290,9 @@ pub trait CapabilityGate: Send {
     fn channel(&self) -> Channel;
 
     /// Fixes the verified process and envelope metadata for this listener.
+    ///
+    /// # Errors
+    /// Returns an invalid/inconsistent binding or capability-listener setup error.
     fn bind(
         &mut self,
         binding: CapabilityBinding,
@@ -261,6 +300,9 @@ pub trait CapabilityGate: Send {
     ) -> Result<(), SupervisorError>;
 
     /// Makes the listener reachable after the exact receipt is durable.
+    ///
+    /// # Errors
+    /// Returns an unbound/closed gate or listener activation error.
     fn enable(&mut self) -> Result<(), SupervisorError>;
 
     /// Immediately revokes live and future capability use without destroying
@@ -269,6 +311,9 @@ pub trait CapabilityGate: Send {
     /// An error reports that the reversible revocation could not be fully
     /// proved, but implementations must still make existing and future uses
     /// unreachable before returning it.
+    ///
+    /// # Errors
+    /// Returns an error if reversible revocation cannot be proved, without retaining live capability reachability.
     fn revoke(&mut self) -> Result<(), SupervisorError>;
 
     /// Revokes the listener and its owned rendezvous path. Idempotent.
@@ -287,6 +332,9 @@ pub trait PreparedAgent: Send {
     fn sandbox_leader_pid(&self) -> Option<u32>;
 
     /// Current host PIDs enclosed in this Session's cgroup.
+    ///
+    /// # Errors
+    /// Returns a process-boundary read error when the enclosed process set cannot be established.
     fn processes(&self) -> Result<Vec<u32>, SupervisorError>;
 
     /// Dynamic cgroup membership used when a capability peer connects later.
@@ -297,9 +345,15 @@ pub trait PreparedAgent: Send {
     /// On failure, the implementation disposes the consumed prepared tree and
     /// returns [`SupervisorError::CleanupUnproven`] when zero survivors cannot
     /// be proved.
+    ///
+    /// # Errors
+    /// Returns a startup-gate failure, or `CleanupUnproven` if the failed prepared tree cannot be proved empty.
     fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError>;
 
     /// Disposes the blocked tree and proves it empty.
+    ///
+    /// # Errors
+    /// Returns cleanup failure unless the owned process tree is proved empty.
     fn dispose(&mut self) -> Result<(), SupervisorError>;
 }
 
@@ -309,6 +363,9 @@ pub trait RunningAgent: Send {
     ///
     /// Implementations also drain Agent stderr without presenting its content
     /// and complete asynchronously so the lifecycle owner retains mechanics.
+    ///
+    /// # Errors
+    /// Returns relay setup/worker-start errors. Later I/O and process outcomes arrive through `events`.
     fn start_relay(
         &mut self,
         input: Box<dyn Read + Send>,
@@ -320,36 +377,57 @@ pub trait RunningAgent: Send {
     ///
     /// Completion is asynchronous because production workers may be concurrently
     /// observing controller or process I/O when terminal cleanup begins.
+    ///
+    /// # Errors
+    /// Returns quiescence registration errors; asynchronous revocation failures arrive through `complete`.
     fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError>;
 
     /// Freezes the whole process tree while retaining its identity lease.
     ///
     /// Failure reports the settled post-attempt state or that no state was provable.
+    ///
+    /// # Errors
+    /// Returns the proved post-attempt mechanical state, or `Ambiguous` if freeze completion cannot be proved.
     fn park(&mut self) -> Result<(), MechanicFailure>;
 
     /// Thaws the whole process tree after durable broker authorization.
     ///
     /// Failure reports the settled post-attempt state or that no state was provable.
+    ///
+    /// # Errors
+    /// Returns the proved post-attempt mechanical state, or `Ambiguous` if thaw completion cannot be proved.
     fn resume(&mut self) -> Result<(), MechanicFailure>;
 
     /// Interrupts the whole process tree and restores its prior freeze state.
     ///
     /// Failure reports the settled post-attempt state or that no state was provable.
+    ///
+    /// # Errors
+    /// Returns the proved post-attempt state, or `Ambiguous` if signalling and prior-state restoration cannot be proved.
     fn interrupt(&mut self) -> Result<(), MechanicFailure>;
 
     /// Disposes the whole process tree and proves it empty.
+    ///
+    /// # Errors
+    /// Returns cleanup failure unless the owned process tree is proved empty.
     fn dispose(&mut self) -> Result<(), SupervisorError>;
 }
 
 /// OS operations whose concrete implementation holds root authority.
 pub trait LaunchPlatform: Send + Sync {
     /// Validates and exclusively leases the broker-assigned installed identity.
+    ///
+    /// # Errors
+    /// Returns invalid-assignment, lease contention/poisoning, or lease-persistence errors.
     fn acquire_identity(
         &self,
         assigned: Identity,
     ) -> Result<Box<dyn IdentityGuard>, SupervisorError>;
 
     /// Creates the Session capability socket in a disabled state.
+    ///
+    /// # Errors
+    /// Returns capability-path, permission, or disabled-listener setup errors.
     fn create_capability(
         &self,
         request: &LaunchRequest,
@@ -357,6 +435,9 @@ pub trait LaunchPlatform: Send + Sync {
     ) -> Result<Box<dyn CapabilityGate>, SupervisorError>;
 
     /// Materializes the resolved confinement plan behind a startup gate.
+    ///
+    /// # Errors
+    /// Returns confinement validation, resource setup, spawn, or host-identity verification errors.
     fn prepare(&self, plan: ConfinementPlan) -> Result<Box<dyn PreparedAgent>, SupervisorError>;
 }
 
@@ -496,6 +577,9 @@ impl LaunchSupervisor {
     /// Registration errors are returned synchronously and do not invoke
     /// `complete`. Once accepted, `complete` runs exactly once on the
     /// coordinator thread.
+    ///
+    /// # Errors
+    /// Returns `AlreadyLaunched` or `WorkerUnavailable` before admission. Launch-transaction failures are delivered to `complete`.
     pub fn launch(
         &self,
         request: LaunchRequest,
@@ -517,7 +601,7 @@ impl LaunchSupervisor {
             .name("louiselm-launch-supervisor".to_owned())
             .spawn(move || {
                 let broker = Arc::clone(&inner.broker);
-                let result = run_launch(inner, request, controller_uid, now_ms, validation_clock);
+                let result = run_launch(&inner, &request, controller_uid, now_ms, validation_clock);
                 if result.is_err() {
                     broker.close();
                 }
@@ -530,6 +614,9 @@ impl LaunchSupervisor {
 
 /// Reads one newline-delimited canonical launch document without consuming any
 /// bytes already buffered after the delimiter.
+///
+/// # Errors
+/// Returns `LaunchDocumentRejected` for read failures, missing delimiters, oversized frames, or noncanonical/invalid launch requests.
 pub fn read_launch_frame(
     reader: &mut (impl BufRead + ?Sized),
 ) -> Result<LaunchRequest, SupervisorError> {
@@ -548,9 +635,13 @@ pub fn read_launch_frame(
     LaunchRequest::parse_canonical(&frame).map_err(|_| SupervisorError::LaunchDocumentRejected)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Startup is one ordered authorization, resource-acquisition and receipt transaction with rollback at each boundary."
+)]
 fn run_launch(
-    inner: Arc<SupervisorInner>,
-    request: LaunchRequest,
+    inner: &SupervisorInner,
+    request: &LaunchRequest,
     controller_uid: u32,
     now_ms: u64,
     validation_clock: Instant,
@@ -558,14 +649,14 @@ fn run_launch(
     request
         .validate()
         .map_err(|_| SupervisorError::LaunchDocumentRejected)?;
-    let authorization = await_broker(&inner, |complete| {
+    let authorization = await_broker(inner, |complete| {
         inner
             .broker
             .consume_authorization(request.clone(), complete)
     })?;
     let elapsed_ms = u64::try_from(validation_clock.elapsed().as_millis()).unwrap_or(u64::MAX);
     authorization
-        .validate_for(&request, controller_uid, now_ms.saturating_add(elapsed_ms))
+        .validate_for(request, controller_uid, now_ms.saturating_add(elapsed_ms))
         .map_err(|_| SupervisorError::AuthorizationRejected)?;
     let broker_loss_grace_ms = authorization.broker_loss_grace_ms;
     let assigned = Identity {
@@ -581,7 +672,7 @@ fn run_launch(
             SupervisorError::IdentityAssignmentInvalid,
         ));
     }
-    let mut capability = match inner.platform.create_capability(&request, assigned) {
+    let mut capability = match inner.platform.create_capability(request, assigned) {
         Ok(capability) => capability,
         Err(error) => return Err(release_identity(identity, error)),
     };
@@ -593,23 +684,20 @@ fn run_launch(
             SupervisorError::CapabilityUnavailable,
         ));
     }
-    let mut resolution = match resolve(
-        &request,
+    let Ok(mut resolution) = resolve(
+        request,
         &inner.registry,
         &inner.sessions_root,
         crate::sandbox::IdentityPlan::HostIdentity {
             uid: assigned.uid,
             gid: assigned.gid,
         },
-    ) {
-        Ok(resolution) => resolution,
-        Err(_) => {
-            capability.close();
-            return Err(release_identity(
-                identity,
-                SupervisorError::ResolutionFailed,
-            ));
-        }
+    ) else {
+        capability.close();
+        return Err(release_identity(
+            identity,
+            SupervisorError::ResolutionFailed,
+        ));
     };
     resolution.plan.channels.push(capability_channel.clone());
     let receipt_channels = resolution.plan.channels.clone();
@@ -633,16 +721,13 @@ fn run_launch(
             SupervisorError::IsolationRejected,
         ));
     }
-    let leader_pid = match prepared.sandbox_leader_pid() {
-        Some(pid) => pid,
-        None => {
-            return Err(cleanup_prepared(
-                prepared,
-                capability,
-                identity,
-                SupervisorError::IsolationRejected,
-            ));
-        }
+    let Some(leader_pid) = prepared.sandbox_leader_pid() else {
+        return Err(cleanup_prepared(
+            prepared,
+            capability,
+            identity,
+            SupervisorError::IsolationRejected,
+        ));
     };
     match prepared.processes() {
         Ok(processes) if processes.contains(&leader_pid) => {}
@@ -684,7 +769,7 @@ fn run_launch(
     }
 
     let evidence = match launch_evidence(
-        &request,
+        request,
         &resolution.runtime,
         prepared.evidence(),
         prepared.backend_id(),
@@ -716,7 +801,7 @@ fn run_launch(
         },
         resulting_state: SessionState::Starting,
     };
-    let launch_receipt = match transact_receipt(&inner, launch_payload) {
+    let launch_receipt = match transact_receipt(inner, launch_payload) {
         Ok(receipt) => receipt,
         Err(error) => {
             return Err(cleanup_prepared(prepared, capability, identity, error));
@@ -761,7 +846,7 @@ fn run_launch(
         },
         resulting_state: SessionState::Running,
     };
-    let receipt = match transact_receipt(&inner, start_payload) {
+    let receipt = match transact_receipt(inner, start_payload) {
         Ok(receipt) => receipt,
         Err(error) => {
             return Err(cleanup_running(running, capability, identity, error));

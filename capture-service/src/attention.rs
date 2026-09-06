@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, BufReader, BufWriter},
+    io::{self, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -332,16 +332,16 @@ impl AttentionStore {
     /// Rejects an invalid key and reports missing conditions explicitly.
     pub fn set_eligible(
         &self,
-        key: AttentionKey,
+        key: &AttentionKey,
         eligible: bool,
     ) -> Result<AttentionSnapshot, AttentionError> {
-        validate_key(&key)?;
+        validate_key(key)?;
         self.with_lock(|store| {
             let mut state = store.load()?;
             let item = state
                 .items
                 .iter_mut()
-                .find(|item| item.key() == key)
+                .find(|item| item.key() == *key)
                 .ok_or_else(|| {
                     AttentionError::Invalid("Attention item was not found".to_owned())
                 })?;
@@ -359,12 +359,12 @@ impl AttentionStore {
     /// # Errors
     ///
     /// Rejects an invalid key and reports persistence failures.
-    pub fn clear(&self, key: AttentionKey) -> Result<AttentionSnapshot, AttentionError> {
-        validate_key(&key)?;
+    pub fn clear(&self, key: &AttentionKey) -> Result<AttentionSnapshot, AttentionError> {
+        validate_key(key)?;
         self.with_lock(|store| {
             let mut state = store.load()?;
             let previous = state.items.len();
-            state.items.retain(|item| item.key() != key);
+            state.items.retain(|item| item.key() != *key);
             if state.items.len() != previous {
                 advance_generation(&mut state)?;
                 store.persist(&state)?;
@@ -464,7 +464,6 @@ impl AttentionStore {
             set_private_permissions(&temporary, false)?;
             let mut writer = BufWriter::new(file);
             serde_json::to_writer_pretty(&mut writer, state)?;
-            use std::io::Write;
             writer.write_all(b"\n")?;
             writer.flush()?;
             writer.get_ref().sync_all()?;
@@ -514,10 +513,7 @@ fn validate_state(state: &PersistedAttention) -> Result<(), AttentionError> {
 }
 
 fn reject_symlink(path: &Path, label: &str) -> Result<(), AttentionError> {
-    if fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(false)
-    {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(AttentionError::Invalid(format!("{label} is a symlink")));
     }
     Ok(())
@@ -557,13 +553,12 @@ fn validate_code(
     code: Option<AttentionCode>,
     stage: Option<&str>,
 ) -> Result<(), AttentionError> {
-    let valid = match (kind, code) {
-        (AttentionKind::SkillApprovalPending, Some(AttentionCode::AdmissionRequired)) => true,
-        (AttentionKind::SkillUnverified, Some(AttentionCode::AdmissionRequired) | None) => false,
-        (AttentionKind::SkillUnverified, Some(_)) => true,
-        (AttentionKind::SkillApprovalPending, _) => false,
-        (_, None) => true,
-        (_, Some(_)) => false,
+    let valid = match kind {
+        AttentionKind::SkillApprovalPending => code == Some(AttentionCode::AdmissionRequired),
+        AttentionKind::SkillUnverified => {
+            code.is_some_and(|value| value != AttentionCode::AdmissionRequired)
+        }
+        _ => code.is_none(),
     };
     if !valid {
         return Err(AttentionError::Invalid(

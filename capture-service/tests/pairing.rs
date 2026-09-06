@@ -1,3 +1,11 @@
+//! Behavioral coverage for pairing.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use louiselm_capture::{PairingRegistry, PairingStatus};
 use qrcode::QrCode;
 
@@ -140,9 +148,9 @@ fn separate_cli_and_server_registries_observe_pairing_and_revocation() {
     );
     cli.revoke(&paired.device_id).expect("CLI revokes device");
     assert!(
-        !server
+        server
             .authenticate_device(&paired.credential)
             .expect("server observes revocation")
-            .is_some()
+            .is_none()
     );
 }

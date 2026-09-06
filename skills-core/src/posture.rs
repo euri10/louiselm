@@ -474,7 +474,7 @@ impl Posture {
             evaluate_dimension(
                 by_dimension
                     .remove(&dimension)
-                    .expect("presence checked above"),
+                    .ok_or(PostureError::MissingDimension(dimension))?,
             )
         };
         let dimensions = PostureDimensions {

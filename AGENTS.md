@@ -266,32 +266,16 @@ its own gates. Run them from the crate directory you touched:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
-
-They are separate crates with separate lockfiles, not a workspace, so a gate run
-in one says nothing about the other. CI runs both as separate jobs.
-
-The strict Rust policy in section 6 requires the following gates once its
-package lints are configured:
-
-```bash
-cargo fmt --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all-features --locked
 RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
 ```
 
-Enforcement adoption is tracked by `louiselm-kd7r` (capture-service) and
-`louiselm-xhgy` (skills-core). The existing manifests and CI do not yet enforce
-the full lint set; passing today's CI is not evidence of strict compliance.
-Until adoption closes, run the existing gates plus a diagnostic scan with the
-section 6 lints explicitly enabled. Fix violations introduced by your changes
-and record existing violations against the adoption issue; do not suppress
-them to manufacture a clean result. New Rust packages must configure the strict
-lints and CI gates from their first implementation. Remove this transition
-paragraph when both adoption issues close.
+They are separate crates with separate lockfiles, not a workspace, so a gate run
+in one says nothing about the other. CI runs both as separate jobs.
+
+Both manifests enforce the strict Rust policy in section 6. New Rust packages
+must configure the same lints and CI gates from their first implementation.
 
 These went unenforced for `capture-service`'s whole life until
 `louiselm-ci-missing-rust-gates-5o5h`: the 56 tests included the three

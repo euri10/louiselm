@@ -2,7 +2,7 @@
 #
 # Scope: this runs the gates AGENTS.md section 4 declares authoritative --
 # StyLua for formatting, lua-language-server for static analysis, and
-# mini.test for tests on the Lua side, plus cargo fmt/clippy/test for each
+# mini.test for tests on the Lua side, plus cargo fmt/clippy/test/doc for each
 # Rust crate. It deliberately does NOT
 # build or publish blog/, which is pages.yml's job (runs only when
 # blog/ changes). The two pipelines are disjoint on purpose: pages.yml
@@ -15,8 +15,9 @@
 #   lua-language-server --check --checklevel=Warning  0 clean / 1 on warning
 #   nvim --headless ... MiniTest.run()           0 clean / 1 on test failure
 #   cargo fmt --check                            0 clean / 1 misformatted
-#   cargo clippy --all-targets -- -D warnings    0 clean / 101 on a lint
-#   cargo test                                   0 clean / 101 on test failure
+#   cargo clippy (all targets/features, locked)  0 clean / 101 on a lint
+#   cargo test (all features, locked)           0 clean / 101 on test failure
+#   cargo doc (no deps, warnings denied)        0 clean / 101 on a doc warning
 #
 # The Rust gates cover capture-service/ and skills-core/ as separate jobs;
 # they are separate crates with separate lockfiles, not a workspace, so one
@@ -236,10 +237,15 @@ jobs:
         run: cargo fmt --check
 
       - name: Lint
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --all-features --locked
+
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --locked
 
   skills-core:
     name: cargo (skills-core)
@@ -280,10 +286,15 @@ jobs:
         run: cargo fmt --check
 
       - name: Lint
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --all-features --locked
+
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features --locked
 
       - name: Test host identity against the initial user namespace
         run: |
@@ -294,7 +305,7 @@ jobs:
             exit 1
           fi
           sandbox_test="$(
-            cargo test --test sandbox --no-run --message-format=json |
+            cargo test --test sandbox --all-features --locked --no-run --message-format=json |
               jq -r 'select(.reason == "compiler-artifact" and .target.name == "sandbox" and .profile.test) | .executable // empty' |
               tail -n 1
           )"
@@ -316,7 +327,7 @@ jobs:
             exit 1
           fi
           library_test="$(
-            cargo test --lib --no-run --message-format=json |
+            cargo test --lib --all-features --locked --no-run --message-format=json |
               jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty' |
               tail -n 1
           )"
@@ -339,7 +350,7 @@ jobs:
             exit 1
           fi
           supervisor_test="$(
-            cargo test --test launch_supervisor --no-run --message-format=json |
+            cargo test --test launch_supervisor --all-features --locked --no-run --message-format=json |
               jq -r 'select(.reason == "compiler-artifact" and .target.name == "launch_supervisor" and .profile.test) | .executable // empty' |
               tail -n 1
           )"
@@ -354,7 +365,7 @@ jobs:
         run: |
           set -eu
           launcher_install_test="$(
-            cargo test --test launcher_install --no-run --message-format=json |
+            cargo test --test launcher_install --all-features --locked --no-run --message-format=json |
               jq -r 'select(.reason == "compiler-artifact" and .target.name == "launcher_install" and .profile.test) | .executable // empty' |
               tail -n 1
           )"
@@ -368,7 +379,7 @@ jobs:
         run: |
           set -eu
           registry_test="$(
-            cargo test --test registry --no-run --message-format=json |
+            cargo test --test registry --all-features --locked --no-run --message-format=json |
               jq -r 'select(.reason == "compiler-artifact" and .target.name == "registry" and .profile.test) | .executable // empty' |
               tail -n 1
           )"

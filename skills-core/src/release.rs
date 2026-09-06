@@ -64,6 +64,9 @@ impl SourceIdentity {
     ///
     /// Untracked files count as dirty. A file that is not in the commit cannot
     /// be reviewed by looking at the commit, and it can still be compiled in.
+    ///
+    /// # Errors
+    /// Returns Git invocation errors or refuses a dirty/untracked source tree.
     pub fn of(repository: &Path, dependencies_digest: &str) -> Result<Self, ReleaseError> {
         let status = git(repository, &["status", "--porcelain"])?;
         if !status.trim().is_empty() {
@@ -94,6 +97,9 @@ pub struct ToolchainIdentity {
 
 impl ToolchainIdentity {
     /// Reads the toolchain currently on `PATH`.
+    ///
+    /// # Errors
+    /// Returns tool invocation errors when rustc or Cargo versions cannot be read.
     pub fn detect() -> Result<Self, ReleaseError> {
         Ok(Self {
             rustc: tool_version("rustc")?,
@@ -173,6 +179,15 @@ pub struct ReleaseManifest {
 
 impl ReleaseManifest {
     /// Serializes the manifest to the bytes the release role signs.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut identified = self.clone();
         identified.release_id = String::new();
@@ -180,11 +195,13 @@ impl ReleaseManifest {
     }
 
     /// Returns the release identity: the digest of its canonical bytes.
+    #[must_use]
     pub fn digest(&self) -> Digest {
         Digest::of(&self.canonical_bytes())
     }
 
     /// Returns the component with `name`, when the release has one.
+    #[must_use]
     pub fn component(&self, name: &str) -> Option<&Component> {
         self.components
             .iter()
@@ -273,6 +290,9 @@ pub enum ReleaseError {
 ///
 /// Building the components is the caller's job; this binds them. Keeping the
 /// two apart is what lets the binding rules be tested without a nested build.
+///
+/// # Errors
+/// Refuses dirty source identity or unknown executable components; returns bundle I/O, hashing, permissions, or manifest serialization errors.
 pub fn assemble(
     request: &AssembleRequest<'_>,
     bundle: &Path,
@@ -321,7 +341,8 @@ pub fn assemble(
     let schemas = schema_identifiers();
     write(
         &bundle.join("schemas/schemas.json"),
-        &serde_json::to_vec(&schemas).expect("schemas are always serializable"),
+        &serde_json::to_vec(&schemas)
+            .map_err(|error| ReleaseError::Malformed(error.to_string()))?,
     )?;
     for extra in [
         ("policy/policy.json", ComponentKind::Data),
@@ -355,12 +376,16 @@ pub fn assemble(
     manifest.release_id = manifest.digest().to_string();
     write(
         &bundle.join("manifest.json"),
-        &serde_json::to_vec(&manifest).expect("a release manifest is always serializable"),
+        &serde_json::to_vec(&manifest)
+            .map_err(|error| ReleaseError::Malformed(error.to_string()))?,
     )?;
     Ok(manifest)
 }
 
 /// Reads a bundle's manifest without verifying it.
+///
+/// # Errors
+/// Returns file-read, malformed-JSON, or unsupported-schema errors.
 pub fn read_manifest(bundle: &Path) -> Result<ReleaseManifest, ReleaseError> {
     let path = bundle.join("manifest.json");
     let bytes = fs::read(&path).map_err(|source| ReleaseError::Io {
@@ -379,6 +404,9 @@ pub fn read_manifest(bundle: &Path) -> Result<ReleaseManifest, ReleaseError> {
 }
 
 /// Verifies a bundle's signature and re-hashes every component it binds.
+///
+/// # Errors
+/// Refuses inconsistent identity, missing/untrusted signatures, changed/missing components, or invalid component paths; propagates read and signature-verification errors.
 pub fn verify_bundle(bundle: &Path, trust: &TrustStore) -> Result<ReleaseManifest, ReleaseError> {
     let manifest = read_manifest(bundle)?;
     let actual = manifest.digest();
@@ -453,6 +481,7 @@ pub struct RunningIdentity {
 /// path that is not inside an installed release — is unverified, always. That
 /// is the whole point: a build the Agent could have written must not be able
 /// to claim otherwise.
+#[must_use]
 pub fn running_identity() -> RunningIdentity {
     match std::env::current_exe() {
         Ok(executable) => identity_of(&executable),
@@ -471,6 +500,7 @@ pub fn running_identity() -> RunningIdentity {
 /// Split from [`running_identity`] so the ownership rules can be exercised
 /// against an install this process created, which is the only way an automated
 /// test reaches them: every test runs as an ordinary user.
+#[must_use]
 pub fn identity_of(executable: &Path) -> RunningIdentity {
     let rendered = executable.display().to_string();
     let Some(release_root) = installed_release_root(executable) else {

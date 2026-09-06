@@ -1,3 +1,10 @@
+//! Behavioral coverage for launch transport.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 #![cfg(target_os = "linux")]
 
 use std::{
@@ -30,7 +37,7 @@ use louiselm_skills::{
     },
 };
 use rustix::{
-    io::{FdFlags, fcntl_getfd, fcntl_setfd},
+    io::{FdFlags, fcntl_dupfd_cloexec, fcntl_getfd, fcntl_setfd},
     net::{
         AddressFamily, SendFlags, SocketAddrUnix, SocketFlags, SocketType, bind, connect, listen,
         send, socket_with,
@@ -45,7 +52,7 @@ const HELPER_PACKET: &str = "LOUISELM_TEST_SEQPACKET_PACKET";
 
 fn current_credentials() -> KernelCredentials {
     KernelCredentials {
-        pid: getpid().as_raw_pid() as u32,
+        pid: u32::try_from(getpid().as_raw_pid()).expect("kernel PID is positive"),
         uid: getuid().as_raw(),
         gid: getgid().as_raw(),
     }
@@ -170,6 +177,10 @@ fn connected(
     result
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "The one-shot fixture consumes and releases the callback receiver after observing completion."
+)]
 fn wait<T>(result: Receiver<Result<T, TransportError>>) -> Result<T, TransportError> {
     result
         .recv_timeout(CALLBACK_TIMEOUT)
@@ -473,7 +484,7 @@ fn credentials_come_from_the_kernel_and_claimed_json_identity_is_rejected() {
 #[test]
 fn broker_identity_and_per_message_process_pins_fail_closed() {
     let credentials = current_credentials();
-    let wrong_uid = if credentials.uid == 0 { 1 } else { 0 };
+    let wrong_uid = u32::from(credentials.uid == 0);
     let directory = TempDir::new().expect("temporary rendezvous directory");
     let path = path_in(&directory);
     let listener = SeqpacketListener::bind(&path).expect("listener binds");
@@ -758,6 +769,7 @@ fn dropping_a_channel_never_waits_for_a_user_callback() {
 }
 
 fn spawn_inherited_sender(peer: &OwnedFd, bytes: &[u8]) -> Child {
+    let peer = fcntl_dupfd_cloexec(peer, 3).expect("helper owns a non-stdio socket descriptor");
     let raw_fd = peer.as_raw_fd();
     let mut command = Command::new(std::env::current_exe().expect("test executable is known"));
     command
@@ -768,14 +780,18 @@ fn spawn_inherited_sender(peer: &OwnedFd, bytes: &[u8]) -> Child {
             String::from_utf8(bytes.to_vec()).expect("test packet is UTF-8"),
         )
         .stdin(Stdio::piped());
-    // SAFETY: the fd stays open through spawn, and these fcntl operations are
-    // async-signal-safe and allocate nothing between fork and exec.
+    #[expect(
+        unsafe_code,
+        reason = "This credential test needs the child to inherit the parent's connected socket across exec."
+    )]
+    // SAFETY: the closure owns a descriptor above stdio through spawn. Only
+    // async-signal-safe fcntl calls and stack-only flag/OS-error conversions run
+    // between fork and exec; no allocation, locks or environment access occur.
     unsafe {
         command.pre_exec(move || {
-            let fd = BorrowedFd::borrow_raw(raw_fd);
-            let mut flags = fcntl_getfd(fd).map_err(std::io::Error::from)?;
+            let mut flags = fcntl_getfd(&peer).map_err(std::io::Error::from)?;
             flags.remove(FdFlags::CLOEXEC);
-            fcntl_setfd(fd, flags).map_err(std::io::Error::from)
+            fcntl_setfd(&peer, flags).map_err(std::io::Error::from)
         });
     }
     command.spawn().expect("sender helper starts")
@@ -800,6 +816,10 @@ fn inherited_sender_helper() {
         .expect("parent releases helper");
     assert_eq!(&release, b"go");
 
+    #[expect(
+        unsafe_code,
+        reason = "The subprocess test receives a raw inherited descriptor from its trusted parent fixture."
+    )]
     // SAFETY: the parent deliberately inherited this live socket descriptor
     // into only this helper, and the borrow ends before the helper exits.
     let peer = unsafe { BorrowedFd::borrow_raw(raw_fd) };

@@ -90,6 +90,9 @@ pub struct PackageDiff {
 
 impl PackageDiff {
     /// Compares `base` against `target`, reading both packages' bytes.
+    ///
+    /// # Errors
+    /// Returns a package-read error when content needed for the diff is unavailable.
     pub fn between(base: &Package, target: &Package) -> Result<Self, StoreError> {
         let paths = base
             .manifest
@@ -172,11 +175,13 @@ impl PackageDiff {
     }
 
     /// Reports whether anything changed at all.
+    #[must_use]
     pub fn has_changes(&self) -> bool {
         !self.entries.is_empty()
     }
 
     /// Counts entries of one change kind.
+    #[must_use]
     pub fn count(&self, change: Change) -> usize {
         self.entries
             .iter()
@@ -192,6 +197,10 @@ fn as_text(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "This function builds the script itself: additions have a target index; context and removals have a base index."
+)]
 fn render(old: &[&str], new: &[&str]) -> Vec<DiffLine> {
     let table = longest_common_subsequence(old, new);
     let mut script = Vec::new();

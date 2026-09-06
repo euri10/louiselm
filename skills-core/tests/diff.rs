@@ -1,3 +1,11 @@
+//! Behavioral coverage for diff.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 //! Update diffs: what changed between the package under review and the one it
 //! would replace.
 

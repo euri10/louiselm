@@ -122,6 +122,9 @@ struct VerifyResult {
 }
 
 /// Runs the command named on the command line, returning its exit status.
+///
+/// # Errors
+/// Returns argument/configuration errors or the selected command's storage, trust, signing, registry, release, or launch failures.
 pub fn run() -> Result<i32, CliError> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let Some(command) = arguments.first().map(String::as_str) else {
@@ -150,6 +153,10 @@ pub fn run() -> Result<i32, CliError> {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent command-line switches mirror the grammar; they are not exclusive states."
+)]
 struct Options {
     positional: Vec<String>,
     members: Vec<String>,
@@ -191,6 +198,10 @@ struct Options {
 }
 
 impl Options {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One flat CLI grammar table keeps flag spelling, parsing and duplicate checks together."
+    )]
     fn parse(arguments: &[String]) -> Result<Self, CliError> {
         let mut parsed = Self {
             positional: Vec::new(),
@@ -433,7 +444,7 @@ impl Options {
     /// Both spellings appear in practice: `--primary ~/.ssh/id_admission.pub`
     /// during a ceremony, and a pasted `sk-ssh-ed25519 AAAA...` when the key
     /// came from somewhere else.
-    fn key_material(&self, flag: &str, value: Option<&str>) -> Result<String, CliError> {
+    fn key_material(flag: &str, value: Option<&str>) -> Result<String, CliError> {
         let value = value.ok_or_else(|| CliError::Invalid(format!("{flag} needs a public key")))?;
         let path = Path::new(value);
         if path.is_file() {
@@ -473,21 +484,21 @@ impl Options {
 
     fn launcher_install_request(&self) -> Result<LauncherInstallRequest, CliError> {
         Ok(LauncherInstallRequest {
-            operator: required(&self.operator, "--operator")?.to_owned(),
-            broker_uid: *required(&self.broker_uid, "--broker-uid")?,
-            broker_gid: *required(&self.broker_gid, "--broker-gid")?,
+            operator: required(self.operator.as_ref(), "--operator")?.to_owned(),
+            broker_uid: *required(self.broker_uid.as_ref(), "--broker-uid")?,
+            broker_gid: *required(self.broker_gid.as_ref(), "--broker-gid")?,
             pool: IdentityPool {
-                uid_start: *required(&self.uid_start, "--uid-start")?,
-                gid_start: *required(&self.gid_start, "--gid-start")?,
-                slots: *required(&self.slots, "--slots")?,
+                uid_start: *required(self.uid_start.as_ref(), "--uid-start")?,
+                gid_start: *required(self.gid_start.as_ref(), "--gid-start")?,
+                slots: *required(self.slots.as_ref(), "--slots")?,
             },
         })
     }
 
     fn rotation_request(&self) -> Result<RotationRequest, CliError> {
         Ok(RotationRequest {
-            rotation_id: required(&self.rotation_id, "--rotation-id")?.to_owned(),
-            expected_active_key_id: required(&self.expected_key_id, "--expected-key-id")?
+            rotation_id: required(self.rotation_id.as_ref(), "--rotation-id")?.to_owned(),
+            expected_active_key_id: required(self.expected_key_id.as_ref(), "--expected-key-id")?
                 .to_owned(),
         })
     }
@@ -713,8 +724,8 @@ fn trust(options: &Options) -> Result<i32, CliError> {
     let store = options.store()?;
     match options.subject("trust")? {
         "bootstrap" => {
-            let primary = options.key_material("--primary", options.primary.as_deref())?;
-            let recovery = options.key_material("--recovery", options.recovery.as_deref())?;
+            let primary = Options::key_material("--primary", options.primary.as_deref())?;
+            let recovery = Options::key_material("--recovery", options.recovery.as_deref())?;
             let trust = TrustStore::bootstrap(
                 &store,
                 options
@@ -747,7 +758,7 @@ fn trust(options: &Options) -> Result<i32, CliError> {
             let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
             let change = trust.rotation_payload(
                 options.required_role()?,
-                &options.key_material("--key", options.key.as_deref())?,
+                &Options::key_material("--key", options.key.as_deref())?,
                 options.sk_policy(),
             );
             // Printed without a trailing newline: these are the exact bytes the
@@ -759,7 +770,7 @@ fn trust(options: &Options) -> Result<i32, CliError> {
             let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
             let change = trust.rotation_payload(
                 options.required_role()?,
-                &options.key_material("--key", options.key.as_deref())?,
+                &Options::key_material("--key", options.key.as_deref())?,
                 options.sk_policy(),
             );
             let signature_path = options.signature.as_ref().ok_or_else(|| {
@@ -887,32 +898,33 @@ fn quarantine_command(options: &Options) -> Result<i32, CliError> {
                 "every member of the current Generation is excluded".to_owned()
             })
         }
-        "show" => match quarantine::load(&store)? {
-            Some(quarantine) => report(options, &quarantine, |quarantine| {
-                let mut lines = vec![format!(
-                    "excluded {} package(s), everything={}",
-                    quarantine.excluded.len(),
-                    quarantine.excludes_everything
-                )];
-                lines.extend(
-                    quarantine
-                        .excluded
-                        .iter()
-                        .map(|digest| format!("  {digest}")),
-                );
-                lines.extend(
-                    quarantine
-                        .reasons
-                        .iter()
-                        .map(|reason| format!("  # {reason}")),
-                );
-                lines.join("\n")
-            }),
-            None => {
+        "show" => {
+            if let Some(quarantine) = quarantine::load(&store)? {
+                report(options, &quarantine, |quarantine| {
+                    let mut lines = vec![format!(
+                        "excluded {} package(s), everything={}",
+                        quarantine.excluded.len(),
+                        quarantine.excludes_everything
+                    )];
+                    lines.extend(
+                        quarantine
+                            .excluded
+                            .iter()
+                            .map(|digest| format!("  {digest}")),
+                    );
+                    lines.extend(
+                        quarantine
+                            .reasons
+                            .iter()
+                            .map(|reason| format!("  # {reason}")),
+                    );
+                    lines.join("\n")
+                })
+            } else {
                 println!("no quarantine is active");
                 Ok(0)
             }
-        },
+        }
         "clear" => {
             quarantine::clear(&store, now_ms())?;
             Ok(0)
@@ -934,6 +946,10 @@ fn release_component_inputs(source: &Path) -> Vec<ComponentInput> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One release subcommand dispatch keeps each signing and publication transaction visible."
+)]
 fn release_command(options: &Options) -> Result<i32, CliError> {
     match options.subject("release")? {
         "build" => {
@@ -1163,10 +1179,8 @@ fn read_text(path: &Path) -> Result<String, CliError> {
     })
 }
 
-fn required<'a, T>(value: &'a Option<T>, flag: &str) -> Result<&'a T, CliError> {
-    value
-        .as_ref()
-        .ok_or_else(|| CliError::Invalid(format!("{flag} is required")))
+fn required<'a, T>(value: Option<&'a T>, flag: &str) -> Result<&'a T, CliError> {
+    value.ok_or_else(|| CliError::Invalid(format!("{flag} is required")))
 }
 
 fn parse_u32(flag: &str, value: &str) -> Result<u32, CliError> {
@@ -1193,7 +1207,7 @@ fn default_store_root() -> Result<PathBuf, CliError> {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
 }
 
@@ -1264,6 +1278,12 @@ Exit status:
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
 mod tests {
     use super::*;
 

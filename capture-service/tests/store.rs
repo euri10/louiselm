@@ -1,3 +1,11 @@
+//! Behavioral coverage for store.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert failures directly."
+)]
+
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Barrier};
 
@@ -22,10 +30,10 @@ fn listing_is_stable_and_transcripts_are_immutable() {
     let later_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let earlier_id = "11111111-1111-4111-8111-111111111111";
     store
-        .ingest(draft(later_id), Cursor::new(b"later"))
+        .ingest(&draft(later_id), Cursor::new(b"later"))
         .expect("later");
     store
-        .ingest(draft(earlier_id), Cursor::new(b"earlier"))
+        .ingest(&draft(earlier_id), Cursor::new(b"earlier"))
         .expect("earlier");
 
     let listed = store.list().expect("list");
@@ -73,9 +81,9 @@ fn listing_preserves_capture_time_with_uuid_as_a_stable_tie_breaker() {
     let mut later = draft(later_id);
     later.recorded_at_ms += 1_000;
 
-    store.ingest(later, Cursor::new(b"later")).expect("later");
+    store.ingest(&later, Cursor::new(b"later")).expect("later");
     store
-        .ingest(draft(earlier_id), Cursor::new(b"earlier"))
+        .ingest(&draft(earlier_id), Cursor::new(b"earlier"))
         .expect("earlier");
 
     assert_eq!(
@@ -96,7 +104,7 @@ fn ingest_preserves_audio_manifest_and_pending_state() {
     let capture_id = uuid::Uuid::new_v4().to_string();
 
     let outcome = store
-        .ingest(draft(&capture_id), Cursor::new(b"speech"))
+        .ingest(&draft(&capture_id), Cursor::new(b"speech"))
         .expect("ingest");
 
     assert_eq!(outcome, IngestOutcome::Created);
@@ -150,25 +158,25 @@ fn repeated_identical_ingest_is_idempotent_but_conflicting_audio_is_rejected() {
 
     assert_eq!(
         store
-            .ingest(draft(&capture_id), Cursor::new(b"same"))
+            .ingest(&draft(&capture_id), Cursor::new(b"same"))
             .expect("first ingest"),
         IngestOutcome::Created
     );
     assert_eq!(
         store
-            .ingest(draft(&capture_id), Cursor::new(b"same"))
+            .ingest(&draft(&capture_id), Cursor::new(b"same"))
             .expect("repeat ingest"),
         IngestOutcome::Existing
     );
     assert!(matches!(
-        store.ingest(draft(&capture_id), Cursor::new(b"different")),
+        store.ingest(&draft(&capture_id), Cursor::new(b"different")),
         Err(StoreError::Conflict(_))
     ));
 
     let mut changed_metadata = draft(&capture_id);
     changed_metadata.duration_ms += 1;
     assert!(matches!(
-        store.ingest(changed_metadata, Cursor::new(b"same")),
+        store.ingest(&changed_metadata, Cursor::new(b"same")),
         Err(StoreError::Conflict(_))
     ));
 }
@@ -181,7 +189,7 @@ fn oversized_capture_is_rejected_without_a_partial_capture() {
     let audio = std::io::repeat(0).take(MAX_CAPTURE_BYTES + 1);
 
     assert!(matches!(
-        store.ingest(draft(&capture_id), audio),
+        store.ingest(&draft(&capture_id), audio),
         Err(StoreError::TooLarge { .. })
     ));
     assert!(matches!(
@@ -197,13 +205,13 @@ fn untrusted_ids_and_audio_types_are_rejected() {
     let mut invalid = draft("../escape");
 
     assert!(matches!(
-        store.ingest(invalid.clone(), Cursor::new(b"speech")),
+        store.ingest(&invalid.clone(), Cursor::new(b"speech")),
         Err(StoreError::InvalidCapture(_))
     ));
     invalid.id = uuid::Uuid::new_v4().to_string();
-    invalid.mime_type = "text/plain".to_owned();
+    "text/plain".clone_into(&mut invalid.mime_type);
     assert!(matches!(
-        store.ingest(invalid, Cursor::new(b"speech")),
+        store.ingest(&invalid, Cursor::new(b"speech")),
         Err(StoreError::InvalidCapture(_))
     ));
 }
@@ -222,7 +230,7 @@ fn concurrent_identical_ingest_creates_one_capture_without_spurious_failure() {
         let barrier = Arc::clone(&barrier);
         threads.push(std::thread::spawn(move || {
             barrier.wait();
-            store.ingest(draft(&capture_id), Cursor::new(b"same"))
+            store.ingest(&draft(&capture_id), Cursor::new(b"same"))
         }));
     }
 

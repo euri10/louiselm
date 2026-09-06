@@ -177,7 +177,10 @@ static SIGN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 const SK_ALGORITHM: &str = "sk-ssh-ed25519@openssh.com";
 
 fn ssh_string(bytes: &[u8]) -> Vec<u8> {
-    let mut encoded = (bytes.len() as u32).to_be_bytes().to_vec();
+    let mut encoded = u32::try_from(bytes.len())
+        .expect("SSH fixture string fits its wire length")
+        .to_be_bytes()
+        .to_vec();
     encoded.extend_from_slice(bytes);
     encoded
 }

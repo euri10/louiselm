@@ -55,6 +55,7 @@ pub struct GenerationPayload {
 
 impl GenerationPayload {
     /// Builds a payload, sorting members and computing the set root.
+    #[must_use]
     pub fn new(
         trust_domain: &str,
         sequence: u64,
@@ -79,11 +80,21 @@ impl GenerationPayload {
     }
 
     /// Serializes the payload to the exact bytes that are signed.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("a generation payload is always serializable")
     }
 
     /// Returns the Generation's identity: the digest of its signed bytes.
+    #[must_use]
     pub fn digest(&self) -> Digest {
         Digest::of(&self.canonical_bytes())
     }
@@ -92,11 +103,13 @@ impl GenerationPayload {
     ///
     /// A verifier calls this instead of reading `member_root`, so a payload
     /// cannot claim a root that does not cover what it contains.
+    #[must_use]
     pub fn recomputed_member_root(&self) -> Digest {
         member_root(&self.members)
     }
 
     /// Returns every admitted package digest, in payload order.
+    #[must_use]
     pub fn member_digests(&self) -> Vec<String> {
         self.members
             .iter()
@@ -124,6 +137,7 @@ pub enum GenerationState {
 
 impl GenerationState {
     /// Returns the name used in robot output.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::PendingWitness => "pending_witness",
@@ -162,6 +176,7 @@ pub struct GenerationRecord {
 
 impl GenerationRecord {
     /// Returns the Generation's identity.
+    #[must_use]
     pub fn digest(&self) -> Digest {
         self.payload.digest()
     }
@@ -170,6 +185,15 @@ impl GenerationRecord {
     ///
     /// Payload and signature only: local state must never change what the
     /// remote is asked to confirm.
+    ///
+    /// # Panics
+    /// Panics only if serialization fails after a future schema change introduces
+    /// a fallible serializer. The current derived schema has only JSON-native values.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+    )]
     pub fn witness_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(&WitnessedGeneration {
             payload: &self.payload,
@@ -185,6 +209,10 @@ struct WitnessedGeneration<'a> {
     signature: &'a str,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "Derived schema has only JSON-native values and string-keyed maps, with no custom serializers."
+)]
 fn member_root(members: &[Member]) -> Digest {
     Digest::of(&serde_json::to_vec(members).expect("members are always serializable"))
 }
