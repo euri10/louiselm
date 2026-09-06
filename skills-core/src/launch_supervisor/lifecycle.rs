@@ -2,9 +2,7 @@
 
 use std::{
     collections::VecDeque,
-    io::{Read, Write},
-    mem,
-    sync::{Arc, Condvar, Mutex, mpsc},
+    sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -31,7 +29,7 @@ use crate::{
 
 use super::{
     CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker, LaunchSigner, MechanicFailure,
-    RunningAgent, RunningAgentEvent, SupervisorError, SupervisorTimer,
+    RelayStdio, RunningAgent, RunningAgentEvent, SupervisorError, SupervisorTimer,
 };
 
 const EVENT_QUEUE_CAPACITY: usize = 32;
@@ -101,8 +99,7 @@ impl Drop for SessionResources {
 pub struct LaunchedSession {
     owner: Option<JoinHandle<Result<i32, SupervisorError>>>,
     sender: mpsc::SyncSender<OwnerEvent>,
-    input: Arc<DeferredAttachment<Box<dyn Read + Send>>>,
-    output: Arc<DeferredAttachment<Box<dyn Write + Send>>>,
+    controller: Option<mpsc::SyncSender<RelayStdio>>,
     receipt: SignedReceipt,
     binding: CapabilityBinding,
 }
@@ -126,8 +123,7 @@ impl LaunchedSession {
             .last()
             .expect("a launched Session has a receipt")
             .clone();
-        let input = Arc::new(DeferredAttachment::new());
-        let output = Arc::new(DeferredAttachment::new());
+        let (controller, attachment) = mpsc::sync_channel(1);
         let mut owner = SessionOwner::new(
             resources,
             signer,
@@ -138,14 +134,15 @@ impl LaunchedSession {
             broker_loss_grace,
         );
         let sender = owner.sender.clone();
-        let owner_input = DeferredReader::new(Arc::clone(&input));
-        let owner_output = DeferredWriter::new(Arc::clone(&output));
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("louiselm-launch-session-owner".to_owned())
             .spawn(move || {
-                let result =
-                    owner.run(Box::new(owner_input), Box::new(owner_output), &ready_sender);
+                let result = owner.run(attachment, &ready_sender);
+                // Terminal cleanup must not join a callback blocked on
+                // a receiver that the owner will never service again.
+                let (_, disconnected) = mpsc::sync_channel(1);
+                owner.receiver = disconnected;
                 let cleanup = owner.resources.cleanup();
                 match (result, cleanup) {
                     (_, Err(error)) => Err(error),
@@ -157,8 +154,7 @@ impl LaunchedSession {
             Ok(Ok(())) => Ok(Self {
                 owner: Some(worker),
                 sender,
-                input,
-                output,
+                controller: Some(controller),
                 receipt,
                 binding,
             }),
@@ -188,15 +184,20 @@ impl LaunchedSession {
     /// Relays opaque ACP bytes while one serialized owner services broker lifecycle requests.
     ///
     /// # Errors
-    /// Returns the lifecycle owner's terminal failure, or `WorkerUnavailable` if it cannot be joined.
-    pub fn relay_stdio(
-        mut self,
-        input: Box<dyn Read + Send>,
-        output: Box<dyn Write + Send>,
-    ) -> Result<i32, SupervisorError> {
-        let _ = self.input.attach(input);
-        let _ = self.output.attach(output);
-        self.join_owner()
+    /// Returns terminal/descriptor-cleanup failure, or `WorkerUnavailable` if the owner cannot be joined.
+    pub fn relay_stdio(mut self, controller: RelayStdio) -> Result<i32, SupervisorError> {
+        // A receiver closed by an already-terminal owner is not resurrected.
+        // Close rejected descriptors explicitly so restoration errors cannot
+        // turn an already-terminal owner into false successful relay cleanup.
+        let sender = self.controller.take().ok_or(SupervisorError::RelayFailed)?;
+        let attachment = sender.send(controller).err().map_or(Ok(()), |error| {
+            error
+                .0
+                .close()
+                .map_err(|_| SupervisorError::CleanupUnproven)
+        });
+        let terminal = self.join_owner();
+        attachment.and(terminal)
     }
 
     /// Ends controller ownership and waits for the broker-settled terminal outcome.
@@ -210,8 +211,7 @@ impl LaunchedSession {
 
     fn detach_controller(&mut self) {
         let _ = self.sender.send(OwnerEvent::ControllerDetached);
-        let _ = self.input.attach(Box::new(std::io::empty()));
-        let _ = self.output.attach(Box::new(std::io::sink()));
+        self.controller = None;
     }
 
     fn join_owner(&mut self) -> Result<i32, SupervisorError> {
@@ -229,114 +229,6 @@ impl Drop for LaunchedSession {
             self.detach_controller();
             let _ = self.owner.take();
         }
-    }
-}
-
-enum DeferredAttachmentState<T> {
-    Waiting,
-    Ready(T),
-    Closed,
-}
-
-struct DeferredAttachment<T> {
-    state: Mutex<DeferredAttachmentState<T>>,
-    changed: Condvar,
-}
-
-impl<T> DeferredAttachment<T> {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(DeferredAttachmentState::Waiting),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn attach(&self, value: T) -> Result<(), T> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !matches!(*state, DeferredAttachmentState::Waiting) {
-            return Err(value);
-        }
-        *state = DeferredAttachmentState::Ready(value);
-        self.changed.notify_all();
-        Ok(())
-    }
-
-    fn take(&self) -> Option<T> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while matches!(*state, DeferredAttachmentState::Waiting) {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        match mem::replace(&mut *state, DeferredAttachmentState::Closed) {
-            DeferredAttachmentState::Ready(value) => Some(value),
-            DeferredAttachmentState::Waiting | DeferredAttachmentState::Closed => None,
-        }
-    }
-}
-
-struct DeferredReader {
-    attachment: Arc<DeferredAttachment<Box<dyn Read + Send>>>,
-    reader: Option<Box<dyn Read + Send>>,
-}
-
-impl DeferredReader {
-    fn new(attachment: Arc<DeferredAttachment<Box<dyn Read + Send>>>) -> Self {
-        Self {
-            attachment,
-            reader: None,
-        }
-    }
-}
-
-impl Read for DeferredReader {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if self.reader.is_none() {
-            self.reader = self.attachment.take();
-        }
-        self.reader
-            .as_mut()
-            .map_or(Ok(0), |reader| reader.read(buffer))
-    }
-}
-
-struct DeferredWriter {
-    attachment: Arc<DeferredAttachment<Box<dyn Write + Send>>>,
-    writer: Option<Box<dyn Write + Send>>,
-}
-
-impl DeferredWriter {
-    fn new(attachment: Arc<DeferredAttachment<Box<dyn Write + Send>>>) -> Self {
-        Self {
-            attachment,
-            writer: None,
-        }
-    }
-
-    fn writer(&mut self) -> std::io::Result<&mut Box<dyn Write + Send>> {
-        if self.writer.is_none() {
-            self.writer = self.attachment.take();
-        }
-        self.writer.as_mut().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "controller output detached")
-        })
-    }
-}
-
-impl Write for DeferredWriter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.writer()?.write(buffer)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer()?.flush()
     }
 }
 
@@ -413,10 +305,7 @@ enum OwnerEvent {
         process_epoch: u64,
         event: RunningAgentEvent,
     },
-    RelayQuiesced {
-        process_epoch: u64,
-        result: Result<(), SupervisorError>,
-    },
+    RelayQuiesced,
 }
 
 struct ActiveOperation {
@@ -546,6 +435,7 @@ struct SessionOwner {
     process_epoch: u64,
     relay_quiescence_epoch: Option<u64>,
     relay_quiescence_result: Option<Result<(), SupervisorError>>,
+    relay_quiescence_mailbox: Arc<Mutex<Option<Result<(), SupervisorError>>>>,
     finish_after_relay_quiescence: Option<Result<i32, SupervisorError>>,
     finish_when_backlog_drained: Option<Result<i32, SupervisorError>>,
     finished: Option<Result<i32, SupervisorError>>,
@@ -609,6 +499,7 @@ impl SessionOwner {
             process_epoch: 1,
             relay_quiescence_epoch: None,
             relay_quiescence_result: None,
+            relay_quiescence_mailbox: Arc::new(Mutex::new(None)),
             finish_after_relay_quiescence: None,
             finish_when_backlog_drained: None,
             finished: None,
@@ -617,17 +508,12 @@ impl SessionOwner {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "One serialized event-dispatch loop makes the owner ordering explicit."
-    )]
     fn run(
         &mut self,
-        input: Box<dyn Read + Send>,
-        output: Box<dyn Write + Send>,
+        controller: mpsc::Receiver<RelayStdio>,
         ready: &mpsc::SyncSender<Result<(), SupervisorError>>,
     ) -> Result<i32, SupervisorError> {
-        if let Err(error) = self.start_relay(input, output) {
+        if let Err(error) = self.start_relay(controller) {
             let _ = ready.send(Err(error.clone()));
             return Err(error);
         }
@@ -720,12 +606,9 @@ impl SessionOwner {
                     process_epoch,
                     event,
                 } if process_epoch == self.process_epoch => self.handle_running_agent_event(event),
-                OwnerEvent::RunningAgent { .. } => {}
-                OwnerEvent::RelayQuiesced {
-                    process_epoch,
-                    result,
-                } => self.handle_relay_quiesced(process_epoch, result),
+                OwnerEvent::RunningAgent { .. } | OwnerEvent::RelayQuiesced => {}
             }
+            self.collect_relay_quiescence();
             if let Some(result) = self.finished.take() {
                 return result;
             }
@@ -734,8 +617,7 @@ impl SessionOwner {
 
     fn start_relay(
         &mut self,
-        input: Box<dyn Read + Send>,
-        output: Box<dyn Write + Send>,
+        controller: mpsc::Receiver<RelayStdio>,
     ) -> Result<(), SupervisorError> {
         let process_epoch = self.process_epoch;
         let sender = self.sender.clone();
@@ -744,13 +626,14 @@ impl SessionOwner {
             .as_mut()
             .ok_or(SupervisorError::RelayFailed)?
             .start_relay(
-                input,
-                output,
+                controller,
                 Arc::new(move |event| {
-                    let _ = sender.send(OwnerEvent::RunningAgent {
-                        process_epoch,
-                        event,
-                    });
+                    sender
+                        .try_send(OwnerEvent::RunningAgent {
+                            process_epoch,
+                            event,
+                        })
+                        .is_ok()
                 }),
             )
     }
@@ -1383,6 +1266,7 @@ impl SessionOwner {
         self.relay_quiescence_epoch = Some(process_epoch);
         self.relay_quiescence_result = None;
         let sender = self.sender.clone();
+        let mailbox = Arc::clone(&self.relay_quiescence_mailbox);
         let result = self
             .resources
             .process
@@ -1390,14 +1274,27 @@ impl SessionOwner {
             .ok_or(SupervisorError::RelayFailed)
             .and_then(|process| {
                 process.quiesce_relay(Box::new(move |result| {
-                    let _ = sender.send(OwnerEvent::RelayQuiesced {
-                        process_epoch,
-                        result,
-                    });
+                    *mailbox
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                    // If full, an already-queued event wakes the owner, which
+                    // checks the mailbox after every dispatch. Never block a join.
+                    let _ = sender.try_send(OwnerEvent::RelayQuiesced);
                 }))
             });
         if let Err(error) = result {
             self.handle_relay_quiesced(process_epoch, Err(error));
+        }
+    }
+
+    fn collect_relay_quiescence(&mut self) {
+        let result = self
+            .relay_quiescence_mailbox
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let (Some(process_epoch), Some(result)) = (self.relay_quiescence_epoch, result) {
+            self.handle_relay_quiesced(process_epoch, result);
         }
     }
 

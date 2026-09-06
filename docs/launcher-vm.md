@@ -97,6 +97,14 @@ regular files and directories, without group/other write permission; even
 internal symlinks, FIFOs and sockets are refused. Unlisted immutable files are
 supported, but their contents are not added to the existing measurement format.
 
+The production relay step runs the library tests selected by
+`launch_supervisor::system::relay_tests` with `LOUISELM_REQUIRE_SYSTEM_RELAY=1`.
+Build `louiselm-launch` first, as in CI: the fixture requires its real bootstrap
+and Bubblewrap, and cannot silently skip when the flag is set. It proves
+quiescence and direct Disposal close controller I/O after a positive-control
+echo, with the controller left open. These NamespaceOnly fixtures do not prove
+assigned outer identity or end-to-end Verified posture.
+
 Prove initial-user-namespace identity with
 `LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1`; a passing test that printed a
 skip is not conformance evidence. Fake-broker tests do not prove the installed

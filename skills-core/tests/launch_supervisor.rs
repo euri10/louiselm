@@ -15,11 +15,14 @@ use std::{
     env, fs,
     io::{self, BufReader, Cursor, Read, Write},
     net::Shutdown,
-    os::unix::{fs::PermissionsExt, net::UnixStream},
+    os::{
+        fd::OwnedFd,
+        unix::{fs::PermissionsExt, net::UnixStream},
+    },
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver},
     },
     thread,
@@ -49,14 +52,15 @@ use louiselm_skills::{
     launch_supervisor::{
         CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker, LaunchPlatform,
         LaunchSigner, LaunchSupervisor, LaunchedSession, MechanicFailure, PreparedAgent,
-        ProcessMembership, RunningAgent, RunningAgentEvent, SupervisorCompletion, SupervisorError,
-        SupervisorTimer, read_launch_frame,
+        ProcessMembership, RelayStdio, RunningAgent, RunningAgentEvent, RunningAgentEvents,
+        SupervisorCompletion, SupervisorError, SupervisorTimer, SystemRunningAgent,
+        read_launch_frame,
     },
     launcher_install::Identity,
     registry::Registry,
     sandbox::{
         BubblewrapBackend, Channel, ConfinementPlan, IdentityPlan, PreparedSession, ProcessTree,
-        SandboxError, SandboxedSession,
+        SandboxError,
     },
 };
 use support::{Fixture, write_file, write_registry};
@@ -1080,7 +1084,7 @@ struct AgentState {
     disposed: bool,
     dispose_attempts: usize,
     relayed_input: Vec<u8>,
-    running_events: Option<Arc<dyn Fn(RunningAgentEvent) + Send + Sync>>,
+    running_events: Option<RunningAgentEvents>,
     hold_relay_quiescence: bool,
     relay_quiescence: Option<SupervisorCompletion<()>>,
 }
@@ -1143,6 +1147,8 @@ impl PreparedAgent for FakePreparedAgent {
             state: Arc::clone(&self.state),
             agent_changed: Arc::clone(&self.agent_changed),
             output: self.output.clone(),
+            relay_worker: None,
+            relay_stopped: Arc::new(AtomicBool::new(false)),
             park_fails: self.park_fails,
             resume_fails: self.resume_fails,
             resume_ambiguous_after_running: self.resume_ambiguous_after_running,
@@ -1183,6 +1189,8 @@ struct FakeRunningAgent {
     state: Arc<Mutex<AgentState>>,
     agent_changed: Arc<Condvar>,
     output: Vec<u8>,
+    relay_worker: Option<thread::JoinHandle<()>>,
+    relay_stopped: Arc<AtomicBool>,
     park_fails: bool,
     resume_fails: bool,
     resume_ambiguous_after_running: bool,
@@ -1191,41 +1199,89 @@ struct FakeRunningAgent {
     active: bool,
 }
 
+impl FakeRunningAgent {
+    fn stop_relay(&mut self) {
+        self.relay_stopped.store(true, Ordering::Release);
+        if let Some(worker) = self.relay_worker.take() {
+            worker.join().expect("fake relay worker finishes");
+        }
+    }
+}
+
+fn run_fake_relay(
+    receiver: &Receiver<RelayStdio>,
+    state: &Mutex<AgentState>,
+    output: &[u8],
+    stopped: &AtomicBool,
+) -> Result<(), SupervisorError> {
+    let mut controller = loop {
+        if stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        match receiver.recv_timeout(Duration::from_millis(1)) {
+            Ok(controller) => break controller,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    };
+    let mut input = Vec::new();
+    let mut buffer = [0; 8192];
+    while !stopped.load(Ordering::Acquire) {
+        match controller.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => input.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    lock(state).relayed_input = input;
+    let mut remaining = output;
+    while !remaining.is_empty() && !stopped.load(Ordering::Acquire) {
+        match controller.write(remaining) {
+            Ok(0) => return Err(SupervisorError::RelayFailed),
+            Ok(written) => remaining = &remaining[written..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    controller.close().map_err(Into::into)
+}
+
 impl RunningAgent for FakeRunningAgent {
     fn start_relay(
         &mut self,
-        mut input: Box<dyn Read + Send>,
-        mut output: Box<dyn Write + Send>,
-        complete: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+        controller: Receiver<RelayStdio>,
+        complete: RunningAgentEvents,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "agent.relay");
         let state = Arc::clone(&self.state);
         let output_bytes = self.output.clone();
+        let stopped = Arc::clone(&self.relay_stopped);
         lock(&state).running_events = Some(Arc::clone(&complete));
-        thread::Builder::new()
-            .name("fake-agent-relay".to_owned())
-            .spawn(move || {
-                let result: Result<i32, SupervisorError> = (|| {
-                    let mut relayed_input = Vec::new();
-                    input
-                        .read_to_end(&mut relayed_input)
-                        .map_err(|_| SupervisorError::RelayFailed)?;
-                    lock(&state).relayed_input = relayed_input;
-                    output
-                        .write_all(&output_bytes)
-                        .map_err(|_| SupervisorError::RelayFailed)?;
-                    Ok(0)
-                })();
-                complete(match result {
-                    Ok(0) => RunningAgentEvent::ControllerEof,
-                    Ok(_) | Err(_) => RunningAgentEvent::RelayFailed,
-                });
-            })
-            .map(drop)
-            .map_err(|_| SupervisorError::RelayFailed)
+        self.relay_worker = Some(
+            thread::Builder::new()
+                .name("fake-agent-relay".to_owned())
+                .spawn(move || {
+                    let result = run_fake_relay(&controller, &state, &output_bytes, &stopped);
+                    if !stopped.load(Ordering::Acquire) {
+                        complete(if result.is_ok() {
+                            RunningAgentEvent::ControllerEof
+                        } else {
+                            RunningAgentEvent::RelayFailed
+                        });
+                    }
+                })
+                .map_err(|_| SupervisorError::RelayFailed)?,
+        );
+        Ok(())
     }
 
     fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
+        self.stop_relay();
         record(&self.events, "agent.quiesce_relay");
         let mut state = lock(&self.state);
         if state.hold_relay_quiescence {
@@ -1284,6 +1340,7 @@ impl RunningAgent for FakeRunningAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
+        self.stop_relay();
         if self.active {
             record(&self.events, "agent.dispose");
             let mut state = lock(&self.state);
@@ -1300,6 +1357,7 @@ impl RunningAgent for FakeRunningAgent {
 
 impl Drop for FakeRunningAgent {
     fn drop(&mut self) {
+        self.stop_relay();
         if self.active {
             record(&self.events, "agent.running_dropped_without_disposal");
         }
@@ -1370,108 +1428,13 @@ impl PreparedAgent for BubblewrapPreparedAgent {
             .take()
             .expect("the real prepared Session remains owned");
         let session = prepared.start().map_err(map_test_sandbox)?;
-        Ok(Box::new(BubblewrapRunningAgent {
-            session: Arc::new(Mutex::new(session)),
-        }))
+        Ok(Box::new(SystemRunningAgent::new(session)))
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
         self.prepared
             .as_mut()
             .expect("the real prepared Session remains owned")
-            .dispose()
-            .map(|_| ())
-            .map_err(map_test_sandbox)
-    }
-}
-
-struct BubblewrapRunningAgent {
-    session: Arc<Mutex<SandboxedSession>>,
-}
-
-impl RunningAgent for BubblewrapRunningAgent {
-    fn start_relay(
-        &mut self,
-        mut input: Box<dyn Read + Send>,
-        mut output: Box<dyn Write + Send>,
-        complete: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
-    ) -> Result<(), SupervisorError> {
-        let (mut agent_input, mut agent_output, mut agent_error) = {
-            let mut session = lock(&self.session);
-            (
-                session.take_stdin().ok_or(SupervisorError::RelayFailed)?,
-                session.take_stdout().ok_or(SupervisorError::RelayFailed)?,
-                session.take_stderr().ok_or(SupervisorError::RelayFailed)?,
-            )
-        };
-        let session = Arc::clone(&self.session);
-        thread::Builder::new()
-            .name("louiselm-test-agent-relay".to_owned())
-            .spawn(move || {
-                let result: Result<i32, SupervisorError> = (|| {
-                    let input_worker = thread::Builder::new()
-                        .name("louiselm-test-agent-stdin".to_owned())
-                        .spawn(move || {
-                            io::copy(&mut input, &mut agent_input).and_then(|_| agent_input.flush())
-                        })
-                        .map_err(|_| SupervisorError::RelayFailed)?;
-                    let error_worker = thread::Builder::new()
-                        .name("louiselm-test-agent-stderr".to_owned())
-                        .spawn(move || io::copy(&mut agent_error, &mut io::sink()))
-                        .map_err(|_| SupervisorError::RelayFailed)?;
-                    io::copy(&mut agent_output, &mut output)?;
-                    output.flush()?;
-                    let exit = lock(&session).wait().map_err(map_test_sandbox)?;
-                    input_worker
-                        .join()
-                        .map_err(|_| SupervisorError::RelayFailed)?
-                        .map_err(|_| SupervisorError::RelayFailed)?;
-                    error_worker
-                        .join()
-                        .map_err(|_| SupervisorError::RelayFailed)?
-                        .map_err(|_| SupervisorError::RelayFailed)?;
-                    Ok(exit)
-                })();
-                complete(match result {
-                    Ok(0) => RunningAgentEvent::ProcessExited(ProcessExitClassification::Success),
-                    Ok(-1) => RunningAgentEvent::ProcessExited(ProcessExitClassification::Signaled),
-                    Ok(_) => RunningAgentEvent::ProcessExited(ProcessExitClassification::Failure),
-                    Err(_) => RunningAgentEvent::RelayFailed,
-                });
-            })
-            .map(drop)
-            .map_err(|_| SupervisorError::RelayFailed)
-    }
-
-    fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
-        thread::Builder::new()
-            .name("louiselm-test-relay-quiescence".to_owned())
-            .spawn(move || complete(Ok(())))
-            .map(drop)
-            .map_err(|_| SupervisorError::RelayFailed)
-    }
-
-    fn park(&mut self) -> Result<(), MechanicFailure> {
-        lock(&self.session)
-            .park()
-            .map_err(|_| MechanicFailure::Running)
-    }
-
-    fn resume(&mut self) -> Result<(), MechanicFailure> {
-        lock(&self.session)
-            .resume()
-            .map_err(|_| MechanicFailure::Parked)
-    }
-
-    fn interrupt(&mut self) -> Result<(), MechanicFailure> {
-        lock(&self.session)
-            .interrupt()
-            .map(|_| ())
-            .map_err(|_| MechanicFailure::Ambiguous)
-    }
-
-    fn dispose(&mut self) -> Result<(), SupervisorError> {
-        lock(&self.session)
             .dispose()
             .map(|_| ())
             .map_err(map_test_sandbox)
@@ -2152,6 +2115,20 @@ fn lifecycle_effect_counts(events: &Events) -> [usize; 4] {
     ]
 }
 
+fn capture_stdio(
+    input: fs::File,
+    output: Arc<Mutex<Vec<u8>>>,
+) -> (RelayStdio, thread::JoinHandle<()>) {
+    let (mut reader, writer) = UnixStream::pair().unwrap();
+    let observer = thread::spawn(move || {
+        io::copy(&mut reader, &mut SharedWriter(output)).expect("capture controller output");
+    });
+    (
+        RelayStdio::new(BufReader::new(input), fs::File::from(OwnedFd::from(writer))).unwrap(),
+        observer,
+    )
+}
+
 fn begin_session_relay(
     session: LaunchedSession,
 ) -> (
@@ -2166,10 +2143,12 @@ fn begin_session_relay(
     let worker = thread::Builder::new()
         .name("fake-supervised-relay".to_owned())
         .spawn(move || {
-            let result = session.relay_stdio(
-                Box::new(supervisor_input),
-                Box::new(SharedWriter(controller_output)),
+            let (stdio, output_worker) = capture_stdio(
+                fs::File::from(OwnedFd::from(supervisor_input)),
+                controller_output,
             );
+            let result = session.relay_stdio(stdio);
+            output_worker.join().expect("output observer finishes");
             sender.send(result).expect("test receives relay completion");
         })
         .expect("supervised relay worker starts");
@@ -2689,11 +2668,15 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
     let relay_worker = thread::Builder::new()
         .name("launch-relay-observation".to_owned())
         .spawn(move || {
+            let (mut writer, reader) = UnixStream::pair().unwrap();
+            writer.write_all(&worker_input).unwrap();
+            drop(writer);
+            let (stdio, output_worker) =
+                capture_stdio(fs::File::from(OwnedFd::from(reader)), worker_output);
+            let result = session.relay_stdio(stdio);
+            output_worker.join().expect("output observer finishes");
             relay_sender
-                .send(session.relay_stdio(
-                    Box::new(Cursor::new(worker_input)),
-                    Box::new(SharedWriter(worker_output)),
-                ))
+                .send(result)
                 .expect("test receives relay completion");
         })
         .expect("observed relay worker starts");
@@ -8126,11 +8109,14 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     let relay_worker = thread::Builder::new()
         .name("privileged-launch-relay".to_owned())
         .spawn(move || {
+            let (stdio, output_worker) = capture_stdio(
+                fs::File::from(OwnedFd::from(supervisor_input)),
+                worker_output,
+            );
+            let result = session.relay_stdio(stdio);
+            output_worker.join().expect("output observer finishes");
             relay_sender
-                .send(session.relay_stdio(
-                    Box::new(supervisor_input),
-                    Box::new(SharedWriter(worker_output)),
-                ))
+                .send(result)
                 .expect("test receives privileged relay completion");
         })
         .expect("privileged relay worker starts");

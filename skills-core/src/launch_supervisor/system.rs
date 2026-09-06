@@ -1,15 +1,14 @@
 //! Production adapters for the one-shot Launch supervisor.
 
+#[cfg(test)]
+#[path = "system_relay_tests.rs"]
+mod relay_tests;
+
 use std::{
-    fs,
-    io::{self, Read, Write},
+    fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, MutexGuard, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -39,8 +38,8 @@ use crate::{
 
 use super::{
     CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker, LaunchPlatform, LaunchSigner,
-    MechanicFailure, PreparedAgent, ProcessMembership, RunningAgent, RunningAgentEvent,
-    SupervisorCompletion, SupervisorError,
+    MechanicFailure, PreparedAgent, ProcessMembership, RelayStdio, RunningAgent,
+    RunningAgentEvents, SupervisorCompletion, SupervisorError, relay::RelayWorker,
 };
 
 /// Fixed root-owned launch registry read by the production entrypoint.
@@ -54,7 +53,6 @@ pub const SYSTEM_CAPABILITY_ROOT: &str = "/run/louiselm-launch/sessions";
 /// Fixed socket location visible inside each confined Session.
 pub const SYSTEM_CAPABILITY_GUEST_PATH: &str = "/tmp/louiselm-capability.sock";
 
-const PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SIGNER_CLEANUP_MARGIN: Duration = Duration::from_millis(250);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -800,12 +798,7 @@ impl PreparedAgent for SystemPreparedAgent {
     fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
         self.prepared
             .start()
-            .map(|session| {
-                Box::new(SystemRunningAgent {
-                    session: Arc::new(Mutex::new(session)),
-                    relay_events: None,
-                }) as Box<dyn RunningAgent>
-            })
+            .map(|session| Box::new(SystemRunningAgent::new(session)) as Box<dyn RunningAgent>)
             .map_err(map_sandbox)
     }
 
@@ -828,17 +821,27 @@ impl ProcessMembership for SystemProcessMembership {
     }
 }
 
-struct SystemRunningAgent {
+/// Production lifecycle/relay adapter for an already-confined running Session.
+pub struct SystemRunningAgent {
     session: Arc<Mutex<SandboxedSession>>,
-    relay_events: Option<Arc<RelayEventGate>>,
+    relay: Option<RelayWorker>,
 }
 
-struct RelayEventGate {
-    active: AtomicBool,
-    events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+impl SystemRunningAgent {
+    /// Takes exclusive lifecycle and stdio ownership of an already-started sandbox.
+    ///
+    /// This does not authorize a launch or establish Verified posture. The caller
+    /// must obtain the Session through the receipt-gated launch workflow.
+    #[must_use]
+    pub fn new(session: SandboxedSession) -> Self {
+        Self {
+            session: Arc::new(Mutex::new(session)),
+            relay: None,
+        }
+    }
 }
 
-fn classify_exit(code: i32) -> ProcessExitClassification {
+pub(super) fn classify_exit(code: i32) -> ProcessExitClassification {
     match code {
         0 => ProcessExitClassification::Success,
         value if value < 0 => ProcessExitClassification::Signaled,
@@ -873,36 +876,16 @@ fn apply_mechanic<T>(
     }
 }
 
-impl RelayEventGate {
-    fn new(events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>) -> Self {
-        Self {
-            active: AtomicBool::new(true),
-            events,
-        }
-    }
-
-    fn emit(&self, event: RunningAgentEvent) {
-        if self.active.load(Ordering::Acquire) {
-            (self.events)(event);
-        }
-    }
-
-    fn quiesce(&self) {
-        self.active.store(false, Ordering::Release);
-    }
-}
-
 impl RunningAgent for SystemRunningAgent {
     fn start_relay(
         &mut self,
-        input: Box<dyn Read + Send>,
-        output: Box<dyn Write + Send>,
-        events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+        controller: mpsc::Receiver<RelayStdio>,
+        events: RunningAgentEvents,
     ) -> Result<(), SupervisorError> {
-        if self.relay_events.is_some() {
+        if self.relay.is_some() {
             return Err(SupervisorError::RelayFailed);
         }
-        let (agent_input, agent_output, agent_error) = {
+        let (input, output, error) = {
             let mut session = lock(&self.session);
             (
                 session.take_stdin().ok_or(SupervisorError::RelayFailed)?,
@@ -910,28 +893,21 @@ impl RunningAgent for SystemRunningAgent {
                 session.take_stderr().ok_or(SupervisorError::RelayFailed)?,
             )
         };
-        let events = Arc::new(RelayEventGate::new(events));
-        self.relay_events = Some(Arc::clone(&events));
-        start_relay_workers(
-            Arc::clone(&self.session),
+        let session = Arc::clone(&self.session);
+        self.relay = Some(RelayWorker::start(
+            controller,
             input,
             output,
-            agent_input,
-            agent_output,
-            agent_error,
+            error,
+            move || lock(&session).try_wait().map_err(map_sandbox),
             events,
-        )
+        )?);
+        Ok(())
     }
 
     fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
-        if let Some(events) = self.relay_events.take() {
-            events.quiesce();
-        }
-        thread::Builder::new()
-            .name("louiselm-launch-relay-quiescence".to_owned())
-            .spawn(move || complete(Ok(())))
-            .map(drop)
-            .map_err(|_| SupervisorError::RelayFailed)
+        complete(self.relay.as_mut().map_or(Ok(()), RelayWorker::stop));
+        Ok(())
     }
 
     fn park(&mut self) -> Result<(), MechanicFailure> {
@@ -955,89 +931,17 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
-        lock(&self.session)
+        let relay = self.relay.as_mut().map_or(Ok(()), RelayWorker::stop);
+        let process = lock(&self.session)
             .dispose()
             .map(|_| ())
-            .map_err(map_sandbox)
+            .map_err(map_sandbox);
+        if relay.is_err() || process.is_err() {
+            Err(SupervisorError::CleanupUnproven)
+        } else {
+            Ok(())
+        }
     }
-}
-
-fn start_relay_workers(
-    session: Arc<Mutex<SandboxedSession>>,
-    mut input: Box<dyn Read + Send>,
-    mut output: Box<dyn Write + Send>,
-    mut agent_input: std::process::ChildStdin,
-    mut agent_output: std::process::ChildStdout,
-    mut agent_error: std::process::ChildStderr,
-    events: Arc<RelayEventGate>,
-) -> Result<(), SupervisorError> {
-    let input_events = Arc::clone(&events);
-    thread::Builder::new()
-        .name("louiselm-launch-acp-input".to_owned())
-        .spawn(move || {
-            let mut buffer = [0_u8; 8 * 1024];
-            loop {
-                match input.read(&mut buffer) {
-                    Ok(0) => {
-                        input_events.emit(RunningAgentEvent::ControllerEof);
-                        break;
-                    }
-                    Ok(read) if agent_input.write_all(&buffer[..read]).is_ok() => {}
-                    Ok(_) | Err(_) => {
-                        input_events.emit(RunningAgentEvent::RelayFailed);
-                        break;
-                    }
-                }
-            }
-        })
-        .map(drop)
-        .map_err(|_| SupervisorError::RelayFailed)?;
-
-    let error_events = Arc::clone(&events);
-    thread::Builder::new()
-        .name("louiselm-launch-agent-stderr".to_owned())
-        .spawn(move || {
-            if io::copy(&mut agent_error, &mut io::sink()).is_err() {
-                error_events.emit(RunningAgentEvent::RelayFailed);
-            }
-        })
-        .map(drop)
-        .map_err(|_| SupervisorError::RelayFailed)?;
-
-    let output_events = Arc::clone(&events);
-    thread::Builder::new()
-        .name("louiselm-launch-acp-output".to_owned())
-        .spawn(move || {
-            if io::copy(&mut agent_output, &mut output)
-                .and_then(|_| output.flush())
-                .is_err()
-            {
-                output_events.emit(RunningAgentEvent::RelayFailed);
-            }
-        })
-        .map(drop)
-        .map_err(|_| SupervisorError::RelayFailed)?;
-
-    thread::Builder::new()
-        .name("louiselm-launch-process-exit".to_owned())
-        .spawn(move || {
-            loop {
-                match lock(&session).try_wait().map_err(map_sandbox) {
-                    Ok(Some(code)) => {
-                        let classification = classify_exit(code);
-                        events.emit(RunningAgentEvent::ProcessExited(classification));
-                        break;
-                    }
-                    Ok(None) => thread::sleep(PROCESS_EXIT_POLL_INTERVAL),
-                    Err(_) => {
-                        events.emit(RunningAgentEvent::RelayFailed);
-                        break;
-                    }
-                }
-            }
-        })
-        .map(drop)
-        .map_err(|_| SupervisorError::RelayFailed)
 }
 
 #[expect(

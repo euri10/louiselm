@@ -382,6 +382,19 @@ jobs:
             LOUISELM_TEST_PINNED_CGROUP_ESCAPE=1 \
             /bin/bash -c 'umask 077; exec "$1" sandbox::tests::pinned_root_cgroup_prevents_operator_migration_of_a_session_process --exact --nocapture' bash "$library_test"
 
+      - name: Test production relay cleanup with an open controller
+        run: |
+          set -eu
+          library_test="$(
+            cargo test --lib --all-features --locked --no-run --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty' |
+              tail -n 1
+          )"
+          test -n "$library_test"
+          cargo build --bin louiselm-launch --all-features --locked
+          sudo env LOUISELM_REQUIRE_SYSTEM_RELAY=1 \
+            /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::relay_tests --nocapture' bash "$library_test"
+
       - name: Test privileged launch supervisor composition
         run: |
           set -eu

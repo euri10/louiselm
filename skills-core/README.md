@@ -471,6 +471,19 @@ test "$(sudo find /usr/local/lib/louiselm/launcher/private/keys \
 
 #### Runtime acceptance
 
+The Rust relay boundary takes `RelayStdio`, not arbitrary blocking `Read`/`Write`
+implementations. It owns descriptor-backed controller I/O and preserves bytes
+prefetched while reading the launch frame. Callers give it exclusive use of the
+open file descriptions, including duplicates, until cleanup restores their
+original flags. The CLI duplicates stdin/stdout with close-on-exec enabled.
+
+`SystemRunningAgent` owns one cancellable, nonblocking relay worker. Successful
+quiescence joins it and closes controller/child I/O even when the controller stays
+open or stops reading. Disposal requires both relay and process-tree cleanup
+before the identity lease can be released. Event callbacks must return promptly;
+`false` requests retry under backpressure. This does not make uninterruptible
+kernel/filesystem faults cancellable, or prove the installed authority ceremony.
+
 `cargo test --test launch_supervisor` covers the complete launch transaction
 against a deterministic fake Control broker. A live ceremony additionally
 requires the real broker from louiselm-qbr.5.1.1 at the installed rendezvous.

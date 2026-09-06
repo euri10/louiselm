@@ -2,7 +2,9 @@
 
 use std::{
     ffi::OsStr,
+    fs::File,
     io::{self, BufReader},
+    os::fd::AsFd,
     path::Path,
     process::ExitCode,
     sync::{Arc, mpsc},
@@ -11,7 +13,7 @@ use std::{
 
 use louiselm_skills::{
     launch_supervisor::{
-        InstalledLaunchSigner, LaunchSigner, LaunchSupervisor, SYSTEM_REGISTRY_ROOT,
+        InstalledLaunchSigner, LaunchSigner, LaunchSupervisor, RelayStdio, SYSTEM_REGISTRY_ROOT,
         SYSTEM_SESSIONS_ROOT, SystemLaunchPlatform, connect_control_broker, read_launch_frame,
     },
     launcher_install::{LauncherPaths, runtime_config_with_deadline},
@@ -77,7 +79,15 @@ fn run() -> Result<i32, &'static str> {
         return Err("launcher invocation is not the installed operator");
     }
 
-    let mut input = BufReader::new(io::stdin());
+    let input = io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|_| "controller stdin unavailable")?;
+    let output = io::stdout()
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|_| "controller stdout unavailable")?;
+    let mut input = BufReader::new(File::from(input));
     let request = read_launch_frame(&mut input).map_err(|_| "launch document rejected")?;
     let registry = Arc::new(
         Registry::open_trusted(Path::new(SYSTEM_REGISTRY_ROOT))
@@ -126,7 +136,10 @@ fn run() -> Result<i32, &'static str> {
         .map_err(|_| "launch supervisor unavailable")?
         .map_err(|_| "authorized launch failed")?;
     session
-        .relay_stdio(Box::new(input), Box::new(io::stdout()))
+        .relay_stdio(
+            RelayStdio::new(input, File::from(output))
+                .map_err(|_| "controller stdio unavailable")?,
+        )
         .map_err(|_| "Agent relay failed")
 }
 

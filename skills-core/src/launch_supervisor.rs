@@ -12,7 +12,7 @@
 #![cfg(target_os = "linux")]
 
 use std::{
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, Read},
     path::PathBuf,
     sync::{
         Arc,
@@ -46,13 +46,16 @@ use crate::{
 };
 
 mod lifecycle;
+mod relay;
+mod stdio;
 mod system;
 
 pub use lifecycle::LaunchedSession;
+pub use stdio::RelayStdio;
 pub use system::{
     InstalledLaunchSigner, SYSTEM_CAPABILITY_GUEST_PATH, SYSTEM_CAPABILITY_ROOT,
     SYSTEM_CGROUP_ROOT, SYSTEM_REGISTRY_ROOT, SYSTEM_SESSIONS_ROOT, SystemLaunchPlatform,
-    connect_control_broker,
+    SystemRunningAgent, connect_control_broker,
 };
 
 /// One exactly-once asynchronous launch completion.
@@ -61,6 +64,12 @@ pub type LaunchCompletion =
 
 /// Completion used by broker and signer ports.
 pub type SupervisorCompletion<T> = Box<dyn FnOnce(Result<T, SupervisorError>) + Send + 'static>;
+
+/// Nonblocking relay-event delivery: `false` means retry while the relay is active.
+///
+/// Callbacks must not block. A worker retains an undelivered event until accepted
+/// or terminal cancellation, so a full owner queue cannot prevent its shutdown.
+pub type RunningAgentEvents = Arc<dyn Fn(RunningAgentEvent) -> bool + Send + Sync>;
 
 /// Sanitized observations emitted by an Agent relay without lifecycle authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,18 +377,17 @@ pub trait RunningAgent: Send {
     /// Returns relay setup/worker-start errors. Later I/O and process outcomes arrive through `events`.
     fn start_relay(
         &mut self,
-        input: Box<dyn Read + Send>,
-        output: Box<dyn Write + Send>,
-        events: Arc<dyn Fn(RunningAgentEvent) + Send + Sync>,
+        controller: mpsc::Receiver<RelayStdio>,
+        events: RunningAgentEvents,
     ) -> Result<(), SupervisorError>;
 
-    /// Revokes every relay worker's authority to publish further lifecycle events.
+    /// Cancels and joins every relay worker, closing its owned I/O before completion.
     ///
-    /// Completion is asynchronous because production workers may be concurrently
-    /// observing controller or process I/O when terminal cleanup begins.
+    /// The callback-shaped boundary permits asynchronous cleanup. Completion may
+    /// be immediate after a bounded join; callers must not block in the callback.
     ///
     /// # Errors
-    /// Returns quiescence registration errors; asynchronous revocation failures arrive through `complete`.
+    /// Returns registration errors; cleanup-proof failures arrive through `complete`.
     fn quiesce_relay(&mut self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError>;
 
     /// Freezes the whole process tree while retaining its identity lease.
@@ -406,10 +414,10 @@ pub trait RunningAgent: Send {
     /// Returns the proved post-attempt state, or `Ambiguous` if signalling and prior-state restoration cannot be proved.
     fn interrupt(&mut self) -> Result<(), MechanicFailure>;
 
-    /// Disposes the whole process tree and proves it empty.
+    /// Cancels/joins all relay workers and disposes the whole process tree.
     ///
     /// # Errors
-    /// Returns cleanup failure unless the owned process tree is proved empty.
+    /// Returns cleanup failure unless both relay quiescence and zero descendants are proved.
     fn dispose(&mut self) -> Result<(), SupervisorError>;
 }
 
