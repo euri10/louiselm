@@ -25,6 +25,49 @@ use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg}
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
+#[test]
+fn bootstrap_refuses_ambient_descriptors_before_target_exec() {
+    if std::env::var_os("LOUISELM_BOOTSTRAP_FD_CHILD").is_none() {
+        // No non-CLOEXEC window in the parallel test runner (louiselm-xhgy).
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bootstrap_refuses_ambient_descriptors_before_target_exec",
+                "--nocapture",
+            ])
+            .env("LOUISELM_BOOTSTRAP_FD_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        return;
+    }
+    // Deliberate non-CLOEXEC authority, unlike the ordinary declared transfers.
+    let file = fs::File::open("/dev/null").unwrap();
+    let inherited = rustix::io::fcntl_dupfd_cloexec(&file, 100).unwrap();
+    rustix::io::fcntl_setfd(&inherited, rustix::io::FdFlags::empty()).unwrap();
+    let mut bootstrap = Bootstrap::start(Path::new("/bin/true"));
+    // Drop our copy before the handshake. Only the freshly exec'd bootstrap
+    // still owns an inherited copy; nothing is altered in the parent's table.
+    drop(inherited);
+    let (_writer, _status) = valid_channels(&bootstrap);
+    bootstrap
+        .channel
+        .shutdown(std::net::Shutdown::Write)
+        .unwrap();
+    let mut reply = Vec::new();
+    bootstrap.channel.read_to_end(&mut reply).unwrap();
+    assert_eq!(
+        reply,
+        [2, 0, 0, 0, 22],
+        "undeclared FD rejected before READY"
+    );
+    assert!(!bootstrap.wait().success());
+}
+
 struct Bootstrap {
     child: Child,
     channel: UnixStream,

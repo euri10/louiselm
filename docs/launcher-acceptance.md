@@ -11,16 +11,24 @@ relay ownership. `louiselm-1mac` subsequently integrates the `louiselm-6f7q`
 creator-thread fix with the production relay and restores composite acceptance.
 `louiselm-relay-failure-terminal-receipt-w1ez` adds causal terminal receipts for
 real relay failures, including ordered audit repair after signing/ACK failures.
+`louiselm-d6fv.4.8` now supplies the [required hostile matrix](launcher-conformance.md):
+45 attack checks, fork/lifecycle coverage, and the existing registry/relay gates.
+It found and fixed undeclared descriptor inheritance (`louiselm-d6fv.4.8.1.1`).
+Ten consecutive full guest rounds passed. Runtime conformance-admission binding
+remains the focused design question `louiselm-ucj1`, blocking Verified cutover.
 
 **The launcher parent is not accepted.** Implementation coverage, host-mechanism
 checks, installed authority, and end-to-end Verified posture are separate claims.
 The [disposable VM](launcher-vm.md) is the only privileged test environment used
 here; no desktop sudo, security changes, credentials, or host mounts were used.
 
-## Acceptance map
+## Acceptance map — pre-conformance audit snapshot
 
 AC numbers refer to `br show louiselm-d6fv.4 --json`. Paths and named tests below
 are evidence pointers, not a claim that every production composition was run.
+The `.4.8` probe gaps in this historical table are now covered by the linked
+conformance report above. Installed authority, Provider packaging, real broker,
+Verified cutover and conformance-admission provenance remain separate work.
 
 | AC | Existing boundary and evidence | Remaining acceptance |
 | --- | --- | --- |
@@ -35,12 +43,15 @@ are evidence pointers, not a claim that every production composition was run.
 | 9 — integrity-protected launch receipt | [`run_launch`/`launch_evidence`](../skills-core/src/launch_supervisor.rs) binds request/runtime/input/isolation/kernel-prerequisite digests and channel IDs. Starting ACK gates start; linked Running ACK gates success. [Receipt tests](../skills-core/tests/launch_receipt.rs) reject mutation, gaps, duplicates, foreign prefixes and splices. | Real signer, installed entrypoint, real broker durability and live Session must be exercised together through `louiselm-qbr.5.1.1` and `louiselm-d6fv.9`. The privileged composite test uses a fake signer/broker and a test platform around real Bubblewrap, not `SystemLaunchPlatform` end to end. |
 | 10 — direct CLI is unmanaged | Direct vendor launch has no launcher receipt. There is no `louiselm-launch` call in the current Lua Session launch path; development release identity stays unverified. | User-visible Verified posture activation is exclusively `louiselm-d6fv.9`, with launch-preview/health work in `louiselm-d6fv.6.2`. Do not call current Sessions verified. |
 
-## Hostile matrix: what still needs a probe
+## Hostile matrix — original probe inventory
 
 The scope is the actual confined workload, not only schema validation or an
 unconfined transport peer. Each negative test needs a positive control: an
 absent socket, dead target process, or unreachable network endpoint proves
 nothing about containment.
+The following was the original gap inventory. See the current
+[observations and authority limits](launcher-conformance.md#observations) for
+the implemented controls, the pre-exec FD refusal, and exact use of doubles.
 
 | Attack class | Current evidence | Gap |
 | --- | --- | --- |
@@ -71,8 +82,8 @@ explicit privileged checks (no skips in those targeted invocations):
 - `trusted_registry_requires_root_owned_immutable_documents_and_runtime`
 
 Ordinary `cargo test` success is not a no-skip claim: privileged/cgroup tests
-can return early when their prerequisites are absent. The future required
-conformance recipe must fail clearly in that situation.
+can return early when their prerequisites are absent. The required
+conformance recipe fails clearly in that situation.
 
 This audit additionally reproduced two failures through public Rust APIs:
 
@@ -138,8 +149,9 @@ and source locations also live in the bugs, so the cache is not the sole record.
   `louiselm-d6fv.4.8` owns the hostile suite; `louiselm-d6fv.4.9` owns installed
   launcher authority and waits on `louiselm-lm70` for genuine release acceptance.
 - `louiselm-ln30`, relay worker ownership (`mthx`), creator-thread integration
-  (`1mac`) and relay-failure terminal receipts (`w1ez`) are fixed. Hostile
-  conformance and installed authority still prevent launcher acceptance.
+  (`1mac`), relay-failure terminal receipts (`w1ez`) and hostile conformance
+  (`d6fv.4.8`) are implemented. Installed authority still prevents launcher
+  acceptance; conformance-admission design (`ucj1`) also blocks Verified cutover.
   The duplicate lifecycle-history allocation issue
   `louiselm-bound-lifecycle-replay-history-wg2v` remains separately tracked;
   this audit does not claim a bounded-memory production lifecycle.

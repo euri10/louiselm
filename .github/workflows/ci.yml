@@ -294,7 +294,7 @@ jobs:
       - name: Install Linux sandbox test tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap strace
           # Noble can deny capabilities inside an unprivileged user namespace;
           # this ephemeral runner exists specifically to exercise that path.
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
@@ -330,6 +330,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features --locked
+
+      - name: Required hostile launcher conformance
+        run: ../scripts/launcher-conformance --disposable-guest
 
       - name: Test host identity against the initial user namespace
         run: |

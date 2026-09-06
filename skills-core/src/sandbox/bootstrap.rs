@@ -7,6 +7,7 @@
 
 use std::{
     ffi::OsString,
+    fs,
     io::{self, IoSlice, IoSliceMut, Read, Write},
     mem::MaybeUninit,
     net::Shutdown,
@@ -63,6 +64,32 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
     result
 }
 
+fn reject_ambient_descriptors(declared: [i32; 4]) -> io::Result<()> {
+    // This fresh exec is single-threaded, before target execution. Only stdio,
+    // our CLOEXEC error-channel duplicate and three declared transfers are owned.
+    // Collect first so read_dir's own descriptor is closed before inspection.
+    // Refuse extra authority instead of closing arbitrary raw FDs unsafely.
+    let paths = fs::read_dir("/proc/self/fd")?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    for path in paths {
+        let fd = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.parse::<i32>().ok())
+            .ok_or_else(|| invalid("invalid inherited descriptor entry"))?;
+        if (0..=2).contains(&fd) || declared.contains(&fd) {
+            continue;
+        }
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(_) => return Err(invalid("undeclared inherited descriptor")),
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn handoff(
     mut channel: UnixStream,
     descriptors: [OwnedFd; 3],
@@ -100,6 +127,12 @@ fn receive_and_exec(
     if read_byte(channel, deadline)?.is_some() {
         return Err(invalid("unexpected trailing bootstrap input"));
     }
+    reject_ambient_descriptors([
+        channel.as_raw_fd(),
+        input.as_raw_fd(),
+        status.as_raw_fd(),
+        block.as_raw_fd(),
+    ])?;
 
     let mut command = Command::new(program);
     command

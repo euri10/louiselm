@@ -6,6 +6,9 @@ replacement for the real Control broker acceptance in `skills-core/README.md`.
 
 See the [launcher acceptance audit](launcher-acceptance.md) for the AC-by-AC
 evidence map, confirmed gaps, and remaining privileged acceptance work.
+The [hostile conformance recipe](launcher-conformance.md) runs the required
+positive-control/denial matrix, existing runtime-mutation regressions and
+production relay/loss composition. It is a component gate, not installed authority.
 
 ## Host boundary
 

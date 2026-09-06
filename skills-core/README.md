@@ -309,6 +309,10 @@ and take a snapshot before the destructive digest checks.
 
 For the rootless host-side QEMU/KVM setup and disposable reset procedure, see
 [the launcher acceptance VM runbook](../docs/launcher-vm.md).
+Before installed-authority acceptance, run the separate
+[hostile conformance gate](../docs/launcher-conformance.md). It uses deterministic
+Agent/service doubles, requires actual kernel denials and cannot grant Verified
+posture or substitute for the genuine signing ceremony below.
 
 #### Installer authority (louiselm-d6fv.4.2)
 

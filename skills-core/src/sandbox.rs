@@ -1293,9 +1293,10 @@ pub trait Backend {
 
 /// Confinement via bubblewrap.
 ///
-/// A candidate, not a trusted name: what it establishes is decided by the
-/// conformance suite, and a launch that has no passing conformance report for
-/// this backend on this kernel is refused.
+/// A candidate, not a trusted name: `scripts/launcher-conformance` exercises
+/// its actual boundaries on a test host. Per-launch evidence below reports
+/// mechanisms and startup observations, not admission of a persisted host
+/// conformance report. Verified cutover must resolve that binding (louiselm-ucj1).
 #[derive(Clone, Debug)]
 pub struct BubblewrapBackend {
     program: PathBuf,
