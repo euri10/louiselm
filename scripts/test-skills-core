@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")/../skills-core"
+
+# CI runners can pass non-CLOEXEC descriptors (louiselm-u4c3). Start Cargo
+# with stdio only; sandbox tests inject their deliberate ambient FDs later.
+# Parse this whole block before closing Bash's own script descriptor.
+{
+  for descriptor in /proc/$$/fd/*; do
+    descriptor=${descriptor##*/}
+    if (( descriptor > 2 )); then
+      exec {descriptor}>&-
+    fi
+  done
+  exec cargo test --all-features --locked "$@"
+}

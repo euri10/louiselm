@@ -549,7 +549,7 @@ them.
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+../scripts/test-skills-core
 ```
 
 ## Scope

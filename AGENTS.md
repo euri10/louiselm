@@ -274,6 +274,13 @@ RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
 They are separate crates with separate lockfiles, not a workspace, so a gate run
 in one says nothing about the other. CI runs both as separate jobs.
 
+For Linux `skills-core` tests, use `./scripts/test-skills-core` from the
+repository root (optional Cargo test arguments follow). It closes inherited
+runner descriptors before starting Cargo; intentional sandbox descriptor
+injections happen inside the tests. CI injects an extra descriptor to gate this
+boundary. Direct Cargo under a polluted runner fails the bootstrap's correct
+ambient-authority refusal (louiselm-u4c3).
+
 Both manifests enforce the strict Rust policy in section 6. New Rust packages
 must configure the same lints and CI gates from their first implementation.
 
