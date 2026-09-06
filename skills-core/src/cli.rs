@@ -6,7 +6,8 @@
 //! prose:
 //!
 //! * `0` — the command succeeded and what it examined is admissible.
-//! * `1` — the command failed; nothing was published and nothing is claimed.
+//! * `1` — the command failed; no success is claimed. Inspect state before
+//!   retrying a persistence failure, which can follow an atomic publication.
 //! * `2` — the command succeeded and what it examined is **not** admissible:
 //!   verification failed, or Inspection produced a fatal finding.
 
@@ -18,6 +19,8 @@ use std::{
 
 use serde::Serialize;
 use thiserror::Error;
+
+mod recovery;
 
 use crate::{
     admission::{self, AdmissionError, AdmissionRequest},
@@ -35,7 +38,7 @@ use crate::{
         ToolchainIdentity,
     },
     render, robot,
-    signer::{Signer, SshKeygenSigner},
+    signer::SshKeygenSigner,
     sshsig::{SkPolicy, TRUST_NAMESPACE},
     store::{PublishOutcome, Store, StoreError},
     trust::{Role, TrustError, TrustStore},
@@ -51,6 +54,9 @@ pub const EXIT_NOT_ADMISSIBLE: i32 = 2;
 /// A command that could not be completed.
 #[derive(Debug, Error)]
 pub enum CliError {
+    /// A local paper ceremony was refused.
+    #[error(transparent)]
+    Paper(#[from] crate::trust::paper::PaperError),
     /// The command line is not valid.
     #[error("{0}")]
     Invalid(String),
@@ -134,6 +140,11 @@ pub fn run() -> Result<i32, CliError> {
     if matches!(command, "help" | "--help" | "-h") {
         print_help();
         return Ok(0);
+    }
+    // Secret-channel commands have a closed parser whose diagnostics never
+    // repeat unknown arguments, even when someone mistakenly supplies a phrase.
+    if command == "recovery" {
+        return recovery::run(&arguments[1..]);
     }
     let options = Options::parse(&arguments[1..])?;
 
@@ -760,7 +771,7 @@ fn trust(options: &Options) -> Result<i32, CliError> {
                 options.required_role()?,
                 &Options::key_material("--key", options.key.as_deref())?,
                 options.sk_policy(),
-            );
+            )?;
             // Printed without a trailing newline: these are the exact bytes the
             // recovery key signs, and a newline would change them.
             print!("{}", String::from_utf8_lossy(&change.canonical_bytes()));
@@ -772,7 +783,7 @@ fn trust(options: &Options) -> Result<i32, CliError> {
                 options.required_role()?,
                 &Options::key_material("--key", options.key.as_deref())?,
                 options.sk_policy(),
-            );
+            )?;
             let signature_path = options.signature.as_ref().ok_or_else(|| {
                 CliError::Invalid(format!(
                     "trust rotate needs --signature: sign the rotation payload in the {TRUST_NAMESPACE} namespace with the recovery key"
@@ -1006,18 +1017,7 @@ fn release_command(options: &Options) -> Result<i32, CliError> {
         "sign" => {
             let bundle = options.required_bundle()?;
             let key = options.signing_key()?;
-            let manifest_path = bundle.join("manifest.json");
-            let bytes = std::fs::read(&manifest_path).map_err(|error| CliError::Read {
-                path: manifest_path.display().to_string(),
-                source: error,
-            })?;
-            let signature = SshKeygenSigner::new(&key).sign(release::RELEASE_NAMESPACE, &bytes)?;
-            std::fs::write(bundle.join("manifest.sig"), &signature).map_err(|error| {
-                CliError::Read {
-                    path: bundle.join("manifest.sig").display().to_string(),
-                    source: error,
-                }
-            })?;
+            release::sign_bundle(&options.store()?, &bundle, &SshKeygenSigner::new(&key))?;
             println!("signed {}", bundle.display());
             Ok(0)
         }
@@ -1225,6 +1225,7 @@ Packaging and review:
   louiselm-skills policy [--digest]
 
 Trust roles:
+  louiselm-skills recovery --help     (local-only paper enrollment/recovery)
   louiselm-skills trust bootstrap --primary <key> --recovery <key>
                                   [--trust-domain <d>] [--require-hardware]
   louiselm-skills trust show

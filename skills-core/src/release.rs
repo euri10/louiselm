@@ -26,8 +26,10 @@ use thiserror::Error;
 use crate::{
     canonical::{Digest, Hasher},
     policy::Policy,
+    signer::{Signer, SignerError},
     sshsig,
-    trust::{Role, TrustStore},
+    store::Store,
+    trust::{Role, TrustError, TrustStore, persistence::LockedTrust},
 };
 
 /// The signature namespace a release is authorized in.
@@ -226,6 +228,12 @@ pub struct AssembleRequest<'a> {
 /// A release operation that was refused.
 #[derive(Debug, Error)]
 pub enum ReleaseError {
+    /// Trust enrollment or durable approval registration failed.
+    #[error(transparent)]
+    Trust(#[from] TrustError),
+    /// The release signer failed.
+    #[error(transparent)]
+    Signer(#[from] SignerError),
     /// A filesystem operation failed.
     #[error("release I/O failed at '{path}': {source}")]
     Io {
@@ -387,6 +395,10 @@ pub fn assemble(
 /// # Errors
 /// Returns file-read, malformed-JSON, or unsupported-schema errors.
 pub fn read_manifest(bundle: &Path) -> Result<ReleaseManifest, ReleaseError> {
+    read_manifest_bytes(bundle).map(|(manifest, _)| manifest)
+}
+
+fn read_manifest_bytes(bundle: &Path) -> Result<(ReleaseManifest, Vec<u8>), ReleaseError> {
     let path = bundle.join("manifest.json");
     let bytes = fs::read(&path).map_err(|source| ReleaseError::Io {
         path: path.display().to_string(),
@@ -400,7 +412,35 @@ pub fn read_manifest(bundle: &Path) -> Result<ReleaseManifest, ReleaseError> {
             crate::scan::escape(&manifest.schema)
         )));
     }
-    Ok(manifest)
+    Ok((manifest, bytes))
+}
+
+/// Signs and records an exact release approval, serialized with key retirement.
+///
+/// # Errors
+/// Refuses missing enrollment, a busy store, malformed or changed bundles, and
+/// signatures from non-current release keys. Propagates signer and persistence
+/// failures; a failure may leave a signature file but never claims registration.
+pub fn sign_bundle(store: &Store, bundle: &Path, signer: &dyn Signer) -> Result<(), ReleaseError> {
+    let locked = LockedTrust::acquire(store)?;
+    let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
+    let (manifest, bytes) = read_manifest_bytes(bundle)?;
+    verify_components(bundle, &manifest)?;
+    let key = trust
+        .key_for(Role::Release)
+        .ok_or(ReleaseError::NoReleaseRole)?;
+    let signature = signer.sign(RELEASE_NAMESPACE, &bytes)?;
+    sshsig::verify(
+        &signature,
+        RELEASE_NAMESPACE,
+        &bytes,
+        &key.public_key,
+        key.sk_policy,
+    )?;
+    write(&bundle.join("manifest.sig"), signature.as_bytes())?;
+    trust.approved_releases.insert(manifest.release_id);
+    locked.write(&trust)?;
+    Ok(())
 }
 
 /// Verifies a bundle's signature and re-hashes every component it binds.
@@ -408,14 +448,8 @@ pub fn read_manifest(bundle: &Path) -> Result<ReleaseManifest, ReleaseError> {
 /// # Errors
 /// Refuses inconsistent identity, missing/untrusted signatures, changed/missing components, or invalid component paths; propagates read and signature-verification errors.
 pub fn verify_bundle(bundle: &Path, trust: &TrustStore) -> Result<ReleaseManifest, ReleaseError> {
-    let manifest = read_manifest(bundle)?;
-    let actual = manifest.digest();
-    if manifest.release_id != actual.to_string() {
-        return Err(ReleaseError::IdentityMismatch {
-            claimed: manifest.release_id.clone(),
-            actual: actual.to_string(),
-        });
-    }
+    let (manifest, manifest_bytes) = read_manifest_bytes(bundle)?;
+    verify_components(bundle, &manifest)?;
 
     let signature_path = bundle.join("manifest.sig");
     if !signature_path.is_file() {
@@ -425,22 +459,30 @@ pub fn verify_bundle(bundle: &Path, trust: &TrustStore) -> Result<ReleaseManifes
         path: signature_path.display().to_string(),
         source,
     })?;
-    let key = trust
-        .key_for(Role::Release)
-        .ok_or(ReleaseError::NoReleaseRole)?;
-    let manifest_bytes =
-        fs::read(bundle.join("manifest.json")).map_err(|source| ReleaseError::Io {
-            path: bundle.join("manifest.json").display().to_string(),
-            source,
-        })?;
-    sshsig::verify(
-        &signature,
-        RELEASE_NAMESPACE,
-        &manifest_bytes,
-        &key.public_key,
-        key.sk_policy,
-    )?;
+    let mut error = ReleaseError::NoReleaseRole;
+    for key in trust.verification_keys(Role::Release, &manifest.release_id) {
+        match sshsig::verify(
+            &signature,
+            RELEASE_NAMESPACE,
+            &manifest_bytes,
+            &key.public_key,
+            key.sk_policy,
+        ) {
+            Ok(_) => return Ok(manifest),
+            Err(reason) => error = ReleaseError::Signature(reason),
+        }
+    }
+    Err(error)
+}
 
+fn verify_components(bundle: &Path, manifest: &ReleaseManifest) -> Result<(), ReleaseError> {
+    let actual = manifest.digest();
+    if manifest.release_id != actual.to_string() {
+        return Err(ReleaseError::IdentityMismatch {
+            claimed: manifest.release_id.clone(),
+            actual: actual.to_string(),
+        });
+    }
     for component in &manifest.components {
         let path = bundle.join(&component.path);
         if !path.is_file() {
@@ -457,7 +499,7 @@ pub fn verify_bundle(bundle: &Path, trust: &TrustStore) -> Result<ReleaseManifes
             });
         }
     }
-    Ok(manifest)
+    Ok(())
 }
 
 /// What the running executable is.
@@ -633,6 +675,7 @@ fn schema_identifiers() -> Vec<String> {
         crate::generation::RECORD_SCHEMA,
         crate::trust::TRUST_SCHEMA,
         crate::trust::TRUST_CHANGE_SCHEMA,
+        crate::trust::paper::PAPER_NAMESPACE,
         crate::quarantine::QUARANTINE_SCHEMA,
         crate::admission::STATUS_SCHEMA,
         crate::launch::REQUEST_SCHEMA,

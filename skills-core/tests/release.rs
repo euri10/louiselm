@@ -91,7 +91,9 @@ fn enrol_release_key(fixture: &Fixture) -> SshKey {
     let trust = TrustStore::load(&store)
         .expect("trust is readable")
         .expect("trust exists");
-    let change = trust.rotation_payload(Role::Release, &release_key.public_key(), SkPolicy::none());
+    let change = trust
+        .rotation_payload(Role::Release, &release_key.public_key(), SkPolicy::none())
+        .expect("rotation payload");
     let signature = recovery.sign(
         louiselm_skills::sshsig::TRUST_NAMESPACE,
         &change.canonical_bytes(),
@@ -104,6 +106,48 @@ fn sign_bundle(bundle: &Path, key: &SshKey) {
     let manifest = fs::read(bundle.join("manifest.json")).expect("the manifest is readable");
     let signature = key.sign(release::RELEASE_NAMESPACE, &manifest);
     fs::write(bundle.join("manifest.sig"), signature).expect("the signature is writable");
+}
+
+#[test]
+fn recorded_release_history_survives_retirement_but_new_old_key_signatures_fail() {
+    let fixture = Fixture::new();
+    let key = enrol_release_key(&fixture);
+    let store = fixture.store();
+    let bundle = assemble(&fixture, "approved", "approved bytes", 1);
+    release::sign_bundle(
+        &store,
+        &bundle,
+        &louiselm_skills::SshKeygenSigner::new(key.private_key_path()),
+    )
+    .expect("recorded release signature");
+    let trust = TrustStore::load(&store).expect("trust").expect("enrolled");
+    let replacement = SshKey::generate(&fixture, "release-replacement");
+    let change = trust
+        .rotation_payload(Role::Release, &replacement.public_key(), SkPolicy::none())
+        .expect("change");
+    let recovery = louiselm_skills::SshKeygenSigner::new(&fixture.path("keys/recovery"));
+    let signature = louiselm_skills::Signer::sign(
+        &recovery,
+        louiselm_skills::sshsig::TRUST_NAMESPACE,
+        &change.canonical_bytes(),
+    )
+    .expect("recovery signature");
+    let rotated = TrustStore::rotate(&store, &change, &signature, 2).expect("rotation");
+    release::verify_bundle(&bundle, &rotated).expect("recorded historical release still verifies");
+    let forged = assemble(&fixture, "after-retirement", "new bytes", 0);
+    sign_bundle(&forged, &key);
+    assert!(
+        release::verify_bundle(&forged, &rotated).is_err(),
+        "old key cannot authorize a new release"
+    );
+    assert!(
+        release::sign_bundle(
+            &store,
+            &forged,
+            &louiselm_skills::SshKeygenSigner::new(key.private_key_path())
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -143,6 +187,12 @@ fn a_bundle_binds_its_source_toolchain_dependencies_policy_and_bytes() {
     assert!(
         bundle.join("policy/policy.json").is_file(),
         "the policy travels with the bundle it governs",
+    );
+    assert!(
+        manifest
+            .schemas
+            .contains(&louiselm_skills::trust::paper::PAPER_NAMESPACE.to_owned()),
+        "the paper change schema is bound by the release"
     );
     assert!(
         bundle.join("schemas/schemas.json").is_file(),

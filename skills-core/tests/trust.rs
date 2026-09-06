@@ -130,7 +130,9 @@ fn rotation_is_locked_atomic_and_cannot_replay() {
     let fixture = Fixture::new();
     let (trust, recovery) = bootstrap(&fixture);
     let replacement = SshKey::generate(&fixture, "replacement");
-    let change = trust.rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none());
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .expect("rotation payload");
     let signature = recovery.sign(TRUST_NAMESPACE, &change.canonical_bytes());
     write_file(&fixture.path("rotation.sig"), &signature);
     let signature_path = fixture.path("rotation.sig");
@@ -194,7 +196,9 @@ fn rotation_replaces_the_inode_even_without_a_contending_writer() {
     let path = fixture.path("store/trust/roles.json");
     let mut reader = File::open(&path).expect("old snapshot");
     let before = fs::read(&path).expect("old bytes");
-    let change = trust.rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none());
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .expect("rotation payload");
     let signature = recovery.sign(TRUST_NAMESPACE, &change.canonical_bytes());
 
     TrustStore::rotate(&fixture.store(), &change, &signature, 2).expect("rotation succeeds");
@@ -215,18 +219,21 @@ fn malformed_existing_state_is_not_silently_replaced() {
     let (trust, recovery) = bootstrap(&fixture);
     let path = fixture.path("store/trust/roles.json");
     fs::write(&path, b"interrupted JSON").expect("corrupt enrollment");
-    assert!(matches!(
-        TrustStore::bootstrap(
-            &fixture.store(),
-            "test/trust",
-            "primary",
-            "recovery",
-            SkPolicy::none(),
-            2
-        ),
-        Err(TrustError::Malformed(_))
-    ));
-    let change = trust.rotation_payload(Role::Primary, "replacement", SkPolicy::none());
+    let refusal = TrustStore::bootstrap(
+        &fixture.store(),
+        "test/trust",
+        "primary",
+        "recovery",
+        SkPolicy::none(),
+        2,
+    );
+    assert!(
+        matches!(refusal, Err(TrustError::Malformed(_))),
+        "{refusal:?}"
+    );
+    let change = trust
+        .rotation_payload(Role::Primary, "replacement", SkPolicy::none())
+        .expect("rotation payload");
     let signature = recovery.sign(TRUST_NAMESPACE, &change.canonical_bytes());
     assert!(matches!(
         TrustStore::rotate(&fixture.store(), &change, &signature, 2),
@@ -290,7 +297,9 @@ fn aliased_state_cannot_be_read_rotated_or_reset() {
             symlink(&unrelated, &state).expect("redirect enrollment");
         }
         let original = fs::read(&unrelated).expect("unrelated bytes");
-        let change = trust.rotation_payload(Role::Primary, "replacement", SkPolicy::none());
+        let change = trust
+            .rotation_payload(Role::Primary, "replacement", SkPolicy::none())
+            .expect("rotation payload");
         let signature = recovery.sign(TRUST_NAMESPACE, &change.canonical_bytes());
 
         assert!(
@@ -324,7 +333,9 @@ fn failed_staging_write_preserves_enrollment_and_reports_no_success() {
     )
     .expect("enrollment with history");
     let replacement = SshKey::generate(&fixture, "replacement");
-    let change = trust.rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none());
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .expect("rotation payload");
     write_file(
         &fixture.path("rotation.sig"),
         &recovery.sign(TRUST_NAMESPACE, &change.canonical_bytes()),
@@ -432,5 +443,69 @@ fn a_colliding_temporary_is_neither_overwritten_nor_cleaned_up() {
             .count(),
         1,
         "the pre-existing temporary must not be removed"
+    );
+}
+
+#[test]
+fn exhausted_trust_counter_is_a_refusal_not_a_panic() {
+    let fixture = Fixture::new();
+    let (mut trust, _) = bootstrap(&fixture);
+    trust.sequence = u64::MAX;
+    let bytes = serde_json::to_vec(&trust).expect("JSON");
+    fs::write(fixture.path("store/trust/roles.json"), &bytes).expect("exhausted state");
+    assert_refused(
+        &run(
+            &fixture,
+            &[
+                "trust",
+                "rotation-payload",
+                "--role",
+                "primary",
+                "--key",
+                "replacement",
+            ],
+        ),
+        "exhausted",
+    );
+    assert_eq!(
+        fs::read(fixture.path("store/trust/roles.json")).expect("unchanged state"),
+        bytes
+    );
+}
+
+#[test]
+fn last_trust_change_is_valid_then_all_successor_paths_refuse_without_wrapping() {
+    let fixture = Fixture::new();
+    let (mut trust, recovery) = bootstrap(&fixture);
+    trust.sequence = u64::MAX - 1;
+    fs::write(
+        fixture.path("store/trust/roles.json"),
+        serde_json::to_vec(&trust).unwrap(),
+    )
+    .unwrap();
+    let replacement = SshKey::generate(&fixture, "replacement");
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .unwrap();
+    assert_eq!(change.sequence, u64::MAX);
+    let trust = TrustStore::rotate(
+        &fixture.store(),
+        &change,
+        &recovery.sign(TRUST_NAMESPACE, &change.canonical_bytes()),
+        3,
+    )
+    .unwrap();
+    let before = fs::read(fixture.path("store/trust/roles.json")).unwrap();
+    assert!(matches!(
+        TrustStore::rotate(&fixture.store(), &change, "unused", 4),
+        Err(louiselm_skills::trust::TrustError::SequenceExhausted)
+    ));
+    assert!(matches!(
+        trust.next_sequence(),
+        Err(louiselm_skills::trust::TrustError::SequenceExhausted)
+    ));
+    assert_eq!(
+        fs::read(fixture.path("store/trust/roles.json")).unwrap(),
+        before
     );
 }

@@ -33,7 +33,7 @@ use crate::{
     signer::{Signer, SignerError},
     sshsig::{self, ADMISSION_NAMESPACE},
     store::{Store, StoreError},
-    trust::{Role, TrustError, TrustStore},
+    trust::{Role, TrustError, TrustStore, persistence::LockedTrust},
     witness::{Witness, WitnessError, WitnessEvidence},
 };
 
@@ -183,7 +183,8 @@ pub fn admit(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    let trust = TrustStore::load(store)?.ok_or(TrustError::NotBootstrapped)?;
+    let locked = LockedTrust::acquire(store)?;
+    let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
     let signing_key = trust.admission_key()?.clone();
 
     let mut members = Vec::with_capacity(request.members.len());
@@ -255,6 +256,8 @@ pub fn admit(
         invalid_reason: None,
     };
     write_record(store, &record)?;
+    trust.approved_admissions.insert(record.generation.clone());
+    locked.write(&trust)?;
     Ok(record)
 }
 
@@ -299,7 +302,7 @@ pub fn verify_record(
 
     let payload_bytes = record.payload.canonical_bytes();
     let mut last = None;
-    for key in trust.admission_verification_keys() {
+    for key in trust.verification_keys(Role::Primary, &record.generation) {
         match sshsig::verify(
             &record.signature,
             ADMISSION_NAMESPACE,

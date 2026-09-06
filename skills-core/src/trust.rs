@@ -16,7 +16,7 @@
 //! The store root must be protected from untrusted writers; the lock coordinates
 //! tools, not an attacker who can edit that root. Never delete `trust/roles.lock`.
 
-use std::io;
+use std::{collections::BTreeSet, io};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -27,10 +27,11 @@ use crate::{
     store::Store,
 };
 
-mod persistence;
+pub mod paper;
+pub(crate) mod persistence;
 
 /// The trust store schema this build reads and writes.
-pub const TRUST_SCHEMA: &str = "louiselm.skills.trust/1";
+pub const TRUST_SCHEMA: &str = "louiselm.skills.trust/2";
 
 /// The trust-change payload schema.
 pub const TRUST_CHANGE_SCHEMA: &str = "louiselm.skills.trust-change/1";
@@ -138,6 +139,7 @@ impl TrustChange {
 
 /// The enrolled keys for one trust domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustStore {
     /// Schema identifier.
     pub schema: String,
@@ -154,6 +156,14 @@ pub struct TrustStore {
     /// supply that token approved, which is an outage disguised as a security
     /// improvement. A retired key may verify history; it may never sign.
     pub retired: Vec<EnrolledKey>,
+    /// Exact Generation payloads recorded by successful local Admission.
+    pub approved_admissions: BTreeSet<String>,
+    /// Exact release manifests recorded by successful local release signing.
+    pub approved_releases: BTreeSet<String>,
+    /// Current domain-scoped paper verifier; no phrase or entropy is persisted.
+    pub paper_verifier: Option<String>,
+    /// Consumed or replaced paper verifiers, which must never be re-enrolled.
+    pub retired_paper_verifiers: BTreeSet<String>,
 }
 
 /// A trust operation that could not report success.
@@ -188,12 +198,44 @@ pub enum TrustError {
     /// The change does not apply to this trust store.
     #[error("trust change does not apply: {0}")]
     DoesNotApply(String),
+    /// The counter has no representable successor; reset requires explicit consent.
+    #[error("trust change sequence is exhausted")]
+    SequenceExhausted,
     /// The change was not authorized by the recovery key.
     #[error("trust change is not authorized by the recovery key: {0}")]
     Unauthorized(#[from] sshsig::SignatureError),
 }
 
 impl TrustStore {
+    pub(crate) fn validate(&self) -> Result<(), TrustError> {
+        if self.schema != TRUST_SCHEMA {
+            return Err(TrustError::Malformed("unsupported trust schema".to_owned()));
+        }
+        if self
+            .approved_admissions
+            .iter()
+            .chain(&self.approved_releases)
+            .chain(self.paper_verifier.iter())
+            .chain(&self.retired_paper_verifiers)
+            .any(|digest| Digest::parse(digest).is_err())
+            || self
+                .paper_verifier
+                .as_ref()
+                .is_some_and(|current| self.retired_paper_verifiers.contains(current))
+        {
+            return Err(TrustError::Malformed(
+                "invalid approval history or paper authority".to_owned(),
+            ));
+        }
+        let mut roles = BTreeSet::new();
+        if self.keys.iter().any(|key| !roles.insert(key.role.name())) {
+            return Err(TrustError::Malformed(
+                "duplicate current signing role".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Enrolls the first primary and recovery keys for a domain.
     ///
     /// # Errors
@@ -215,6 +257,10 @@ impl TrustStore {
             trust_domain: trust_domain.to_owned(),
             sequence: 0,
             retired: Vec::new(),
+            approved_admissions: BTreeSet::new(),
+            approved_releases: BTreeSet::new(),
+            paper_verifier: None,
+            retired_paper_verifiers: BTreeSet::new(),
             keys: vec![
                 EnrolledKey {
                     role: Role::Primary,
@@ -254,17 +300,23 @@ impl TrustStore {
         self.keys.iter().find(|key| key.role == role)
     }
 
-    /// Returns every key whose signature may verify a stored Generation.
+    /// Returns keys that may verify this exact approved subject.
     ///
-    /// The current primary plus retired primaries, newest first.
+    /// Current keys may authorize new subjects. Retired keys verify only digests
+    /// registered while a key for that role was current, never backdated claims.
     #[must_use]
-    pub fn admission_verification_keys(&self) -> Vec<&EnrolledKey> {
-        self.key_for(Role::Primary)
+    pub fn verification_keys(&self, role: Role, digest: &str) -> Vec<&EnrolledKey> {
+        let recorded = match role {
+            Role::Primary => self.approved_admissions.contains(digest),
+            Role::Release => self.approved_releases.contains(digest),
+            Role::Recovery => false,
+        };
+        self.key_for(role)
             .into_iter()
             .chain(
                 self.retired
                     .iter()
-                    .filter(|key| key.role == Role::Primary)
+                    .filter(|key| recorded && key.role == role)
                     .rev(),
             )
             .collect()
@@ -294,22 +346,34 @@ impl TrustStore {
     }
 
     /// Builds the change that would replace `role` with `public_key`.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Refuses an exhausted trust-change counter.
     pub fn rotation_payload(
         &self,
         role: Role,
         public_key: &str,
         sk_policy: SkPolicy,
-    ) -> TrustChange {
-        TrustChange {
+    ) -> Result<TrustChange, TrustError> {
+        Ok(TrustChange {
             schema: TRUST_CHANGE_SCHEMA.to_owned(),
             trust_domain: self.trust_domain.clone(),
-            sequence: self.sequence + 1,
+            sequence: self.next_sequence()?,
             predecessor: self.digest().to_string(),
             role,
             public_key: normalize(public_key),
             sk_policy,
-        }
+        })
+    }
+
+    /// Returns the next trust-change sequence, without wrapping.
+    ///
+    /// # Errors
+    /// Returns [`TrustError::SequenceExhausted`] at the largest counter.
+    pub fn next_sequence(&self) -> Result<u64, TrustError> {
+        self.sequence
+            .checked_add(1)
+            .ok_or(TrustError::SequenceExhausted)
     }
 
     /// Applies a recovery-signed change to the enrolled keys.
@@ -337,7 +401,7 @@ impl TrustStore {
                 change.trust_domain, trust.trust_domain
             )));
         }
-        if change.sequence != trust.sequence + 1 {
+        if change.sequence != trust.next_sequence()? {
             return Err(TrustError::DoesNotApply(format!(
                 "sequence {} does not follow {}",
                 change.sequence, trust.sequence
@@ -392,9 +456,9 @@ impl TrustStore {
 
     /// Discards all enrolled keys, invalidating every Generation they signed.
     ///
-    /// This is the documented path out of losing both tokens. It is explicit
-    /// and destructive by design: there is no seed phrase and no extractable
-    /// master secret, so recovery is re-enrollment plus re-Admission.
+    /// The last resort after losing all functioning signing/recovery methods.
+    /// This is explicit and destructive: it discards paper recovery too, and
+    /// requires re-enrollment plus re-Admission rather than reviving old trust.
     ///
     /// # Errors
     /// Refuses a busy store or an aliased/non-regular file; propagates removal

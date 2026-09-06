@@ -77,9 +77,10 @@ impl Directory {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|source| io_error(&self.path.join(STATE), source))?;
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| TrustError::Malformed(error.to_string()))
+        let trust: TrustStore = serde_json::from_slice(&bytes)
+            .map_err(|error| TrustError::Malformed(error.to_string()))?;
+        trust.validate()?;
+        Ok(Some(trust))
     }
 
     fn sync(&self) -> Result<(), TrustError> {
@@ -99,13 +100,24 @@ pub(super) fn load(store: &Store) -> Result<Option<TrustStore>, TrustError> {
 
 /// Owns the persistent lock inode until the mutation and its durability checks
 /// finish. Never unlink the lock: waiters must all refer to the same inode.
-pub(super) struct LockedTrust {
+pub(crate) struct LockedTrust {
     directory: Directory,
-    _lock: File,
+    lock: File,
+}
+
+impl Drop for LockedTrust {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open-file description until exec;
+        // closing ours alone would extend an already finished operation's lock.
+        // State publication/durability has settled before guard disposal. Failed
+        // unlock can only retain exclusion until the last descriptor closes,
+        // not permit an uncommitted write or unsafe authority/identity reuse.
+        let _ = fs::flock(&self.lock, FlockOperation::Unlock);
+    }
 }
 
 impl LockedTrust {
-    pub(super) fn acquire(store: &Store) -> Result<Self, TrustError> {
+    pub(crate) fn acquire(store: &Store) -> Result<Self, TrustError> {
         let root = open_root(store)?;
         match fs::mkdirat(&root, "trust", Mode::RWXU) {
             Ok(()) | Err(Errno::EXIST) => (),
@@ -124,17 +136,15 @@ impl LockedTrust {
             }
             Err(source) => return Err(io_error(&directory.path.join(LOCK), source.into())),
         }
-        Ok(Self {
-            directory,
-            _lock: lock,
-        })
+        Ok(Self { directory, lock })
     }
 
-    pub(super) fn load(&self) -> Result<Option<TrustStore>, TrustError> {
+    pub(crate) fn load(&self) -> Result<Option<TrustStore>, TrustError> {
         self.directory.load()
     }
 
-    pub(super) fn write(&self, trust: &TrustStore) -> Result<(), TrustError> {
+    pub(crate) fn write(&self, trust: &TrustStore) -> Result<(), TrustError> {
+        trust.validate()?;
         let bytes =
             serde_json::to_vec(trust).map_err(|error| TrustError::Malformed(error.to_string()))?;
         let temporary = format!(
@@ -196,5 +206,39 @@ fn io_error(path: &Path, source: io::Error) -> TrustError {
     TrustError::Io {
         path: path.display().to_string(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "Storage fixture setup and assertions abort only this test."
+    )]
+    use super::*;
+
+    #[test]
+    fn a_fork_equivalent_descriptor_cannot_extend_a_finished_trust_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let guard = LockedTrust::acquire(&store).unwrap();
+        // dup shares the open-file description exactly as fork does before exec.
+        // This avoids timing-dependent fork hooks or unsafe code in the test.
+        let inherited = guard.lock.try_clone().unwrap();
+        assert!(matches!(
+            LockedTrust::acquire(&store),
+            Err(TrustError::Busy(_))
+        ));
+        drop(guard);
+        let next = LockedTrust::acquire(&store).expect("completed operation released authority");
+        drop(inherited);
+        assert!(matches!(
+            LockedTrust::acquire(&store),
+            Err(TrustError::Busy(_))
+        ));
+        drop(next);
+        LockedTrust::acquire(&store).unwrap();
     }
 }

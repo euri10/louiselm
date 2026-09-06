@@ -398,7 +398,9 @@ fn the_recovery_key_can_replace_the_primary_and_the_old_primary_then_fails() {
         .expect("trust is readable")
         .expect("trust was bootstrapped");
 
-    let change = trust.rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none());
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .expect("rotation payload");
     let signature = ceremony.recovery.sign(
         louiselm_skills::sshsig::TRUST_NAMESPACE,
         &change.canonical_bytes(),
@@ -429,7 +431,9 @@ fn a_rotation_the_recovery_key_did_not_sign_is_refused() {
         .expect("trust is readable")
         .expect("trust was bootstrapped");
 
-    let change = trust.rotation_payload(Role::Primary, &attacker.public_key(), SkPolicy::none());
+    let change = trust
+        .rotation_payload(Role::Primary, &attacker.public_key(), SkPolicy::none())
+        .expect("rotation payload");
     for signer in [&ceremony.primary, &attacker] {
         let signature = signer.sign(
             louiselm_skills::sshsig::TRUST_NAMESPACE,
@@ -440,4 +444,170 @@ fn a_rotation_the_recovery_key_did_not_sign_is_refused() {
             "only the recovery key may change trust",
         );
     }
+}
+
+#[test]
+fn retired_keys_verify_only_admissions_recorded_before_retirement() {
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let package = ceremony.skill("alpha");
+    let historical = ceremony
+        .admit(&[(package, ReviewDepth::Read)], &ceremony.primary)
+        .expect("historical Admission");
+    let trust = TrustStore::load(&store).expect("trust").expect("enrolled");
+    let replacement = SshKey::generate(&ceremony.fixture, "replacement");
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .expect("rotation payload");
+    let signature = ceremony.recovery.sign(
+        louiselm_skills::sshsig::TRUST_NAMESPACE,
+        &change.canonical_bytes(),
+    );
+    let rotated = TrustStore::rotate(&store, &change, &signature, 2).expect("retire primary");
+    admission::verify_record(&store, &historical, &rotated).expect("real history still verifies");
+
+    let mut forged = historical;
+    forged
+        .payload
+        .view_roots
+        .insert("new-after-retirement".to_owned(), "new root".to_owned());
+    forged.generation = forged.payload.digest().to_string();
+    forged.signature = ceremony.primary.sign(
+        louiselm_skills::sshsig::ADMISSION_NAMESPACE,
+        &forged.payload.canonical_bytes(),
+    );
+    forged.admitted_at_ms = 0; // Unsigned local timestamps cannot prove prior approval.
+    assert!(
+        admission::verify_record(&store, &forged, &rotated).is_err(),
+        "a retired key must not authorize a new payload, even when backdated"
+    );
+}
+
+#[test]
+fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
+    use louiselm_skills::signer::{Signer, SignerError};
+    use std::{sync::mpsc, time::Duration};
+    struct PausedSigner {
+        key: SshKeygenSigner,
+        started: mpsc::Sender<()>,
+        resume: mpsc::Receiver<()>,
+    }
+    impl Signer for PausedSigner {
+        fn sign(&self, namespace: &str, bytes: &[u8]) -> Result<String, SignerError> {
+            self.started.send(()).unwrap();
+            self.resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            self.key.sign(namespace, bytes)
+        }
+    }
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let trust = TrustStore::load(&store).unwrap().unwrap();
+    let replacement = SshKey::generate(&ceremony.fixture, "replacement");
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .unwrap();
+    let signature = ceremony.recovery.sign(
+        louiselm_skills::sshsig::TRUST_NAMESPACE,
+        &change.canonical_bytes(),
+    );
+    let (started, waiting) = mpsc::channel();
+    let (resume, ready) = mpsc::channel();
+    let signer = PausedSigner {
+        key: SshKeygenSigner::new(ceremony.primary.private_key_path()),
+        started,
+        resume: ready,
+    };
+    std::thread::scope(|scope| {
+        let store_ref = &store;
+        let worker = scope.spawn(move || {
+            admission::admit(
+                store_ref,
+                &Policy::embedded(),
+                &AdmissionRequest {
+                    members: vec![],
+                    view_roots: std::collections::BTreeMap::new(),
+                    signer: &signer,
+                    admitted_at_ms: 2,
+                },
+            )
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let rotation = TrustStore::rotate(&store, &change, &signature, 3);
+        resume.send(()).unwrap();
+        let record = worker.join().unwrap().unwrap();
+        assert!(matches!(
+            rotation,
+            Err(louiselm_skills::trust::TrustError::Busy(_))
+        ));
+        let latest = TrustStore::load(&store).unwrap().unwrap();
+        assert!(latest.approved_admissions.contains(&record.generation));
+        assert!(
+            TrustStore::rotate(&store, &change, &signature, 3).is_err(),
+            "newly registered approval invalidates the old trust-change snapshot"
+        );
+    });
+}
+
+#[test]
+fn failed_approval_registration_never_becomes_retired_key_history() {
+    use louiselm_skills::signer::{Signer, SignerError};
+    struct FailRegistration {
+        signer: SshKeygenSigner,
+        state: std::path::PathBuf,
+        alias: std::path::PathBuf,
+    }
+    impl Signer for FailRegistration {
+        fn sign(&self, namespace: &str, bytes: &[u8]) -> Result<String, SignerError> {
+            let signature = self.signer.sign(namespace, bytes)?;
+            // Fixture owner injects an actual publication refusal after signing;
+            // an unprivileged operator cannot alias a protected production store.
+            std::fs::hard_link(&self.state, &self.alias)?;
+            Ok(signature)
+        }
+    }
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let trust = TrustStore::load(&store).unwrap().unwrap();
+    let signer = FailRegistration {
+        signer: SshKeygenSigner::new(ceremony.primary.private_key_path()),
+        state: ceremony.fixture.path("store/trust/roles.json"),
+        alias: ceremony.fixture.path("test-registration-fault"),
+    };
+    let result = admission::admit(
+        &store,
+        &Policy::embedded(),
+        &AdmissionRequest {
+            members: vec![],
+            view_roots: std::collections::BTreeMap::new(),
+            signer: &signer,
+            admitted_at_ms: 2,
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(AdmissionError::Trust(
+            louiselm_skills::trust::TrustError::Io { .. }
+        ))
+    ));
+    std::fs::remove_file(&signer.alias).unwrap();
+    assert_eq!(TrustStore::load(&store).unwrap(), Some(trust.clone()));
+    let pending = admission::list(&store)
+        .unwrap()
+        .pop()
+        .expect("signature was stored before refusal");
+    let replacement = SshKey::generate(&ceremony.fixture, "replacement");
+    let change = trust
+        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
+        .unwrap();
+    let trust = TrustStore::rotate(
+        &store,
+        &change,
+        &ceremony.recovery.sign(
+            louiselm_skills::sshsig::TRUST_NAMESPACE,
+            &change.canonical_bytes(),
+        ),
+        3,
+    )
+    .unwrap();
+    assert!(admission::verify_record(&store, &pending, &trust).is_err());
 }

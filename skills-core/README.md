@@ -22,6 +22,9 @@ policy [--digest]
 trust bootstrap --primary KEY --recovery KEY [--require-hardware]
 trust show | rotation-payload | rotate | reset --confirm
 
+recovery paper-enroll --store PATH --authorizer PRIVATE_KEY [--authorizer-role primary|release]
+recovery paper-recover --store PATH [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY]
+
 generation admit --member DIGEST[:DEPTH] ... --key PRIVKEY
 generation witness DIGEST --remote URL [--branch B]
 generation activate DIGEST
@@ -32,8 +35,8 @@ quarantine all --reason TEXT
 quarantine show
 ```
 
-Every command accepts `--store DIR`, `--policy FILE --policy-digest D`, and
-`--robot-json`.
+Except for local-only `recovery`, commands accept `--store DIR`,
+`--policy FILE --policy-digest D`, and `--robot-json`.
 
 Exit status is part of the contract, so an unattended caller never has to parse
 prose:
@@ -41,7 +44,7 @@ prose:
 | status | meaning |
 | ------ | ------- |
 | `0` | succeeded; the subject is admissible |
-| `1` | failed; nothing was published and nothing is claimed |
+| `1` | failed; no success claimed; persistence errors may follow atomic publication |
 | `2` | succeeded; the subject is **not** admissible — verification failed, or Inspection produced a fatal finding |
 
 ```sh
@@ -127,9 +130,62 @@ Three roles, kept distinct even on one physical token. **Primary** signs routine
 Admissions. **Recovery** exists only to replace key policy or the primary, and
 is refused as an ordinary signer — a recovery key that could also admit skills
 would just be a second primary. **Release** authorizes trusted builds
-(louiselm-d6fv.7). There is no seed phrase and no extractable master secret:
-losing both tokens means an explicit `trust reset` and re-Admission, which is
-the honest cost of not having a secret to steal.
+(louiselm-d6fv.7). Paper recovery can authorize replacement signing keys, but
+cannot itself sign an Admission or release. Losing every functioning signing
+and recovery method requires explicit `trust reset` and re-Admission.
+
+Normal Admission and `release sign` register exact approved payload digests in
+the protected trust state under its mutation lock. Retired keys verify only
+that recorded history, not fresh signatures or backdated records. Signing a
+release outside `release sign` does not register it for verification after the
+signing key is retired.
+
+### Paper recovery
+
+This slice implements paper enrollment and recovery; Android passkeys,
+integrated one-YubiKey first-time onboarding, and installed/hardware acceptance
+remain `louiselm-d6fv.11.3`–`.11.5`. The legacy bootstrap below still needs a
+recovery signing credential; it is not the finished one-YubiKey onboarding.
+
+Run `recovery --help` from a trusted installed release, as root, against an
+explicit production store whose ancestors, provenance and trust state are
+root-owned and not group/world-writable. Development CLI builds refuse before
+opening a secret channel. Public API tests may use untrusted development stores;
+that path never grants Verified posture or promotes a store.
+
+`paper-enroll` requires a current Primary or Release signing credential.
+`paper-recover` uses the current paper phrase; replacement private-key paths
+name freshly generated hardware credentials with adjacent `.pub` files. Supply
+both `--primary` and `--release` to replace both roles, one to replace only that
+role, or neither to refresh only the paper phrase. Replacement keys must prove
+possession of the exact reviewed change with the inherited hardware assertion
+policy. Other methods and signing roles stay unchanged.
+
+The tool generates 24 checksummed English words from 256 OS-random bits using
+[bip39](https://docs.rs/bip39/2.2.2/bip39/struct.Mnemonic.html). Only a
+domain-separated SHA-256 verifier is stored, with consumed verifiers to forbid
+reuse. This is a random recovery secret, not a user-chosen password or a wallet
+seed. Never reuse an existing wallet phrase.
+
+Words are displayed only on `/dev/tty` in the alternate screen, then cleared
+before hidden full re-entry. The operator confirms the exact key change before
+signing/applying it. Phrase input is never accepted through argv, stdin, robot
+output or a plaintext file. Owned secret buffers are zeroized, core dumps are
+disabled, and keyboard Ctrl-C cancels with terminal restoration. Do not use an
+Agent terminal, terminal recorder, screen sharing or screenshots: terminal
+capture and a compromised/root operator are outside this protection boundary.
+
+Replacing keys and consuming/reissuing the paper phrase use one locked atomic
+state publication. Wrong phrases, stale plans, cancellation, failed possession
+or failed confirmation do not change authority. A failure before rename keeps
+the prior state; a directory-sync error may follow publication. **Keep both
+papers until success is confirmed**; inspect `trust show` before retrying a
+persistence error. A killed process can leave terminal display settings dirty
+(`stty sane` restores them), but cannot partially publish a key/phrase change.
+
+The new closed trust schema is `louiselm.skills.trust/2`; unsupported or malformed
+state is refused, not silently migrated or initialized. See the public
+`trust::paper` API and `tests/paper_recovery.rs` for deterministic fixture coverage.
 
 A signed Generation governs nothing until it is **witnessed**. Its exact bytes
 are published to a protected Git branch and read back from the remote before it
