@@ -9,22 +9,23 @@
 //! Two design points worth stating, because both are places a sandbox usually
 //! leaks:
 //!
-//! * **The tree is enclosed before it exists.** The child joins its cgroup from
-//!   `pre_exec`, between fork and exec, so there is no window in which it can
-//!   fork a descendant that lands outside. Moving a process into a cgroup after
-//!   spawning it leaves exactly that window, and anything already forked stays
-//!   behind.
+//! * **The tree is enclosed before it exists.** A trusted, single-threaded
+//!   bootstrap blocks without forking. The parent admits it to the cgroup
+//!   before transferring the descriptors that authorize exec of Bubblewrap.
+//!   Descendants therefore inherit containment from their first instruction.
 //! * **A backend is not trusted for its name.** What [`Backend::spawn`] returns
 //!   is the mechanisms it used. Whether those mechanisms actually hold is
 //!   decided by the conformance suite running hostile probes inside the thing,
 //!   not by this module asserting it passed a flag.
 
+#[doc(hidden)]
+pub mod bootstrap;
 mod host_identity;
 
 use std::{
     collections::BTreeMap,
     fs, io,
-    io::Write,
+    os::fd::OwnedFd,
     os::unix::{
         fs::{DirBuilderExt, MetadataExt, PermissionsExt, chown},
         net::UnixStream,
@@ -1086,40 +1087,51 @@ fn signal(processes: &[u32], signal: &str, backend: &'static str) -> Result<usiz
     Ok(processes.len())
 }
 
-fn identity_start_failed(
+fn startup_failed(
     backend: &'static str,
     session_id: &str,
     child: &mut Child,
-    cgroup: &Cgroup,
-    source: &io::Error,
+    cgroup: Option<&Cgroup>,
+    failure: &str,
 ) -> SandboxError {
     let deadline = Instant::now() + DISPOSAL_TIMEOUT;
-    let _ = cgroup.thaw();
-    let cgroup_kill_error = cgroup.kill_all().err();
+    // Thaw and direct-child kill are best effort; success below still requires
+    // both a reaped child and independently observed empty cgroup membership.
+    if let Some(cgroup) = cgroup {
+        let _ = cgroup.thaw();
+    }
+    let cgroup_kill_error = cgroup.and_then(|group| group.kill_all().err());
     let _ = child.kill();
 
     let mut child_reaped = false;
-    let mut membership = cgroup.try_processes();
+    let mut membership = cgroup.map(Cgroup::try_processes);
     loop {
         if !child_reaped {
             child_reaped = matches!(child.try_wait(), Ok(Some(_)));
         }
-        if child_reaped && membership.as_ref().is_ok_and(Vec::is_empty) {
-            cgroup.remove();
+        if child_reaped
+            && membership
+                .as_ref()
+                .is_some_and(|result| result.as_ref().is_ok_and(Vec::is_empty))
+        {
+            if let Some(cgroup) = cgroup {
+                cgroup.remove();
+            }
             return SandboxError::SpawnFailed {
                 backend,
-                reason: format!("host identity verification failed: {source}"),
+                reason: failure.to_owned(),
             };
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || (child_reaped && cgroup.is_none()) {
             break;
         }
         thread::sleep(Duration::from_millis(20));
-        membership = cgroup.try_processes();
+        membership = cgroup.map(Cgroup::try_processes);
     }
     let membership = match membership {
-        Ok(processes) => format!("{} process(es) remain", processes.len()),
-        Err(error) => format!("membership is unreadable: {error}"),
+        Some(Ok(processes)) => format!("{} process(es) remain", processes.len()),
+        Some(Err(error)) => format!("membership is unreadable: {error}"),
+        None => "no cgroup can prove descendant cleanup after handoff".to_owned(),
     };
     let reaping = if child_reaped {
         "launcher-side child was reaped"
@@ -1127,14 +1139,19 @@ fn identity_start_failed(
         "launcher-side child was not reaped"
     };
     let killing = cgroup_kill_error.map_or_else(
-        || "cgroup kill was issued".to_owned(),
+        || {
+            if cgroup.is_some() {
+                "cgroup kill was issued"
+            } else {
+                "no cgroup kill is available"
+            }
+            .to_owned()
+        },
         |error| format!("cgroup kill failed: {error}"),
     );
     SandboxError::CleanupUnproven {
         session_id: session_id.to_owned(),
-        reason: format!(
-            "{backend} host identity verification failed: {source}; {killing}; {membership}; {reaping}",
-        ),
+        reason: format!("{backend} {failure}; {killing}; {membership}; {reaping}"),
     }
 }
 
@@ -1282,6 +1299,7 @@ pub trait Backend {
 #[derive(Clone, Debug)]
 pub struct BubblewrapBackend {
     program: PathBuf,
+    bootstrap_program: PathBuf,
     cgroup_parent: Option<PathBuf>,
     cached_version: Option<String>,
 }
@@ -1296,11 +1314,7 @@ impl BubblewrapBackend {
     /// Uses `bwrap` from the system.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            program: PathBuf::from("bwrap"),
-            cgroup_parent: None,
-            cached_version: None,
-        }
+        Self::at(Path::new("bwrap"))
     }
 
     /// Uses a specific `bwrap` binary.
@@ -1308,19 +1322,34 @@ impl BubblewrapBackend {
     pub fn at(program: &Path) -> Self {
         Self {
             program: program.to_path_buf(),
+            bootstrap_program: Path::new(crate::install::DEFAULT_PREFIX)
+                .join("current/bin/louiselm-launch"),
             cgroup_parent: None,
             cached_version: None,
         }
     }
 
+    /// Selects the trusted `louiselm-launch` bootstrap for development or tests.
+    ///
+    /// This executable runs before containment is released and must implement
+    /// the private bootstrap protocol without forking or starting threads.
+    /// Production launchers instead pin it to their validated release.
+    #[must_use]
+    pub fn with_bootstrap(mut self, program: &Path) -> Self {
+        self.bootstrap_program = program.to_path_buf();
+        self
+    }
+
     /// Uses only the launcher's pinned binary, cgroup parent, and measured version.
     pub(crate) fn for_launcher(
         program: &Path,
+        bootstrap_program: &Path,
         cgroup_parent: &Path,
         backend_version: String,
     ) -> Self {
         Self {
             program: program.to_path_buf(),
+            bootstrap_program: bootstrap_program.to_path_buf(),
             cgroup_parent: Some(cgroup_parent.to_path_buf()),
             cached_version: Some(backend_version),
         }
@@ -1355,19 +1384,13 @@ impl BubblewrapBackend {
         )))
     }
 
-    fn arguments(plan: &ConfinementPlan, identity_gate: Option<&HostIdentityGate>) -> Vec<String> {
+    fn arguments(plan: &ConfinementPlan) -> Vec<String> {
         let mut arguments = vec![
             "--unshare-all".to_owned(),
             "--die-with-parent".to_owned(),
             "--new-session".to_owned(),
             "--clearenv".to_owned(),
         ];
-        if let Some(gate) = identity_gate {
-            arguments.push("--json-status-fd".to_owned());
-            arguments.push(gate.status_fd().to_string());
-            arguments.push("--block-fd".to_owned());
-            arguments.push(gate.block_fd().to_string());
-        }
         if let IdentityPlan::HostIdentity { uid, gid } = plan.identity {
             // These select the namespace-visible ids. `CommandExt` separately
             // applies the same ids to Bubblewrap on the host side.
@@ -1473,6 +1496,15 @@ impl BubblewrapBackend {
             path: "startup gate".to_owned(),
             source,
         })?;
+        let (bootstrap_parent, bootstrap_child) =
+            UnixStream::pair().map_err(|source| SandboxError::Io {
+                path: "bootstrap channel".to_owned(),
+                source,
+            })?;
+        let (stdin_reader, stdin_writer) = io::pipe().map_err(|source| SandboxError::Io {
+            path: "Session stdin".to_owned(),
+            source,
+        })?;
         let cgroup_parent = self.cgroup_parent()?;
         if host_identity.is_some() && cgroup_parent.is_none() {
             return Err(SandboxError::Refused(
@@ -1485,53 +1517,18 @@ impl BubblewrapBackend {
             .transpose()?;
         let cgroup = preflight_cgroup(cgroup, plan.identity)?;
 
-        let mut command = Command::new(&self.program);
+        let mut command = Command::new(&self.bootstrap_program);
         command
-            .args(Self::arguments(plan, Some(&startup_gate)))
+            .arg(bootstrap::ARGUMENT)
+            .arg(&self.program)
+            .args(Self::arguments(plan))
             .env_clear()
-            .stdin(Stdio::piped())
+            .stdin(OwnedFd::from(bootstrap_child))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some((uid, gid)) = host_identity {
             command.gid(gid).uid(uid);
         }
-        startup_gate.inherit_fds(&mut command);
-
-        if let Some(cgroup) = &cgroup {
-            let procs = cgroup.path().join("cgroup.procs");
-            let file = match fs::OpenOptions::new().write(true).open(&procs) {
-                Ok(file) => file,
-                Err(source) => {
-                    cgroup.remove();
-                    return Err(SandboxError::Io {
-                        path: procs.display().to_string(),
-                        source,
-                    });
-                }
-            };
-            // The file is deliberately opened before the uid/gid drop. cgroup
-            // v2 authorizes migration against its open-time credentials.
-            // Between fork and exec the child writes itself into the cgroup:
-            // "0" means "the writing process". Doing this from the parent
-            // after spawn would leave a window in which the child could fork a
-            // descendant that never joins, and disposal could not prove it
-            // gone.
-            #[expect(
-                unsafe_code,
-                reason = "Join containment before exec can fork descendants."
-            )]
-            // SAFETY: the closure owns the already-open File through spawn.
-            // It writes static bytes using write(2), retrying interrupted/short
-            // writes without allocation, locks, environment access, or formatting.
-            // I/O failures abort spawn; no child-side Rust destructor is required.
-            unsafe {
-                command.pre_exec(move || {
-                    (&file).write_all(b"0\n")?;
-                    Ok(())
-                });
-            }
-        }
-
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -1544,9 +1541,17 @@ impl BubblewrapBackend {
                 });
             }
         };
-        // The pre-exec hooks own the child's descriptors. Close the parent's
-        // copies now so status EOF and gate lifetime retain their spawn boundary.
+        // Close the parent's copy of the bootstrap's stdin endpoint.
         drop(command);
+        let [status, block] = startup_gate.take_child_fds();
+        self.admit_and_handoff(
+            &plan.session_id,
+            &mut child,
+            cgroup.as_ref(),
+            bootstrap_parent,
+            [OwnedFd::from(stdin_reader), status, block],
+        )?;
+        child.stdin = Some(OwnedFd::from(stdin_writer).into());
 
         let (identity, sandbox_leader_pid) = if let Some((uid, gid)) = host_identity {
             let cgroup = cgroup
@@ -1555,12 +1560,12 @@ impl BubblewrapBackend {
             let observation = match startup_gate.verify(child.id(), cgroup, uid, gid) {
                 Ok(observation) => observation,
                 Err(error) => {
-                    return Err(identity_start_failed(
+                    return Err(startup_failed(
                         self.name(),
                         &plan.session_id,
                         &mut child,
-                        cgroup,
-                        &error,
+                        Some(cgroup),
+                        &format!("host identity verification failed: {error}"),
                     ));
                 }
             };
@@ -1580,6 +1585,39 @@ impl BubblewrapBackend {
                 status_guard: None,
             }),
             startup_gate: Some(startup_gate),
+        })
+    }
+
+    fn admit_and_handoff(
+        &self,
+        session_id: &str,
+        child: &mut Child,
+        cgroup: Option<&Cgroup>,
+        channel: UnixStream,
+        descriptors: [OwnedFd; 3],
+    ) -> Result<(), SandboxError> {
+        if let Some(cgroup) = cgroup {
+            // The unreaped child cannot have its PID reused. It remains a
+            // trusted singleton until handoff; no descendant can escape this
+            // parent-side admission, even after the host uid/gid drop.
+            if let Err(error) = cgroup.write("cgroup.procs", &child.id().to_string()) {
+                return Err(startup_failed(
+                    self.name(),
+                    session_id,
+                    child,
+                    Some(cgroup),
+                    &format!("cgroup admission failed: {error}"),
+                ));
+            }
+        }
+        bootstrap::handoff(channel, descriptors, Duration::from_secs(5)).map_err(|error| {
+            startup_failed(
+                self.name(),
+                session_id,
+                child,
+                cgroup,
+                &format!("bootstrap handoff failed: {error}"),
+            )
         })
     }
 
@@ -1753,7 +1791,92 @@ pub fn default_system_roots() -> Vec<PathBuf> {
     reason = "Test fixtures abort on setup failure and assert failures directly."
 )]
 mod tests {
+    use std::io::{Read, Write};
+
     use super::*;
+
+    #[test]
+    fn bootstrap_handoff_admits_the_child_before_releasing_descriptors() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let membership = fixture.path().join("cgroup.procs");
+        fs::write(&membership, "").expect("empty membership fixture writes");
+        let cgroup = Cgroup {
+            path: fixture.path().to_owned(),
+        };
+        let mut gate = HostIdentityGate::new().expect("startup gate opens");
+        let [status, block] = gate.take_child_fds();
+        let (input, _writer) = io::pipe().expect("workload stdin opens");
+        let (channel, mut peer) = UnixStream::pair().expect("bootstrap channel opens");
+        peer.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("peer read timeout is set");
+        let peer_worker = thread::spawn(move || -> io::Result<([u8; 1], String)> {
+            let mut request = [0];
+            // Ordinary Read discards SCM_RIGHTS. Observe containment before
+            // acknowledging, so reversing admission and handoff cannot race green.
+            peer.read_exact(&mut request)?;
+            let observed = fs::read_to_string(membership)?;
+            peer.write_all(&[1])?;
+            Ok((request, observed))
+        });
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("bootstrap singleton starts");
+        let expected_pid = child.id().to_string();
+        let result = BubblewrapBackend::new().admit_and_handoff(
+            "admission-before-handoff",
+            &mut child,
+            Some(&cgroup),
+            channel,
+            [input.into(), status, block],
+        );
+        // Settle the actual process before checking any outcome, including a
+        // failed handoff or a failed observer thread.
+        let _ = child.kill();
+        let reaped = child.wait();
+        let observed = peer_worker.join();
+
+        reaped.expect("bootstrap singleton is reaped");
+        result.expect("admitted bootstrap handoff succeeds");
+        let (request, membership) = observed
+            .expect("observer thread settles")
+            .expect("observer reads containment before readiness");
+        assert_eq!(request, [1]);
+        assert_eq!(membership, expected_pid);
+    }
+
+    #[test]
+    fn bootstrap_handoff_failure_without_cgroup_reaps_child_but_retains_uncertainty() {
+        let mut gate = HostIdentityGate::new().expect("startup gate opens");
+        let [status, block] = gate.take_child_fds();
+        let (input, _writer) = io::pipe().expect("workload stdin opens");
+        let (channel, peer) = UnixStream::pair().expect("bootstrap channel opens");
+        drop(peer);
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("bootstrap singleton starts");
+        let result = BubblewrapBackend::new().admit_and_handoff(
+            "handoff-without-containment",
+            &mut child,
+            None,
+            channel,
+            [input.into(), status, block],
+        );
+        // Query the kernel before Child::try_wait could itself reap a zombie.
+        let observed_wait = rustix::process::waitpid(
+            Some(rustix::process::Pid::from_child(&child)),
+            rustix::process::WaitOptions::NOHANG,
+        );
+        // Cleanup remains unconditional even if the production failure path
+        // regresses and leaves the direct child alive.
+        let _ = child.kill();
+        let reaped = child.wait();
+
+        reaped.expect("bootstrap singleton is reaped");
+        assert!(matches!(observed_wait, Err(rustix::io::Errno::CHILD)));
+        assert!(matches!(result, Err(SandboxError::CleanupUnproven { .. })));
+    }
 
     #[test]
     fn freeze_wait_requires_kernel_confirmation() {
@@ -2241,6 +2364,7 @@ mod tests {
             .expect("fixture mode is exact");
         let backend = BubblewrapBackend::for_launcher(
             Path::new("/usr/bin/bwrap"),
+            Path::new("/unused/bootstrap"),
             fixture.path(),
             "bubblewrap 1.0".to_owned(),
         );
@@ -2257,6 +2381,7 @@ mod tests {
         std::os::unix::fs::symlink(fixture.path(), &link).expect("parent symlink creates");
         let backend = BubblewrapBackend::for_launcher(
             Path::new("/usr/bin/bwrap"),
+            Path::new("/unused/bootstrap"),
             &link,
             "bubblewrap 1.0".to_owned(),
         );
@@ -2283,6 +2408,7 @@ mod tests {
             .expect("backend fixture becomes executable");
         let backend = BubblewrapBackend::for_launcher(
             &program,
+            Path::new("/unused/bootstrap"),
             fixture.path(),
             "bubblewrap measured-before-authorization".to_owned(),
         );
@@ -2404,6 +2530,10 @@ mod tests {
         };
         let backend = BubblewrapBackend::for_launcher(
             Path::new("/usr/bin/bwrap"),
+            &PathBuf::from(
+                std::env::var_os("LOUISELM_TEST_BOOTSTRAP")
+                    .expect("the privileged fixture requires its built launcher bootstrap"),
+            ),
             &launcher_parent,
             "bubblewrap measured before authorization".to_owned(),
         );

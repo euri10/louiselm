@@ -17,13 +17,24 @@ use louiselm_skills::{
     launcher_install::{LauncherPaths, runtime_config_with_deadline},
     registry::Registry,
     release,
+    sandbox::bootstrap,
 };
 
 const BROKER_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() != Some(OsStr::new("run")) || arguments.next().is_some() {
+    let verb = arguments.next();
+    // `run` is the sole privileged operator verb. Bootstrap uses only inherited
+    // capabilities and never enters the launcher authority path below.
+    if verb.as_deref() == Some(OsStr::new(bootstrap::ARGUMENT)) {
+        if bootstrap::run(&arguments.collect::<Vec<_>>()).is_ok() {
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("louiselm-launch: sandbox bootstrap failed");
+        return ExitCode::FAILURE;
+    }
+    if verb.as_deref() != Some(OsStr::new("run")) || arguments.next().is_some() {
         eprintln!("louiselm-launch: expected exactly 'run'");
         return ExitCode::FAILURE;
     }

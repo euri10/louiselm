@@ -680,6 +680,11 @@ impl SystemLaunchPlatform {
             .map_err(|_| SupervisorError::SpawnFailed)?;
         let backend = BubblewrapBackend::for_launcher(
             &config.bwrap_path,
+            &paths
+                .release_prefix
+                .join("releases")
+                .join(&config.release_id)
+                .join("bin/louiselm-launch"),
             Path::new(SYSTEM_CGROUP_ROOT),
             backend_version,
         );

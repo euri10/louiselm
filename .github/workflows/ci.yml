@@ -332,8 +332,15 @@ jobs:
               tail -n 1
           )"
           test -n "$library_test"
+          bootstrap="$(
+            cargo build --bin louiselm-launch --all-features --locked --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm-launch" and (.profile.test | not)) | .executable // empty' |
+              tail -n 1
+          )"
+          test -n "$bootstrap"
           sudo env \
             "PATH=$PATH" \
+            "LOUISELM_TEST_BOOTSTRAP=$bootstrap" \
             "LOUISELM_TEST_HOST_ID=$test_identity" \
             "LOUISELM_TEST_OPERATOR_UID=$operator_uid" \
             "LOUISELM_TEST_OPERATOR_GID=$operator_gid" \

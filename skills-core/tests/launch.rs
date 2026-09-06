@@ -10,7 +10,7 @@
 
 mod support;
 
-use std::{fs, io::Read, os::unix::fs::PermissionsExt};
+use std::{fs, io::Read, os::unix::fs::PermissionsExt, path::Path};
 
 use louiselm_skills::{
     canonical::Digest,
@@ -321,7 +321,8 @@ fn a_resolved_plan_actually_spawns_through_the_bubblewrap_backend() {
     )
     .expect("resolution succeeds");
 
-    let backend = BubblewrapBackend::new();
+    let backend =
+        BubblewrapBackend::new().with_bootstrap(Path::new(env!("CARGO_BIN_EXE_louiselm-launch")));
     let mut session = backend
         .spawn(&resolution.plan)
         .expect("bwrap starts the resolved plan");

@@ -203,6 +203,22 @@ Check at each touch that the token actually blinked. A ceremony that completes
 without a touch means `--require-hardware` did not reach the enrolled key, and
 the assertion flags in the signature are what the verifier checks.
 
+## Sandbox startup
+
+Sandbox startup uses the release's existing `louiselm-launch` executable as a
+single-threaded bootstrap. It blocks while the parent admits its PID to the
+Session cgroup, then receives only the workload stdin and Bubblewrap's two gate
+descriptors over a private socket and replaces itself with Bubblewrap. Descriptor
+inheritance is configured only in that fresh process; concurrent parent spawns
+cannot inherit the gates. Host identity is still checked before the workload is
+released. The crate forbids unsafe Rust, including in its binaries and tests.
+
+The privileged launcher pins its bootstrap to the validated release directory.
+Development callers of `BubblewrapBackend` can select the Cargo-built launcher
+explicitly with `with_bootstrap`; that executable must be trusted and traversable
+by the assigned Session identity. This does not make a development build a
+verified release.
+
 ## The trusted release
 
 Everything above assumes the binary enforcing it is not one the Agent can

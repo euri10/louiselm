@@ -8091,7 +8091,8 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
     let platform = Arc::new(BubblewrapLaunchPlatform {
         events: Arc::clone(&setup.events),
         expected_identity,
-        backend: BubblewrapBackend::at(bwrap),
+        backend: BubblewrapBackend::at(bwrap)
+            .with_bootstrap(Path::new(env!("CARGO_BIN_EXE_louiselm-launch"))),
         backend_id: Digest::of(&fs::read(bwrap).expect("Bubblewrap is installed")).to_string(),
         capability_root: setup.fixture.path("real-capability"),
         observation: Arc::clone(&observation),

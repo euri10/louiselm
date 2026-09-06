@@ -17,7 +17,7 @@ tempfile = "3"
 
 [lints.rust]
 missing_docs = "deny"
-unsafe_code = "deny"
+unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]

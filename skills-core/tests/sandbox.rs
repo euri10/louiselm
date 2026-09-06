@@ -38,6 +38,8 @@ use louiselm_skills::{
 };
 use support::{Fixture, write_file};
 
+const BOOTSTRAP: &str = env!("CARGO_BIN_EXE_louiselm-launch");
+
 /// Reports whether `pid` is a real, scheduled process rather than a zombie.
 ///
 /// A zombie stays in `cgroup.procs` until its parent reaps it, so `processes()`
@@ -254,7 +256,7 @@ fn spawn_runs_the_planned_executable_and_reports_matching_evidence() {
     let lifecycle_available = cgroup_available();
     let fixture = Fixture::new();
     let confinement = plan(&fixture, "echo", "#!/bin/sh\necho sandboxed-marker\n");
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let mut session = backend
         .spawn(&confinement)
@@ -308,7 +310,7 @@ fn prepare_blocks_the_workload_until_start() {
     confinement
         .environment
         .insert("STARTED".to_owned(), marker.display().to_string());
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let prepared = backend
         .prepare(&confinement)
@@ -343,7 +345,7 @@ fn prepared_and_running_sessions_expose_their_dynamic_process_tree() {
         "process-tree-handle",
         "#!/bin/sh\nexec sleep 30\n",
     );
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let prepared = backend
         .prepare(&confinement)
@@ -395,7 +397,7 @@ fn disposing_a_prepared_session_never_runs_its_workload() {
     confinement
         .environment
         .insert("STARTED".to_owned(), marker.display().to_string());
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let mut prepared = backend
         .prepare(&confinement)
@@ -423,7 +425,7 @@ fn dropping_a_prepared_session_kills_it_without_releasing_the_gate() {
     confinement
         .environment
         .insert("STARTED".to_owned(), marker.display().to_string());
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let prepared = backend
         .prepare(&confinement)
@@ -455,7 +457,7 @@ fn sandboxed_stdin_can_be_taken_for_an_owned_relay() {
         "take-stdin",
         "#!/bin/sh\nIFS= read -r line\nprintf '%s\\n' \"$line\"\n",
     );
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
     let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
@@ -489,7 +491,7 @@ fn host_identity_is_never_inferred_from_an_unprivileged_plan() {
         uid: effective_uid(),
         gid: process_status_values(std::process::id(), "Gid:")[1],
     };
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let error = expect_spawn_error(
         &backend,
@@ -508,7 +510,7 @@ fn host_identity_refuses_a_root_uid_or_gid() {
     let session_identity = host_identity_test_id().unwrap_or(12_345);
     let fixture = Fixture::new();
     let mut confinement = plan(&fixture, "root-identity", "#!/bin/sh\ntrue\n");
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     for identity in [
         IdentityPlan::HostIdentity {
@@ -570,7 +572,7 @@ fn host_identity_changes_outer_credentials_and_owns_private_directories() {
         "WORKSPACE_PROBE".to_owned(),
         workspace_probe.display().to_string(),
     );
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let mut session = backend
         .spawn(&confinement)
@@ -693,7 +695,7 @@ fn host_identity_refuses_an_existing_session_root_with_the_wrong_mode() {
         uid: session_identity,
         gid: session_identity,
     };
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let error = expect_spawn_error(
         &backend,
@@ -755,7 +757,7 @@ sleep 30
     let cgroup_path = Cgroup::delegated_parent()
         .expect("a delegated cgroup exists")
         .join(format!("louiselm-session-{session_id}"));
-    let backend = BubblewrapBackend::at(&fake_bwrap);
+    let backend = BubblewrapBackend::at(&fake_bwrap).with_bootstrap(Path::new(BOOTSTRAP));
 
     let error = expect_spawn_error(
         &backend,
@@ -823,7 +825,7 @@ exec /usr/bin/bwrap "${args[@]}"
     let cgroup_path = Cgroup::delegated_parent()
         .expect("a delegated cgroup exists")
         .join(format!("louiselm-session-{session_id}"));
-    let backend = BubblewrapBackend::at(&wrapper);
+    let backend = BubblewrapBackend::at(&wrapper).with_bootstrap(Path::new(BOOTSTRAP));
 
     let error = expect_spawn_error(
         &backend,
@@ -858,7 +860,7 @@ fn a_confined_session_cannot_reach_paths_outside_its_plan() {
         .environment
         .insert("SECRET".to_owned(), secret.display().to_string());
 
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
     let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
@@ -897,7 +899,7 @@ fn park_freezes_the_whole_tree_and_resume_thaws_it() {
     }
     let fixture = Fixture::new();
     let confinement = plan(&fixture, "park", "#!/bin/sh\nexec sleep 30\n");
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
     let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
@@ -943,7 +945,7 @@ fn interrupt_reaches_the_workload_and_dispose_still_reaches_zero_survivors() {
     confinement
         .environment
         .insert("HEARTBEAT".to_owned(), heartbeat.display().to_string());
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
     let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
@@ -992,7 +994,7 @@ fn dispose_kills_a_grandchild_the_launcher_never_directly_forked() {
     }
     let fixture = Fixture::new();
     let confinement = plan(&fixture, "grandchild", "#!/bin/sh\nsleep 30 &\nwait\n");
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
     let mut session = backend
         .spawn(&confinement)
         .expect("bwrap starts the session");
@@ -1023,7 +1025,7 @@ fn spawn_refuses_a_plan_with_anything_but_denied_network() {
     let fixture = Fixture::new();
     let mut confinement = plan(&fixture, "network", "#!/bin/sh\ntrue\n");
     confinement.network = NetworkPolicy::Brokered;
-    let backend = BubblewrapBackend::new();
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
     let error = backend
         .spawn(&confinement)
@@ -1036,7 +1038,8 @@ fn spawn_refuses_a_plan_with_anything_but_denied_network() {
 
 #[test]
 fn a_missing_backend_program_is_reported_clearly() {
-    let backend = BubblewrapBackend::at(Path::new("/definitely/not/a/real/bwrap"));
+    let backend = BubblewrapBackend::at(Path::new("/definitely/not/a/real/bwrap"))
+        .with_bootstrap(Path::new(BOOTSTRAP));
 
     let error = backend.version().expect_err("the program does not exist");
     assert!(
