@@ -87,6 +87,8 @@ setup block into your regular configuration when ready, or see the
   commit/issue/Session Provenance, export the full transcript to Markdown, copy
   the Agent-scoped Session ID, and inspect supported account limits. Known
   Agent transcript layouts are supported; raw ACP logs remain adapter-owned.
+  The Beads inspector wraps descriptions and grows to fit, up to the available
+  editor height; longer issues scroll inside the float.
 - **Keep diagnostic evidence.** Private Forensics records preserve a bounded
   snapshot of Session configuration, capabilities, and Git state for later
   inspection.

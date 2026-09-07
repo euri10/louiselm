@@ -137,18 +137,23 @@ local function open_issue(issue)
     nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
     nvim.api.nvim_set_option_value("modifiable", false, { buf = buffer })
     local width = math.min(100, math.max(1, nvim.o.columns - 4))
-    local height = math.min(#lines, math.max(1, nvim.o.lines - 4))
-    nvim.api.nvim_open_win(buffer, true, {
+    local max_height = math.max(1, nvim.o.lines - 4)
+    local window = nvim.api.nvim_open_win(buffer, true, {
       relative = "editor",
       row = 1,
       col = 2,
       width = width,
-      height = height,
+      height = math.min(#lines, max_height),
       style = "minimal",
       border = "rounded",
       title = " Beads ",
       title_pos = "center",
     })
+    nvim.wo[window].wrap = true
+    nvim.wo[window].linebreak = true
+    -- A single description line can occupy many rows after wrapping.
+    local text_height = nvim.api.nvim_win_text_height(window, { max_height = max_height }).all
+    nvim.api.nvim_win_set_height(window, math.min(text_height, max_height))
   end)
   if not opened then
     if nvim.api.nvim_buf_is_valid(buffer) then

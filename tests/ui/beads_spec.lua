@@ -145,6 +145,73 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
   MiniTest.expect.equality(close_mapping ~= nil, true)
 end
 
+for _, layout in ipairs({
+  { name = "short issue", rows = 48, columns = 93, repetitions = 1, fits = true },
+  { name = "long paragraph", rows = 48, columns = 93, repetitions = 20, fits = true },
+  { name = "small editor", rows = 14, columns = 40, repetitions = 20, fits = false },
+}) do
+  T["beads"]["sizes readable content within the editor: " .. layout.name] = function()
+    local original_rows, original_columns = nvim.o.lines, nvim.o.columns
+    local source_window = nvim.api.nvim_get_current_win()
+    local original_wrap = nvim.wo[source_window].wrap
+    MiniTest.finally(function()
+      nvim.o.lines, nvim.o.columns = original_rows, original_columns
+      nvim.wo[source_window].wrap = original_wrap
+    end)
+    nvim.o.lines, nvim.o.columns = layout.rows, layout.columns
+    nvim.wo[source_window].wrap = false
+    local buffer = source_buffer({ "louiselm-hgmv" }, 0)
+    local calls = fake_system()
+    local scheduled = {}
+    rawset(nvim, "schedule", function(callback)
+      scheduled[#scheduled + 1] = callback
+    end)
+    assert(Beads.inspect(buffer))
+    complete_where(calls, scheduled, "louiselm")
+
+    -- Preserve the single-paragraph shape of louiselm-b1sk in the maintainer's
+    -- 20260907_1028 screenshot (louiselm-hgmv); no issue prose is needed.
+    local description = string.rep("Read the entire issue description. ", layout.repetitions) .. "End."
+    local payload = nvim.json.encode({
+      { id = "louiselm-hgmv", title = "Readable issue", status = "open", priority = 2, description = description },
+    })
+    local callback_was_fast
+    local timer = assert(nvim.uv.new_timer())
+    timer:start(0, 0, function()
+      timer:stop()
+      timer:close()
+      callback_was_fast = nvim.in_fast_event()
+      calls[2].on_exit({ code = 0, signal = 0, stdout = payload, stderr = "" })
+    end)
+    assert(nvim.wait(1000, function()
+      return #scheduled == 2
+    end))
+    MiniTest.expect.equality(callback_was_fast, true)
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+    scheduled[2]()
+
+    local popup = assert(find_buffer("louiselm://beads/louiselm-hgmv"))
+    local window = nvim.api.nvim_get_current_win()
+    local config = nvim.api.nvim_win_get_config(window)
+    MiniTest.expect.equality(nvim.wo[window].wrap, true)
+    MiniTest.expect.equality(nvim.wo[window].linebreak, true)
+    MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, -2, -1, false), { description })
+    assert(config.row + config.height + 2 <= layout.rows)
+    assert(config.col + config.width + 2 <= layout.columns)
+    nvim.cmd.redraw()
+    MiniTest.expect.equality(nvim.fn.screenpos(window, 8, #description).row > 0, layout.fits)
+    if layout.repetitions == 1 then
+      MiniTest.expect.equality(nvim.api.nvim_win_get_height(window), 8)
+    elseif layout.fits then
+      assert(nvim.api.nvim_win_get_height(window) > 8)
+    else
+      nvim.cmd("normal! G$")
+      nvim.cmd.redraw()
+      assert(nvim.fn.screenpos(window, 8, #description).row > 0)
+    end
+  end
+end
+
 T["beads"]["uses the Beads workspace prefix for issue lookup"] = function()
   local buffer = source_buffer({ "Fix daa-nk1l today" }, 8)
   local calls = fake_system()
