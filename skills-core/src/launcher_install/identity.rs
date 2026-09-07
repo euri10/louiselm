@@ -975,7 +975,9 @@ pub(super) fn check_secure_tool(path: &Path, failures: &mut Vec<LauncherFailure>
 )]
 mod tests {
     use std::{
+        cell::Cell,
         os::unix::fs::{PermissionsExt, symlink},
+        sync::MutexGuard,
         time::{Duration, Instant},
     };
 
@@ -996,6 +998,7 @@ mod tests {
 
     static DEADLINE_TESTS: Mutex<()> = Mutex::new(());
     const DEADLINE_TEST_TIMEOUT: Duration = Duration::from_secs(1);
+    const DEADLINE_TEST_ATTEMPTS: usize = 3;
 
     struct DeadlineIdentityFixture {
         _root: tempfile::TempDir,
@@ -1156,81 +1159,138 @@ mod tests {
         }
     }
 
+    /// Serializes the real-process deadline tests against each other.
+    ///
+    /// The lock only orders spawn load; it guards no invariant, so a poisoned
+    /// lock keeps the barrier instead of cascading one failure into the
+    /// sibling test (louiselm-mbpc).
+    fn deadline_test_barrier() -> MutexGuard<'static, ()> {
+        DEADLINE_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A missing, empty, or non-numeric pid record cannot prove helper startup.
+    fn recorded_helper_pid(pid_path: &Path) -> Option<rustix::process::Pid> {
+        let recorded = fs::read_to_string(pid_path).ok()?;
+        rustix::process::Pid::from_raw(recorded.trim().parse::<i32>().ok()?)
+    }
+
+    /// Checks timeout and slot reuse on every attempt, and requires one
+    /// observed helper start to prove reaping.
+    ///
+    /// Every attempt must honor the full behavioral contract: the hung lookup
+    /// fails as an I/O timeout within the end-to-end bound. Scheduling may
+    /// prevent the helper from recording its pid before the deadline
+    /// (louiselm-mbpc, recurring louiselm-902c). That attempt is inconclusive
+    /// for reaping only, so retry with a fresh fixture after checking reuse.
+    fn assert_getent_deadline<T: std::fmt::Debug>(
+        deadline_call: impl Fn(&LauncherPaths, Instant) -> Result<T, LauncherError>,
+    ) {
+        for _ in 0..DEADLINE_TEST_ATTEMPTS {
+            let fixture = DeadlineIdentityFixture::new();
+            fs::write(&fixture.hold_path, b"hold").expect("getent hold marker");
+            let started = Instant::now();
+            let error = deadline_call(&fixture.paths, Instant::now() + DEADLINE_TEST_TIMEOUT)
+                .expect_err("the hung getent lookup must observe the operation deadline");
+            assert!(
+                matches!(
+                    &error,
+                    LauncherError::Io { source, .. } if source.kind() == io::ErrorKind::TimedOut
+                ),
+                "the deadline must remain an I/O timeout: {error}"
+            );
+            assert!(started.elapsed() < Duration::from_secs(2));
+            let pid = recorded_helper_pid(&fixture.pid_path);
+            if let Some(pid) = pid {
+                assert_eq!(
+                    rustix::process::test_kill_process(pid),
+                    Err(rustix::io::Errno::SRCH),
+                    "the operation deadline must reap the started getent helper"
+                );
+            }
+            assert_eq!(
+                fs::metadata(fixture.paths.locks().join("0.lock"))
+                    .expect("identity lock remains")
+                    .len(),
+                0,
+                "NSS failure must happen before the slot is marked active"
+            );
+
+            fs::remove_file(&fixture.hold_path).expect("getent hold marker is removable");
+            acquire_identity(&fixture.paths, 0)
+                .expect("the failed bounded lookup left the slot reusable")
+                .release()
+                .expect("reacquired slot releases cleanly");
+            if pid.is_some() {
+                return;
+            }
+        }
+        panic!(
+            "the getent helper never recorded a pid across \
+             {DEADLINE_TEST_ATTEMPTS} deadline attempts; this machine starves \
+             fixture startup (louiselm-mbpc)"
+        );
+    }
+
     #[test]
     fn identity_deadline_reaps_getent_without_acquiring_or_poisoning_the_slot() {
-        let _serial = DEADLINE_TESTS.lock().expect("deadline test lock");
-        let fixture = DeadlineIdentityFixture::new();
-        fs::write(&fixture.hold_path, b"hold").expect("getent hold marker");
-        let started = Instant::now();
-
-        let error = acquire_identity_with_deadline(
-            &fixture.paths,
-            0,
-            Instant::now() + DEADLINE_TEST_TIMEOUT,
-        )
-        .expect_err("hung NSS lookup must observe the operation deadline");
-
-        match &error {
-            LauncherError::Io { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::TimedOut);
-            }
-            _ => panic!("deadline must remain an I/O timeout: {error}"),
-        }
-        assert!(started.elapsed() < Duration::from_secs(2));
-        let pid = fs::read_to_string(&fixture.pid_path)
-            .expect("getent helper records its pid")
-            .trim()
-            .parse::<i32>()
-            .expect("getent helper records a numeric pid");
-        let pid = rustix::process::Pid::from_raw(pid).expect("getent helper has a positive pid");
-        assert_eq!(
-            rustix::process::test_kill_process(pid),
-            Err(rustix::io::Errno::SRCH),
-            "the deadline must reap the held getent helper before returning"
-        );
-        assert_eq!(
-            fs::metadata(fixture.paths.locks().join("0.lock"))
-                .expect("identity lock remains")
-                .len(),
-            0,
-            "NSS failure must happen before the slot is marked active"
-        );
-
-        fs::remove_file(&fixture.hold_path).expect("getent hold marker is removable");
-        acquire_identity(&fixture.paths, 0)
-            .expect("the failed bounded lookup left the slot reusable")
-            .release()
-            .expect("reacquired slot releases cleanly");
+        let _serial = deadline_test_barrier();
+        assert_getent_deadline(|paths, deadline| {
+            acquire_identity_with_deadline(paths, 0, deadline)
+        });
     }
 
     #[test]
     fn runtime_config_deadline_reaps_held_getent_validation() {
-        let _serial = DEADLINE_TESTS.lock().expect("deadline test lock");
-        let fixture = DeadlineIdentityFixture::new();
-        fs::write(&fixture.hold_path, b"hold").expect("getent hold marker");
-        let started = Instant::now();
+        let _serial = deadline_test_barrier();
+        assert_getent_deadline(runtime_config_with_deadline);
+    }
 
-        let error =
-            runtime_config_with_deadline(&fixture.paths, Instant::now() + DEADLINE_TEST_TIMEOUT)
-                .expect_err("hung runtime NSS validation must observe the operation deadline");
+    #[test]
+    fn identity_deadline_retries_after_unobserved_helper_startup() {
+        let _serial = deadline_test_barrier();
+        let attempts = Cell::new(0);
+        assert_getent_deadline(|paths, deadline| {
+            attempts.set(attempts.get() + 1);
+            let deadline = if attempts.get() == 1 {
+                Instant::now()
+            } else {
+                deadline
+            };
+            acquire_identity_with_deadline(paths, 0, deadline)
+        });
+        assert!(attempts.get() >= 2);
+    }
 
-        match &error {
-            LauncherError::Io { source, .. } => {
-                assert_eq!(source.kind(), io::ErrorKind::TimedOut);
-            }
-            _ => panic!("deadline must remain an I/O timeout: {error}"),
-        }
-        assert!(started.elapsed() < Duration::from_secs(2));
-        let pid = fs::read_to_string(&fixture.pid_path)
-            .expect("getent helper records its pid")
-            .trim()
-            .parse::<i32>()
-            .expect("getent helper records a numeric pid");
-        let pid = rustix::process::Pid::from_raw(pid).expect("getent helper has a positive pid");
+    #[test]
+    #[should_panic(expected = "NSS failure must happen before the slot is marked active")]
+    fn unobserved_helper_startup_cannot_hide_an_activated_slot() {
+        let _serial = deadline_test_barrier();
+        assert_getent_deadline(|paths, _| {
+            let result = acquire_identity_with_deadline(paths, 0, Instant::now());
+            // Model a regression that marks the slot even though no helper started.
+            fs::write(paths.locks().join("0.lock"), POISON_MARKER)
+                .expect("injected premature slot activation");
+            result
+        });
+    }
+
+    #[test]
+    fn recorded_helper_pid_accepts_only_a_finished_numeric_record() {
+        let directory = tempfile::tempdir().expect("temporary pid directory");
+        let pid_path = directory.path().join("getent.pid");
+        assert_eq!(recorded_helper_pid(&pid_path), None);
+        fs::write(&pid_path, b"").expect("empty pid record");
+        assert_eq!(recorded_helper_pid(&pid_path), None);
+        fs::write(&pid_path, b"not a pid\n").expect("non-numeric pid record");
+        assert_eq!(recorded_helper_pid(&pid_path), None);
+        fs::write(&pid_path, b"0\n").expect("zero pid record");
+        assert_eq!(recorded_helper_pid(&pid_path), None);
+        fs::write(&pid_path, b" 4242\n").expect("numeric pid record");
         assert_eq!(
-            rustix::process::test_kill_process(pid),
-            Err(rustix::io::Errno::SRCH),
-            "runtime validation must reap the held getent helper before returning"
+            recorded_helper_pid(&pid_path),
+            rustix::process::Pid::from_raw(4242)
         );
     }
 
