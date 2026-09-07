@@ -403,6 +403,14 @@ live Sessions share that id and only the maintainer can say which one is
 calling. Do not substitute an ID copied from an old Beads record, a different
 Session, or a child-agent task.
 
+A sandboxed Agent may not reach the socket at all — connecting to `$NVIM` needs
+write access to a path outside the workspace, and Codex's Linux sandbox refuses
+it (louiselm-lkoc). Your own id is the identity either way; the lookup confirms
+it is live and supplies the configured Agent name. When the editor is
+unreachable, use `<agent>/<your id>` and say you could not verify it. Do not
+guess the Agent name: it is a LouiseLM config key, not your adapter's name, and
+the two only happen to match today.
+
 `:LouiselmSessionId` and `Chat:session_id()` answer for the **focused** chat.
 That is what a bug report about the visible Session wants, and it is not caller
 identity. On 2026-09-07 four Sessions were live and the focused lookup named the
