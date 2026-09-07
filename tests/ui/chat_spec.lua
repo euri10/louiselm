@@ -5043,6 +5043,7 @@ T["chat"]["shows clickable Agent limits in the window bar"] = function()
   }
   local chat = assert(Chat.new(api))
   assert(chat:attach(first))
+  local chat_window = nvim.api.nvim_get_current_win()
   local winbar = nvim.api.nvim_get_option_value("winbar", { win = 0 })
 
   MiniTest.expect.equality(
@@ -5050,8 +5051,21 @@ T["chat"]["shows clickable Agent limits in the window bar"] = function()
     "Your turn · codex/acp-session-1 · limits 50%/5h ↻2h · renamed · context=50/100 (50%) · cost=1.5 USD"
   )
   assert(chat:winbar_click(99))
-  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0), "louiselm://limits/codex")
-  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(0), "### Codex (codex) [default]"), true)
+  local limits_window = nvim.api.nvim_get_current_win()
+  local limits_buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(limits_buffer), "louiselm://limits/codex")
+  MiniTest.expect.equality(nvim.api.nvim_win_get_config(limits_window).relative, "editor")
+  MiniTest.expect.equality(nvim.api.nvim_win_get_config(limits_window).border[1], "╭")
+  MiniTest.expect.equality(nvim.api.nvim_win_get_config(chat_window).relative, "")
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(limits_buffer), "### Codex (codex) [default]"), true)
+  local close
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(limits_buffer, "n")) do
+    if mapping.lhs == "q" then
+      close = mapping.callback
+      break
+    end
+  end
+  assert(type(close) == "function", "account limits inspector has no q mapping")
   api:emit_limits({
     agent = "codex",
     status = "fresh",
@@ -5072,6 +5086,9 @@ T["chat"]["shows clickable Agent limits in the window bar"] = function()
     end, 1),
     true
   )
+  close()
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), chat_window)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(limits_buffer), false)
   chat:dispose()
 end
 

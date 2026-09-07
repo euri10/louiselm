@@ -335,7 +335,27 @@ function M.open(agent_name, state)
   nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
   nvim.api.nvim_set_option_value("filetype", "louiselm-limits", { buf = buffer })
   M.update(buffer, state)
-  nvim.api.nvim_set_current_buf(buffer)
+  local lines = nvim.api.nvim_buf_line_count(buffer)
+  local width = math.min(100, math.max(1, nvim.o.columns - 4))
+  local height = math.min(lines, math.max(1, nvim.o.lines - 4))
+  nvim.api.nvim_open_win(buffer, true, {
+    relative = "editor",
+    row = 1,
+    col = 2,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = "rounded",
+    title = " Account limits ",
+    title_pos = "center",
+  })
+  local function close()
+    if nvim.api.nvim_buf_is_valid(buffer) then
+      nvim.api.nvim_buf_delete(buffer, { force = true })
+    end
+  end
+  nvim.keymap.set("n", "q", close, { buffer = buffer, silent = true, nowait = true, desc = "Close account limits" })
+  nvim.keymap.set("n", "<Esc>", close, { buffer = buffer, silent = true, nowait = true, desc = "Close account limits" })
   return buffer
 end
 
