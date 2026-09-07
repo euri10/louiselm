@@ -91,11 +91,23 @@ maintainer rather than falling back to one.
   when triage ranks an unstarted issue higher. Scoring rewards unblocking
   leverage and cannot see that a claimed issue is half-done. This preference
   covers only issues you claimed; another agent's claim is not your backlog.
-- Before working an issue that is already `in_progress`, check
-  `br coordination status` with the available Agent Mail agent and reservation
-  snapshots. A live claim belongs to its holder: pick something else. A claim
-  is eligible for takeover only when its classification is `abandoned_likely`
-  and `reclaim_allowed_by_policy` is true. Age alone is not permission:
+- Before working an issue that is already `in_progress`, run
+  `./scripts/agent-liveness-snapshot --status`. This project does not use
+  Agent Mail and will not; the script supplies the reservation snapshot
+  `br coordination status` needs by reading each session's transcript mtime,
+  and without it every claim classifies as `no_mail_snapshot` and no claim can
+  ever be released. Do not call `br coordination status` bare, and never hand
+  it an empty snapshot: an empty file asserts that no session is alive, which
+  makes age the only evidence and takes work away from an agent that is simply
+  busy. A session counts as gone after 45 minutes of transcript silence
+  (`LOUISELM_LIVENESS_WINDOW_MINUTES`). An assignee the script reports as
+  unresolved on stderr has no transcript to judge, so treat its claim as live.
+  A live claim belongs to its holder: pick something else. A claim is eligible
+  for takeover only when its classification is `abandoned_likely` and
+  `reclaim_allowed_by_policy` is true. That flag alone is not enough — br also
+  sets it at `stale_candidate`, two hours in, and this project requires the
+  eight-hour `abandoned_likely` bar as well, so that a takeover needs both a
+  silent transcript and a silent issue. Age alone is not permission either:
   `no_mail_snapshot`, `ambiguous`, `fresh`, and
   `blocked_by_active_reservation` remain protected regardless of age. Record
   the command's evidence summary in a comment, then have the maintainer requeue

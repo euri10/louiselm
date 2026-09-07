@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Emit an offline reservation snapshot describing which agent sessions are
+# still alive, so `br coordination status` can tell an abandoned claim from a
+# working one.
+#
+# Beads refuses to release a claim it cannot assess. Without a snapshot every
+# claim classifies as `no_mail_snapshot` forever, at any age, which is why a
+# session that dies mid-task takes its issue out of the queue permanently.
+# Agent Mail is the upstream answer to that; this is the same evidence taken
+# from files the machine already writes.
+#
+# A session's heartbeat is the mtime of its transcript. A live session gets a
+# reservation that has not expired, and br protects its claim. A dead session
+# gets an expired one, and br falls back to age. An assignee whose transcript
+# cannot be found at all gets no row and is named on stderr, because silently
+# omitting it would present a working agent as abandoned.
+set -euo pipefail
+
+window_minutes=${LOUISELM_LIVENESS_WINDOW_MINUTES:-45}
+
+usage() {
+	cat >&2 <<'USAGE'
+usage: agent-liveness-snapshot [--status [br args...]]
+
+  (no arguments)  Write reservation snapshot JSONL to stdout. Assignees are
+                  read from stdin, one per line, or from `br list` when stdin
+                  is a terminal.
+  --status        Generate the snapshot and hand it to `br coordination
+                  status`. Remaining arguments are passed through to br.
+
+environment:
+  LOUISELM_LIVENESS_WINDOW_MINUTES   Minutes of transcript silence before a
+                                     session counts as gone (default 45).
+USAGE
+}
+
+# Newest mtime across every place an adapter may record this session, or empty
+# when the session left no transcript anywhere.
+heartbeat_epoch() {
+	local id=$1
+	local newest=""
+	local candidate
+
+	# Every adapter driven through LouiseLM writes here, and it is the
+	# freshest of the three because the proxy sees traffic in both
+	# directions.
+	candidate="$HOME/.local/state/acp-llm-adapter/proxy/sessions/$id/log.jsonl"
+	if [ -f "$candidate" ]; then
+		newest=$(stat -c %Y "$candidate")
+	fi
+
+	# Adapters run outside LouiseLM only leave their own transcript.
+	if [ -d "$HOME/.codex/sessions" ]; then
+		while IFS= read -r found; do
+			candidate=$(stat -c %Y "$found")
+			if [ -z "$newest" ] || [ "$candidate" -gt "$newest" ]; then
+				newest=$candidate
+			fi
+		done < <(find "$HOME/.codex/sessions" -type f -name "*$id*" 2>/dev/null)
+	fi
+
+	if [ -d "$HOME/.claude/projects" ]; then
+		while IFS= read -r found; do
+			candidate=$(stat -c %Y "$found")
+			if [ -z "$newest" ] || [ "$candidate" -gt "$newest" ]; then
+				newest=$candidate
+			fi
+		done < <(find "$HOME/.claude/projects" -type f -name "$id.jsonl" 2>/dev/null)
+	fi
+
+	printf '%s' "$newest"
+}
+
+emit_snapshot() {
+	local assignees=$1
+	local seen=""
+	local reported=0
+	local unresolved=0
+	local holder id last expires
+
+	while IFS= read -r holder; do
+		holder=${holder#"${holder%%[![:space:]]*}"}
+		holder=${holder%"${holder##*[![:space:]]}"}
+		[ -n "$holder" ] || continue
+
+		# One row per holder: the same session legitimately holds several
+		# claims, and duplicate rows would just be re-matched per claim.
+		case "$seen" in
+		*"|$holder|"*) continue ;;
+		esac
+		seen="$seen|$holder|"
+
+		# Assignees are `<agent>/<session-id>`; legacy rows are a bare id.
+		id=${holder##*/}
+
+		last=$(heartbeat_epoch "$id")
+		if [ -z "$last" ]; then
+			echo "agent-liveness-snapshot: no transcript found for $holder; its claim will be judged on age alone" >&2
+			unresolved=$((unresolved + 1))
+			continue
+		fi
+
+		# br treats the reservation as active while expires_ts is in the
+		# future, so the window is expressed as an expiry on the last
+		# heartbeat rather than as a separate age field.
+		expires=$(date -u -d "@$((last + window_minutes * 60))" +%Y-%m-%dT%H:%M:%SZ)
+
+		# `reason` is free text, but br also correlates a reservation to a
+		# claim when reason contains the issue id, so it must never name one.
+		printf '{"holder":%s,"path_pattern":"","exclusive":true,"expires_ts":"%s","reason":"transcript last written %s"}\n' \
+			"$(printf '%s' "$holder" | jq -Rs .)" \
+			"$expires" \
+			"$(date -u -d "@$last" +%Y-%m-%dT%H:%M:%SZ)"
+		reported=$((reported + 1))
+	done <<<"$assignees"
+
+	echo "agent-liveness-snapshot: $reported session(s) reported, $unresolved unresolved, ${window_minutes}m window" >&2
+}
+
+read_assignees() {
+	if [ ! -t 0 ]; then
+		cat
+		return
+	fi
+
+	br list --status in_progress --json | jq -r '.issues[].assignee // empty'
+}
+
+main() {
+	local mode=emit
+
+	if [ "${1-}" = "--help" ] || [ "${1-}" = "-h" ]; then
+		usage
+		exit 0
+	fi
+
+	if [ "${1-}" = "--status" ]; then
+		mode=status
+		shift
+	fi
+
+	local assignees
+	assignees=$(read_assignees)
+
+	if [ "$mode" = emit ]; then
+		emit_snapshot "$assignees"
+		return
+	fi
+
+	local snapshot_file
+	snapshot_file=$(mktemp)
+	trap 'rm -f "$snapshot_file"' EXIT
+	emit_snapshot "$assignees" >"$snapshot_file"
+	br coordination status --reservations "$snapshot_file" "$@"
+}
+
+main "$@"
