@@ -223,6 +223,18 @@ explicitly with `with_bootstrap`; that executable must be trusted and traversabl
 by the assigned Session identity. This does not make a development build a
 verified release.
 
+Without a usable cgroup, NamespaceOnly preparation pins Bubblewrap's observed
+PID-namespace leader with a pidfd before releasing the startup gate. Disposal
+kills that leader first and lets the monitor reap it; success requires both
+processes reaped, including when the workload never started. A failed proof
+returns `CleanupUnproven` and retains the Session's handles for retry. Complete
+membership is unavailable (`processes()` returns `NoCgroup`), and the disposal
+report's initial count covers only the monitor and leader. This does not supply
+cgroup freeze/interrupt control or verified Lifecycle evidence.
+
+`without_cgroup()` selects this development path explicitly for conformance on
+hosts that also offer delegated cgroups; HostIdentity plans remain refused.
+
 ## The trusted release
 
 Everything above assumes the binary enforcing it is not one the Agent can

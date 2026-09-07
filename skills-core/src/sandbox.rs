@@ -37,6 +37,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rustix::{
+    event::{PollFd, PollFlags, Timespec, poll},
+    process::{Signal, pidfd_send_signal},
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -471,6 +475,7 @@ pub struct SandboxedSession {
     child: Child,
     cgroup: Option<Cgroup>,
     sandbox_leader_pid: Option<u32>,
+    namespace_leader: Option<OwnedFd>,
     // Keep Bubblewrap's status reader alive for its terminal status write.
     status_guard: Option<UnixStream>,
 }
@@ -498,7 +503,8 @@ pub struct PreparedSession {
 pub struct DisposalReport {
     /// The Session disposed of.
     pub session_id: String,
-    /// Processes still alive when disposal was asked for.
+    /// Processes observed when disposal was asked for. Without a cgroup this
+    /// counts only the monitor and namespace leader, not their descendants.
     pub processes_before: usize,
     /// Processes still alive afterwards. Anything but zero is a failure.
     pub survivors: usize,
@@ -526,11 +532,14 @@ impl SandboxedSession {
     /// Fails when the Session's cgroup membership cannot be read.
     ///
     /// # Errors
-    /// Returns cgroup membership read or malformed-PID errors. Namespace-only Sessions without a cgroup return an empty list.
+    /// Returns cgroup membership read or malformed-PID errors, or `NoCgroup`
+    /// when complete process-tree membership is unavailable.
     pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
         match &self.cgroup {
             Some(cgroup) => cgroup.processes(),
-            None => Ok(Vec::new()),
+            None => Err(SandboxError::NoCgroup(
+                "complete Session process membership is unavailable".to_owned(),
+            )),
         }
     }
 
@@ -787,6 +796,9 @@ impl SandboxedSession {
     /// # Errors
     /// Returns process/cgroup observation or kill/reap failures, survivors, or unproven cleanup by the deadline. No success is returned without zero survivors.
     pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
+        if self.cgroup.is_none() {
+            return self.dispose_namespace();
+        }
         let deadline = Instant::now() + DISPOSAL_TIMEOUT;
         let processes_before = self.processes().map(|processes| processes.len());
         let cgroup_kill = if let Some(cgroup) = &self.cgroup {
@@ -886,6 +898,61 @@ impl SandboxedSession {
         })
     }
 
+    fn dispose_namespace(&mut self) -> Result<DisposalReport, SandboxError> {
+        let unproven = |reason: String| SandboxError::CleanupUnproven {
+            session_id: self.session_id.clone(),
+            reason,
+        };
+        let leader = self.namespace_leader.as_ref().ok_or_else(|| {
+            unproven("no pinned namespace leader can prove descendant cleanup".to_owned())
+        })?;
+        let processes_before = usize::from(
+            !pidfd_events(leader)
+                .map_err(|error| unproven(error.to_string()))?
+                .contains(PollFlags::IN),
+        ) + usize::from(
+            self.child
+                .try_wait()
+                .map_err(|error| unproven(error.to_string()))?
+                .is_none(),
+        );
+        // Killing PID 1 terminates its entire PID namespace. Leave the outer
+        // monitor alive to reap it, including while --block-fd is unreleased.
+        match pidfd_send_signal(leader, Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+            Err(error) => return Err(unproven(format!("namespace kill failed: {error}"))),
+        }
+        let deadline = Instant::now() + DISPOSAL_TIMEOUT;
+        loop {
+            let events = pidfd_events(leader).map_err(|error| unproven(error.to_string()))?;
+            let monitor_reaped = self
+                .child
+                .try_wait()
+                .map_err(|error| unproven(format!("monitor reap failed: {error}")))?
+                .is_some();
+            // HUP means the kernel has released the task, not merely that it
+            // is a zombie. The PID-namespace init cannot finish exiting until
+            // the kernel has killed and waited for its namespace descendants.
+            if events.contains(PollFlags::HUP) && monitor_reaped {
+                self.status_guard = None;
+                return Ok(DisposalReport {
+                    session_id: self.session_id.clone(),
+                    processes_before,
+                    survivors: 0,
+                    identity_released: true,
+                });
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(unproven(
+                    "namespace leader or monitor was not reaped before the disposal deadline"
+                        .to_owned(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(20).min(deadline - now));
+        }
+    }
+
     /// Waits for the Session to exit on its own.
     ///
     /// # Errors
@@ -977,7 +1044,8 @@ impl PreparedSession {
     /// Panics if this prepared Session has already been successfully disposed.
     ///
     /// # Errors
-    /// Returns cgroup membership read or malformed-PID errors.
+    /// Returns cgroup membership read or malformed-PID errors, or `NoCgroup`
+    /// when complete process-tree membership is unavailable.
     pub fn processes(&self) -> Result<Vec<u32>, SandboxError> {
         self.session().processes()
     }
@@ -1036,6 +1104,12 @@ impl PreparedSession {
         self.session = None;
         Ok(report)
     }
+}
+
+fn pidfd_events(fd: &OwnedFd) -> io::Result<PollFlags> {
+    let mut descriptors = [PollFd::new(fd, PollFlags::IN)];
+    poll(&mut descriptors, Some(&Timespec::default()))?;
+    Ok(descriptors[0].revents())
 }
 
 impl Drop for PreparedSession {
@@ -1302,6 +1376,7 @@ pub struct BubblewrapBackend {
     program: PathBuf,
     bootstrap_program: PathBuf,
     cgroup_parent: Option<PathBuf>,
+    discover_cgroup: bool,
     cached_version: Option<String>,
 }
 
@@ -1326,6 +1401,7 @@ impl BubblewrapBackend {
             bootstrap_program: Path::new(crate::install::DEFAULT_PREFIX)
                 .join("current/bin/louiselm-launch"),
             cgroup_parent: None,
+            discover_cgroup: true,
             cached_version: None,
         }
     }
@@ -1341,6 +1417,16 @@ impl BubblewrapBackend {
         self
     }
 
+    /// Disables cgroup discovery for namespace-only development and conformance.
+    ///
+    /// Host-identity plans still require a cgroup and are refused in this mode.
+    #[must_use]
+    pub fn without_cgroup(mut self) -> Self {
+        self.cgroup_parent = None;
+        self.discover_cgroup = false;
+        self
+    }
+
     /// Uses only the launcher's pinned binary, cgroup parent, and measured version.
     pub(crate) fn for_launcher(
         program: &Path,
@@ -1352,13 +1438,17 @@ impl BubblewrapBackend {
             program: program.to_path_buf(),
             bootstrap_program: bootstrap_program.to_path_buf(),
             cgroup_parent: Some(cgroup_parent.to_path_buf()),
+            discover_cgroup: false,
             cached_version: Some(backend_version),
         }
     }
 
     fn cgroup_parent(&self) -> Result<Option<PathBuf>, SandboxError> {
         let Some(parent) = &self.cgroup_parent else {
-            return Ok(Cgroup::delegated_parent());
+            return Ok(self
+                .discover_cgroup
+                .then(Cgroup::delegated_parent)
+                .flatten());
         };
         let metadata = fs::symlink_metadata(parent).map_err(|source| {
             SandboxError::NoCgroup(format!(
@@ -1554,26 +1644,44 @@ impl BubblewrapBackend {
         )?;
         child.stdin = Some(OwnedFd::from(stdin_writer).into());
 
-        let (identity, sandbox_leader_pid) = if let Some((uid, gid)) = host_identity {
-            let cgroup = cgroup
-                .as_ref()
-                .expect("HostIdentity requires a cgroup before spawning");
-            let observation = match startup_gate.verify(child.id(), cgroup, uid, gid) {
-                Ok(observation) => observation,
-                Err(error) => {
-                    return Err(startup_failed(
-                        self.name(),
-                        &plan.session_id,
-                        &mut child,
-                        Some(cgroup),
-                        &format!("host identity verification failed: {error}"),
-                    ));
-                }
+        let (identity, sandbox_leader_pid, namespace_leader) =
+            if let Some((uid, gid)) = host_identity {
+                let cgroup = cgroup
+                    .as_ref()
+                    .expect("HostIdentity requires a cgroup before spawning");
+                let observation = match startup_gate.verify(child.id(), cgroup, uid, gid) {
+                    Ok(observation) => observation,
+                    Err(error) => {
+                        return Err(startup_failed(
+                            self.name(),
+                            &plan.session_id,
+                            &mut child,
+                            Some(cgroup),
+                            &format!("host identity verification failed: {error}"),
+                        ));
+                    }
+                };
+                (
+                    Some(observation),
+                    Some(observation.sandbox_leader_pid),
+                    None,
+                )
+            } else if cgroup.is_none() {
+                let (pid, fd) = startup_gate
+                    .pin_namespace_leader(child.id())
+                    .map_err(|error| {
+                        startup_failed(
+                            self.name(),
+                            &plan.session_id,
+                            &mut child,
+                            None,
+                            &format!("namespace leader observation failed: {error}"),
+                        )
+                    })?;
+                (None, Some(pid), Some(fd))
+            } else {
+                (None, None, None)
             };
-            (Some(observation), Some(observation.sandbox_leader_pid))
-        } else {
-            (None, None)
-        };
 
         Ok(PreparedSession {
             session: Some(SandboxedSession {
@@ -1583,6 +1691,7 @@ impl BubblewrapBackend {
                 child,
                 cgroup,
                 sandbox_leader_pid,
+                namespace_leader,
                 status_guard: None,
             }),
             startup_gate: Some(startup_gate),
@@ -2314,6 +2423,31 @@ mod tests {
         assert!(matches!(prepared.start(), Err(SandboxError::Refused(_))));
     }
 
+    #[test]
+    fn no_cgroup_disposal_without_a_pinned_leader_retains_its_process_owner() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        let mut session = test_session("missing-leader", fixture.path(), None);
+        session.cgroup = None;
+
+        assert!(matches!(
+            session.processes(),
+            Err(SandboxError::NoCgroup(_))
+        ));
+        let result = session.dispose();
+        let still_owned = session
+            .child
+            .try_wait()
+            .expect("owned child status reads")
+            .is_none();
+        clean_up_test_child(&mut session);
+
+        assert!(matches!(result, Err(SandboxError::CleanupUnproven { .. })));
+        assert!(
+            still_owned,
+            "failed cleanup keeps its live monitor for retry"
+        );
+    }
+
     fn test_session(
         session_id: &str,
         cgroup_path: &Path,
@@ -2343,6 +2477,7 @@ mod tests {
                 path: cgroup_path.to_owned(),
             }),
             sandbox_leader_pid: None,
+            namespace_leader: None,
             status_guard,
         }
     }

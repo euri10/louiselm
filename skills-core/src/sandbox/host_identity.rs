@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rustix::process::{Pid, PidfdFlags, pidfd_open};
 use serde::Deserialize;
 
 use super::Cgroup;
@@ -93,16 +94,7 @@ impl Gate {
         verify_credentials("Bubblewrap monitor process", &monitor, uid, gid)?;
         let child = read_process_status(pid)?;
         verify_credentials("Bubblewrap sandbox leader", &child, uid, gid)?;
-        if child.parent_pid != monitor_pid {
-            return Err(invalid(
-                "Bubblewrap sandbox leader has an unexpected parent",
-            ));
-        }
-        if child.namespace_pids.first() != Some(&pid) || child.namespace_pids.last() != Some(&1) {
-            return Err(invalid(
-                "Bubblewrap child-pid is not the host-view PID-namespace leader",
-            ));
-        }
+        verify_leader(&child, monitor_pid, pid)?;
         verify_id_map(pid, "uid_map", uid, deadline)?;
         verify_id_map(pid, "gid_map", gid, deadline)?;
 
@@ -113,6 +105,24 @@ impl Gate {
             initial_user_namespace: read_id_map(std::process::id(), "uid_map")?
                 == [[0, 0, u32::MAX]],
         })
+    }
+
+    pub fn pin_namespace_leader(&self, monitor_pid: u32) -> io::Result<(u32, OwnedFd)> {
+        let pid = read_child_pid(&self.status, Instant::now() + STARTUP_TIMEOUT)?;
+        let process = i32::try_from(pid)
+            .ok()
+            .and_then(Pid::from_raw)
+            .ok_or_else(|| invalid("Bubblewrap reported an invalid child-pid"))?;
+        let fd = pidfd_open(process, PidfdFlags::empty())?;
+        verify_leader(&read_process_status(pid)?, monitor_pid, pid)?;
+        // Pin before reading /proc, then require that pinned process to still
+        // be alive. A recycled numeric PID cannot validate a dead pidfd.
+        if !super::pidfd_events(&fd)?.is_empty() {
+            return Err(invalid(
+                "Bubblewrap namespace leader exited during observation",
+            ));
+        }
+        Ok((pid, fd))
     }
 
     pub fn release(&mut self) -> io::Result<()> {
@@ -127,6 +137,23 @@ impl Gate {
     pub fn into_status(self) -> UnixStream {
         self.status
     }
+}
+
+fn verify_leader(child: &ProcessStatus, monitor_pid: u32, pid: u32) -> io::Result<()> {
+    if child.parent_pid != monitor_pid {
+        return Err(invalid(
+            "Bubblewrap sandbox leader has an unexpected parent",
+        ));
+    }
+    if child.namespace_pids.len() < 2
+        || child.namespace_pids.first() != Some(&pid)
+        || child.namespace_pids.last() != Some(&1)
+    {
+        return Err(invalid(
+            "Bubblewrap child-pid is not the host-view PID-namespace leader",
+        ));
+    }
+    Ok(())
 }
 
 fn wait_for_cgroup(
@@ -343,6 +370,41 @@ mod tests {
 
         let error = read_child_pid(&reader, Instant::now() + Duration::from_secs(1))
             .expect_err("malformed status is refused");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn pinning_rejects_an_ordinary_child_without_signalling_it() {
+        let mut gate = Gate::new().expect("startup gate opens");
+        let [status, _block] = gate.take_child_fds();
+        let mut writer = UnixStream::from(status);
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("ordinary child starts");
+        writeln!(writer, "{{\"child-pid\":{}}}", child.id()).expect("status writes");
+
+        let result = gate.pin_namespace_leader(std::process::id());
+        let still_running = child.try_wait().expect("child status reads").is_none();
+        child.kill().expect("fixture child is killed");
+        child.wait().expect("fixture child is reaped");
+
+        let error = result.expect_err("a child must also be PID 1 in a nested namespace");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(still_running, "invalid status must never authorize a kill");
+    }
+
+    #[test]
+    fn pinning_rejects_a_pid_outside_the_kernel_range() {
+        let mut gate = Gate::new().expect("startup gate opens");
+        let [status, _block] = gate.take_child_fds();
+        let mut writer = UnixStream::from(status);
+        writeln!(writer, "{{\"child-pid\":{}}}", u32::MAX).expect("status writes");
+
+        let error = gate
+            .pin_namespace_leader(std::process::id())
+            .expect_err("unsigned overflow must not select another process");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }

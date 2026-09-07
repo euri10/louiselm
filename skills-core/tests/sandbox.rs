@@ -414,6 +414,135 @@ fn disposing_a_prepared_session_never_runs_its_workload() {
 }
 
 #[test]
+fn no_cgroup_prepared_disposal_reaps_the_blocked_namespace_leader() {
+    let fixture = Fixture::new();
+    let marker = fixture.path("sessions/no-cgroup-prepared/workspace/started");
+    let mut confinement = plan(
+        &fixture,
+        "no-cgroup-prepared",
+        "#!/bin/sh\ntouch \"$STARTED\"\nsleep 30\n",
+    );
+    confinement
+        .environment
+        .insert("STARTED".to_owned(), marker.display().to_string());
+    let backend = BubblewrapBackend::new()
+        .with_bootstrap(Path::new(BOOTSTRAP))
+        .without_cgroup();
+    let mut prepared = backend.prepare(&confinement).expect("namespace prepares");
+    assert!(prepared.process_tree().is_none());
+    assert!(matches!(
+        prepared.processes(),
+        Err(SandboxError::NoCgroup(_))
+    ));
+    let monitor = prepared.monitor_pid();
+    // Observe the real monitor's child before disposal, independent of the
+    // backend's bookkeeping. This is the blocked-leader order from a29a.
+    let children = format!("/proc/{monitor}/task/{monitor}/children");
+    let mut leader = None;
+    assert!(wait_for(Duration::from_secs(2), || {
+        leader = fs::read_to_string(&children)
+            .ok()
+            .and_then(|text| text.split_whitespace().next()?.parse::<u32>().ok());
+        leader.is_some()
+    }));
+    let leader = leader.expect("Bubblewrap created its namespace leader");
+    let leader_fd = rustix::process::pidfd_open(
+        rustix::process::Pid::from_raw(i32::try_from(leader).expect("PID fits"))
+            .expect("nonzero PID"),
+        rustix::process::PidfdFlags::empty(),
+    )
+    .expect("the regression owns a cleanup handle");
+    let disposal = prepared.dispose();
+    let leader_survived = Path::new(&format!("/proc/{leader}")).exists();
+    // Clean up even on the old implementation, before failing the assertion.
+    if leader_survived {
+        let _ = rustix::process::pidfd_send_signal(&leader_fd, rustix::process::Signal::KILL);
+        assert!(wait_for(Duration::from_secs(2), || !is_alive(leader)));
+    }
+    disposal.expect("prepared disposal succeeds");
+    assert!(
+        !leader_survived,
+        "disposal left namespace leader {leader} behind"
+    );
+    assert!(!Path::new(&format!("/proc/{monitor}")).exists());
+    assert!(!marker.exists(), "disposal must never release the workload");
+}
+
+#[test]
+fn no_cgroup_running_disposal_kills_namespace_descendants() {
+    let fixture = Fixture::new();
+    let confinement = plan(
+        &fixture,
+        "no-cgroup-running",
+        "#!/bin/sh\nsleep 30 &\nprintf 'ready\\n'\nwait\n",
+    );
+    let backend = BubblewrapBackend::new()
+        .with_bootstrap(Path::new(BOOTSTRAP))
+        .without_cgroup();
+    let mut session = backend.spawn(&confinement).expect("namespace starts");
+    let monitor = session.monitor_pid();
+    let leader = session
+        .sandbox_leader_pid()
+        .expect("namespace leader is observed");
+    let mut line = String::new();
+    BufReader::new(session.take_stdout().expect("stdout is piped"))
+        .read_line(&mut line)
+        .expect("workload reports its descendant running");
+    assert_eq!(line, "ready\n");
+    let children = |pid| {
+        fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .expect("live namespace children are readable")
+            .split_whitespace()
+            .map(|pid| pid.parse::<u32>().expect("child PID is numeric"))
+            .collect::<Vec<_>>()
+    };
+    let workloads = children(leader);
+    assert!(!workloads.is_empty(), "the namespace has a live workload");
+    let descendants: Vec<_> = workloads.iter().flat_map(|&pid| children(pid)).collect();
+    assert!(
+        !descendants.is_empty(),
+        "the workload forked its background child"
+    );
+    let report = session
+        .dispose()
+        .expect("running namespace disposal succeeds");
+    assert_eq!(report.survivors, 0);
+    assert!(!Path::new(&format!("/proc/{leader}")).exists());
+    assert!(!Path::new(&format!("/proc/{monitor}")).exists());
+    for pid in workloads.into_iter().chain(descendants) {
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "descendant {pid} survived"
+        );
+    }
+    assert_eq!(
+        session
+            .dispose()
+            .expect("cleanup remains settled")
+            .survivors,
+        0
+    );
+}
+
+#[test]
+fn no_cgroup_disposal_after_natural_exit_still_proves_cleanup() {
+    let fixture = Fixture::new();
+    let confinement = plan(&fixture, "no-cgroup-exited", "#!/bin/sh\nexit 0\n");
+    let backend = BubblewrapBackend::new()
+        .with_bootstrap(Path::new(BOOTSTRAP))
+        .without_cgroup();
+    let mut session = backend.spawn(&confinement).expect("namespace starts");
+    assert_eq!(session.wait().expect("workload exits"), 0);
+    assert_eq!(
+        session
+            .dispose()
+            .expect("exited namespace cleans up")
+            .survivors,
+        0
+    );
+}
+
+#[test]
 fn dropping_a_prepared_session_kills_it_without_releasing_the_gate() {
     let fixture = Fixture::new();
     let marker = fixture.path("sessions/drop-prepared/workspace/started");
@@ -427,24 +556,30 @@ fn dropping_a_prepared_session_kills_it_without_releasing_the_gate() {
         .insert("STARTED".to_owned(), marker.display().to_string());
     let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
 
-    let prepared = backend
-        .prepare(&confinement)
-        .expect("bwrap prepares the session");
-    let monitor_pid = prepared.monitor_pid();
-    let enclosed = prepared
-        .processes()
-        .expect("prepared cgroup membership is readable");
-    drop(prepared);
+    for backend in [backend.clone(), backend.without_cgroup()] {
+        let prepared = backend
+            .prepare(&confinement)
+            .expect("bwrap prepares the session");
+        let monitor_pid = prepared.monitor_pid();
+        let enclosed = match prepared.processes() {
+            Ok(processes) => processes,
+            Err(SandboxError::NoCgroup(_)) => {
+                vec![prepared.sandbox_leader_pid().expect("leader is observed")]
+            }
+            Err(error) => panic!("membership observation failed: {error}"),
+        };
+        drop(prepared);
 
-    assert!(
-        !Path::new(&format!("/proc/{monitor_pid}")).exists(),
-        "dropping a prepared Session reaps the Bubblewrap monitor",
-    );
-    for pid in enclosed {
         assert!(
-            !Path::new(&format!("/proc/{pid}")).exists(),
-            "dropping kills enclosed process {pid}",
+            !Path::new(&format!("/proc/{monitor_pid}")).exists(),
+            "dropping a prepared Session reaps the Bubblewrap monitor",
         );
+        for pid in enclosed {
+            assert!(
+                !Path::new(&format!("/proc/{pid}")).exists(),
+                "dropping kills enclosed process {pid}",
+            );
+        }
     }
     assert!(!marker.exists(), "dropping must not release the workload");
 }
