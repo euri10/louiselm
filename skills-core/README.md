@@ -102,12 +102,12 @@ inside the report of it.
 
 Inspection produces two kinds of output.
 
-*Fatal* means the package cannot be reviewed at all. The class is deliberately
+_Fatal_ means the package cannot be reviewed at all. The class is deliberately
 tiny: no `SKILL.md` at the root, `SKILL.md` without usable frontmatter, or a
 file that is neither binary nor valid UTF-8. Growing this class moves judgement
 from the reviewer to a scanner that cannot read prose.
 
-Everything else is a *mandatory Dossier finding* — a fact the reviewer must be
+Everything else is a _mandatory Dossier finding_ — a fact the reviewer must be
 shown, never a verdict: hidden and bidirectional code points, ASCII homoglyphs,
 terminal control sequences, URLs, credential references, encoded payloads and
 decoders, network and process reach, SVG that acts rather than draws, declared
@@ -520,9 +520,9 @@ printf 'louiselm-launch %s\n' "$public_key" > /tmp/allowed-signers
   < /tmp/receipt.payload
 ```
 
-Finally, hold identity slot *N* through one Session. A second acquisition of
-slot *N* must fail busy while an adjacent slot succeeds; after disposing the
-first Session, slot *N* must be acquirable again. This proves the persistent
+Finally, hold identity slot _N_ through one Session. A second acquisition of
+slot _N_ must fail busy while an adjacent slot succeeds; after disposing the
+first Session, slot _N_ must be acquirable again. This proves the persistent
 `locks/<slot>.lock` inode coordinates live leases rather than merely recording
 them.
 
