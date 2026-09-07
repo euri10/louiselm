@@ -44,3 +44,13 @@ the merge policy can change too.
 The repository's internal development contract and required checks live in
 `AGENTS.md`; that operator-facing file is intentionally not part of the public
 site.
+
+For Linux `acp-proxy` lifecycle acceptance, run from this checkout:
+
+```sh
+nvim --headless --noplugin -u NONE -l tests/acp/orphan_acceptance.lua /path/to/acp-proxy
+```
+
+This creates disposable Neovim Sessions against the mock Agent, kills one editor,
+and quits another normally. It checks that detached descendants disappear and
+normal quit preserves the abandonment record. It does not stop your live editor.
