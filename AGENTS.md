@@ -48,8 +48,11 @@ Adapter lookup recipes:
   `session.identity()`, as described in Live-instance introspection. Never ask
   which chat is focused: focus follows the maintainer's window, not the Agent
   that is calling, so a focused-chat lookup names an arbitrary Session whenever
-  more than one is live (louiselm-hmmc). An adapter that exposes no id of its
-  own has nothing to resolve; ask the maintainer.
+  more than one is live (louiselm-hmmc). Codex exposes its id as
+  `CODEX_SESSION_ID` in the shell it spawns for a tool call, not in its own
+  process environment, and that value equals the ACP session id (verified
+  2026-09-07). An adapter that exposes no id of its own has nothing to resolve;
+  ask the maintainer.
 - OpenCode outside LouiseLM: `OPENCODE=1`, `OPENCODE_PID`, and
   `OPENCODE_CLIENT=acp` identify the process, not the current session.
   `opencode session list --format json` is an inventory, not proof of which
