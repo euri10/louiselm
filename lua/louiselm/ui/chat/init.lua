@@ -106,6 +106,7 @@ local nvim = vim
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
 ---@field decision_active? louiselm.ui.ChatDecision Permission decision currently presented.
+---@field decision_picker? louiselm.ui.ChatDecision Provider-owned picker awaiting its callback, even after retirement.
 ---@field decision_queue louiselm.ui.ChatDecision[] Permission decisions waiting for the open one.
 ---@field queue_namespace integer Extmark namespace for queued prompt indicators.
 ---@field prompt_namespace integer Extmark namespace for prompt boundaries.
@@ -1791,10 +1792,19 @@ local function open_decision(self, decision)
     return
   end
   -- A select provider that throws would otherwise strand every later decision behind it.
-  local call_ok, prompt_error = pcall(prompt_permission, self, view, data, respond)
+  self.decision_picker = decision
+  local function picker_respond(result, rpc_error)
+    if self.decision_picker == decision then
+      self.decision_picker = nil
+    end
+    local sent, send_error = respond(result, rpc_error)
+    pump_decisions(self)
+    return sent, send_error
+  end
+  local call_ok, prompt_error = pcall(prompt_permission, self, view, data, picker_respond)
   if not call_ok then
     insert_transcript(self, view, { "Error: permission picker failed: " .. tostring(prompt_error) })
-    cancel_permission(self, view, respond)
+    cancel_permission(self, view, picker_respond)
   end
 end
 
@@ -1804,7 +1814,7 @@ end
 ---that request without the user choosing and can leave the replacement unanswered.
 ---@param self louiselm.ui.Chat
 pump_decisions = function(self)
-  while self.decision_active == nil do
+  while self.decision_active == nil and (self.decision_picker == nil or self.disposed) do
     local decision = table.remove(self.decision_queue, 1)
     if decision == nil then
       return
@@ -3969,6 +3979,25 @@ local function close_view(self, view)
   clear_queued_prompt(view)
   view.unsubscribe()
   self.views[id] = nil
+  -- Retire authority now; a provider-owned picker may return much later. Keep
+  -- other Sessions queued until that callback, so a new selector cannot toggle it.
+  for index = #self.decision_queue, 1, -1 do
+    local decision = self.decision_queue[index]
+    if decision.view == view then
+      table.remove(self.decision_queue, index)
+      if not decision.answered then
+        decision.answered = true
+        cancel_permission(self, view, decision.respond)
+      end
+    end
+  end
+  local active = self.decision_active
+  if active ~= nil and active.view == view then
+    self.decision_active = nil
+    active.answered = true
+    cancel_permission(self, view, active.respond)
+    self.diff:close()
+  end
   for index, candidate in ipairs(self.view_order) do
     if candidate == id then
       table.remove(self.view_order, index)
@@ -3989,6 +4018,7 @@ local function close_view(self, view)
   if close_error ~= nil then
     nvim.notify("louiselm: " .. close_error, nvim.log.levels.ERROR)
   end
+  pump_decisions(self)
 end
 
 ---Dispose the current session and remove only its chat buffer.

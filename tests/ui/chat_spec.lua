@@ -4604,12 +4604,151 @@ T["chat"]["confirms Session close without replacing its permission picker"] = fu
   MiniTest.expect.equality(first.disposed, true)
   MiniTest.expect.equality(chat:buffer("session-1"), nil)
   MiniTest.expect.equality(attention_cleared, "acp-session")
+  MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
   -- A provider's delayed dismissal after buffer teardown cannot restore the view.
   nvim.schedule(active)
   run_scheduled()
   MiniTest.expect.equality(chat:buffer("session-1"), nil)
   MiniTest.expect.equality(#pickers, 1)
   MiniTest.expect.equality(responses, { { id = "first", result = { outcome = { outcome = "cancelled" } } } })
+end
+
+T["chat"]["closing a Session retires its decisions and preserves other Sessions behind its picker"] = function()
+  -- Disposal ordering observed in opencode/ses_f8ad69e74ffeJtjZEVya5PPimo,
+  -- proxy sessions/<id>/log.jsonl, 2026-09-06 (louiselm-z06f).
+  -- Cross-Session queue interleaving below is synthetic.
+  local first = fake_session("session-1", "opencode")
+  local second = fake_session("session-2", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  assert(chat:switch("session-1"))
+  local request, run_scheduled, pickers, responses = permission_harness()
+  request(first, "active")
+  request(second, "other")
+  request(first, "queued")
+  run_scheduled()
+
+  assert(chat:close_session())
+  run_scheduled()
+  MiniTest.expect.equality(first.disposed, true)
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
+  MiniTest.expect.equality(#responses, 2)
+  for _, response in ipairs(responses) do
+    MiniTest.expect.equality(response.result, { outcome = { outcome = "cancelled" } })
+    MiniTest.expect.equality(response.id == "active" or response.id == "queued", true)
+  end
+
+  pickers[1].callback(pickers[1].items[2], 2)
+  run_scheduled()
+  MiniTest.expect.equality(#pickers, 2)
+  MiniTest.expect.equality(#responses, 2)
+  -- Repeated obsolete callbacks must not release or answer the new decision.
+  pickers[1].callback(pickers[1].items[1], 1)
+  run_scheduled()
+  MiniTest.expect.equality(
+    { chat:switch_session() },
+    { false, "a louiselm permission decision is open; answer it first" }
+  )
+  MiniTest.expect.equality(#responses, 2)
+  pickers[2].callback(pickers[2].items[2], 2)
+  run_scheduled()
+  MiniTest.expect.equality(responses[3], {
+    id = "other",
+    result = { outcome = { outcome = "selected", optionId = "allow-once" } },
+  })
+  MiniTest.expect.equality(chat:buffer("session-1"), nil)
+end
+
+T["chat"]["closing a queued Session leaves another Session's active decision intact"] = function()
+  local first = fake_session("session-1", "opencode")
+  local second = fake_session("session-2", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  local request, run_scheduled, pickers, responses = permission_harness()
+  request(first, "active")
+  request(second, "queued")
+  run_scheduled()
+  assert(chat:close_session())
+  MiniTest.expect.equality(responses, { { id = "queued", result = { outcome = { outcome = "cancelled" } } } })
+  MiniTest.expect.equality(
+    { chat:switch_session() },
+    { false, "a louiselm permission decision is open; answer it first" }
+  )
+  pickers[1].callback(pickers[1].items[2], 2)
+  run_scheduled()
+  MiniTest.expect.equality(#pickers, 1)
+  MiniTest.expect.equality(responses[2], {
+    id = "active",
+    result = { outcome = { outcome = "selected", optionId = "allow-once" } },
+  })
+end
+
+T["chat"]["Session close retires a diff review and cancels permission events queued from fast callbacks"] = function()
+  local path = nvim.fn.tempname()
+  nvim.fn.writefile({ "before" }, path)
+  local session = fake_session("session-1", "opencode")
+  local chat = assert(Chat.new(fake_api()))
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    if not timer:is_closing() then
+      timer:close()
+    end
+    chat:dispose()
+    nvim.fn.delete(path)
+  end)
+  assert(chat:attach(session))
+  local responses = {}
+  local function request(id, operation)
+    session:emit({
+      type = "permission_requested",
+      session_id = "session-1",
+      data = {
+        request_id = id,
+        operation = operation,
+        toolCall = { rawInput = { path = path, content = "after\n" } },
+        options = { { optionId = "allow-once", kind = "allow_once" } },
+      },
+      respond = function(result)
+        assert(not nvim.in_fast_event())
+        responses[id] = result
+        return true
+      end,
+    })
+  end
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    request("review", { kind = "file_edit", path = path })
+  end)
+  assert(nvim.wait(1000, function()
+    return chat.diff.buffer ~= nil
+  end))
+  -- Queue close ahead of the UI delivery of another process event.
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    nvim.schedule(function()
+      assert(chat:close_session())
+    end)
+    request("late", { kind = "command", command = { "git", "status" } })
+  end)
+  assert(nvim.wait(1000, function()
+    return responses.late ~= nil
+  end))
+  MiniTest.expect.equality(responses, {
+    review = { outcome = { outcome = "cancelled" } },
+    late = { outcome = { outcome = "cancelled" } },
+  })
+  MiniTest.expect.equality(chat.diff.buffer, nil)
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "before" })
+  MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
 end
 
 T["chat"]["refuses command pickers while a permission decision is open"] = function()
