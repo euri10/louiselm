@@ -21,6 +21,7 @@ public_markdown_sources=(
 	"$source_root/docs/index.md"
 	"$source_root/docs/onboarding.md"
 	"$source_root/docs/tutorial.md"
+	"$source_root/docs/turn-recording.md"
 	"$source_root/blog/index.md"
 )
 for source in "$source_root"/blog/post-*/blog.md; do
@@ -75,7 +76,7 @@ while IFS= read -r -d '' path; do
 	# known public source basenames and require byte identity with one of the
 	# curated source files. MyST flattens source paths here, so names alone
 	# cannot distinguish a public page from a linked private document.
-	if [[ "$relative" =~ ^build/(README|CONTRIBUTING|POLITICAL_STATEMENT|TRADEMARK_POLICY|api|blog|demo-promotion|example-workflow|index|onboarding|tutorial)-[[:xdigit:]]{32}\.md$ ]]; then
+	if [[ "$relative" =~ ^build/(README|CONTRIBUTING|POLITICAL_STATEMENT|TRADEMARK_POLICY|api|blog|demo-promotion|example-workflow|index|onboarding|tutorial|turn-recording)-[[:xdigit:]]{32}\.md$ ]]; then
 		matched=0
 		for source in "${public_markdown_sources[@]}"; do
 			if [ -f "$source" ] && cmp -s "$path" "$source"; then

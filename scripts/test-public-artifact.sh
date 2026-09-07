@@ -34,6 +34,17 @@ source_root="$work_dir/source"
 make_safe_artifact "$safe" "$source_root"
 "$check_artifact" "$safe" "$source_root"
 
+# README links this guide; MyST exports it alongside the rendered public page.
+recording_export="$safe/build/turn-recording-0123456789abcdef0123456789abcdef.md"
+printf '# Durable turn recording\n' >"$source_root/docs/turn-recording.md"
+cp "$source_root/docs/turn-recording.md" "$recording_export"
+"$check_artifact" "$safe" "$source_root"
+printf 'private material\n' >"$recording_export"
+if "$check_artifact" "$safe" "$source_root" >"$work_dir/check.log" 2>&1; then
+	echo "expected rejection for a non-curated turn recording export" >&2
+	exit 1
+fi
+
 for forbidden in \
 	"conversations/session.html" \
 	"events.jsonl" \

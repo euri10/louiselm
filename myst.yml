@@ -19,6 +19,7 @@ project:
       children:
         - file: docs/tutorial.md
         - file: docs/onboarding.md
+        - file: docs/turn-recording.md
         - file: docs/demo-promotion.md
         - file: docs/example-workflow.md
         - file: doc/api.md
