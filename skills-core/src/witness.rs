@@ -18,7 +18,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
 };
 
 use serde::{Deserialize, Serialize};
@@ -77,8 +77,6 @@ pub trait Witness {
     ///
     /// # Errors
     /// Returns backend-specific setup or lookup errors; no record is `Ok(None)`.
-    /// Currently [`GitWitness`] also reports unsuccessful branch fetches as absence,
-    /// including transport failures (tracked by louiselm-7k9w).
     fn fetch(&self, digest: &Digest) -> Result<Option<(Vec<u8>, WitnessEvidence)>, WitnessError>;
 
     /// Publishes `bytes` for `digest`.
@@ -135,6 +133,11 @@ impl GitWitness {
     }
 
     fn git(directory: &Path, arguments: &[&str]) -> Result<String, WitnessError> {
+        let output = Self::git_output(directory, arguments)?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn git_output(directory: &Path, arguments: &[&str]) -> Result<Output, WitnessError> {
         let output = Command::new("git")
             .current_dir(directory)
             .args(arguments)
@@ -146,33 +149,39 @@ impl GitWitness {
                 reason: crate::scan::escape(String::from_utf8_lossy(&output.stderr).trim()),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        Ok(output)
     }
 
-    fn fetch_branch(&self, directory: &Path) -> bool {
-        Self::git(directory, &["fetch", "-q", &self.remote, &self.branch]).is_ok()
+    fn fetch_branch(&self, directory: &Path) -> Result<bool, WitnessError> {
+        let branch = format!("refs/heads/{}", self.branch);
+        // A successful listing with no match proves absence. A failed fetch
+        // cannot distinguish an absent branch from an unavailable remote.
+        if Self::git(directory, &["ls-remote", "--refs", &self.remote, &branch])?.is_empty() {
+            return Ok(false);
+        }
+        Self::git(directory, &["fetch", "-q", &self.remote, &branch])?;
+        Ok(true)
     }
 }
 
 impl Witness for GitWitness {
     fn fetch(&self, digest: &Digest) -> Result<Option<(Vec<u8>, WitnessEvidence)>, WitnessError> {
         let directory = self.scratch()?;
-        if !self.fetch_branch(&directory) {
+        if !self.fetch_branch(&directory)? {
             return Ok(None);
         }
         let path = Self::record_path(digest);
-        let Ok(commit) = Self::git(&directory, &["rev-parse", "FETCH_HEAD"]) else {
-            return Ok(None);
-        };
-        let object = format!("FETCH_HEAD:{path}");
-        let output = Command::new("git")
-            .current_dir(&directory)
-            .args(["cat-file", "blob", &object])
-            .output()
-            .map_err(|error| WitnessError::ToolMissing(error.to_string()))?;
-        if !output.status.success() {
+        let commit = Self::git(&directory, &["rev-parse", "FETCH_HEAD"])?;
+        if Self::git(
+            &directory,
+            &["ls-tree", "--name-only", &commit, "--", &path],
+        )?
+        .is_empty()
+        {
             return Ok(None);
         }
+        let object = format!("{commit}:{path}");
+        let output = Self::git_output(&directory, &["cat-file", "blob", &object])?;
         Ok(Some((
             output.stdout,
             WitnessEvidence {
@@ -187,7 +196,7 @@ impl Witness for GitWitness {
 
     fn publish(&self, digest: &Digest, bytes: &[u8]) -> Result<WitnessEvidence, WitnessError> {
         let directory = self.scratch()?;
-        if self.fetch_branch(&directory) {
+        if self.fetch_branch(&directory)? {
             Self::git(
                 &directory,
                 &["checkout", "-q", "-B", "witness", "FETCH_HEAD"],
