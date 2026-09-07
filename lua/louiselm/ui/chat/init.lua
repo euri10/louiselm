@@ -397,6 +397,7 @@ local DERIVED_HIGHLIGHT = "LouiselmDerivedValue"
 
 local STATUS_HIGHLIGHTS = {
   ready = "LouiselmStatusReady",
+  preparing = "LouiselmStatusActive",
   prompting = "LouiselmStatusActive",
   configuring = "LouiselmStatusActive",
   starting = "LouiselmStatusActive",
@@ -438,6 +439,7 @@ local function close_handoff(self, buffer)
 end
 
 local ACTIVE_TURN_STATUS = {
+  preparing = true,
   prompting = true,
   waiting_permission = true,
   cancelling = true,
@@ -585,6 +587,12 @@ end
 ---@param state louiselm.session.State
 ---@return string
 local function turn_label(state)
+  if state.recording_error ~= nil then
+    return "Recording failed — retry to recover"
+  end
+  if state.status == "preparing" then
+    return "Preparing turn"
+  end
   if state.status == "ready" then
     return "Your turn"
   end
@@ -2347,7 +2355,12 @@ local function handle_event(self, view, event)
 
   reconcile_prompt_boundary(view)
 
-  if event.type == "state_changed" or event.type == "config_options_changed" or event.type == "usage_updated" then
+  if
+    event.type == "state_changed"
+    or event.type == "config_options_changed"
+    or event.type == "usage_updated"
+    or event.type == "recording_changed"
+  then
     render_header(self, view)
     render_winbars(self)
   end
@@ -2590,6 +2603,13 @@ local function handle_event(self, view, event)
     view.response_line = nil
     view.response_tail = nil
     view.response_started = false
+  elseif event.type == "prompt_rejected" then
+    insert_transcript(self, view, { "Prompt not sent: " .. event.data.message })
+  elseif event.type == "recording_changed" then
+    if event.data.error ~= nil then
+      clear_queued_prompt(view)
+      insert_transcript(self, view, { "Recording error: " .. event.data.error.message })
+    end
   elseif event.type == "error" then
     view.replay_user_open = false
     view.pending_terminal_completion = nil
@@ -3921,6 +3941,7 @@ function Chat:close_session()
   if
     has_queued_prompt
     or status == "configuring"
+    or status == "preparing"
     or status == "prompting"
     or status == "waiting_permission"
     or status == "cancelling"

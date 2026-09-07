@@ -13,6 +13,7 @@
 ---the only way a Run's generated-work budget is ever actually spent. The reply becomes a JSON summary of what
 ---was created and what refused it, so a caller can observe the budget stopping the loop.
 ---@field generate_title? string Title prefix for generated work. Defaults to `Generated`.
+---@field recording_probe? string Test-only SQLite path. Reply with committed turn IDs visible when the prompt arrives.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
@@ -301,6 +302,19 @@ local function handle_message(message, state, options)
     else
       local generated = generate_work(options)
       local response = configured_response(options)
+      if options.recording_probe ~= nil then
+        -- The mock already has a blocking stdin loop. A separate SQLite reader
+        -- here proves the real peer sees committed admission, not client memory.
+        local observed = nvim
+          .system({ "sqlite3", "-json", options.recording_probe, "SELECT id FROM turns ORDER BY id" }, { text = true })
+          :wait()
+        if observed.code ~= 0 then
+          write_error(message.id, -32603, "mock could not read committed turns")
+          state.pending_prompt = nil
+          return true
+        end
+        response = observed.stdout
+      end
       finish_prompt(state, prompt, generated or (response ~= "" and response or prompt.text))
     end
     return true
@@ -353,6 +367,7 @@ function M.run(options)
     available_commands = available_commands,
     generate_count = generate_count,
     generate_title = options.generate_title or nvim.env.LOUISELM_MOCK_GENERATE_TITLE,
+    recording_probe = options.recording_probe or nvim.env.LOUISELM_MOCK_RECORDING_PROBE,
   }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
 

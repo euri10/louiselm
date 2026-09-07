@@ -216,6 +216,54 @@ T["chat"] = MiniTest.new_set({
   },
 })
 
+T["chat"]["schedules recording failures and ignores queued notices after Disposal"] = function()
+  local session = fake_session("recording-ui", "claude")
+  session.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api(), { markdown_highlighting = false }))
+  assert(chat:attach(session))
+  local buffer = assert(chat:buffer("recording-ui"))
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "schedule", original_schedule)
+    chat:dispose()
+  end)
+  local delivered = false
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    session.state.recording_error = { code = "locked", message = "database locked" }
+    session:emit({
+      type = "recording_changed",
+      session_id = "recording-ui",
+      data = { error = session.state.recording_error, pending = true },
+    })
+    delivered = true
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return delivered
+  end))
+  MiniTest.expect.equality(table.concat(buffer_lines(buffer), "\n"):find("Recording error:", 1, true), nil)
+  for _, callback in ipairs(scheduled) do
+    callback()
+  end
+  MiniTest.expect.equality(
+    table.concat(buffer_lines(buffer), "\n"):find("Recording error: database locked", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(session.state.status, "prompting")
+  scheduled = {}
+  session:emit({ type = "prompt_rejected", session_id = "recording-ui", data = { turn_id = "old", message = "late" } })
+  chat:dispose()
+  for _, callback in ipairs(scheduled) do
+    callback()
+  end
+  MiniTest.expect.equality(chat.disposed, true)
+end
+
 T["chat"]["can attach without starting Markdown tree-sitter"] = function()
   local started = false
   nvim.treesitter.start = function()

@@ -11,10 +11,12 @@
 ---@field revoke_permission fun(self: louiselm.session.Api, id: string): boolean, string?
 ---@field collect_forensics fun(self: louiselm.session.Api, agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string?
 ---@field dispose fun(self: louiselm.session.Api): boolean, string?
+---@field flush_recording fun(self: louiselm.session.Api, callback: louiselm.session.RecordingCallback) Retry/acknowledge queued facts, including final observations after Disposal.
 
 ---@class louiselm.session.ApiOptions
 ---@field permission_store? louiselm.permission.Store Explicit remembered-permission store.
 ---@field forensics_directory? string Override the private Session Forensics directory.
+---@field usage_directory? string Absolute private directory for durable turn recording; defaults to stdpath("state")/louiselm/usage.
 
 ---@class louiselm.session.ForensicsOptions
 ---@field diagnosing_session_id? string Durable identity of the diagnosing Session.

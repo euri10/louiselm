@@ -7,7 +7,7 @@ local Provider = require("louiselm.agent.provider")
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
----@alias louiselm.session.Status "starting"|"ready"|"configuring"|"prompting"|"waiting_permission"|"cancelling"|"error"|"disposed"
+---@alias louiselm.session.Status "starting"|"ready"|"configuring"|"preparing"|"prompting"|"waiting_permission"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
 
 ---@class louiselm.session.TurnIdentity
@@ -24,8 +24,11 @@ local nvim = vim
 ---@field acp_session_id? string Agent-side persistent conversation identifier, once available.
 ---@field status louiselm.session.Status Lifecycle state.
 ---@field working_dir string ACP working directory.
----@field current_turn integer Number of the current or most recently completed turn.
----@field turn_identity? louiselm.session.TurnIdentity Owned identity for the current or last started turn; later option changes never rewrite it.
+---@field current_turn integer Accepted prompt attempts in this local Session, including failed admission; not durable identity.
+---@field turn_identity? louiselm.session.TurnIdentity Owned identity for the latest accepted attempt; later option changes never rewrite it.
+---@field turn_id? string Durable identity of the latest accepted prompt attempt; independent of local turn ordinal.
+---@field recording_error? louiselm.session.RecordingError Last registry recording failure; subsequent dispatch requires recovery.
+---@field recording_pending boolean Whether the registry has unacknowledged writes.
 ---@field config_options louiselm.session.ConfigOption[] Supported agent-advertised options in priority order.
 ---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
@@ -62,6 +65,7 @@ local nvim = vim
 ---@field acp_session_id string? Agent-side session identifier.
 ---@field load_session_id string? Agent-side session identifier to load.
 ---@field prompt_callback? fun(result: unknown, error?: string) Current prompt completion callback.
+---@field recording_turn? { id: string, sequence: integer, finished: boolean, dispatched: boolean } Active recording identity.
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
@@ -82,7 +86,7 @@ local nvim = vim
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
----@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string|number?, string?
+---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string?, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
 ---@field set_config_option fun(self: louiselm.session.Session, id: string, value: string|boolean, callback?: fun(options: louiselm.session.ConfigOption[]?, error?: string)): string|number?, string?
 ---@field dispose fun(self: louiselm.session.Session): boolean, string?
@@ -210,11 +214,35 @@ local function clear_session_failure(self)
 end
 
 ---@param self louiselm.session.Session
+---@param kind "dispatch"|"cost"|"cancel_requested"|"outcome"
+---@param data table Normalized metadata only.
+local function record_observation(self, kind, data)
+  local turn = self.recording_turn
+  if turn == nil or turn.finished then
+    return
+  end
+  turn.sequence = turn.sequence + 1
+  if kind == "outcome" then
+    turn.finished = true
+  end
+  self.state.recording_pending = true
+  self.owner.recording:append({
+    turn_id = turn.id,
+    sequence = turn.sequence,
+    kind = kind,
+    observed_at = tostring(os.date("!%Y-%m-%dT%H:%M:%SZ")),
+    data = data,
+  })
+end
+
+---@param self louiselm.session.Session
 ---@param message string
-local function fail(self, message)
+---@param peer_response? boolean Whether an ACP prompt response was actually observed.
+local function fail(self, message, peer_response)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  record_observation(self, "outcome", { outcome = "failed", peer_response = peer_response == true })
   clear_session_failure(self)
   set_status(self, "error")
   self.permission_active = nil
@@ -290,6 +318,20 @@ local function complete_turn(self, result)
   self.prompt_callback = nil
   if callback ~= nil then
     callback(result)
+  end
+end
+
+---@param self louiselm.session.Session
+---@param message string Sanitized admission error.
+local function reject_prompt(self, message)
+  record_observation(self, "outcome", { outcome = "not_sent", peer_response = false })
+  local completion = self.prompt_callback
+  local turn_id = self.state.turn_id
+  self.prompt_callback = nil
+  set_status(self, "ready")
+  emit(self, "prompt_rejected", { turn_id = turn_id, message = message })
+  if completion then
+    completion(nil, message)
   end
 end
 
@@ -377,6 +419,7 @@ local function handle_notification(self, message)
     self.state.context = context
     if cost_present then
       self.state.cost = cost
+      record_observation(self, "cost", { cost = cost or nvim.NIL })
     end
     emit(self, "usage_updated", nvim.deepcopy({ context = context, cost = self.state.cost }))
   elseif update_type == "available_commands_update" then
@@ -708,24 +751,29 @@ end
 ---@param result unknown
 ---@param rpc_error? louiselm.acp.JsonRpcError
 local function handle_prompt_result(self, result, rpc_error)
-  if self.state.status == "disposed" then
+  if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
   if rpc_error ~= nil then
     local message = "ACP session/prompt failed: " .. error_message(rpc_error)
-    fail(self, message)
+    fail(self, message, true)
     return
   end
   if type(result) ~= "table" then
-    fail(self, "ACP session/prompt returned a malformed result")
+    fail(self, "ACP session/prompt returned a malformed result", true)
     return
   end
   local usage, usage_valid = Validation.turn_usage(result.usage)
   if not usage_valid then
-    fail(self, "ACP session/prompt returned malformed usage")
+    fail(self, "ACP session/prompt returned malformed usage", true)
     return
   end
   self.state.usage = usage
+  record_observation(self, "outcome", {
+    outcome = result.stopReason == "cancelled" and "cancelled" or "completed",
+    peer_response = true,
+    usage = usage,
+  })
   complete_turn(self, result)
 end
 
@@ -749,6 +797,8 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       status = "starting",
       working_dir = working_dir,
       current_turn = 0,
+      recording_pending = #owner.recording.queue > 0,
+      recording_error = nvim.deepcopy(owner.recording.error),
       config_options = {},
       commands = {},
       skills_policy = definition.skills.policy,
@@ -860,12 +910,12 @@ function Session:set_name(name)
   return true
 end
 
----Submit one prompt and receive its completion callback.
+---Admit one prompt asynchronously, committing attribution before ACP dispatch.
 ---@param self louiselm.session.Session
 ---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
----@param callback? fun(result: unknown, error?: string) Called once on completion or failure.
----@return string|number? request_id ACP request identifier.
----@return string? error_message Validation, state, or unresolved Provider error; attribution failures send no prompt and leave turn state unchanged.
+---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal. Admission errors leave the Session ready to retry.
+---@return string? turn_id Stable local turn ID, NOT an ACP request ID or proof of peer receipt.
+---@return string? error_message Immediate validation, state, Provider, or random identity error; no prompt is sent.
 function Session:prompt(prompt, callback)
   if self.state.status ~= "ready" then
     return nil, "session is not ready"
@@ -887,8 +937,18 @@ function Session:prompt(prompt, callback)
   if provider == nil then
     return nil, "agents." .. self.state.agent .. ".provider: " .. provider_error
   end
+  local random, random_error = nvim.uv.random(16)
+  if random == nil then
+    return nil, "could not allocate turn identity: " .. tostring(random_error)
+  end
+  local turn_id = random:gsub(".", function(byte)
+    return string.format("%02x", byte:byte())
+  end)
+  prompt = nvim.deepcopy(prompt)
   clear_session_failure(self)
   self.state.current_turn = self.state.current_turn + 1
+  self.state.turn_id = turn_id
+  self.state.usage = nil
   self.state.turn_identity = {
     agent = self.state.agent,
     provider = provider,
@@ -898,20 +958,63 @@ function Session:prompt(prompt, callback)
   self.turn_done_turn = nil
   self.prompt_progress = 0
   self.prompt_callback = callback
-  set_status(self, "prompting")
-  local request_id, request_error = client:prompt(
-    { sessionId = self.acp_session_id, prompt = prompt },
-    function(result, rpc_error)
-      handle_prompt_result(self, result, rpc_error)
+  self.recording_turn = { id = turn_id, sequence = 0, finished = false, dispatched = false }
+  local prepared = nvim.deepcopy(self.state.turn_identity)
+  prepared.id, prepared.acp_session_id = turn_id, self.acp_session_id
+  prepared.prepared_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  prepared.cost_baseline = nvim.deepcopy(self.state.cost)
+  self.state.recording_pending = true
+  -- Queue the initial fact immediately, so Cancellation/Disposal observations
+  -- cannot overtake it. flush also retries any earlier failed registry writes.
+  self.owner.recording:append(prepared)
+  set_status(self, "preparing")
+  self.owner.recording:flush(function(err)
+    if self.state.status ~= "preparing" or self.state.turn_id ~= turn_id then
+      return
     end
-  )
-  if request_id == nil then
-    local message = request_error or "ACP prompt request could not be sent"
-    fail(self, message)
-    return nil, message
-  end
-  schedule_prompt_timeout(self)
-  return request_id
+    if err ~= nil then
+      reject_prompt(self, err.message)
+      return
+    end
+    local turn = self.recording_turn
+    if turn == nil or turn.finished then
+      return
+    end
+    set_status(self, "prompting")
+    -- A state observer may dispose/cancel synchronously before the write.
+    if self.state.status ~= "prompting" then
+      return
+    end
+    local current_values = {}
+    for _, option in ipairs(self.state.config_options) do
+      current_values[option.id] = option.current_value
+    end
+    local current_provider = Provider.resolve(self.definition.provider, current_values)
+    if
+      not nvim.deep_equal(current_values, prepared.options)
+      or Validation.model_value(self.state.config_options) ~= prepared.model
+      or current_provider ~= prepared.provider
+      or not nvim.deep_equal(self.state.cost, prepared.cost_baseline)
+    then
+      reject_prompt(self, "Session attribution changed while preparing; submit the prompt again")
+      return
+    end
+    local request_id, request_error = client:prompt(
+      { sessionId = self.acp_session_id, prompt = prompt },
+      function(result, rpc_error)
+        handle_prompt_result(self, result, rpc_error)
+      end
+    )
+    if request_id == nil then
+      record_observation(self, "outcome", { outcome = "not_sent", peer_response = false })
+      fail(self, request_error or "ACP prompt request could not be sent")
+      return
+    end
+    turn.dispatched = true
+    record_observation(self, "dispatch", { request_id = request_id })
+    schedule_prompt_timeout(self)
+  end)
+  return turn_id
 end
 
 ---Request cancellation of the active prompt turn.
@@ -919,6 +1022,14 @@ end
 ---@return boolean sent
 ---@return string? error_message ACP write or state error.
 function Session:cancel()
+  if
+    self.state.status == "preparing"
+    or (self.state.status == "prompting" and self.recording_turn ~= nil and not self.recording_turn.dispatched)
+  then
+    record_observation(self, "outcome", { outcome = "not_sent", peer_response = false })
+    complete_turn(self, { stopReason = "cancelled" })
+    return true
+  end
   if
     self.state.status ~= "prompting"
     and self.state.status ~= "waiting_permission"
@@ -936,6 +1047,7 @@ function Session:cancel()
     fail(self, message)
     return false, message
   end
+  record_observation(self, "cancel_requested", {})
   local permission_waiting = self.permission_active ~= nil or #self.permission_queue > 0
   cancel_permissions(self)
   clear_session_failure(self)
@@ -1040,6 +1152,7 @@ function Session:dispose()
   if self.state.status == "disposed" then
     return true
   end
+  record_observation(self, "outcome", { outcome = "disposed", peer_response = false })
   clear_session_failure(self)
   set_status(self, "disposed")
   self.permission_store:clear_session(self.state.id)

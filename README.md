@@ -39,6 +39,12 @@ For a first chat you need one installed and authenticated ACP Agent. Codex is
 the shortest documented path; install `codex-acp` using its
 [official instructions](https://github.com/agentclientprotocol/codex-acp#installation).
 
+Install `sqlite3` 3.38 or newer with JSON support on `PATH` (for example,
+`sudo apt install sqlite3` on Debian/Ubuntu). Every Session records private
+turn metadata before sending a prompt. Recording failures hold new prompts;
+active work can finish. See [durable turn recording](docs/turn-recording.md)
+for storage, recovery, and the asynchronous headless API contract.
+
 The public source download is not available yet. If you have a checkout,
 replace the path below and save this as `quickstart.lua`:
 

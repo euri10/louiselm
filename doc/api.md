@@ -18,6 +18,7 @@ API reference.
 - `create_session: fun(self: louiselm.session.Api, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session?: louiselm.session.Session, error?: string)):(louiselm.session.Session)?, string?`
 - `discover_sessions: fun(self: louiselm.session.Api, options?: louiselm.session.DiscoveryOptions, callback: fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.DiscoveryError[])):boolean, string?`
 - `dispose: fun(self: louiselm.session.Api):boolean, string?`
+- `flush_recording: fun(self: louiselm.session.Api, callback: fun(error?: louiselm.session.RecordingError))` -- Retry/acknowledge queued facts, including final observations after Disposal.
 - `get_session: fun(self: louiselm.session.Api, id: string):(louiselm.session.Session)?`
 - `inspect_agent_limits: fun(self: louiselm.session.Api, agent_name: string):(louiselm.session.LimitsState)?, string?`
 - `list_permissions: fun(self: louiselm.session.Api):louiselm.permission.Rule[]?, string?`
@@ -31,6 +32,7 @@ API reference.
 
 - `forensics_directory: string?` -- Override the private Session Forensics directory.
 - `permission_store: (louiselm.permission.Store)?` -- Explicit remembered-permission store.
+- `usage_directory: string?` -- Absolute private directory for durable turn recording; defaults to stdpath("state")/louiselm/usage.
 
 ### louiselm.session.ForensicsOptions
 
@@ -55,6 +57,7 @@ louiselm.session.Status:
     | "starting"
     | "ready"
     | "configuring"
+    | "preparing"
     | "prompting"
     | "waiting_permission"
     | "cancelling"
@@ -84,15 +87,18 @@ string|table
 - `config_options: louiselm.session.ConfigOption[]` -- Supported agent-advertised options in priority order.
 - `context: (louiselm.session.ContextUsage)?` -- Latest agent-reported context state.
 - `cost: (louiselm.session.Cost)?` -- Latest agent-reported cumulative cost.
-- `current_turn: integer` -- Number of the current or most recently completed turn.
+- `current_turn: integer` -- Accepted prompt attempts in this local Session, including failed admission; not durable identity.
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
 - `name: string` -- User-facing session name.
+- `recording_error: (louiselm.session.RecordingError)?` -- Last registry recording failure; subsequent dispatch requires recovery.
+- `recording_pending: boolean` -- Whether the registry has unacknowledged writes.
 - `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
-- `status: "cancelling"|"configuring"|"disposed"|"error"|"prompting"...(+3)` -- Lifecycle state.
-- `turn_identity: (louiselm.session.TurnIdentity)?` -- Owned identity for the current or last started turn; later option changes never rewrite it.
+- `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+4)` -- Lifecycle state.
+- `turn_id: string?` -- Durable identity of the latest accepted prompt attempt; independent of local turn ordinal.
+- `turn_identity: (louiselm.session.TurnIdentity)?` -- Owned identity for the latest accepted attempt; later option changes never rewrite it.
 - `usage: (louiselm.session.TurnUsage)?` -- Latest agent-reported completed-turn usage.
 - `working_dir: string` -- ACP working directory.
 
@@ -106,7 +112,7 @@ string|table
 - `cwd: string?` -- Working directory for the ACP session.
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `name: string?` -- User-facing session name.
-- `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))?` -- Initial event listener.
+- `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -128,7 +134,7 @@ string|table
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `load_session_id: string?` -- Agent-side session identifier to load.
-- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))):fun()`
+- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))):fun()`
 - `options: louiselm.session.Options` -- Session options.
 - `owner: louiselm.session.Registry` -- Registry that owns this session.
 - `owner_run: (louiselm.workflow.Run)?` -- Run that supervised construction of this Session.
@@ -136,12 +142,13 @@ string|table
 - `permission_policy: louiselm.permission.Policy` -- Policy for agent-requested operations.
 - `permission_queue: louiselm.session.PermissionEntry[]` -- Permission requests waiting for the active one.
 - `permission_store: louiselm.permission.Store` -- Remembered-permission owner.
-- `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string)):(string|number)?, string?`
+- `prompt: fun(self: louiselm.session.Session, prompt: string|table, callback?: fun(result: unknown, error?: string)):string?, string?`
 - `prompt_callback: fun(result: unknown, error?: string)?` -- Current prompt completion callback.
 - `prompt_progress: integer` -- Meaningful updates observed during the active prompt.
 - `prompt_watchdog_revision: integer` -- Invalidates obsolete prompt timeout callbacks.
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
+- `recording_turn: { id: string, sequence: integer, finished: boolean, dispatched: boolean }?` -- Active recording identity.
 - `schedule: fun(delay_ms: integer, callback: fun())` -- Testable scheduling boundary.
 - `set_config_option: fun(self: louiselm.session.Session, id: string, value: boolean|string, callback?: fun(options?: louiselm.session.ConfigOption[], error?: string)):(string|number)?, string?`
 - `set_name: fun(self: louiselm.session.Session, name: string):boolean, string?` -- Rename the session.
@@ -188,6 +195,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `discoveries: table<integer, louiselm.session.DiscoveryState>` -- Active adapter discovery operations.
 - `dispose: fun(self: louiselm.session.Registry):boolean, string?`
 - `disposed: boolean` -- Whether this registry is closed.
+- `flush_recording: fun(self: louiselm.session.Api, callback: fun(error?: louiselm.session.RecordingError))` -- Retry/acknowledge queued facts, including final observations after Disposal.
 - `forensics_store: louiselm.forensics.Store` -- Immutable Session Forensics records.
 - `get_session: fun(self: louiselm.session.Registry, id: string):(louiselm.session.Session)?`
 - `handle_agent_notification: fun(self: louiselm.session.Registry, session: louiselm.session.Session, message: louiselm.acp.JsonRpcNotification)`
@@ -200,6 +208,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `on_agent_limits: fun(self: louiselm.session.Registry, callback: fun(state: louiselm.session.LimitsState)):fun()?, string?`
 - `order: string[]` -- Session ids in creation order.
 - `permission_store: louiselm.permission.Store` -- Remembered rules owned by this registry.
+- `recording: louiselm.session.RecordingStore` -- Shared durable writer; failed writes gate subsequent prompts.
 - `refresh_agent_limits: fun(self: louiselm.session.Registry, agent_name: string, callback: fun(state: louiselm.session.LimitsState, error?: string)):boolean, string?`
 - `remove_session: fun(self: louiselm.session.Registry, id: string)`
 - `revoke_permission: fun(self: louiselm.session.Registry, id: string):boolean, string?`
@@ -348,6 +357,8 @@ louiselm.session.EventType:
     | "config_options_changed"
     | "commands_changed"
     | "usage_updated"
+    | "recording_changed"
+    | "prompt_rejected"
     | "state_changed"
     | "turn_done"
     | "error"
@@ -360,7 +371,7 @@ louiselm.session.EventType:
 ### louiselm.session.StateChangedData
 
 - `activity: string?` -- Current generic tool activity.
-- `status: "cancelling"|"configuring"|"disposed"|"error"|"prompting"...(+3)` -- Current lifecycle state.
+- `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+4)` -- Current lifecycle state.
 
 ### louiselm.session.StateChangedEvent
 
@@ -395,6 +406,23 @@ louiselm.session.EventType:
 - `data: louiselm.session.UsageUpdatedData`
 - `session_id: string` -- Local session identifier.
 - `type: "usage_updated"`
+
+### louiselm.session.RecordingChangedData
+
+- `error: (louiselm.session.RecordingError)?` -- Recording failure; active work continues, new dispatch requires recovery.
+- `pending: boolean` -- Whether this registry has unacknowledged writes.
+
+### louiselm.session.RecordingChangedEvent
+
+- `data: louiselm.session.RecordingChangedData`
+- `session_id: string` -- Local session identifier.
+- `type: "recording_changed"`
+
+### louiselm.session.PromptRejectedEvent
+
+- `data: { turn_id: string, message: string }` -- Asynchronous admission failure; no ACP prompt was sent.
+- `session_id: string` -- Local session identifier.
+- `type: "prompt_rejected"`
 
 ### louiselm.session.PermissionData
 
@@ -432,22 +460,22 @@ louiselm.session.EventType:
 ### louiselm.session.Event
 
 ```lua
-louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2)
+louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4)
 ```
 
 ### louiselm.session.EventCallback
 
 ```lua
-fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))
+fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))
 ```
 
 ### louiselm.session.EventEmitter
 
 - `clear: fun(self: louiselm.session.EventEmitter)`
-- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))`
-- `listeners: table<integer, fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))>`
+- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))`
+- `listeners: table<integer, fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))>`
 - `next_id: integer` -- Next listener identifier.
-- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+2))):fun()` -- Remove the listener.
+- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))):fun()` -- Remove the listener.
 - `order: integer[]` -- Listener registration order.
 
 ## Permission Policies

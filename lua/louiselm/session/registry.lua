@@ -5,6 +5,7 @@ local Lifecycle = require("louiselm.session.lifecycle")
 local Limits = require("louiselm.session.limits")
 local Validation = require("louiselm.session.validation")
 local ForensicsStore = require("louiselm.forensics.store")
+local Recording = require("louiselm.session.recording")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -39,6 +40,7 @@ local nvim = vim
 ---@field agent_limits_listeners table<fun(state: louiselm.session.LimitsState), boolean> Agent-limit observers.
 ---@field permission_store louiselm.permission.Store Remembered rules owned by this registry.
 ---@field forensics_store louiselm.forensics.Store Immutable Session Forensics records.
+---@field recording louiselm.session.RecordingStore Shared durable writer; failed writes gate subsequent prompts.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
 ---@field load_session fun(self: louiselm.session.Registry, agent_name: string, acp_session_id: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
@@ -102,7 +104,7 @@ end
 ---@return boolean
 local function has_only_permission_store(value)
   for key in pairs(value) do
-    if key ~= "permission_store" and key ~= "forensics_directory" then
+    if key ~= "permission_store" and key ~= "forensics_directory" and key ~= "usage_directory" then
       return false
     end
   end
@@ -190,7 +192,7 @@ function M.new(definitions, default_skills_policy, options)
     return nil, errors
   end
   if options ~= nil and (type(options) ~= "table" or not has_only_permission_store(options)) then
-    return nil, { { path = "session", message = "session API options may contain only permission_store" } }
+    return nil, { { path = "session", message = "unknown session API option" } }
   end
   local permission_store = options and options.permission_store or Permission.store()
   if not valid_permission_store(permission_store) then
@@ -215,8 +217,40 @@ function M.new(definitions, default_skills_policy, options)
     forensics_store = forensics_store,
     disposed = false,
   }, Registry)
+  local recording, recording_error = Recording.new(
+    options and options.usage_directory or nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "usage"),
+    function(err, pending)
+      for _, session in pairs(registry.sessions) do
+        session.state.recording_error = nvim.deepcopy(err)
+        session.state.recording_pending = pending
+        session.emitter:emit({
+          type = "recording_changed",
+          session_id = session.state.id,
+          data = { error = nvim.deepcopy(err), pending = pending },
+        })
+      end
+    end
+  )
+  if recording == nil then
+    return nil,
+      {
+        {
+          path = "session.usage_directory",
+          message = recording_error and recording_error.message or "invalid recording directory",
+        },
+      }
+  end
+  registry.recording = recording
   registries[#registries + 1] = registry
   return registry, {}
+end
+
+---Acknowledge pending turn facts or retry failed writes without submitting work.
+---May run after Disposal to drain final facts. Callback is asynchronous and fires once.
+---@param self louiselm.session.Registry
+---@param callback louiselm.session.RecordingCallback
+function Registry:flush_recording(callback)
+  self.recording:flush(callback)
 end
 
 ---Return a process-wide snapshot of live Sessions relevant to editor exit.
@@ -234,7 +268,8 @@ function M.exit_verdict()
           agent = state.agent,
           acp_session_id = state.acp_session_id,
           recoverable = capabilities.loadSession == true,
-          turn_active = state.status == "prompting"
+          turn_active = state.status == "preparing"
+            or state.status == "prompting"
             or state.status == "waiting_permission"
             or state.status == "cancelling",
         }

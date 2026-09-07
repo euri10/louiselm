@@ -303,6 +303,10 @@ function M.check()
   check_agents(configuration)
   check_skills(configuration)
   check_capture(configuration)
+  report(
+    "turn recording requires sqlite3 >= 3.38 with JSON support on PATH (features verified at each write)",
+    nvim().fn.executable("sqlite3") == 1
+  )
   return true
 end
 

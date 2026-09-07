@@ -12,6 +12,9 @@ local function fake_processes()
   local processes = {}
   local original_system = nvim.system
   rawset(nvim, "system", function(command, options, on_exit)
+    if command[1] == "sqlite3" then
+      return original_system(command, options, on_exit)
+    end
     local process = {
       command = command,
       options = options,
@@ -45,7 +48,29 @@ local function restore_processes(original_system)
   rawset(nvim, "system", original_system)
 end
 
+-- Existing lifecycle assertions start after durable admission. The recording
+-- specs separately exercise preparing, write errors and cancellation before send.
+local function submit(session, ...)
+  local id, err = session:prompt(...)
+  if id then
+    assert(nvim.wait(6000, function()
+      return session:inspect().status ~= "preparing"
+    end, 10))
+  end
+  return id, err
+end
+
 local function respond(process, id, result)
+  -- ACP ids exist only after asynchronous admission; answer the wire request.
+  if type(id) == "string" and id:match("^%x+$") and #id == 32 then
+    for index = #process.writes, 1, -1 do
+      local request = assert(Protocol.decode(process.writes[index]:sub(1, -2)))
+      if request.method == "session/prompt" then
+        id = request.id
+        break
+      end
+    end
+  end
   local message = Protocol.response(id, result)
   local encoded = assert(Protocol.encode(message))
   process.options.stdout(nil, encoded .. "\n")
@@ -124,6 +149,39 @@ T["forensics"] = MiniTest.new_set()
 
 T["provider"] = MiniTest.new_set()
 
+T["provider"]["does not dispatch attribution made stale during async admission"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "service", command = "agent" } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local rejected, completion_error
+  session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "preparing" then
+      notification(process, "session/update", {
+        sessionId = "agent-acp",
+        update = {
+          sessionUpdate = "config_option_update",
+          configOptions = {
+            { id = "changed", name = "Changed", type = "boolean", currentValue = true },
+          },
+        },
+      })
+    elseif event.type == "prompt_rejected" then
+      rejected = event.data
+    end
+  end)
+  assert(submit(session, "must not use old attribution", function(_, err)
+    completion_error = err
+  end))
+  MiniTest.expect.equality(#process.writes, 2)
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(type(completion_error), "string")
+  MiniTest.expect.equality(rejected.turn_id, session:inspect().turn_id)
+  assert(submit(session, "use current attribution"))
+  MiniTest.expect.equality(#process.writes, 3)
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["provider"]["prefix mappings gate dispatch and preserve the prompt-start Provider"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
@@ -153,7 +211,7 @@ T["provider"]["prefix mappings gate dispatch and preserve the prompt-start Provi
   for _, value in ipairs({ "unknown/model", "one/team/model" }) do
     options(value)
     local writes = #process.writes
-    local id, err = session:prompt("must not be sent")
+    local id, err = submit(session, "must not be sent")
     MiniTest.expect.equality(id, nil)
     MiniTest.expect.equality(assert(err):find("Provider", 1, true) ~= nil, true)
     MiniTest.expect.equality(#process.writes, writes)
@@ -162,7 +220,7 @@ T["provider"]["prefix mappings gate dispatch and preserve the prompt-start Provi
     MiniTest.expect.equality(session:inspect().turn_identity, nil)
   end
   options("one/new-model")
-  local request = assert(session:prompt("resolved"))
+  local request = assert(submit(session, "resolved"))
   local identity = session:inspect().turn_identity
   MiniTest.expect.equality(identity.provider, "One")
   local timer = assert(nvim.uv.new_timer())
@@ -175,7 +233,7 @@ T["provider"]["prefix mappings gate dispatch and preserve the prompt-start Provi
   end))
   MiniTest.expect.equality(session:inspect().turn_identity, identity)
   respond(process, request, { stopReason = "end_turn" })
-  assert(session:prompt("next service"))
+  assert(submit(session, "next service"))
   MiniTest.expect.equality(session:inspect().turn_identity.provider, "Two")
   api:dispose()
   restore_processes(original_system)
@@ -214,7 +272,7 @@ T["provider"]["refuses unmatched and ambiguous routes before dispatch or turn st
   for _, values in ipairs({ { "other", true }, { "direct", false } }) do
     options(values[1], values[2])
     local writes = #process.writes
-    local id, err = session:prompt("must not be sent")
+    local id, err = submit(session, "must not be sent")
     MiniTest.expect.equality(id, nil)
     MiniTest.expect.equality(err:find("Provider", 1, true) ~= nil, true)
     MiniTest.expect.equality(#process.writes, writes)
@@ -223,7 +281,7 @@ T["provider"]["refuses unmatched and ambiguous routes before dispatch or turn st
     MiniTest.expect.equality(session:inspect().turn_identity, nil)
   end
   options("direct", true)
-  assert(session:prompt("resolved"))
+  assert(submit(session, "resolved"))
   MiniTest.expect.equality(session:inspect().turn_identity.provider, "one")
   api:dispose()
   restore_processes(original_system)
@@ -260,7 +318,7 @@ T["provider"]["snapshots complete typed identity before prompt events and preser
       observed = session:inspect()
     end
   end)
-  assert(session:prompt("first"))
+  assert(submit(session, "first"))
   local identity =
     { agent = "agent", provider = "service", model = "small", options = { model = "small", enabled = false } }
   MiniTest.expect.equality(observed.current_turn, 1)
@@ -278,7 +336,7 @@ T["provider"]["snapshots complete typed identity before prompt events and preser
   observed.turn_identity.options.enabled = true
   MiniTest.expect.equality(session:inspect().turn_identity, identity)
   respond(process, 3, { stopReason = "end_turn" })
-  assert(session:prompt("second"))
+  assert(submit(session, "second"))
   MiniTest.expect.equality(
     session:inspect().turn_identity,
     { agent = "agent", provider = "service", model = "large", options = { model = "large", enabled = true } }
@@ -366,6 +424,94 @@ end
 
 T["new"] = MiniTest.new_set()
 
+T["new"]["persists normalized tokens and cumulative cost evidence from fast callbacks"] = function()
+  local directory = nvim.fn.tempname()
+  local processes, original_system = fake_processes()
+  local api =
+    assert(Session.new({ agent = { provider = "service", command = "agent" } }, nil, { usage_directory = directory }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local function cost(value)
+    notification(
+      process,
+      "session/update",
+      { sessionId = "agent-acp", update = { sessionUpdate = "usage_update", used = 500, size = 1000, cost = value } }
+    )
+  end
+  cost({ amount = 1, currency = "USD" })
+  local id = assert(submit(session, "secret prompt"))
+  local costs = {
+    { amount = 2, currency = "USD" },
+    { amount = 0.5, currency = "USD" },
+    { amount = 3, currency = "EUR" },
+    nvim.NIL,
+    { amount = 4, currency = "USD" },
+  }
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    for _, value in ipairs(costs) do
+      cost(value)
+    end
+    -- CamelCase wire fields match the captured DeepSeek prompt-result fixture
+    -- cited by louiselm-4tum (session-25790698-4242-41d4-af23-cfe0e512d90c).
+    -- Resets/currency changes and this ordering are synthetic boundary coverage.
+    respond(process, id, {
+      stopReason = "end_turn",
+      usage = {
+        totalTokens = 30,
+        inputTokens = 20,
+        outputTokens = 10,
+        thoughtTokens = 5,
+        cachedReadTokens = 7,
+        cachedWriteTokens = 0,
+        ignored = "payload",
+      },
+    })
+    timer:close()
+  end)
+  assert(nvim.wait(6000, function()
+    return session:inspect().status == "ready"
+  end, 10))
+  local flushed
+  api:flush_recording(function(err)
+    assert(err == nil)
+    assert(not nvim.in_fast_event())
+    flushed = true
+  end)
+  assert(nvim.wait(6000, function()
+    return flushed
+  end, 10))
+  local function rows(sql)
+    local result = original_system({ "sqlite3", "-json", directory .. "/turns.sqlite3", sql }, { text = true }):wait()
+    assert(result.code == 0, result.stderr)
+    return nvim.json.decode(result.stdout)
+  end
+  MiniTest.expect.equality(
+    nvim.json.decode(rows("SELECT cost_baseline FROM turns")[1].cost_baseline),
+    { amount = 1, currency = "USD" }
+  )
+  local recorded_costs = rows("SELECT data FROM turn_events WHERE kind='cost' ORDER BY sequence")
+  for index, value in ipairs(costs) do
+    MiniTest.expect.equality(nvim.json.decode(recorded_costs[index].data).cost, value)
+  end
+  local outcome = nvim.json.decode(rows("SELECT data FROM turn_events WHERE kind='outcome'")[1].data)
+  MiniTest.expect.equality(outcome.usage, {
+    total_tokens = 30,
+    input_tokens = 20,
+    output_tokens = 10,
+    thought_tokens = 5,
+    cached_read_tokens = 7,
+    cached_write_tokens = 0,
+  })
+  MiniTest.expect.equality(outcome.peer_response, true)
+  assert(session:dispose())
+  cost({ amount = 999, currency = "USD" })
+  MiniTest.expect.equality(#rows("SELECT data FROM turn_events WHERE kind='cost'"), 5)
+  assert(api:dispose())
+  restore_processes(original_system)
+  nvim.fn.delete(directory, "rf")
+end
+
 T["new"]["reports live Sessions across headless APIs for exit safety"] = function()
   local processes, original_system = fake_processes()
   local first_api = assert(Session.new({ claude = { provider = "test-service", command = "claude", args = {} } }))
@@ -376,7 +522,7 @@ T["new"]["reports live Sessions across headless APIs for exit safety"] = functio
   local second = assert(second_api:create_session("codex"))
   respond(processes[2], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
   respond(processes[2], 2, { sessionId = "codex-acp" })
-  assert(second:prompt("working"))
+  assert(submit(second, "working"))
 
   local verdict = Session.exit_verdict()
 
@@ -1231,6 +1377,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     status = "ready",
     working_dir = "/tmp/one",
     current_turn = 0,
+    recording_pending = false,
     config_options = {},
     commands = {},
     skills_policy = "native",
@@ -1245,6 +1392,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     status = "ready",
     working_dir = "/tmp/two",
     current_turn = 0,
+    recording_pending = false,
     config_options = {},
     commands = {},
     skills_policy = "native",
@@ -1450,7 +1598,7 @@ T["new"]["tracks context cost and reported turn usage and ignores malformed tele
   })
   MiniTest.expect.equality(session:inspect().context.pressure, "critical")
 
-  local request_id = assert(session:prompt("hello"))
+  local request_id = assert(submit(session, "hello"))
   respond(process, request_id, {
     stopReason = "end_turn",
     usage = { totalTokens = 30, inputTokens = 20, cachedReadTokens = 7, ignored = "future" },
@@ -1538,7 +1686,7 @@ T["new"]["rejects malformed reported turn usage"] = function()
     events[#events + 1] = event
   end)
 
-  local request_id = assert(session:prompt("hello"))
+  local request_id = assert(submit(session, "hello"))
   respond(process, request_id, {
     stopReason = "end_turn",
     usage = { totalTokens = "many" },
@@ -1576,7 +1724,7 @@ T["new"]["rejects option changes while prompting or waiting for permission"] = f
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
-  assert(session:prompt("hello"))
+  assert(submit(session, "hello"))
   MiniTest.expect.equality({ session:set_config_option("model", "large") }, { nil, "session is not idle" })
 
   local request = {
@@ -1605,10 +1753,11 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   end)
 
   local completed
-  local request_id = assert(session:prompt("hello", function(result, err)
+  local request_id = assert(submit(session, "hello", function(result, err)
     completed = { result = result, error = err }
   end))
-  MiniTest.expect.equality(request_id, 3)
+  MiniTest.expect.equality(request_id, session:inspect().turn_id)
+  MiniTest.expect.equality(#request_id, 32)
   MiniTest.expect.equality(session:inspect().status, "prompting")
 
   notification(process, "session/update", {
@@ -1638,7 +1787,7 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
 
   local streamed = {}
   for _, event in ipairs(events) do
-    if event.type ~= "state_changed" then
+    if event.type ~= "state_changed" and event.type ~= "recording_changed" then
       streamed[#streamed + 1] = event
     end
   end
@@ -1665,7 +1814,7 @@ T["new"]["tracks AIR session failure revisions and clears the warning on progres
     events[#events + 1] = event
   end)
 
-  local request_id = assert(session:prompt("hello"))
+  local request_id = assert(submit(session, "hello"))
   local function failure(revision, title, version)
     notification(process, "session/update", {
       sessionId = "agent-acp",
@@ -1752,7 +1901,7 @@ T["new"]["tracks AIR session failure revisions and clears the warning on progres
   respond(process, request_id, { stopReason = "end_turn" })
   MiniTest.expect.equality(session:inspect().session_failure, nil)
 
-  assert(session:prompt("again"))
+  assert(submit(session, "again"))
   failure(6, "Retrying Claude, attempt 6 of 10.")
   assert(session:cancel())
   MiniTest.expect.equality(session:inspect().session_failure, nil)
@@ -1774,7 +1923,7 @@ T["new"]["does not emit live user message echoes as replay events"] = function()
     events[#events + 1] = event
   end)
 
-  assert(session:prompt("hello"))
+  assert(submit(session, "hello"))
   notification(process, "session/update", {
     sessionId = "agent-acp",
     update = {
@@ -1811,7 +1960,7 @@ T["new"]["does not reopen a completed turn for late permission responses"] = fun
     end
   end)
 
-  local request_id = assert(session:prompt("hello", function(result, err)
+  local request_id = assert(submit(session, "hello", function(result, err)
     completed = { result = result, error = err }
   end))
   local options = { "once", "always", "reject" }
@@ -1863,7 +2012,7 @@ T["new"]["keeps the Session usable after a cancelled prompt reports null usage"]
       errors[#errors + 1] = event.data.message
     end
   end)
-  local request_id = assert(session:prompt("hello", function(result, err)
+  local request_id = assert(submit(session, "hello", function(result, err)
     completions[#completions + 1] = { result = result, error = err }
   end))
   assert(session:cancel())
@@ -1898,7 +2047,7 @@ T["new"]["keeps the Session usable after a cancelled prompt reports null usage"]
   MiniTest.expect.equality(turns, { "cancelled" })
   MiniTest.expect.equality(errors, {})
 
-  local next_id = assert(session:prompt("one more thing", function(next_result, err)
+  local next_id = assert(submit(session, "one more thing", function(next_result, err)
     completions[#completions + 1] = { result = next_result, error = err }
   end))
   respond(process, next_id, { stopReason = "end_turn", usage = { totalTokens = 5 } })
@@ -1916,7 +2065,7 @@ T["new"]["cancels and disposes without allowing late process results"] = functio
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
 
-  assert(session:prompt("hello"))
+  assert(submit(session, "hello"))
   local sent, cancel_error = session:cancel()
   MiniTest.expect.equality(sent, true)
   MiniTest.expect.equality(cancel_error, nil)
@@ -1989,7 +2138,7 @@ T["new"]["publishes overlapping permission requests one at a time"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
-  assert(session:prompt("hello"))
+  assert(submit(session, "hello"))
   local permissions = {}
   session:on(function(event)
     if event.type == "permission_requested" then
@@ -2028,7 +2177,7 @@ T["new"]["cancels every outstanding permission request when the turn is cancelle
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
-  assert(session:prompt("hello"))
+  assert(submit(session, "hello"))
   local permissions = {}
   local cancelled = {}
   session:on(function(event)
@@ -2326,7 +2475,7 @@ T["new"]["calls a prompt callback with the error when the agent crashes"] = func
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local completion
-  assert(session:prompt("hello", function(result, err)
+  assert(submit(session, "hello", function(result, err)
     completion = { result = result, error = err }
   end))
 
@@ -2488,7 +2637,7 @@ T["new"]["fails a prompt that never receives a terminal ACP response"] = functio
       error_count = error_count + 1
     end
   end)
-  assert(session:prompt("hello", function(result, err)
+  assert(submit(session, "hello", function(result, err)
     completion_count = completion_count + 1
     completion = { result = result, error = err }
   end))
@@ -2526,7 +2675,7 @@ T["new"]["suspends the prompt watchdog while permission waits for a human"] = fu
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "agent-acp" })
-  local request_id = assert(session:prompt("hello"))
+  local request_id = assert(submit(session, "hello"))
   local permission
   session:on(function(event)
     if event.type == "permission_requested" then
@@ -2582,7 +2731,7 @@ T["new"]["keeps a prompt alive when a tool completes before the timeout"] = func
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "agent-acp" })
-  local request_id = assert(session:prompt("hello"))
+  local request_id = assert(submit(session, "hello"))
 
   notification(process, "session/update", {
     sessionId = "agent-acp",

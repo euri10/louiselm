@@ -256,6 +256,9 @@ are expected.
   its absence surfaces as scattered assertion failures.
 - Any additional development dependency requires a demonstrated gap and
   explicit approval. Never vendor a dependency or utility for convenience.
+- `sqlite3` >= 3.38 with JSON support is a required runtime/test executable
+  (approved in louiselm-3x9p). Turn recording uses asynchronous CLI calls,
+  rollback journal DELETE and synchronous EXTRA; do not enable WAL.
 
 ## 4. Required Tooling
 

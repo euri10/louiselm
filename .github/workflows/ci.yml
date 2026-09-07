@@ -214,12 +214,12 @@ jobs:
       # Exporting LUA_PATH/LUA_CPATH is the mechanism the project already
       # documents for this: discovery.lua's own error text tells users to eval
       # `luarocks path` in the shell that launches Neovim.
-      - name: Install lyaml
+      - name: Install lyaml and SQLite
         run: |
           set -eu
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lua5.1 liblua5.1-0-dev luarocks libyaml-dev
+            lua5.1 liblua5.1-0-dev luarocks libyaml-dev sqlite3
           sudo luarocks --lua-version 5.1 install lyaml
           eval "$(luarocks --lua-version 5.1 path --no-bin)"
           {

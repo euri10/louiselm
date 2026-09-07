@@ -2,6 +2,9 @@
 ---@diagnostic disable-next-line: undefined-global
 local nvim = vim
 local project_root = nvim.fn.getcwd()
+if nvim.fn.executable("sqlite3") ~= 1 then
+  error("turn recording tests require sqlite3 >= 3.38 with JSON support on PATH")
+end
 -- Persistent stores exercised by tests must never consume or overwrite the
 -- developer's real Neovim state (notably the one-shot abandonment breadcrumb).
 nvim.env.XDG_STATE_HOME = nvim.fn.tempname()

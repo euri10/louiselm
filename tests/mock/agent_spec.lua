@@ -192,7 +192,7 @@ T["mock agent"]["completes a prompt after a permission response"] = function()
   })
   local meaningful = {}
   for _, event in ipairs(events) do
-    if event.type ~= "state_changed" then
+    if event.type ~= "state_changed" and event.type ~= "recording_changed" then
       meaningful[#meaningful + 1] = event.type
     end
   end

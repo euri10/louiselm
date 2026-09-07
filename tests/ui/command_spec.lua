@@ -21,6 +21,9 @@ local function fake_process()
   local process = { writes = {} }
   local original_system = nvim.system
   rawset(nvim, "system", function(command, options, on_exit)
+    if command[1] == "sqlite3" then
+      return original_system(command, options, on_exit)
+    end
     process.command = command
     process.options = options
     process.on_exit = on_exit
@@ -655,6 +658,9 @@ T["command"]["queues the source buffer as context through LouiselmMentionBuffer 
   end
   assert(type(submit) == "function")
   nvim.api.nvim_buf_call(buffer, submit)
+  assert(nvim.wait(6000, function()
+    return #process.writes >= 3
+  end, 10))
   local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
 
   rawset(nvim, "system", original_system)
@@ -1439,6 +1445,9 @@ T["command"]["injects the hidden bounded catalog through the normal chat path"] 
   end
   assert(type(submit) == "function")
   nvim.api.nvim_buf_call(buffer, submit)
+  assert(nvim.wait(6000, function()
+    return #process.writes >= 3
+  end, 10))
   local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
   local index = prompt[1].text
 
@@ -1483,6 +1492,9 @@ T["command"]["attaches a project instructions resource_link on a new session thr
   end
   assert(type(submit) == "function")
   nvim.api.nvim_buf_call(buffer, submit)
+  assert(nvim.wait(6000, function()
+    return #process.writes >= 3
+  end, 10))
   local prompt = assert(Protocol.decode(process.writes[3]:sub(1, -2))).params.prompt
 
   rawset(nvim, "system", original_system)

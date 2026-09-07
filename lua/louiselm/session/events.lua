@@ -9,6 +9,8 @@
 ---| "config_options_changed"
 ---| "commands_changed"
 ---| "usage_updated"
+---| "recording_changed"
+---| "prompt_rejected"
 ---| "state_changed"
 ---| "turn_done"
 ---| "error"
@@ -44,6 +46,18 @@
 ---@field type "usage_updated"
 ---@field data louiselm.session.UsageUpdatedData
 
+---@class louiselm.session.RecordingChangedData
+---@field error? louiselm.session.RecordingError Recording failure; active work continues, new dispatch requires recovery.
+---@field pending boolean Whether this registry has unacknowledged writes.
+
+---@class louiselm.session.RecordingChangedEvent: louiselm.session.EventBase
+---@field type "recording_changed"
+---@field data louiselm.session.RecordingChangedData
+
+---@class louiselm.session.PromptRejectedEvent: louiselm.session.EventBase
+---@field type "prompt_rejected"
+---@field data { turn_id: string, message: string } Asynchronous admission failure; no ACP prompt was sent.
+
 ---@class louiselm.session.PermissionData
 ---@field request_id string|number ACP request identifier.
 ---@field operation louiselm.permission.Request Normalized requested operation.
@@ -72,7 +86,7 @@
 ---"user_chunk" only arrives while replaying a resumed session's history via session/load, never
 ---for a live turn, while "thought_chunk" carries the agent's reasoning text (live or replayed).
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

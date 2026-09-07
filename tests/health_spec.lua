@@ -59,6 +59,18 @@ end
 
 T["check"] = MiniTest.new_set()
 
+T["check"]["reports a missing required SQLite executable"] = function()
+  assert(Health.configure({}, require("louiselm.config").schema))
+  with_health_stubs(function(calls)
+    nvim.fn.executable = function(command)
+      return command == "sqlite3" and 0 or 1
+    end
+    Health.check()
+    MiniTest.expect.equality(calls.error[#calls.error]:find("sqlite3", 1, true) ~= nil, true)
+  end)
+  Health.reset()
+end
+
 T["check"]["reports missing Provider before probing the Agent"] = function()
   assert(Health.configure({ agents = { agent = { command = "agent" } } }, require("louiselm.config").schema))
   with_health_stubs(function(calls)

@@ -104,7 +104,10 @@ end
 ---@return boolean
 local function acknowledged(worker)
   local state = worker.inspect(worker)
-  return state.status ~= "prompting" and state.status ~= "waiting_permission" and state.status ~= "cancelling"
+  return state.status ~= "preparing"
+    and state.status ~= "prompting"
+    and state.status ~= "waiting_permission"
+    and state.status ~= "cancelling"
 end
 
 ---@param self louiselm.workflow.Run
