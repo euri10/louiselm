@@ -19,11 +19,16 @@ dossier <digest> [--against DIGEST] [--review-depth DEPTH]
 list
 policy [--digest]
 
-trust bootstrap --primary KEY --recovery KEY [--require-hardware]
-trust show | rotation-payload | rotate | reset --confirm
+trust bootstrap --primary PUBLIC_KEY --release PUBLIC_KEY [--require-hardware]
+trust show
+trust reset --confirm  # development stores only
 
-recovery paper-enroll --store PATH --authorizer PRIVATE_KEY [--authorizer-role primary|release]
-recovery paper-recover --store PATH [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY]
+recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY
+recovery status --store PATH
+recovery change --store PATH --via primary|release|paper|passkey
+                [--authorizer PRIVATE_KEY] [--primary NEW_PRIVATE_KEY]
+                [--release NEW_PRIVATE_KEY] [--paper replace] [--passkey replace]
+recovery reset --store PATH
 
 generation admit --member DIGEST[:DEPTH] ... --key PRIVKEY
 generation witness DIGEST --remote URL [--branch B]
@@ -36,7 +41,9 @@ quarantine show
 ```
 
 Except for local-only `recovery`, commands accept `--store DIR`,
-`--policy FILE --policy-digest D`, and `--robot-json`.
+`--policy FILE --policy-digest D`, and `--robot-json`. Recovery requires an
+explicit store; `status` returns public JSON, while setup/change/reset require
+the trusted local foreground terminal and refuse robot mode.
 
 Exit status is part of the contract, so an unattended caller never has to parse
 prose:
@@ -126,159 +133,22 @@ roots, and its place in a chain — sequence and predecessor. The set is admitte
 as a whole, with one touch, so addition, deletion, replacement, policy change,
 and rollback are all visible as changes to a signed record.
 
-Three roles, kept distinct even on one physical token. **Primary** signs routine
-Admissions. **Recovery** exists only to replace key policy or the primary, and
-is refused as an ordinary signer — a recovery key that could also admit skills
-would just be a second primary. **Release** authorizes trusted builds
-(louiselm-d6fv.7). Paper and passkey recovery can authorize replacement signing keys, but
-cannot itself sign an Admission or release. Losing every functioning signing
-and recovery method requires explicit `trust reset` and re-Admission.
+One physical YubiKey holds distinct **Primary** and **Release** credentials.
+Primary signs Admissions; Release authorizes trusted builds. A backed-up passkey
+and a written paper phrase independently authorize recovery changes, never
+ordinary Admissions or releases. There is no separate SSH Recovery role.
 
-Normal Admission and `release sign` register exact approved payload digests in
-the protected trust state under its mutation lock. Retired keys verify only
-that recorded history, not fresh signatures or backdated records. Signing a
-release outside `release sign` does not register it for verification after the
-signing key is retired.
+Follow the [one-token setup and recovery ceremony](../docs/recovery-ceremony.md)
+for provisional first-release signing, atomic installed setup, method/key
+replacement, readiness and last-resort reset. Production setup requires both
+recovery methods and strict hardware presence/verification on both signing
+roles. Development stores cannot be promoted to production authority.
 
-### Paper recovery
-
-Paper and browser passkey enrollment/recovery are implemented. Integrated
-one-YubiKey first-time onboarding and installed/hardware/Android acceptance
-remain `louiselm-d6fv.11.4`–`.11.5`. The legacy bootstrap below still needs a
-recovery signing credential; it is not the finished one-YubiKey onboarding.
-
-Run `recovery --help` from a trusted installed release, as root, against an
-explicit production store whose ancestors, provenance and trust state are
-root-owned and not group/world-writable. Development CLI builds refuse before
-opening a secret channel. Public API tests may use untrusted development stores;
-that path never grants Verified posture or promotes a store.
-
-`paper-enroll` requires a current Primary or Release signing credential.
-`paper-recover` uses the current paper phrase; replacement private-key paths
-name freshly generated hardware credentials with adjacent `.pub` files. Supply
-both `--primary` and `--release` to replace both roles, one to replace only that
-role, or neither to refresh only the paper phrase. Replacement keys must prove
-possession of the exact reviewed change with the inherited hardware assertion
-policy. Other methods and signing roles stay unchanged.
-
-The tool generates 24 checksummed English words from 256 OS-random bits using
-[bip39](https://docs.rs/bip39/2.2.2/bip39/struct.Mnemonic.html). Only a
-domain-separated SHA-256 verifier is stored, with consumed verifiers to forbid
-reuse. This is a random recovery secret, not a user-chosen password or a wallet
-seed. Never reuse an existing wallet phrase.
-
-Words are displayed only on `/dev/tty` in the alternate screen, then cleared
-before hidden full re-entry. The operator confirms the exact key change before
-signing/applying it. Phrase input is never accepted through argv, stdin, robot
-output or a plaintext file. Owned secret buffers are zeroized, core dumps are
-disabled, and keyboard Ctrl-C cancels with terminal restoration. Do not use an
-Agent terminal, terminal recorder, screen sharing or screenshots: terminal
-capture and a compromised/root operator are outside this protection boundary.
-
-Replacing keys and consuming/reissuing the paper phrase use one locked atomic
-state publication. Wrong phrases, stale plans, cancellation, failed possession
-or failed confirmation do not change authority. A failure before rename keeps
-the prior state; a directory-sync error may follow publication. **Keep both
-papers until success is confirmed**; inspect `trust show` before retrying a
-persistence error. A killed process can leave terminal display settings dirty
-(`stty sane` restores them), but cannot partially publish a key/phrase change.
-
-The closed trust schema is `louiselm.skills.trust/3`; unsupported or malformed
-state is refused, not silently migrated or initialized. See the public
-`trust::paper` secret type, shared `trust::recovery` transaction API, and
-`tests/paper_recovery.rs` for fixture coverage.
-
-### Passkey recovery
-
-```sh
-louiselm-skills recovery passkey-enroll --store /protected/store \
-  --authorizer /protected/current-primary
-louiselm-skills recovery passkey-recover --store /protected/store \
-  --primary /protected/new-primary --release /protected/new-release
-# Optionally replace paper recovery too; words stay exclusively on the local TTY.
-louiselm-skills recovery passkey-recover --store /protected/store --paper replace
-```
-
-These commands enforce the same installed-tool, root-owned store and foreground
-TTY boundary as paper recovery. Never run an actual ceremony through an Agent,
-terminal recorder or screen-sharing session. Open the printed localhost URL in
-your normal trusted browser, **never a browser running as root**. Check its
-address against the terminal and review the exact public change. A phone's
-passkey prompt is not an independent display of that full change.
-
-`passkey-enroll` first verifies possession in the browser, then asks for local
-confirmation and a signature from the current Primary or Release key. A second
-browser page confirms the exact resulting credential/change before publication.
-A newly registered passkey cannot enroll itself. The same command replaces an
-existing passkey and retires its credential ID; paper and signing keys are
-unchanged. General method management and one-token bootstrap belong to `.11.4`.
-
-`passkey-recover` authenticates with the current passkey after preparing the
-exact replacement-key possession proofs. It never needs the old signing key
-or paper phrase. Paper stays unchanged unless `--paper replace` is supplied;
-that flag requires writing and confirming the new phrase on the local TTY.
-Passkey counters and backup metadata update in the same locked trust publication.
-Neither recovery method can directly sign an Admission or release.
-
-The maintained [webauthn-rs passkey API](https://docs.rs/webauthn-rs/0.5.5/webauthn_rs/)
-requires user verification and permits synced/backed-up credentials. No hardware
-attestation or device-bound protection is claimed. The fixed RP is `localhost`;
-each listener binds IPv4 loopback on an ephemeral port and verifies that exact
-`http://localhost:PORT` origin. Neither the browser nor capture-service/pairing
-can choose an RP, remote verifier or trust root. Localhost is shared with other
-local applications, so the trusted browser/TTY and protected verifier remain
-part of the security boundary, not interchangeable with arbitrary local pages.
-
-The HTTP adapter uses bounded `httparse` requests, an unguessable path token,
-exact Host/Origin checks, no CORS, no caching and no framing. Pending verifier
-state stays in memory, binds the full predecessor and exact change, and expires
-after five minutes. Attempts are consumed even on failed proofs. Cancellation,
-expiry and normal completion close the listener; browser crashes are bounded
-by expiry. Registration's same deadline covers local confirmation, hardware
-signing and final browser confirmation. The SSH signer uses a private exclusive
-scratch directory, a fixed `/usr/bin/ssh-keygen`, a cleared environment and the
-shared bounded process-group runner. Linux foreground handoff preserves PIN
-input and restores the terminal after success, cancellation or timeout.
-
-The browser reports the result. A lost response **after submitting approval** is
-indeterminate: inspect the trusted terminal and `trust show` before retrying.
-Closing a page cannot undo a committed change; a persistence error can follow
-atomic publication. A failed or expired proof cannot authorize a late change.
-
-Chrome virtual-authenticator registration/authentication and cancellation have
-been exercised with disposable fixtures. Real Android/Google Password Manager,
-cross-device transport and installed YubiKey acceptance remain `.11.5`; this
-implementation does not assert their acceptance or recovery-ready onboarding.
-
-#### Passkey development checks
-
-`webauthn-rs` needs the platform OpenSSL library and build headers/pkg-config.
-`tempfile` is also used by the runtime signer; it is not a second test framework.
-`tests/passkey_recovery.rs` uses a public, disposable Chrome credential and the
-already-transitive Rust OpenSSL library, explicitly declared as an approved
-test dependency, to sign synthetic assertions against fresh verifier challenges.
-Signing stays in memory: no OpenSSL executable or temporary private-key file.
-No test reads personal credentials, relies on a network peer or serializes
-pending WebAuthn server state.
-
-For the opt-in browser check, use an isolated browser session, not your profile:
-
-```sh
-# From the repository root; this fixture creates its own untrusted temporary store.
-./scripts/test-skills-core --lib trust::browser::tests::virtual_browser \
-  -- --ignored --exact --nocapture
-playwright-cli -s=passkey-fixture open --browser=chrome
-# For each PUBLIC_FIXTURE_* URL printed by the test (register, authenticate, cancel):
-playwright-cli -s=passkey-fixture goto URL
-playwright-cli -s=passkey-fixture run-code --filename=skills-core/tests/passkey_browser.js
-playwright-cli -s=passkey-fixture close
-```
-
-Keep that same isolated browser open between the three URLs. The script refuses
-non-fixture action labels, creates only a virtual authenticator, checks exact
-displayed data, verifies both proof results and cancels the final pending change.
-The ordinary Rust suite independently covers transport rejection, expiry,
-replay, UV/origin/challenge/credential failures, atomic recovery and real PTYs.
+Normal Admission and `release sign` record exact approved payload digests under
+the trust mutation lock. Retired keys verify only that recorded history, never
+new or backdated approvals. Signing outside `release sign` does not register a
+release for verification after its signing key is retired. Losing all usable
+authority requires explicit `recovery reset`, fresh setup and re-Admission.
 
 A signed Generation governs nothing until it is **witnessed**. Its exact bytes
 are published to a protected Git branch and read back from the remote before it
@@ -316,41 +186,24 @@ That is the gap that release makes real; it is not closed here.
 
 Automated tests cover the chain, the state machine, the witness protocol, and
 signature verification, using software keys. They cannot cover a physical touch.
-Run this once on Linux with the real tokens:
+Complete the linked one-token ceremony first, then use the installed tool and
+protected production store for Admission. Replace digest/remote placeholders:
 
 ```sh
-# 1. Enrol. Two resident FIDO keys, on two physically separate tokens.
-ssh-keygen -t ed25519-sk -O resident -O verify-required -C admission-primary  -f ~/.ssh/id_admission
-ssh-keygen -t ed25519-sk -O resident -O verify-required -C admission-recovery -f ~/.ssh/id_recovery
-louiselm-skills trust bootstrap \
-  --primary  ~/.ssh/id_admission.pub \
-  --recovery ~/.ssh/id_recovery.pub \
-  --require-hardware
-louiselm-skills trust show
-
-# 2. Admit. One touch for the whole set; ssh-keygen prompts for it.
-louiselm-skills generation admit \
-  --member sha256:<pkg>:read \
-  --key ~/.ssh/id_admission
-louiselm-skills generation witness sha256:<generation> --remote git@your.host:infra/skill-witness.git
-louiselm-skills generation activate sha256:<generation>
-
-# 3. Verify without a token. Nothing below should prompt for a touch.
-louiselm-skills generation status
-
-# 4. Rotate the primary with the recovery key. This is the touch that matters:
-#    it must come from the recovery token, not the primary.
-louiselm-skills trust rotation-payload --role primary --key ~/.ssh/id_admission2.pub > /tmp/change
-ssh-keygen -Y sign -n louiselm.skills.trust/1 -f ~/.ssh/id_recovery /tmp/change
-louiselm-skills trust rotate --role primary --key ~/.ssh/id_admission2.pub --signature /tmp/change.sig
-
-# 5. Confirm the replaced primary is dead. This must fail.
-louiselm-skills generation admit --member sha256:<pkg>:read --key ~/.ssh/id_admission
+skills=/usr/local/lib/louiselm/current/bin/louiselm-skills
+production_store=/var/lib/louiselm/skills
+sudo "$skills" generation admit --store "$production_store" \
+  --member 'sha256:<pkg>:read' --key "$HOME/.ssh/id_louiselm_primary"
+sudo "$skills" generation witness --store "$production_store" \
+  'sha256:<generation>' --remote git@your.host:infra/skill-witness.git
+sudo "$skills" generation activate --store "$production_store" 'sha256:<generation>'
+sudo "$skills" generation status --store "$production_store"
 ```
 
-Check at each touch that the token actually blinked. A ceremony that completes
-without a touch means `--require-hardware` did not reach the enrolled key, and
-the assertion flags in the signature are what the verifier checks.
+Check physical presence and PIN/user verification yourself. The verifier
+requires the signature assertion flags; key-generation options alone do not
+set its policy. Recovery changes inherit that policy, and a replaced Primary
+must be refused for a new Admission. Verification/status need no token touch.
 
 ## Sandbox startup
 
@@ -381,8 +234,8 @@ commit — untracked files count as dirty, because a file that is not in the
 commit cannot be reviewed by reading the commit and can still be compiled in —
 and binds the commit, the locked dependencies, the toolchain, the policy, the
 schema set, and every resulting byte into one manifest. Its digest is the
-release identity. A separate **release** role signs it, distinct from Admission
-and recovery even on one token, in its own signature namespace.
+release identity. The **Release** credential signs it in its own namespace,
+distinct from Primary even on one token. Neither recovery method can sign it.
 
 Installing is content-addressed and atomic. Each release lands in its own
 immutable directory and the prefix's `current` symlink is replaced by a rename,
@@ -420,37 +273,15 @@ must not also be able to decide the store is trustworthy.
 
 Automated tests assemble bundles from fake component files and install into
 temporary prefixes, so they cover identity, signing, tampering, atomicity, and
-downgrade without a nested build or root. Root ownership and the release-role
-touch need a machine. Run this once:
+downgrade without a nested build or root. Root ownership and genuine hardware
+signing remain `lm70`; installed Android/YubiKey recovery remains `.11.5`.
 
-```sh
-# 1. Enrol the release role. Distinct from Admission and recovery.
-ssh-keygen -t ed25519-sk -O resident -O verify-required -C louiselm-release -f ~/.ssh/id_release
-louiselm-skills trust rotation-payload --role release --key ~/.ssh/id_release.pub > /tmp/change
-ssh-keygen -Y sign -n louiselm.skills.trust/1 -f ~/.ssh/id_recovery /tmp/change
-louiselm-skills trust rotate --role release --key ~/.ssh/id_release.pub --signature /tmp/change.sig
-
-# 2. Clean build, then sign. The build refuses a dirty tree; check that first.
-git status --porcelain          # must be empty
-louiselm-skills release build --source skills-core --output /tmp/bundle
-louiselm-skills release sign --bundle /tmp/bundle --key ~/.ssh/id_release
-
-# 3. Install as root, into the fixed prefix.
-sudo louiselm-skills release install --bundle /tmp/bundle
-sudo louiselm-skills release status   # trusted: yes, ownership root-owned
-
-# 4. Upgrade. Build a newer release and install it; `current` flips, the old
-#    release stays on disk.
-sudo louiselm-skills release install --bundle /tmp/bundle-2
-ls /usr/local/lib/louiselm/releases    # both present
-
-# 5. Prove the failure paths. Each must refuse.
-sudo louiselm-skills release install --bundle /tmp/bundle      # downgrade
-sudo sed -i s/x/y/ /usr/local/lib/louiselm/current/bin/louiselm-skills
-sudo louiselm-skills release status                           # release_tampered
-```
-
-No private key material leaves the token at any point in this procedure.
+Use the [one-token release/recovery runbook](../docs/recovery-ceremony.md), not
+older two-token rotation recipes. It distinguishes the permanently untrusted
+first-release store from fresh installed production setup. Beads records the
+exact clean source, two unsigned bundles and transfer checks; do not reuse
+pre-recovery artifacts. Signing/install, upgrade/downgrade and destructive
+tamper checks are maintainer-operated, inside the disposable acceptance VM.
 
 ### Manual launcher-authority acceptance
 

@@ -15,6 +15,48 @@ use louiselm_skills::{
 use support::{Fixture, SshKey};
 
 #[test]
+fn published_first_release_recipe_enforces_hardware_policy() {
+    assert!(include_str!("../README.md").contains("../docs/recovery-ceremony.md"));
+    // Execute the documented bootstrap, substituting only disposable paths.
+    // Do not run key generation, jq, signing or installation from the guide.
+    let guide = include_str!("../../docs/recovery-ceremony.md");
+    let start = guide.find("\"$DEV_TOOL\" trust bootstrap").unwrap();
+    let command = guide[start..].split_once(" |\n").unwrap().0;
+    let command = command
+        .replace("$HOME/.ssh/id_louiselm_primary.pub", "$PRIMARY")
+        .replace("$HOME/.ssh/id_louiselm_release.pub", "$RELEASE");
+    let fixture = Fixture::new();
+    let primary = SshKey::generate(&fixture, "primary");
+    let release = SshKey::generate(&fixture, "release");
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-eu", "-c", &command])
+        .env("DEV_TOOL", env!("CARGO_BIN_EXE_louiselm-skills"))
+        .env("provisional_store", fixture.store_root())
+        .env("PRIMARY", primary.private_key_path().with_extension("pub"))
+        .env("RELEASE", release.private_key_path().with_extension("pub"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let trust: TrustStore = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(trust.keys.len(), 2);
+    for key in &trust.keys {
+        assert_eq!(key.sk_policy, SkPolicy::require_presence_and_verification());
+    }
+    let signature = release.sign("louiselm.skills.release/1", b"fixture");
+    assert!(matches!(
+        louiselm_skills::sshsig::verify(
+            &signature,
+            "louiselm.skills.release/1",
+            b"fixture",
+            &release.public_key(),
+            trust.key_for(Role::Release).unwrap().sk_policy,
+        ),
+        Err(louiselm_skills::sshsig::SignatureError::NotHardwareBacked { .. })
+    ));
+    assert!(!fixture.store().is_trusted());
+}
+
+#[test]
 fn provisional_bootstrap_enrolls_distinct_ordinary_signers_without_recovery_role() {
     let fixture = Fixture::new();
     let primary = SshKey::generate(&fixture, "primary");

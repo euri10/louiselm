@@ -39,6 +39,10 @@ prompt is not an independent display of the complete change.
 
 Only do this when no trusted release is installed. Use a disposable Linux VM
 for `lm70`; do not install or change launcher policy on the host as preparation.
+Transfer the reviewed artifacts using the recipe below. The VM wrapper exposes
+neither USB nor a browser: the maintainer must explicitly arrange the hardware
+and trusted-browser access needed by a real ceremony. Agent preparation does
+not attach devices, forward an agent socket or run these signing/setup commands.
 
 Generate two fresh credentials on the same token. Choose unused file names;
 do not overwrite existing keys. Hardware attestation is not validated by this
@@ -50,8 +54,8 @@ ssh-keygen -t ed25519-sk -O resident -O verify-required \
 ssh-keygen -t ed25519-sk -O resident -O verify-required \
   -C louiselm-release -f "$HOME/.ssh/id_louiselm_release"
 
-# DEV_TOOL is the reviewed development binary; FIRST_BUNDLE is the reviewed
-# unsigned acceptance bundle. Fill both paths yourself from the lm70 record.
+# DEV_TOOL is the reviewed, not-yet-installed binary; FIRST_BUNDLE and
+# SECOND_BUNDLE are the reviewed acceptance bundles (transfer recipe below).
 provisional_store=$(mktemp -d)
 "$DEV_TOOL" trust bootstrap --store "$provisional_store" \
   --primary "$HOME/.ssh/id_louiselm_primary.pub" \
@@ -64,6 +68,9 @@ provisional_store=$(mktemp -d)
 "$DEV_TOOL" release sign --store "$provisional_store" \
   --bundle "$FIRST_BUNDLE" --key "$HOME/.ssh/id_louiselm_release"
 "$DEV_TOOL" release verify --store "$provisional_store" --bundle "$FIRST_BUNDLE"
+"$DEV_TOOL" release sign --store "$provisional_store" \
+  --bundle "$SECOND_BUNDLE" --key "$HOME/.ssh/id_louiselm_release"
+"$DEV_TOOL" release verify --store "$provisional_store" --bundle "$SECOND_BUNDLE"
 
 # Maintainer-operated installation INSIDE the disposable acceptance VM only.
 sudo "$DEV_TOOL" release install --store "$provisional_store" \
@@ -222,3 +229,62 @@ upgrade/downgrade check. Record the source commit, toolchain, release IDs and
 bundle paths in Beads. Do not reuse pre-recovery bundles or sign during Agent
 preparation; signature, tamper, installation and physical acceptance remain
 maintainer-operated checks in `lm70` and `.11.5`.
+
+### Exact artifact transfer and release acceptance
+
+The `lm70` record names `BUNDLE_ROOT`, the archive SHA-256 and both manifest
+release IDs. The archive contains only the two unsigned bundle directories;
+no trust store, private key, paper or passkey credential belongs in it. The
+bundle's `bin/louiselm-skills` can serve as `DEV_TOOL` before installation;
+running those bytes outside an installed release still reports development
+provenance. Check the source commit and component hashes before trusting it.
+
+On the host, after the maintainer has separately authorized starting the
+[disposable VM](launcher-vm.md), transfer the exact recorded archive:
+
+```sh
+# Set BUNDLE_ROOT to the fresh path in lm70, never an older cache directory.
+sha256sum "$BUNDLE_ROOT/unsigned-bundles.tar.gz"
+./scripts/launcher-vm put "$BUNDLE_ROOT/unsigned-bundles.tar.gz" \
+  /home/vm/unsigned-bundles.tar.gz
+./scripts/launcher-vm exec sha256sum /home/vm/unsigned-bundles.tar.gz
+```
+
+Compare both hashes to the recorded hash; stop on any mismatch. In the VM's
+trusted operator terminal, extract into a fresh directory and compare both
+displayed release IDs with the Beads record:
+
+```sh
+acceptance_root=$(mktemp -d /home/vm/lm70.XXXXXX)
+tar -xzf /home/vm/unsigned-bundles.tar.gz -C "$acceptance_root"
+FIRST_BUNDLE="$acceptance_root/bundle-1"
+SECOND_BUNDLE="$acceptance_root/bundle-2"
+DEV_TOOL="$FIRST_BUNDLE/bin/louiselm-skills"
+jq '{release_id, built_at_ms, source, toolchain}' "$FIRST_BUNDLE/manifest.json"
+jq '{release_id, built_at_ms, source, toolchain}' "$SECOND_BUNDLE/manifest.json"
+```
+
+The first-release ceremony above signs both bundles and installs the older one.
+Keep its provisional store available for this release-only acceptance, then:
+
+```sh
+# INSIDE the VM, after both signatures and first install have succeeded.
+sudo "$skills" release install --store "$provisional_store" --bundle "$SECOND_BUNDLE"
+sudo "$skills" release status --robot-json | jq -e '.trusted == true'
+ls /usr/local/lib/louiselm/releases  # both recorded releases remain
+
+# Must refuse the older bundle; current must still name the second release.
+sudo "$skills" release install --store "$provisional_store" --bundle "$FIRST_BUNDLE"
+readlink /usr/local/lib/louiselm/current
+```
+
+The last install is an expected failure, not a command to retry or bypass.
+Perform destructive component-tampering acceptance only on a disposable VM
+snapshot under the separate `lm70` checklist. Never mutate the host installation
+or the only accepted release. Production recovery setup uses a fresh protected
+store regardless of this release-only provisional store.
+
+For local development, the existing `webauthn-rs` dependency requires system
+OpenSSL headers/libraries and pkg-config. Browser checks use an isolated virtual
+authenticator, never the maintainer's profile; see `tests/passkey_browser.js`
+and the opt-in operator fixture above.
