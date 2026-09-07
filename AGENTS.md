@@ -388,8 +388,11 @@ To learn your own Session identity, resolve the ACP session id your interaction
 already exposes against the live Sessions:
 
 ```bash
-nvim --server "$NVIM" --remote-expr 'luaeval("(function() local id, err = require(\"louiselm.session\").identity(_A) return id or err end)()", "<your ACP session id>")'
+nvim --headless --server "$NVIM" --remote-expr 'luaeval("(function() local id, err = require(\"louiselm.session\").identity(_A) return id or err end)()", "<your ACP session id>")'
 ```
+
+`--headless` is required: without it the client starts a TUI and its terminal
+queries scramble the answer on a real tty.
 
 `session.identity()` returns `<agent>/<ACP-session-id>` for the one live Session
 holding that id. Use it verbatim as the Beads actor. It reads only the id you
@@ -405,11 +408,11 @@ Session, or a child-agent task.
 
 A sandboxed Agent may not reach the socket at all — connecting to `$NVIM` needs
 write access to a path outside the workspace, and Codex's Linux sandbox refuses
-it (louiselm-lkoc). Your own id is the identity either way; the lookup confirms
-it is live and supplies the configured Agent name. When the editor is
-unreachable, use `<agent>/<your id>` and say you could not verify it. Do not
-guess the Agent name: it is a LouiseLM config key, not your adapter's name, and
-the two only happen to match today.
+it (louiselm-lkoc). Unreachable does not license a guess. If you also have no id
+of your own, you have nothing to resolve and nothing to fall back on: ask the
+maintainer. Only if you do know your own id may you use `<agent>/<your id>`, and
+you must say it is unverified. Never guess the Agent name: it is a LouiseLM
+config key, not your adapter's name, and the two only happen to match today.
 
 `:LouiselmSessionId` and `Chat:session_id()` answer for the **focused** chat.
 That is what a bug report about the visible Session wants, and it is not caller
