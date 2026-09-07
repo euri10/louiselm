@@ -61,6 +61,35 @@ while IFS= read -r -d '' path; do
 	fi
 done < <(find "$artifact" -type f \( -name '*.html' -o -name '*.json' \) -print0)
 
+# The theme serves whatever favicon the site config names, and falls back to
+# fetching https://mystmd.org/favicon.ico when it names none. A published icon
+# that is not our own asset means the config lost its favicon again.
+favicon_source="$source_root/assets/louiselm-favicon.ico"
+if [ ! -f "$artifact/favicon.ico" ]; then
+	reject "missing favicon.ico"
+elif [ ! -f "$favicon_source" ]; then
+	reject "missing favicon source ${favicon_source#"$source_root"/}"
+elif ! cmp -s "$artifact/favicon.ico" "$favicon_source"; then
+	reject "favicon.ico is not ${favicon_source#"$source_root"/}"
+fi
+
+# Link previews and search results read these two. The theme emits the image
+# meta with an empty origin, so a value still starting with / means the
+# absolutising pass in build-site did not run or stopped matching.
+while IFS= read -r -d '' path; do
+	relative=${path#"$artifact"/}
+	if grep -Eq '<meta (name="image"|property="og:image") content="/' "$path"; then
+		reject "site-relative preview image in $relative"
+	fi
+	# Only MyST-rendered pages carry this generator marker; the demo page is
+	# built separately and keeps its own metadata.
+	if grep -q '<meta name="generator" content="mystmd"/>' "$path"; then
+		if ! grep -Eq '<meta name="description" content="[^"]+"' "$path"; then
+			reject "rendered page has no description: $relative"
+		fi
+	fi
+done < <(find "$artifact" -type f -name '*.html' -print0)
+
 while IFS= read -r -d '' path; do
 	relative=${path#"$artifact"/}
 	lower=${relative,,}

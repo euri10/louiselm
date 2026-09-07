@@ -1,6 +1,17 @@
 version: 1
 project:
   title: LouiseLM
+  # The theme falls back to this for every page that sets no description of its
+  # own, so it is what a shared link and a search result actually show.
+  description: >-
+    Chat with ACP Agents inside Neovim. Streaming Sessions, editor context,
+    file-edit review, permissions, and Agent Skills.
+  keywords:
+    - neovim
+    - agent client protocol
+    - acp
+    - ai coding agent
+    - lua plugin
   downloads: []
   exclude:
     - AGENTS.md
@@ -32,8 +43,20 @@ project:
 site:
   # Theme install/start commands execute in CI, so this must stay at a full commit.
   template: https://github.com/myst-templates/book-theme/archive/45706bcb9ac02b6713270785e3fc22eda348ed3b.zip
+  # Rendered as buttons at the end of the top navbar, after search and the
+  # dark-mode toggle, and collapsed into a dropdown on narrow viewports. The
+  # theme's other navbar slot, the navbar_end part, is hidden below 1280px.
+  actions:
+    - title: GitHub
+      url: https://github.com/euri10/louiselm
   options:
     folders: true
     logo: ./assets/louiselm-logo.png
     logo_alt: LouiseLM
+    # Without a favicon the theme fetches https://mystmd.org/favicon.ico and
+    # serves it as ours.
+    favicon: ./assets/louiselm-favicon.ico
+    # Absolute links to our own pages, such as README's demo call to action,
+    # otherwise render as external and open in a new tab.
+    internal_domains: louiselm.com
     style: ./blog/blog.css

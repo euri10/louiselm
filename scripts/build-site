@@ -31,4 +31,12 @@ for path in "$repo_root/_build/html/robots.txt" "$repo_root/_build/html/sitemap.
 	sed -i -E "s#http://localhost:[0-9]+#$public_origin#g" "$path"
 done
 
+# The theme builds its social meta with a hardcoded empty origin, so the preview
+# image is emitted as a site-relative path that link scrapers cannot resolve.
+# No MyST option changes that; absolutise it here, alongside the origin fixes
+# above. Only values already starting with / are rewritten.
+while IFS= read -r -d '' path; do
+	sed -i -E "s#(<meta (name=\"image\"|property=\"og:image\") content=\")/#\1$public_origin/#g" "$path"
+done < <(find "$repo_root/_build/html" -type f -name '*.html' -print0)
+
 "$script_dir/check-public-artifact" "$repo_root/_build/html" "$repo_root"
