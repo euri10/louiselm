@@ -66,7 +66,14 @@ T["setup"]["accepts upgrade argv and rejects malformed commands"] = function()
   })
   MiniTest.expect.equality(ok, true)
   MiniTest.expect.equality(report, nil)
-  for _, upgrade in ipairs({ false, "npm install", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
+  local manual_ok, manual_report = capture_setup({
+    agents = {
+      mock = { provider = "test-service", command = "mock-acp", upgrade = "Update and rebuild the checkout." },
+    },
+  })
+  MiniTest.expect.equality(manual_ok, true)
+  MiniTest.expect.equality(manual_report, nil)
+  for _, upgrade in ipairs({ false, "", " \n ", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
     local accepted, invalid =
       capture_setup({ agents = { mock = { provider = "test-service", command = "mock-acp", upgrade = upgrade } } })
     MiniTest.expect.equality(accepted, false)

@@ -79,11 +79,18 @@ M.schema = assert(Schema.define({
           },
         },
         upgrade = {
-          type = "array-of",
-          items = "string",
+          type = "one-of",
           default = {},
-          validator = valid_upgrade,
-          description = "Optional upgrade executable and arguments, e.g. { 'npm', 'install', '-g', 'my-agent@latest' }. Shown as a shell-escaped command in outdated-Agent warnings, never executed. Set this for the actual installation (including local builds); omission leaves upgrade guidance unavailable. Multiple commands are joined with &&, stopping on failure.",
+          options = {
+            { type = "array-of", items = "string", validator = valid_upgrade },
+            {
+              type = "string",
+              validator = function(value)
+                return value:match("%S") ~= nil, "manual upgrade instructions must not be blank"
+              end,
+            },
+          },
+          description = "Optional upgrade executable and arguments (e.g. { 'npm', 'install', '-g', 'my-agent@latest' }), or a nonblank string explaining a manual update (e.g. 'Update and rebuild /path/to/checkout; global npm upgrades do not affect this copy.'). Displayed in outdated-Agent warnings, never executed. Only argv commands are shell-escaped and joined with && when every outdated Agent has one; manual instructions are never included in that command.",
         },
         latest = {
           type = "table",

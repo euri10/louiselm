@@ -215,7 +215,9 @@ local function check_agent_staleness(definitions)
           result.latest_version
         )
         local upgrade = definitions[name].upgrade
-        if upgrade ~= nil then
+        if type(upgrade) == "string" then
+          lines[#lines + 1] = "  Manual update: " .. upgrade:gsub("\n", "\n  ")
+        elseif upgrade ~= nil then
           local argv = {}
           for _, argument in ipairs(upgrade) do
             argv[#argv + 1] = nvim.fn.shellescape(argument)
@@ -224,7 +226,8 @@ local function check_agent_staleness(definitions)
           commands[#commands + 1] = command
           lines[#lines + 1] = "  Upgrade: " .. command
         else
-          lines[#lines + 1] = "  Upgrade: unavailable (set agents." .. name .. ".upgrade)"
+          lines[#lines + 1] =
+            "  No upgrade instructions configured. Check this agent's installation instructions before updating."
         end
       end
     end

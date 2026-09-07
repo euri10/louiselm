@@ -27,7 +27,7 @@ local Provider = require("louiselm.agent.provider")
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
 ---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 ---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
----@field upgrade? string[] Executable and arguments shown as a shell-escaped upgrade command; never executed by LouiseLM. Omission leaves upgrade guidance unavailable.
+---@field upgrade? string[]|string Upgrade executable and arguments, or nonblank manual update instructions. Displayed only, never executed by LouiseLM; only argv can join the combined upgrade command.
 
 ---@alias louiselm.agent.ConfigErrorType "unknown_key"|"wrong_type"|"missing_required"|"invalid_value"
 
@@ -456,13 +456,19 @@ function M.normalize(definitions, default_skills_policy)
       local upgrade
       if definition.upgrade ~= nil then
         local upgrade_path = child_path(path, "upgrade")
-        if type(definition.upgrade) ~= "table" then
+        if type(definition.upgrade) == "string" then
+          if definition.upgrade:match("%S") == nil then
+            add_error(errors, upgrade_path, "invalid_value", "manual upgrade instructions must not be blank")
+          else
+            upgrade = definition.upgrade
+          end
+        elseif type(definition.upgrade) ~= "table" then
           add_error(
             errors,
             upgrade_path,
             "wrong_type",
-            "must be an executable and arguments array",
-            "string[]",
+            "must be an executable and arguments array or manual update instructions",
+            "string[]|string",
             value_type(definition.upgrade)
           )
         else

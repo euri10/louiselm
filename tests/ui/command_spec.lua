@@ -1195,7 +1195,7 @@ T["command"]["warns without blocking chat creation when a configured agent trail
 
   MiniTest.expect.equality(notifications, {
     {
-      message = "louiselm: mock is outdated (mock-acp 1.0.0 installed, 9.9.9 upstream)\n  Upgrade: unavailable (set agents.mock.upgrade)",
+      message = "louiselm: mock is outdated (mock-acp 1.0.0 installed, 9.9.9 upstream)\n  No upgrade instructions configured. Check this agent's installation instructions before updating.",
       level = nvim.log.levels.WARN,
     },
   })
@@ -1294,6 +1294,7 @@ T["command"]["groups upgrade guidance after async checks in either completion or
       "single",
       "current",
       "missing",
+      "manual",
       "failed",
       "spawn_failure",
       "disposed",
@@ -1301,6 +1302,7 @@ T["command"]["groups upgrade guidance after async checks in either completion or
     }) do
       callbacks, notifications = {}, {}
       spawn_failure = scenario == "spawn_failure"
+      local manual = "Local checkout: /work/agent\nUpdate and rebuild it; global npm upgrades do not affect this copy."
       Command.configure({
         agents = {
           alpha = {
@@ -1313,7 +1315,8 @@ T["command"]["groups upgrade guidance after async checks in either completion or
             provider = "test-service",
             command = "beta",
             args = {},
-            upgrade = scenario ~= "missing" and { "/path with spaces/updater", "a'b;$(no)" } or nil,
+            upgrade = scenario == "manual" and manual
+              or (scenario ~= "missing" and { "/path with spaces/updater", "a'b;$(no)" } or nil),
           },
         },
       })
@@ -1365,13 +1368,17 @@ T["command"]["groups upgrade guidance after async checks in either completion or
         local message =
           "louiselm: alpha is outdated (1.0.0 installed, 2.0.0 upstream)\n  Upgrade: 'npm' 'install' '-g' 'alpha@latest'"
         if scenario ~= "single" and scenario ~= "failed" and not spawn_failure then
-          message = message
-            .. "\nlouiselm: beta is outdated (1.0.0 installed, 2.0.0 upstream)\n  Upgrade: "
-            .. (
-              scenario == "missing" and "unavailable (set agents.beta.upgrade)"
-              or "'/path with spaces/updater' 'a'\\''b;$(no)'"
-            )
-          if scenario ~= "missing" then
+          message = message .. "\nlouiselm: beta is outdated (1.0.0 installed, 2.0.0 upstream)\n  "
+          if scenario == "manual" then
+            message = message
+              .. "Manual update: Local checkout: /work/agent\n  Update and rebuild it; global npm upgrades do not affect this copy."
+          elseif scenario == "missing" then
+            message = message
+              .. "No upgrade instructions configured. Check this agent's installation instructions before updating."
+          else
+            message = message .. "Upgrade: '/path with spaces/updater' 'a'\\''b;$(no)'"
+          end
+          if scenario ~= "missing" and scenario ~= "manual" then
             message = message
               .. "\nUpgrade all: 'npm' 'install' '-g' 'alpha@latest' && '/path with spaces/updater' 'a'\\''b;$(no)'"
           end

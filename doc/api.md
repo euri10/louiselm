@@ -545,7 +545,7 @@ louiselm.permission.Lifetime:
 - `provider: string|louiselm.agent.ProviderRoute[]` -- Explicit access/quota service or option routes; required before prompting.
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
 - `transcript_layout: string?` -- Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
-- `upgrade: string[]?` -- Executable and arguments shown as a shell-escaped upgrade command; never executed by LouiseLM. Omission leaves upgrade guidance unavailable.
+- `upgrade: (string|string[])?` -- Upgrade executable and arguments, or nonblank manual update instructions. Displayed only, never executed by LouiseLM; only argv can join the combined upgrade command.
 - `version: (louiselm.agent.CommandCheck)?` -- Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 
 ### louiselm.agent.ConfigErrorType

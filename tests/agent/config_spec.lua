@@ -18,8 +18,18 @@ T["validate"]["copies optional upgrade argv and leaves it unset by default"] = f
   MiniTest.expect.equality(normalized.other.upgrade, nil)
 end
 
-T["validate"]["rejects malformed upgrade argv"] = function()
-  for _, upgrade in ipairs({ false, "npm install", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
+T["validate"]["preserves manual upgrade instructions"] = function()
+  local instructions = "Update and rebuild the local checkout; npm upgrades do not affect it."
+  local normalized, errors = Config.normalize({
+    mock = { provider = "test-service", command = "mock-acp", upgrade = instructions },
+  })
+  MiniTest.expect.equality(errors, {})
+  assert(normalized)
+  MiniTest.expect.equality(normalized.mock.upgrade, instructions)
+end
+
+T["validate"]["rejects malformed upgrade guidance"] = function()
+  for _, upgrade in ipairs({ false, "", " \n ", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
     local normalized, errors =
       Config.normalize({ mock = { provider = "test-service", command = "mock-acp", upgrade = upgrade } })
     MiniTest.expect.equality(normalized, nil)
