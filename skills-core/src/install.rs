@@ -64,7 +64,8 @@ pub struct InstalledState {
 pub struct OwnershipEvidence {
     /// Whether every installed path is owned by uid 0.
     pub root_owned: bool,
-    /// Whether any installed path is writable by group or other.
+    /// Whether an installed path has group/other write bits, excluding the
+    /// validated `current` symlink whose mode does not confer write authority.
     pub world_writable: bool,
     /// Whether the invoking user can write the prefix.
     pub writable_by_invoker: bool,
@@ -354,11 +355,18 @@ pub(crate) fn ownership_of(prefix: &Path) -> OwnershipEvidence {
         root_owned = metadata.uid() == 0;
         world_writable = metadata.mode() & 0o022 != 0;
     }
-    walk(prefix, &mut |metadata| {
+    let current = prefix.join("current");
+    let current_is_valid = expected_current_link(prefix);
+    walk(prefix, &mut |path, metadata| {
         if metadata.uid() != 0 {
             root_owned = false;
         }
-        if metadata.mode() & 0o022 != 0 {
+        // Linux ordinary symlink modes are 0777, not write authority. Exempt
+        // only our validated current link; its owner and every containing
+        // directory/target remain checked. Never follow arbitrary links.
+        if metadata.mode() & 0o022 != 0
+            && !(metadata.is_symlink() && path == current && current_is_valid)
+        {
             world_writable = true;
         }
     });
@@ -371,7 +379,19 @@ pub(crate) fn ownership_of(prefix: &Path) -> OwnershipEvidence {
     }
 }
 
-fn walk(path: &Path, visit: &mut impl FnMut(&fs::Metadata)) {
+fn expected_current_link(prefix: &Path) -> bool {
+    let Ok(Some(state)) = load_state(prefix) else {
+        return false;
+    };
+    if crate::Digest::parse(&state.release_id).is_err() {
+        return false;
+    }
+    let target = Path::new("releases").join(state.release_id);
+    fs::read_link(prefix.join("current")).is_ok_and(|found| found == target)
+        && fs::symlink_metadata(prefix.join(target)).is_ok_and(|metadata| metadata.is_dir())
+}
+
+fn walk(path: &Path, visit: &mut impl FnMut(&Path, &fs::Metadata)) {
     let Ok(listing) = fs::read_dir(path) else {
         return;
     };
@@ -379,7 +399,7 @@ fn walk(path: &Path, visit: &mut impl FnMut(&fs::Metadata)) {
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        visit(&metadata);
+        visit(&entry.path(), &metadata);
         if metadata.is_dir() {
             walk(&entry.path(), visit);
         }

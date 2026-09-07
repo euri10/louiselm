@@ -442,6 +442,18 @@ jobs:
             LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
             /bin/bash -c 'umask 077; exec "$1" production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn --exact --nocapture' bash "$launcher_install_test"
 
+      - name: Test root-owned installed release boundary
+        run: |
+          set -eu
+          release_test="$(
+            cargo test --test release --all-features --locked --no-run --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "release" and .profile.test) | .executable // empty' |
+              tail -n 1
+          )"
+          test -n "$release_test"
+          sudo env LOUISELM_REQUIRE_ROOT_RELEASE=1 \
+            /bin/bash -c 'umask 022; exec "$1" installed_release_ --nocapture' bash "$release_test"
+
       - name: Test root-owned launch registry boundary
         run: |
           set -eu

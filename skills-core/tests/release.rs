@@ -10,14 +10,17 @@
 //!
 //! Bundles here are assembled from fake component files rather than by running
 //! `cargo build`, so the tests cover identity, signing, tampering, install
-//! atomicity, and downgrade without a nested build. What they deliberately do
-//! not cover is real root ownership, which needs a machine and a manual
-//! procedure; `release status` reports ownership as evidence rather than
-//! claiming it.
+//! atomicity, and downgrade without a nested build. CI also runs the
+//! `installed_release_` cases as root in the initial user namespace. These
+//! software-key fixtures do not replace genuine hardware-signing acceptance.
 
 mod support;
 
-use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    fs,
+    os::unix::fs::{PermissionsExt, symlink},
+    path::{Path, PathBuf},
+};
 
 use louiselm_skills::{
     Policy,
@@ -480,6 +483,169 @@ fn status_reports_ownership_as_evidence_rather_than_claiming_it() {
         Some("prefix_not_root_owned")
     );
     assert_eq!(status.next_action.id, "install_as_root");
+}
+
+fn installed_fixture() -> (Fixture, PathBuf, PathBuf) {
+    if std::env::var_os("LOUISELM_REQUIRE_ROOT_RELEASE").is_some() {
+        assert!(
+            rustix::process::geteuid().is_root(),
+            "root gate requires root"
+        );
+        assert_eq!(
+            fs::read_to_string("/proc/self/uid_map")
+                .expect("UID map")
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            ["0", "0", "4294967295"],
+            "root gate requires the initial user namespace",
+        );
+    }
+    let fixture = Fixture::new();
+    let key = enrol_release_key(&fixture);
+    let bundle = assemble(&fixture, "ownership", "#!/bin/sh\nexit 0\n", 1);
+    sign_bundle(&bundle, &key);
+    let prefix = fixture.path("prefix");
+    let state = install::install(&fixture.store(), &bundle, &prefix, 1).expect("install");
+    let installed = prefix.join("releases").join(state.release_id);
+    // Match the observed guest install, independent of the runner's umask.
+    for directory in [
+        &prefix,
+        &prefix.join("releases"),
+        &installed,
+        &installed.join("bin"),
+        &installed.join("policy"),
+        &installed.join("schemas"),
+    ] {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o755))
+            .expect("fixed directory mode");
+    }
+    fs::set_permissions(prefix.join("state.json"), fs::Permissions::from_mode(0o644))
+        .expect("fixed state mode");
+    let executable = installed.join("bin/louiselm-skills");
+    (fixture, prefix, executable)
+}
+
+fn assert_installed_permissions(prefix: &Path, executable: &Path, writable: bool) {
+    let status = install::status(prefix).expect("status");
+    let identity = release::identity_of(executable);
+    let root_owned = rustix::process::geteuid().is_root();
+    assert_eq!(status.ownership.root_owned, root_owned);
+    assert_eq!(status.ownership.world_writable, writable);
+    assert_eq!(status.trusted, root_owned && !writable, "{status:?}");
+    assert_eq!(identity.verified, status.trusted, "{identity:?}");
+    if identity.verified {
+        assert_eq!(
+            identity.release_id,
+            status.installed.map(|state| state.release_id)
+        );
+    }
+}
+
+#[test]
+fn installed_release_checks_real_file_directory_and_link_ownership() {
+    // louiselm-se9g: genuine root install in the lm70 guest falsely refused
+    // current's 0777 symlink mode. Exercise both public consumers, not chmod
+    // on the symlink (which would modify the release directory instead).
+    let (_fixture, prefix, executable) = installed_fixture();
+    assert_installed_permissions(&prefix, &executable, false);
+    for target in [
+        &prefix,
+        &prefix.join("releases"),
+        &executable,
+        &prefix.join("state.json"),
+    ] {
+        let permissions = fs::metadata(target).expect("metadata").permissions();
+        for added in [0o020, 0o002] {
+            fs::set_permissions(
+                target,
+                fs::Permissions::from_mode(permissions.mode() | added),
+            )
+            .expect("add write permission");
+            assert_installed_permissions(&prefix, &executable, true);
+        }
+        fs::set_permissions(target, permissions).expect("restore permissions");
+        assert_installed_permissions(&prefix, &executable, false);
+    }
+    if rustix::process::geteuid().is_root() {
+        for target in [&executable, &prefix.join("current")] {
+            // lchown preserves the symlink target while changing its owner.
+            rustix::fs::chownat(
+                rustix::fs::CWD,
+                target,
+                Some(rustix::fs::Uid::from_raw(1000)),
+                None,
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .expect("change entry owner");
+            let status = install::status(&prefix).expect("status");
+            assert!(!status.ownership.root_owned);
+            assert!(!status.trusted);
+            assert!(!release::identity_of(&executable).verified);
+            rustix::fs::chownat(
+                rustix::fs::CWD,
+                target,
+                Some(rustix::fs::Uid::ROOT),
+                None,
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .expect("restore entry owner");
+        }
+        assert_installed_permissions(&prefix, &executable, false);
+    }
+}
+
+#[test]
+fn installed_release_accepts_only_the_expected_current_symlink() {
+    let (fixture, prefix, executable) = installed_fixture();
+    let current = prefix.join("current");
+    let expected = fs::read_link(&current).expect("installed target");
+    let outside = fixture.path("outside");
+    fs::create_dir(&outside).expect("outside directory");
+    let other_release =
+        Path::new("releases").join(louiselm_skills::Digest::of(b"other").to_string());
+    fs::create_dir(prefix.join(&other_release)).expect("other release directory");
+    fs::set_permissions(
+        prefix.join(&other_release),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("fixed other release mode");
+    for target in [
+        outside,
+        other_release,
+        prefix.join(&expected),
+        PathBuf::from("releases/missing"),
+        PathBuf::from("current"),
+        PathBuf::from("releases"),
+        PathBuf::from("state.json"),
+    ] {
+        fs::remove_file(&current).expect("remove fixture link");
+        symlink(target, &current).expect("replace current");
+        assert_installed_permissions(&prefix, &executable, true);
+    }
+    fs::remove_file(&current).expect("remove fixture link");
+    symlink(&expected, &current).expect("restore current");
+    let unexpected = executable
+        .parent()
+        .expect("bin directory")
+        .join("unexpected");
+    for target in [
+        Path::new("."),
+        Path::new("missing"),
+        Path::new("unexpected"),
+    ] {
+        symlink(target, &unexpected).expect("unexpected link");
+        assert_installed_permissions(&prefix, &executable, true);
+        fs::remove_file(&unexpected).expect("remove fixture link");
+    }
+    // A current link with the right text must not hide a redirected release.
+    let installed = prefix.join(&expected);
+    let moved = fixture.path("moved-release");
+    fs::rename(&installed, &moved).expect("move release");
+    symlink(&moved, &installed).expect("redirect release");
+    assert_installed_permissions(&prefix, &executable, true);
+    fs::remove_file(&installed).expect("remove redirect");
+    fs::rename(moved, installed).expect("restore release");
+    assert_installed_permissions(&prefix, &executable, false);
 }
 
 #[test]
