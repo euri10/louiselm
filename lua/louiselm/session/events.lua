@@ -28,7 +28,7 @@
 
 ---@class louiselm.session.ConfigOptionsChangedEvent: louiselm.session.EventBase
 ---@field type "config_options_changed"
----@field data louiselm.session.ConfigOption[] Complete supported option state in agent order.
+---@field data louiselm.session.ConfigOption[] Complete supported option state in agent order. Confirmed value changes are queued for persistence before publication; request attribution lives in option_events.
 
 ---@class louiselm.session.CommandsChangedData
 ---@field commands louiselm.session.AvailableCommand[] Complete supported command state in agent order.
@@ -47,7 +47,7 @@
 ---@field data louiselm.session.UsageUpdatedData
 
 ---@class louiselm.session.RecordingChangedData
----@field error? louiselm.session.RecordingError Recording failure; active work continues, new dispatch requires recovery.
+---@field error? louiselm.session.RecordingError Storage failure or unresolved Session Provider; active work continues, new dispatch requires correction/recovery.
 ---@field pending boolean Whether this registry has unacknowledged writes.
 
 ---@class louiselm.session.RecordingChangedEvent: louiselm.session.EventBase

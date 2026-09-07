@@ -60,7 +60,11 @@ exits or storage remains broken, only committed facts survive. A missing
 terminal fact means **completion unobserved**, including after resume; loading
 history never invents a completion or reuses an old turn ID.
 
-## Schema version 1
+## Schema version 2
+
+The writer upgrades version 1 transactionally by adding `option_events`; existing
+turn facts remain untouched. Older writers refuse version 2. Restart other
+editors using an older plugin before continuing to record into this database.
 
 `turns` contains immutable initial records:
 
@@ -106,6 +110,55 @@ unavailable; do not treat a later partial delta as the whole turn or sum
 currencies. Late idle readings can become the next turn's baseline but are not
 retroactively attributed to a finished turn.
 
+## Confirmed option history
+
+`option_events` records each accepted change to the complete typed option tuple,
+including changes made without any prompt. It records additions and removals as
+well as value changes. Display-name changes and unchanged advertisements add no
+events. Initial configuration and notifications during `session/load` establish
+the baseline; replay never recollects historical transitions.
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Stable observation ID, unchanged when a failed write is retried |
+| `observer_id`, `sequence` | Random live Session stream identity and its increasing observation order |
+| `agent`, `acp_session_id` | Session whose confirmed configuration changed |
+| `observed_at` | UTC observation time; sequence orders ties within one stream |
+| `previous_options`, `options` | Canonical JSON objects before and after the accepted replacement |
+| `source` | `notification` or `response`, describing the observed ACP source |
+| `request` | JSON `{id,option,value}` for a matched response; otherwise SQL NULL |
+| `turn_id` | Affected active attempt, or SQL NULL while idle |
+
+Every resumed/live observer gets a distinct stream identity. Stream sequence
+states observed order; it does not impose a global causal order on independent
+editors. Both snapshots are captured and queued before Session events publish
+the accepted state, so later mutable state and reentrant callbacks cannot
+rewrite or overtake an observation.
+
+A response records only its explicitly requested option/value as requested.
+Additional changed options remain observations. A notification has no request
+link, even while a request is pending. If a notification already confirmed the
+whole change, an identical response adds no event or retrospective request link.
+Failed requests do not themselves create transitions. No timing-based cause or
+operator motive is inferred.
+
+An active attempt retains its immutable prompt-start tuple. Any associated
+`option_events` row makes that attempt unsuitable for comparisons claiming one
+fixed option combination, even if the values later return to their starting
+values. `Session:inspect().turn_options_changed` exposes the same fact for the
+current/latest attempt and resets on the next attempt. Consumers exclude these
+turns from fixed-combination comparisons with `NOT EXISTS (SELECT 1 FROM
+option_events o WHERE o.turn_id = turns.id)`; they remain in overall usage and
+outcome counts. Do not estimate how consumption splits across configurations.
+
+Option-write failures use the existing durable retry/admission barrier and do
+not undo the configuration the Agent actually accepted. An unresolved Provider
+adds a Session-local `recording_error` with code `attribution`; successful storage
+alone cannot clear it. A confirmed valid configuration clears that error, and
+prompt admission still requires all earlier writes to commit. Other Sessions
+are unaffected by this attribution error. Option events carry no guessed
+Provider: resolved Provider attribution remains part of each turn's start row.
+
 ## Integrity and scope
 
 The recorder is owned by the Session registry. It serializes local writes;
@@ -124,8 +177,8 @@ disabled. Errors contain neither SQL nor record contents. No prompt, tool,
 environment, or raw error payload is stored. Facts have no automatic expiry or
 lossy rollup.
 
-Option-transition collection is `louiselm-j7hg`. New/legacy replay association
-and retirement of the old UI-owned `usage.json` writes are `louiselm-lc32`.
+New/legacy replay association and retirement of the old UI-owned `usage.json`
+writes are `louiselm-lc32`.
 Until that replacement lands, the legacy file still serves its existing UI
 consumers; it is not imported into this database. Analytics queries, picker
 cohorts, history views, and reflection are separate follow-up work.

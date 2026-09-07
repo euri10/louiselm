@@ -221,12 +221,12 @@ function M.new(definitions, default_skills_policy, options)
     options and options.usage_directory or nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "usage"),
     function(err, pending)
       for _, session in pairs(registry.sessions) do
-        session.state.recording_error = nvim.deepcopy(err)
+        session.state.recording_error = nvim.deepcopy(err or session.attribution_error)
         session.state.recording_pending = pending
         session.emitter:emit({
           type = "recording_changed",
           session_id = session.state.id,
-          data = { error = nvim.deepcopy(err), pending = pending },
+          data = { error = nvim.deepcopy(session.state.recording_error), pending = pending },
         })
       end
     end

@@ -230,7 +230,7 @@ T["refuses unsafe journals and future schemas before adding facts"] = function()
   assert(nvim.uv.fs_symlink(writer.path, writer.path .. "-journal"))
   MiniTest.expect.equality(append(writer, prepared("two")).code, "permissions")
   assert(nvim.uv.fs_unlink(writer.path .. "-journal"))
-  local changed = nvim.system({ "sqlite3", writer.path, "PRAGMA user_version=2;" }, { text = true }):wait()
+  local changed = nvim.system({ "sqlite3", writer.path, "PRAGMA user_version=999;" }, { text = true }):wait()
   assert(changed.code == 0, changed.stderr)
   local err
   writer:flush(function(value)

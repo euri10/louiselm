@@ -92,7 +92,7 @@ string|table
 - `embedded_context: boolean` -- Whether the Agent accepts embedded resource prompt context.
 - `id: string` -- Local session identifier.
 - `name: string` -- User-facing session name.
-- `recording_error: (louiselm.session.RecordingError)?` -- Last registry recording failure; subsequent dispatch requires recovery.
+- `recording_error: (louiselm.session.RecordingError)?` -- Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 - `recording_pending: boolean` -- Whether the registry has unacknowledged writes.
 - `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
@@ -100,6 +100,7 @@ string|table
 - `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+4)` -- Lifecycle state.
 - `turn_id: string?` -- Durable identity of the latest accepted prompt attempt; independent of local turn ordinal.
 - `turn_identity: (louiselm.session.TurnIdentity)?` -- Owned identity for the latest accepted attempt; later option changes never rewrite it.
+- `turn_options_changed: boolean` -- Whether the current/last attempt had confirmed value changes; unsuitable for fixed-option comparisons.
 - `usage: (louiselm.session.TurnUsage)?` -- Latest agent-reported completed-turn usage.
 - `working_dir: string` -- ACP working directory.
 
@@ -128,6 +129,7 @@ string|table
 ### louiselm.session.Session
 
 - `acp_session_id: string?` -- Agent-side session identifier.
+- `attribution_error: (louiselm.session.RecordingError)?` -- Unresolved current Provider; cleared only by a confirmed correction.
 - `cancel: fun(self: louiselm.session.Session):boolean, string?`
 - `client: (louiselm.acp.Client)?` -- ACP client.
 - `definition: louiselm.agent.Definition` -- Agent process definition.
@@ -136,6 +138,8 @@ string|table
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `load_session_id: string?` -- Agent-side session identifier to load.
 - `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))):fun()`
+- `option_observer_id: string` -- Random identity of this live observation stream.
+- `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
 - `options: louiselm.session.Options` -- Session options.
 - `owner: louiselm.session.Registry` -- Registry that owns this session.
 - `owner_run: (louiselm.workflow.Run)?` -- Run that supervised construction of this Session.
@@ -382,7 +386,7 @@ louiselm.session.EventType:
 
 ### louiselm.session.ConfigOptionsChangedEvent
 
-- `data: louiselm.session.ConfigOption[]` -- Complete supported option state in agent order.
+- `data: louiselm.session.ConfigOption[]` -- Complete supported option state in agent order. Confirmed value changes are queued for persistence before publication; request attribution lives in option_events.
 - `session_id: string` -- Local session identifier.
 - `type: "config_options_changed"`
 
@@ -410,7 +414,7 @@ louiselm.session.EventType:
 
 ### louiselm.session.RecordingChangedData
 
-- `error: (louiselm.session.RecordingError)?` -- Recording failure; active work continues, new dispatch requires recovery.
+- `error: (louiselm.session.RecordingError)?` -- Storage failure or unresolved Session Provider; active work continues, new dispatch requires correction/recovery.
 - `pending: boolean` -- Whether this registry has unacknowledged writes.
 
 ### louiselm.session.RecordingChangedEvent

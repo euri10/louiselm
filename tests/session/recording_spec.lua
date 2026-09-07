@@ -3,9 +3,9 @@ local Session = require("louiselm.session")
 
 ---@diagnostic disable-next-line: undefined-global -- Neovim test runtime.
 local nvim = vim
-local T = MiniTest.new_set()
 local resources = {}
 local directories = {}
+local processes = {}
 
 local function wait_for(predicate)
   assert(nvim.wait(6000, predicate, 10), "asynchronous recording did not finish")
@@ -47,25 +47,32 @@ local function new_session(directory, mode, load_id, extra_env)
   return session, api
 end
 
-T.hooks = {
-  post_case = function()
-    for _, api in ipairs(resources) do
-      assert(api:dispose())
-      local settled = false
-      api:flush_recording(function()
-        settled = true
-      end)
-      wait_for(function()
-        return settled
-      end)
-    end
-    resources = {}
-    for _, directory in ipairs(directories) do
-      nvim.fn.delete(directory, "rf")
-    end
-    directories = {}
-  end,
-}
+local T = MiniTest.new_set({
+  hooks = {
+    post_case = function()
+      for _, process in ipairs(processes) do
+        process:kill(9)
+        process:wait()
+      end
+      processes = {}
+      for _, api in ipairs(resources) do
+        assert(api:dispose())
+        local settled = false
+        api:flush_recording(function()
+          settled = true
+        end)
+        wait_for(function()
+          return settled
+        end)
+      end
+      resources = {}
+      for _, directory in ipairs(directories) do
+        nvim.fn.delete(directory, "rf")
+      end
+      directories = {}
+    end,
+  },
+})
 
 T["headless unmeasured turns survive reopen and resumed local ordinals"] = function()
   local directory = nvim.fn.tempname()
@@ -99,23 +106,40 @@ T["headless unmeasured turns survive reopen and resumed local ordinals"] = funct
   )
 end
 
-T["real mock observes its committed start record before responding"] = function()
+T["real mock observes its committed start through a transient write lock"] = function()
   local directory = nvim.fn.tempname()
   directories[#directories + 1] = directory
   local session = new_session(directory, nil, nil, { LOUISELM_MOCK_RECORDING_PROBE = directory .. "/turns.sqlite3" })
-  local reply, done
+  local reply, done, completion_error
   session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "prompting" then
+      -- Admission has committed; another writer can briefly exclude readers.
+      -- Hold that window deliberately instead of relying on dispatch-write timing.
+      local held = false
+      processes[#processes + 1] = nvim.system({ "sqlite3", directory .. "/turns.sqlite3" }, {
+        stdin = "BEGIN EXCLUSIVE;\nSELECT 'held';\n.shell sleep 0.5\nROLLBACK;\n",
+        stdout = function(_, data)
+          if data and data:find("held", 1, true) then
+            held = true
+          end
+        end,
+      })
+      wait_for(function()
+        return held
+      end)
+    end
     if event.type == "chunk" then
       reply = event.data.content.text
     end
   end)
   local id = assert(session:prompt("sensitive text never stored", function(_, err)
-    assert(err == nil, err)
+    completion_error = err
     done = true
   end))
   wait_for(function()
     return done and not session:inspect().recording_pending
   end)
+  MiniTest.expect.equality(completion_error, nil)
   MiniTest.expect.equality(nvim.json.decode(reply), { { id = id } })
   local db = directory .. "/turns.sqlite3"
   MiniTest.expect.equality(nvim.uv.fs_stat(directory).mode % 512, 448)

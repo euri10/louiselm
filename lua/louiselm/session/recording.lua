@@ -1,7 +1,7 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns process and filesystem effects.
 local nvim = vim
 
----@alias louiselm.session.RecordingErrorCode "invalid"|"unavailable"|"permissions"|"locked"|"corrupt"|"conflict"|"storage"
+---@alias louiselm.session.RecordingErrorCode "invalid"|"unavailable"|"permissions"|"locked"|"corrupt"|"conflict"|"storage"|"attribution"
 ---@class louiselm.session.RecordingError
 ---@field code louiselm.session.RecordingErrorCode
 ---@field message string Sanitized, never includes SQL or recorded values.
@@ -19,6 +19,25 @@ local nvim = vim
 ---@field observed_at string UTC timestamp.
 ---@field data table Normalized metadata only; see docs/turn-recording.md.
 
+---@class louiselm.session.OptionRequest
+---@field id string|number ACP request answered by this response.
+---@field option string Explicitly requested option ID; other changes are not attributed to this request.
+---@field value string|boolean Explicitly requested typed value.
+
+---@class louiselm.session.OptionTransition
+---@field kind "options"
+---@field id string Stable event identity, retained across write retries.
+---@field observer_id string Random identity of this live Session observation stream.
+---@field sequence integer Observation order within that stream, independent of timestamp ties.
+---@field agent string Configured Agent.
+---@field acp_session_id string Agent-side Session identity.
+---@field observed_at string UTC observation timestamp.
+---@field previous_options table<string, string|boolean> Values before this confirmed replacement.
+---@field options table<string, string|boolean> Values after this confirmed replacement.
+---@field source "notification"|"response" Observed ACP source, never inferred intent.
+---@field request? louiselm.session.OptionRequest Present only for the matched response.
+---@field turn_id? string Active attempt affected by this transition; its starting tuple stays immutable.
+
 ---@alias louiselm.session.RecordingCallback fun(error?: louiselm.session.RecordingError)
 ---@class louiselm.session.RecordingWrite
 ---@field sql string Encoded immutable transaction fragment.
@@ -32,7 +51,7 @@ local nvim = vim
 ---@field busy boolean Whether a bounded write is scheduled/running.
 ---@field error? louiselm.session.RecordingError Last failed write.
 ---@field changed fun(error: louiselm.session.RecordingError?, pending: boolean) Main-loop observer.
----@field append fun(self: louiselm.session.RecordingStore, record: louiselm.session.PreparedTurn|louiselm.session.TurnObservation, callback?: louiselm.session.RecordingCallback)
+---@field append fun(self: louiselm.session.RecordingStore, record: louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition, callback?: louiselm.session.RecordingCallback)
 ---@field flush fun(self: louiselm.session.RecordingStore, callback: louiselm.session.RecordingCallback)
 
 local M = {}
@@ -53,6 +72,16 @@ CREATE TABLE IF NOT EXISTS turn_events (
   PRIMARY KEY(turn_id, sequence)
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS turn_terminal ON turn_events(turn_id) WHERE kind = 'outcome';
+CREATE TABLE IF NOT EXISTS option_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  observer_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK(sequence > 0),
+  agent TEXT NOT NULL, acp_session_id TEXT NOT NULL, observed_at TEXT NOT NULL,
+  previous_options TEXT NOT NULL, options TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('notification','response')), request TEXT,
+  turn_id TEXT REFERENCES turns(id),
+  UNIQUE(observer_id, sequence)
+) STRICT;
+CREATE INDEX IF NOT EXISTS option_events_turn ON option_events(turn_id);
 ]]
 
 ---@param code louiselm.session.RecordingErrorCode
@@ -113,6 +142,20 @@ local function finite(value)
   return type(value) == "number" and value >= 0 and value < math.huge
 end
 
+---@param value unknown
+---@return boolean
+local function tuple_valid(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  for key, item in pairs(value) do
+    if not nonempty(key) or (type(item) ~= "string" and type(item) ~= "boolean") then
+      return false
+    end
+  end
+  return true
+end
+
 local function cost_valid(value)
   return value == nil
     or value == nvim.NIL
@@ -134,30 +177,82 @@ local TOKEN_FIELDS = {
   cached_write_tokens = true,
 }
 
----@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation
+---@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition
 ---@return string?
 local function record_sql(record)
   if type(record) ~= "table" then
     return nil
   end
   local columns, values, table_name, key, equal
-  if record.id ~= nil then
+  if record.kind == "options" then
+    if
+      not nonempty(record.id)
+      or not nonempty(record.observer_id)
+      or not finite(record.sequence)
+      or record.sequence < 1
+      or record.sequence % 1 ~= 0
+      or not nonempty(record.agent)
+      or not nonempty(record.acp_session_id)
+      or not nonempty(record.observed_at)
+      or not tuple_valid(record.previous_options)
+      or not tuple_valid(record.options)
+      or (record.turn_id ~= nil and not nonempty(record.turn_id))
+    then
+      return nil
+    end
+    local request = record.request
+    if record.source == "response" then
+      if
+        type(request) ~= "table"
+        or not nonempty(request.option)
+        or (type(request.value) ~= "string" and type(request.value) ~= "boolean")
+        or not (nonempty(request.id) or (finite(request.id) and request.id % 1 == 0))
+      then
+        return nil
+      end
+      request = { id = request.id, option = request.option, value = request.value }
+    elseif record.source ~= "notification" or request ~= nil then
+      return nil
+    end
+    columns = {
+      "id",
+      "observer_id",
+      "sequence",
+      "agent",
+      "acp_session_id",
+      "observed_at",
+      "previous_options",
+      "options",
+      "source",
+      "request",
+      "turn_id",
+    }
+    values = {
+      sql_text(record.id),
+      sql_text(record.observer_id),
+      tostring(record.sequence),
+      sql_text(record.agent),
+      sql_text(record.acp_session_id),
+      sql_text(record.observed_at),
+      sql_text(json(record.previous_options)),
+      sql_text(json(record.options)),
+      sql_text(record.source),
+      sql_text(request and json(request) or nil),
+      sql_text(record.turn_id),
+    }
+    table_name, key = "option_events", "id"
+  elseif record.id ~= nil then
     if
       not nonempty(record.id)
       or not nonempty(record.agent)
       or not nonempty(record.provider)
       or not nonempty(record.acp_session_id)
       or not nonempty(record.prepared_at)
-      or type(record.options) ~= "table"
+      or not tuple_valid(record.options)
       or not cost_valid(record.cost_baseline)
       or (record.model ~= nil and type(record.model) ~= "string" and type(record.model) ~= "boolean")
     then
       return nil
-    end
-    for option, value in pairs(record.options) do
-      if not nonempty(option) or (type(value) ~= "string" and type(value) ~= "boolean") then
-        return nil
-      end
     end
     columns = { "id", "agent", "provider", "acp_session_id", "prepared_at", "options", "model", "cost_baseline" }
     values = {
@@ -233,7 +328,7 @@ local function record_sql(record)
   end
   -- A conflicting retry deliberately violates NOT NULL, rolling back the batch.
   local checked = columns[#columns]
-  if table_name == "turns" then
+  if table_name == "turns" or table_name == "option_events" then
     checked = "options"
   end
   return "INSERT INTO "
@@ -378,9 +473,9 @@ local function drain(self)
         .. " AND (SELECT journal_mode = 'delete' FROM pragma_journal_mode)"
         .. " AND (SELECT synchronous = 3 FROM pragma_synchronous)"
         .. " AND (SELECT foreign_keys = 1 FROM pragma_foreign_keys)"
-        .. " AND (SELECT user_version IN (0,1) FROM pragma_user_version);",
+        .. " AND (SELECT user_version IN (0,1,2) FROM pragma_user_version);",
       SCHEMA,
-      "PRAGMA user_version=1;",
+      "PRAGMA user_version=2;",
     }
     for index = 1, count do
       sql[#sql + 1] = self.queue[index].sql
@@ -436,7 +531,7 @@ end
 ---Failure retains the encoded write for flush/retry; identical retries are idempotent.
 ---Extra caller fields are omitted, never persisted. No raw ACP payload is accepted.
 ---@param self louiselm.session.RecordingStore
----@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation
+---@param record louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition
 ---@param callback? louiselm.session.RecordingCallback
 function Store:append(record, callback)
   local ok, sql = pcall(record_sql, record)

@@ -305,8 +305,12 @@ local function handle_message(message, state, options)
       if options.recording_probe ~= nil then
         -- The mock already has a blocking stdin loop. A separate SQLite reader
         -- here proves the real peer sees committed admission, not client memory.
+        -- Dispatch observations can briefly lock the database after admission.
         local observed = nvim
-          .system({ "sqlite3", "-json", options.recording_probe, "SELECT id FROM turns ORDER BY id" }, { text = true })
+          .system(
+            { "sqlite3", "-cmd", ".timeout 1000", "-json", options.recording_probe, "SELECT id FROM turns ORDER BY id" },
+            { text = true }
+          )
           :wait()
         if observed.code ~= 0 then
           write_error(message.id, -32603, "mock could not read committed turns")

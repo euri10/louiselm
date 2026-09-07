@@ -26,8 +26,9 @@ local nvim = vim
 ---@field working_dir string ACP working directory.
 ---@field current_turn integer Accepted prompt attempts in this local Session, including failed admission; not durable identity.
 ---@field turn_identity? louiselm.session.TurnIdentity Owned identity for the latest accepted attempt; later option changes never rewrite it.
+---@field turn_options_changed boolean Whether the current/last attempt had confirmed value changes; unsuitable for fixed-option comparisons.
 ---@field turn_id? string Durable identity of the latest accepted prompt attempt; independent of local turn ordinal.
----@field recording_error? louiselm.session.RecordingError Last registry recording failure; subsequent dispatch requires recovery.
+---@field recording_error? louiselm.session.RecordingError Storage failure or unresolved current Provider; subsequent dispatch requires recovery.
 ---@field recording_pending boolean Whether the registry has unacknowledged writes.
 ---@field config_options louiselm.session.ConfigOption[] Supported agent-advertised options in priority order.
 ---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
@@ -66,6 +67,9 @@ local nvim = vim
 ---@field load_session_id string? Agent-side session identifier to load.
 ---@field prompt_callback? fun(result: unknown, error?: string) Current prompt completion callback.
 ---@field recording_turn? { id: string, sequence: integer, finished: boolean, dispatched: boolean } Active recording identity.
+---@field option_observer_id string Random identity of this live observation stream.
+---@field option_sequence integer Number of confirmed value transitions observed outside replay.
+---@field attribution_error? louiselm.session.RecordingError Unresolved current Provider; cleared only by a confirmed correction.
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
@@ -114,6 +118,18 @@ local STDERR_BUFFER_LIMIT = 4096
 local M = {}
 local Session = {}
 Session.__index = Session
+
+---@return string? id
+---@return string? error_message
+local function random_id()
+  local bytes, err = nvim.uv.random(16)
+  if bytes == nil then
+    return nil, "could not allocate recording identity: " .. tostring(err)
+  end
+  return (bytes:gsub(".", function(byte)
+    return string.format("%02x", byte:byte())
+  end))
+end
 
 -- Claude's SDK default for recent models streams signature-only "thinking"
 -- blocks (`display = "omitted"`, empty text), so a Claude Session never shows
@@ -335,6 +351,65 @@ local function reject_prompt(self, message)
   end
 end
 
+---@param options louiselm.session.ConfigOption[]
+---@return table<string, string|boolean>
+local function option_values(options)
+  local values = {}
+  for _, option in ipairs(options) do
+    values[option.id] = option.current_value
+  end
+  return values
+end
+
+-- Queue before publishing accepted state: reentrant observers may submit,
+-- Cancel, Dispose, or receive another update, and must not overtake this fact.
+---@param self louiselm.session.Session
+---@param options louiselm.session.ConfigOption[] Validated complete replacement.
+---@param request? louiselm.session.OptionRequest Matched response only.
+local function accept_options(self, options, request)
+  local previous = option_values(self.state.config_options)
+  local values = option_values(options)
+  local previous_model = Validation.model_value(self.state.config_options)
+  self.state.config_options = options
+  if self.state.context ~= nil and previous_model ~= Validation.model_value(options) then
+    self.state.context.stale = true
+  end
+  if self.state.status == "starting" or nvim.deep_equal(previous, values) then
+    return
+  end
+  local provider, provider_error = Provider.resolve(self.definition.provider, values)
+  self.attribution_error = provider == nil
+      and {
+        code = "attribution",
+        message = "agents." .. self.state.agent .. ".provider: " .. provider_error,
+      }
+    or nil
+  self.state.recording_error = nvim.deepcopy(self.owner.recording.error or self.attribution_error)
+  self.state.recording_pending = true
+  self.option_sequence = self.option_sequence + 1
+  local turn = self.recording_turn
+  local turn_id = turn ~= nil and not turn.finished and turn.id or nil
+  if turn_id ~= nil then
+    self.state.turn_options_changed = true
+  end
+  local observed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  ---@cast observed_at string -- This date format returns text, never a date table.
+  self.owner.recording:append({
+    kind = "options",
+    id = self.option_observer_id .. ":" .. self.option_sequence,
+    observer_id = self.option_observer_id,
+    sequence = self.option_sequence,
+    agent = self.state.agent,
+    acp_session_id = self.acp_session_id,
+    observed_at = observed_at,
+    previous_options = previous,
+    options = values,
+    source = request ~= nil and "response" or "notification",
+    request = request,
+    turn_id = turn_id,
+  })
+end
+
 ---@param self louiselm.session.Session
 ---@param message louiselm.acp.JsonRpcNotification
 local function handle_notification(self, message)
@@ -397,12 +472,7 @@ local function handle_notification(self, message)
       fail(self, "malformed ACP config_option_update notification")
       return
     end
-    local previous_model = Validation.model_value(self.state.config_options)
-    self.state.config_options = options
-    local current_model = Validation.model_value(options)
-    if self.state.context ~= nil and previous_model ~= nil and previous_model ~= current_model then
-      self.state.context.stale = true
-    end
+    accept_options(self, options)
     emit(self, "config_options_changed", nvim.deepcopy(options))
   elseif update_type == "usage_update" then
     local context, cost, cost_present = Validation.usage_update(update)
@@ -797,6 +867,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       status = "starting",
       working_dir = working_dir,
       current_turn = 0,
+      turn_options_changed = false,
       recording_pending = #owner.recording.queue > 0,
       recording_error = nvim.deepcopy(owner.recording.error),
       config_options = {},
@@ -817,6 +888,8 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     ready_callback_called = false,
     turn_done_turn = nil,
     prompt_progress = 0,
+    option_observer_id = "",
+    option_sequence = 0,
     prompt_watchdog_revision = 0,
     schedule = options.schedule or function(delay_ms, callback)
       nvim.defer_fn(callback, delay_ms)
@@ -835,6 +908,12 @@ end
 ---@return boolean started
 ---@return string? error_message Immediate connection or request error.
 function Session:start()
+  local observer_id, identity_error = random_id()
+  if observer_id == nil then
+    fail(self, identity_error or "could not allocate option observation identity")
+    return false, identity_error
+  end
+  self.option_observer_id = observer_id
   local client, connect_error = Acp.connect(self.definition, {
     cwd = self.state.working_dir,
     env = self.options.env,
@@ -929,25 +1008,20 @@ function Session:prompt(prompt, callback)
   if client == nil then
     return nil, "session has no ACP client"
   end
-  local values = {}
-  for _, option in ipairs(self.state.config_options) do
-    values[option.id] = option.current_value
-  end
+  local values = option_values(self.state.config_options)
   local provider, provider_error = Provider.resolve(self.definition.provider, values)
   if provider == nil then
     return nil, "agents." .. self.state.agent .. ".provider: " .. provider_error
   end
-  local random, random_error = nvim.uv.random(16)
-  if random == nil then
-    return nil, "could not allocate turn identity: " .. tostring(random_error)
+  local turn_id, identity_error = random_id()
+  if turn_id == nil then
+    return nil, identity_error
   end
-  local turn_id = random:gsub(".", function(byte)
-    return string.format("%02x", byte:byte())
-  end)
   prompt = nvim.deepcopy(prompt)
   clear_session_failure(self)
   self.state.current_turn = self.state.current_turn + 1
   self.state.turn_id = turn_id
+  self.state.turn_options_changed = false
   self.state.usage = nil
   self.state.turn_identity = {
     agent = self.state.agent,
@@ -985,10 +1059,7 @@ function Session:prompt(prompt, callback)
     if self.state.status ~= "prompting" then
       return
     end
-    local current_values = {}
-    for _, option in ipairs(self.state.config_options) do
-      current_values[option.id] = option.current_value
-    end
+    local current_values = option_values(self.state.config_options)
     local current_provider = Provider.resolve(self.definition.provider, current_values)
     if
       not nvim.deep_equal(current_values, prepared.options)
@@ -1103,9 +1174,9 @@ function Session:set_config_option(id, value, callback)
   if option.type == "boolean" then
     params.type = "boolean"
   end
-  local previous_model = Validation.model_value(self.state.config_options)
   set_status(self, "configuring")
-  local request_id, request_error = client:set_config_option(params, function(result, rpc_error)
+  local request_id, request_error
+  request_id, request_error = client:set_config_option(params, function(result, rpc_error)
     if self.state.status == "disposed" then
       return
     end
@@ -1127,10 +1198,8 @@ function Session:set_config_option(id, value, callback)
       end
       return
     end
-    self.state.config_options = options
-    if self.state.context ~= nil and previous_model ~= Validation.model_value(options) then
-      self.state.context.stale = true
-    end
+    ---@cast request_id string|number -- ACP returns the ID before receiving the asynchronous response.
+    accept_options(self, options, { id = request_id, option = id, value = value })
     set_status(self, "ready")
     emit(self, "config_options_changed", nvim.deepcopy(options))
     if callback ~= nil then
