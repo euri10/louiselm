@@ -119,6 +119,7 @@ local nvim = vim
 ---@field limits_unsubscribe fun() Agent-limit observer removal function.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget>> Click targets by window and minwid.
+---@field winbar_resize_autocmd? integer Resize observer removed on disposal.
 ---@field current_id string? Currently displayed session id.
 ---@field handoffs table<integer, louiselm.ui.Handoff>
 ---@field resume_client? louiselm.workflow.RunClient Client for durable Run mutations.
@@ -741,6 +742,7 @@ end
 ---@field group string
 ---@field text string
 ---@field attention boolean
+---@field overflow_glyph? string Glyph for a collapsible entry; absent for pinned permission/error entries.
 
 ---@param view louiselm.ui.ChatView
 ---@return louiselm.ui.WinbarEntry entry
@@ -755,10 +757,22 @@ local function background_winbar_entry(view)
     return { id = state.id, group = "LouiselmStatusError", text = "✗ " .. label, attention = true }
   end
   if view.unread_turn then
-    return { id = state.id, group = "LouiselmStatusWarning", text = "● " .. label, attention = true }
+    return {
+      id = state.id,
+      group = "LouiselmStatusWarning",
+      text = "● " .. label,
+      attention = true,
+      overflow_glyph = "●",
+    }
   end
   if state.status == "ready" then
-    return { id = state.id, group = "LouiselmStatusReady", text = "● " .. label, attention = false }
+    return {
+      id = state.id,
+      group = "LouiselmStatusReady",
+      text = "● " .. label,
+      attention = false,
+      overflow_glyph = "●",
+    }
   end
   if state.status == "disposed" then
     return { id = state.id, group = "LouiselmStatusWarning", text = "✗ " .. label, attention = true }
@@ -768,7 +782,41 @@ local function background_winbar_entry(view)
     group = STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning",
     text = "… " .. label,
     attention = false,
+    overflow_glyph = "…",
   }
+end
+
+---@param entries louiselm.ui.WinbarEntry[]
+---@param visible integer Number of collapsible entries to keep individually labelled.
+---@return louiselm.ui.WinbarEntry[]
+local function collapsed_winbar_entries(entries, visible)
+  local result = {} ---@type louiselm.ui.WinbarEntry[]
+  local summaries = {} ---@type louiselm.ui.WinbarEntry[]
+  local by_state = {} ---@type table<string, louiselm.ui.WinbarEntry>
+  local counts = {} ---@type table<string, integer>
+  local pinned = {} ---@type louiselm.ui.WinbarEntry[]
+  for _, entry in ipairs(entries) do
+    if entry.overflow_glyph == nil then
+      pinned[#pinned + 1] = entry
+    elseif visible > 0 then
+      result[#result + 1] = entry
+      visible = visible - 1
+    else
+      -- Color distinguishes unseen/seen dots; glyph distinguishes cancellation from completion.
+      local key = entry.group .. entry.overflow_glyph
+      local summary = by_state[key]
+      if summary == nil then
+        summary = { id = "", group = entry.group, text = "", attention = entry.attention }
+        by_state[key] = summary
+        summaries[#summaries + 1] = summary
+      end
+      counts[key] = (counts[key] or 0) + 1
+      summary.text = "+" .. counts[key] .. entry.overflow_glyph
+    end
+  end
+  nvim.list_extend(result, summaries)
+  nvim.list_extend(result, pinned)
+  return result
 end
 
 ---@param entries louiselm.ui.WinbarEntry[]
@@ -869,33 +917,18 @@ local function chat_winbar(self, view, win)
     entries[#entries + 1] = entry
   end
   if winbar_entries_width(entries) > available then
-    entries = {}
-    local visible_quiet = 0
-    for index, entry in ipairs(quiet) do
-      local candidate = {} ---@type louiselm.ui.WinbarEntry[]
-      for _, visible in ipairs(entries) do
-        candidate[#candidate + 1] = visible
+    local all = entries
+    entries = collapsed_winbar_entries(all, 0)
+    local visible = 0
+    for _, entry in ipairs(all) do
+      if entry.overflow_glyph ~= nil then
+        visible = visible + 1
+        local candidate = collapsed_winbar_entries(all, visible)
+        if winbar_entries_width(candidate) > available then
+          break
+        end
+        entries = candidate
       end
-      candidate[#candidate + 1] = entry
-      local hidden = #quiet - index
-      if hidden > 0 then
-        candidate[#candidate + 1] = { id = "", group = "Normal", text = "+" .. hidden, attention = false }
-      end
-      for _, urgent in ipairs(attention) do
-        candidate[#candidate + 1] = urgent
-      end
-      if winbar_entries_width(candidate) > available then
-        break
-      end
-      entries[#entries + 1] = entry
-      visible_quiet = index
-    end
-    local hidden = #quiet - visible_quiet
-    if hidden > 0 then
-      entries[#entries + 1] = { id = "", group = "Normal", text = "+" .. hidden, attention = false }
-    end
-    for _, entry in ipairs(attention) do
-      entries[#entries + 1] = entry
     end
   end
 
@@ -2857,6 +2890,15 @@ function M.new(api, options)
     return nil, limits_error or "could not observe Agent account limits"
   end
   chat.limits_unsubscribe = limits_unsubscribe
+  chat.winbar_resize_autocmd = nvim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    callback = function()
+      nvim.schedule(function()
+        if not chat.disposed then
+          render_winbars(chat)
+        end
+      end)
+    end,
+  })
   return chat, nil
 end
 
@@ -4690,6 +4732,10 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  if self.winbar_resize_autocmd ~= nil then
+    nvim.api.nvim_del_autocmd(self.winbar_resize_autocmd)
+    self.winbar_resize_autocmd = nil
+  end
   self.attention:dispose()
   if self.park_observer ~= nil then
     self.park_observer:dispose()

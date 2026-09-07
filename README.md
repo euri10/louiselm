@@ -118,6 +118,13 @@ the Agent name appears. Redundant default quota labels are omitted; distinct
 quota buckets keep their names. Narrow windows truncate the current Session's
 details before background attention entries.
 
+Background Sessions that do not fit collapse into counts with the same status
+colors and glyphs: blue `+2…` for two working Sessions, yellow `+1●` for an unseen
+completed response, and green `+1●` for a ready Session already seen. Permission
+requests and errors keep their labelled entries. Click any count to open the
+Session picker, or use `:LouiselmSessionSwitch`. Counts update as Sessions change
+state and when windows resize.
+
 `:LouiselmSessionRename` changes the human-readable name (`Review` above).
 `session-7` is an internal handle and the initial default name; it stays stable
 after renaming. `codex/<uuid>` identifies the Agent conversation and can be

@@ -5432,6 +5432,220 @@ T["chat"]["keeps attention sessions visible when quiet sessions overflow"] = fun
   chat:dispose()
 end
 
+T["chat"]["groups overflow by working unseen and seen state"] = function()
+  local original_columns = nvim.o.columns
+  MiniTest.finally(function()
+    nvim.o.columns = original_columns
+  end)
+  nvim.o.columns = 72
+  local sessions = {
+    fake_session("session-1", "working-one"),
+    fake_session("session-2", "working-two"),
+    fake_session("session-3", "unseen"),
+    fake_session("session-4", "seen"),
+    fake_session("session-5", "current"),
+  }
+  sessions[1].state.status = "prompting"
+  sessions[2].state.status = "prompting"
+  sessions[5].state.acp_session_id = "01a07aad-6124-75b2-92f0-dbe90d9745fe"
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2", "session-3", "session-4", "session-5" }
+  end
+  local chat = assert(Chat.new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  for _, session in ipairs(sessions) do
+    assert(chat:attach(session))
+  end
+
+  local function expect_groups(expected)
+    local winbar = nvim.api.nvim_get_option_value("winbar", { win = 0 })
+    local rendered = nvim.api.nvim_eval_statusline(winbar, { use_winbar = true, highlights = true })
+    local groups = {}
+    for index, highlight in ipairs(rendered.highlights) do
+      local next_highlight = rendered.highlights[index + 1]
+      local text = rendered.str:sub(highlight.start + 1, next_highlight and next_highlight.start or #rendered.str)
+      if text:sub(1, 1) == "+" then
+        groups[#groups + 1] = text .. " " .. highlight.group
+      end
+    end
+    table.sort(groups)
+    table.sort(expected)
+    MiniTest.expect.equality(groups, expected)
+  end
+
+  -- UI transition exercise using the existing Session event API, not an ACP wire fixture.
+  local function complete_in_background(session)
+    local timer = assert(nvim.uv.new_timer())
+    local emitted = false
+    local delivered = false
+    timer:start(0, 0, function()
+      emitted = nvim.in_fast_event()
+      session.state.status = "ready"
+      session:emit({ type = "state_changed", session_id = session.state.id, data = { status = "ready" } })
+      session:emit({ type = "turn_done", session_id = session.state.id, data = { stopReason = "end_turn" } })
+      nvim.schedule(function()
+        delivered = true
+      end)
+      timer:stop()
+      timer:close()
+    end)
+    MiniTest.expect.equality(
+      nvim.wait(200, function()
+        return delivered
+      end, 1),
+      true
+    )
+    MiniTest.expect.equality(emitted, true)
+  end
+
+  complete_in_background(sessions[3])
+  expect_groups({ "+2… LouiselmStatusActive", "+1● LouiselmStatusWarning", "+1● LouiselmStatusReady" })
+  local picks = 0
+  nvim.ui.select = function(items, _, callback)
+    MiniTest.expect.equality(#items, 5)
+    picks = picks + 1
+    callback(nil)
+  end
+  for target = 1, 3 do
+    assert(chat:winbar_click(target))
+  end
+  MiniTest.expect.equality(picks, 3)
+  MiniTest.expect.equality(chat.current_id, "session-5")
+
+  sessions[2].state.status = "cancelling"
+  sessions[2]:emit({ type = "state_changed", session_id = "session-2", data = { status = "cancelling" } })
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("LouiselmStatusWarning#+1…", 1, true) ~= nil
+    end, 1),
+    true
+  )
+  expect_groups({
+    "+1… LouiselmStatusActive",
+    "+1… LouiselmStatusWarning",
+    "+1● LouiselmStatusWarning",
+    "+1● LouiselmStatusReady",
+  })
+  sessions[2].state.status = "prompting"
+  sessions[2]:emit({ type = "state_changed", session_id = "session-2", data = { status = "prompting" } })
+
+  complete_in_background(sessions[1])
+  expect_groups({ "+1… LouiselmStatusActive", "+2● LouiselmStatusWarning", "+1● LouiselmStatusReady" })
+  assert(chat:switch("session-1"))
+  assert(chat:switch("session-5"))
+  expect_groups({ "+1… LouiselmStatusActive", "+1● LouiselmStatusWarning", "+2● LouiselmStatusReady" })
+  assert(chat:switch("session-3"))
+  assert(chat:switch("session-5"))
+  expect_groups({ "+1… LouiselmStatusActive", "+3● LouiselmStatusReady" })
+
+  sessions[2].state.status = "waiting_permission"
+  sessions[2]:emit({ type = "state_changed", session_id = "session-2", data = { status = "waiting_permission" } })
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return nvim.api.nvim_get_option_value("winbar", { win = 0 }):find("! working-two", 1, true) ~= nil
+    end, 1),
+    true
+  )
+  expect_groups({ "+3● LouiselmStatusReady" })
+  assert(chat:winbar_click(2))
+  MiniTest.expect.equality(chat.current_id, "session-2")
+  assert(chat:switch("session-5"))
+  sessions[2].state.status = "error"
+  sessions[2]:emit({ type = "state_changed", session_id = "session-2", data = { status = "error" } })
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      local rendered = nvim.api.nvim_eval_statusline(nvim.api.nvim_get_option_value("winbar", { win = 0 }), {
+        use_winbar = true,
+      })
+      return rendered.str:find("✗ working-two", 1, true) ~= nil
+    end, 1),
+    true
+  )
+  expect_groups({ "+3● LouiselmStatusReady" })
+end
+
+T["chat"]["refreshes overflow and click targets on resize and disposes queued refreshes"] = function()
+  local original_columns = nvim.o.columns
+  local resize_hooks = #nvim.api.nvim_get_autocmds({ event = "WinResized" })
+  MiniTest.finally(function()
+    nvim.o.columns = original_columns
+  end)
+  nvim.o.columns = 45
+  local first = fake_session("session-1", "a")
+  local second = fake_session("session-2", "second-with-a-very-long-name")
+  local third = fake_session("session-3", "third-with-a-very-long-name")
+  local current = fake_session("session-4", "current")
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-2", "session-3", "session-4" }
+  end
+  local chat = assert(Chat.new(api))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  assert(chat:attach(second))
+  assert(chat:attach(third))
+  assert(chat:attach(current))
+  local function rendered()
+    return nvim.api.nvim_eval_statusline(nvim.api.nvim_get_option_value("winbar", { win = 0 }), {
+      use_winbar = true,
+    }).str
+  end
+  MiniTest.expect.equality(rendered():find("● a", 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered():find(second.state.agent, 1, true), nil)
+
+  nvim.o.columns = 200
+  nvim.api.nvim_exec_autocmds("VimResized", {})
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return rendered():find(second.state.agent, 1, true) ~= nil
+    end, 1),
+    true
+  )
+  MiniTest.expect.equality(rendered():find("+", 1, true), nil)
+  assert(chat:winbar_click(2))
+  MiniTest.expect.equality(chat.current_id, "session-2")
+  assert(chat:switch("session-4"))
+
+  nvim.o.columns = 45
+  nvim.api.nvim_exec_autocmds("WinResized", {})
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return rendered():find("● a", 1, true) ~= nil and rendered():find("+2●", 1, true) ~= nil
+    end, 1),
+    true
+  )
+  local picker_opened = false
+  nvim.ui.select = function(_, _, callback)
+    picker_opened = true
+    callback(nil)
+  end
+  assert(chat:winbar_click(2))
+  MiniTest.expect.equality(picker_opened, true)
+  MiniTest.expect.equality(chat.current_id, "session-4")
+
+  nvim.api.nvim_exec_autocmds("WinResized", {})
+  current:emit({ type = "state_changed", session_id = "session-4", data = { status = "ready" } })
+  chat:dispose()
+  local restored = nvim.api.nvim_get_option_value("winbar", { win = 0 })
+  local drained = false
+  nvim.schedule(function()
+    drained = true
+  end)
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return drained
+    end, 1),
+    true
+  )
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("winbar", { win = 0 }), restored)
+  MiniTest.expect.equality(#nvim.api.nvim_get_autocmds({ event = "WinResized" }), resize_hooks)
+end
+
 T["chat"]["opens the setup overview and applies a selected option"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {
