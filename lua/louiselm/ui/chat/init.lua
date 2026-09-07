@@ -479,36 +479,26 @@ local function statusline_escape(value)
 end
 
 ---@param state louiselm.session.State
----@return string
-local function session_identity(state)
-  local parts = { state.id }
-  if state.name ~= nil and state.name ~= state.id then
-    parts[#parts + 1] = state.name
-  end
-  parts[#parts + 1] = state.status or "unknown"
-  if state.source == "loaded" then
-    parts[#parts + 1] = "loaded"
-  end
-  if state.skills_policy ~= nil then
-    parts[#parts + 1] = "skills: " .. state.skills_policy
-  end
-  parts[#parts + 1] = state.acp_session_id ~= nil and report_id(state.agent, state.acp_session_id) or state.agent
-  return table.concat(parts, " · ")
-end
-
----@param state louiselm.session.State
----@return string
-local function session_summary(state)
-  local parts = { session_identity(state) }
+---@return table<string, string>
+local function session_cells(state)
+  local cells = {
+    id = state.id,
+    name = state.name ~= state.id and state.name or "",
+    status = state.status or "unknown",
+    skills = state.skills_policy and "skills: " .. state.skills_policy or "",
+    agent = state.agent,
+    loaded = state.source == "loaded" and "loaded" or "",
+    identity = state.acp_session_id and report_id(state.agent, state.acp_session_id) or "",
+  }
   if state.activity ~= nil then
-    parts[#parts + 1] = "activity=" .. single_line(state.activity)
+    cells.activity = "activity=" .. state.activity
   end
   for _, option in ipairs(state.config_options or {}) do
-    parts[#parts + 1] = option.name .. "=" .. option_display_value(option)
+    cells["option:" .. option.id] = option.name .. "=" .. option_display_value(option)
   end
   if state.context ~= nil then
     local stale = state.context.stale and " stale" or ""
-    parts[#parts + 1] = string.format(
+    cells.context = string.format(
       "context=%s/%s (%.0f%%%s)",
       format_number(state.context.used),
       format_number(state.context.size),
@@ -517,9 +507,55 @@ local function session_summary(state)
     )
   end
   if state.cost ~= nil then
-    parts[#parts + 1] = "cost=" .. format_number(state.cost.amount) .. " " .. state.cost.currency
+    cells.cost = "cost=" .. format_number(state.cost.amount) .. " " .. state.cost.currency
   end
-  return table.concat(parts, " · ")
+  return cells
+end
+
+---@param sessions louiselm.session.Session[]
+---@return fun(session: louiselm.session.Session): string
+local function session_formatter(sessions)
+  local columns = { "id", "name", "status", "skills", "agent", "loaded" }
+  local seen_options = {}
+  local rows = {}
+  -- Freeze one opening so filtering and repeated rendering use the same widths/values.
+  for index, session in ipairs(sessions) do
+    local state = session:inspect()
+    rows[index] = session_cells(state)
+    for _, option in ipairs(state.config_options or {}) do
+      if not seen_options[option.id] then
+        seen_options[option.id] = true
+        columns[#columns + 1] = "option:" .. option.id
+      end
+    end
+  end
+  nvim.list_extend(columns, { "activity", "context", "cost", "identity" })
+
+  local widths = {}
+  for _, row in ipairs(rows) do
+    for _, column in ipairs(columns) do
+      -- Tabs depend on their starting column; normalize them before measuring cells.
+      local value = single_line(row[column] or ""):gsub("\t", " ")
+      row[column] = value
+      widths[column] = math.max(widths[column] or 0, nvim.fn.strdisplaywidth(value))
+    end
+  end
+
+  local labels = {}
+  for index, row in ipairs(rows) do
+    local parts = {}
+    for _, column in ipairs(columns) do
+      local width = widths[column]
+      if width > 0 then
+        local value = row[column]
+        parts[#parts + 1] = value .. string.rep(" ", width - nvim.fn.strdisplaywidth(value))
+      end
+    end
+    labels[sessions[index]] = table.concat(parts, " · ")
+  end
+  return function(session)
+    return labels[session]
+  end
 end
 
 ---@param session louiselm.session.DiscoveredSession
@@ -3762,9 +3798,7 @@ function Chat:switch_session()
   end
   Picker.select(sessions, {
     prompt = "louiselm session: ",
-    format_item = function(session)
-      return session_summary(session:inspect())
-    end,
+    format_item = session_formatter(sessions),
   }, function(session)
     if session ~= nil then
       self:switch(session:inspect().id)

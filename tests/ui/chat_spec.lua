@@ -5956,6 +5956,119 @@ T["chat"]["ignores a queued setup overview after disposal"] = function()
   MiniTest.expect.equality(selects, 0)
 end
 
+T["chat"]["aligns Session picker columns with missing names and different option sets"] = function()
+  -- Presentation examples from 20260907_1752_1920x1200_1788796342.png;
+  -- these are public Session snapshots, not ACP wire fixtures.
+  local sessions = {
+    fake_session("session-1", "codex"),
+    fake_session("session-22", "claude"),
+    fake_session("session-3", "codex"),
+  }
+  sessions[1].state.name = "界界界界"
+  sessions[1].state.status = "prompting"
+  sessions[1].state.skills_policy = "inject"
+  sessions[1].state.acp_session_id = "first-acp"
+  sessions[1].state.config_options = {
+    { id = "mode", name = "Mode", type = "select", current_value = "full" },
+    {
+      id = "model",
+      name = "Model",
+      type = "select",
+      current_value = "astra",
+      options = { { value = "astra", name = "GPT-6-Astra" } },
+    },
+    { id = "reasoning", name = "Reasoning effort", type = "select", current_value = "Xhigh" },
+  }
+  sessions[1].state.context = { used = 25, size = 100, percentage = 25, stale = true }
+  sessions[1].state.cost = { amount = 0.25, currency = "USD" }
+  sessions[2].state.name = "d6fv.4.9"
+  sessions[2].state.source = "loaded"
+  sessions[2].state.skills_policy = "native"
+  sessions[2].state.acp_session_id = "second-acp"
+  sessions[2].state.activity = "review\tcode\nnow"
+  sessions[2].state.config_options = {
+    { id = "reasoning", name = "Reasoning effort", type = "select", current_value = "High" },
+    { id = "model", name = "Model", type = "select", current_value = "Sonnet" },
+    { id = "fast", name = "Fast mode", type = "boolean", current_value = false },
+  }
+
+  local api = fake_api()
+  api.list_sessions = function()
+    return { "session-1", "session-22", "session-3" }
+  end
+  local chat = assert(Chat.new(api))
+  for _, session in ipairs(sessions) do
+    assert(chat:attach(session))
+  end
+  local rows, choose
+  nvim.ui.select = function(items, options, callback)
+    MiniTest.expect.equality(items, sessions)
+    rows = nvim.tbl_map(options.format_item, items)
+    choose = callback
+  end
+  assert(chat:switch_session())
+
+  local boundaries = {}
+  local cells = {}
+  for index, row in ipairs(rows) do
+    cells[index] = nvim.tbl_map(nvim.trim, nvim.split(row, " · ", { plain = true }))
+    local offsets = {}
+    for position in row:gmatch("() · ") do
+      offsets[#offsets + 1] = nvim.fn.strdisplaywidth(row:sub(1, position - 1))
+    end
+    boundaries[index] = offsets
+  end
+  MiniTest.expect.equality(cells, {
+    {
+      "session-1",
+      "界界界界",
+      "prompting",
+      "skills: inject",
+      "codex",
+      "",
+      "Mode=full",
+      "Model=GPT-6-Astra",
+      "Reasoning effort=Xhigh",
+      "",
+      "",
+      "context=25/100 (25% stale)",
+      "cost=0.25 USD",
+      "codex/first-acp",
+    },
+    {
+      "session-22",
+      "d6fv.4.9",
+      "ready",
+      "skills: native",
+      "claude",
+      "loaded",
+      "",
+      "Model=Sonnet",
+      "Reasoning effort=High",
+      "Fast mode=false",
+      "activity=review code now",
+      "",
+      "",
+      "claude/second-acp",
+    },
+    { "session-3", "", "ready", "", "codex", "", "", "", "", "", "", "", "", "" },
+  })
+  MiniTest.expect.equality(boundaries[1], boundaries[2])
+  MiniTest.expect.equality(boundaries[1], boundaries[3])
+  choose(nil)
+  MiniTest.expect.equality(chat.current_id, "session-3")
+
+  -- Each opening measures fresh state; filtering/rendering one opening stays aligned.
+  sessions[3].state.name = "session-3"
+  sessions[1].state.name = "A much longer name"
+  assert(chat:switch_session())
+  MiniTest.expect.equality(rows[1]:find("A much longer name", 1, true) ~= nil, true)
+  MiniTest.expect.equality(nvim.trim(nvim.split(rows[3], " · ", { plain = true })[2]), "")
+  choose(sessions[2])
+  MiniTest.expect.equality(chat.current_id, "session-22")
+  chat:dispose()
+end
+
 T["chat"]["switches with telemetry rows and closes only the selected session"] = function()
   local first = fake_session("session-1", "one")
   first.state.acp_session_id = "one-acp"
@@ -5986,12 +6099,14 @@ T["chat"]["switches with telemetry rows and closes only the selected session"] =
   MiniTest.expect.equality(chat.current_id, "session-1")
   assert(chat:switch("session-2"))
   assert(chat:close_session())
-  nvim.ui.select = original_select
 
   MiniTest.expect.equality(prompts[1].prompt, "louiselm session: ")
-  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready · one/one-acp")
+  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready     · one · one/one-acp")
   first.state.name = "First"
-  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · First · ready · one/one-acp")
+  MiniTest.expect.equality(prompts[1].format_item(first), "session-1 · ready     · one · one/one-acp")
+  assert(chat:switch_session())
+  MiniTest.expect.equality(prompts[3].format_item(first), "session-1 · First · ready · one · one/one-acp")
+  nvim.ui.select = original_select
   MiniTest.expect.equality(prompts[2].prompt, "close active louiselm session? ")
   MiniTest.expect.equality(second.disposed, true)
   MiniTest.expect.equality(first.disposed, false)

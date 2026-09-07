@@ -173,6 +173,10 @@ requests and errors keep their labelled entries. Click any count to open the
 Session picker, or use `:LouiselmSessionSwitch`. Counts update as Sessions change
 state and when windows resize.
 
+The Session picker aligns fields in columns, leaving blank cells for missing
+names or metadata. Agent and options precede the full Agent/ACP Session ID.
+Rows are a snapshot; reopen the picker to refresh their values and column widths.
+
 `:LouiselmSessionRename` changes the human-readable name (`Review` above).
 `session-7` is an internal handle and the initial default name; it stays stable
 after renaming. `codex/<uuid>` identifies the Agent conversation and can be
