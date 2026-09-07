@@ -16,7 +16,6 @@
 		profileCoreTitle: document.getElementById('profile-core-title'),
 		profileCoreBody: document.getElementById('profile-core-body'),
 		profileNote: document.getElementById('profile-note'),
-		disclosure: document.getElementById('demo-disclosure'),
 		statusLabel: document.getElementById('status-label'),
 		completionInstallLink: document.getElementById('completion-install-link'),
 		fallbackInstallLink: document.getElementById('fallback-install-link'),
@@ -54,7 +53,6 @@
 			profileNote:
 				'Snacks and which-key are pinned, self-hosted demo extras—not LouiseLM dependencies. Changing profile restarts the tour.',
 			replayOther: 'Replay in {profile}',
-			disclosure: 'Scripted demo—no Agent or Provider connected.',
 			statusLabel: 'Status',
 			install: 'Install LouiseLM locally',
 			type: 'Type it for me',
@@ -160,7 +158,6 @@
 			profileCoreBody: 'LouiseLM 配合 Neovim 原生编号选择器。',
 			profileNote: 'Snacks 与 which-key 是固定版本、自托管的演示附加项，并非 LouiseLM 依赖。切换体验会重新开始导览。',
 			replayOther: '使用{profile}重新导览',
-			disclosure: '脚本化演示——未连接任何 Agent 或 Provider。',
 			statusLabel: '状态',
 			install: '在本机安装 LouiseLM',
 			type: '帮我输入',
@@ -325,7 +322,6 @@
 		elements.profileCoreTitle.textContent = value.profileCoreTitle;
 		elements.profileCoreBody.textContent = value.profileCoreBody;
 		elements.profileNote.textContent = value.profileNote;
-		elements.disclosure.textContent = value.disclosure;
 		elements.statusLabel.textContent = value.statusLabel;
 		elements.completionInstallLink.textContent = value.install;
 		elements.fallbackInstallLink.textContent = value.install;
@@ -429,6 +425,27 @@
 			observer.observe(elements.runtimeStatus, { childList: true, characterData: true, subtree: true });
 			inspect();
 		});
+	}
+
+	function fitGrid() {
+		const measure = document.createElement('canvas').getContext('2d');
+		if (!measure) throw new Error('Could not measure the Neovim font');
+		let previousSize = '';
+		const observer = new ResizeObserver(([entry]) => {
+			const style = getComputedStyle(elements.grid);
+			measure.font = `${style.fontSize} ${style.fontFamily}`;
+			const columns = Math.max(1, Math.floor(entry.contentRect.width / measure.measureText('M').width));
+			const rows = Math.max(1, Math.floor(entry.contentRect.height / parseFloat(style.lineHeight)));
+			const size = `${columns}:${rows}`;
+			if (size === previousSize) return;
+			previousSize = size;
+			globalThis.nvim.request('nvim_ui_try_resize', [columns, rows]).catch((error) => {
+				observer.disconnect();
+				fail(error);
+			});
+		});
+		// The document owns this observer, including across back/forward-cache restores.
+		observer.observe(elements.grid);
 	}
 
 	async function writeFile(path, content) {
@@ -641,6 +658,7 @@ return true`,
 		setPhase('booting');
 		await loadRuntime();
 		await waitForUi();
+		fitGrid();
 		setPhase('installing');
 		await installFiles();
 		const initialized = await initializeLouiseLM();

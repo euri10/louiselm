@@ -56,7 +56,7 @@ assert.match(html, /id="fallback-install-link"/);
 assert.match(html, /id="profile-enhanced"/);
 assert.match(html, /id="profile-core"/);
 assert.match(bootstrap, /LouiseLM 交互式演示/);
-assert.match(bootstrap, /scripted demo—no Agent or Provider connected/i);
+assert.match(bootstrap, /The guided Agent behavior is scripted/);
 assert.match(bootstrap, /LouiselmHandOff/);
 assert.match(bootstrap, /LouiselmSessionSwitch/);
 assert.match(bootstrap, /LouiselmResume/);

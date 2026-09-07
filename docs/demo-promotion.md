@@ -37,8 +37,8 @@ Leave Result as `pending` until the entire row passes on the deployed route.
 
 For each row, start in a fresh browser context and verify:
 
-1. The disclosure remains visible and says that the demo is scripted and no
-   Agent or Provider is connected.
+1. The summary identifies the guided Agent behavior as scripted, and the
+   Neovim conversation retains its scripted-demo labels.
 2. An arbitrary non-empty prompt opens the real LouiseLM diff review. Reject
    once and confirm the file is unchanged; retry, accept, and confirm the
    browser-local file now contains `left + right`.
@@ -53,6 +53,24 @@ For each row, start in a fresh browser context and verify:
    the native numbered selector and never requests `vendor-bundle.js`.
    Enhanced uses the searchable Snacks picker, shows LouiseLM descriptions
    after `Space l`, and never loads `snacks.util.spawn`.
+7. The compact guide and complete Neovim panel fit without page scrolling at
+   browser content sizes 1920×1030, 1440×900, and 1280×720. Resize while on the
+   longest instruction and on completion; confirm all controls and Neovim's
+   bottom status line remain visible. Neovim buffer scrolling stays inside
+   Neovim. The static mobile/unsupported fallback may scroll normally.
+
+With the existing `playwright-cli` tool, open the built artifact served with
+the isolation headers below, then run the layout regression:
+
+```bash
+playwright-cli open http://127.0.0.1:8765/demo/
+playwright-cli run-code --filename=scripts/test-demo-layout.js
+```
+
+The check walks guide steps using Skip in both languages and profiles at all
+three sizes, measuring document overflow, guide controls, and rendered Neovim
+rows/columns. It supplements the real-action journey above. A `### Error`
+result fails the check even if the CLI process exits zero.
 
 ## Privacy and fallback audit
 
