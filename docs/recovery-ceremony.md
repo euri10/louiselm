@@ -44,15 +44,18 @@ neither USB nor a browser: the maintainer must explicitly arrange the hardware
 and trusted-browser access needed by a real ceremony. Agent preparation does
 not attach devices, forward an agent socket or run these signing/setup commands.
 
-Generate two fresh credentials on the same token. Choose unused file names;
-do not overwrite existing keys. Hardware attestation is not validated by this
-tool, but signatures must prove user presence and verification.
+Generate two fresh credentials on the same token. Choose unused file names
+and resident user IDs; do not overwrite existing keys. `-C` only supplies a
+comment, so different comments/file names do not distinguish token credentials.
+The explicit `-O user=` values below keep the two resident identities distinct.
+If any token/file overwrite prompt appears, answer `n` and stop. Hardware
+attestation is not validated, but signatures must prove presence and verification.
 
 ```sh
 ssh-keygen -t ed25519-sk -O resident -O verify-required \
-  -C louiselm-primary -f "$HOME/.ssh/id_louiselm_primary"
+  -O user=louiselm-primary -C louiselm-primary -f "$HOME/.ssh/id_louiselm_primary"
 ssh-keygen -t ed25519-sk -O resident -O verify-required \
-  -C louiselm-release -f "$HOME/.ssh/id_louiselm_release"
+  -O user=louiselm-release -C louiselm-release -f "$HOME/.ssh/id_louiselm_release"
 
 # DEV_TOOL is the reviewed, not-yet-installed binary; FIRST_BUNDLE and
 # SECOND_BUNDLE are the reviewed acceptance bundles (transfer recipe below).
@@ -127,7 +130,10 @@ It is not a claim of actual Android acceptance or Verified posture.
 Only explicitly named replacements change. Replacement signing credentials must
 be new and distinct and prove possession of the exact plan. Their hardware
 policy is inherited; the CLI cannot weaken it. Generate replacement hardware
-credentials as above before invoking a key replacement.
+credentials as above before invoking a key replacement, with new unused
+resident user IDs as well as new file paths (for example `-O user=louiselm-primary2`
+and `id_louiselm_primary2`). Reusing an existing resident identity can replace
+the old token credential before the recovery transaction is authorized.
 
 | Available authority | Example operation |
 | --- | --- |
