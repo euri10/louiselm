@@ -171,8 +171,8 @@ then clarity, simplicity, and performance.
   or `ignoreFailures` to make gates green. A narrow suppression names the
   diagnostic and explains the unavoidable boundary.
 - Transitional gate gap: existing Android Lint warnings are visible but not
-  fatal. `louiselm-16a6` tracks their review and enabling `warningsAsErrors`;
-  `louiselm-0u2t` tracks missing device-transfer exclusions. Do not describe lint
+  fatal. `louiselm-16a6` tracks their review and enabling `warningsAsErrors`.
+  Do not describe lint
   as warning-clean until that work lands, or silently upgrade SDKs/dependencies
   or weaken security to satisfy an advisory.
 - CI runs the same Android gates. Report unavailable/failed checks; do not claim

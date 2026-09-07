@@ -45,6 +45,13 @@ routine TLS certificate renewal with that key remains trusted. The long-lived
 device credential and receiver identity are encrypted by Android Keystore.
 WorkManager retries only network, timeout, rate-limit, and server failures.
 
+App data opts out of Android backup. Android 12+ extraction rules explicitly
+exclude all app storage domains from cloud backup and device-to-device transfer,
+including recordings and device-bound pairing credentials. Older devices retain
+`allowBackup=false`. The packaged policy is regression-tested; OEM transfer
+behavior has not been physically verified. See
+[Android backup rules](https://developer.android.com/identity/data/autobackup).
+
 Configure one private receiver profile before running
 `:LouiselmCapturePair`; the receiver refuses pairing while it is loopback-only.
 The Android app does not support version-1 exact-certificate pairing offers.
