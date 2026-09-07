@@ -64,7 +64,7 @@ fn bootstrap(fixture: &Fixture) -> (SshKey, SshKey) {
             "bootstrap",
             "--primary",
             &primary.public_key(),
-            "--recovery",
+            "--release",
             &recovery.public_key(),
         ],
     );
@@ -242,56 +242,19 @@ fn a_quarantine_without_a_reason_is_refused() {
 }
 
 #[test]
-fn the_rotation_payload_is_printed_exactly_as_it_will_be_signed() {
+fn obsolete_recovery_role_and_rotation_commands_are_refused_without_mutation() {
     let fixture = Fixture::new();
-    let (_primary, recovery) = bootstrap(&fixture);
-    let replacement = SshKey::generate(&fixture, "primary-2");
-
-    let printed = run(
-        &fixture,
-        &[
-            "trust",
-            "rotation-payload",
-            "--role",
-            "primary",
-            "--key",
-            &replacement.public_key(),
-        ],
-    );
-    assert_eq!(printed.status, 0, "stderr was: {}", printed.stderr);
-    assert!(
-        !printed.stdout.ends_with('\n'),
-        "a trailing newline would change the bytes being signed",
-    );
-
-    let signature = recovery.sign(
-        louiselm_skills::sshsig::TRUST_NAMESPACE,
-        printed.stdout.as_bytes(),
-    );
-    let signature_path = fixture.path("rotation.sig");
-    write_file(&signature_path, &signature);
-
-    let rotated = run(
-        &fixture,
-        &[
-            "trust",
-            "rotate",
-            "--role",
-            "primary",
-            "--key",
-            &replacement.public_key(),
-            "--signature",
-            signature_path.to_str().expect("path is UTF-8"),
-        ],
-    );
-    assert_eq!(rotated.status, 0, "rotate failed: {}", rotated.stderr);
-
-    let shown = run(&fixture, &["trust", "show"]);
-    assert!(
-        shown.stdout.contains(&replacement.public_key()),
-        "the new primary is enrolled: {}",
-        shown.stdout,
-    );
+    bootstrap(&fixture);
+    let before = std::fs::read(fixture.path("store/trust/roles.json")).unwrap();
+    for command in ["rotation-payload", "rotate"] {
+        let output = run(&fixture, &["trust", command]);
+        assert_eq!(output.status, 1);
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            std::fs::read(fixture.path("store/trust/roles.json")).unwrap(),
+            before
+        );
+    }
 }
 
 #[test]

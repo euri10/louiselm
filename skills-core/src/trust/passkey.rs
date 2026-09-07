@@ -46,6 +46,28 @@ impl EnrolledPasskey {
     pub fn fingerprint(&self) -> Result<String, RecoveryError> {
         Ok(Digest::of(self.key()?.cred_id().as_ref()).to_string())
     }
+
+    /// Whether the verified authenticator reports eligible and completed backup.
+    /// This is authenticator-reported metadata, not proof of provider durability.
+    ///
+    /// # Errors
+    /// Refuses malformed verifier-owned credential metadata.
+    pub fn backed_up(&self) -> Result<bool, RecoveryError> {
+        self.validate()?;
+        // webauthn-rs 0.5.5 exposes these fields in its supported persisted Passkey
+        // schema, but not as getters. Refuse missing fields; never infer backup.
+        let eligible = self
+            .credential
+            .pointer("/cred/backup_eligible")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or(RecoveryError::Passkey)?;
+        let backed_up = self
+            .credential
+            .pointer("/cred/backup_state")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or(RecoveryError::Passkey)?;
+        Ok(eligible && backed_up)
+    }
 }
 
 /// Verified registration candidate, not authority to enroll itself.

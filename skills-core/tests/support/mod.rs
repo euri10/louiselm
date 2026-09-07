@@ -12,6 +12,55 @@ use std::{
 use louiselm_skills::{Package, Policy, PublishOutcome, Store, StoreError};
 use tempfile::TempDir;
 
+/// Prepares an ordinary-key replacement through the public recovery API.
+pub fn key_change(
+    trust: &louiselm_skills::trust::TrustStore,
+    role: louiselm_skills::trust::Role,
+    public_key: &str,
+) -> louiselm_skills::trust::recovery::RecoveryChange {
+    use louiselm_skills::trust::recovery::{RecoveryChange, ReplacementKey};
+    RecoveryChange::new(
+        trust,
+        vec![ReplacementKey {
+            role,
+            public_key: public_key.to_owned(),
+        }],
+        None,
+    )
+    .expect("key replacement plan")
+}
+
+/// Applies a single-key fixture change, authorized by the current release role.
+pub fn apply_key_change(
+    store: &Store,
+    change: &louiselm_skills::trust::recovery::RecoveryChange,
+    signature: &str,
+    replacement: &SshKey,
+    at_ms: u64,
+) -> Result<louiselm_skills::trust::TrustStore, louiselm_skills::trust::recovery::RecoveryError> {
+    use louiselm_skills::trust::{
+        Role,
+        recovery::{
+            self, POSSESSION_NAMESPACE, RecoveryAuthorization, RecoveryConfirmation,
+            ReplacementProof,
+        },
+    };
+    recovery::apply(
+        store,
+        change,
+        RecoveryAuthorization::SigningKey {
+            role: Role::Release,
+            signature,
+        },
+        &[ReplacementProof {
+            role: change.replacements[0].role,
+            signature: replacement.sign(POSSESSION_NAMESPACE, &change.canonical_bytes()),
+        }],
+        RecoveryConfirmation::default(),
+        at_ms,
+    )
+}
+
 /// A temporary working directory holding candidates and one store.
 pub struct Fixture {
     directory: TempDir,

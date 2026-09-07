@@ -329,8 +329,7 @@ pub(crate) fn validate(trust: &TrustStore, change: &RecoveryChange) -> Result<()
     let mut roles = BTreeSet::new();
     let mut keys = BTreeSet::new();
     for replacement in &change.replacements {
-        if replacement.role == Role::Recovery
-            || !roles.insert(replacement.role.name())
+        if !roles.insert(replacement.role.name())
             || !keys.insert(&replacement.public_key)
             || replacement.public_key.is_empty()
             || replacement.public_key != normalize(&replacement.public_key)
@@ -365,9 +364,6 @@ fn authorize(
             }
         }
         RecoveryAuthorization::SigningKey { role, signature } => {
-            if role == Role::Recovery {
-                return Err(RecoveryError::Unauthorized);
-            }
             let key = trust.key_for(role).ok_or(RecoveryError::Unauthorized)?;
             sshsig::verify(
                 signature,
@@ -421,10 +417,13 @@ fn verify_possession(
 }
 
 pub(crate) fn require_hardware_policy(trust: &TrustStore) -> Result<(), RecoveryError> {
-    if trust.admission_key()?.sk_policy != SkPolicy::require_presence_and_verification()
-        || trust
-            .key_for(Role::Release)
-            .is_some_and(|key| key.sk_policy != SkPolicy::require_presence_and_verification())
+    let primary = trust.admission_key()?;
+    let release = trust
+        .key_for(Role::Release)
+        .ok_or(RecoveryError::UntrustedAuthority)?;
+    if primary.sk_policy != SkPolicy::require_presence_and_verification()
+        || release.sk_policy != SkPolicy::require_presence_and_verification()
+        || release.public_key == primary.public_key
     {
         return Err(RecoveryError::UntrustedAuthority);
     }

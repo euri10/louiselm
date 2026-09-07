@@ -31,19 +31,19 @@ use support::{Fixture, SshKey, write_file};
 struct Ceremony {
     fixture: Fixture,
     primary: SshKey,
-    recovery: SshKey,
+    release_key: SshKey,
 }
 
 impl Ceremony {
     fn new() -> Self {
         let fixture = Fixture::new();
         let primary = SshKey::generate(&fixture, "primary");
-        let recovery = SshKey::generate(&fixture, "recovery");
+        let release_key = SshKey::generate(&fixture, "release_key");
         TrustStore::bootstrap(
             &fixture.store(),
             "louiselm/skills",
             &primary.public_key(),
-            &recovery.public_key(),
+            &release_key.public_key(),
             SkPolicy::none(),
             1_756_800_000_000,
         )
@@ -51,7 +51,7 @@ impl Ceremony {
         Self {
             fixture,
             primary,
-            recovery,
+            release_key,
         }
     }
 
@@ -174,8 +174,8 @@ fn the_recovery_key_cannot_sign_an_ordinary_admission() {
     let package = ceremony.skill("alpha");
 
     let error = ceremony
-        .admit(&[(package, ReviewDepth::Read)], &ceremony.recovery)
-        .expect_err("the recovery key is not an ordinary signer");
+        .admit(&[(package, ReviewDepth::Read)], &ceremony.release_key)
+        .expect_err("the release_key key is not an ordinary signer");
 
     assert!(
         matches!(error, AdmissionError::Signature(_)),
@@ -398,15 +398,13 @@ fn the_recovery_key_can_replace_the_primary_and_the_old_primary_then_fails() {
         .expect("trust is readable")
         .expect("trust was bootstrapped");
 
-    let change = trust
-        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
-        .expect("rotation payload");
-    let signature = ceremony.recovery.sign(
-        louiselm_skills::sshsig::TRUST_NAMESPACE,
+    let change = support::key_change(&trust, Role::Primary, &replacement.public_key());
+    let signature = ceremony.release_key.sign(
+        louiselm_skills::trust::recovery::RECOVERY_NAMESPACE,
         &change.canonical_bytes(),
     );
-    TrustStore::rotate(&store, &change, &signature, 1_756_800_000_100)
-        .expect("the recovery key may replace the primary");
+    support::apply_key_change(&store, &change, &signature, &replacement, 1_756_800_000_100)
+        .expect("the release_key key may replace the primary");
 
     let package = ceremony.skill("alpha");
     let error = ceremony
@@ -423,7 +421,7 @@ fn the_recovery_key_can_replace_the_primary_and_the_old_primary_then_fails() {
 }
 
 #[test]
-fn a_rotation_the_recovery_key_did_not_sign_is_refused() {
+fn role_confusion_and_outsider_signatures_cannot_change_trust() {
     let ceremony = Ceremony::new();
     let store = ceremony.fixture.store();
     let attacker = SshKey::generate(&ceremony.fixture, "attacker");
@@ -431,17 +429,16 @@ fn a_rotation_the_recovery_key_did_not_sign_is_refused() {
         .expect("trust is readable")
         .expect("trust was bootstrapped");
 
-    let change = trust
-        .rotation_payload(Role::Primary, &attacker.public_key(), SkPolicy::none())
-        .expect("rotation payload");
+    let change = support::key_change(&trust, Role::Primary, &attacker.public_key());
     for signer in [&ceremony.primary, &attacker] {
         let signature = signer.sign(
-            louiselm_skills::sshsig::TRUST_NAMESPACE,
+            louiselm_skills::trust::recovery::RECOVERY_NAMESPACE,
             &change.canonical_bytes(),
         );
         assert!(
-            TrustStore::rotate(&store, &change, &signature, 1_756_800_000_100).is_err(),
-            "only the recovery key may change trust",
+            support::apply_key_change(&store, &change, &signature, &attacker, 1_756_800_000_100)
+                .is_err(),
+            "a primary or outsider signature cannot impersonate the release role",
         );
     }
 }
@@ -456,14 +453,13 @@ fn retired_keys_verify_only_admissions_recorded_before_retirement() {
         .expect("historical Admission");
     let trust = TrustStore::load(&store).expect("trust").expect("enrolled");
     let replacement = SshKey::generate(&ceremony.fixture, "replacement");
-    let change = trust
-        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
-        .expect("rotation payload");
-    let signature = ceremony.recovery.sign(
-        louiselm_skills::sshsig::TRUST_NAMESPACE,
+    let change = support::key_change(&trust, Role::Primary, &replacement.public_key());
+    let signature = ceremony.release_key.sign(
+        louiselm_skills::trust::recovery::RECOVERY_NAMESPACE,
         &change.canonical_bytes(),
     );
-    let rotated = TrustStore::rotate(&store, &change, &signature, 2).expect("retire primary");
+    let rotated = support::apply_key_change(&store, &change, &signature, &replacement, 2)
+        .expect("retire primary");
     admission::verify_record(&store, &historical, &rotated).expect("real history still verifies");
 
     let mut forged = historical;
@@ -503,11 +499,9 @@ fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
     let store = ceremony.fixture.store();
     let trust = TrustStore::load(&store).unwrap().unwrap();
     let replacement = SshKey::generate(&ceremony.fixture, "replacement");
-    let change = trust
-        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
-        .unwrap();
-    let signature = ceremony.recovery.sign(
-        louiselm_skills::sshsig::TRUST_NAMESPACE,
+    let change = support::key_change(&trust, Role::Primary, &replacement.public_key());
+    let signature = ceremony.release_key.sign(
+        louiselm_skills::trust::recovery::RECOVERY_NAMESPACE,
         &change.canonical_bytes(),
     );
     let (started, waiting) = mpsc::channel();
@@ -532,17 +526,19 @@ fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
             )
         });
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-        let rotation = TrustStore::rotate(&store, &change, &signature, 3);
+        let rotation = support::apply_key_change(&store, &change, &signature, &replacement, 3);
         resume.send(()).unwrap();
         let record = worker.join().unwrap().unwrap();
         assert!(matches!(
             rotation,
-            Err(louiselm_skills::trust::TrustError::Busy(_))
+            Err(louiselm_skills::trust::recovery::RecoveryError::Trust(
+                louiselm_skills::trust::TrustError::Busy(_)
+            ))
         ));
         let latest = TrustStore::load(&store).unwrap().unwrap();
         assert!(latest.approved_admissions.contains(&record.generation));
         assert!(
-            TrustStore::rotate(&store, &change, &signature, 3).is_err(),
+            support::apply_key_change(&store, &change, &signature, &replacement, 3).is_err(),
             "newly registered approval invalidates the old trust-change snapshot"
         );
     });
@@ -596,16 +592,15 @@ fn failed_approval_registration_never_becomes_retired_key_history() {
         .pop()
         .expect("signature was stored before refusal");
     let replacement = SshKey::generate(&ceremony.fixture, "replacement");
-    let change = trust
-        .rotation_payload(Role::Primary, &replacement.public_key(), SkPolicy::none())
-        .unwrap();
-    let trust = TrustStore::rotate(
+    let change = support::key_change(&trust, Role::Primary, &replacement.public_key());
+    let trust = support::apply_key_change(
         &store,
         &change,
-        &ceremony.recovery.sign(
-            louiselm_skills::sshsig::TRUST_NAMESPACE,
+        &ceremony.release_key.sign(
+            louiselm_skills::trust::recovery::RECOVERY_NAMESPACE,
             &change.canonical_bytes(),
         ),
+        &replacement,
         3,
     )
     .unwrap();

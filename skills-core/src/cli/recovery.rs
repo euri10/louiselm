@@ -1,35 +1,40 @@
-//! Local-only operator ceremony; no robot/stdin/argument secret input.
-
-use std::{collections::BTreeMap, fs, path::Path};
+//! Local operator ceremonies; no Agent, robot, stdin or argument secret channel.
 
 use super::{CliError, now_ms};
 use crate::{
-    release, scan,
-    signer::{Signer, SshKeygenSigner},
+    scan,
+    signer::SshKeygenSigner,
     store::Store,
     trust::{
         Role, TrustError, TrustStore,
         browser::Browser,
         paper::PaperPhrase,
-        passkey::{PendingAuthentication, PendingRegistration},
+        passkey::{self, PendingAuthentication, PendingRegistration, Registration},
         recovery::{
-            self, RecoveryAuthorization, RecoveryChange, RecoveryError, ReplacementKey,
-            ReplacementProof,
+            self, RecoveryAuthorization, RecoveryChange, RecoveryConfirmation, RecoveryError,
+            ReplacementKey, ReplacementProof,
         },
-        terminal::Terminal,
+        terminal::{self, Terminal},
     },
 };
+use std::{collections::BTreeMap, fs, path::Path, time::Instant};
+mod setup;
+type Flags<'a> = BTreeMap<&'a str, &'a str>;
 
-const HELP: &str = "recovery paper-enroll --store PATH --authorizer PRIVATE_KEY [--authorizer-role primary|release]
-recovery paper-recover --store PATH [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY]
-recovery passkey-enroll --store PATH --authorizer PRIVATE_KEY [--authorizer-role primary|release]
-recovery passkey-recover --store PATH [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY] [--paper replace]
-Requires the installed trusted tool, protected production store and a local foreground TTY.
-No phrase arguments, stdin, robot output or development override. paper-recover without key flags refreshes paper only.
-Do not run in an Agent terminal, recorded terminal or screen-sharing session.
-Passkey enrollment/replacement requires a current signing key. Passkey recovery leaves paper unchanged unless --paper replace.
+const HELP: &str = "recovery setup --store PATH --primary PRIVATE_KEY --release PRIVATE_KEY [--trust-domain DOMAIN]
+recovery status --store PATH
+recovery change --store PATH --via primary|release|paper|passkey [--authorizer PRIVATE_KEY]
+                [--primary NEW_PRIVATE_KEY] [--release NEW_PRIVATE_KEY] [--paper replace] [--passkey replace]
+recovery reset --store PATH
+Mutations require the trusted installed tool, protected production store and local foreground TTY.
+Setup confirms BOTH signing keys, a password-manager-backed passkey and written paper before enrollment.
+--via primary/release requires --authorizer. --via paper requires --paper replace (single-use).
+Only explicitly named replacements change. A new passkey never authorizes itself.
+Status is public JSON; no mutation accepts robot output, phrase arguments, stdin or development overrides.
+Reset discards ALL trust and history authorization; use only after losing every usable method.
+Do not run secret ceremonies in an Agent terminal, recorded terminal or screen-sharing session.
 Open the ephemeral localhost URL in your normal browser, never a root browser.
-Full one-YubiKey onboarding and real Android acceptance are separate, pending work.";
+Software readiness is not personal-hardware acceptance or Verified posture.";
 
 fn invalid() -> CliError {
     CliError::Invalid(
@@ -38,21 +43,23 @@ fn invalid() -> CliError {
     )
 }
 
-pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
-    if arguments.len() == 1 && arguments[0] == "--help" {
-        println!("{HELP}");
-        return Ok(0);
-    }
-    let Some(command) = arguments.first().map(String::as_str) else {
-        return Err(invalid());
-    };
+fn parse(arguments: &[String]) -> Result<(&str, Flags<'_>), CliError> {
+    let command = arguments.first().map(String::as_str).ok_or_else(invalid)?;
     let allowed: &[&str] = match command {
-        "paper-enroll" | "passkey-enroll" => &["--store", "--authorizer", "--authorizer-role"],
-        "paper-recover" => &["--store", "--primary", "--release"],
-        "passkey-recover" => &["--store", "--primary", "--release", "--paper"],
+        "setup" => &["--store", "--primary", "--release", "--trust-domain"],
+        "status" | "reset" => &["--store"],
+        "change" => &[
+            "--store",
+            "--via",
+            "--authorizer",
+            "--primary",
+            "--release",
+            "--paper",
+            "--passkey",
+        ],
         _ => return Err(invalid()),
     };
-    let mut flags = BTreeMap::new();
+    let mut flags = Flags::new();
     for pair in arguments[1..].chunks(2) {
         let [flag, value] = pair else {
             return Err(invalid());
@@ -65,32 +72,52 @@ pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
             return Err(invalid());
         }
     }
-    let path = flags.get("--store").ok_or_else(invalid)?;
-    if flags
-        .get("--paper")
-        .is_some_and(|value| *value != "replace")
+    if !flags.contains_key("--store") {
+        return Err(invalid());
+    }
+    if command == "setup" && (!flags.contains_key("--primary") || !flags.contains_key("--release"))
     {
         return Err(invalid());
     }
-    let authorizer = if matches!(command, "paper-enroll" | "passkey-enroll") {
-        let key = flags.get("--authorizer").ok_or_else(invalid)?;
-        let role = match flags.get("--authorizer-role").copied().unwrap_or("primary") {
-            "primary" => Role::Primary,
-            "release" => Role::Release,
-            _ => return Err(invalid()),
-        };
-        Some((role, *key))
-    } else {
-        None
-    };
-    // Refuse before opening/creating a store or requesting any secret.
-    if !release::running_identity().verified {
-        return Err(RecoveryError::UntrustedAuthority.into());
+    for name in ["--paper", "--passkey"] {
+        if flags.get(name).is_some_and(|value| *value != "replace") {
+            return Err(invalid());
+        }
     }
-    let store = Store::open(Path::new(path))?;
-    crate::trust::terminal::require_production(&store)?;
-    let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
-    recovery::require_hardware_policy(&trust)?;
+    if command == "change" {
+        match flags.get("--via").copied() {
+            Some("primary" | "release") if flags.contains_key("--authorizer") => (),
+            Some("paper")
+                if !flags.contains_key("--authorizer") && flags.contains_key("--paper") => {}
+            Some("passkey") if !flags.contains_key("--authorizer") => (),
+            _ => return Err(invalid()),
+        }
+        if !["--primary", "--release", "--paper", "--passkey"]
+            .iter()
+            .any(|name| flags.contains_key(name))
+        {
+            return Err(invalid());
+        }
+    }
+    Ok((command, flags))
+}
+
+pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
+    if arguments == ["--help"] {
+        println!("{HELP}");
+        return Ok(0);
+    }
+    let (command, flags) = parse(arguments)?;
+    let path = Path::new(flags.get("--store").ok_or_else(invalid)?);
+    if command == "status" {
+        // Do not manufacture provenance for an absent store.
+        fs::metadata(path.join("provenance.json")).map_err(RecoveryError::Io)?;
+        return setup::status(&Store::open(path)?);
+    }
+    // Includes existing provenance/trust paths; runs BEFORE Store::open can write.
+    terminal::require_store_path(path)?;
+    let store = Store::open(path)?;
+    terminal::require_production_root(&store)?;
     rustix::process::setrlimit(
         rustix::process::Resource::Core,
         rustix::process::Rlimit {
@@ -99,17 +126,19 @@ pub(super) fn run(arguments: &[String]) -> Result<i32, CliError> {
         },
     )
     .map_err(|error| RecoveryError::Io(error.into()))?;
-    match command {
-        "passkey-enroll" => {
-            let (role, key) = authorizer.ok_or_else(invalid)?;
-            enroll_passkey(&store, &trust, role, key)
-        }
-        "passkey-recover" => recover_passkey(&store, &trust, &flags),
-        _ => ceremony(&store, &trust, &flags, authorizer),
+    if command == "setup" {
+        return setup::enroll(&store, &flags);
     }
+    terminal::require_production(&store)?;
+    let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
+    if command == "reset" {
+        return setup::reset(&store, &trust);
+    }
+    recovery::require_hardware_policy(&trust)?;
+    change(&store, &trust, &flags)
 }
 
-fn replacement_keys(flags: &BTreeMap<&str, &str>) -> Result<Vec<ReplacementKey>, RecoveryError> {
+fn replacement_keys(flags: &Flags<'_>) -> Result<Vec<ReplacementKey>, RecoveryError> {
     [(Role::Primary, "--primary"), (Role::Release, "--release")]
         .into_iter()
         .filter_map(|(role, flag)| flags.get(flag).map(|path| (role, *path)))
@@ -123,215 +152,169 @@ fn replacement_keys(flags: &BTreeMap<&str, &str>) -> Result<Vec<ReplacementKey>,
         .collect()
 }
 
-fn ceremony(
-    store: &Store,
-    trust: &TrustStore,
-    flags: &BTreeMap<&str, &str>,
-    authorizer: Option<(Role, &str)>,
-) -> Result<i32, CliError> {
-    let replacements = replacement_keys(flags)?;
-    let mut terminal = Terminal::open()?;
-    // No secret exists before the protected terminal opens successfully.
-    let next = PaperPhrase::generate()?;
-    let change = RecoveryChange::new(trust, replacements, Some(&next))?;
-    let old = if authorizer.is_none() {
-        terminal.write("Enter current paper phrase (hidden); Ctrl-C cancels:\r\n")?;
-        Some(PaperPhrase::parse(&terminal.read_hidden()?)?)
-    } else {
-        None
-    };
-    if old.as_ref().is_some_and(|phrase| {
-        trust.paper_verifier.as_ref() != Some(&phrase.verifier(&trust.trust_domain))
-    }) {
-        return Err(RecoveryError::Unauthorized.into());
-    }
-    show_change(&mut terminal, &change)?;
-    terminal
-        .write("\r\nWrite this NEW recovery phrase on paper. Never reuse a wallet seed.\r\n")?;
-    terminal.write(&next.expose_secret())?;
-    terminal.write("\r\nKeep both papers until success. Press Enter after writing it.\r\n")?;
-    if !terminal.read_hidden()?.is_empty() {
-        return Err(RecoveryError::Cancelled.into());
-    }
-    terminal.clear()?;
-    terminal.write("Re-enter the newly written 24 words (hidden):\r\n")?;
-    let confirmation = PaperPhrase::parse(&terminal.read_hidden()?)?;
-    if Some(confirmation.verifier(&trust.trust_domain)) != change.next_verifier {
-        return Err(RecoveryError::Confirmation.into());
-    }
-    show_change(&mut terminal, &change)?;
-    terminal.write("\r\nType apply then Enter to authorize exactly this change (hidden):\r\n")?;
-    if terminal.read_hidden()?.as_str() != "apply" {
-        return Err(RecoveryError::Cancelled.into());
-    }
-    // Restore before ssh-keygen needs the controlling TTY for PIN/touch.
-    terminal.restore()?;
-    let bytes = change.canonical_bytes();
-    let signature = authorizer
-        .map(|(_, key)| {
-            SshKeygenSigner::new(Path::new(key)).sign(recovery::RECOVERY_NAMESPACE, &bytes)
-        })
-        .transpose()?;
-    let authorization = match (authorizer, signature.as_deref(), old.as_ref()) {
-        (Some((role, _)), Some(signature), _) => {
-            RecoveryAuthorization::SigningKey { role, signature }
-        }
-        (None, None, Some(phrase)) => RecoveryAuthorization::Phrase(phrase),
-        _ => return Err(RecoveryError::Unauthorized.into()),
-    };
-    let proofs = [(Role::Primary, "--primary"), (Role::Release, "--release")]
+fn proofs(
+    flags: &Flags<'_>,
+    namespace: &str,
+    bytes: &[u8],
+    deadline: Instant,
+) -> Result<Vec<ReplacementProof>, CliError> {
+    [(Role::Primary, "--primary"), (Role::Release, "--release")]
         .into_iter()
         .filter_map(|(role, flag)| flags.get(flag).map(|key| (role, key)))
         .map(|(role, key)| {
             SshKeygenSigner::new(Path::new(key))
-                .sign(recovery::POSSESSION_NAMESPACE, &bytes)
+                .sign_until(namespace, bytes, deadline)
                 .map(|signature| ReplacementProof { role, signature })
+                .map_err(CliError::from)
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    recovery::apply(
-        store,
-        &change,
-        authorization,
-        &proofs,
-        recovery::RecoveryConfirmation {
-            paper: Some(&confirmation),
-            registration: None,
-        },
-        now_ms(),
-    )?;
-    println!(
-        "Paper change committed. Only the new paper phrase is valid. Passkey/onboarding readiness is not asserted."
-    );
-    Ok(0)
+        .collect()
 }
 
-fn show_change(terminal: &mut Terminal, change: &RecoveryChange) -> Result<(), RecoveryError> {
-    terminal.write(&format!(
-        "\r\nTrust domain: {}\r\nChange sequence: {}\r\n",
-        scan::escape(&change.trust_domain),
-        change.sequence
-    ))?;
-    if change.replacements.is_empty() {
-        terminal.write("Signing keys unchanged; replace/enroll paper recovery only.\r\n")?;
+fn paper(terminal: &mut Terminal, deadline: Instant) -> Result<PaperPhrase, RecoveryError> {
+    let next = PaperPhrase::generate()?;
+    terminal.write(
+        "Write this NEW paper phrase. Never reuse a wallet seed or enter it in the browser.\r\n",
+    )?;
+    terminal.write(&next.expose_secret())?;
+    terminal.write("\r\nKeep both papers until success. Press Enter after writing it.\r\n")?;
+    if !terminal.read_hidden_until(deadline)?.is_empty() {
+        return Err(RecoveryError::Cancelled);
     }
-    for replacement in &change.replacements {
-        terminal.write(&format!(
-            "Replace {} key with: {}\r\n",
-            replacement.role.name(),
-            scan::escape(&replacement.public_key)
-        ))?;
+    terminal.clear()?;
+    terminal.write("Re-enter the newly written 24 words (hidden):\r\n")?;
+    let confirmed = PaperPhrase::parse(&terminal.read_hidden_until(deadline)?)?;
+    if confirmed.expose_secret() != next.expose_secret() {
+        return Err(RecoveryError::Confirmation);
     }
-    terminal
-        .write("Any prior paper phrase becomes invalid. Other recovery methods stay unchanged.\r\n")
+    terminal.clear()?;
+    Ok(confirmed)
 }
 
 fn browser_url(terminal: &mut Terminal, browser: &Browser) -> Result<(), RecoveryError> {
     terminal.write(&format!(
-        "\r\nOpen in your normal, non-root browser (expires in five minutes):\r\n{}\r\n",
+        "\r\nOpen in your normal, non-root browser before the ceremony expires:\r\n{}\r\n",
         browser.url()
     ))
 }
 
-fn public_plan(change: &RecoveryChange) -> Result<serde_json::Value, RecoveryError> {
-    serde_json::to_value(change).map_err(|_| RecoveryError::Passkey)
-}
-
-fn enroll_passkey(
-    store: &Store,
+fn register(
+    terminal: &mut Terminal,
     trust: &TrustStore,
-    role: Role,
-    key: &str,
-) -> Result<i32, CliError> {
-    let mut terminal = Terminal::open()?;
-    let browser = Browser::bind()?;
+    deadline: Instant,
+) -> Result<Registration, RecoveryError> {
+    let browser = Browser::bind()?.until(deadline);
     let (mut pending, options) = PendingRegistration::start(trust, browser.port()?)?;
     terminal.restore()?;
-    browser_url(&mut terminal, &browser)?;
-    let registration = browser.run("register", &serde_json::json!({"operation":"Prove possession of a new recovery passkey; no enrollment yet", "trust_domain":trust.trust_domain, "predecessor":trust.digest().to_string()}), &serde_json::to_value(options).map_err(|_| RecoveryError::Passkey)?, |value| {
+    browser_url(terminal, &browser)?;
+    browser.run("register", &serde_json::json!({"operation":"Create a password-manager-backed recovery passkey; NOT enrolled yet", "trust_domain":trust.trust_domain, "predecessor":trust.digest().to_string()}), &serde_json::to_value(options).map_err(|_| RecoveryError::Passkey)?, |value| {
         let response = serde_json::from_value(value).map_err(|_| RecoveryError::Passkey)?;
-        pending.finish(trust, &response).map(|registration| (registration, "Passkey verified, but NOT enrolled. Return to the trusted terminal for signing-key authorization and the final review page."))
-    })?;
-    let change = RecoveryChange::enroll_passkey(trust, &registration)?;
-    let mut terminal = Terminal::open()?;
-    terminal.write(&format!("\r\nExact recovery change:\r\n{}\r\nPaper and ordinary signing keys remain unchanged.\r\nType apply then Enter to authorize with your current signing key:\r\n", scan::escape(&String::from_utf8_lossy(&change.canonical_bytes()))))?;
-    if terminal
-        .read_hidden_until(registration.deadline())?
-        .as_str()
-        != "apply"
-    {
-        return Err(RecoveryError::Cancelled.into());
-    }
-    terminal.restore()?;
-    let signature = SshKeygenSigner::new(Path::new(key)).sign_until(
-        recovery::RECOVERY_NAMESPACE,
-        &change.canonical_bytes(),
-        registration.deadline(),
-    )?;
-    let browser = Browser::bind()?.until(registration.deadline());
-    browser_url(&mut terminal, &browser)?;
-    browser.run("confirm", &public_plan(&change)?, &serde_json::json!({}), |value| {
-        if value != serde_json::json!({}) { return Err(RecoveryError::Passkey); }
-        recovery::apply(store, &change, RecoveryAuthorization::SigningKey{role, signature:&signature}, &[], recovery::RecoveryConfirmation{paper:None, registration:Some(&registration)}, now_ms())?;
-        Ok(((), "Committed: recovery passkey enrolled. Paper and signing keys unchanged. Any previous passkey is retired."))
-    })?;
-    terminal.write("\r\nPasskey enrollment committed. Paper and signing keys unchanged.\r\n")?;
-    Ok(0)
+        let registration = pending.finish(trust, &response)?;
+        if !registration.credential().backed_up()? { return Err(RecoveryError::InvalidChange("choose a backed-up password-manager passkey, not a device-bound credential")); }
+        Ok((registration, "Passkey verified, but NOT enrolled. Return to the trusted terminal for the exact change and independent authorization."))
+    })
 }
 
-fn recover_passkey(
-    store: &Store,
-    trust: &TrustStore,
-    flags: &BTreeMap<&str, &str>,
-) -> Result<i32, CliError> {
+fn review(bytes: &[u8], via: &str, deadline: Instant) -> Result<Terminal, RecoveryError> {
     let mut terminal = Terminal::open()?;
-    let next = flags
-        .contains_key("--paper")
-        .then(PaperPhrase::generate)
-        .transpose()?;
-    let confirmation = if let Some(next) = &next {
-        terminal.write("Write this NEW paper phrase. Never put it in the browser.\r\n")?;
-        terminal.write(&next.expose_secret())?;
-        terminal.write("\r\nPress Enter after writing it; keep both papers until success.\r\n")?;
-        if !terminal.read_hidden()?.is_empty() {
-            return Err(RecoveryError::Cancelled.into());
+    terminal.write(&format!("\r\nExact public plan:\r\n{}\r\nAuthorization: {}\r\nType apply then Enter to authorize exactly this plan (hidden):\r\n", scan::escape(&String::from_utf8_lossy(bytes)), scan::escape(via)))?;
+    if terminal.read_hidden_until(deadline)?.as_str() != "apply" {
+        return Err(RecoveryError::Cancelled);
+    }
+    terminal.restore()?;
+    Ok(terminal)
+}
+
+fn prepare_change(
+    trust: &TrustStore,
+    flags: &Flags<'_>,
+    paper: Option<&PaperPhrase>,
+    registration: Option<&Registration>,
+) -> Result<RecoveryChange, RecoveryError> {
+    let keys = replacement_keys(flags)?;
+    if keys.is_empty() && paper.is_none() {
+        return RecoveryChange::enroll_passkey(trust, registration.ok_or(RecoveryError::Passkey)?);
+    }
+    let mut change = RecoveryChange::new(trust, keys, paper)?;
+    if let Some(registration) = registration {
+        change.next_passkey = Some(registration.credential().clone());
+        registration.check(&change)?;
+    }
+    recovery::validate(trust, &change)?;
+    Ok(change)
+}
+
+fn change(store: &Store, trust: &TrustStore, flags: &Flags<'_>) -> Result<i32, CliError> {
+    let deadline = Instant::now() + passkey::TIMEOUT;
+    let via = flags.get("--via").ok_or_else(invalid)?;
+    let mut terminal = Terminal::open()?;
+    terminal.write(&format!(
+        "\r\nChanging trust domain: {}\r\n",
+        scan::escape(&trust.trust_domain)
+    ))?;
+    let old = if *via == "paper" {
+        terminal.write("Enter CURRENT paper phrase (hidden); Ctrl-C cancels:\r\n")?;
+        let phrase = PaperPhrase::parse(&terminal.read_hidden_until(deadline)?)?;
+        if trust.paper_verifier.as_ref() != Some(&phrase.verifier(&trust.trust_domain)) {
+            return Err(RecoveryError::Unauthorized.into());
         }
-        terminal.clear()?;
-        terminal.write("Re-enter the new phrase (hidden):\r\n")?;
-        Some(PaperPhrase::parse(&terminal.read_hidden()?)?)
+        Some(phrase)
     } else {
         None
     };
-    let change = RecoveryChange::new(trust, replacement_keys(flags)?, next.as_ref())?;
-    if confirmation
-        .as_ref()
-        .map(|phrase| phrase.verifier(&trust.trust_domain))
-        != change.next_verifier
-    {
-        return Err(RecoveryError::Confirmation.into());
-    }
-    terminal.write(&format!(
-        "\r\nExact recovery change:\r\n{}\r\nReview this same change in the browser.\r\n",
-        scan::escape(&String::from_utf8_lossy(&change.canonical_bytes()))
-    ))?;
+    let paper = flags
+        .contains_key("--paper")
+        .then(|| paper(&mut terminal, deadline))
+        .transpose()?;
+    let registration = flags
+        .contains_key("--passkey")
+        .then(|| register(&mut terminal, trust, deadline))
+        .transpose()?;
     terminal.restore()?;
-    let proofs = [(Role::Primary, "--primary"), (Role::Release, "--release")]
-        .into_iter()
-        .filter_map(|(role, flag)| flags.get(flag).map(|key| (role, key)))
-        .map(|(role, key)| {
-            SshKeygenSigner::new(Path::new(key))
-                .sign(recovery::POSSESSION_NAMESPACE, &change.canonical_bytes())
-                .map(|signature| ReplacementProof { role, signature })
+    let change = prepare_change(trust, flags, paper.as_ref(), registration.as_ref())?;
+    let bytes = change.canonical_bytes();
+    let mut terminal = review(&bytes, via, deadline)?;
+    let proofs = proofs(flags, recovery::POSSESSION_NAMESPACE, &bytes, deadline)?;
+    let signature = flags
+        .get("--authorizer")
+        .map(|key| {
+            SshKeygenSigner::new(Path::new(key)).sign_until(
+                recovery::RECOVERY_NAMESPACE,
+                &bytes,
+                deadline,
+            )
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let browser = Browser::bind()?;
-    let (mut pending, options) = PendingAuthentication::start(trust, &change, browser.port()?)?;
-    browser_url(&mut terminal, &browser)?;
-    browser.run("authenticate", &public_plan(&change)?, &serde_json::to_value(options).map_err(|_| RecoveryError::Passkey)?, |value| {
-        let response = serde_json::from_value(value).map_err(|_| RecoveryError::Passkey)?;
-        let approval = pending.finish(&response)?;
-        recovery::apply(store, &change, RecoveryAuthorization::Passkey(approval), &proofs, recovery::RecoveryConfirmation{paper:confirmation.as_ref(), registration:None}, now_ms())?;
-        Ok(((), "Committed: exactly the displayed recovery change. Replaced signing keys cannot authorize new approvals; recorded history remains verifiable."))
-    })?;
-    terminal.write("\r\nRecovery change committed. Only methods explicitly displayed as replacements changed.\r\n")?;
+        .transpose()?;
+    let confirmation = RecoveryConfirmation {
+        paper: paper.as_ref(),
+        registration: registration.as_ref(),
+    };
+    let browser = Browser::bind()?.until(deadline);
+    let plan = serde_json::to_value(&change).map_err(|_| RecoveryError::Passkey)?;
+    if *via == "passkey" {
+        let (mut pending, options) = PendingAuthentication::start(trust, &change, browser.port()?)?;
+        browser_url(&mut terminal, &browser)?;
+        browser.run("authenticate", &plan, &serde_json::to_value(options).map_err(|_| RecoveryError::Passkey)?, |value| {
+            let response = serde_json::from_value(value).map_err(|_| RecoveryError::Passkey)?;
+            let approval = pending.finish(&response)?;
+            recovery::apply(store, &change, RecoveryAuthorization::Passkey(approval), &proofs, confirmation, now_ms())?;
+            Ok(((), "Committed: exactly the displayed recovery change. Recorded history remains verifiable."))
+        })?;
+    } else {
+        let authorization = if let Some(old) = &old {
+            RecoveryAuthorization::Phrase(old)
+        } else {
+            RecoveryAuthorization::SigningKey {
+                role: Role::parse(via).ok_or_else(invalid)?,
+                signature: signature.as_deref().ok_or_else(invalid)?,
+            }
+        };
+        browser_url(&mut terminal, &browser)?;
+        browser.run("confirm", &plan, &serde_json::json!({}), |value| {
+            if value != serde_json::json!({}) || Instant::now() >= deadline { return Err(RecoveryError::Cancelled); }
+            recovery::apply(store, &change, authorization, &proofs, confirmation, now_ms())?;
+            Ok(((), "Committed: exactly the displayed recovery change. Only named replacements changed."))
+        })?;
+    }
+    terminal.write("\r\nRecovery change committed. Any replaced method/key is retired. Keep only the new paper if paper changed.\r\n")?;
     Ok(0)
 }

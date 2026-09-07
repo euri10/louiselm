@@ -39,9 +39,9 @@ use crate::{
     },
     render, robot,
     signer::SshKeygenSigner,
-    sshsig::{SkPolicy, TRUST_NAMESPACE},
+    sshsig::SkPolicy,
     store::{PublishOutcome, Store, StoreError},
-    trust::{Role, TrustError, TrustStore},
+    trust::{TrustError, TrustStore},
     witness::GitWitness,
 };
 
@@ -173,11 +173,9 @@ struct Options {
     members: Vec<String>,
     views: Vec<String>,
     primary: Option<String>,
-    recovery: Option<String>,
+    release_key: Option<String>,
     trust_domain: Option<String>,
-    role: Option<String>,
     key: Option<String>,
-    signature: Option<PathBuf>,
     remote: Option<PathBuf>,
     branch: Option<String>,
     workdir: Option<PathBuf>,
@@ -219,11 +217,9 @@ impl Options {
             members: Vec::new(),
             views: Vec::new(),
             primary: None,
-            recovery: None,
+            release_key: None,
             trust_domain: None,
-            role: None,
             key: None,
-            signature: None,
             remote: None,
             branch: None,
             workdir: None,
@@ -279,24 +275,16 @@ impl Options {
                     parsed.primary = Some(value("--primary")?);
                     index += 1;
                 }
-                "--recovery" => {
-                    parsed.recovery = Some(value("--recovery")?);
+                "--release" => {
+                    parsed.release_key = Some(value("--release")?);
                     index += 1;
                 }
                 "--trust-domain" => {
                     parsed.trust_domain = Some(value("--trust-domain")?);
                     index += 1;
                 }
-                "--role" => {
-                    parsed.role = Some(value("--role")?);
-                    index += 1;
-                }
                 "--key" => {
                     parsed.key = Some(value("--key")?);
-                    index += 1;
-                }
-                "--signature" => {
-                    parsed.signature = Some(PathBuf::from(value("--signature")?));
                     index += 1;
                 }
                 "--remote" => {
@@ -462,14 +450,6 @@ impl Options {
             return Ok(read_text(path)?.trim().to_owned());
         }
         Ok(value.trim().to_owned())
-    }
-
-    fn required_role(&self) -> Result<Role, CliError> {
-        let raw = self
-            .role
-            .as_deref()
-            .ok_or_else(|| CliError::Invalid("--role is required".to_owned()))?;
-        Role::parse(raw).ok_or_else(|| CliError::Invalid(format!("'{raw}' is not a role")))
     }
 
     fn required_reason(&self) -> Result<&str, CliError> {
@@ -736,7 +716,7 @@ fn trust(options: &Options) -> Result<i32, CliError> {
     match options.subject("trust")? {
         "bootstrap" => {
             let primary = Options::key_material("--primary", options.primary.as_deref())?;
-            let recovery = Options::key_material("--recovery", options.recovery.as_deref())?;
+            let release = Options::key_material("--release", options.release_key.as_deref())?;
             let trust = TrustStore::bootstrap(
                 &store,
                 options
@@ -744,58 +724,32 @@ fn trust(options: &Options) -> Result<i32, CliError> {
                     .as_deref()
                     .unwrap_or(DEFAULT_TRUST_DOMAIN),
                 &primary,
-                &recovery,
+                &release,
                 options.sk_policy(),
                 now_ms(),
             )?;
             report(options, &trust, |trust| {
-                format!("trust bootstrapped for {}", trust.trust_domain)
+                format!(
+                    "provisional signing trust for {}; recovery is NOT ready; this store cannot be promoted",
+                    trust.trust_domain
+                )
             })
         }
         "show" => {
-            let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
-            report(options, &trust, |trust| {
-                let mut lines = vec![format!(
-                    "domain {} (change sequence {})",
-                    trust.trust_domain, trust.sequence
-                )];
-                for key in &trust.keys {
-                    lines.push(format!("  {:<9} {}", key.role.name(), key.public_key));
-                }
-                lines.join("\n")
-            })
-        }
-        "rotation-payload" => {
-            let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
-            let change = trust.rotation_payload(
-                options.required_role()?,
-                &Options::key_material("--key", options.key.as_deref())?,
-                options.sk_policy(),
-            )?;
-            // Printed without a trailing newline: these are the exact bytes the
-            // recovery key signs, and a newline would change them.
-            print!("{}", String::from_utf8_lossy(&change.canonical_bytes()));
-            Ok(0)
-        }
-        "rotate" => {
-            let trust = TrustStore::load(&store)?.ok_or(TrustError::NotBootstrapped)?;
-            let change = trust.rotation_payload(
-                options.required_role()?,
-                &Options::key_material("--key", options.key.as_deref())?,
-                options.sk_policy(),
-            )?;
-            let signature_path = options.signature.as_ref().ok_or_else(|| {
-                CliError::Invalid(format!(
-                    "trust rotate needs --signature: sign the rotation payload in the {TRUST_NAMESPACE} namespace with the recovery key"
-                ))
-            })?;
-            let signature = read_text(signature_path)?;
-            let rotated = TrustStore::rotate(&store, &change, &signature, now_ms())?;
-            report(options, &rotated, |trust| {
-                format!("trust change {} applied", trust.sequence)
+            let status = crate::trust::status::read(&store)?;
+            report(options, &status, |status| {
+                format!(
+                    "domain {}: recovery_ready={} next_action={}",
+                    status.trust_domain.as_deref().unwrap_or("(not enrolled)"),
+                    status.recovery_ready,
+                    status.next_action
+                )
             })
         }
         "reset" => {
+            if store.provenance()?.trusted {
+                return Err(TrustError::ProvisionalOnly.into());
+            }
             if !options.confirm {
                 return Err(CliError::Invalid(
                     "trust reset discards every enrolled key and invalidates every Generation they signed; pass --confirm".to_owned(),
@@ -1225,12 +1179,10 @@ Packaging and review:
   louiselm-skills policy [--digest]
 
 Trust roles:
-  louiselm-skills recovery --help     (local-only paper enrollment/recovery)
-  louiselm-skills trust bootstrap --primary <key> --recovery <key>
+  louiselm-skills recovery --help     (local-only paper/passkey recovery)
+  louiselm-skills trust bootstrap --primary <key> --release <key>
                                   [--trust-domain <d>] [--require-hardware]
   louiselm-skills trust show
-  louiselm-skills trust rotation-payload --role primary --key <key>
-  louiselm-skills trust rotate --role primary --key <key> --signature <file>
   louiselm-skills trust reset --confirm
 
 Skill Generations:

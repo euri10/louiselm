@@ -55,40 +55,27 @@ impl Terminal {
         self.write("\x1b[2J\x1b[H")
     }
 
-    pub(crate) fn read_hidden(&mut self) -> Result<Zeroizing<String>, RecoveryError> {
-        self.read_hidden_before(None)
-    }
-
     pub(crate) fn read_hidden_until(
         &mut self,
         deadline: Instant,
     ) -> Result<Zeroizing<String>, RecoveryError> {
-        self.read_hidden_before(Some(deadline))
-    }
-
-    fn read_hidden_before(
-        &mut self,
-        deadline: Option<Instant>,
-    ) -> Result<Zeroizing<String>, RecoveryError> {
         let mut input = Zeroizing::new(String::with_capacity(512));
         let mut byte = Zeroizing::new([0_u8; 1]);
         loop {
-            if let Some(deadline) = deadline {
-                let remaining = deadline
-                    .checked_duration_since(Instant::now())
-                    .ok_or(RecoveryError::Passkey)?;
-                let timeout = rustix::event::Timespec::try_from(remaining)
-                    .map_err(|_| RecoveryError::Passkey)?;
-                let mut descriptors = [rustix::event::PollFd::new(
-                    &self.file,
-                    rustix::event::PollFlags::IN,
-                )];
-                match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-                    Ok(0) => return Err(RecoveryError::Passkey),
-                    Ok(_) => (),
-                    Err(rustix::io::Errno::INTR) => continue,
-                    Err(error) => return Err(RecoveryError::Io(error.into())),
-                }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(RecoveryError::Passkey)?;
+            let timeout =
+                rustix::event::Timespec::try_from(remaining).map_err(|_| RecoveryError::Passkey)?;
+            let mut descriptors = [rustix::event::PollFd::new(
+                &self.file,
+                rustix::event::PollFlags::IN,
+            )];
+            match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+                Ok(0) => return Err(RecoveryError::Passkey),
+                Ok(_) => (),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(RecoveryError::Io(error.into())),
             }
             match self.file.read_exact(&mut *byte) {
                 Ok(()) => (),
@@ -108,6 +95,9 @@ impl Terminal {
     }
 
     pub(crate) fn restore(&mut self) -> Result<(), RecoveryError> {
+        if self.restored {
+            return Ok(());
+        }
         // Attempt both even if clearing fails. Do not mutate authority if either
         // terminal cleanup step cannot be acknowledged.
         let clear = self.write("\x1b[2J\x1b[H\x1b[?1049l");
@@ -161,7 +151,8 @@ mod tests {
             );
             let mut master = File::from(master);
             master.write_all(input).unwrap();
-            let answer = terminal.read_hidden();
+            let answer =
+                terminal.read_hidden_until(Instant::now() + std::time::Duration::from_secs(5));
             if input.ends_with(b"\r") {
                 assert_eq!(answer.unwrap().as_str(), "abc");
                 terminal.restore().unwrap();
@@ -247,23 +238,75 @@ mod tests {
 }
 
 pub(crate) fn require_production(store: &Store) -> Result<(), RecoveryError> {
+    require_production_root(store)?;
+    for path in [
+        store.root().join("trust"),
+        store.root().join("trust/roles.json"),
+    ] {
+        require_protected(&path)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn require_production_root(store: &Store) -> Result<(), RecoveryError> {
     if !crate::release::running_identity().verified
         || !store.provenance()?.trusted
         || rustix::process::geteuid().as_raw() != 0
     {
         return Err(RecoveryError::UntrustedAuthority);
     }
-    let root = std::path::absolute(store.root())?;
-    for path in root.ancestors().map(std::path::Path::to_path_buf).chain([
-        root.join("trust"),
-        root.join("trust/roles.json"),
-        root.join("provenance.json"),
-    ]) {
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0
-        {
-            return Err(RecoveryError::UntrustedAuthority);
+    require_store_path(store.root())?;
+    require_protected(&store.root().join("provenance.json"))?;
+    // Initial enrollment may not exist yet; existing paths must still be guarded.
+    for name in ["trust", "trust/roles.json", "trust/roles.lock"] {
+        match require_protected(&store.root().join(name)) {
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => (),
+            result => result?,
         }
+    }
+    Ok(())
+}
+
+/// Check before `Store::open` creates anything, including its provenance record.
+pub(crate) fn require_store_path(path: &std::path::Path) -> Result<(), RecoveryError> {
+    if !crate::release::running_identity().verified || rustix::process::geteuid().as_raw() != 0 {
+        return Err(RecoveryError::UntrustedAuthority);
+    }
+    let absolute = std::path::absolute(path)?;
+    if absolute
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(RecoveryError::UntrustedAuthority);
+    }
+    for ancestor in absolute.ancestors() {
+        match require_protected(ancestor) {
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => (),
+            result => result?,
+        }
+    }
+    for name in [
+        "provenance.json",
+        "trust",
+        "trust/roles.json",
+        "trust/roles.lock",
+    ] {
+        match require_protected(&absolute.join(name)) {
+            Err(RecoveryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => (),
+            result => result?,
+        }
+    }
+    Ok(())
+}
+
+fn require_protected(path: &std::path::Path) -> Result<(), RecoveryError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o022 != 0
+        || (!metadata.is_dir() && (!metadata.is_file() || metadata.nlink() != 1))
+    {
+        return Err(RecoveryError::UntrustedAuthority);
     }
     Ok(())
 }

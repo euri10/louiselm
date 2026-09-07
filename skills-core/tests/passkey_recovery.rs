@@ -64,6 +64,136 @@ fn registration(challenge: &Value, origin: &str) -> RegisterPublicKeyCredential 
 }
 
 #[test]
+fn initial_setup_publishes_both_methods_only_after_exact_key_possession() {
+    use louiselm_skills::trust::onboarding::{PendingSetup, SETUP_NAMESPACE};
+    let fixture = Fixture::new();
+    let primary = SshKey::generate(&fixture, "setup-primary");
+    let release = SshKey::generate(&fixture, "setup-release");
+    let paper = PaperPhrase::generate().unwrap();
+    for fault in ["missing", "role", "namespace", "paper", "hardware", "none"] {
+        let setup = PendingSetup::new(
+            "test/setup",
+            &primary.public_key(),
+            &release.public_key(),
+            if fault == "hardware" {
+                SkPolicy::require_presence_and_verification()
+            } else {
+                SkPolicy::none()
+            },
+            1,
+        )
+        .unwrap();
+        let (mut pending, options) = PendingRegistration::start(setup.trust(), 45081).unwrap();
+        let registered = pending
+            .finish(
+                setup.trust(),
+                &registration(
+                    &serde_json::to_value(options).unwrap()["publicKey"]["challenge"],
+                    "http://localhost:45081",
+                ),
+            )
+            .unwrap();
+        let bytes = setup.plan(&paper, &registered).unwrap();
+        let mut proofs = vec![
+            ReplacementProof {
+                role: Role::Primary,
+                signature: primary.sign(SETUP_NAMESPACE, &bytes),
+            },
+            ReplacementProof {
+                role: Role::Release,
+                signature: release.sign(SETUP_NAMESPACE, &bytes),
+            },
+        ];
+        let wrong = PaperPhrase::generate().unwrap();
+        match fault {
+            "missing" => {
+                proofs.pop();
+            }
+            "role" => proofs[1].role = Role::Primary,
+            "namespace" => {
+                proofs[1].signature = release.sign(recovery::POSSESSION_NAMESPACE, &bytes);
+            }
+            _ => (),
+        }
+        let result = setup.apply(
+            &fixture.store(),
+            if fault == "paper" { &wrong } else { &paper },
+            &registered,
+            &proofs,
+        );
+        if fault == "none" {
+            let trust = result.unwrap();
+            assert_eq!(trust.paper_verifier, Some(paper.verifier("test/setup")));
+            assert!(trust.passkey.is_some());
+            assert_eq!(trust.keys.len(), 2);
+            assert_eq!(TrustStore::load(&fixture.store()).unwrap(), Some(trust));
+        } else {
+            assert!(result.is_err(), "{fault}");
+            assert!(TrustStore::load(&fixture.store()).unwrap().is_none());
+        }
+    }
+}
+
+#[test]
+fn setup_nonce_binds_registration_and_never_overwrites_existing_state() {
+    use louiselm_skills::trust::onboarding::{PendingSetup, SETUP_NAMESPACE};
+    let fixture = Fixture::new();
+    let primary = SshKey::generate(&fixture, "setup-primary");
+    let release = SshKey::generate(&fixture, "setup-release");
+    let setup = || {
+        PendingSetup::new(
+            "test/setup",
+            &primary.public_key(),
+            &release.public_key(),
+            SkPolicy::none(),
+            1,
+        )
+        .unwrap()
+    };
+    let first = setup();
+    let second = setup();
+    assert_ne!(first.trust().digest(), second.trust().digest());
+    let (mut pending, options) = PendingRegistration::start(first.trust(), 45081).unwrap();
+    let registered = pending
+        .finish(
+            first.trust(),
+            &registration(
+                &serde_json::to_value(options).unwrap()["publicKey"]["challenge"],
+                "http://localhost:45081",
+            ),
+        )
+        .unwrap();
+    let paper = PaperPhrase::generate().unwrap();
+    assert!(second.plan(&paper, &registered).is_err());
+    let bytes = first.plan(&paper, &registered).unwrap();
+    let proofs = [
+        ReplacementProof {
+            role: Role::Primary,
+            signature: primary.sign(SETUP_NAMESPACE, &bytes),
+        },
+        ReplacementProof {
+            role: Role::Release,
+            signature: release.sign(SETUP_NAMESPACE, &bytes),
+        },
+    ];
+    let original = TrustStore::bootstrap(
+        &fixture.store(),
+        "test/existing",
+        &primary.public_key(),
+        &release.public_key(),
+        SkPolicy::none(),
+        1,
+    )
+    .unwrap();
+    assert!(
+        first
+            .apply(&fixture.store(), &paper, &registered, &proofs)
+            .is_err()
+    );
+    assert_eq!(TrustStore::load(&fixture.store()).unwrap(), Some(original));
+}
+
+#[test]
 fn real_verifier_accepts_backed_up_registration_and_consumes_each_attempt() {
     let fixture = Fixture::new();
     let (trust, _) = trust(&fixture);
@@ -166,13 +296,15 @@ fn registration_refuses_missing_uv_and_wrong_rp_hash() {
 #[test]
 fn passkey_cli_refuses_uninstalled_authority_and_never_echoes_unknown_values() {
     let fixture = Fixture::new();
-    for command in ["passkey-enroll", "passkey-recover"] {
+    for command in ["setup", "change", "reset"] {
         let mut process = Command::new(env!("CARGO_BIN_EXE_louiselm-skills"));
         process
             .args(["recovery", command, "--store"])
             .arg(fixture.path("must-not-create"));
-        if command == "passkey-enroll" {
-            process.args(["--authorizer", "unused-fixture-key"]);
+        if command == "setup" {
+            process.args(["--primary", "unused-primary", "--release", "unused-release"]);
+        } else if command == "change" {
+            process.args(["--via", "passkey", "--paper", "replace"]);
         }
         let output = process.output().unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -180,19 +312,14 @@ fn passkey_cli_refuses_uninstalled_authority_and_never_echoes_unknown_values() {
         assert!(!fixture.path("must-not-create").exists());
     }
     let output = Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
-        .args([
-            "recovery",
-            "passkey-recover",
-            "--phrase",
-            "private-fixture-input",
-        ])
+        .args(["recovery", "change", "--phrase", "private-fixture-input"])
         .output()
         .unwrap();
     assert!(!String::from_utf8_lossy(&output.stderr).contains("private-fixture-input"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("private-fixture-input"));
 }
 
-fn enrolled(fixture: &Fixture) -> (TrustStore, Value) {
+fn enrolled(fixture: &Fixture) -> (TrustStore, Value, PaperPhrase) {
     let (trust, primary) = trust(fixture);
     let paper = PaperPhrase::generate().unwrap();
     let change = RecoveryChange::new(&trust, vec![], Some(&paper)).unwrap();
@@ -252,7 +379,7 @@ fn enrolled(fixture: &Fixture) -> (TrustStore, Value) {
     )
     .unwrap();
     assert_eq!(enrolled.paper_verifier, trust.paper_verifier);
-    (enrolled, options["publicKey"]["user"]["id"].clone())
+    (enrolled, options["publicKey"]["user"]["id"].clone(), paper)
 }
 
 fn assertion(challenge: &Value, user: &Value, fault: &str, counter: u32) -> PublicKeyCredential {
@@ -273,9 +400,105 @@ fn assertion(challenge: &Value, user: &Value, fault: &str, counter: u32) -> Publ
 }
 
 #[test]
+fn either_old_method_can_replace_passkey_but_candidate_cannot_authorize_itself() {
+    for via_paper in [true, false] {
+        let fixture = Fixture::new();
+        let (trust, user, old_paper) = enrolled(&fixture);
+        let next_paper = PaperPhrase::generate().unwrap();
+        let (mut registration_state, options) = PendingRegistration::start(&trust, 45081).unwrap();
+        let mut response = registration(
+            &serde_json::to_value(options).unwrap()["publicKey"]["challenge"],
+            "http://localhost:45081",
+        );
+        // Synthetic second credential ID in the observed fmt=none fixture. Key
+        // material is disposable; no claim about real Android ceremony ordering.
+        let mut attestation = response.response.attestation_object.as_ref().to_vec();
+        let id = response.raw_id.as_ref();
+        let offset = attestation
+            .windows(id.len())
+            .position(|bytes| bytes == id)
+            .unwrap();
+        let mut next_id = id.to_vec();
+        next_id[0] ^= 1;
+        attestation[offset..offset + next_id.len()].copy_from_slice(&next_id);
+        response.raw_id = next_id.clone().into();
+        response.id = encoded(next_id).as_str().unwrap().to_owned();
+        response.response.attestation_object = attestation.into();
+        let registration = registration_state.finish(&trust, &response).unwrap();
+        let mut change = RecoveryChange::enroll_passkey(&trust, &registration).unwrap();
+        if via_paper {
+            change.next_verifier = Some(next_paper.verifier(&trust.trust_domain));
+        }
+        let (mut pending, options) = PendingAuthentication::start(&trust, &change, 45081).unwrap();
+        let mut self_approval = assertion(
+            &serde_json::to_value(options).unwrap()["publicKey"]["challenge"],
+            &user,
+            "",
+            2,
+        );
+        self_approval.raw_id = response.raw_id.clone();
+        self_approval.id.clone_from(&response.id);
+        assert!(pending.finish(&self_approval).is_err());
+        let authorization = if via_paper {
+            RecoveryAuthorization::Phrase(&old_paper)
+        } else {
+            let (mut pending, options) =
+                PendingAuthentication::start(&trust, &change, 45081).unwrap();
+            RecoveryAuthorization::Passkey(
+                pending
+                    .finish(&assertion(
+                        &serde_json::to_value(options).unwrap()["publicKey"]["challenge"],
+                        &user,
+                        "",
+                        2,
+                    ))
+                    .unwrap(),
+            )
+        };
+        let updated = recovery::apply(
+            &fixture.store(),
+            &change,
+            authorization,
+            &[],
+            RecoveryConfirmation {
+                paper: via_paper.then_some(&next_paper),
+                registration: Some(&registration),
+            },
+            4,
+        )
+        .unwrap();
+        assert_eq!(updated.keys, trust.keys);
+        assert_eq!(updated.passkey.as_ref(), Some(registration.credential()));
+        assert!(
+            updated
+                .retired_passkeys
+                .contains(&trust.passkey.as_ref().unwrap().fingerprint().unwrap())
+        );
+        assert_eq!(
+            updated.paper_verifier,
+            if via_paper {
+                change.next_verifier
+            } else {
+                trust.paper_verifier
+            }
+        );
+        let status = louiselm_skills::trust::status::read(&fixture.store()).unwrap();
+        assert!(status.paper_enrolled && status.passkey_enrolled && status.passkey_backed_up);
+        assert!(
+            !status.recovery_ready,
+            "complete development fixture remains untrusted"
+        );
+        let public = serde_json::to_string(&status).unwrap();
+        assert!(!public.contains(&old_paper.expose_secret().to_string()));
+        assert!(!public.contains(updated.paper_verifier.as_ref().unwrap()));
+        assert!(!public.contains(&response.id));
+    }
+}
+
+#[test]
 fn passkey_alone_replaces_signing_key_and_preserves_paper() {
     let fixture = Fixture::new();
-    let (trust, user) = enrolled(&fixture);
+    let (trust, user, _) = enrolled(&fixture);
     let replacement = SshKey::generate(&fixture, "replacement");
     let change = RecoveryChange::new(
         &trust,
@@ -355,7 +578,7 @@ fn passkey_alone_replaces_signing_key_and_preserves_paper() {
 #[test]
 fn approval_binds_exact_change_and_passkey_remains_reusable() {
     let fixture = Fixture::new();
-    let (trust, user) = enrolled(&fixture);
+    let (trust, user, _) = enrolled(&fixture);
     let next = PaperPhrase::generate().unwrap();
     let change = RecoveryChange::new(&trust, vec![], Some(&next)).unwrap();
     let (mut pending, options) = PendingAuthentication::start(&trust, &change, 45081).unwrap();

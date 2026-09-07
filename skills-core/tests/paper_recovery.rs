@@ -26,7 +26,9 @@ fn cli_refuses_development_authority_before_opening_a_secret_channel() {
     let fixture = Fixture::new();
     let absent = fixture.path("must-not-create");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
-        .args(["recovery", "paper-recover", "--store"])
+        .args([
+            "recovery", "change", "--via", "paper", "--paper", "replace", "--store",
+        ])
         .arg(&absent)
         .output()
         .expect("CLI runs");
@@ -34,12 +36,7 @@ fn cli_refuses_development_authority_before_opening_a_secret_channel() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("trusted installed tool"));
     assert!(!absent.exists());
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
-        .args([
-            "recovery",
-            "paper-recover",
-            "--phrase",
-            "never-echo-this-fixture",
-        ])
+        .args(["recovery", "change", "--phrase", "never-echo-this-fixture"])
         .output()
         .expect("CLI runs");
     assert_eq!(output.status.code(), Some(1));
@@ -323,7 +320,7 @@ fn stale_wrong_domain_and_confused_roles_never_change_authority() {
             &fixture.store(),
             &change,
             RecoveryAuthorization::SigningKey {
-                role: Role::Recovery,
+                role: Role::Release,
                 signature: &signature
             },
             &[],
@@ -335,17 +332,7 @@ fn stale_wrong_domain_and_confused_roles_never_change_authority() {
         )
         .is_err()
     );
-    assert!(
-        RecoveryChange::new(
-            &trust,
-            vec![ReplacementKey {
-                role: Role::Recovery,
-                public_key: "replacement".to_owned()
-            }],
-            Some(&next)
-        )
-        .is_err()
-    );
+    assert!(serde_json::from_str::<Role>(r#"\"recovery\""#).is_err());
     assert_eq!(
         TrustStore::load(&fixture.store()).expect("state"),
         Some(trust)
@@ -577,18 +564,8 @@ fn paper_recovery_preserves_history_but_old_keys_cannot_make_new_admissions() {
 #[test]
 fn both_signing_roles_require_exact_distinct_possession_proofs() {
     let fixture = Fixture::new();
-    let (mut trust, _) = enrolled(&fixture);
-    // The development fixture already has a software release role. Production
-    // has strict assertion policy and is tested separately for refusal.
-    let mut release = trust.admission_key().unwrap().clone();
-    release.role = Role::Release;
-    release.public_key = SshKey::generate(&fixture, "old-release").public_key();
-    trust.keys.push(release);
-    std::fs::write(
-        fixture.path("store/trust/roles.json"),
-        serde_json::to_vec(&trust).unwrap(),
-    )
-    .unwrap();
+    // Both fixture roles use software keys; production requires SK assertions.
+    let (trust, _) = enrolled(&fixture);
     let primary = SshKey::generate(&fixture, "new-primary");
     let release = SshKey::generate(&fixture, "new-release");
     let keys = vec![
@@ -663,10 +640,9 @@ fn both_signing_roles_require_exact_distinct_possession_proofs() {
         recovered.key_for(Role::Release).unwrap().public_key,
         release.public_key()
     );
-    assert_eq!(
-        recovered.key_for(Role::Recovery),
-        trust.key_for(Role::Recovery)
-    );
+    for role in [Role::Primary, Role::Release] {
+        assert!(recovered.retired.contains(trust.key_for(role).unwrap()));
+    }
 }
 
 #[cfg(target_os = "linux")]

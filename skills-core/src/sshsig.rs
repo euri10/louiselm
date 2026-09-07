@@ -33,9 +33,6 @@ use thiserror::Error;
 /// Endorsement, or a git commit must never verify as an Admission.
 pub const ADMISSION_NAMESPACE: &str = "louiselm.skills.admission/1";
 
-/// The signature namespace trust changes own.
-pub const TRUST_NAMESPACE: &str = "louiselm.skills.trust/1";
-
 const MAGIC: &[u8] = b"SSHSIG";
 const BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 const END: &str = "-----END SSH SIGNATURE-----";
