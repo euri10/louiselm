@@ -12,6 +12,9 @@ import androidx.work.workDataOf
 
 internal class UploadWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
     override fun doWork(): Result {
+        if (!hasReceiverNetworkAccess(applicationContext)) {
+            return Result.failure(workDataOf("error" to applicationContext.getString(R.string.local_network_denied)))
+        }
         val pairing = runCatching { PairingStore(applicationContext).load() }
             .getOrElse { return Result.failure(workDataOf("error" to "pairing credential needs attention")) }
             ?: return Result.success()
@@ -24,6 +27,9 @@ internal class UploadWorker(context: Context, parameters: WorkerParameters) : Wo
         }
             .getOrElse { return Result.failure(workDataOf("error" to "capture queue needs attention")) }
         for (capture in captures) {
+            if (!hasReceiverNetworkAccess(applicationContext)) {
+                return Result.failure(workDataOf("error" to applicationContext.getString(R.string.local_network_denied)))
+            }
             when (val attempt = PinnedHttps.upload(pairing, capture)) {
                 UploadAttempt.Success -> {
                     if (!store.markUploaded(capture.id, pairing.receiverIdentitySha256)) return Result.success()

@@ -54,6 +54,7 @@ class MainActivity : Activity() {
     private var startedAtElapsedMs = 0L
     private var qrPhoto: File? = null
     private var lastAttention: AttentionSnapshot? = null
+    private var pendingReceiverAction: (() -> Unit)? = null
     private val attentionPreferences by lazy { getSharedPreferences("attention-ui", MODE_PRIVATE) }
     private val uploadObserver = Observer<List<WorkInfo>> { workInfos ->
         if (hasFinishedUpload(workInfos)) refreshStatus()
@@ -91,6 +92,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        pendingReceiverAction = null
         stopObservingUpload()
         recorder?.release()
         recorder = null
@@ -132,7 +134,7 @@ class MainActivity : Activity() {
         content.addView(attentionCards, matchWidth())
         attentionRetryButton = Button(this).apply {
             text = getString(R.string.attention_retry)
-            setOnClickListener { refreshAttention() }
+            setOnClickListener { withReceiverNetworkAccess { refreshAttention() } }
         }
         content.addView(attentionRetryButton, matchWidth(topMargin = padding / 2))
         captureButton = Button(this).apply {
@@ -147,14 +149,16 @@ class MainActivity : Activity() {
         }, matchWidth())
         pairButton = Button(this).apply {
             text = getString(R.string.pair_receiver)
-            setOnClickListener { launchQrCamera() }
+            setOnClickListener { withReceiverNetworkAccess { launchQrCamera() } }
         }
         content.addView(pairButton, matchWidth())
         content.addView(Button(this).apply {
             text = getString(R.string.sync_now)
             setOnClickListener {
-                UploadWorker.enqueue(applicationContext, replaceExisting = true)
-                statusView.text = getString(R.string.sync_queued)
+                withReceiverNetworkAccess {
+                    UploadWorker.enqueue(applicationContext, replaceExisting = true)
+                    statusView.text = getString(R.string.sync_queued)
+                }
             }
         }, matchWidth(topMargin = padding / 2))
         return ScrollView(this).apply { addView(content) }
@@ -372,6 +376,7 @@ class MainActivity : Activity() {
         statusView.text = getString(R.string.pairing_in_progress)
         networkExecutor.execute {
             val result = runCatching {
+                requireReceiverNetworkAccess(applicationContext)
                 when (plan.transition) {
                     PairingTransition.FIRST_PAIR -> {
                         val config = PinnedHttps.pair(plan.offer, deviceName())
@@ -464,11 +469,20 @@ class MainActivity : Activity() {
             ?: getString(R.string.never_status)
 
     private fun refreshAttention() {
+        if (!hasReceiverNetworkAccess(this)) {
+            attentionStatusView.text = getString(R.string.local_network_denied)
+            attentionRetryButton.isEnabled = true
+            return
+        }
         networkExecutor.execute {
-            val result: AttentionFetch? = runCatching { pairingStore.load() }.fold(
-                onSuccess = { pairing -> pairing?.let(PinnedHttps::fetchAttention) },
-                onFailure = { AttentionFetch.OperatorAction("stored pairing configuration needs operator attention") },
-            )
+            val result: AttentionFetch? = if (!hasReceiverNetworkAccess(applicationContext)) {
+                AttentionFetch.OperatorAction(getString(R.string.local_network_denied))
+            } else {
+                runCatching { pairingStore.load() }.fold(
+                    onSuccess = { pairing -> pairing?.let(PinnedHttps::fetchAttention) },
+                    onFailure = { AttentionFetch.OperatorAction("stored pairing configuration needs operator attention") },
+                )
+            }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 if (result == null) {
@@ -486,7 +500,7 @@ class MainActivity : Activity() {
                     }
                     is AttentionFetch.OperatorAction -> {
                         attentionStatusView.text = getString(R.string.attention_operator_state, result.message)
-                        attentionRetryButton.isEnabled = false
+                        attentionRetryButton.isEnabled = !hasReceiverNetworkAccess(this)
                     }
                 }
             }
@@ -552,8 +566,28 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun withReceiverNetworkAccess(action: () -> Unit) {
+        if (hasReceiverNetworkAccess(this)) {
+            action()
+        } else if (pendingReceiverAction == null) {
+            pendingReceiverAction = action
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), LOCAL_NETWORK_PERMISSION_REQUEST)
+        }
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (isDestroyed || isFinishing) return
+        if (requestCode == LOCAL_NETWORK_PERMISSION_REQUEST) {
+            val action = pendingReceiverAction ?: return
+            pendingReceiverAction = null
+            if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED && hasReceiverNetworkAccess(this)) {
+                action()
+            } else {
+                statusView.text = getString(R.string.local_network_denied)
+            }
+            return
+        }
         if (requestCode != MICROPHONE_PERMISSION_REQUEST) return
         if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             startRecording()
@@ -565,5 +599,6 @@ class MainActivity : Activity() {
     companion object {
         private const val MICROPHONE_PERMISSION_REQUEST = 1
         private const val QR_CAMERA_REQUEST = 2
+        private const val LOCAL_NETWORK_PERMISSION_REQUEST = 3
     }
 }

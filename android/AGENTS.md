@@ -170,9 +170,9 @@ then clarity, simplicity, and performance.
   build. Resolve warnings in changed code; no new baselines, global suppression
   or `ignoreFailures` to make gates green. A narrow suppression names the
   diagnostic and explains the unavoidable boundary.
-- Keep version-advisory exceptions scoped to the tested pins; their upgrade
-  audit is `louiselm-myd5`. Do not silently upgrade SDKs/dependencies or weaken
-  security to satisfy an advisory.
+- Keep SDK/dependency upgrades intentional and tested. Target SDK changes can
+  alter runtime permissions; cover denial/revocation as well as granted access.
+  Do not weaken security to satisfy a version advisory.
 - CI runs the same Android gates. Report unavailable/failed checks; do not claim
   that merely configuring a gate proves it passed. Compiler, Android Lint and
   JUnit/Robolectric own their separate checks; no unapproved overlapping tools.

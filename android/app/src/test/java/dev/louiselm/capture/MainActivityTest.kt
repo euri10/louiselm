@@ -83,6 +83,84 @@ class MainActivityTest {
     }
 
     @Test
+    @Config(sdk = [37])
+    fun receiverPermissionCancellationLeavesControlsUsable() {
+        val status = statusView()
+        assertEquals(null, shadowOf(activity).lastRequestedPermission)
+        for (label in listOf(R.string.pair_receiver, R.string.attention_retry)) {
+            button(label).performClick()
+            val request = shadowOf(activity).lastRequestedPermission
+            assertTrue(request != null)
+            assertEquals(listOf(Manifest.permission.ACCESS_LOCAL_NETWORK), request.requestedPermissions.toList())
+            activity.onRequestPermissionsResult(request.requestCode, request.requestedPermissions, intArrayOf())
+            assertEquals(activity.getString(R.string.local_network_denied), status.text.toString())
+            assertTrue(button(label).isEnabled)
+        }
+    }
+
+    @Test
+    @Config(sdk = [37])
+    fun attentionRevocationWhileQueuedStillAllowsRequestingPermission() {
+        shadowOf(activity).grantPermissions(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        button(R.string.attention_retry).performClick()
+        shadowOf(activity).denyPermissions(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        drainStatus()
+        assertTrue(button(R.string.attention_retry).isEnabled)
+    }
+
+    @Test
+    @Config(sdk = [28, 34])
+    fun olderAndroidSyncDoesNotRequestReceiverPermission() {
+        val status = statusView()
+        button(R.string.sync_now).performClick()
+        assertEquals(null, shadowOf(activity).lastRequestedPermission)
+        assertEquals(activity.getString(R.string.sync_queued), status.text.toString())
+    }
+
+    @Test
+    @Config(sdk = [37])
+    fun syncRequestsLocalNetworkPermissionBeforeQueueingWork() {
+        val status = statusView()
+        button(R.string.sync_now).performClick()
+        val request = shadowOf(activity).lastRequestedPermission
+        assertTrue(request != null)
+        assertEquals(listOf(Manifest.permission.ACCESS_LOCAL_NETWORK), request.requestedPermissions.toList())
+        assertFalse(status.text.contains(activity.getString(R.string.sync_queued)))
+        activity.onRequestPermissionsResult(request.requestCode, request.requestedPermissions, intArrayOf(-1))
+        assertTrue(status.text.contains("Local network access"))
+        assertTrue(button(R.string.start_capture).isEnabled)
+    }
+
+    @Test
+    @Config(sdk = [37])
+    fun grantedNetworkPermissionContinuesSyncOnce() {
+        val status = statusView()
+        button(R.string.sync_now).performClick()
+        val request = shadowOf(activity).lastRequestedPermission
+        assertTrue(request != null)
+        shadowOf(activity).grantPermissions(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        activity.onRequestPermissionsResult(request.requestCode, request.requestedPermissions, intArrayOf(0))
+        assertEquals(activity.getString(R.string.sync_queued), status.text.toString())
+        status.text = "settled"
+        activity.onRequestPermissionsResult(request.requestCode, request.requestedPermissions, intArrayOf(0))
+        assertEquals("settled", status.text.toString())
+    }
+
+    @Test
+    @Config(sdk = [37])
+    fun disposedActivityIgnoresPendingNetworkPermission() {
+        val status = statusView()
+        button(R.string.sync_now).performClick()
+        val request = shadowOf(activity).lastRequestedPermission
+        assertTrue(request != null)
+        val before = status.text.toString()
+        controller.close()
+        activity.onRequestPermissionsResult(request.requestCode, request.requestedPermissions, intArrayOf(0))
+        assertEquals(before, status.text.toString())
+    }
+
+    @Test
+    @Config(sdk = [34, 37])
     fun offlineCaptureShowsPendingAndAcknowledgementWithoutResuming() {
         // Observed on Android 14: capture ac7e076f-8def-487f-80bf-b5631a191c89,
         // codex/01a074f5-e592-72d1-9ccf-69e162d8cdfe, louiselm-qbr.1.15.

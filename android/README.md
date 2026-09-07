@@ -6,7 +6,7 @@ metadata in app-private storage. Pairing and upload can happen later.
 
 ## Build
 
-Install Android SDK Platform 36, Build Tools 36.0.0, and Platform Tools. Gradle
+Install Android SDK Platform 37.0, Build Tools 36.0.0, and Platform Tools. Gradle
 must be able to find that SDK through `ANDROID_HOME` or an ignored
 `local.properties` file in this directory:
 
@@ -22,9 +22,11 @@ Connect an API 28+ device, then run:
 ```
 
 `test` includes pure JUnit tests and Robolectric Activity/View/lifecycle tests
-on the JVM; no device is needed for those tests. The Activity fixtures use
-Android 14/API 34, matching the physical regression evidence, isolated app
-storage, a shadow recorder, and separately controlled background/UI queues.
+on the JVM; no device is needed for those tests. Activity fixtures retain
+Android 14/API 34 physical-regression coverage and exercise receiver permissions
+on Android 17/API 37. They use isolated app storage, a shadow recorder, and
+separately controlled background/UI queues. Robolectric is pinned to 4.17-beta-4
+for API 37 support; its SharedSecrets module export applies only to JVM tests.
 Run just that regression with:
 
 ```sh
@@ -32,8 +34,8 @@ Run just that regression with:
 ```
 
 Kotlin warnings and Android Lint warnings/errors fail the build. Narrow exceptions
-document the pinned-version upgrade audit (`louiselm-myd5`), receiver SPKI trust,
-and checked credential persistence. CI uses JDK 25 and runs `test lint assembleDebug`;
+document receiver SPKI trust and checked credential persistence.
+CI uses JDK 25 and runs `test lint assembleDebug`;
 physical checks remain necessary for hardware, pairing/Keystore and real
 background scheduling. Development rules are in
 [AGENTS.md](AGENTS.md).
@@ -44,6 +46,13 @@ the stable receiver public-key identity carried by the version-2 one-time QR;
 routine TLS certificate renewal with that key remains trusted. The long-lived
 device credential and receiver identity are encrypted by Android Keystore.
 WorkManager retries only network, timeout, rate-limit, and server failures.
+
+On Android 17+, Pair, Sync, and Refresh request Nearby devices permission for
+direct access to the private receiver. Denial or revocation leaves offline
+recording available. Grant access in app settings and retry the receiver action;
+background uploads stop with an actionable failure while permission is missing.
+The permission flow is framework-tested; physical Android 17 receiver access,
+QR scanning, and recording have not yet been verified.
 
 App data opts out of Android backup. Android 12+ extraction rules explicitly
 exclude all app storage domains from cloud backup and device-to-device transfer,
@@ -79,6 +88,10 @@ stored only in app-private preferences.
 
 ## Physical acceptance checklist
 
+- On Android 17, deny Nearby devices access from Pair or Sync; verify offline
+  recording still saves. Grant access and retry Pair, Sync, and Refresh. Revoke
+  access with pending captures; verify originals remain and Sync resumes after
+  access is restored.
 - Record while offline, stop, force-stop the app, reopen it, and confirm the
   capture remains queued.
 - Start recording, background the app, and confirm `onStop` saves the capture.

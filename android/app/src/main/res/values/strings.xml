@@ -14,6 +14,7 @@
     <string name="saving_status">Saving the original audio durably…</string>
     <string name="saved_status">Capture %1$s is durable and queued.</string>
     <string name="microphone_denied">Microphone permission is required to record.</string>
+    <string name="local_network_denied">Local network access is required to reach your receiver. Allow Nearby devices in app settings, then retry. Offline recording still works.</string>
     <string name="recording_failed">Recording failed: %1$s</string>
     <string name="recording_retained">Recording could not be finalized. The partial file remains at %1$s.</string>
     <string name="camera_missing">No camera app is available to scan the pairing QR.</string>
