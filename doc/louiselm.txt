@@ -266,11 +266,11 @@ agents.<name>.latest.env                                      *louiselm-config-a
 
 ------------------------------------------------------------------------------
 agents.<name>.provider                                        *louiselm-config-agents-name-provider*
-    Type: one of: string, array of table
-    Description: Required access/quota service: a fixed name or nonempty
-    routes matching exact advertised option IDs and typed values. Exactly one
-    route must match before each prompt; Model display names never determine
-    Provider.
+    Type: one of: string, array of table, table
+    Description: Required access/quota service: a fixed name, exact typed
+    option routes, or { option, prefixes } mapping literal prefixes of an
+    advertised string option to services. Exactly one route or prefix must
+    match before each prompt; display names never determine Provider.
 
 ------------------------------------------------------------------------------
 agents.<name>.provider[].options                              *louiselm-config-agents-name-provider-options*
@@ -279,6 +279,19 @@ agents.<name>.provider[].options                              *louiselm-config-a
 ------------------------------------------------------------------------------
 agents.<name>.provider[].provider                             *louiselm-config-agents-name-provider-provider*
     Type: string
+
+------------------------------------------------------------------------------
+agents.<name>.provider.option                                 *louiselm-config-agents-name-provider-option*
+    Type: string
+    Description: Advertised string-valued option ID to match, not its display
+    name.
+
+------------------------------------------------------------------------------
+agents.<name>.provider.prefixes                               *louiselm-config-agents-name-provider-prefixes*
+    Type: string-keyed map of string
+    Description: Nonempty literal, case-sensitive prefixes mapped to
+    access/quota services. No regex or longest-match precedence; multiple
+    matches are ambiguous even for the same service.
 
 ------------------------------------------------------------------------------
 agents.<name>.skills                                          *louiselm-config-agents-name-skills*

@@ -542,7 +542,7 @@ louiselm.permission.Lifetime:
 - `env: table<string, string>?` -- Environment variables for the process.
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.
 - `options: table<string, unknown>?` -- Agent-specific options. `options._meta`, when present, is threaded
-- `provider: string|louiselm.agent.ProviderRoute[]` -- Explicit access/quota service or option routes; required before prompting.
+- `provider: string|louiselm.agent.ProviderPrefixes|louiselm.agent.ProviderRoute[]` -- Explicit access/quota service, exact option routes, or literal option prefixes; required before prompting.
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
 - `transcript_layout: string?` -- Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
 - `upgrade: (string|string[])?` -- Upgrade executable and arguments, or nonblank manual update instructions. Displayed only, never executed by LouiseLM; only argv can join the combined upgrade command.

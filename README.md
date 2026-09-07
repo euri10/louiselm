@@ -70,7 +70,27 @@ setup block into your regular configuration when ready, or see the
 
 Every Agent must declare its access/quota `provider`, independently of the Model
 manufacturer: a Model reached through GitHub Copilot has Provider `GitHub Copilot`.
-For an Agent offering multiple services, configure exact advertised option routes:
+For an Agent whose advertised option values identify services by namespace,
+configure a literal prefix map (the option ID need not be `model`):
+
+```lua
+provider = {
+  option = "model",
+  prefixes = {
+    ["opencode-go/"] = "OpenCode Go",
+    ["opencode/"] = "OpenCode Zen",
+    ["deepseek/"] = "DeepSeek",
+  },
+}
+```
+
+These mappings are explicit configuration, not built-in Agent-specific rules.
+New Models under a configured prefix need no config edit. Prefixes are nonempty,
+literal and case-sensitive: no patterns or longest-match precedence. Missing or
+non-string option values, no match, and multiple matches refuse attribution;
+even overlapping prefixes naming the same service are ambiguous.
+
+When attribution depends on multiple options or exact values, use routes instead:
 
 ```lua
 provider = {
@@ -79,10 +99,10 @@ provider = {
 }
 ```
 
-These identifiers are illustrative; use the option IDs and values your Agent
-actually advertises. All entries in a route's `options` must match, including
-boolean values. Exactly one route must match before either Chat or the headless
-Session API sends a prompt. Missing configuration fails setup; missing or
+Use the option IDs and values your Agent actually advertises, and map the service
+supplying your access. All entries in a route's `options` must match, including
+boolean values. Exactly one route or prefix must match before either Chat or the
+headless Session API sends a prompt. Missing configuration fails setup; missing or
 ambiguous active routes leave the Session ready and report how to fix attribution.
 `Session:inspect().turn_identity` preserves Agent, Provider, advertised Model,
 and the complete supported option tuple at prompt start; later option changes

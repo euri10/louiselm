@@ -12,7 +12,7 @@ local Provider = require("louiselm.agent.provider")
 ---@class louiselm.agent.Definition
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
----@field provider louiselm.agent.Provider Explicit access/quota service or option routes; required before prompting.
+---@field provider louiselm.agent.Provider Explicit access/quota service, exact option routes, or literal option prefixes; required before prompting.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options. `options._meta`, when present, is threaded
 ---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
@@ -390,7 +390,7 @@ function M.normalize(definitions, default_skills_policy)
           errors,
           child_path(path, provider_error.path),
           provider_error_types[provider_error.type],
-          provider_error.message or "configure provider as a service name or exact option routes",
+          provider_error.message or "configure provider as a service name, exact option routes, or option prefixes",
           provider_error.expected,
           provider_error.got
         )

@@ -124,6 +124,63 @@ T["forensics"] = MiniTest.new_set()
 
 T["provider"] = MiniTest.new_set()
 
+T["provider"]["prefix mappings gate dispatch and preserve the prompt-start Provider"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    agent = {
+      command = "agent",
+      provider = { option = "access", prefixes = { ["one/"] = "One", ["one/team/"] = "Team", ["two/"] = "Two" } },
+    },
+  }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local function options(value)
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = {
+        sessionUpdate = "config_option_update",
+        configOptions = {
+          {
+            id = "access",
+            name = "Access",
+            type = "select",
+            currentValue = value,
+            options = { { value = value, name = "Same display name" } },
+          },
+        },
+      },
+    })
+  end
+  for _, value in ipairs({ "unknown/model", "one/team/model" }) do
+    options(value)
+    local writes = #process.writes
+    local id, err = session:prompt("must not be sent")
+    MiniTest.expect.equality(id, nil)
+    MiniTest.expect.equality(assert(err):find("Provider", 1, true) ~= nil, true)
+    MiniTest.expect.equality(#process.writes, writes)
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality(session:inspect().current_turn, 0)
+    MiniTest.expect.equality(session:inspect().turn_identity, nil)
+  end
+  options("one/new-model")
+  local request = assert(session:prompt("resolved"))
+  local identity = session:inspect().turn_identity
+  MiniTest.expect.equality(identity.provider, "One")
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    options("two/new-model")
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return session:inspect().config_options[1].current_value == "two/new-model"
+  end))
+  MiniTest.expect.equality(session:inspect().turn_identity, identity)
+  respond(process, request, { stopReason = "end_turn" })
+  assert(session:prompt("next service"))
+  MiniTest.expect.equality(session:inspect().turn_identity.provider, "Two")
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["provider"]["refuses unmatched and ambiguous routes before dispatch or turn state changes"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
