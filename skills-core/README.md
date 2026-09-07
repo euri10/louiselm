@@ -156,9 +156,25 @@ can be activated, so a Generation only takes effect once it exists somewhere the
 operator does not solely control. The witness ledger is append-only per
 Generation: a digest already published with different bytes is refused, never
 overwritten. During a witness outage nothing changes, and the previous
-Generation stays in force. Activation also refuses any sequence at or below what
-is current, so restoring an older signed record is not a rollback path —
-intentional rollback is a newly admitted higher sequence.
+Generation stays in force. Activation refuses an older sequence or a different
+Generation at the current sequence, so intentional rollback requires a newly
+admitted higher sequence. Retrying the exact current digest confirms activation
+without appending another lineage pin.
+
+Activation serializes its Generation records and Supply lineage under the trust
+lock. It writes and syncs `activation.pending.json` before replacing any of them;
+ordinary failures restore the previous state. An interrupted activation rolls back
+before the next `generation status`, `list`, or other Admission operation reads
+the store. These APIs report a busy store instead of exposing an in-flight
+transaction; raw files are not a committed-state inspection API.
+
+If rollback cannot finish, repair the reported filesystem problem and retry the
+operation; retain the journal, which contains the recovery evidence. Once every
+new file is durable, journal removal commits the activation. Failure to sync that
+removal reports **uncertain commit durability**: retry activation of the same
+digest to settle the outcome without creating another pin. A crash in this final
+window can recover the complete old or complete new state. Process-crash tests
+cover publication boundaries; they do not emulate physical storage failure.
 
 The commit to the witness branch is an ordinary commit. Branch protection on the
 remote is the control; a second hardware signature there would cost another

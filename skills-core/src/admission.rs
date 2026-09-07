@@ -1,7 +1,8 @@
 //! The Skill Admission ceremony and the Generation lifecycle.
 //!
-//! Admission is a transaction with three separable failures, and the ordering
-//! is chosen so that each one leaves the prior Generation in force:
+//! Admission separates preparation from activation so that failures before
+//! commit preserve the prior Generation, with recovery required after an
+//! interrupted write:
 //!
 //! 1. **Recompute.** Every member's Dossier is rebuilt from stored bytes. A
 //!    package that no longer verifies, or that Inspection calls unreviewable,
@@ -15,6 +16,13 @@
 //!    `pending_witness` and governs nothing. It becomes current only after the
 //!    exact bytes are read back from the witness remote and its sequence is
 //!    higher than what is current. A witness outage therefore changes nothing.
+//!
+//! Activation holds the trust lock and journals both Generation records and
+//! Supply lineage before replacing them. Reads recover an interrupted activation
+//! under that same lock. Ordinary write failures restore the old supply; failure
+//! to confirm the final commit is reported separately as uncertain durability.
+
+mod transaction;
 
 use std::{collections::BTreeMap, fs, io, path::PathBuf};
 
@@ -33,7 +41,7 @@ use crate::{
     signer::{Signer, SignerError},
     sshsig::{self, ADMISSION_NAMESPACE},
     store::{Store, StoreError},
-    trust::{Role, TrustError, TrustStore, persistence::LockedTrust},
+    trust::{Role, TrustError, TrustStore},
     witness::{Witness, WitnessError, WitnessEvidence},
 };
 
@@ -62,6 +70,24 @@ pub enum AdmissionError {
         path: String,
         /// Underlying failure.
         source: io::Error,
+    },
+    /// Activation failed and its durable journal could not yet be rolled back.
+    #[error("activation failed: {failure}; recovery is required before reading supply: {source}")]
+    RecoveryRequired {
+        /// The original activation failure.
+        failure: Box<AdmissionError>,
+        /// Why rollback could not complete.
+        source: Box<AdmissionError>,
+    },
+    /// All activation files were published but commit durability is unconfirmed.
+    #[error(
+        "generation {generation} is published but commit durability is uncertain; retry activation: {source}"
+    )]
+    CommitUncertain {
+        /// The exact Generation whose activation should be retried.
+        generation: String,
+        /// The failure after removing the rollback journal.
+        source: Box<AdmissionError>,
     },
     /// A stored record is unreadable.
     #[error("generation record is malformed: {0}")]
@@ -183,7 +209,7 @@ pub fn admit(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
 ) -> Result<GenerationRecord, AdmissionError> {
-    let locked = LockedTrust::acquire(store)?;
+    let locked = transaction::lock(store)?;
     let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
     let signing_key = trust.admission_key()?.clone();
 
@@ -222,7 +248,7 @@ pub fn admit(
         });
     }
 
-    let previous = current(store)?;
+    let previous = current_unlocked(store)?;
     let payload = GenerationPayload::new(
         &trust.trust_domain,
         previous
@@ -332,7 +358,7 @@ fn verify_chain_position(store: &Store, record: &GenerationRecord) -> Result<(),
         )),
         (Some(predecessor), sequence) => {
             let digest = Digest::parse(predecessor)?;
-            let earlier = load(store, &digest)?;
+            let earlier = load_unlocked(store, &digest)?;
             if earlier.payload.sequence + 1 != sequence {
                 return Err(AdmissionError::Chain(format!(
                     "sequence {sequence} does not follow {}",
@@ -354,7 +380,7 @@ pub fn witness(
     witness: &dyn Witness,
     confirmed_at_ms: u64,
 ) -> Result<GenerationRecord, AdmissionError> {
-    let mut record = load_verified(store, digest)?;
+    let record = load_verified(store, digest)?;
     let bytes = record.witness_bytes();
 
     let held = if let Some(held) = witness.fetch(digest)? {
@@ -374,6 +400,15 @@ pub fn witness(
         });
     }
     evidence.confirmed_at_ms = confirmed_at_ms;
+    // Network I/O holds no trust lock. Re-read after acquiring it so a concurrent
+    // activation cannot be overwritten by the pre-network lifecycle snapshot.
+    let _locked = transaction::lock(store)?;
+    let mut record = load_verified_unlocked(store, digest)?;
+    if record.witness_bytes() != bytes {
+        return Err(AdmissionError::WitnessMismatch {
+            digest: digest.to_string(),
+        });
+    }
     record.witness = Some(evidence);
     write_record(store, &record)?;
     Ok(record)
@@ -381,8 +416,16 @@ pub fn witness(
 
 /// Makes a witnessed Generation the supply in force.
 ///
+/// Readers and mutations share the trust lock and recover an interrupted
+/// activation before proceeding. Retrying the current digest confirms commit
+/// durability without appending another pin.
+///
 /// # Errors
-/// Rejects an untrusted running release, unwitnessed or invalid Generation, or rollback; propagates trust, chain-read, and persistence errors.
+/// Rejects an untrusted release, unwitnessed/invalid Generation, rollback, or
+/// busy store. Pre-commit failures restore the previous supply; failed rollback
+/// returns [`AdmissionError::RecoveryRequired`] and blocks reads until repaired.
+/// [`AdmissionError::CommitUncertain`] means the complete new state is visible
+/// but its commit durability is unknown; retry the same digest to settle it.
 pub fn activate(
     store: &Store,
     digest: &Digest,
@@ -396,35 +439,43 @@ pub fn activate(
                 .unwrap_or_else(|| "unverified".to_owned()),
         });
     }
-    let mut record = load_verified(store, digest)?;
+    let _locked = transaction::lock(store)?;
+    let mut record = load_verified_unlocked(store, digest)?;
     if record.witness.is_none() {
         return Err(AdmissionError::NotWitnessed {
             digest: digest.to_string(),
         });
     }
-    if let Some(previous) = current(store)? {
+    let previous = current_unlocked(store)?;
+    if let Some(previous) = &previous {
+        if previous.digest() == *digest {
+            transaction::confirm(store, digest)?;
+            return Ok(record);
+        }
         if record.payload.sequence <= previous.payload.sequence {
             return Err(AdmissionError::Rollback {
                 attempted: digest.to_string(),
                 current: previous.payload.sequence,
             });
         }
-        let mut superseded = previous;
-        superseded.state = GenerationState::Superseded;
-        write_record(store, &superseded)?;
     }
     record.state = GenerationState::Current;
-    write_record(store, &record)?;
-    record_pin(store, &record)?;
+    transaction::activate(store, previous.as_ref(), &record)?;
     Ok(record)
 }
 
 /// Returns the Generation in force, when there is one.
 ///
 /// # Errors
-/// Returns record-listing or decoding errors. No current Generation is `Ok(None)`.
+/// Returns lock, interrupted-activation recovery, listing, or decoding errors.
+/// No current Generation is `Ok(None)`.
 pub fn current(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError> {
-    Ok(list(store)?
+    let _locked = transaction::lock(store)?;
+    current_unlocked(store)
+}
+
+fn current_unlocked(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError> {
+    Ok(list_unlocked(store)?
         .into_iter()
         .find(|record| record.state == GenerationState::Current))
 }
@@ -432,8 +483,14 @@ pub fn current(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError
 /// Reads a stored record without verifying it.
 ///
 /// # Errors
-/// Returns `Unknown` for an absent record, otherwise I/O or malformed-record errors.
+/// Returns `Unknown` for an absent record, otherwise lock, recovery, I/O, or
+/// malformed-record errors. Interrupted activation is recovered before reading.
 pub fn load(store: &Store, digest: &Digest) -> Result<GenerationRecord, AdmissionError> {
+    let _locked = transaction::lock(store)?;
+    load_unlocked(store, digest)
+}
+
+fn load_unlocked(store: &Store, digest: &Digest) -> Result<GenerationRecord, AdmissionError> {
     let path = record_path(store, digest);
     let bytes = fs::read(&path).map_err(|source| match source.kind() {
         io::ErrorKind::NotFound => AdmissionError::Unknown(digest.to_string()),
@@ -450,7 +507,15 @@ pub fn load(store: &Store, digest: &Digest) -> Result<GenerationRecord, Admissio
 /// # Errors
 /// Returns record/trust loading errors or any failure from [`verify_record`].
 pub fn load_verified(store: &Store, digest: &Digest) -> Result<GenerationRecord, AdmissionError> {
-    let record = load(store, digest)?;
+    let _locked = transaction::lock(store)?;
+    load_verified_unlocked(store, digest)
+}
+
+fn load_verified_unlocked(
+    store: &Store,
+    digest: &Digest,
+) -> Result<GenerationRecord, AdmissionError> {
+    let record = load_unlocked(store, digest)?;
     let trust = TrustStore::load(store)?.ok_or(TrustError::NotBootstrapped)?;
     verify_record(store, &record, &trust)?;
     Ok(record)
@@ -459,8 +524,14 @@ pub fn load_verified(store: &Store, digest: &Digest) -> Result<GenerationRecord,
 /// Reads every stored record, ordered by sequence.
 ///
 /// # Errors
-/// Returns directory/record read or JSON errors. An absent Generations directory is empty.
+/// Returns lock, interrupted-activation recovery, directory/record read, or JSON
+/// errors. An absent Generations directory is empty.
 pub fn list(store: &Store) -> Result<Vec<GenerationRecord>, AdmissionError> {
+    let _locked = transaction::lock(store)?;
+    list_unlocked(store)
+}
+
+fn list_unlocked(store: &Store) -> Result<Vec<GenerationRecord>, AdmissionError> {
     let directory = store.root().join("generations");
     let listing = match fs::read_dir(&directory) {
         Ok(listing) => listing,
@@ -478,6 +549,14 @@ pub fn list(store: &Store) -> Result<Vec<GenerationRecord>, AdmissionError> {
             path: directory.display().to_string(),
             source,
         })?;
+        // An interrupted atomic write can leave only an inert staging file.
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".admission-")
+        {
+            continue;
+        }
         let bytes = fs::read(entry.path()).map_err(|source| AdmissionError::Io {
             path: entry.path().display().to_string(),
             source,
@@ -594,18 +673,15 @@ fn write_record(store: &Store, record: &GenerationRecord) -> Result<(), Admissio
     }
     let bytes =
         serde_json::to_vec(record).map_err(|error| AdmissionError::Malformed(error.to_string()))?;
-    fs::write(&path, bytes).map_err(|source| AdmissionError::Io {
-        path: path.display().to_string(),
-        source,
-    })
+    transaction::write_atomic(&path, &bytes)
 }
 
-/// Appends the activated pin to Supply lineage.
+/// Serializes the activated pin for the journaled Supply lineage update.
 ///
 /// Lineage records which policy and set root were in force and when. It has no
 /// approval authority: reading it can tell an operator what changed, never
 /// that a change was allowed.
-fn record_pin(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionError> {
+fn pin_line(record: &GenerationRecord) -> Result<String, AdmissionError> {
     #[derive(Serialize)]
     struct Pin<'a> {
         sequence: u64,
@@ -615,7 +691,6 @@ fn record_pin(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionE
         activated_at_ms: u64,
     }
 
-    let path = store.root().join("pins.jsonl");
     let pin = Pin {
         sequence: record.payload.sequence,
         generation: &record.generation,
@@ -626,19 +701,5 @@ fn record_pin(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionE
     let mut line = serde_json::to_string(&pin)
         .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
     line.push('\n');
-    let mut existing = match fs::read_to_string(&path) {
-        Ok(existing) => existing,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(source) => {
-            return Err(AdmissionError::Io {
-                path: path.display().to_string(),
-                source,
-            });
-        }
-    };
-    existing.push_str(&line);
-    fs::write(&path, existing).map_err(|source| AdmissionError::Io {
-        path: path.display().to_string(),
-        source,
-    })
+    Ok(line)
 }

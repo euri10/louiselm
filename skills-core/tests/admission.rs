@@ -218,6 +218,17 @@ fn a_generation_becomes_current_only_after_the_exact_bytes_are_witnessed() {
             .map(|record| record.payload.sequence),
         Some(1),
     );
+    let pins_path = store.root().join("pins.jsonl");
+    let pins = std::fs::read(&pins_path).expect("activated lineage is readable");
+    assert_eq!(
+        admission::activate(&store, &record.digest(), 1_756_800_000_004)
+            .expect("retrying the current Generation confirms activation"),
+        activated,
+    );
+    assert_eq!(
+        std::fs::read(&pins_path).expect("lineage is readable"),
+        pins
+    );
 }
 
 #[test]
@@ -250,6 +261,164 @@ fn activation_preserves_unreadable_pin_lineage_and_reports_the_read_error() {
         ),
         "the original lineage read error must reach the caller: {result:?}",
     );
+}
+
+#[test]
+fn failed_activation_preserves_current_supply_and_allows_retry() {
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let first = ceremony
+        .admit(
+            &[(ceremony.skill("alpha"), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("first admission succeeds");
+    admission::witness(&store, &first.digest(), &ceremony.witness(), 1)
+        .expect("first witnessing succeeds");
+    let first = admission::activate(&store, &first.digest(), 2).expect("first activation succeeds");
+    let second = ceremony
+        .admit(
+            &[(ceremony.skill("beta"), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("second admission succeeds");
+    let second = admission::witness(&store, &second.digest(), &ceremony.witness(), 3)
+        .expect("second witnessing succeeds");
+    let pins = store.root().join("pins.jsonl");
+    let saved_pins = ceremony.fixture.path("saved-pins.jsonl");
+    std::fs::rename(&pins, &saved_pins).expect("save the existing lineage");
+    std::fs::create_dir(&pins).expect("inject a lineage persistence failure");
+
+    let result = admission::activate(&store, &second.digest(), 4);
+
+    assert!(matches!(result, Err(AdmissionError::Io { .. })));
+    assert_eq!(
+        admission::current(&store).expect("current supply remains readable"),
+        Some(first),
+        "failed activation must leave the prior Generation current",
+    );
+    assert_eq!(
+        admission::load(&store, &second.digest()).expect("candidate remains readable"),
+        second,
+    );
+    std::fs::remove_dir(&pins).expect("remove the injected directory");
+    std::fs::rename(&saved_pins, &pins).expect("restore lineage");
+    admission::activate(&store, &second.digest(), 5).expect("activation can be retried");
+    assert_eq!(
+        std::fs::read_to_string(&pins)
+            .expect("lineage is readable")
+            .lines()
+            .count(),
+        2,
+    );
+}
+
+#[test]
+fn a_witness_refresh_cannot_undo_activation_during_network_io() {
+    struct ActivateDuringFetch {
+        store: louiselm_skills::Store,
+        witness: GitWitness,
+    }
+    impl Witness for ActivateDuringFetch {
+        fn fetch(
+            &self,
+            digest: &louiselm_skills::Digest,
+        ) -> Result<
+            Option<(Vec<u8>, louiselm_skills::witness::WitnessEvidence)>,
+            louiselm_skills::witness::WitnessError,
+        > {
+            admission::activate(&self.store, digest, 3)
+                .expect("another operation can activate while network I/O is pending");
+            self.witness.fetch(digest)
+        }
+        fn publish(
+            &self,
+            digest: &louiselm_skills::Digest,
+            bytes: &[u8],
+        ) -> Result<louiselm_skills::witness::WitnessEvidence, louiselm_skills::witness::WitnessError>
+        {
+            self.witness.publish(digest, bytes)
+        }
+        fn describe(&self) -> String {
+            self.witness.describe()
+        }
+    }
+    let ceremony = Ceremony::new();
+    let record = ceremony
+        .admit(
+            &[(ceremony.skill("alpha"), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("admission succeeds");
+    let store = ceremony.fixture.store();
+    admission::witness(&store, &record.digest(), &ceremony.witness(), 1)
+        .expect("initial witnessing succeeds");
+    let witness = ActivateDuringFetch {
+        store: store.clone(),
+        witness: ceremony.witness(),
+    };
+    let refreshed = admission::witness(&store, &record.digest(), &witness, 4)
+        .expect("refresh preserves the concurrent activation");
+    assert_eq!(refreshed.state, GenerationState::Current);
+    assert_eq!(
+        admission::current(&store).expect("current is readable"),
+        Some(refreshed)
+    );
+    assert_eq!(
+        std::fs::read_to_string(store.root().join("pins.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_held_trust_lock_refuses_activation_readers_and_other_writers() {
+    use rustix::fs::{FlockOperation, flock};
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let package = ceremony.skill("alpha");
+    let record = ceremony
+        .admit(&[(package.clone(), ReviewDepth::Read)], &ceremony.primary)
+        .unwrap();
+    admission::witness(&store, &record.digest(), &ceremony.witness(), 1).unwrap();
+    let lock = std::fs::File::open(store.root().join("trust/roles.lock")).unwrap();
+    flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+    let operations = [
+        admission::activate(&store, &record.digest(), 2).map(|_| ()),
+        admission::current(&store).map(|_| ()),
+        admission::load(&store, &record.digest()).map(|_| ()),
+        admission::load_verified(&store, &record.digest()).map(|_| ()),
+        admission::list(&store).map(|_| ()),
+        admission::status(&store).map(|_| ()),
+        admission::witness(&store, &record.digest(), &ceremony.witness(), 2).map(|_| ()),
+        ceremony
+            .admit(&[(package, ReviewDepth::Read)], &ceremony.primary)
+            .map(|_| ()),
+    ];
+    for result in operations {
+        assert!(
+            matches!(
+                result,
+                Err(AdmissionError::Trust(
+                    louiselm_skills::trust::TrustError::Busy(_)
+                ))
+            ),
+            "{result:?}"
+        );
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-skills"))
+        .args(["generation", "status", "--robot-json"])
+        .env("LOUISELM_SKILLS_STORE", store.root())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("busy"));
+    drop(lock);
+    assert_eq!(admission::current(&store).unwrap(), None);
+    admission::activate(&store, &record.digest(), 3).expect("released lock permits activation");
 }
 
 #[test]
