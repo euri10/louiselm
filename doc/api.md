@@ -154,6 +154,7 @@ string|table
 - `ready_callback: fun(session?: louiselm.session.Session, error?: string)?` -- Session startup callback.
 - `ready_callback_called: boolean` -- Whether startup callback ran.
 - `recording_turn: { id: string, sequence: integer, finished: boolean, dispatched: boolean }?` -- Active recording identity.
+- `replay_user_open: boolean` -- Consecutive historical user chunks belong to one prompt.
 - `schedule: fun(delay_ms: integer, callback: fun())` -- Testable scheduling boundary.
 - `set_config_option: fun(self: louiselm.session.Session, id: string, value: boolean|string, callback?: fun(options?: louiselm.session.ConfigOption[], error?: string)):(string|number)?, string?`
 - `set_name: fun(self: louiselm.session.Session, name: string):boolean, string?` -- Rename the session.
@@ -161,7 +162,9 @@ string|table
 - `start_timeout_ms: integer` -- Milliseconds to wait for the ACP handshake before failing a Session stuck "starting".
 - `state: louiselm.session.State` -- Internal mutable state.
 - `stderr_buffer: string` -- Recent stderr output from the agent process, most-recent-last.
+- `transcript_turn: integer` -- Observed replay turns plus locally dispatched prompts, excluding unsent attempts.
 - `turn_done_turn: integer?` -- Turn for which the completion event was emitted.
+- `usage_history: fun(self: louiselm.session.Session, callback: fun(records?: louiselm.session.ReplayUsage[], error?: louiselm.session.RecordingError))`
 
 ### louiselm.session.DiscoveryOptions
 

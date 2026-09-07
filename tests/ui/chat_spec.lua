@@ -39,6 +39,12 @@ local function fake_session(id, agent)
     return self.state
   end
 
+  function session:usage_history(callback)
+    nvim.schedule(function()
+      callback({})
+    end)
+  end
+
   function session:prompt(prompt)
     if self.prompt_error ~= nil then
       return nil, self.prompt_error
@@ -3607,49 +3613,60 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
   restored.state.acp_session_id = "prior-acp"
   local chat = assert(Chat.new(fake_api()))
   local usage = assert(Usage.new(nvim.fn.tempname()))
-  assert(usage:record_turn("deepseek", "prior-acp", 2, {
-    total_tokens = 30,
-    input_tokens = 20,
-    cached_read_tokens = 7,
-  }))
+  assert(nvim.fn.writefile({
+    nvim.json.encode({
+      version = 1,
+      records = {},
+      turns = {
+        {
+          agent = "deepseek",
+          session_id = "prior-acp",
+          turn = 2,
+          usage = { total_tokens = 30, input_tokens = 20, cached_read_tokens = 7 },
+        },
+      },
+    }),
+  }, usage.path) == 0)
   chat.usage = usage
   assert(chat:attach(restored))
-  local original_schedule = nvim.schedule
-  local scheduled = {}
-  rawset(nvim, "schedule", function(callback)
-    scheduled[#scheduled + 1] = callback
+  -- hxvc: queued historical status must not observe the already-ready snapshot.
+  -- Exercise an actual fast callback, including the end-of-replay boundary.
+  local replay
+  replay = nvim.uv.new_async(function()
+    replay:close()
+    restored:emit({
+      type = "user_chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = "first prompt" } },
+    })
+    restored:emit({
+      type = "chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = "first answer" } },
+    })
+    -- Real replayed tool updates emit historical state changes. By the time their
+    -- scheduled UI callbacks run, the Session snapshot may already be ready.
+    restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "starting" } })
+    restored:emit({
+      type = "user_chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = "second prompt" } },
+    })
+    restored:emit({
+      type = "chunk",
+      session_id = "session-1",
+      data = { content = { type = "text", text = "second answer" } },
+    })
+    restored.state.status = "ready"
+    restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
   end)
-
-  restored:emit({
-    type = "user_chunk",
-    session_id = "session-1",
-    data = { content = { type = "text", text = "first prompt" } },
-  })
-  restored:emit({
-    type = "chunk",
-    session_id = "session-1",
-    data = { content = { type = "text", text = "first answer" } },
-  })
-  -- Real replayed tool updates emit historical state changes. By the time their
-  -- scheduled UI callbacks run, the Session snapshot may already be ready.
-  restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "starting" } })
-  restored:emit({
-    type = "user_chunk",
-    session_id = "session-1",
-    data = { content = { type = "text", text = "second prompt" } },
-  })
-  restored:emit({
-    type = "chunk",
-    session_id = "session-1",
-    data = { content = { type = "text", text = "second answer" } },
-  })
-  restored.state.status = "ready"
-  restored:emit({ type = "state_changed", session_id = "session-1", data = { status = "ready" } })
-
-  for _, callback in ipairs(scheduled) do
-    callback()
-  end
-  rawset(nvim, "schedule", original_schedule)
+  replay:send()
+  assert(nvim.wait(1000, function()
+    return nvim.tbl_contains(
+      buffer_lines(chat:buffer()),
+      "[usage] total_tokens=30 · input_tokens=20 · cached_read_tokens=7"
+    )
+  end, 1))
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer()),
@@ -3674,15 +3691,122 @@ T["chat"]["restores client-owned usage beside its replayed Session turn"] = func
   restored.state.usage = { total_tokens = 40, output_tokens = 10 }
   restored:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
   nvim.wait(100, function()
-    return #assert(usage:turns("deepseek", "prior-acp")) == 2
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[usage] total_tokens=40 · output_tokens=10")
   end, 1)
-  MiniTest.expect.equality(assert(usage:turns("deepseek", "prior-acp"))[2], {
-    agent = "deepseek",
-    session_id = "prior-acp",
-    turn = 3,
-    usage = { total_tokens = 40, output_tokens = 10 },
-  })
+  MiniTest.expect.equality(#assert(usage:turns("deepseek", "prior-acp")), 1)
   chat:dispose()
+  nvim.fn.delete(usage.path)
+end
+
+T["chat"]["waits for usage history and suppresses ambiguous or unmeasured legacy fallback"] = function()
+  local session = fake_session("history", "mock")
+  session.state.source, session.state.status, session.state.acp_session_id = "loaded", "starting", "prior-acp"
+  local finish_history
+  session.usage_history = function(_, callback)
+    finish_history = callback
+  end
+  local chat = assert(Chat.new(fake_api()))
+  local usage = assert(Usage.new(nvim.fn.tempname()))
+  assert(nvim.fn.writefile({
+    nvim.json.encode({
+      version = 1,
+      records = {},
+      turns = {
+        { agent = "mock", session_id = "prior-acp", turn = 1, usage = { total_tokens = 999 } },
+        { agent = "mock", session_id = "prior-acp", turn = 2, usage = { total_tokens = 888 } },
+      },
+    }),
+  }, usage.path) == 0)
+  chat.usage = usage
+  assert(chat:attach(session))
+  local replayed
+  local replay
+  replay = nvim.uv.new_async(function()
+    replay:close()
+    for turn = 1, 3 do
+      session:emit({
+        type = "user_chunk",
+        session_id = "history",
+        data = {
+          content = turn == 1 and { type = "image", data = "", mimeType = "image/png" }
+            or { type = "text", text = "prompt " .. turn },
+        },
+      })
+      session:emit({
+        type = "chunk",
+        session_id = "history",
+        data = { content = { type = "text", text = "answer " .. turn } },
+      })
+      session:emit({ type = "state_changed", session_id = "history", data = { status = "starting" } })
+    end
+    session.state.status = "ready"
+    session:emit({ type = "state_changed", session_id = "history", data = { status = "ready" } })
+    nvim.schedule(function()
+      replayed = true
+    end)
+  end)
+  replay:send()
+  assert(nvim.wait(1000, function()
+    return replayed
+  end, 1))
+  MiniTest.expect.equality({ chat:submit("too early") }, { nil, "Session history is still loading" })
+  finish_history({
+    { id = "one", turn = 1, usage = { total_tokens = 30 } },
+    { id = "conflict", turn = 1, usage = { total_tokens = 40 } },
+    { id = "unmeasured", turn = 2 },
+    { id = "measured", turn = 3, usage = { total_tokens = 77 } },
+  })
+  local text = table.concat(buffer_lines(chat:buffer()), "\n")
+  MiniTest.expect.equality(text:find("answer 2", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("999", 1, true), nil)
+  MiniTest.expect.equality(text:find("888", 1, true), nil)
+  MiniTest.expect.equality(text:find("[usage] total_tokens=77", 1, true) ~= nil, true)
+  assert(chat:submit("next"))
+  chat:dispose()
+  nvim.fn.delete(usage.path)
+end
+
+T["chat"]["reports history read errors and ignores late history after Disposal"] = function()
+  for _, dispose in ipairs({ false, true }) do
+    local session = fake_session("history", "mock")
+    session.state.source, session.state.status = "loaded", "starting"
+    local finish_history
+    session.usage_history = function(_, callback)
+      finish_history = callback
+    end
+    local chat = assert(Chat.new(fake_api()))
+    assert(chat:attach(session))
+    local buffer = assert(chat:buffer())
+    session:emit({
+      type = "chunk",
+      session_id = "history",
+      data = { content = { type = "text", text = "history survives" } },
+    })
+    if dispose then
+      chat:dispose()
+    end
+    local returned
+    local event
+    event = nvim.uv.new_async(function()
+      event:close()
+      nvim.schedule(function()
+        finish_history(nil, { code = "locked", message = "database locked" })
+        returned = true
+      end)
+    end)
+    event:send()
+    assert(nvim.wait(1000, function()
+      return returned
+    end, 1))
+    if dispose then
+      MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+    else
+      local lines = buffer_lines(buffer)
+      MiniTest.expect.equality(nvim.tbl_contains(lines, "Recording error: database locked"), true)
+      MiniTest.expect.equality(nvim.tbl_contains(lines, "history survives"), true)
+      chat:dispose()
+    end
+  end
 end
 
 T["chat"]["discovers and resumes into a separate scheduled chat view"] = function()
@@ -4859,15 +4983,7 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
     callback(nil)
   end
   local chat = assert(Chat.new(fake_api()))
-  local recorded_turn
   local usage = assert(Usage.new(nvim.fn.tempname()))
-  usage.record = function()
-    return true
-  end
-  usage.record_turn = function(_, agent, session_id, turn, turn_usage)
-    recorded_turn = { agent = agent, session_id = session_id, turn = turn, usage = turn_usage }
-    return true
-  end
   chat.usage = usage
   assert(chat:attach(first))
   first.state.usage = { input_tokens = 12, cached_read_tokens = 3 }
@@ -4887,12 +5003,7 @@ T["chat"]["renders state telemetry and reported-only usage"] = function()
       "context=95/100 (95%) · cost=1.5 USD"
     )
   )
-  MiniTest.expect.equality(recorded_turn, {
-    agent = "claude",
-    session_id = "acp-session-1",
-    turn = 1,
-    usage = { input_tokens = 12, cached_read_tokens = 3 },
-  })
+  MiniTest.expect.equality(nvim.uv.fs_stat(usage.path), nil)
   chat:dispose()
 end
 
@@ -5746,7 +5857,23 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
   local chat = assert(Chat.new(fake_api()))
   local usage_path = nvim.fn.tempname()
   chat.usage = assert(Usage.new(usage_path))
-  assert(chat.usage:record("claude", first.state.config_options, { total_tokens = 120 }))
+  assert(nvim.fn.writefile({
+    nvim.json.encode({
+      version = 1,
+      records = {
+        {
+          agent = "claude",
+          option = "model",
+          value = "small",
+          samples = 1,
+          token_samples = 1,
+          total_tokens = 120,
+          costs = {},
+          updated_at = 1,
+        },
+      },
+    }),
+  }, usage_path) == 0)
   MiniTest.expect.equality(assert(chat.usage:summary("claude", "model", "small")).average_tokens, 120)
   assert(chat:attach(first))
   nvim.wait(100, function()
@@ -5777,7 +5904,7 @@ T["chat"]["explains when the Agent exposes no standard ACP options"] = function(
   chat:dispose()
 end
 
-T["chat"]["records measured usage when a turn completes"] = function()
+T["chat"]["renders measured usage without a UI-owned write"] = function()
   local first = fake_session("session-1", "claude")
   first.state.config_options = {
     { id = "model", name = "Model", type = "select", current_value = "small", options = {} },
@@ -5794,12 +5921,12 @@ T["chat"]["records measured usage when a turn completes"] = function()
   first.state.usage = { total_tokens = 80 }
   first:emit({ type = "turn_done", session_id = "session-1", data = { stopReason = "end_turn" } })
   nvim.wait(100, function()
-    local summary = chat.usage:summary("claude", "model", "small")
-    return summary ~= nil
+    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[usage] total_tokens=80")
   end, 1)
 
   nvim.ui.select = original_select
-  MiniTest.expect.equality(assert(chat.usage:summary("claude", "model", "small")).average_tokens, 80)
+  MiniTest.expect.equality(chat.usage:summary("claude", "model", "small"), nil)
+  MiniTest.expect.equality(nvim.uv.fs_stat(usage_path), nil)
   chat:dispose()
   nvim.fn.delete(usage_path)
 end

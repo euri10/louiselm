@@ -69,6 +69,8 @@ local nvim = vim
 ---@field recording_turn? { id: string, sequence: integer, finished: boolean, dispatched: boolean } Active recording identity.
 ---@field option_observer_id string Random identity of this live observation stream.
 ---@field option_sequence integer Number of confirmed value transitions observed outside replay.
+---@field transcript_turn integer Observed replay turns plus locally dispatched prompts, excluding unsent attempts.
+---@field replay_user_open boolean Consecutive historical user chunks belong to one prompt.
 ---@field attribution_error? louiselm.session.RecordingError Unresolved current Provider; cleared only by a confirmed correction.
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
@@ -89,6 +91,7 @@ local nvim = vim
 ---@field start fun(self: louiselm.session.Session): boolean, string?
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
+---@field usage_history fun(self: louiselm.session.Session, callback: louiselm.session.UsageHistoryCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
 ---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string?, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
@@ -436,6 +439,16 @@ local function handle_notification(self, message)
     or update_type == "agent_thought_chunk"
     or update_type == "tool_call"
     or update_type == "tool_call_update"
+  if self.load_session_id ~= nil and self.state.status == "starting" then
+    if update_type == "user_message_chunk" then
+      if not self.replay_user_open then
+        self.transcript_turn = self.transcript_turn + 1
+        self.replay_user_open = true
+      end
+    elseif is_agent_progress then
+      self.replay_user_open = false
+    end
+  end
   if prompt_active(self) and is_agent_progress then
     self.prompt_progress = self.prompt_progress + 1
   end
@@ -890,6 +903,8 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     prompt_progress = 0,
     option_observer_id = "",
     option_sequence = 0,
+    transcript_turn = 0,
+    replay_user_open = false,
     prompt_watchdog_revision = 0,
     schedule = options.schedule or function(delay_ms, callback)
       nvim.defer_fn(callback, delay_ms)
@@ -970,6 +985,27 @@ function Session:inspect()
   state.acp_session_id = self.acp_session_id
   ---@cast state louiselm.session.State
   return state
+end
+
+---Read committed usage associations for this Session, even before load completes.
+---Await pending registry writes first; loading history never records it again.
+---Missing or ambiguous associations must
+---not be inferred from timestamps, attempt counts, or the current option tuple.
+---@param self louiselm.session.Session
+---@param callback louiselm.session.UsageHistoryCallback Called once on the main loop; invalid identity/storage errors are typed.
+function Session:usage_history(callback)
+  local store = self.owner.recording
+  if #store.queue > 0 then
+    store:flush(function(err)
+      if err ~= nil then
+        callback(nil, err)
+      else
+        store:usage_history(self.state.agent, self.acp_session_id, callback)
+      end
+    end)
+  else
+    store:usage_history(self.state.agent, self.acp_session_id, callback)
+  end
 end
 
 ---Set the user-facing name without changing the ACP session.
@@ -1082,7 +1118,8 @@ function Session:prompt(prompt, callback)
       return
     end
     turn.dispatched = true
-    record_observation(self, "dispatch", { request_id = request_id })
+    self.transcript_turn = self.transcript_turn + 1
+    record_observation(self, "dispatch", { request_id = request_id, transcript_turn = self.transcript_turn })
     schedule_prompt_timeout(self)
   end)
   return turn_id

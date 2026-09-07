@@ -243,4 +243,62 @@ T["refuses unsafe journals and future schemas before adding facts"] = function()
   MiniTest.expect.equality(query(writer, "SELECT COUNT(*) AS n FROM turns")[1].n, 1)
 end
 
+local function read_history(writer, agent, session_id)
+  local done, records, failure
+  writer:usage_history(agent or "mock", session_id or "session", function(result, err)
+    assert(not nvim.in_fast_event())
+    records, failure, done = result, err, true
+  end)
+  wait_for(function()
+    return done
+  end)
+  return records, failure
+end
+
+T["history queries are read-only, scoped, and preserve missing measurements"] = function()
+  local writer = store()
+  MiniTest.expect.equality(read_history(writer), {})
+  MiniTest.expect.equality(nvim.uv.fs_stat(writer.directory), nil)
+  for index, identity in ipairs({ "session", "session'\n.quit", "another" }) do
+    local turn = prepared(tostring(index))
+    turn.acp_session_id = identity
+    assert(append(writer, turn) == nil)
+    assert(append(writer, {
+      turn_id = turn.id,
+      sequence = 1,
+      kind = "dispatch",
+      observed_at = turn.prepared_at,
+      data = { request_id = index, transcript_turn = 2 },
+    }) == nil)
+  end
+  assert(append(writer, prepared("old-without-association")) == nil)
+  assert(append(writer, {
+    turn_id = "1",
+    sequence = 2,
+    kind = "outcome",
+    observed_at = "now",
+    data = { outcome = "completed", peer_response = true, usage = { input_tokens = 0 } },
+  }) == nil)
+  MiniTest.expect.equality(read_history(writer), { { id = "1", turn = 2, usage = { input_tokens = 0 } } })
+  MiniTest.expect.equality(read_history(writer, "mock", "session'\n.quit"), { { id = "2", turn = 2 } })
+  MiniTest.expect.equality(read_history(writer, "other"), {})
+  MiniTest.expect.equality(query(writer, "SELECT count(*) AS n FROM turns")[1].n, 4)
+end
+
+T["history reports corrupt, unsafe, missing-executable and invalid-identity failures"] = function()
+  local writer = store()
+  assert(append(writer, prepared()) == nil)
+  saved_path = nvim.env.PATH
+  nvim.env.PATH = writer.directory
+  MiniTest.expect.equality(select(2, read_history(writer)).code, "unavailable")
+  nvim.env.PATH, saved_path = saved_path, nil
+  MiniTest.expect.equality(select(2, read_history(writer, "")).code, "invalid")
+  assert(nvim.uv.fs_chmod(writer.path, 420))
+  MiniTest.expect.equality(select(2, read_history(writer)).code, "permissions")
+  assert(nvim.uv.fs_chmod(writer.path, 384))
+  nvim.fn.writefile({ "broken" }, writer.path)
+  MiniTest.expect.equality(select(2, read_history(writer)).code, "corrupt")
+  MiniTest.expect.equality(nvim.fn.readfile(writer.path), { "broken" })
+end
+
 return T

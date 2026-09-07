@@ -14,6 +14,8 @@
 ---was created and what refused it, so a caller can observe the budget stopping the loop.
 ---@field generate_title? string Title prefix for generated work. Defaults to `Generated`.
 ---@field recording_probe? string Test-only SQLite path. Reply with committed turn IDs visible when the prompt arrives.
+---@field replay_updates? table[] Ordered session/load updates from a captured structural fixture.
+---@field usage? table Completed-turn ACP usage returned with each prompt result.
 
 ---@class louiselm.dev.MockAgentState
 ---@field initialized boolean
@@ -71,7 +73,7 @@ end
 ---@param state louiselm.dev.MockAgentState
 ---@param prompt { id: string|number, session_id: string, text: string }
 ---@param response string
-local function finish_prompt(state, prompt, response)
+local function finish_prompt(state, prompt, response, usage)
   write_notification("session/update", {
     sessionId = prompt.session_id,
     update = {
@@ -83,7 +85,7 @@ local function finish_prompt(state, prompt, response)
     sessionId = prompt.session_id,
     update = { sessionUpdate = "turn_done", stopReason = "end_turn" },
   })
-  write_response(prompt.id, { stopReason = "end_turn" })
+  write_response(prompt.id, { stopReason = "end_turn", usage = usage })
   state.pending_prompt = nil
 end
 
@@ -158,7 +160,7 @@ local function handle_message(message, state, options)
       local prompt = state.pending_prompt
       if prompt ~= nil then
         local response = configured_response(options)
-        finish_prompt(state, prompt, response ~= "" and response or prompt.text)
+        finish_prompt(state, prompt, response ~= "" and response or prompt.text, options.usage)
       end
     end
     return true
@@ -216,6 +218,9 @@ local function handle_message(message, state, options)
       return true
     end
     state.sessions[params.sessionId] = { cwd = type(params.cwd) == "string" and params.cwd or nvim.fn.getcwd() }
+    for _, update in ipairs(options.replay_updates or {}) do
+      write_notification("session/update", { sessionId = params.sessionId, update = update })
+    end
     if options.replay_user_message ~= nil then
       write_notification("session/update", {
         sessionId = params.sessionId,
@@ -319,7 +324,7 @@ local function handle_message(message, state, options)
         end
         response = observed.stdout
       end
-      finish_prompt(state, prompt, generated or (response ~= "" and response or prompt.text))
+      finish_prompt(state, prompt, generated or (response ~= "" and response or prompt.text), options.usage)
     end
     return true
   end
@@ -372,6 +377,8 @@ function M.run(options)
     generate_count = generate_count,
     generate_title = options.generate_title or nvim.env.LOUISELM_MOCK_GENERATE_TITLE,
     recording_probe = options.recording_probe or nvim.env.LOUISELM_MOCK_RECORDING_PROBE,
+    replay_updates = options.replay_updates,
+    usage = options.usage,
   }
   local state = { initialized = false, next_session = 1, next_permission = 1, sessions = {} }
 

@@ -39,6 +39,11 @@ local nvim = vim
 ---@field turn_id? string Active attempt affected by this transition; its starting tuple stays immutable.
 
 ---@alias louiselm.session.RecordingCallback fun(error?: louiselm.session.RecordingError)
+---@class louiselm.session.ReplayUsage
+---@field id string Durable turn ID; the ordinal is only a presentation association.
+---@field turn integer Observed transcript position of the dispatched prompt.
+---@field usage? louiselm.session.TurnUsage Reported completion usage, absent for unmeasured/unobserved outcomes.
+---@alias louiselm.session.UsageHistoryCallback fun(records: louiselm.session.ReplayUsage[]?, error?: louiselm.session.RecordingError)
 ---@class louiselm.session.RecordingWrite
 ---@field sql string Encoded immutable transaction fragment.
 ---@field error? louiselm.session.RecordingError Invalid metadata fences the queue; it cannot become a successful admission barrier.
@@ -53,6 +58,7 @@ local nvim = vim
 ---@field changed fun(error: louiselm.session.RecordingError?, pending: boolean) Main-loop observer.
 ---@field append fun(self: louiselm.session.RecordingStore, record: louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition, callback?: louiselm.session.RecordingCallback)
 ---@field flush fun(self: louiselm.session.RecordingStore, callback: louiselm.session.RecordingCallback)
+---@field usage_history fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.UsageHistoryCallback)
 
 local M = {}
 local Store = {}
@@ -282,7 +288,13 @@ local function record_sql(record)
       if type(data.request_id) ~= "string" and type(data.request_id) ~= "number" then
         return nil
       end
-      data = { request_id = data.request_id }
+      if
+        data.transcript_turn ~= nil
+        and (not finite(data.transcript_turn) or data.transcript_turn < 1 or data.transcript_turn % 1 ~= 0)
+      then
+        return nil
+      end
+      data = { request_id = data.request_id, transcript_turn = data.transcript_turn }
     elseif record.kind == "cost" then
       if data.cost == nil or not cost_valid(data.cost) then
         return nil
@@ -349,27 +361,29 @@ local function record_sql(record)
 end
 
 ---@param self louiselm.session.RecordingStore
+---@param create boolean Whether this is a writer preparing a new store.
 ---@return louiselm.session.RecordingError?
-local function private_store(self)
-  local ok, result = pcall(nvim.fn.mkdir, self.directory, "p", 448)
-  if not ok then
-    return failure("permissions")
+local function private_store(self, create)
+  if create then
+    local ok, result = pcall(nvim.fn.mkdir, self.directory, "p", 448)
+    if not ok or (result == 0 and nvim.uv.fs_lstat(self.directory) == nil) then
+      return failure("permissions")
+    end
   end
   local stat = nvim.uv.fs_lstat(self.directory)
   local uid = nvim.uv.getuid()
-  if result == 0 and stat == nil then
-    return failure("permissions")
-  end
   if stat == nil or stat.type ~= "directory" or stat.uid ~= uid or stat.mode % 512 ~= 448 then
     return failure("permissions")
   end
-  local fd, _, code = nvim.uv.fs_open(self.path, "wx", 384)
-  if fd ~= nil then
-    if not nvim.uv.fs_close(fd) then
+  if create then
+    local fd, _, code = nvim.uv.fs_open(self.path, "wx", 384)
+    if fd ~= nil then
+      if not nvim.uv.fs_close(fd) then
+        return failure("storage")
+      end
+    elseif code ~= "EEXIST" then
       return failure("storage")
     end
-  elseif code ~= "EEXIST" then
-    return failure("storage")
   end
   stat = nvim.uv.fs_lstat(self.path)
   if stat == nil or stat.type ~= "file" or stat.uid ~= uid or stat.nlink ~= 1 or stat.mode % 512 ~= 384 then
@@ -455,7 +469,7 @@ local function drain(self)
       finished(failure("unavailable"))
       return
     end
-    local private_error = private_store(self)
+    local private_error = private_store(self, true)
     if private_error then
       finished(private_error)
       return
@@ -554,6 +568,101 @@ end
 function Store:flush(callback)
   self.queue[#self.queue + 1] = { sql = "", callback = callback }
   drain(self)
+end
+
+---Read committed presentation associations for exactly one Agent/ACP Session.
+---Does not flush, create, migrate, or write history. Missing stores return an empty
+---list; old dispatches without an observed ordinal remain unassociated. Results
+---include unmeasured turns so callers cannot substitute legacy measurements.
+---@param self louiselm.session.RecordingStore
+---@param agent string Configured Agent.
+---@param acp_session_id string Agent-side conversation identity.
+---@param callback louiselm.session.UsageHistoryCallback Called once on the main loop, including errors.
+function Store:usage_history(agent, acp_session_id, callback)
+  nvim.schedule(function()
+    if not nonempty(agent) or not nonempty(acp_session_id) then
+      callback(nil, failure("invalid"))
+      return
+    end
+    local stat, _, code = nvim.uv.fs_lstat(self.path)
+    if stat == nil then
+      if code == "ENOENT" then
+        callback({})
+      else
+        callback(nil, failure("storage"))
+      end
+      return
+    end
+    local err = private_store(self, false)
+    if err ~= nil then
+      callback(nil, err)
+      return
+    end
+    local sql = [[
+.timeout 1000
+PRAGMA trusted_schema=OFF;
+PRAGMA foreign_keys=ON;
+PRAGMA synchronous=EXTRA;
+BEGIN;
+CREATE TEMP TABLE history_guard(ok INTEGER NOT NULL CHECK(ok=1));
+INSERT INTO history_guard SELECT
+  (CAST(sqlite_version() AS INTEGER)>3 OR
+    (CAST(sqlite_version() AS INTEGER)=3 AND CAST(substr(sqlite_version(),3) AS INTEGER)>=38))
+  AND json_valid('{}')
+  AND (SELECT user_version IN (1,2) FROM pragma_user_version)
+  AND (SELECT journal_mode='delete' FROM pragma_journal_mode)
+  AND (SELECT synchronous=3 FROM pragma_synchronous)
+  AND (SELECT foreign_keys=1 FROM pragma_foreign_keys);
+SELECT t.id, json_extract(d.data,'$.transcript_turn') AS turn,
+       json_extract(o.data,'$.usage') AS usage
+FROM turns t JOIN turn_events d ON d.turn_id=t.id AND d.kind='dispatch'
+LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
+WHERE t.agent=]] .. sql_text(agent) .. " AND t.acp_session_id=" .. sql_text(acp_session_id) .. [[
+ AND json_type(d.data,'$.transcript_turn')='integer'
+ AND json_extract(d.data,'$.transcript_turn')>0
+ORDER BY turn,t.id;
+COMMIT;
+]]
+    local started, process = pcall(
+      nvim.system,
+      { "sqlite3", "-readonly", "-batch", "-bail", "-json", "-nofollow", "-init", "/dev/null", self.path },
+      { cwd = self.directory, env = {}, text = true, stdin = sql, timeout = 5000 },
+      function(result)
+        nvim.schedule(function()
+          if result.code ~= 0 then
+            callback(nil, sqlite_error(result.stderr or ""))
+            return
+          end
+          local ok, records =
+            pcall(nvim.json.decode, result.stdout ~= "" and result.stdout or "[]", { luanil = { object = true } })
+          if not ok or type(records) ~= "table" then
+            callback(nil, failure("corrupt"))
+            return
+          end
+          for _, record in ipairs(records) do
+            if record.usage ~= nil then
+              local decoded, usage = pcall(nvim.json.decode, record.usage)
+              if not decoded or type(usage) ~= "table" then
+                callback(nil, failure("corrupt"))
+                return
+              end
+              for field, value in pairs(usage) do
+                if not TOKEN_FIELDS[field] or not finite(value) or value % 1 ~= 0 then
+                  callback(nil, failure("corrupt"))
+                  return
+                end
+              end
+              record.usage = usage
+            end
+          end
+          callback(records)
+        end)
+      end
+    )
+    if not started or process == nil then
+      callback(nil, failure("unavailable"))
+    end
+  end)
 end
 
 return M

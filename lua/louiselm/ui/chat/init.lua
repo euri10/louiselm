@@ -65,13 +65,13 @@ local nvim = vim
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
----@field cost_before louiselm.session.Cost? Cumulative cost before the current turn.
 ---@field unread_turn boolean Whether a completed background response has not been focused.
 ---@field replay_active boolean Whether session/load history is still arriving.
 ---@field replay_user_open boolean Whether consecutive replayed user chunks belong to the current historical turn.
 ---@field replay_prompt_mark integer? Range extmark for the current replayed user turn.
 ---@field replay_turn integer Number of historical user turns replayed into this view.
 ---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
+---@field replay_events? { event: louiselm.session.Event, state: louiselm.session.State? }[] UI events waiting for asynchronous usage history.
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
@@ -1985,7 +1985,6 @@ local function submit_prompt(self, view, text)
   if state.acp_session_id ~= nil then
     self.attention:prompt_started(state.acp_session_id)
   end
-  view.cost_before = state.cost
   view.transcript:record_user(text)
 
   clear_queued_prompt(view)
@@ -2343,7 +2342,8 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param event louiselm.session.Event
-local function handle_event(self, view, event)
+---@param completed_state? louiselm.session.State Immutable completion snapshot captured before queued UI work.
+local function handle_event(self, view, event, completed_state)
   if self.disposed or self.views[event.session_id] ~= view or not nvim.api.nvim_buf_is_valid(view.buffer) then
     if event.type == "permission_requested" and type(event.respond) == "function" then
       -- Scheduled before teardown, delivered after it: no view is left to host the choice,
@@ -2389,16 +2389,16 @@ local function handle_event(self, view, event)
   end
 
   if event.type == "user_chunk" then
-    local text = chunk_text(event.data)
-    if text == nil then
-      return
-    end
     close_thought_fold_run(view)
     local continuing_prompt = view.replay_active and view.replay_user_open
     if view.replay_active and not view.replay_user_open then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_turn = view.replay_turn + 1
       view.replay_user_open = true
+    end
+    local text = chunk_text(event.data)
+    if text == nil then
+      return
     end
     local lines = nvim.split(text, "\n", { plain = true })
     for index, line in ipairs(lines) do
@@ -2433,12 +2433,12 @@ local function handle_event(self, view, event)
     view.turn_done_fired = false
     view.last_block_kind = nil
   elseif event.type == "chunk" then
+    view.replay_user_open = false
     local text = chunk_text(event.data)
     if text == nil then
       return
     end
     view.turn_prose = view.turn_prose .. text
-    view.replay_user_open = false
     close_tool_fold_run(view)
     close_thought_fold_run(view)
     if not view.response_started then
@@ -2474,12 +2474,12 @@ local function handle_event(self, view, event)
     view.transcript_tail = view.response_tail + 1
     mark_prompt(view, view.prompt_line + added)
   elseif event.type == "thought_chunk" then
+    view.replay_user_open = false
     local text = chunk_text(event.data)
     if text == nil or text == "" then
       return
     end
     view.pending_terminal_completion = nil
-    view.replay_user_open = false
     close_tool_fold_run(view)
     local run = view.thought_run
     if run == nil then
@@ -2655,30 +2655,9 @@ local function handle_event(self, view, event)
       flush_terminal_completion(self, view, terminal_completion)
     end
     view.turn_done_fired = true
-    local state = view.session:inspect()
+    local state = completed_state or view.session:inspect()
     self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.buffer)
-    local cost
-    if
-      view.cost_before ~= nil
-      and state.cost ~= nil
-      and view.cost_before.currency == state.cost.currency
-      and state.cost.amount >= view.cost_before.amount
-    then
-      cost = { amount = state.cost.amount - view.cost_before.amount, currency = state.cost.currency }
-    end
-    view.cost_before = nil
     local line = usage_line(state.usage)
-    if line ~= nil and state.acp_session_id ~= nil then
-      local recorded_turn, turn_error =
-        self.usage:record_turn(state.agent, state.acp_session_id, view.replay_turn + state.current_turn, state.usage)
-      if not recorded_turn then
-        insert_transcript(self, view, { "Error: " .. (turn_error or "could not record Session turn usage") })
-      end
-    end
-    local recorded, usage_error = self.usage:record(state.agent, state.config_options, state.usage, cost)
-    if not recorded then
-      insert_transcript(self, view, { "Error: " .. (usage_error or "could not record measured usage") })
-    end
     if line ~= nil then
       insert_usage(self, view, line)
     end
@@ -2718,9 +2697,14 @@ local function observe_view_event(self, view, event)
   -- Recording is a pure data transform, not an editor/UI operation, so it can run
   -- directly in this fast-event callback instead of waiting for the scheduled turn.
   view.transcript:record(event)
+  local state = event.type == "turn_done" and nvim.deepcopy(view.session:inspect()) or nil
   -- ACP stdout callbacks run in a fast event; buffer APIs must run later.
   nvim.schedule(function()
-    handle_event(self, view, event)
+    if view.replay_events ~= nil and not self.disposed and self.views[event.session_id] == view then
+      view.replay_events[#view.replay_events + 1] = { event = event, state = state }
+    else
+      handle_event(self, view, event, state)
+    end
   end)
 end
 
@@ -3138,13 +3122,13 @@ local function attach_session(self, session, event_relay)
     queue_namespace = self.queue_namespace,
     prompt_namespace = self.prompt_namespace,
     setup_shown = false,
-    cost_before = nil,
     unread_turn = false,
     replay_active = replay_active,
     replay_user_open = false,
     replay_prompt_mark = nil,
     replay_turn = 0,
     restored_usage = restored_usage,
+    replay_events = replay_active and {} or nil,
     transcript = Transcript.new(),
     unsubscribe = function() end,
     last_forensics_path = nil,
@@ -3217,6 +3201,34 @@ local function attach_session(self, session, event_relay)
   end
   if restore_error ~= nil then
     insert_transcript(self, view, { "Error: " .. restore_error })
+  end
+  if replay_active then
+    session:usage_history(function(records, err)
+      if self.disposed or self.views[state.id] ~= view or not nvim.api.nvim_buf_is_valid(buffer) then
+        local events = view.replay_events or {}
+        view.replay_events = nil
+        for _, queued in ipairs(events) do
+          handle_event(self, view, queued.event, queued.state)
+        end
+        return
+      end
+      if err ~= nil then
+        insert_transcript(self, view, { "Recording error: " .. err.message })
+      else
+        local seen = {}
+        for _, record in ipairs(records or {}) do
+          -- Multiple durable IDs at one ordinal are ambiguous, not a choice
+          -- to resolve with timestamp order or a legacy annotation.
+          view.restored_usage[record.turn] = not seen[record.turn] and record.usage or nil
+          seen[record.turn] = true
+        end
+      end
+      local events = view.replay_events or {}
+      view.replay_events = nil
+      for _, queued in ipairs(events) do
+        handle_event(self, view, queued.event, queued.state)
+      end
+    end)
   end
   nvim.keymap.set("i", "<CR>", function()
     self:submit()
@@ -4062,6 +4074,9 @@ function Chat:submit(text)
   local view = self.current_id and self.views[self.current_id]
   if view == nil then
     return nil, "no chat session is attached"
+  end
+  if view.replay_events ~= nil then
+    return nil, "Session history is still loading"
   end
   if text == nil then
     text = prompt_text(view)

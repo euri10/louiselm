@@ -83,7 +83,7 @@ editors using an older plugin before continuing to record into this database.
 
 | `kind` | JSON `data` |
 | --- | --- |
-| `dispatch` | `request_id`: the locally accepted ACP write; no receipt claim |
+| `dispatch` | `request_id`: the locally accepted ACP write; `transcript_turn`: observed replay position; neither proves peer receipt |
 | `cost` | `cost`: normalized cumulative amount/currency, or explicit JSON null |
 | `cancel_requested` | Empty object; local cancellation request succeeded |
 | `outcome` | `outcome`, `peer_response`, optional `usage` |
@@ -177,8 +177,38 @@ disabled. Errors contain neither SQL nor record contents. No prompt, tool,
 environment, or raw error payload is stored. Facts have no automatic expiry or
 lossy rollup.
 
-New/legacy replay association and retirement of the old UI-owned `usage.json`
-writes are `louiselm-lc32`.
-Until that replacement lands, the legacy file still serves its existing UI
-consumers; it is not imported into this database. Analytics queries, picker
-cohorts, history views, and reflection are separate follow-up work.
+## Replay annotations
+
+The Session lifecycle counts historical user turns during `session/load`, grouping
+consecutive user chunks, including non-text content. Intermediate historical state
+updates do not end replay. Each successful local prompt dispatch records its
+`transcript_turn` after the observed history; failed admission and cancellation
+before dispatch consume no transcript position. The random durable turn ID remains
+the identity of the fact. Loading the same Session never records its history again.
+
+`session:usage_history(callback)` asynchronously reads committed associations for
+exactly that Agent and ACP Session, returning `{id, turn, usage?}` records on the
+main loop. The known ACP ID is available before load initialization finishes.
+It first acknowledges any pending writes owned by this registry, so an immediate
+reload cannot outrun the previous completion. The underlying store read creates
+no database and migrates no history; missing storage returns an empty list and
+other failures return a typed error.
+
+Chat waits for this read before presenting queued replay events, preserving their
+immutable status and order. It shows exact SQLite usage beside the associated
+turn and uses exact entries from the pre-rollout `usage.json` only where no new
+association exists. A new unmeasured turn or several durable IDs at one position
+suppresses fallback rather than guessing. A read failure is visible and does not
+prevent rendering the available history. Queued callbacks cannot revive a disposed
+view; live completion snapshots retain their own measurements even if a later turn
+has already started before the UI callback runs.
+
+Old SQLite dispatches that lack `transcript_turn` remain unassociated; timestamps
+and attempt counts cannot reconstruct that evidence. External changes to an Agent's
+history (truncation/reordering, or concurrently prompting the same ACP Session)
+cannot be made lossless by client ordinals. No prompt content is stored or matched.
+
+`usage.json` is read-only: its write APIs are removed. Exact legacy annotations and
+the existing picker summaries remain readable, but neither legacy marginal buckets
+nor guessed Provider/time/options enter SQLite analytics. Analytics queries, picker
+cohorts, history views, and reflection remain separate follow-up work.
