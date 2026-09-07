@@ -31,9 +31,9 @@ Run just that regression with:
 ./gradlew :app:testDebugUnitTest --tests dev.louiselm.capture.MainActivityTest
 ```
 
-Kotlin warnings and Android Lint errors fail the build. Existing lint warnings
-remain visible; their review and warnings-as-errors gate are tracked in
-`louiselm-16a6`. CI uses JDK 25 and runs `test lint assembleDebug`;
+Kotlin warnings and Android Lint warnings/errors fail the build. Narrow exceptions
+document the pinned-version upgrade audit (`louiselm-myd5`), receiver SPKI trust,
+and checked credential persistence. CI uses JDK 25 and runs `test lint assembleDebug`;
 physical checks remain necessary for hardware, pairing/Keystore and real
 background scheduling. Development rules are in
 [AGENTS.md](AGENTS.md).

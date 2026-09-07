@@ -166,15 +166,13 @@ then clarity, simplicity, and performance.
   over the maintainer's app data as test setup. Resolve build dependencies before
   testing; dependency downloads are not permission for live service calls.
 - Run focused tests while developing and `./gradlew test lint assembleDebug`
-  before handoff. Kotlin compiler warnings and Android Lint errors fail the
+  before handoff. Kotlin compiler warnings and Android Lint warnings/errors fail the
   build. Resolve warnings in changed code; no new baselines, global suppression
   or `ignoreFailures` to make gates green. A narrow suppression names the
   diagnostic and explains the unavoidable boundary.
-- Transitional gate gap: existing Android Lint warnings are visible but not
-  fatal. `louiselm-16a6` tracks their review and enabling `warningsAsErrors`.
-  Do not describe lint
-  as warning-clean until that work lands, or silently upgrade SDKs/dependencies
-  or weaken security to satisfy an advisory.
+- Keep version-advisory exceptions scoped to the tested pins; their upgrade
+  audit is `louiselm-myd5`. Do not silently upgrade SDKs/dependencies or weaken
+  security to satisfy an advisory.
 - CI runs the same Android gates. Report unavailable/failed checks; do not claim
   that merely configuring a gate proves it passed. Compiler, Android Lint and
   JUnit/Robolectric own their separate checks; no unapproved overlapping tools.

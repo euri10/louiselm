@@ -22,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
+import androidx.core.content.edit
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import androidx.work.WorkInfo
@@ -347,9 +348,15 @@ class MainActivity : Activity() {
     private fun confirmPairing(plan: PairingPlan) {
         val message = when (plan.transition) {
             PairingTransition.FIRST_PAIR ->
-                getString(R.string.confirm_first_pair, plan.affectedCaptureCount, plan.offer.receiverUrl)
+                resources.getQuantityString(
+                    R.plurals.confirm_first_pair, plan.affectedCaptureCount,
+                    plan.affectedCaptureCount, plan.offer.receiverUrl,
+                )
             PairingTransition.RECEIVER_MIGRATION ->
-                getString(R.string.confirm_receiver_migration, plan.affectedCaptureCount, plan.offer.receiverUrl)
+                resources.getQuantityString(
+                    R.plurals.confirm_receiver_migration, plan.affectedCaptureCount,
+                    plan.affectedCaptureCount, plan.offer.receiverUrl,
+                )
             PairingTransition.ENDPOINT_UPDATE -> error("endpoint updates do not require migration consent")
         }
         AlertDialog.Builder(this)
@@ -494,7 +501,9 @@ class MainActivity : Activity() {
         if (snapshot.items.isEmpty()) {
             attentionStatusView.text = getString(R.string.attention_empty)
         } else {
-            attentionStatusView.text = getString(R.string.attention_count, snapshot.items.size)
+            attentionStatusView.text = resources.getQuantityString(
+                R.plurals.attention_count, snapshot.items.size, snapshot.items.size,
+            )
             snapshot.items.forEach { item ->
                 val card = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
@@ -531,7 +540,7 @@ class MainActivity : Activity() {
             }
         }
         attentionRetryButton.isEnabled = true
-        attentionPreferences.edit().putLong("seen_generation", snapshot.generation).apply()
+        attentionPreferences.edit { putLong("seen_generation", snapshot.generation) }
     }
 
     private fun formatAttentionAge(createdAtMs: Long): String {

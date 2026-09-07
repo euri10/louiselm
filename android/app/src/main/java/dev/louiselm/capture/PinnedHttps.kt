@@ -1,5 +1,6 @@
 package dev.louiselm.capture
 
+import android.annotation.SuppressLint
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.FileInputStream
@@ -215,6 +216,9 @@ internal object PinnedHttps {
         return false
     }
 
+    // The QR authorizes the exact SPKI, including self-signed receivers. Check
+    // certificate validity and pin equality; public CA trust is not this authority.
+    @SuppressLint("CustomX509TrustManager")
     private class PinnedTrustManager(private val pin: ByteArray) : X509TrustManager {
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             val certificate = chain?.firstOrNull() ?: throw CertificateException("receiver sent no certificate")

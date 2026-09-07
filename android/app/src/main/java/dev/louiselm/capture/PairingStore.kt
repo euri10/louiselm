@@ -1,5 +1,6 @@
 package dev.louiselm.capture
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -21,6 +22,7 @@ internal data class PairingConfig(
 internal class PairingStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
+    @SuppressLint("UseKtx") // KTX edit returns Unit; credential durability requires the commit Boolean.
     fun save(config: PairingConfig) {
         require(validReceiverUrl(config.receiverUrl)) { "receiver URL is invalid" }
         require(decodeSha256(config.receiverIdentitySha256) != null) { "receiver identity is invalid" }

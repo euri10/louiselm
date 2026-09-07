@@ -23,8 +23,14 @@
     <string name="pairing_failed">Pairing failed: %1$s</string>
     <string name="confirm_pairing_title">Confirm receiver</string>
     <string name="confirm_pairing">Confirm</string>
-    <string name="confirm_first_pair">Pair with %2$s and assign %1$d unowned pending capture(s) to it?</string>
-    <string name="confirm_receiver_migration">This receiver has a different identity. Move %1$d pending capture(s) to %2$s? Original recordings and capture IDs will remain unchanged.</string>
+    <plurals name="confirm_first_pair">
+        <item quantity="one">Pair with %2$s and assign %1$d unowned pending capture to it?</item>
+        <item quantity="other">Pair with %2$s and assign %1$d unowned pending captures to it?</item>
+    </plurals>
+    <plurals name="confirm_receiver_migration">
+        <item quantity="one">This receiver has a different identity. Move %1$d pending capture to %2$s? Original recordings and capture IDs will remain unchanged.</item>
+        <item quantity="other">This receiver has a different identity. Move %1$d pending captures to %2$s? Original recordings and capture IDs will remain unchanged.</item>
+    </plurals>
     <string name="sync_queued">Upload work queued.</string>
     <string name="queue_failed">Capture queue needs attention: %1$s</string>
     <string name="none_status">none</string>
@@ -35,7 +41,10 @@
     <string name="attention_title">Attention inbox</string>
     <string name="attention_unpaired">Pair a receiver to view Attention.</string>
     <string name="attention_empty">Nothing needs attention.</string>
-    <string name="attention_count">%1$d item(s) need attention.</string>
+    <plurals name="attention_count">
+        <item quantity="one">%1$d item needs attention.</item>
+        <item quantity="other">%1$d items need attention.</item>
+    </plurals>
     <string name="attention_session">Session: %1$s</string>
     <string name="attention_run">Run: %1$s</string>
     <string name="attention_linked_run">Linked Run: %1$s</string>
