@@ -186,47 +186,78 @@ local function configured_workflow(definitions)
   return Workflow.new(definitions, path)
 end
 
----Notify from whichever context we're called in: directly on the main loop,
----or scheduled when invoked from a fast event (e.g. a vim.system callback).
----@param message string
----@param level integer
-local function notify_safely(message, level)
-  if nvim.in_fast_event() then
-    nvim.schedule(function()
-      nvim.notify(message, level)
-    end)
-  else
-    nvim.notify(message, level)
-  end
-end
-
 ---Fire a non-blocking latest-version check for every configured agent and
 ---warn when the installed version trails it. `Agent.check` starts async
 ---vim.system() calls and returns immediately, so this never delays chat or
----session creation; the notification (if any) arrives whenever the
----independent checks resolve.
+---session creation; one notification arrives after all checks resolve.
 ---@param definitions table<string, louiselm.agent.Definition>
 local function check_agent_staleness(definitions)
   staleness_generation = staleness_generation + 1
   local generation = staleness_generation
-  for name, definition in pairs(definitions) do
-    Agent.check(definition, function(result)
-      if generation ~= staleness_generation then
-        return
-      end
-      if not result.outdated then
-        return
-      end
-      notify_safely(
-        string.format(
+  local names = sorted_agent_names(definitions)
+  local remaining = #names
+  local results = {} ---@type table<string, louiselm.agent.HealthResult>
+
+  local function publish()
+    if generation ~= staleness_generation then
+      return
+    end
+    local lines, commands = {}, {}
+    local outdated = 0
+    for _, name in ipairs(names) do
+      local result = results[name]
+      if result ~= nil and result.outdated then
+        outdated = outdated + 1
+        lines[#lines + 1] = string.format(
           "louiselm: %s is outdated (%s installed, %s upstream)",
           name,
           result.version,
           result.latest_version
-        ),
-        nvim.log.levels.WARN
-      )
-    end)
+        )
+        local upgrade = definitions[name].upgrade
+        if upgrade ~= nil then
+          local argv = {}
+          for _, argument in ipairs(upgrade) do
+            argv[#argv + 1] = nvim.fn.shellescape(argument)
+          end
+          local command = table.concat(argv, " ")
+          commands[#commands + 1] = command
+          lines[#lines + 1] = "  Upgrade: " .. command
+        else
+          lines[#lines + 1] = "  Upgrade: unavailable (set agents." .. name .. ".upgrade)"
+        end
+      end
+    end
+    if outdated > 1 and #commands == outdated then
+      lines[#lines + 1] = "Upgrade all: " .. table.concat(commands, " && ")
+    end
+    if #lines > 0 then
+      nvim.notify(table.concat(lines, "\n"), nvim.log.levels.WARN)
+    end
+  end
+
+  for _, name in ipairs(names) do
+    local finished = false
+    ---@param result? louiselm.agent.HealthResult
+    local function complete(result)
+      if finished or generation ~= staleness_generation then
+        return
+      end
+      finished = true
+      results[name] = result
+      remaining = remaining - 1
+      if remaining == 0 then
+        if nvim.in_fast_event() then
+          nvim.schedule(publish)
+        else
+          publish()
+        end
+      end
+    end
+    local _, check_error = Agent.check(definitions[name], complete)
+    if check_error ~= nil then
+      complete()
+    end
   end
 end
 
@@ -766,6 +797,7 @@ function M.register()
     end)
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
+    staleness_generation = staleness_generation + 1
     if chat ~= nil then
       chat:dispose()
       chat.api:dispose()

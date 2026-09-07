@@ -5,6 +5,27 @@ local T = MiniTest.new_set()
 
 T["validate"] = MiniTest.new_set()
 
+T["validate"]["copies optional upgrade argv and leaves it unset by default"] = function()
+  local upgrade = { "npm", "install", "-g", "mock-acp@latest" }
+  local normalized, errors = Config.normalize({
+    mock = { command = "mock-acp", upgrade = upgrade },
+    other = { command = "other-acp" },
+  })
+  MiniTest.expect.equality(errors, {})
+  assert(normalized)
+  MiniTest.expect.equality(normalized.mock.upgrade, upgrade)
+  MiniTest.expect.equality(normalized.mock.upgrade == upgrade, false)
+  MiniTest.expect.equality(normalized.other.upgrade, nil)
+end
+
+T["validate"]["rejects malformed upgrade argv"] = function()
+  for _, upgrade in ipairs({ false, "npm install", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
+    local normalized, errors = Config.normalize({ mock = { command = "mock-acp", upgrade = upgrade } })
+    MiniTest.expect.equality(normalized, nil)
+    MiniTest.expect.equality(errors[1].path:find("agents.mock.upgrade", 1, true), 1)
+  end
+end
+
 T["validate"]["accepts named agent definitions and returns owned copies"] = function()
   local definitions = {
     claude = {

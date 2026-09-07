@@ -19,6 +19,10 @@ local function valid_service(value)
   return #value > 0 and value[1] ~= "", "must start with the louiselm-capture executable"
 end
 
+local function valid_upgrade(value)
+  return #value > 0 and value[1] ~= "", "must start with an upgrade executable"
+end
+
 local function valid_skill_policy(value)
   local valid = value == "native" or value == "inject" or value == "off"
   return valid, "must be one of: native, inject, off"
@@ -71,6 +75,13 @@ M.schema = assert(Schema.define({
               description = "Override the global Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation; omission inherits the global policy.",
             },
           },
+        },
+        upgrade = {
+          type = "array-of",
+          items = "string",
+          default = {},
+          validator = valid_upgrade,
+          description = "Optional upgrade executable and arguments, e.g. { 'npm', 'install', '-g', 'my-agent@latest' }. Shown as a shell-escaped command in outdated-Agent warnings, never executed. Set this for the actual installation (including local builds); omission leaves upgrade guidance unavailable. Multiple commands are joined with &&, stopping on failure.",
         },
         latest = {
           type = "table",

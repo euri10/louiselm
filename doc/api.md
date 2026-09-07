@@ -536,6 +536,7 @@ louiselm.permission.Lifetime:
 - `options: table<string, unknown>?` -- Agent-specific options. `options._meta`, when present, is threaded
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
 - `transcript_layout: string?` -- Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
+- `upgrade: string[]?` -- Executable and arguments shown as a shell-escaped upgrade command; never executed by LouiseLM. Omission leaves upgrade guidance unavailable.
 - `version: (louiselm.agent.CommandCheck)?` -- Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 
 ### louiselm.agent.ConfigErrorType

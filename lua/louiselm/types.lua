@@ -14,6 +14,7 @@
 ---@field latest? louiselm.ConfigAgentsValueLatest Optional command that resolves the agent's latest available version, e.g. `npm view <pkg> version`; omission disables the staleness check.
 ---@field skills? louiselm.ConfigAgentsValueSkills Agent-specific Agent Skills policy override; paths remain global and the effective value is fixed when a session is created.
 ---@field transcript_layout? string Optional Provenance layout override for this Agent's historical transcripts: claude, codex, openai-compatible, or copilot; live chat transcripts need no configuration; omission searches all supported layouts.
+---@field upgrade? string[] Optional upgrade executable and arguments, e.g. { 'npm', 'install', '-g', 'my-agent@latest' }. Shown as a shell-escaped command in outdated-Agent warnings, never executed. Set this for the actual installation (including local builds); omission leaves upgrade guidance unavailable. Multiple commands are joined with &&, stopping on failure.
 ---@field version? louiselm.ConfigAgentsValueVersion Optional override for querying the installed version, verbatim (nothing is auto-appended). Use when `command args... --version` is not the right invocation, e.g. a subcommand-based CLI wrapped by a debug script.
 
 ---@class louiselm.ConfigAgentsValueLatest

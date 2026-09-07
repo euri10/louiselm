@@ -1181,7 +1181,10 @@ T["command"]["warns without blocking chat creation when a configured agent trail
   Command.configure(nil)
 
   MiniTest.expect.equality(notifications, {
-    { message = "louiselm: mock is outdated (mock-acp 1.0.0 installed, 9.9.9 upstream)", level = nvim.log.levels.WARN },
+    {
+      message = "louiselm: mock is outdated (mock-acp 1.0.0 installed, 9.9.9 upstream)\n  Upgrade: unavailable (set agents.mock.upgrade)",
+      level = nvim.log.levels.WARN,
+    },
   })
   delete_chat_buffers()
 end
@@ -1250,6 +1253,122 @@ T["command"]["ignores a stale health result after a newer chat check starts"] = 
   Command.configure(nil)
 
   MiniTest.expect.equality(notifications, {})
+end
+
+T["command"]["groups upgrade guidance after async checks in either completion order"] = function()
+  local Agent = require("louiselm.agent")
+  local original_check, original_notify = Agent.check, nvim.notify
+  local original_select = nvim.ui.select
+  rawset(nvim.ui, "select", function(items, _, callback)
+    callback(items[1], 1)
+  end)
+  local _, original_system = fake_process()
+  local callbacks, notifications = {}, {}
+  local spawn_failure = false
+  rawset(Agent, "check", function(definition, callback)
+    if spawn_failure and definition.command == "beta" then
+      return nil, "process spawn failed"
+    end
+    callbacks[definition.command] = callback
+  end)
+  rawset(nvim, "notify", function(message)
+    notifications[#notifications + 1] = { message = message, fast = nvim.in_fast_event() }
+  end)
+  local ok, err = pcall(function()
+    for _, scenario in ipairs({
+      "forward",
+      "reverse",
+      "single",
+      "current",
+      "missing",
+      "failed",
+      "spawn_failure",
+      "disposed",
+      "queued_disposal",
+    }) do
+      callbacks, notifications = {}, {}
+      spawn_failure = scenario == "spawn_failure"
+      Command.configure({
+        agents = {
+          alpha = { command = "alpha", args = {}, upgrade = { "npm", "install", "-g", "alpha@latest" } },
+          beta = {
+            command = "beta",
+            args = {},
+            upgrade = scenario ~= "missing" and { "/path with spaces/updater", "a'b;$(no)" } or nil,
+          },
+        },
+      })
+      Command.register()
+      nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+      MiniTest.expect.equality(notifications, {})
+      local first, second = "alpha", "beta"
+      if scenario == "reverse" or spawn_failure then
+        first, second = second, first
+      end
+      local function complete(name)
+        if callbacks[name] == nil then
+          return
+        end
+        callbacks[name]({
+          ok = scenario ~= "failed" or name ~= "beta",
+          outdated = scenario ~= "current" and (name == "alpha" or (scenario ~= "single" and scenario ~= "failed")),
+          version = "1.0.0",
+          latest_version = "2.0.0",
+        })
+      end
+      complete(first)
+      MiniTest.expect.equality(notifications, {})
+      local timer = assert(nvim.uv.new_timer())
+      local finished = false
+      timer:start(0, 0, function()
+        timer:close()
+        -- Queue disposal first, then let the final result queue publication.
+        if scenario == "queued_disposal" then
+          nvim.schedule(function()
+            Command.register()
+          end)
+        end
+        complete(second)
+        finished = true
+      end)
+      if scenario == "disposed" then
+        Command.register()
+      end
+      assert(nvim.wait(1000, function()
+        return finished
+      end, 1))
+      nvim.wait(10, function()
+        return false
+      end, 1)
+      if scenario == "current" or scenario == "disposed" or scenario == "queued_disposal" then
+        MiniTest.expect.equality(notifications, {})
+      else
+        local message =
+          "louiselm: alpha is outdated (1.0.0 installed, 2.0.0 upstream)\n  Upgrade: 'npm' 'install' '-g' 'alpha@latest'"
+        if scenario ~= "single" and scenario ~= "failed" and not spawn_failure then
+          message = message
+            .. "\nlouiselm: beta is outdated (1.0.0 installed, 2.0.0 upstream)\n  Upgrade: "
+            .. (
+              scenario == "missing" and "unavailable (set agents.beta.upgrade)"
+              or "'/path with spaces/updater' 'a'\\''b;$(no)'"
+            )
+          if scenario ~= "missing" then
+            message = message
+              .. "\nUpgrade all: 'npm' 'install' '-g' 'alpha@latest' && '/path with spaces/updater' 'a'\\''b;$(no)'"
+          end
+        end
+        MiniTest.expect.equality(notifications, { { message = message, fast = false } })
+      end
+      Session.dispose_all()
+      delete_chat_buffers()
+    end
+  end)
+  rawset(Agent, "check", original_check)
+  rawset(nvim, "system", original_system)
+  rawset(nvim, "notify", original_notify)
+  rawset(nvim.ui, "select", original_select)
+  Command.configure(nil)
+  assert(ok, err)
 end
 
 T["command"]["injects the hidden bounded catalog through the normal chat path"] = function()

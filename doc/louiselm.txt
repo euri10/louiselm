@@ -288,6 +288,16 @@ agents.<name>.transcript_layout                               *louiselm-config-a
     layouts.
 
 ------------------------------------------------------------------------------
+agents.<name>.upgrade                                         *louiselm-config-agents-name-upgrade*
+    Type: array of string
+    Default: {}
+    Description: Optional upgrade executable and arguments, e.g. { 'npm',
+    'install', '-g', 'my-agent@latest' }. Shown as a shell-escaped command in
+    outdated-Agent warnings, never executed. Set this for the actual
+    installation (including local builds); omission leaves upgrade guidance
+    unavailable. Multiple commands are joined with &&, stopping on failure.
+
+------------------------------------------------------------------------------
 agents.<name>.version                                         *louiselm-config-agents-name-version*
     Type: table
     Default: {}

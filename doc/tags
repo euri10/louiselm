@@ -47,6 +47,7 @@ louiselm-config-agents-name-latest-env	louiselm.txt	/*louiselm-config-agents-nam
 louiselm-config-agents-name-skills	louiselm.txt	/*louiselm-config-agents-name-skills*
 louiselm-config-agents-name-skills-policy	louiselm.txt	/*louiselm-config-agents-name-skills-policy*
 louiselm-config-agents-name-transcript-layout	louiselm.txt	/*louiselm-config-agents-name-transcript-layout*
+louiselm-config-agents-name-upgrade	louiselm.txt	/*louiselm-config-agents-name-upgrade*
 louiselm-config-agents-name-version	louiselm.txt	/*louiselm-config-agents-name-version*
 louiselm-config-agents-name-version-args	louiselm.txt	/*louiselm-config-agents-name-version-args*
 louiselm-config-agents-name-version-command	louiselm.txt	/*louiselm-config-agents-name-version-command*

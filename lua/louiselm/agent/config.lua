@@ -25,6 +25,7 @@ local Policy = require("louiselm.skills.policy")
 ---@field skills? louiselm.agent.SkillConfig Effective Agent Skills policy after normalization.
 ---@field version? louiselm.agent.CommandCheck Optional override for querying the installed version, when `command args... --version` is not the right invocation (e.g. a subcommand-based CLI).
 ---@field latest? louiselm.agent.CommandCheck Optional command that resolves the latest available version.
+---@field upgrade? string[] Executable and arguments shown as a shell-escaped upgrade command; never executed by LouiseLM. Omission leaves upgrade guidance unavailable.
 
 ---@alias louiselm.agent.ConfigErrorType "unknown_key"|"wrong_type"|"missing_required"|"invalid_value"
 
@@ -48,6 +49,7 @@ local allowed_keys = {
   options = true,
   skills = true,
   transcript_layout = true,
+  upgrade = true,
   version = true,
 }
 
@@ -429,6 +431,25 @@ function M.normalize(definitions, default_skills_policy)
       if definition.version ~= nil then
         version = parse_command_check(definition.version, child_path(path, "version"), errors)
       end
+      local upgrade
+      if definition.upgrade ~= nil then
+        local upgrade_path = child_path(path, "upgrade")
+        if type(definition.upgrade) ~= "table" then
+          add_error(
+            errors,
+            upgrade_path,
+            "wrong_type",
+            "must be an executable and arguments array",
+            "string[]",
+            value_type(definition.upgrade)
+          )
+        else
+          upgrade = copy_args(definition.upgrade, upgrade_path, errors)
+          if upgrade ~= nil and (#upgrade == 0 or upgrade[1] == "") then
+            add_error(errors, upgrade_path, "invalid_value", "must start with an upgrade executable")
+          end
+        end
+      end
       normalized[name] = {
         command = process.command,
         args = process.args,
@@ -439,6 +460,7 @@ function M.normalize(definitions, default_skills_policy)
         skills = { policy = effective_skill_policy },
         latest = latest,
         version = version,
+        upgrade = upgrade,
       }
     end
   end

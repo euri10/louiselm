@@ -29,6 +29,19 @@ end
 
 T["setup"] = MiniTest.new_set()
 
+T["setup"]["accepts upgrade argv and rejects malformed commands"] = function()
+  local ok, report = capture_setup({
+    agents = { mock = { command = "mock-acp", upgrade = { "npm", "install", "-g", "mock-acp@latest" } } },
+  })
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+  for _, upgrade in ipairs({ false, "npm install", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
+    local accepted, invalid = capture_setup({ agents = { mock = { command = "mock-acp", upgrade = upgrade } } })
+    MiniTest.expect.equality(accepted, false)
+    MiniTest.expect.equality(invalid.errors[1].path:find("agents.mock.upgrade", 1, true), 1)
+  end
+end
+
 T["setup"]["rejects invalid config and reports every error"] = function()
   local ok, report, notifications = capture_setup({
     agents = {
