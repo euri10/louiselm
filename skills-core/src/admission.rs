@@ -626,7 +626,16 @@ fn record_pin(store: &Store, record: &GenerationRecord) -> Result<(), AdmissionE
     let mut line = serde_json::to_string(&pin)
         .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
     line.push('\n');
-    let mut existing = fs::read_to_string(&path).unwrap_or_default();
+    let mut existing = match fs::read_to_string(&path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(AdmissionError::Io {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
     existing.push_str(&line);
     fs::write(&path, existing).map_err(|source| AdmissionError::Io {
         path: path.display().to_string(),

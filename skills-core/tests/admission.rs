@@ -221,6 +221,38 @@ fn a_generation_becomes_current_only_after_the_exact_bytes_are_witnessed() {
 }
 
 #[test]
+fn activation_preserves_unreadable_pin_lineage_and_reports_the_read_error() {
+    let ceremony = Ceremony::new();
+    let package = ceremony.skill("alpha");
+    let record = ceremony
+        .admit(&[(package, ReviewDepth::Read)], &ceremony.primary)
+        .expect("admission succeeds");
+    let store = ceremony.fixture.store();
+    admission::witness(&store, &record.digest(), &ceremony.witness(), 1)
+        .expect("witnessing succeeds");
+    let path = store.root().join("pins.jsonl");
+    let existing = b"previous lineage\xff\n";
+    std::fs::write(&path, existing).expect("unreadable lineage fixture is writable");
+
+    let result = admission::activate(&store, &record.digest(), 2);
+
+    assert_eq!(
+        std::fs::read(&path).expect("lineage bytes are readable"),
+        existing,
+        "activation must not replace lineage it could not read",
+    );
+    assert!(
+        matches!(
+            &result,
+            Err(AdmissionError::Io { path: failed_path, source })
+                if failed_path == &path.display().to_string()
+                    && source.kind() == std::io::ErrorKind::InvalidData
+        ),
+        "the original lineage read error must reach the caller: {result:?}",
+    );
+}
+
+#[test]
 fn a_witness_that_holds_other_bytes_is_refused() {
     let ceremony = Ceremony::new();
     let package = ceremony.skill("alpha");
@@ -260,7 +292,13 @@ fn the_chain_refuses_gaps_wrong_predecessors_and_rollback() {
         .expect("first admission succeeds");
     admission::witness(&store, &first.digest(), &ceremony.witness(), 1)
         .expect("witnessing succeeds");
+    let pins_path = store.root().join("pins.jsonl");
+    assert!(!pins_path.exists(), "the first activation creates lineage");
     admission::activate(&store, &first.digest(), 2).expect("activation succeeds");
+    let first_pin = std::fs::read_to_string(&pins_path).expect("first pin is readable");
+    let pin: serde_json::Value = serde_json::from_str(&first_pin).expect("pin is JSON");
+    assert_eq!(pin["generation"], first.generation);
+    assert_eq!(pin["sequence"], 1);
 
     let second = ceremony
         .admit(
@@ -276,6 +314,17 @@ fn the_chain_refuses_gaps_wrong_predecessors_and_rollback() {
     admission::witness(&store, &second.digest(), &ceremony.witness(), 3)
         .expect("witnessing succeeds");
     admission::activate(&store, &second.digest(), 4).expect("activation succeeds");
+    let pins = std::fs::read_to_string(&pins_path).expect("pins are readable");
+    assert!(
+        pins.starts_with(&first_pin),
+        "existing lineage stays intact"
+    );
+    assert_eq!(pins.lines().count(), 2);
+    let pin: serde_json::Value =
+        serde_json::from_str(pins.lines().nth(1).expect("second pin exists"))
+            .expect("second pin is JSON");
+    assert_eq!(pin["generation"], second.generation);
+    assert_eq!(pin["sequence"], 2);
 
     assert_eq!(
         admission::load(&store, &first.digest())
