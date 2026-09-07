@@ -44,9 +44,12 @@ Adapter lookup recipes:
   sessions, but do not replace the current session ID with one copied from a
   session picker.
 - LouiseLM ACP sessions (including OpenCode, Codex, DeepSeek, and Copilot):
-  query the live Chat controller described in Live-instance introspection and
-  use its exact `<agent>/<ACP-session-id>` result. This is the current-session
-  source even when the adapter exports only process markers.
+  take the ACP session id your own interaction exposes and resolve it with
+  `session.identity()`, as described in Live-instance introspection. Never ask
+  which chat is focused: focus follows the maintainer's window, not the Agent
+  that is calling, so a focused-chat lookup names an arbitrary Session whenever
+  more than one is live (louiselm-hmmc). An adapter that exposes no id of its
+  own has nothing to resolve; ask the maintainer.
 - OpenCode outside LouiseLM: `OPENCODE=1`, `OPENCODE_PID`, and
   `OPENCODE_CLIENT=acp` identify the process, not the current session.
   `opencode session list --format json` is an inventory, not proof of which
@@ -381,22 +384,31 @@ the Agent, match its structure (`'"thinking":{'`) rather than a word from it:
 bare terms like `summarized` also appear in ordinary session prose and read as
 false confirmation.
 
-The shell-side equivalent of `:LouiselmSessionId` is to evaluate Lua in the
-live instance and ask the chat controller for `session_id()`. Today that
-controller is the `chat` upvalue of
-`require("louiselm.ui.chat.command").winbar_click`; reach it with
-`debug.getupvalue` and call `chat:session_id()`, which returns
-`<agent>/<ACP-session-id>`. This is a debugging reflection path, not a public
-API; if it becomes recurring tooling, promote it to a documented accessor
-rather than encoding the upvalue walk.
+To learn your own Session identity, resolve the ACP session id your interaction
+already exposes against the live Sessions:
 
-Use that returned value verbatim as the Beads actor when it is available. This
-is the authoritative identity of the current live Session and does not depend
-on an adapter environment variable; in particular, an OpenCode result shaped
-as `opencode/<ACP-session-id>` is usable even when the shell exports only
-`OPENCODE=1`. Do not substitute an ID copied from an old Beads record, a
-different Session, or a child-agent task. If the live query and current
-interaction context expose no attributable ID, ask before mutating Beads.
+```bash
+nvim --server "$NVIM" --remote-expr 'luaeval("(function() local id, err = require(\"louiselm.session\").identity(_A) return id or err end)()", "<your ACP session id>")'
+```
+
+`session.identity()` returns `<agent>/<ACP-session-id>` for the one live Session
+holding that id. Use it verbatim as the Beads actor. It reads only the id you
+pass, so it stays correct while several Sessions run and while the maintainer
+switches windows.
+
+Anything else it returns is a question for the maintainer, never a reason to
+name another Session. `no live Session has ACP session id <id>` means what you
+passed is not the Session you are running in. The ambiguous message means two
+live Sessions share that id and only the maintainer can say which one is
+calling. Do not substitute an ID copied from an old Beads record, a different
+Session, or a child-agent task.
+
+`:LouiselmSessionId` and `Chat:session_id()` answer for the **focused** chat.
+That is what a bug report about the visible Session wants, and it is not caller
+identity. On 2026-09-07 four Sessions were live and the focused lookup named the
+one that was not even running a turn; two Sessions had already claimed the same
+Beads issue under one actor that way (louiselm-hmmc). Do not attribute work with
+it.
 
 ## 5. Test-Driven Development
 

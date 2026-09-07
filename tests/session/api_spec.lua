@@ -542,6 +542,74 @@ T["new"]["reports live Sessions across headless APIs for exit safety"] = functio
   restore_processes(original_system)
 end
 
+T["identity"] = MiniTest.new_set()
+
+T["identity"]["answers each caller separately instead of naming one current Session"] = function()
+  local processes, original_system = fake_processes()
+  local first_api = assert(Session.new({ claude = { provider = "test-service", command = "claude", args = {} } }))
+  local second_api = assert(Session.new({ codex = { provider = "test-service", command = "codex", args = {} } }))
+  assert(first_api:create_session("claude"))
+  respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(processes[1], 2, { sessionId = "claude-acp" })
+  assert(second_api:create_session("codex"))
+  respond(processes[2], 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(processes[2], 2, { sessionId = "codex-acp" })
+
+  -- Both answers are correct at the same instant across both headless APIs.
+  -- Nothing here is "current", so no UI focus change can alias one caller onto
+  -- the other's identity (louiselm-hmmc).
+  MiniTest.expect.equality({ Session.identity("claude-acp") }, { "claude/claude-acp" })
+  MiniTest.expect.equality({ Session.identity("codex-acp") }, { "codex/codex-acp" })
+
+  assert(Session.dispose_all())
+  MiniTest.expect.equality({ Session.identity("claude-acp") }, { nil, "no live Session has ACP session id claude-acp" })
+  restore_processes(original_system)
+end
+
+T["identity"]["refuses an unmatched caller rather than falling back to the only live Session"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ claude = { provider = "test-service", command = "claude", args = {} } }))
+  assert(api:create_session("claude"))
+  respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(processes[1], 2, { sessionId = "claude-acp" })
+
+  MiniTest.expect.equality(
+    { Session.identity("someone-elses-acp") },
+    { nil, "no live Session has ACP session id someone-elses-acp" }
+  )
+
+  assert(Session.dispose_all())
+  restore_processes(original_system)
+end
+
+T["identity"]["refuses an ambiguous match instead of picking one Session"] = function()
+  local processes, original_system = fake_processes()
+  local first_api = assert(Session.new({ claude = { provider = "test-service", command = "claude", args = {} } }))
+  local second_api = assert(Session.new({ claude = { provider = "test-service", command = "claude", args = {} } }))
+  assert(first_api:create_session("claude"))
+  respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(processes[1], 2, { sessionId = "shared-acp" })
+  assert(second_api:load_session("claude", "shared-acp"))
+  respond(processes[2], 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  respond(processes[2], 2, {})
+
+  MiniTest.expect.equality(
+    { Session.identity("shared-acp") },
+    { nil, "2 live Sessions have ACP session id shared-acp; ask which one is calling" }
+  )
+
+  assert(Session.dispose_all())
+  restore_processes(original_system)
+end
+
+T["identity"]["rejects a caller identity that is missing or not a string"] = function()
+  MiniTest.expect.equality({ Session.identity("") }, { nil, "acp_session_id must be a non-empty string" })
+  ---@diagnostic disable-next-line: param-type-mismatch -- Proves the contract rejects a non-string caller id.
+  MiniTest.expect.equality({ Session.identity(nil) }, { nil, "acp_session_id must be a non-empty string" })
+  ---@diagnostic disable-next-line: param-type-mismatch -- Proves the contract rejects a non-string caller id.
+  MiniTest.expect.equality({ Session.identity(42) }, { nil, "acp_session_id must be a non-empty string" })
+end
+
 T["new"]["reads and receives normalized Agent account limits through an advertised ACP extension"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))

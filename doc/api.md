@@ -48,6 +48,7 @@ fun(path?: string, error_message?: string)
 
 - `dispose_all: fun():boolean, string?` -- Dispose every live Session in this Neovim process.
 - `exit_verdict: fun():louiselm.session.ExitVerdict[]` -- Inspect live Sessions across every headless API.
+- `identity: fun(acp_session_id: string):string?, string?` -- Resolve the calling Session's `<agent>/<acp session id>` identity.
 - `new: fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions):(louiselm.session.Api)?, louiselm.agent.ConfigError[]` -- Create a headless session API.
 
 ### louiselm.session.Status

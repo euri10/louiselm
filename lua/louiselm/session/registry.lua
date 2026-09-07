@@ -253,30 +253,71 @@ function Registry:flush_recording(callback)
   self.recording:flush(callback)
 end
 
----Return a process-wide snapshot of live Sessions relevant to editor exit.
----@return louiselm.session.ExitVerdict[] verdict
-function M.exit_verdict()
-  local verdict = {}
+---Visit every live Session of this Neovim process, in registry then creation order.
+---Disposed and errored Sessions are not live: they answer for no caller and
+---survive no editor exit.
+---@param visit fun(session: louiselm.session.Session, state: louiselm.session.State)
+local function each_live_session(visit)
   for _, registry in ipairs(registries) do
     for _, id in ipairs(registry.order) do
       local session = registry.sessions[id]
       local state = session and session:inspect() or nil
       if state ~= nil and state.status ~= "disposed" and state.status ~= "error" then
-        local capabilities = session.client and session.client.agent_capabilities or {}
-        verdict[#verdict + 1] = {
-          session = session,
-          agent = state.agent,
-          acp_session_id = state.acp_session_id,
-          recoverable = capabilities.loadSession == true,
-          turn_active = state.status == "preparing"
-            or state.status == "prompting"
-            or state.status == "waiting_permission"
-            or state.status == "cancelling",
-        }
+        visit(session, state)
       end
     end
   end
+end
+
+---Return a process-wide snapshot of live Sessions relevant to editor exit.
+---@return louiselm.session.ExitVerdict[] verdict
+function M.exit_verdict()
+  local verdict = {}
+  each_live_session(function(session, state)
+    local capabilities = session.client and session.client.agent_capabilities or {}
+    verdict[#verdict + 1] = {
+      session = session,
+      agent = state.agent,
+      acp_session_id = state.acp_session_id,
+      recoverable = capabilities.loadSession == true,
+      turn_active = state.status == "preparing"
+        or state.status == "prompting"
+        or state.status == "waiting_permission"
+        or state.status == "cancelling",
+    }
+  end)
   return verdict
+end
+
+---Resolve the durable identity of the live Session a caller is running inside.
+---
+---The caller supplies the ACP session id its own interaction already exposes;
+---this matches it against live Sessions across every headless API in the
+---process. The answer depends on nothing but that id, so concurrent Sessions
+---each resolve to their own identity and a chat focus change cannot alias one
+---onto another. An unknown or ambiguous id is an error, never a fallback to
+---whichever Session is at hand (louiselm-hmmc).
+---@param acp_session_id string ACP session id exposed by the calling interaction.
+---@return string? session_id Agent-scoped identity, `<agent>/<acp session id>`.
+---@return string? error_message Why no single live Session answered for this caller.
+function M.identity(acp_session_id)
+  if type(acp_session_id) ~= "string" or acp_session_id == "" then
+    return nil, "acp_session_id must be a non-empty string"
+  end
+  local agents = {}
+  each_live_session(function(_, state)
+    if state.acp_session_id == acp_session_id then
+      agents[#agents + 1] = state.agent
+    end
+  end)
+  if #agents == 0 then
+    return nil, "no live Session has ACP session id " .. acp_session_id
+  end
+  if #agents > 1 then
+    return nil,
+      string.format("%d live Sessions have ACP session id %s; ask which one is calling", #agents, acp_session_id)
+  end
+  return agents[1] .. "/" .. acp_session_id
 end
 
 ---Dispose every Session registry created in this Neovim process.

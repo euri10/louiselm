@@ -26,6 +26,7 @@
 ---@class louiselm.session.Module
 ---@field new fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions): louiselm.session.Api?, louiselm.agent.ConfigError[] Create a headless session API.
 ---@field exit_verdict fun(): louiselm.session.ExitVerdict[] Inspect live Sessions across every headless API.
+---@field identity fun(acp_session_id: string): string?, string? Resolve the calling Session's `<agent>/<acp session id>` identity.
 ---@field dispose_all fun(): boolean, string? Dispose every live Session in this Neovim process.
 
 local M = {}
@@ -45,6 +46,20 @@ end
 ---@return louiselm.session.ExitVerdict[] verdict
 function M.exit_verdict()
   return Registry.exit_verdict()
+end
+
+---Resolve the durable identity of the live Session a caller is running inside.
+---
+---Pass the ACP session id the calling interaction already exposes about itself.
+---The result is independent of which chat view has focus, so it stays correct
+---while concurrent Sessions run. Use it verbatim wherever a Session must be
+---attributed; an unknown or ambiguous caller id is an error to resolve with the
+---maintainer, never a reason to name another Session.
+---@param acp_session_id string ACP session id exposed by the calling interaction.
+---@return string? session_id Agent-scoped identity, `<agent>/<acp session id>`.
+---@return string? error_message Why no single live Session answered for this caller.
+function M.identity(acp_session_id)
+  return Registry.identity(acp_session_id)
 end
 
 ---Dispose every live Session in this Neovim process.
