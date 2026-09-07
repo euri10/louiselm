@@ -476,6 +476,7 @@ pub struct SandboxedSession {
     cgroup: Option<Cgroup>,
     sandbox_leader_pid: Option<u32>,
     namespace_leader: Option<OwnedFd>,
+    disposed: bool,
     // Keep Bubblewrap's status reader alive for its terminal status write.
     status_guard: Option<UnixStream>,
 }
@@ -793,12 +794,30 @@ impl SandboxedSession {
 
     /// Terminates the whole tree and releases the Session's identity.
     ///
+    /// Repeated calls after proven cleanup succeed with zero processes observed.
+    /// Failed cleanup retains its resources for a later attempt.
+    ///
     /// # Errors
     /// Returns process/cgroup observation or kill/reap failures, survivors, or unproven cleanup by the deadline. No success is returned without zero survivors.
     pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
-        if self.cgroup.is_none() {
-            return self.dispose_namespace();
+        if self.disposed {
+            return Ok(DisposalReport {
+                session_id: self.session_id.clone(),
+                processes_before: 0,
+                survivors: 0,
+                identity_released: true,
+            });
         }
+        let report = if self.cgroup.is_none() {
+            self.dispose_namespace()
+        } else {
+            self.dispose_cgroup()
+        }?;
+        self.disposed = true;
+        Ok(report)
+    }
+
+    fn dispose_cgroup(&mut self) -> Result<DisposalReport, SandboxError> {
         let deadline = Instant::now() + DISPOSAL_TIMEOUT;
         let processes_before = self.processes().map(|processes| processes.len());
         let cgroup_kill = if let Some(cgroup) = &self.cgroup {
@@ -1692,6 +1711,7 @@ impl BubblewrapBackend {
                 cgroup,
                 sandbox_leader_pid,
                 namespace_leader,
+                disposed: false,
                 status_guard: None,
             }),
             startup_gate: Some(startup_gate),
@@ -2424,6 +2444,25 @@ mod tests {
     }
 
     #[test]
+    fn cgroup_disposal_remains_proven_after_releasing_the_cgroup() {
+        let fixture = tempfile::tempdir().expect("fixture opens");
+        fs::write(fixture.path().join("cgroup.procs"), "")
+            .expect("empty membership fixture writes");
+        fs::write(fixture.path().join("cgroup.kill"), "0").expect("kill control fixture writes");
+        let mut session = test_session("repeated-cgroup-disposal", fixture.path(), None);
+
+        let first = session.dispose().expect("first disposal proves cleanup");
+        assert_eq!(first.survivors, 0);
+        assert!(first.identity_released);
+        // The production relay disposes again after its direct-disposal probe.
+        // CI run 34142936852 failed here once the first call removed its cgroup.
+        let repeated = session.dispose().expect("proven disposal stays successful");
+        assert_eq!(repeated.processes_before, 0);
+        assert_eq!(repeated.survivors, 0);
+        assert!(repeated.identity_released);
+    }
+
+    #[test]
     fn no_cgroup_disposal_without_a_pinned_leader_retains_its_process_owner() {
         let fixture = tempfile::tempdir().expect("fixture opens");
         let mut session = test_session("missing-leader", fixture.path(), None);
@@ -2478,6 +2517,7 @@ mod tests {
             }),
             sandbox_leader_pid: None,
             namespace_leader: None,
+            disposed: false,
             status_guard,
         }
     }
@@ -2893,6 +2933,10 @@ mod tests {
             "the identity-lifetime handle stays owned",
         );
 
+        assert!(
+            session.dispose().is_err(),
+            "failed cleanup cannot be remembered as proven disposal",
+        );
         fs::write(&membership, "").expect("membership becomes readably empty");
         session.dispose().expect("empty membership can be retried");
         assert!(terminated, "Disposal must still terminate the child");
