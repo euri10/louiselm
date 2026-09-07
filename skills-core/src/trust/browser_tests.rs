@@ -12,15 +12,34 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-fn request(port: u16, raw: &str) -> String {
-    let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+fn connect(port: u16) -> TcpStream {
+    let stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
+    stream
+}
+
+fn exchange(mut stream: TcpStream, raw: &str) -> String {
     stream.write_all(raw.as_bytes()).unwrap();
     let mut output = String::new();
     stream.read_to_string(&mut output).unwrap();
     output
+}
+
+fn request(port: u16, raw: &str) -> String {
+    exchange(connect(port), raw)
+}
+
+fn assert_listener_disposed(mut pending: TcpStream) {
+    // Observe a connection queued on the original listener, never a released
+    // port. Concurrent fork can retain its CLOEXEC descriptor until exec, so
+    // allow bounded teardown while still failing if a descriptor leaks (b7us).
+    match pending.read(&mut [0]) {
+        Ok(0) => (),
+        Err(error) if error.kind() == io::ErrorKind::ConnectionReset => (),
+        result => panic!("listener did not dispose its queued connection: {result:?}"),
+    }
 }
 
 fn post(port: u16, prefix: &str, route: &str) -> String {
@@ -30,7 +49,7 @@ fn post(port: u16, prefix: &str, route: &str) -> String {
 }
 
 #[test]
-fn bad_host_origin_framing_and_token_have_no_authority_then_cancel_closes_port() {
+fn bad_host_origin_framing_and_token_have_no_authority_then_cancel_disposes_listener() {
     let browser = Browser::bind().unwrap();
     let port = browser.port().unwrap();
     let prefix = browser.prefix.clone();
@@ -72,13 +91,15 @@ fn bad_host_origin_framing_and_token_have_no_authority_then_cancel_closes_port()
     );
     assert!(page.contains("frame-ancestors 'none'"));
     assert!(page.contains("Never enter a paper phrase here"));
-    assert!(request(port, &post(port, &prefix, "cancel")).contains("trust unchanged"));
+    let cancel = connect(port);
+    let pending = connect(port);
+    assert!(exchange(cancel, &post(port, &prefix, "cancel")).contains("trust unchanged"));
     assert!(matches!(
         worker.join().unwrap(),
         Err(RecoveryError::Cancelled)
     ));
     assert!(!called.load(Ordering::SeqCst));
-    assert!(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
+    assert_listener_disposed(pending);
 }
 
 #[test]
@@ -86,14 +107,16 @@ fn completed_and_expired_servers_dispose_their_listener() {
     let browser = Browser::bind().unwrap();
     let port = browser.port().unwrap();
     let prefix = browser.prefix.clone();
+    let finish = connect(port);
+    let pending = connect(port);
     let worker = thread::spawn(move || {
         browser.run("confirm", &json!({}), &json!({}), |_| Ok((42, "committed")))
     });
-    assert!(request(port, &post(port, &prefix, "finish")).contains("committed"));
+    assert!(exchange(finish, &post(port, &prefix, "finish")).contains("committed"));
     assert_eq!(worker.join().unwrap().unwrap(), 42);
-    assert!(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
+    assert_listener_disposed(pending);
     let mut browser = Browser::bind().unwrap();
-    let port = browser.port().unwrap();
+    let pending = connect(browser.port().unwrap());
     browser.deadline = Instant::now();
     assert!(
         browser
@@ -105,7 +128,32 @@ fn completed_and_expired_servers_dispose_their_listener() {
             )
             .is_err()
     );
-    assert!(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
+    assert_listener_disposed(pending);
+}
+
+#[test]
+fn inherited_listener_delays_teardown_until_its_descriptor_closes() {
+    let mut browser = Browser::bind().unwrap();
+    let mut pending = connect(browser.port().unwrap());
+    // fork and try_clone retain the same listener until the last descriptor closes.
+    let inherited = browser.listener.try_clone().unwrap();
+    browser.deadline = Instant::now();
+    assert!(matches!(
+        browser.run(
+            "confirm",
+            &json!({}),
+            &json!({}),
+            |_| -> Result<((), &'static str), RecoveryError> { panic!("expired callback") }
+        ),
+        Err(RecoveryError::Passkey)
+    ));
+    pending.set_nonblocking(true).unwrap();
+    assert!(
+        matches!(pending.read(&mut [0]), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+    );
+    drop(inherited);
+    pending.set_nonblocking(false).unwrap();
+    assert_listener_disposed(pending);
 }
 
 #[test]
