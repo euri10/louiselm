@@ -208,7 +208,31 @@ and attempt counts cannot reconstruct that evidence. External changes to an Agen
 history (truncation/reordering, or concurrently prompting the same ACP Session)
 cannot be made lossless by client ordinals. No prompt content is stored or matched.
 
-`usage.json` is read-only: its write APIs are removed. Exact legacy annotations and
-the existing picker summaries remain readable, but neither legacy marginal buckets
-nor guessed Provider/time/options enter SQLite analytics. Analytics queries, picker
-cohorts, history views, and reflection remain separate follow-up work.
+`usage.json` is read-only: its write APIs are removed. Exact legacy annotations
+remain readable; legacy marginal buckets never enter the Session options picker
+or SQLite analytics.
+
+## Exact option cohorts
+
+`session:option_usage(option_id, callback)` snapshots the confirmed configuration
+and resolves Provider for each advertised candidate with every other typed option
+unchanged. It acknowledges pending recorder writes before querying committed
+history. A candidate with unresolved Provider returns an attribution error; a
+storage failure remains distinct from an empty cohort. Callbacks run on the main
+loop. The picker discards pending results after configuration changes, Session
+switching, a newer picker, or Disposal.
+
+`store:usage_summaries(cohorts, callback)` is the shared typed SQL query boundary.
+Each closed filter specifies Agent, Provider, and the complete option tuple. One
+read-only transaction queries all candidates; it creates no store and migrates no
+history. SQL excludes unsent attempts and turns with associated option changes.
+No match returns zero turns and absent measurements, never a broader fallback.
+
+Summaries return dispatched turn counts, outcome counts (including `unobserved`),
+each reported token field's mean and measurement count, and complete cost deltas
+with separate means and counts per currency. Cost coverage requires a terminal
+peer response and the uninterrupted baseline/readings described above. Zero is
+a measurement; absent telemetry is not. The picker names total turns and the
+denominator for each displayed metric, or shows `No matching history`.
+
+The history explorer and advisory reflection remain separate follow-up work.

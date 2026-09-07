@@ -140,6 +140,7 @@ string|table
 - `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
+- `option_usage: fun(self: louiselm.session.Session, option_id: string, callback: fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError))`
 - `options: louiselm.session.Options` -- Session options.
 - `owner: louiselm.session.Registry` -- Registry that owns this session.
 - `owner_run: (louiselm.workflow.Run)?` -- Run that supervised construction of this Session.
@@ -165,6 +166,19 @@ string|table
 - `transcript_turn: integer` -- Observed replay turns plus locally dispatched prompts, excluding unsent attempts.
 - `turn_done_turn: integer?` -- Turn for which the completion event was emitted.
 - `usage_history: fun(self: louiselm.session.Session, callback: fun(records?: louiselm.session.ReplayUsage[], error?: louiselm.session.RecordingError))`
+
+### louiselm.session.OptionUsage
+
+- `error: (louiselm.session.RecordingError)?` -- Candidate attribution failure.
+- `provider: string?` -- Resolved candidate Provider.
+- `summary: (louiselm.session.CohortSummary)?` -- Exact matching committed history.
+- `value: boolean|string` -- Candidate advertised value.
+
+### louiselm.session.OptionUsageCallback
+
+```lua
+fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError)
+```
 
 ### louiselm.session.DiscoveryOptions
 

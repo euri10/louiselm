@@ -65,6 +65,7 @@ local nvim = vim
 ---@field queue_mark integer? Extmark showing queued prompt state.
 ---@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
+---@field options_revision? integer Invalidates pending option-history pickers.
 ---@field unread_turn boolean Whether a completed background response has not been focused.
 ---@field replay_active boolean Whether session/load history is still arriving.
 ---@field replay_user_open boolean Whether consecutive replayed user chunks belong to the current historical turn.
@@ -2100,33 +2101,27 @@ local function config_values(option)
   return option.options or {}
 end
 
----@param summary louiselm.routing.UsageSummary
+---@param summary louiselm.session.CohortSummary?
 ---@return string
 local function usage_details(summary)
-  local details = {}
-  if summary.average_tokens ~= nil then
-    details[#details + 1] = format_number(summary.average_tokens) .. " tokens/turn"
+  if summary == nil or summary.turns == 0 then
+    return " (No matching history)"
+  end
+  local details = { summary.turns .. " turns" }
+  local tokens = summary.tokens.total_tokens
+  if tokens ~= nil then
+    details[#details + 1] = format_number(tokens.average) .. " tokens/turn · token data for " .. tokens.samples
+  else
+    details[#details + 1] = "No total-token data"
   end
   for _, cost in ipairs(summary.costs) do
-    details[#details + 1] = format_number(cost.average) .. " " .. cost.currency .. "/turn"
+    details[#details + 1] = format_number(cost.average)
+      .. " "
+      .. cost.currency
+      .. "/turn · cost data for "
+      .. cost.samples
   end
-  if #details == 0 then
-    return ""
-  end
-  return " (observed: " .. table.concat(details, " · ") .. " · " .. summary.samples .. " samples)"
-end
-
----@param self louiselm.ui.Chat
----@param state louiselm.session.State
----@param option_id string
----@param value string|boolean
----@return string
-local function option_usage_details(self, state, option_id, value)
-  local summary = self.usage:summary(state.agent, option_id, value)
-  if summary == nil then
-    return ""
-  end
-  return usage_details(summary)
+  return " (observed: " .. table.concat(details, " · ") .. ")"
 end
 
 ---@param self louiselm.ui.Chat
@@ -2146,44 +2141,70 @@ open_session_options = function(self, view, initial)
     end
     view.setup_shown = true
   end
+  view.options_revision = (view.options_revision or 0) + 1
+  local revision = view.options_revision
+  local function current()
+    return not self.disposed
+      and self.views[state.id] == view
+      and self.current_id == state.id
+      and not self.decision_active
+      and view.options_revision == revision
+      and view.session:inspect().status == "ready"
+      and nvim.deep_equal(view.session:inspect().config_options, state.config_options)
+  end
   Picker.select(state.config_options, {
     prompt = "louiselm session options: ",
     format_item = function(option)
       return option.name .. ": " .. option_display_value(option)
     end,
   }, function(option)
-    if option == nil or self.disposed or self.views[state.id] ~= view then
+    if option == nil or not current() then
       return
     end
-    Picker.select(config_values(option), {
-      prompt = option.name .. ": ",
-      format_item = function(value)
-        return value.name .. option_usage_details(self, state, option.id, value.value)
-      end,
-    }, function(choice)
-      if self.disposed or self.views[state.id] ~= view then
+    view.session:option_usage(option.id, function(candidates, query_error)
+      if not current() then
         return
       end
-      if choice == nil then
-        open_session_options(self, view, false)
-        return
+      local details = {}
+      for _, candidate in ipairs(candidates or {}) do
+        details[candidate.value] = candidate.error and " (" .. candidate.error.message .. ")"
+          or usage_details(candidate.summary)
       end
-      local _, set_error = self:set_config_option(option.id, choice.value, function(_, callback_error)
-        nvim.schedule(function()
-          if self.disposed or self.views[state.id] ~= view then
-            return
-          end
-          if callback_error ~= nil then
-            insert_transcript(self, view, { "Error: " .. callback_error })
-          else
-            render_header(self, view)
-          end
+      Picker.select(config_values(option), {
+        prompt = option.name .. ": ",
+        format_item = function(value)
+          return value.name
+            .. (
+              query_error and " (History unavailable: " .. query_error.message .. ")"
+              or details[value.value]
+              or usage_details(nil)
+            )
+        end,
+      }, function(choice)
+        if not current() then
+          return
+        end
+        if choice == nil then
           open_session_options(self, view, false)
+          return
+        end
+        local _, set_error = self:set_config_option(option.id, choice.value, function(_, callback_error)
+          nvim.schedule(function()
+            if self.disposed or self.views[state.id] ~= view then
+              return
+            end
+            if callback_error ~= nil then
+              insert_transcript(self, view, { "Error: " .. callback_error })
+            else
+              render_header(self, view)
+            end
+            open_session_options(self, view, false)
+          end)
         end)
+        if set_error ~= nil then
+          insert_transcript(self, view, { "Error: " .. set_error })
+        end
       end)
-      if set_error ~= nil then
-        insert_transcript(self, view, { "Error: " .. set_error })
-      end
     end)
   end)
 end

@@ -92,6 +92,7 @@ local nvim = vim
 ---@field on fun(self: louiselm.session.Session, callback: louiselm.session.EventCallback): fun()
 ---@field inspect fun(self: louiselm.session.Session): louiselm.session.State
 ---@field usage_history fun(self: louiselm.session.Session, callback: louiselm.session.UsageHistoryCallback)
+---@field option_usage fun(self: louiselm.session.Session, option_id: string, callback: louiselm.session.OptionUsageCallback)
 ---@field set_name fun(self: louiselm.session.Session, name: string): boolean, string? Rename the session.
 ---@field prompt fun(self: louiselm.session.Session, prompt: louiselm.session.Prompt, callback?: fun(result: unknown, error?: string)): string?, string?
 ---@field cancel fun(self: louiselm.session.Session): boolean, string?
@@ -1005,6 +1006,79 @@ function Session:usage_history(callback)
     end)
   else
     store:usage_history(self.state.agent, self.acp_session_id, callback)
+  end
+end
+
+---@class louiselm.session.OptionUsage
+---@field value string|boolean Candidate advertised value.
+---@field provider? string Resolved candidate Provider.
+---@field summary? louiselm.session.CohortSummary Exact matching committed history.
+---@field error? louiselm.session.RecordingError Candidate attribution failure.
+---@alias louiselm.session.OptionUsageCallback fun(candidates: louiselm.session.OptionUsage[]?, error?: louiselm.session.RecordingError)
+
+---Read usage for each advertised value, holding every other active option fixed.
+---Resolves Provider separately per candidate. Snapshots options at invocation;
+---callers must discard results if the confirmed configuration changes meanwhile.
+---Flushes pending observations first. Never reads legacy marginal history.
+---@param self louiselm.session.Session
+---@param option_id string Advertised option ID.
+---@param callback louiselm.session.OptionUsageCallback Called once on the main loop; invalid options, storage and attribution failures are typed.
+function Session:option_usage(option_id, callback)
+  local option
+  for _, candidate in ipairs(self.state.config_options) do
+    if candidate.id == option_id then
+      option = candidate
+      break
+    end
+  end
+  if self.state.status == "disposed" or option == nil then
+    nvim.schedule(function()
+      callback(nil, { code = "invalid", message = "Session option is unavailable" })
+    end)
+    return
+  end
+  local values = option_values(self.state.config_options)
+  local choices = option.type == "boolean" and { { value = true }, { value = false } } or option.options or {}
+  local candidates, cohorts, indices = {}, {}, {}
+  for index, choice in ipairs(choices) do
+    local tuple = nvim.deepcopy(values)
+    tuple[option_id] = choice.value
+    local provider, err = Provider.resolve(self.definition.provider, tuple)
+    candidates[index] = { value = choice.value, provider = provider }
+    if provider == nil then
+      candidates[index].error = { code = "attribution", message = err }
+    else
+      indices[#indices + 1] = index
+      cohorts[#cohorts + 1] = { agent = self.state.agent, provider = provider, options = tuple }
+    end
+  end
+  local store = self.owner.recording
+  local function query(err)
+    if err ~= nil then
+      callback(nil, err)
+      return
+    end
+    if #cohorts == 0 then
+      callback(candidates)
+      return
+    end
+    store:usage_summaries(cohorts, function(summaries, query_error)
+      if summaries == nil then
+        callback(nil, query_error)
+        return
+      end
+      for index, summary in ipairs(summaries) do
+        candidates[indices[index]].summary = summary
+      end
+      callback(candidates)
+    end)
+  end
+  if #store.queue > 0 then
+    store:flush(query)
+  else
+    nvim.schedule(function()
+      query(nil)
+    end)
   end
 end
 

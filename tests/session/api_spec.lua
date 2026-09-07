@@ -149,6 +149,85 @@ T["forensics"] = MiniTest.new_set()
 
 T["provider"] = MiniTest.new_set()
 
+T["provider"]["candidate usage resolves each Provider and recomputes confirmed tuples"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    agent = {
+      command = "agent",
+      provider = {
+        { provider = "One", options = { model = "small" } },
+        { provider = "Two", options = { model = "large" } },
+      },
+    },
+  }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local function options(model, enabled)
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = {
+        sessionUpdate = "config_option_update",
+        configOptions = {
+          {
+            id = "model",
+            name = "Model",
+            type = "select",
+            currentValue = model,
+            options = {
+              { value = "small", name = "Small" },
+              { value = "large", name = "Large" },
+              {
+                value = "unknown",
+                name = "Unknown",
+              },
+            },
+          },
+          { id = "enabled", name = "Enabled", type = "boolean", currentValue = enabled },
+        },
+      },
+    })
+  end
+  local function measure(model, enabled, amount)
+    options(model, enabled)
+    local id = assert(submit(session, "measured"))
+    respond(process, id, { stopReason = "end_turn", usage = { totalTokens = amount } })
+  end
+  local function read(id)
+    local done, result, failure
+    session:option_usage(id, function(rows, err)
+      assert(not nvim.in_fast_event())
+      done, result, failure = true, rows, err
+    end)
+    assert(nvim.wait(6000, function()
+      return done
+    end, 10))
+    return result, failure
+  end
+  measure("small", false, 120)
+  measure("large", false, 240)
+  measure("large", true, 480)
+  options("small", false)
+  local rows = assert(read("model"))
+  MiniTest.expect.equality(rows[1].provider, "One")
+  MiniTest.expect.equality(rows[1].summary.tokens.total_tokens.average, 120)
+  MiniTest.expect.equality(rows[2].provider, "Two")
+  MiniTest.expect.equality(rows[2].summary.tokens.total_tokens.average, 240)
+  MiniTest.expect.equality(rows[3].error.code, "attribution")
+  options("large", true)
+  rows = assert(read("model"))
+  MiniTest.expect.equality(rows[1].summary.turns, 0)
+  MiniTest.expect.equality(rows[2].summary.tokens.total_tokens.average, 480)
+  rows = assert(read("enabled"))
+  MiniTest.expect.equality(rows[1].value, true)
+  MiniTest.expect.equality(rows[1].summary.tokens.total_tokens.average, 480)
+  MiniTest.expect.equality(rows[2].value, false)
+  MiniTest.expect.equality(rows[2].summary.tokens.total_tokens.average, 240)
+  local missing, err = read("missing")
+  MiniTest.expect.equality(missing, nil)
+  MiniTest.expect.equality(err.code, "invalid")
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["provider"]["does not dispatch attribution made stale during async admission"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "service", command = "agent" } }))

@@ -59,6 +59,23 @@ local nvim = vim
 ---@field append fun(self: louiselm.session.RecordingStore, record: louiselm.session.PreparedTurn|louiselm.session.TurnObservation|louiselm.session.OptionTransition, callback?: louiselm.session.RecordingCallback)
 ---@field flush fun(self: louiselm.session.RecordingStore, callback: louiselm.session.RecordingCallback)
 ---@field usage_history fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.UsageHistoryCallback)
+---@field usage_summaries fun(self: louiselm.session.RecordingStore, cohorts: louiselm.session.UsageCohort[], callback: louiselm.session.UsageSummariesCallback)
+
+---@class louiselm.session.UsageCohort
+---@field agent string Exact configured Agent.
+---@field provider string Resolved service for this candidate.
+---@field options table<string, string|boolean> Complete typed tuple; no widening or legacy fallback.
+---@class louiselm.session.UsageMetric
+---@field samples integer Turns reporting this measurement.
+---@field average number Mean over measured turns only.
+---@class louiselm.session.UsageCurrency: louiselm.session.UsageMetric
+---@field currency string Reported currency; never combined across currencies.
+---@class louiselm.session.CohortSummary
+---@field turns integer Dispatched turns, including unmeasured and unobserved completions.
+---@field outcomes table<string, integer> Counts by observed outcome; unobserved means no terminal observation.
+---@field tokens table<string, louiselm.session.UsageMetric> Reported token fields, absent when unmeasured.
+---@field costs louiselm.session.UsageCurrency[] Complete reported deltas in currency order.
+---@alias louiselm.session.UsageSummariesCallback fun(summaries: louiselm.session.CohortSummary[]?, error?: louiselm.session.RecordingError)
 
 local M = {}
 local Store = {}
@@ -570,20 +587,11 @@ function Store:flush(callback)
   drain(self)
 end
 
----Read committed presentation associations for exactly one Agent/ACP Session.
----Does not flush, create, migrate, or write history. Missing stores return an empty
----list; old dispatches without an observed ordinal remain unassociated. Results
----include unmeasured turns so callers cannot substitute legacy measurements.
 ---@param self louiselm.session.RecordingStore
----@param agent string Configured Agent.
----@param acp_session_id string Agent-side conversation identity.
----@param callback louiselm.session.UsageHistoryCallback Called once on the main loop, including errors.
-function Store:usage_history(agent, acp_session_id, callback)
+---@param query string
+---@param callback fun(rows: table[]?, error?: louiselm.session.RecordingError)
+local function read(self, query, callback)
   nvim.schedule(function()
-    if not nonempty(agent) or not nonempty(acp_session_id) then
-      callback(nil, failure("invalid"))
-      return
-    end
     local stat, _, code = nvim.uv.fs_lstat(self.path)
     if stat == nil then
       if code == "ENOENT" then
@@ -613,14 +621,7 @@ INSERT INTO history_guard SELECT
   AND (SELECT journal_mode='delete' FROM pragma_journal_mode)
   AND (SELECT synchronous=3 FROM pragma_synchronous)
   AND (SELECT foreign_keys=1 FROM pragma_foreign_keys);
-SELECT t.id, json_extract(d.data,'$.transcript_turn') AS turn,
-       json_extract(o.data,'$.usage') AS usage
-FROM turns t JOIN turn_events d ON d.turn_id=t.id AND d.kind='dispatch'
-LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
-WHERE t.agent=]] .. sql_text(agent) .. " AND t.acp_session_id=" .. sql_text(acp_session_id) .. [[
- AND json_type(d.data,'$.transcript_turn')='integer'
- AND json_extract(d.data,'$.transcript_turn')>0
-ORDER BY turn,t.id;
+]] .. query .. [[
 COMMIT;
 ]]
     local started, process = pcall(
@@ -639,22 +640,6 @@ COMMIT;
             callback(nil, failure("corrupt"))
             return
           end
-          for _, record in ipairs(records) do
-            if record.usage ~= nil then
-              local decoded, usage = pcall(nvim.json.decode, record.usage)
-              if not decoded or type(usage) ~= "table" then
-                callback(nil, failure("corrupt"))
-                return
-              end
-              for field, value in pairs(usage) do
-                if not TOKEN_FIELDS[field] or not finite(value) or value % 1 ~= 0 then
-                  callback(nil, failure("corrupt"))
-                  return
-                end
-              end
-              record.usage = usage
-            end
-          end
           callback(records)
         end)
       end
@@ -662,6 +647,183 @@ COMMIT;
     if not started or process == nil then
       callback(nil, failure("unavailable"))
     end
+  end)
+end
+
+---Read committed presentation associations for exactly one Agent/ACP Session.
+---Does not flush, create, migrate, or write history. Missing stores return an empty
+---list; old dispatches without an observed ordinal remain unassociated. Results
+---include unmeasured turns so callers cannot substitute legacy measurements.
+---@param self louiselm.session.RecordingStore
+---@param agent string Configured Agent.
+---@param acp_session_id string Agent-side conversation identity.
+---@param callback louiselm.session.UsageHistoryCallback Called once on the main loop, including errors.
+function Store:usage_history(agent, acp_session_id, callback)
+  if not nonempty(agent) or not nonempty(acp_session_id) then
+    nvim.schedule(function()
+      callback(nil, failure("invalid"))
+    end)
+    return
+  end
+  read(self, [[
+SELECT t.id, json_extract(d.data,'$.transcript_turn') AS turn,
+       json_extract(o.data,'$.usage') AS usage
+FROM turns t JOIN turn_events d ON d.turn_id=t.id AND d.kind='dispatch'
+LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
+WHERE t.agent=]] .. sql_text(agent) .. " AND t.acp_session_id=" .. sql_text(acp_session_id) .. [[
+ AND json_type(d.data,'$.transcript_turn')='integer'
+ AND json_extract(d.data,'$.transcript_turn')>0
+ORDER BY turn,t.id;
+]], function(records, err)
+    if records == nil then
+      callback(nil, err)
+      return
+    end
+    for _, record in ipairs(records) do
+      if record.usage ~= nil then
+        local decoded, usage = pcall(nvim.json.decode, record.usage)
+        if not decoded or type(usage) ~= "table" then
+          callback(nil, failure("corrupt"))
+          return
+        end
+        for field, value in pairs(usage) do
+          if not TOKEN_FIELDS[field] or not finite(value) or value % 1 ~= 0 then
+            callback(nil, failure("corrupt"))
+            return
+          end
+        end
+        record.usage = usage
+      end
+    end
+    callback(records)
+  end)
+end
+
+---Query exact candidate cohorts together in one read-only SQLite snapshot.
+---SQL owns all counts and means. Excludes unsent attempts and option-changing
+---turns; absent telemetry stays absent. Missing stores yield empty summaries.
+---Does not flush or write; callers needing pending observations must flush first.
+---@param self louiselm.session.RecordingStore
+---@param cohorts louiselm.session.UsageCohort[] Closed filters; Agent, Provider and complete typed options only.
+---@param callback louiselm.session.UsageSummariesCallback Called once on the main loop, including validation/storage failures.
+function Store:usage_summaries(cohorts, callback)
+  local values, summaries = {}, {}
+  local valid = type(cohorts) == "table" and nvim.islist(cohorts) and #cohorts > 0
+  for index, cohort in ipairs(valid and cohorts or {}) do
+    if
+      type(cohort) ~= "table"
+      or nvim.tbl_count(cohort) ~= 3
+      or not nonempty(cohort.agent)
+      or not nonempty(cohort.provider)
+      or not tuple_valid(cohort.options)
+    then
+      valid = false
+      break
+    end
+    values[#values + 1] = "("
+      .. index
+      .. ","
+      .. sql_text(cohort.agent)
+      .. ","
+      .. sql_text(cohort.provider)
+      .. ","
+      .. sql_text(json(cohort.options))
+      .. ")"
+    summaries[index] = { turns = 0, outcomes = {}, tokens = {}, costs = {} }
+  end
+  if not valid then
+    nvim.schedule(function()
+      callback(nil, failure("invalid"))
+    end)
+    return
+  end
+  read(self, [[
+CREATE TEMP TABLE cohort_turns AS
+WITH candidates(candidate,agent,provider,options) AS (VALUES ]] .. table.concat(values, ",") .. [[)
+SELECT c.candidate,t.*,o.data AS outcome_data
+FROM candidates c JOIN turns t ON t.agent=c.agent AND t.provider=c.provider AND t.options=c.options
+LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
+WHERE EXISTS (SELECT 1 FROM turn_events d WHERE d.turn_id=t.id AND d.kind='dispatch')
+AND NOT EXISTS (SELECT 1 FROM option_events e WHERE e.turn_id=t.id);
+
+-- Refuse malformed consumed telemetry rather than letting SQLite coerce it.
+INSERT INTO history_guard SELECT NOT EXISTS (
+ SELECT 1 FROM cohort_turns t WHERE t.outcome_data IS NOT NULL AND (
+  json_type(t.outcome_data) IS NOT 'object'
+  OR json_extract(t.outcome_data,'$.outcome') NOT IN ('completed','cancelled','failed','disposed','not_sent')
+  OR json_type(t.outcome_data,'$.outcome') IS NOT 'text'
+  OR json_type(t.outcome_data,'$.peer_response') NOT IN ('true','false')
+  OR json_type(t.outcome_data,'$.peer_response') IS NULL
+  OR (json_type(t.outcome_data,'$.usage') IS NOT NULL AND json_type(t.outcome_data,'$.usage') IS NOT 'object')
+  OR EXISTS (SELECT 1 FROM json_each(t.outcome_data,'$.usage') u WHERE
+   u.key NOT IN ('total_tokens','input_tokens','output_tokens','thought_tokens','cached_read_tokens','cached_write_tokens')
+   OR u.type IS NOT 'integer' OR u.value<0)
+ ));
+CREATE TEMP TABLE cost_readings AS
+SELECT candidate,id,0 AS sequence,cost_baseline AS cost FROM cohort_turns
+UNION ALL
+SELECT t.candidate,t.id,e.sequence,json_extract(e.data,'$.cost')
+FROM cohort_turns t JOIN turn_events e ON e.turn_id=t.id AND e.kind='cost';
+INSERT INTO history_guard SELECT NOT EXISTS (
+ SELECT 1 FROM cost_readings WHERE cost IS NOT NULL AND json_type(cost) IS NOT 'null' AND (
+  json_type(cost) IS NOT 'object' OR (SELECT count(*) FROM json_each(cost))<>2
+  OR json_type(cost,'$.amount') NOT IN ('integer','real') OR json_type(cost,'$.amount') IS NULL
+  OR json_extract(cost,'$.amount')<0 OR json_extract(cost,'$.amount')>=1e999
+  OR json_type(cost,'$.currency') IS NOT 'text'
+  OR json_extract(cost,'$.currency') NOT GLOB '[A-Z][A-Z][A-Z]'
+ ));
+WITH ordered_costs AS (
+ SELECT *,json_extract(cost,'$.amount') AS amount,json_extract(cost,'$.currency') AS currency,
+ lag(json_extract(cost,'$.amount')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous,
+ lag(json_extract(cost,'$.currency')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous_currency
+ FROM cost_readings
+), deltas AS (
+ SELECT candidate,id,min(currency) AS currency,max(amount)-min(amount) AS amount
+ FROM ordered_costs GROUP BY candidate,id
+ HAVING count(*)>1 AND count(amount)=count(*)
+ AND sum(CASE WHEN sequence>0 AND (previous IS NULL OR amount<previous OR currency IS NOT previous_currency) THEN 1 ELSE 0 END)=0
+), metrics AS (
+ SELECT candidate,'turns' AS kind,'' AS name,count(*) AS samples,NULL AS average FROM cohort_turns GROUP BY candidate
+ UNION ALL
+ SELECT candidate,'outcome',coalesce(json_extract(outcome_data,'$.outcome'),'unobserved'),count(*),NULL
+ FROM cohort_turns GROUP BY candidate,coalesce(json_extract(outcome_data,'$.outcome'),'unobserved')
+ UNION ALL
+ SELECT t.candidate,'token',u.key,count(*),avg(u.value)
+ FROM cohort_turns t,json_each(t.outcome_data,'$.usage') u GROUP BY t.candidate,u.key
+ UNION ALL
+ SELECT d.candidate,'cost',d.currency,count(*),avg(d.amount) FROM deltas d
+ JOIN cohort_turns t ON t.candidate=d.candidate AND t.id=d.id
+ WHERE json_extract(t.outcome_data,'$.peer_response')=1 GROUP BY d.candidate,d.currency
+)
+SELECT * FROM metrics ORDER BY candidate,kind,name;
+]], function(rows, err)
+    if rows == nil then
+      callback(nil, err)
+      return
+    end
+    for _, row in ipairs(rows) do
+      local summary = summaries[row.candidate]
+      if
+        summary == nil
+        or not finite(row.samples)
+        or row.samples % 1 ~= 0
+        or (row.kind ~= "turns" and row.kind ~= "outcome" and row.kind ~= "token" and row.kind ~= "cost")
+        or ((row.kind == "token" or row.kind == "cost") and not finite(row.average))
+      then
+        callback(nil, failure("corrupt"))
+        return
+      end
+      if row.kind == "turns" then
+        summary.turns = row.samples
+      elseif row.kind == "outcome" then
+        summary.outcomes[row.name] = row.samples
+      elseif row.kind == "token" then
+        summary.tokens[row.name] = { samples = row.samples, average = row.average }
+      else
+        summary.costs[#summary.costs + 1] = { currency = row.name, samples = row.samples, average = row.average }
+      end
+    end
+    callback(summaries)
   end)
 end
 

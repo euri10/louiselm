@@ -45,6 +45,12 @@ local function fake_session(id, agent)
     end)
   end
 
+  function session:option_usage(_, callback)
+    nvim.schedule(function()
+      callback({})
+    end)
+  end
+
   function session:prompt(prompt)
     if self.prompt_error ~= nil then
       return nil, self.prompt_error
@@ -5884,11 +5890,8 @@ T["chat"]["opens the setup overview and applies a selected option"] = function()
 
   MiniTest.expect.equality(calls[1].options.prompt, "louiselm session options: ")
   MiniTest.expect.equality(calls[1].options.format_item(calls[1].items[1]), "Model: Small")
-  MiniTest.expect.equality(
-    calls[2].options.format_item(calls[2].items[1]),
-    "Small (observed: 120 tokens/turn · 1 samples)"
-  )
-  MiniTest.expect.equality(calls[2].options.format_item(calls[2].items[2]), "Large")
+  MiniTest.expect.equality(calls[2].options.format_item(calls[2].items[1]), "Small (No matching history)")
+  MiniTest.expect.equality(calls[2].options.format_item(calls[2].items[2]), "Large (No matching history)")
   MiniTest.expect.equality(modes_at_select, { "n", "n", "n" })
   MiniTest.expect.equality(first.config_changes, { { id = "model", value = "large" } })
   chat:dispose()
@@ -5902,6 +5905,105 @@ T["chat"]["explains when the Agent exposes no standard ACP options"] = function(
 
   MiniTest.expect.equality({ chat:session_options() }, { false, "session has no standard ACP options" })
   chat:dispose()
+end
+
+T["chat"]["picker distinguishes total turns metric coverage and query failures"] = function()
+  local session = fake_session("cohort-ui", "codex")
+  session.state.config_options = {
+    {
+      id = "reasoning",
+      name = "Reasoning",
+      type = "select",
+      current_value = "medium",
+      options = { { value = "medium", name = "Medium" }, { value = "high", name = "High" } },
+    },
+  }
+  local failure
+  function session:option_usage(id, callback)
+    MiniTest.expect.equality(id, "reasoning")
+    nvim.schedule(function()
+      callback({
+        {
+          value = "medium",
+          summary = {
+            turns = 4,
+            tokens = { total_tokens = { samples = 2, average = 100 } },
+            costs = { { currency = "EUR", samples = 1, average = 2 }, { currency = "USD", samples = 2, average = 3 } },
+            outcomes = {},
+          },
+        },
+        { value = "high", summary = { turns = 1, tokens = {}, costs = {}, outcomes = {} } },
+      }, failure)
+    end)
+  end
+  local labels = {}
+  nvim.ui.select = function(items, options, callback)
+    assert(not nvim.in_fast_event())
+    if options.prompt == "louiselm session options: " then
+      callback(items[1])
+    else
+      labels = { options.format_item(items[1]), options.format_item(items[2]) }
+    end
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  assert(nvim.wait(1000, function()
+    return #labels > 0
+  end))
+  MiniTest.expect.equality(labels, {
+    "Medium (observed: 4 turns · 100 tokens/turn · token data for 2 · 2 EUR/turn · cost data for 1 · 3 USD/turn · cost data for 2)",
+    "High (observed: 1 turns · No total-token data)",
+  })
+  labels = {}
+  failure = { code = "locked", message = "database locked" }
+  assert(chat:session_options())
+  assert(nvim.wait(1000, function()
+    return #labels > 0
+  end))
+  MiniTest.expect.equality(labels[1], "Medium (History unavailable: database locked)")
+  chat:dispose()
+end
+
+T["chat"]["queued history never opens a picker after disposal or confirmed option drift"] = function()
+  for _, dispose in ipairs({ false, true }) do
+    local session = fake_session("queued-cohort", "codex")
+    function session:inspect()
+      return nvim.deepcopy(self.state)
+    end
+    session.state.config_options = { { id = "mode", name = "Mode", type = "boolean", current_value = false } }
+    local pending, picked = nil, 0
+    function session:option_usage(_, callback)
+      pending = callback
+    end
+    nvim.ui.select = function(items, _, callback)
+      assert(not nvim.in_fast_event())
+      picked = picked + 1
+      callback(items[1])
+    end
+    local chat = assert(Chat.new(fake_api()))
+    assert(chat:attach(session))
+    assert(nvim.wait(1000, function()
+      return pending ~= nil
+    end))
+    if dispose then
+      chat:dispose()
+    else
+      session.state.config_options[1].current_value = true
+    end
+    local timer, done = assert(nvim.uv.new_timer()), false
+    timer:start(0, 0, function()
+      timer:close()
+      nvim.schedule(function()
+        assert(pending)({})
+        done = true
+      end)
+    end)
+    assert(nvim.wait(1000, function()
+      return done
+    end))
+    MiniTest.expect.equality(picked, 1)
+    chat:dispose()
+  end
 end
 
 T["chat"]["renders measured usage without a UI-owned write"] = function()
