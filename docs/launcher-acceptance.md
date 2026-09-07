@@ -17,6 +17,12 @@ It found and fixed undeclared descriptor inheritance (`louiselm-d6fv.4.8.1.1`).
 Ten consecutive full guest rounds passed. Runtime conformance-admission binding
 remains the focused design question `louiselm-ucj1`, blocking Verified cutover.
 
+On 2026-09-07, `louiselm-d6fv.4.9` passed the separate
+[installed launcher authority acceptance](launcher-authority-acceptance.md)
+against the genuine signed release from `louiselm-lm70`. The exact sudo command
+reached `Control broker unavailable`; runtime receipts and Verified activation
+remain downstream work. The historical map below predates that acceptance.
+
 **The launcher parent is not accepted.** Implementation coverage, host-mechanism
 checks, installed authority, and end-to-end Verified posture are separate claims.
 The [disposable VM](launcher-vm.md) is the only privileged test environment used
