@@ -242,6 +242,99 @@ else
 	echo "note: br not on PATH, skipped the snapshot acceptance check" >&2
 fi
 
+# --- runner stdin and the complete --status boundary -------------------------
+# Substitute br so an empty or partial test snapshot never judges real claims.
+mkdir -p "$work_dir/bin" "$work_dir/status tmp ' quoted"
+cat >"$work_dir/bin/br" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+"list --status in_progress --json")
+	printf 'list\n' >>"$LIVENESS_TEST_CALLS"
+	if [ "${LIVENESS_TEST_LIST_FAIL:-0}" -ne 0 ]; then exit 42; fi
+	cat "$LIVENESS_TEST_ISSUES"
+	;;
+"coordination status --reservations "*)
+	printf 'status\n' >>"$LIVENESS_TEST_CALLS"
+	[ "$#" -eq 5 ] && [ "$5" = --json ] || exit 64
+	printf '%s' "$4" >"$LIVENESS_TEST_SNAPSHOT_PATH"
+	cp "$4" "$LIVENESS_TEST_RESERVATIONS"
+	[ -s "$4" ] || exit 65
+	exit "${LIVENESS_TEST_STATUS_EXIT:-0}"
+	;;
+*) exit 64 ;;
+esac
+MOCK
+chmod +x "$work_dir/bin/br"
+export PATH="$work_dir/bin:$PATH" TMPDIR="$work_dir/status tmp ' quoted"
+export LIVENESS_TEST_CALLS="$work_dir/calls.txt"
+export LIVENESS_TEST_ISSUES="$work_dir/issues.json"
+export LIVENESS_TEST_SNAPSHOT_PATH="$work_dir/snapshot-path.txt"
+export LIVENESS_TEST_RESERVATIONS="$work_dir/reservations.jsonl"
+printf '%s\n' '{"issues":[{"assignee":"claude/820e1ab6-83e2-45fd-92f3-79263d4d7141"},{"assignee":null}]}' >"$LIVENESS_TEST_ISSUES"
+
+for input in empty whitespace; do
+	printf '' >"$work_dir/in.txt"
+	if [ "$input" = whitespace ]; then printf ' \n\t\n' >"$work_dir/in.txt"; fi
+	for mode in emit status; do
+		printf '' >"$LIVENESS_TEST_CALLS"
+		args=()
+		if [ "$mode" = status ]; then args=(--status --json); fi
+		if ! run_snapshot "$work_dir/shape" "$work_dir/in.txt" "${args[@]}"; then
+			fail "$mode with $input stdin failed: $(cat "$work_dir/err.txt")"
+		fi
+		if ! grep -qx list "$LIVENESS_TEST_CALLS"; then
+			fail "$mode with $input stdin did not discover actual claims"
+		fi
+		if [ "$mode" = status ]; then
+			cp "$LIVENESS_TEST_RESERVATIONS" "$work_dir/out.jsonl"
+			if [ -e "$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")" ]; then
+				fail "successful status left its temporary snapshot behind"
+			fi
+		fi
+		if [ -z "$(row_for "claude/820e1ab6-83e2-45fd-92f3-79263d4d7141")" ]; then
+			fail "$mode with $input stdin lost the live holder"
+		fi
+	done
+done
+
+# Explicit assignee input keeps working and must not trigger discovery.
+printf '%s\n' 'codex/01a056ef-03ae-7203-885d-c73b4ba00d1b' >"$work_dir/in.txt"
+printf '' >"$LIVENESS_TEST_CALLS"
+status_exit=0
+LIVENESS_TEST_STATUS_EXIT=42 run_snapshot "$work_dir/shape" "$work_dir/in.txt" --status --json || status_exit=$?
+if [ "$status_exit" -ne 42 ]; then fail "status lost br's exit code 42"; fi
+if grep -qx list "$LIVENESS_TEST_CALLS"; then fail "explicit stdin unexpectedly queried br list"; fi
+if [ -e "$(cat "$LIVENESS_TEST_SNAPSHOT_PATH")" ]; then fail "failed status left its snapshot behind"; fi
+if [ ! -d "$TMPDIR" ]; then fail "cleanup removed the snapshot's parent directory"; fi
+if ! jq -e '.holder == "codex/01a056ef-03ae-7203-885d-c73b4ba00d1b"' "$LIVENESS_TEST_RESERVATIONS" >/dev/null; then
+	fail "status replaced explicit stdin with discovered holders"
+fi
+
+# No evidence must never become an assertion that every claim is abandoned.
+for scenario in no_claims unresolved list_failure closed_stdin; do
+	printf '' >"$LIVENESS_TEST_CALLS"
+	printf '' >"$work_dir/in.txt"
+	printf '%s\n' '{"issues":[]}' >"$LIVENESS_TEST_ISSUES"
+	case "$scenario" in
+	unresolved) printf '%s\n' 'opencode/unknown-session' >"$work_dir/in.txt" ;;
+	list_failure) export LIVENESS_TEST_LIST_FAIL=1 ;;
+	esac
+	status_exit=0
+	if [ "$scenario" = closed_stdin ]; then
+		timeout 5 bash -c 'exec "$1" --status --json <&-' _ "$snapshot" >"$work_dir/out.jsonl" 2>"$work_dir/err.txt" || status_exit=$?
+	else
+		run_snapshot "$work_dir/shape" "$work_dir/in.txt" --status --json || status_exit=$?
+	fi
+	unset LIVENESS_TEST_LIST_FAIL
+	if [ "$status_exit" -eq 0 ]; then fail "$scenario must refuse coordination without evidence"; fi
+	if [ "$status_exit" -eq 124 ]; then fail "$scenario hung instead of refusing"; fi
+	if grep -qx status "$LIVENESS_TEST_CALLS"; then fail "$scenario passed an empty snapshot to br"; fi
+	if [ "$scenario" = unresolved ] && ! grep -q 'opencode/unknown-session' "$work_dir/err.txt"; then
+		fail "unresolved holder was not named on stderr"
+	fi
+done
+
 if [ "$failed" -ne 0 ]; then
 	echo "agent-liveness-snapshot: FAILED" >&2
 	exit 1

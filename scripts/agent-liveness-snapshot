@@ -24,9 +24,10 @@ usage: agent-liveness-snapshot [--status [br args...]]
 
   (no arguments)  Write reservation snapshot JSONL to stdout. Assignees are
                   read from stdin, one per line, or from `br list` when stdin
-                  is a terminal.
+                  is a terminal or contains no non-whitespace input.
   --status        Generate the snapshot and hand it to `br coordination
-                  status`. Remaining arguments are passed through to br.
+                  status`, refusing an empty snapshot. Remaining arguments
+                  are passed through to br.
 
 environment:
   LOUISELM_LIVENESS_WINDOW_MINUTES   Minutes of transcript silence before a
@@ -118,9 +119,13 @@ emit_snapshot() {
 }
 
 read_assignees() {
+	local assignees
 	if [ ! -t 0 ]; then
-		cat
-		return
+		assignees=$(cat) || return
+		if [[ "$assignees" =~ [^[:space:]] ]]; then
+			printf '%s\n' "$assignees"
+			return
+		fi
 	fi
 
 	br list --status in_progress --json | jq -r '.issues[].assignee // empty'
@@ -140,6 +145,11 @@ main() {
 	fi
 
 	local assignees
+	# A command substitution can reuse closed fd 0 for its pipe and hang cat.
+	if ! { : 3<&0; } 2>/dev/null; then
+		echo "agent-liveness-snapshot: stdin is closed" >&2
+		return 1
+	fi
 	assignees=$(read_assignees)
 
 	if [ "$mode" = emit ]; then
@@ -149,8 +159,13 @@ main() {
 
 	local snapshot_file
 	snapshot_file=$(mktemp)
-	trap 'rm -f "$snapshot_file"' EXIT
+	# EXIT runs after main's locals are gone; bind the owned path now.
+	trap "rm -f -- $(printf '%q' "$snapshot_file")" EXIT
 	emit_snapshot "$assignees" >"$snapshot_file"
+	if [ ! -s "$snapshot_file" ]; then
+		echo "agent-liveness-snapshot: refusing coordination status with an empty snapshot" >&2
+		return 1
+	fi
 	br coordination status --reservations "$snapshot_file" "$@"
 }
 
