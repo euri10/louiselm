@@ -794,9 +794,31 @@ end
 ---@return string winbar
 ---@return string? limits_agent
 local function session_winbar(self, state)
+  local identity = state.acp_session_id and report_id(state.agent, state.acp_session_id) or state.agent
   local fields = {
     winbar_segment(turn_highlight(state), turn_label(state)),
+    -- Truncate identity/telemetry before clipping background attention on the right.
+    "%<" .. winbar_segment("Normal", identity),
   }
+  local limits_state = self.api:inspect_agent_limits(state.agent)
+  local limits_text
+  local limits_group
+  if limits_state ~= nil then
+    limits_text, limits_group = Limits.summary(limits_state)
+  end
+  if limits_text ~= nil and limits_group ~= nil then
+    fields[#fields + 1] = clickable_winbar_segment(LIMITS_CLICK_TARGET, limits_group, limits_text)
+  end
+  if
+    state.name ~= nil
+    and state.name ~= ""
+    and state.name ~= state.id
+    and state.name ~= state.acp_session_id
+    and state.name ~= state.agent
+    and state.name ~= identity
+  then
+    fields[#fields + 1] = winbar_segment("Normal", state.name)
+  end
   local raw_context, derived_context = context_display(state)
   if raw_context ~= "" then
     fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, raw_context)
@@ -807,15 +829,6 @@ local function session_winbar(self, state)
   local cost = cost_display(state)
   if cost ~= nil then
     fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, cost)
-  end
-  local limits_state = self.api:inspect_agent_limits(state.agent)
-  local limits_text
-  local limits_group
-  if limits_state ~= nil then
-    limits_text, limits_group = Limits.summary(limits_state)
-  end
-  if limits_text ~= nil and limits_group ~= nil then
-    fields[#fields + 1] = clickable_winbar_segment(LIMITS_CLICK_TARGET, limits_group, limits_text)
   end
   return table.concat(fields, " · "), limits_text ~= nil and state.agent or nil
 end

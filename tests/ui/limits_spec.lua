@@ -35,8 +35,20 @@ T["summary"]["sorts and caps default windows with compact remaining capacity"] =
   }, "codex")
 
   local text, group = Limits.summary(value, NOW)
-  MiniTest.expect.equality(text, "limits Codex <1%/1h ↻30m 18%/5h ↻2h +1")
+  MiniTest.expect.equality(text, "limits <1%/1h ↻30m 18%/5h ↻2h +1")
   MiniTest.expect.equality(group, "LouiselmStatusError")
+end
+
+T["summary"]["preserves meaningful default labels and all alternate bucket labels"] = function()
+  local bucket = {
+    id = "codex",
+    label = "Spark",
+    windows = { { used_percent = 91, duration_mins = 300, resets_at = NOW + 7200 } },
+  }
+  MiniTest.expect.equality(Limits.summary(state("fresh", { bucket }, "codex"), NOW), "limits Spark 9%/5h ↻2h")
+
+  bucket.label = "Codex"
+  MiniTest.expect.equality(Limits.summary(state("fresh", { bucket }, "other"), NOW), "limits Codex 9%/5h ↻2h")
 end
 
 T["summary"]["lets an urgent additional bucket take precedence and marks stale data"] = function()
@@ -64,7 +76,7 @@ T["summary"]["shows loading and detail freshness age explicitly"] = function()
   value.updated_at = NOW - 3700
 
   local text = Limits.summary(value, NOW)
-  MiniTest.expect.equality(text, "limits codex 50%/5h ↻2h loading")
+  MiniTest.expect.equality(text, "limits 50%/5h ↻2h loading")
   MiniTest.expect.equality(Limits.render(value, NOW)[5]:find("(1h ago)", 1, true) ~= nil, true)
 end
 

@@ -133,7 +133,11 @@ function M.summary(state, now)
   table.sort(windows, function(left, right)
     return left.duration_mins < right.duration_mins
   end)
-  local fields = { "limits " .. (bucket.label or bucket.id):gsub("[%c]", " ") }
+  local label = (bucket.label or bucket.id):gsub("[%c]", " ")
+  local fields = { "limits" }
+  if bucket.id ~= state.snapshot.default_bucket_id or label:lower() ~= state.agent:lower() then
+    fields[1] = fields[1] .. " " .. label
+  end
   for index = 1, math.min(2, #windows) do
     local window = windows[index]
     fields[#fields + 1] = remaining_percent(100 - window.used_percent)

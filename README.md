@@ -106,6 +106,26 @@ setup block into your regular configuration when ready, or see the
   lifecycle, permission policies, and typed events are available without the
   chat buffer.
 
+The chat winbar keeps the current turn state, Agent-scoped Session ID, reported
+account limits, and a useful Session name visible while you scroll:
+
+```text
+Your turn · codex/<uuid> · limits 98%/7d ↻7d · Review
+```
+
+Reported context and cost follow those fields. Before the ACP ID arrives, only
+the Agent name appears. Redundant default quota labels are omitted; distinct
+quota buckets keep their names. Narrow windows truncate the current Session's
+details before background attention entries.
+
+`:LouiselmSessionRename` changes the human-readable name (`Review` above).
+`session-7` is an internal handle and the initial default name; it stays stable
+after renaming. `codex/<uuid>` identifies the Agent conversation and can be
+copied with `:LouiselmSessionId`. The statusline's `louiselm://session-7` is a
+virtual buffer name, with Neovim filetype `louiselm-session`, rather than a file
+on disk. The transcript heading includes these diagnostic identifiers; the
+winbar omits names that merely repeat an identifier.
+
 The complete command list is in [`:help louiselm`](doc/louiselm.txt). Common
 entry points are grouped by purpose:
 
