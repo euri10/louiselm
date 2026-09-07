@@ -47,7 +47,7 @@ vim.opt.runtimepath:prepend("/absolute/path/to/louiselm")
 
 assert(require("louiselm").setup({
   agents = {
-    codex = { command = "codex-acp" },
+    codex = { command = "codex-acp", provider = "OpenAI" },
   },
 }))
 ```
@@ -67,6 +67,26 @@ nvim --clean -u quickstart.lua
 The quickstart does not modify your normal Neovim configuration. Move the same
 setup block into your regular configuration when ready, or see the
 [Agent table](#agents-and-adapters) for other paths.
+
+Every Agent must declare its access/quota `provider`, independently of the Model
+manufacturer: a Model reached through GitHub Copilot has Provider `GitHub Copilot`.
+For an Agent offering multiple services, configure exact advertised option routes:
+
+```lua
+provider = {
+  { provider = "OpenAI", options = { model = "openai/example-model" } },
+  { provider = "GitHub Copilot", options = { model = "github-copilot/example-model" } },
+}
+```
+
+These identifiers are illustrative; use the option IDs and values your Agent
+actually advertises. All entries in a route's `options` must match, including
+boolean values. Exactly one route must match before either Chat or the headless
+Session API sends a prompt. Missing configuration fails setup; missing or
+ambiguous active routes leave the Session ready and report how to fix attribution.
+`Session:inspect().turn_identity` preserves Agent, Provider, advertised Model,
+and the complete supported option tuple at prompt start; later option changes
+do not rewrite it. This snapshot does not yet persist usage history.
 
 ## Features
 

@@ -38,9 +38,12 @@ T["check"]["reports executable availability and detected version"] = function()
     on_exit({ code = 0, signal = 0, stdout = "claude-agent-acp 1.2.3\n", stderr = "" })
     return fake_handle
   end, function()
-    local handle, err = Health.check({ command = "claude-agent-acp", args = {} }, function(result)
-      report = result
-    end)
+    local handle, err = Health.check(
+      { provider = "test-service", command = "claude-agent-acp", args = {} },
+      function(result)
+        report = result
+      end
+    )
 
     MiniTest.expect.equality(err, nil)
     MiniTest.expect.equality(handle, fake_handle)
@@ -90,6 +93,7 @@ T["check"]["includes wrapper args before --version"] = function()
     return 1
   end, function(calls)
     local handle, err = Health.check({
+      provider = "test-service",
       command = "acp-debug.sh",
       args = { "codex-acp" },
     }, function(result)
@@ -117,6 +121,7 @@ T["check"]["installed-version override"]["uses the override command/args verbati
     return 1
   end, function(calls)
     local handle, err = Health.check({
+      provider = "test-service",
       command = "/opt/acp-debug.sh",
       args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
       version = { command = "/opt/acp-debug.sh", args = { "acp-llm-adapter", "--version" } },
@@ -143,6 +148,7 @@ T["check"]["installed-version override"]["uses the override's own env instead of
     return 1
   end, function(calls)
     Health.check({
+      provider = "test-service",
       command = "/opt/acp-debug.sh",
       args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
       env = { LLM_API_KEY = "secret" },
@@ -165,6 +171,7 @@ T["check"]["installed-version override"]["reports a missing override executable 
     error("vim.system must not be called when the override executable is missing")
   end, function()
     local handle, err = Health.check({
+      provider = "test-service",
       command = "/opt/acp-debug.sh",
       args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
       version = { command = "missing-version-checker", args = {} },
@@ -190,6 +197,7 @@ T["check"]["latest version"]["combines both independent completions into one out
     return 1
   end, function(calls)
     local handle, err = Health.check({
+      provider = "test-service",
       command = "codex-agent-acp",
       args = {},
       latest = {
@@ -230,6 +238,7 @@ T["check"]["latest version"]["fires the health callback exactly once for two ind
     return 1
   end, function(calls)
     Health.check({
+      provider = "test-service",
       command = "codex-agent-acp",
       args = {},
       latest = { command = "npm", args = { "view", "codex-acp", "version" } },
@@ -251,6 +260,7 @@ T["check"]["latest version"]["reports outdated false when the installed banner c
     return 1
   end, function(calls)
     Health.check({
+      provider = "test-service",
       command = "codex-acp",
       args = {},
       latest = { command = "npm", args = { "view", "@agentclientprotocol/codex-acp", "version" } },
@@ -277,6 +287,7 @@ T["check"]["latest version"]["ignores terminal punctuation after an installed ve
     return 1
   end, function(calls)
     Health.check({
+      provider = "test-service",
       command = "copilot",
       args = {},
       latest = { command = "npm", args = { "view", "@github/copilot", "version" } },
@@ -298,6 +309,7 @@ T["check"]["latest version"]["reports outdated false when the installed and late
     return 1
   end, function(calls)
     Health.check({
+      provider = "test-service",
       command = "codex-agent-acp",
       args = {},
       latest = { command = "npm", args = { "view", "codex-acp", "version" } },
@@ -324,6 +336,7 @@ T["check"]["latest version"]["records a latest-check error without failing the p
     return 1
   end, function(calls)
     Health.check({
+      provider = "test-service",
       command = "codex-agent-acp",
       args = {},
       latest = { command = "npm", args = { "view", "codex-acp", "version" } },
@@ -347,7 +360,7 @@ T["check"]["latest version"]["does not spawn a second process when latest is not
   with_deferred_stubs(function()
     return 1
   end, function(calls)
-    Health.check({ command = "codex-agent-acp", args = {} }, function() end)
+    Health.check({ provider = "test-service", command = "codex-agent-acp", args = {} }, function() end)
     calls[1].on_exit({ code = 0, signal = 0, stdout = "codex-agent-acp 1.3.0\n", stderr = "" })
     MiniTest.expect.equality(#calls, 1)
   end)
@@ -363,9 +376,12 @@ T["check"]["reports a missing executable without spawning"] = function()
     process_started = true
     return {}
   end, function()
-    local handle, err = Health.check({ command = "missing-agent", args = {} }, function(result)
-      report = result
-    end)
+    local handle, err = Health.check(
+      { provider = "test-service", command = "missing-agent", args = {} },
+      function(result)
+        report = result
+      end
+    )
 
     MiniTest.expect.equality(handle, nil)
     MiniTest.expect.equality(err, "missing-agent: executable not found on PATH")

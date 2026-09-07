@@ -8,8 +8,8 @@ T["validate"] = MiniTest.new_set()
 T["validate"]["copies optional upgrade argv and leaves it unset by default"] = function()
   local upgrade = { "npm", "install", "-g", "mock-acp@latest" }
   local normalized, errors = Config.normalize({
-    mock = { command = "mock-acp", upgrade = upgrade },
-    other = { command = "other-acp" },
+    mock = { provider = "test-service", command = "mock-acp", upgrade = upgrade },
+    other = { provider = "test-service", command = "other-acp" },
   })
   MiniTest.expect.equality(errors, {})
   assert(normalized)
@@ -20,7 +20,8 @@ end
 
 T["validate"]["rejects malformed upgrade argv"] = function()
   for _, upgrade in ipairs({ false, "npm install", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
-    local normalized, errors = Config.normalize({ mock = { command = "mock-acp", upgrade = upgrade } })
+    local normalized, errors =
+      Config.normalize({ mock = { provider = "test-service", command = "mock-acp", upgrade = upgrade } })
     MiniTest.expect.equality(normalized, nil)
     MiniTest.expect.equality(errors[1].path:find("agents.mock.upgrade", 1, true), 1)
   end
@@ -29,6 +30,7 @@ end
 T["validate"]["accepts named agent definitions and returns owned copies"] = function()
   local definitions = {
     claude = {
+      provider = "test-service",
       command = "claude-agent-acp",
       args = { "--verbose" },
       env = { ANTHROPIC_LOG = "debug" },
@@ -49,7 +51,7 @@ end
 
 T["validate"]["preserves an optional transcript layout"] = function()
   local normalized, errors = Config.normalize({
-    renamed_codex = { command = "codex-acp", transcript_layout = "codex" },
+    renamed_codex = { provider = "test-service", command = "codex-acp", transcript_layout = "codex" },
   })
 
   MiniTest.expect.equality(errors, {})
@@ -59,7 +61,7 @@ end
 
 T["validate"]["rejects a malformed transcript layout without coercion"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-acp", transcript_layout = false },
+    codex = { provider = "test-service", command = "codex-acp", transcript_layout = false },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -69,8 +71,8 @@ end
 
 T["validate"]["resolves per-agent skill policy against the global default"] = function()
   local normalized, errors = Config.normalize({
-    claude = { command = "claude-agent-acp" },
-    deepseek = { command = "acp-llm-adapter", skills = { policy = "inject" } },
+    claude = { provider = "test-service", command = "claude-agent-acp" },
+    deepseek = { provider = "test-service", command = "acp-llm-adapter", skills = { policy = "inject" } },
   }, "off")
 
   MiniTest.expect.equality(errors, {})
@@ -81,7 +83,7 @@ end
 
 T["validate"]["rejects unknown per-agent skill settings"] = function()
   local normalized, errors = Config.normalize({
-    claude = { command = "claude-agent-acp", skills = { paths = { "/tmp/skills" } } },
+    claude = { provider = "test-service", command = "claude-agent-acp", skills = { paths = { "/tmp/skills" } } },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -89,7 +91,8 @@ T["validate"]["rejects unknown per-agent skill settings"] = function()
 end
 
 T["validate"]["rejects an empty per-agent skill override"] = function()
-  local normalized, errors = Config.normalize({ claude = { command = "claude-agent-acp", skills = {} } })
+  local normalized, errors =
+    Config.normalize({ claude = { provider = "test-service", command = "claude-agent-acp", skills = {} } })
 
   MiniTest.expect.equality(normalized, nil)
   MiniTest.expect.equality(errors[1].path, "agents.claude.skills.policy")
@@ -99,6 +102,7 @@ end
 T["validate"]["accepts an optional latest-version check shaped like command/args/env"] = function()
   local definitions = {
     codex = {
+      provider = "test-service",
       command = "codex-agent-acp",
       latest = {
         command = "npm",
@@ -119,7 +123,7 @@ end
 
 T["validate"]["defaults latest.args to an empty array when omitted"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", latest = { command = "npm" } },
+    codex = { provider = "test-service", command = "codex-agent-acp", latest = { command = "npm" } },
   })
 
   MiniTest.expect.equality(errors, {})
@@ -128,7 +132,7 @@ T["validate"]["defaults latest.args to an empty array when omitted"] = function(
 end
 
 T["validate"]["leaves latest nil when the agent has no latest-version check"] = function()
-  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp" } })
+  local normalized, errors = Config.normalize({ codex = { provider = "test-service", command = "codex-agent-acp" } })
 
   MiniTest.expect.equality(errors, {})
   assert(normalized ~= nil)
@@ -138,6 +142,7 @@ end
 T["validate"]["rejects a malformed latest-version check without coercion"] = function()
   local normalized, errors = Config.normalize({
     codex = {
+      provider = "test-service",
       command = "codex-agent-acp",
       latest = { command = 7, args = { "view", false }, bogus = true },
     },
@@ -154,7 +159,7 @@ end
 
 T["validate"]["rejects a latest-version check that is not a table"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", latest = "npm view codex-acp version" },
+    codex = { provider = "test-service", command = "codex-agent-acp", latest = "npm view codex-acp version" },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -165,6 +170,7 @@ end
 T["validate"]["accepts an optional installed-version check shaped like command/args/env"] = function()
   local definitions = {
     deepseek = {
+      provider = "test-service",
       command = "/opt/acp-debug.sh",
       args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
       version = {
@@ -185,7 +191,7 @@ end
 
 T["validate"]["defaults version.args to an empty array when omitted"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", version = { command = "codex-agent-acp" } },
+    codex = { provider = "test-service", command = "codex-agent-acp", version = { command = "codex-agent-acp" } },
   })
 
   MiniTest.expect.equality(errors, {})
@@ -194,7 +200,7 @@ T["validate"]["defaults version.args to an empty array when omitted"] = function
 end
 
 T["validate"]["leaves version nil when the agent has no installed-version override"] = function()
-  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp" } })
+  local normalized, errors = Config.normalize({ codex = { provider = "test-service", command = "codex-agent-acp" } })
 
   MiniTest.expect.equality(errors, {})
   assert(normalized ~= nil)
@@ -204,6 +210,7 @@ end
 T["validate"]["rejects a malformed installed-version check without coercion"] = function()
   local normalized, errors = Config.normalize({
     codex = {
+      provider = "test-service",
       command = "codex-agent-acp",
       version = { command = 7, args = { "view", false }, bogus = true },
     },
@@ -220,7 +227,7 @@ end
 
 T["validate"]["rejects an installed-version check that is not a table"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", version = "acp-llm-adapter --version" },
+    codex = { provider = "test-service", command = "codex-agent-acp", version = "acp-llm-adapter --version" },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -230,7 +237,7 @@ end
 
 T["validate"]["accepts declared capabilities and returns an owned copy"] = function()
   local definitions = {
-    codex = { command = "codex-agent-acp", capabilities = { "image-generation" } },
+    codex = { provider = "test-service", command = "codex-agent-acp", capabilities = { "image-generation" } },
   }
 
   local normalized, errors = Config.normalize(definitions)
@@ -242,7 +249,7 @@ T["validate"]["accepts declared capabilities and returns an owned copy"] = funct
 end
 
 T["validate"]["leaves capabilities nil when the agent declares none"] = function()
-  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp" } })
+  local normalized, errors = Config.normalize({ codex = { provider = "test-service", command = "codex-agent-acp" } })
 
   MiniTest.expect.equality(errors, {})
   assert(normalized ~= nil)
@@ -250,7 +257,8 @@ T["validate"]["leaves capabilities nil when the agent declares none"] = function
 end
 
 T["validate"]["accepts an empty capabilities list"] = function()
-  local normalized, errors = Config.normalize({ codex = { command = "codex-agent-acp", capabilities = {} } })
+  local normalized, errors =
+    Config.normalize({ codex = { provider = "test-service", command = "codex-agent-acp", capabilities = {} } })
 
   MiniTest.expect.equality(errors, {})
   assert(normalized ~= nil)
@@ -259,7 +267,7 @@ end
 
 T["validate"]["rejects a capabilities value that is not a table"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", capabilities = "image-generation" },
+    codex = { provider = "test-service", command = "codex-agent-acp", capabilities = "image-generation" },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -269,7 +277,11 @@ end
 
 T["validate"]["rejects a non-dense capabilities table"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", capabilities = { [1] = "image-generation", [3] = "ocr" } },
+    codex = {
+      provider = "test-service",
+      command = "codex-agent-acp",
+      capabilities = { [1] = "image-generation", [3] = "ocr" },
+    },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -279,7 +291,7 @@ end
 
 T["validate"]["rejects non-string and empty-string capability entries without coercion"] = function()
   local normalized, errors = Config.normalize({
-    codex = { command = "codex-agent-acp", capabilities = { "image-generation", "", 7 } },
+    codex = { provider = "test-service", command = "codex-agent-acp", capabilities = { "image-generation", "", 7 } },
   })
 
   MiniTest.expect.equality(normalized, nil)
@@ -293,6 +305,7 @@ end
 T["validate"]["collects malformed definitions without coercion"] = function()
   local normalized, errors = Config.normalize({
     claude = {
+      provider = "test-service",
       command = 42,
       args = { "ok", false },
       env = { TOKEN = 123 },
@@ -309,6 +322,33 @@ T["validate"]["collects malformed definitions without coercion"] = function()
   MiniTest.expect.equality(errors[3].type, "wrong_type")
   MiniTest.expect.equality(errors[4].path, "agents.claude.env.TOKEN")
   MiniTest.expect.equality(errors[5].path, "agents.claude.extra")
+end
+
+T["validate"]["requires explicit Provider and rejects malformed routes"] = function()
+  for _, provider in ipairs({ false, "", "   ", {}, { { provider = "service", options = {} } } }) do
+    local normalized, errors = Config.normalize({ agent = { command = "agent", provider = provider } })
+    MiniTest.expect.equality(normalized, nil)
+    MiniTest.expect.equality(errors[1].path:find("agents.agent.provider", 1, true), 1)
+  end
+  local normalized, errors = Config.normalize({ agent = { command = "agent" } })
+  MiniTest.expect.equality(normalized, nil)
+  MiniTest.expect.equality(errors[1].path, "agents.agent.provider")
+end
+
+T["validate"]["owns Provider route values without coercing booleans"] = function()
+  local definitions = {
+    agent = {
+      command = "agent",
+      provider = {
+        { provider = "service", options = { route = "direct", enabled = false } },
+      },
+    },
+  }
+  local normalized, errors = Config.normalize(definitions)
+  MiniTest.expect.equality(errors, {})
+  assert(normalized)
+  definitions.agent.provider[1].options.enabled = true
+  MiniTest.expect.equality(normalized.agent.provider[1].options.enabled, false)
 end
 
 return T

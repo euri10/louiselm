@@ -11,6 +11,7 @@ nvim.pack.add({
 assert(require("louiselm").setup({
   agents = {
     codex = {
+      provider = "OpenAI",
       command = "codex-acp",
     },
 
@@ -18,13 +19,14 @@ assert(require("louiselm").setup({
     -- Install with Node.js 22+: npm install --global @agentclientprotocol/claude-agent-acp
     -- Authenticate with an environment variable before launching Neovim:
     --   export ANTHROPIC_API_KEY=...
-    -- claude = { command = "claude-agent-acp" },
+    -- claude = { command = "claude-agent-acp", provider = "Anthropic" },
 
     -- Optional DeepSeek profile.
     -- Install with: cargo install acp-llm-adapter
     -- Authenticate before launching Neovim:
     --   export DEEPSEEK_API_KEY=...
     -- deepseek = {
+    --   provider = "DeepSeek",
     --   command = "acp-llm-adapter",
     --   args = { "serve", "--backend", "deepseek" },
     --   env = { LLM_API_KEY = assert(nvim.env.DEEPSEEK_API_KEY) },

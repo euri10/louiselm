@@ -18,6 +18,7 @@ local function mock_definition(mode, response, extra_env)
     env[key] = value
   end
   return {
+    provider = "test-service",
     command = nvim.v.progpath,
     args = {
       "--headless",
@@ -63,6 +64,21 @@ T["mock agent"] = MiniTest.new_set({
     end,
   },
 })
+
+T["mock agent"]["Chat refuses an unresolved Provider before the mock receives a prompt"] = function()
+  local definition = mock_definition("echo")
+  definition.provider = { { provider = "service", options = { route = "direct" } } }
+  local api = track(assert(Session.new({ mock = definition })), "dispose")
+  local chat = track(assert(Chat.new(api, { agents = { "mock" } })), "dispose")
+  local session = assert(chat:new_session("mock", { cwd = project_root }))
+  wait_for(function()
+    return session:inspect().status == "ready"
+  end)
+  local ok, err = chat:submit("must not reach Agent")
+  MiniTest.expect.equality(ok, nil)
+  MiniTest.expect.equality(err:find("Provider", 1, true) ~= nil, true)
+  MiniTest.expect.equality(session:inspect().current_turn, 0)
+end
 
 T["mock agent"]["supports the ACP session flow and static responses"] = function()
   local updates = {}

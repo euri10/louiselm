@@ -2,12 +2,19 @@ local Acp = require("louiselm.acp")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
 local Validation = require("louiselm.session.validation")
+local Provider = require("louiselm.agent.provider")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
 ---@alias louiselm.session.Status "starting"|"ready"|"configuring"|"prompting"|"waiting_permission"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
+
+---@class louiselm.session.TurnIdentity
+---@field agent string Configured Agent at prompt start.
+---@field provider string Resolved access/quota service at prompt start.
+---@field model? string|boolean Advertised Model value, when present; never inferred from its name.
+---@field options table<string, string|boolean> Complete supported option tuple at prompt start.
 
 ---@class louiselm.session.State
 ---@field id string Local session identifier.
@@ -18,6 +25,7 @@ local nvim = vim
 ---@field status louiselm.session.Status Lifecycle state.
 ---@field working_dir string ACP working directory.
 ---@field current_turn integer Number of the current or most recently completed turn.
+---@field turn_identity? louiselm.session.TurnIdentity Owned identity for the current or last started turn; later option changes never rewrite it.
 ---@field config_options louiselm.session.ConfigOption[] Supported agent-advertised options in priority order.
 ---@field context? louiselm.session.ContextUsage Latest agent-reported context state.
 ---@field cost? louiselm.session.Cost Latest agent-reported cumulative cost.
@@ -857,7 +865,7 @@ end
 ---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
 ---@param callback? fun(result: unknown, error?: string) Called once on completion or failure.
 ---@return string|number? request_id ACP request identifier.
----@return string? error_message Validation or state error.
+---@return string? error_message Validation, state, or unresolved Provider error; attribution failures send no prompt and leave turn state unchanged.
 function Session:prompt(prompt, callback)
   if self.state.status ~= "ready" then
     return nil, "session is not ready"
@@ -871,12 +879,26 @@ function Session:prompt(prompt, callback)
   if client == nil then
     return nil, "session has no ACP client"
   end
+  local values = {}
+  for _, option in ipairs(self.state.config_options) do
+    values[option.id] = option.current_value
+  end
+  local provider, provider_error = Provider.resolve(self.definition.provider, values)
+  if provider == nil then
+    return nil, "agents." .. self.state.agent .. ".provider: " .. provider_error
+  end
   clear_session_failure(self)
-  set_status(self, "prompting")
   self.state.current_turn = self.state.current_turn + 1
+  self.state.turn_identity = {
+    agent = self.state.agent,
+    provider = provider,
+    model = Validation.model_value(self.state.config_options),
+    options = values,
+  }
   self.turn_done_turn = nil
   self.prompt_progress = 0
   self.prompt_callback = callback
+  set_status(self, "prompting")
   local request_id, request_error = client:prompt(
     { sessionId = self.acp_session_id, prompt = prompt },
     function(result, rpc_error)

@@ -18,11 +18,13 @@ end
 assert(require("louiselm").setup({
   agents = {
     claude = {
+      provider = "Anthropic",
       command = "acp-proxy",
       args = { "--", "claude-agent-acp" },
       version = { command = "claude-agent-acp", args = { "--version" } },
     },
     deepseek = {
+      provider = "DeepSeek",
       command = "acp-llm-adapter",
       args = { "serve", "--backend", "deepseek" },
       env = deepseek_env,

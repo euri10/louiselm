@@ -122,11 +122,125 @@ end
 
 T["forensics"] = MiniTest.new_set()
 
+T["provider"] = MiniTest.new_set()
+
+T["provider"]["refuses unmatched and ambiguous routes before dispatch or turn state changes"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({
+    agent = {
+      command = "agent",
+      provider = {
+        { provider = "one", options = { route = "direct" } },
+        { provider = "two", options = { enabled = false } },
+      },
+    },
+  }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local function options(route, enabled)
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = {
+        sessionUpdate = "config_option_update",
+        configOptions = {
+          {
+            id = "route",
+            name = "Route",
+            type = "select",
+            currentValue = route,
+            options = { { value = "direct", name = "Direct" }, { value = "other", name = "Other" } },
+          },
+          { id = "enabled", name = "Enabled", type = "boolean", currentValue = enabled },
+        },
+      },
+    })
+  end
+  for _, values in ipairs({ { "other", true }, { "direct", false } }) do
+    options(values[1], values[2])
+    local writes = #process.writes
+    local id, err = session:prompt("must not be sent")
+    MiniTest.expect.equality(id, nil)
+    MiniTest.expect.equality(err:find("Provider", 1, true) ~= nil, true)
+    MiniTest.expect.equality(#process.writes, writes)
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality(session:inspect().current_turn, 0)
+    MiniTest.expect.equality(session:inspect().turn_identity, nil)
+  end
+  options("direct", true)
+  assert(session:prompt("resolved"))
+  MiniTest.expect.equality(session:inspect().turn_identity.provider, "one")
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["provider"]["snapshots complete typed identity before prompt events and preserves it"] = function()
+  local processes, original_system = fake_processes()
+  local definitions = { agent = { command = "agent", provider = "service" } }
+  local api = assert(Session.new(definitions))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local function options(model, enabled)
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = {
+        sessionUpdate = "config_option_update",
+        configOptions = {
+          {
+            id = "model",
+            name = "Model",
+            category = "model",
+            type = "select",
+            currentValue = model,
+            options = { { value = "small", name = "Shared name" }, { value = "large", name = "Shared name" } },
+          },
+          { id = "enabled", name = "Enabled", type = "boolean", currentValue = enabled },
+        },
+      },
+    })
+  end
+  options("small", false)
+  local observed
+  session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "prompting" then
+      observed = session:inspect()
+    end
+  end)
+  assert(session:prompt("first"))
+  local identity =
+    { agent = "agent", provider = "service", model = "small", options = { model = "small", enabled = false } }
+  MiniTest.expect.equality(observed.current_turn, 1)
+  MiniTest.expect.equality(observed.turn_identity, identity)
+  definitions.agent.provider = "changed"
+  -- Exercise an actual fast-event delivery while the prompt is active.
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    options("large", true)
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return session:inspect().config_options[1].current_value == "large"
+  end))
+  observed.turn_identity.options.enabled = true
+  MiniTest.expect.equality(session:inspect().turn_identity, identity)
+  respond(process, 3, { stopReason = "end_turn" })
+  assert(session:prompt("second"))
+  MiniTest.expect.equality(
+    session:inspect().turn_identity,
+    { agent = "agent", provider = "service", model = "large", options = { model = "large", enabled = true } }
+  )
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["forensics"]["collects an asynchronous private record for a live Session"] = function()
   local root = nvim.fn.tempname()
   assert(nvim.fn.mkdir(root, "p") == 1)
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, { forensics_directory = root }))
+  local api = assert(
+    Session.new(
+      { agent = { provider = "test-service", command = "agent", args = {} } },
+      nil,
+      { forensics_directory = root }
+    )
+  )
   local session = start_ready_session(api, processes, "agent", "/tmp/project")
   local path, collection_error
 
@@ -162,7 +276,13 @@ T["forensics"]["records embedded_context from nested promptCapabilities, not a t
   local root = nvim.fn.tempname()
   assert(nvim.fn.mkdir(root, "p") == 1)
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, { forensics_directory = root }))
+  local api = assert(
+    Session.new(
+      { agent = { provider = "test-service", command = "agent", args = {} } },
+      nil,
+      { forensics_directory = root }
+    )
+  )
   local session = start_ready_session(api, processes, "agent", "/tmp/project", {
     promptCapabilities = { embeddedContext = true },
   })
@@ -191,8 +311,8 @@ T["new"] = MiniTest.new_set()
 
 T["new"]["reports live Sessions across headless APIs for exit safety"] = function()
   local processes, original_system = fake_processes()
-  local first_api = assert(Session.new({ claude = { command = "claude", args = {} } }))
-  local second_api = assert(Session.new({ codex = { command = "codex", args = {} } }))
+  local first_api = assert(Session.new({ claude = { provider = "test-service", command = "claude", args = {} } }))
+  local second_api = assert(Session.new({ codex = { provider = "test-service", command = "codex", args = {} } }))
   local first = assert(first_api:create_session("claude"))
   respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(processes[1], 2, { sessionId = "claude-acp" })
@@ -221,7 +341,7 @@ end
 
 T["new"]["reads and receives normalized Agent account limits through an advertised ACP extension"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local ready
   assert(api:create_session("agent", { cwd = "/tmp/project" }, function(session)
     ready = session
@@ -326,7 +446,7 @@ end
 
 T["new"]["keeps last good account limits stale after malformed data or a refresh error"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   assert(api:create_session("agent", { cwd = "/tmp/project" }))
   local process = processes[1]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
@@ -370,7 +490,7 @@ end
 
 T["new"]["inspects unsupported and unobserved Agent limits without starting a process"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
 
   MiniTest.expect.equality(assert(api:inspect_agent_limits("agent")).status, "not_observed")
   MiniTest.expect.equality(#processes, 0)
@@ -396,7 +516,7 @@ end
 
 T["new"]["ignores account-limit results arriving after their source Session is disposed"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", { cwd = "/tmp/project" }))
   local process = processes[1]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
@@ -436,7 +556,7 @@ end
 
 T["new"]["fails account-limit refresh over to another live Session for the same Agent"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local first = assert(api:create_session("agent", { cwd = "/tmp/project" }))
   respond(processes[1], 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
   respond(processes[1], 2, { sessionId = "first-acp" })
@@ -473,7 +593,7 @@ T["new"]["loads an existing ACP session and receives replayed history"] = functi
   local processes, original_system = fake_processes()
   local events = {}
   local ready
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:load_session("agent", "prior-acp", {
     cwd = "/tmp/project",
     on_event = function(event)
@@ -532,6 +652,7 @@ T["new"]["threads agent Definition.options._meta into session/new params"] = fun
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
     agent = {
+      provider = "test-service",
       command = "agent",
       args = {},
       options = { _meta = { claudeCode = { options = { thinking = { type = "adaptive" } } } } },
@@ -555,6 +676,7 @@ T["new"]["threads agent Definition.options._meta into session/load params"] = fu
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
     agent = {
+      provider = "test-service",
       command = "agent",
       args = {},
       options = { _meta = { claudeCode = { options = { thinking = { type = "adaptive" } } } } },
@@ -581,7 +703,7 @@ T["new"]["invents no _meta beyond the thinking default when the definition has n
   -- stopped being gated (louiselm-5tuq); what still matters, and is asserted
   -- here, is that nothing else is fabricated alongside it.
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   assert(api:create_session("agent", { cwd = "/tmp/project" }, function() end))
   local process = processes[#processes]
 
@@ -599,7 +721,7 @@ end
 T["new"]["defaults Claude's thinking display to summarized"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    claude = { command = "agent", args = {}, transcript_layout = "claude" },
+    claude = { provider = "test-service", command = "agent", args = {}, transcript_layout = "claude" },
   }))
   assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
   local process = processes[#processes]
@@ -618,7 +740,7 @@ T["new"]["defaults thinking display without any configured transcript layout"] =
   -- hint, so gating the default on it shipped the feature inert for every user
   -- who left it unset, which is the documented-as-fine case (louiselm-5tuq).
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ claude = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ claude = { provider = "test-service", command = "agent", args = {} } }))
   assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
   local process = processes[#processes]
 
@@ -638,7 +760,7 @@ T["new"]["sends the vendor-namespaced default to a non-Claude agent too"] = func
   -- unconditionally is what makes the default work without configuration.
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    codex = { command = "agent", args = {}, transcript_layout = "codex" },
+    codex = { provider = "test-service", command = "agent", args = {}, transcript_layout = "codex" },
   }))
   assert(api:create_session("codex", { cwd = "/tmp/project" }, function() end))
   local process = processes[#processes]
@@ -656,6 +778,7 @@ T["new"]["respects an explicit user thinking config instead of overriding it"] =
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
     claude = {
+      provider = "test-service",
       command = "agent",
       args = {},
       transcript_layout = "claude",
@@ -677,7 +800,7 @@ end
 T["new"]["does not mutate the shared agent definition when defaulting Claude's thinking display"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    claude = { command = "agent", args = {}, transcript_layout = "claude" },
+    claude = { provider = "test-service", command = "agent", args = {}, transcript_layout = "claude" },
   }))
   assert(api:create_session("claude", { cwd = "/tmp/project" }, function() end))
   local process = processes[#processes]
@@ -698,7 +821,7 @@ end
 T["new"]["replays the user's own prior messages as user_chunk events when loading a session"] = function()
   local processes, original_system = fake_processes()
   local events = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:load_session("agent", "prior-acp", {
     cwd = "/tmp/project",
     on_event = function(event)
@@ -735,7 +858,7 @@ end
 T["new"]["emits thought_chunk events for replayed agent_thought_chunk notifications"] = function()
   local processes, original_system = fake_processes()
   local events = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:load_session("agent", "prior-acp", {
     cwd = "/tmp/project",
     on_event = function(event)
@@ -774,7 +897,7 @@ end
 T["new"]["closes the ACP process when loading returns a malformed result"] = function()
   local processes, original_system = fake_processes()
   local ready
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:load_session("agent", "prior-acp", nil, function(value, err)
     ready = { session = value, error = err }
   end))
@@ -795,7 +918,7 @@ end
 T["new"]["explains a Codex active-writer load failure without exposing its thread id"] = function()
   local processes, original_system = fake_processes()
   local ready
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:load_session("agent", "prior-acp", nil, function(value, err)
     ready = { session = value, error = err }
   end))
@@ -823,7 +946,7 @@ end
 T["new"]["names a resource-not-found session/load failure instead of the raw ACP string"] = function()
   local processes, original_system = fake_processes()
   local ready
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:load_session("agent", "expired-park", nil, function(value, err)
     ready = { session = value, error = err }
   end))
@@ -851,7 +974,7 @@ end
 T["new"]["does not expose arbitrary internal ACP error details"] = function()
   local processes, original_system = fake_processes()
   local ready_error
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   assert(api:load_session("agent", "prior-acp", nil, function(_, err)
     ready_error = err
   end))
@@ -873,8 +996,8 @@ end
 T["new"]["discovers paginated sessions with adapter-scoped identities"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    claude = { command = "claude-agent", args = {} },
-    codex = { command = "codex-agent", args = {} },
+    claude = { provider = "test-service", command = "claude-agent", args = {} },
+    codex = { provider = "test-service", command = "codex-agent", args = {} },
   }))
   local discovered
   local discovery_errors
@@ -952,8 +1075,8 @@ end
 T["new"]["filters discovery to one workspace and reports unsupported adapters"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    supported = { command = "supported-agent", args = {} },
-    unsupported = { command = "unsupported-agent", args = {} },
+    supported = { provider = "test-service", command = "supported-agent", args = {} },
+    unsupported = { provider = "test-service", command = "unsupported-agent", args = {} },
   }))
   local discovered
   local discovery_errors
@@ -994,7 +1117,7 @@ end
 
 T["new"]["rejects malformed discovery and ignores late results after disposal"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local callbacks = 0
   local discovered
   local discovery_errors
@@ -1035,8 +1158,8 @@ end
 T["new"]["creates concurrent addressable sessions and exposes state"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    one = { command = "agent-one", args = {} },
-    two = { command = "agent-two", args = {} },
+    one = { provider = "test-service", command = "agent-one", args = {} },
+    two = { provider = "test-service", command = "agent-two", args = {} },
   }))
 
   local first = start_ready_session(api, processes, "one", "/tmp/one")
@@ -1081,8 +1204,8 @@ end
 T["new"]["snapshots the effective skill policy for each session"] = function()
   local processes, original_system = fake_processes()
   local definitions = {
-    inherited = { command = "agent-inherited", args = {} },
-    native = { command = "agent-native", args = {}, skills = { policy = "native" } },
+    inherited = { provider = "test-service", command = "agent-inherited", args = {} },
+    native = { provider = "test-service", command = "agent-native", args = {}, skills = { policy = "native" } },
   }
   local api = assert(Session.new(definitions, "off"))
 
@@ -1100,7 +1223,7 @@ end
 T["new"]["starts inject sessions without an external parser dependency"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({
-    deepseek = { command = "agent", skills = { policy = "inject" } },
+    deepseek = { provider = "test-service", command = "agent", skills = { policy = "inject" } },
   }))
 
   local session, err = api:create_session("deepseek")
@@ -1114,7 +1237,7 @@ end
 
 T["new"]["records embedded context support from agent capabilities"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent" } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
   local session = assert(api:create_session("agent"))
   local process = processes[#processes]
 
@@ -1131,7 +1254,7 @@ end
 
 T["new"]["tracks supported config options and replaces dependent options after a change"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local events = {}
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
@@ -1228,7 +1351,7 @@ end
 T["new"]["tracks context cost and reported turn usage and ignores malformed telemetry"] = function()
   local processes, original_system = fake_processes()
   local events = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   session:on(function(event)
     events[#events + 1] = event
@@ -1297,7 +1420,7 @@ end
 T["new"]["ignores malformed usage_update telemetry when no context has ever arrived"] = function()
   local processes, original_system = fake_processes()
   local events = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   session:on(function(event)
     events[#events + 1] = event
@@ -1324,7 +1447,7 @@ T["new"]["accepts an over-full context window"] = function()
   -- 1M one, so `used` momentarily exceeds `size`.
   local processes, original_system = fake_processes()
   local events = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   session:on(function(event)
     events[#events + 1] = event
@@ -1352,7 +1475,7 @@ end
 T["new"]["rejects malformed reported turn usage"] = function()
   local processes, original_system = fake_processes()
   local events = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   session:on(function(event)
     events[#events + 1] = event
@@ -1373,7 +1496,7 @@ end
 T["new"]["rejects malformed supported config options during startup"] = function()
   local processes, original_system = fake_processes()
   local ready
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", nil, function(value, err)
     ready = { session = value, error = err }
   end))
@@ -1394,7 +1517,7 @@ end
 
 T["new"]["rejects option changes while prompting or waiting for permission"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   assert(session:prompt("hello"))
   MiniTest.expect.equality({ session:set_config_option("model", "large") }, { nil, "session is not idle" })
@@ -1417,7 +1540,7 @@ end
 
 T["new"]["emits typed streamed events and completes a prompt"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local events = {}
   session:on(function(event)
@@ -1478,7 +1601,7 @@ end
 
 T["new"]["tracks AIR session failure revisions and clears the warning on progress"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local events = {}
   session:on(function(event)
@@ -1587,7 +1710,7 @@ end
 
 T["new"]["does not emit live user message echoes as replay events"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local events = {}
   session:on(function(event)
@@ -1621,7 +1744,7 @@ T["new"]["does not reopen a completed turn for late permission responses"] = fun
   -- ~/.local/state/acp-llm-adapter/proxy/sessions/ses_fad1ec8d3ffeTYD4TzGM755ney/log.jsonl:
   -- the session/prompt response arrives after permission request 9 and before request 10.
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local permissions = {}
   local completed
@@ -1666,7 +1789,7 @@ T["new"]["keeps the Session usable after a cancelled prompt reports null usage"]
   -- ~/.local/state/acp-llm-adapter/proxy/sessions/01a074b2-a152-70b1-81eb-21ed37d04e7d/log.jsonl:70-73.
   -- The account-limits notification between cancel and idle is unrelated and omitted.
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local timer = assert(nvim.uv.new_timer())
   MiniTest.finally(function()
@@ -1733,7 +1856,7 @@ end
 
 T["new"]["cancels and disposes without allowing late process results"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
 
   assert(session:prompt("hello"))
@@ -1754,7 +1877,7 @@ end
 
 T["new"]["rejects unsupported agent requests but ignores notifications"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local _, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local writes_before = #process.writes
 
@@ -1776,7 +1899,7 @@ end
 
 T["new"]["publishes permission requests with a response function"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local permission
   session:on(function(event)
@@ -1807,7 +1930,7 @@ end
 
 T["new"]["publishes overlapping permission requests one at a time"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   assert(session:prompt("hello"))
   local permissions = {}
@@ -1846,7 +1969,7 @@ end
 
 T["new"]["cancels every outstanding permission request when the turn is cancelled"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   assert(session:prompt("hello"))
   local permissions = {}
@@ -1882,7 +2005,7 @@ end
 
 T["new"]["publishes pathless edit permission requests as generic decisions"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local permission
   session:on(function(event)
@@ -1921,7 +2044,7 @@ end
 T["new"]["automatically responds only to explicitly scoped permission requests"] = function()
   local processes, original_system = fake_processes()
   local policy = assert(Permission.policy("auto-approve-scoped", { paths = { "/tmp/project" } }))
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
     permission_policy = policy,
@@ -1962,9 +2085,10 @@ T["new"]["persists exact always choices and replays only through compatible opti
   local state_path = nvim.fs.joinpath(root, "permissions.json")
   local processes, original_system = fake_processes()
   local store = assert(Permission.store(state_path))
-  local api = assert(Session.new({ agent = { command = "agent", args = { "serve" } } }, nil, {
-    permission_store = store,
-  }))
+  local api =
+    assert(Session.new({ agent = { provider = "test-service", command = "agent", args = { "serve" } } }, nil, {
+      permission_store = store,
+    }))
   local session, process = start_ready_session(api, processes, "agent", nvim.fs.joinpath(root, "workspace"))
   local permission_events = {}
   session:on(function(event)
@@ -2009,9 +2133,10 @@ T["new"]["persists exact always choices and replays only through compatible opti
   assert(permission_events[2].respond({ outcome = { outcome = "cancelled" } }))
   api:dispose()
 
-  local reloaded_api = assert(Session.new({ agent = { command = "agent", args = { "serve" } } }, nil, {
-    permission_store = assert(Permission.store(state_path)),
-  }))
+  local reloaded_api =
+    assert(Session.new({ agent = { provider = "test-service", command = "agent", args = { "serve" } } }, nil, {
+      permission_store = assert(Permission.store(state_path)),
+    }))
   local reloaded, reloaded_process =
     start_ready_session(reloaded_api, processes, "agent", nvim.fs.joinpath(root, "workspace"))
   local replayed_event
@@ -2048,7 +2173,7 @@ end
 T["new"]["applies a fresh always choice to permission requests already queued"] = function()
   local root = nvim.fn.tempname()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, {
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }, nil, {
     permission_store = assert(Permission.store(nvim.fs.joinpath(root, "permissions.json"))),
   }))
   local session, process = start_ready_session(api, processes, "agent", nvim.fs.joinpath(root, "workspace"))
@@ -2100,7 +2225,7 @@ T["new"]["asks again and cancels an always choice when permission state is malfo
   local state_path = nvim.fs.joinpath(root, "permissions.json")
   assert(nvim.fn.writefile({ "not json" }, state_path) == 0)
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }, nil, {
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }, nil, {
     permission_store = assert(Permission.store(state_path)),
   }))
   local session, process = start_ready_session(api, processes, "agent", root)
@@ -2141,7 +2266,7 @@ end
 
 T["new"]["calls a prompt callback with the error when the agent crashes"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local completion
   assert(session:prompt("hello", function(result, err)
@@ -2160,7 +2285,7 @@ end
 
 T["new"]["turns an unexpected agent exit into a session error event"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local event
   session:on(function(value)
@@ -2181,7 +2306,7 @@ end
 
 T["new"]["appends buffered agent stderr to the exit error message"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local event
   session:on(function(value)
@@ -2204,7 +2329,7 @@ end
 
 T["new"]["caps buffered agent stderr to the most recent output"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local event
   session:on(function(value)
@@ -2227,7 +2352,7 @@ end
 
 T["new"]["fails a session that never completes the ACP handshake after the start timeout"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local scheduled
   local ready
   local session = assert(api:create_session("agent", {
@@ -2261,7 +2386,7 @@ end
 
 T["new"]["ignores a stale start timeout after the Session becomes ready"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local scheduled
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
@@ -2285,7 +2410,7 @@ end
 T["new"]["fails a prompt that never receives a terminal ACP response"] = function()
   local processes, original_system = fake_processes()
   local scheduled = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
     schedule = function(delay_ms, callback)
@@ -2334,7 +2459,7 @@ end
 T["new"]["suspends the prompt watchdog while permission waits for a human"] = function()
   local processes, original_system = fake_processes()
   local scheduled = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
     schedule = function(delay_ms, callback)
@@ -2390,7 +2515,7 @@ end
 T["new"]["keeps a prompt alive when a tool completes before the timeout"] = function()
   local processes, original_system = fake_processes()
   local scheduled = {}
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
     schedule = function(delay_ms, callback)
@@ -2426,7 +2551,7 @@ end
 
 T["new"]["honors a custom start_timeout_ms option"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local scheduled
   assert(api:create_session("agent", {
     cwd = "/tmp/project",
@@ -2443,7 +2568,7 @@ T["new"]["honors a custom start_timeout_ms option"] = function()
 end
 
 T["new"]["rejects a negative start_timeout_ms session option"] = function()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, err = api:create_session("agent", { start_timeout_ms = -1 })
   MiniTest.expect.equality(session, nil)
   MiniTest.expect.equality(err, "session option start_timeout_ms must be a non-negative integer")
@@ -2451,7 +2576,7 @@ end
 
 T["new"]["tracks advertised commands and replaces the cache on every update"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local events = {}
   session:on(function(event)
@@ -2499,7 +2624,7 @@ end
 
 T["new"]["skips malformed advertised commands, diagnoses them, and keeps duplicates visible"] = function()
   local processes, original_system = fake_processes()
-  local api = assert(Session.new({ agent = { command = "agent", args = {} } }))
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local events = {}
   session:on(function(event)

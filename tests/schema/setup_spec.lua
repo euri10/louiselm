@@ -29,14 +29,46 @@ end
 
 T["setup"] = MiniTest.new_set()
 
+T["setup"]["requires Provider and validates fixed and routed service mappings"] = function()
+  for _, definition in ipairs({
+    { command = "agent" },
+    { command = "agent", provider = "" },
+    { command = "agent", provider = {} },
+    { command = "agent", provider = { { provider = "service", options = {} } } },
+    { command = "agent", provider = { { provider = "service", options = { route = 7 } } } },
+  }) do
+    local ok, report = capture_setup({ agents = { agent = definition } })
+    MiniTest.expect.equality(ok, false)
+    MiniTest.expect.equality(report.errors[1].path:find("agents.agent.provider", 1, true), 1)
+  end
+  local ok = capture_setup({
+    agents = {
+      agent = {
+        command = "agent",
+        provider = {
+          { provider = "service", options = { model = "wire-id", enabled = false } },
+        },
+      },
+    },
+  })
+  MiniTest.expect.equality(ok, true)
+end
+
 T["setup"]["accepts upgrade argv and rejects malformed commands"] = function()
   local ok, report = capture_setup({
-    agents = { mock = { command = "mock-acp", upgrade = { "npm", "install", "-g", "mock-acp@latest" } } },
+    agents = {
+      mock = {
+        provider = "test-service",
+        command = "mock-acp",
+        upgrade = { "npm", "install", "-g", "mock-acp@latest" },
+      },
+    },
   })
   MiniTest.expect.equality(ok, true)
   MiniTest.expect.equality(report, nil)
   for _, upgrade in ipairs({ false, "npm install", {}, { "" }, { "npm", false }, { [2] = "npm" } }) do
-    local accepted, invalid = capture_setup({ agents = { mock = { command = "mock-acp", upgrade = upgrade } } })
+    local accepted, invalid =
+      capture_setup({ agents = { mock = { provider = "test-service", command = "mock-acp", upgrade = upgrade } } })
     MiniTest.expect.equality(accepted, false)
     MiniTest.expect.equality(invalid.errors[1].path:find("agents.mock.upgrade", 1, true), 1)
   end
@@ -45,7 +77,7 @@ end
 T["setup"]["rejects invalid config and reports every error"] = function()
   local ok, report, notifications = capture_setup({
     agents = {
-      codex = { command = 42, surprise = true },
+      codex = { provider = "test-service", command = 42, surprise = true },
     },
     extra = true,
   })
@@ -61,8 +93,8 @@ end
 T["setup"]["starts with valid config"] = function()
   local ok, report, notifications = capture_setup({
     agents = {
-      codex = { command = "codex-acp", args = {}, env = { TOKEN = "secret" } },
-      deepseek = { command = "acp-llm-adapter", skills = { policy = "inject" } },
+      codex = { provider = "test-service", command = "codex-acp", args = {}, env = { TOKEN = "secret" } },
+      deepseek = { provider = "test-service", command = "acp-llm-adapter", skills = { policy = "inject" } },
     },
     skills = { paths = {}, policy = "native" },
   })
@@ -84,10 +116,11 @@ T["setup"]["accepts an optional per-agent latest-version check"] = function()
   local ok, report = capture_setup({
     agents = {
       codex = {
+        provider = "test-service",
         command = "codex-acp",
         latest = { command = "npm", args = { "view", "@agentclientprotocol/codex-acp", "version" } },
       },
-      deepseek = { command = "acp-llm-adapter" },
+      deepseek = { provider = "test-service", command = "acp-llm-adapter" },
     },
   })
 
@@ -97,7 +130,7 @@ end
 
 T["setup"]["rejects a per-agent latest-version check missing its command"] = function()
   local ok, report = capture_setup({
-    agents = { codex = { command = "codex-acp", latest = { args = { "view", "version" } } } },
+    agents = { codex = { provider = "test-service", command = "codex-acp", latest = { args = { "view", "version" } } } },
   })
 
   MiniTest.expect.equality(ok, false)
@@ -108,6 +141,7 @@ T["setup"]["accepts an optional per-agent installed-version override"] = functio
   local ok, report = capture_setup({
     agents = {
       deepseek = {
+        provider = "test-service",
         command = "acp-debug.sh",
         args = { "acp-llm-adapter", "serve", "--backend", "deepseek" },
         version = { command = "acp-debug.sh", args = { "acp-llm-adapter", "--version" } },
@@ -121,7 +155,7 @@ end
 
 T["setup"]["rejects a per-agent installed-version override missing its command"] = function()
   local ok, report = capture_setup({
-    agents = { codex = { command = "codex-acp", version = { args = { "--version" } } } },
+    agents = { codex = { provider = "test-service", command = "codex-acp", version = { args = { "--version" } } } },
   })
 
   MiniTest.expect.equality(ok, false)
@@ -131,8 +165,8 @@ end
 T["setup"]["accepts declared agent capabilities"] = function()
   local ok, report = capture_setup({
     agents = {
-      codex = { command = "codex-acp", capabilities = { "image-generation" } },
-      claude = { command = "claude-agent-acp" },
+      codex = { provider = "test-service", command = "codex-acp", capabilities = { "image-generation" } },
+      claude = { provider = "test-service", command = "claude-agent-acp" },
     },
   })
 
@@ -142,7 +176,7 @@ end
 
 T["setup"]["rejects an empty-string capability"] = function()
   local ok, report = capture_setup({
-    agents = { codex = { command = "codex-acp", capabilities = { "image-generation", "" } } },
+    agents = { codex = { provider = "test-service", command = "codex-acp", capabilities = { "image-generation", "" } } },
   })
 
   MiniTest.expect.equality(ok, false)
@@ -152,7 +186,7 @@ end
 T["setup"]["rejects per-agent skill paths"] = function()
   local ok, report = capture_setup({
     agents = {
-      codex = { command = "codex-acp", skills = { paths = { "/tmp/skills" } } },
+      codex = { provider = "test-service", command = "codex-acp", skills = { paths = { "/tmp/skills" } } },
     },
   })
 
@@ -185,7 +219,7 @@ end
 
 T["setup"]["accepts a per-Agent transcript layout"] = function()
   local ok = capture_setup({
-    agents = { renamed_codex = { command = "codex-acp", transcript_layout = "codex" } },
+    agents = { renamed_codex = { provider = "test-service", command = "codex-acp", transcript_layout = "codex" } },
   })
 
   MiniTest.expect.equality(ok, true)

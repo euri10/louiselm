@@ -33,7 +33,7 @@ T["start"]["frames messages across stdout chunks and writes JSON lines"] = funct
   end)
 
   local messages = {}
-  local transport, err = Transport.start({ command = "agent", args = { "--acp" } }, {
+  local transport, err = Transport.start({ provider = "test-service", command = "agent", args = { "--acp" } }, {
     on_message = function(message)
       messages[#messages + 1] = message
     end,
@@ -74,9 +74,14 @@ T["start"]["merges Session environment over Agent configuration"] = function()
       end,
     }
   end)
-  assert(Transport.start({ command = "agent", args = {}, env = { SHARED = "agent", AGENT = "yes" } }, {
-    env = { SHARED = "run", RUN = "yes" },
-  }))
+  assert(
+    Transport.start(
+      { provider = "test-service", command = "agent", args = {}, env = { SHARED = "agent", AGENT = "yes" } },
+      {
+        env = { SHARED = "run", RUN = "yes" },
+      }
+    )
+  )
   set_system(original_system)
   MiniTest.expect.equality(captured, { SHARED = "run", AGENT = "yes", RUN = "yes" })
 end
@@ -93,7 +98,7 @@ T["start"]["surfaces malformed stdout and launch errors"] = function()
     }
   end)
 
-  local transport, err = Transport.start({ command = "agent", args = {} }, {
+  local transport, err = Transport.start({ provider = "test-service", command = "agent", args = {} }, {
     on_error = function(message)
       errors[#errors + 1] = message
     end,
@@ -109,7 +114,7 @@ T["start"]["surfaces malformed stdout and launch errors"] = function()
   set_system(function()
     error("cannot spawn")
   end)
-  local failed, launch_error = Transport.start({ command = "agent", args = {} })
+  local failed, launch_error = Transport.start({ provider = "test-service", command = "agent", args = {} })
   set_system(original_system)
 
   MiniTest.expect.equality(failed, nil)

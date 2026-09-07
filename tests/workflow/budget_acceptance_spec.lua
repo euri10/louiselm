@@ -228,6 +228,7 @@ T["a real Agent generating over ACP is bounded by the same budget"] = function()
   local project_root = nvim.fn.getcwd()
   local reply
   local client = assert(Acp.connect({
+    provider = "test-service",
     command = nvim.v.progpath,
     args = {
       "--headless",

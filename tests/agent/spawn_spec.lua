@@ -25,6 +25,7 @@ T["start"]["starts a process with an argument array and explicit environment"] =
   end)
 
   local handle, err = Spawn.start({
+    provider = "test-service",
     command = "claude-agent-acp",
     args = { "--verbose" },
     env = { ANTHROPIC_LOG = "debug" },
@@ -45,7 +46,7 @@ T["start"]["returns process launch errors instead of throwing"] = function()
     error("vim.system failed")
   end)
 
-  local handle, err = Spawn.start({ command = "agent", args = {} })
+  local handle, err = Spawn.start({ provider = "test-service", command = "agent", args = {} })
 
   set_system(original_system)
 

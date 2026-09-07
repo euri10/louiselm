@@ -72,7 +72,7 @@ nvim.pack.add({
 }, { confirm = false })
 
 assert(require("louiselm").setup({
-  agents = { codex = { command = "codex-acp" } },
+  agents = { codex = { command = "codex-acp", provider = "OpenAI" } },
 }))
 ```
 
@@ -96,7 +96,7 @@ Use this LouiseLM profile:
 
 ```lua
 agents = {
-  claude = { command = "claude-agent-acp" },
+  claude = { command = "claude-agent-acp", provider = "Anthropic" },
 }
 ```
 
@@ -129,6 +129,7 @@ local nvim = vim
 
 agents = {
   deepseek = {
+    provider = "DeepSeek",
     command = "acp-llm-adapter",
     args = { "serve", "--backend", "deepseek" },
     env = { LLM_API_KEY = assert(nvim.env.DEEPSEEK_API_KEY) },
@@ -163,7 +164,7 @@ vim.pack.add({
 })
 
 require("louiselm").setup({
-  agents = { codex = { command = "codex-acp" } },
+  agents = { codex = { command = "codex-acp", provider = "OpenAI" } },
 })
 ```
 

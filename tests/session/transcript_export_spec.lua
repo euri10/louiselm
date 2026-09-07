@@ -26,6 +26,7 @@ local function mock_definition(overrides)
     env.LOUISELM_MOCK_REPLAY_REASONING = overrides.replay_reasoning
   end
   return {
+    provider = "test-service",
     command = nvim.v.progpath,
     args = {
       "--headless",

@@ -30,7 +30,7 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
     return fake_handle
   end)
 
-  local client, err = Acp.connect({ command = "agent", args = {} })
+  local client, err = Acp.connect({ provider = "test-service", command = "agent", args = {} })
   set_system(original_system)
   MiniTest.expect.equality(err, nil)
   assert(client ~= nil)
@@ -108,7 +108,7 @@ T["connect"]["ignores an unsolicited response after a completed request"] = func
     return fake_handle
   end)
 
-  local client = assert(Acp.connect({ command = "agent", args = {} }, {
+  local client = assert(Acp.connect({ provider = "test-service", command = "agent", args = {} }, {
     on_error = function(message)
       errors[#errors + 1] = message
     end,
@@ -147,7 +147,7 @@ T["connect"]["rejects loading when the agent lacks loadSession capability"] = fu
     return fake_handle
   end)
 
-  local client = assert(Acp.connect({ command = "agent", args = {} }))
+  local client = assert(Acp.connect({ provider = "test-service", command = "agent", args = {} }))
   assert(client:initialize())
   set_system(original_system)
   calls.stdout(nil, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n')
@@ -174,7 +174,7 @@ T["connect"]["lists sessions only when the agent advertises support"] = function
     return fake_handle
   end)
 
-  local client = assert(Acp.connect({ command = "agent", args = {} }))
+  local client = assert(Acp.connect({ provider = "test-service", command = "agent", args = {} }))
   assert(client:initialize())
   set_system(original_system)
   calls.stdout(
@@ -227,7 +227,7 @@ T["connect"]["passes agent requests to the callback"] = function()
     return fake_handle
   end)
 
-  local client = assert(Acp.connect({ command = "agent", args = {} }, {
+  local client = assert(Acp.connect({ provider = "test-service", command = "agent", args = {} }, {
     on_request = function(request)
       received = request
     end,
@@ -271,7 +271,7 @@ T["connect"]["defers agent callbacks from fast events"] = function()
     scheduled = callback
   end)
 
-  local client = assert(Acp.connect({ command = "agent", args = {} }, {
+  local client = assert(Acp.connect({ provider = "test-service", command = "agent", args = {} }, {
     on_request = function(request)
       received = request
     end,

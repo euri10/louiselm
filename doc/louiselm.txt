@@ -265,6 +265,22 @@ agents.<name>.latest.env                                      *louiselm-config-a
     Description: Environment variables passed to the process.
 
 ------------------------------------------------------------------------------
+agents.<name>.provider                                        *louiselm-config-agents-name-provider*
+    Type: one of: string, array of table
+    Description: Required access/quota service: a fixed name or nonempty
+    routes matching exact advertised option IDs and typed values. Exactly one
+    route must match before each prompt; Model display names never determine
+    Provider.
+
+------------------------------------------------------------------------------
+agents.<name>.provider[].options                              *louiselm-config-agents-name-provider-options*
+    Type: string-keyed map of one of: string, boolean
+
+------------------------------------------------------------------------------
+agents.<name>.provider[].provider                             *louiselm-config-agents-name-provider-provider*
+    Type: string
+
+------------------------------------------------------------------------------
 agents.<name>.skills                                          *louiselm-config-agents-name-skills*
     Type: table
     Default: {}

@@ -1,4 +1,5 @@
 local Schema = require("louiselm.schema")
+local Provider = require("louiselm.agent.provider")
 
 local M = {}
 
@@ -41,6 +42,7 @@ M.schema = assert(Schema.define({
       type = "table",
       fields = {
         command = { type = "string", description = "Executable to start." },
+        provider = Provider.schema.fields.provider,
         args = {
           type = "array-of",
           items = "string",

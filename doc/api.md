@@ -68,6 +68,13 @@ louiselm.session.Status:
 string|table
 ```
 
+### louiselm.session.TurnIdentity
+
+- `agent: string` -- Configured Agent at prompt start.
+- `model: (boolean|string)?` -- Advertised Model value, when present; never inferred from its name.
+- `options: table<string, boolean|string>` -- Complete supported option tuple at prompt start.
+- `provider: string` -- Resolved access/quota service at prompt start.
+
 ### louiselm.session.State
 
 - `acp_session_id: string?` -- Agent-side persistent conversation identifier, once available.
@@ -85,6 +92,7 @@ string|table
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
 - `status: "cancelling"|"configuring"|"disposed"|"error"|"prompting"...(+3)` -- Lifecycle state.
+- `turn_identity: (louiselm.session.TurnIdentity)?` -- Owned identity for the current or last started turn; later option changes never rewrite it.
 - `usage: (louiselm.session.TurnUsage)?` -- Latest agent-reported completed-turn usage.
 - `working_dir: string` -- ACP working directory.
 
@@ -534,6 +542,7 @@ louiselm.permission.Lifetime:
 - `env: table<string, string>?` -- Environment variables for the process.
 - `latest: (louiselm.agent.CommandCheck)?` -- Optional command that resolves the latest available version.
 - `options: table<string, unknown>?` -- Agent-specific options. `options._meta`, when present, is threaded
+- `provider: string|louiselm.agent.ProviderRoute[]` -- Explicit access/quota service or option routes; required before prompting.
 - `skills: (louiselm.agent.SkillConfig)?` -- Effective Agent Skills policy after normalization.
 - `transcript_layout: string?` -- Optional Provenance integration for locating this Agent's historical transcripts on disk; live chat transcripts need no configuration.
 - `upgrade: string[]?` -- Executable and arguments shown as a shell-escaped upgrade command; never executed by LouiseLM. Omission leaves upgrade guidance unavailable.

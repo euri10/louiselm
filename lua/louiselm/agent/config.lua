@@ -1,4 +1,5 @@
 local Policy = require("louiselm.skills.policy")
+local Provider = require("louiselm.agent.provider")
 
 ---@class louiselm.agent.SkillConfig
 ---@field policy? louiselm.skills.Policy Agent-specific policy override.
@@ -11,6 +12,7 @@ local Policy = require("louiselm.skills.policy")
 ---@class louiselm.agent.Definition
 ---@field command string Executable to start.
 ---@field args string[] Arguments passed after the command.
+---@field provider louiselm.agent.Provider Explicit access/quota service or option routes; required before prompting.
 ---@field env? table<string, string> Environment variables for the process.
 ---@field options? table<string, unknown> Agent-specific options. `options._meta`, when present, is threaded
 ---verbatim into the ACP `session/new`/`session/load` request params (e.g. Claude's
@@ -47,6 +49,7 @@ local allowed_keys = {
   env = true,
   latest = true,
   options = true,
+  provider = true,
   skills = true,
   transcript_layout = true,
   upgrade = true,
@@ -57,6 +60,14 @@ local command_check_allowed_keys = {
   args = true,
   command = true,
   env = true,
+}
+
+---@type table<"unknown_key"|"wrong_type"|"missing_required"|"validation_failed", louiselm.agent.ConfigErrorType>
+local provider_error_types = {
+  unknown_key = "unknown_key",
+  wrong_type = "wrong_type",
+  missing_required = "missing_required",
+  validation_failed = "invalid_value",
 }
 
 ---@param value unknown
@@ -373,6 +384,17 @@ function M.normalize(definitions, default_skills_policy)
       end
 
       local process = parse_process_fields(definition, path, errors)
+      local provider, provider_errors = Provider.normalize(definition.provider)
+      for _, provider_error in ipairs(provider_errors) do
+        add_error(
+          errors,
+          child_path(path, provider_error.path),
+          provider_error_types[provider_error.type],
+          provider_error.message or "configure provider as a service name or exact option routes",
+          provider_error.expected,
+          provider_error.got
+        )
+      end
 
       local options
       if definition.options ~= nil then
@@ -452,6 +474,7 @@ function M.normalize(definitions, default_skills_policy)
       end
       normalized[name] = {
         command = process.command,
+        provider = provider,
         args = process.args,
         env = process.env,
         options = options,

@@ -12,6 +12,7 @@
 ---@field command string Executable to start.
 ---@field env? table<string, string> Environment variables passed to the process.
 ---@field latest? louiselm.ConfigAgentsValueLatest Optional command that resolves the agent's latest available version, e.g. `npm view <pkg> version`; omission disables the staleness check.
+---@field provider string|louiselm.ConfigAgentsValueProviderOption2Item[] Required access/quota service: a fixed name or nonempty routes matching exact advertised option IDs and typed values. Exactly one route must match before each prompt; Model display names never determine Provider.
 ---@field skills? louiselm.ConfigAgentsValueSkills Agent-specific Agent Skills policy override; paths remain global and the effective value is fixed when a session is created.
 ---@field transcript_layout? string Optional Provenance layout override for this Agent's historical transcripts: claude, codex, openai-compatible, or copilot; live chat transcripts need no configuration; omission searches all supported layouts.
 ---@field upgrade? string[] Optional upgrade executable and arguments, e.g. { 'npm', 'install', '-g', 'my-agent@latest' }. Shown as a shell-escaped command in outdated-Agent warnings, never executed. Set this for the actual installation (including local builds); omission leaves upgrade guidance unavailable. Multiple commands are joined with &&, stopping on failure.
@@ -21,6 +22,10 @@
 ---@field args? string[] Arguments passed after the executable.
 ---@field command string Executable that prints the latest available version.
 ---@field env? table<string, string> Environment variables passed to the process.
+
+---@class louiselm.ConfigAgentsValueProviderOption2Item
+---@field options table<string, string|boolean>
+---@field provider string
 
 ---@class louiselm.ConfigAgentsValueSkills
 ---@field policy string Override the global Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation; omission inherits the global policy.

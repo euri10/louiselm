@@ -59,10 +59,25 @@ end
 
 T["check"] = MiniTest.new_set()
 
+T["check"]["reports missing Provider before probing the Agent"] = function()
+  assert(Health.configure({ agents = { agent = { command = "agent" } } }, require("louiselm.config").schema))
+  with_health_stubs(function(calls)
+    Health.check()
+    MiniTest.expect.equality(calls.error[1]:find("agents.agent.provider", 1, true) ~= nil, true)
+    MiniTest.expect.equality(calls.error[2]:find("configure provider", 1, true) ~= nil, true)
+  end, function()
+    error("unattributed Agent must not be probed")
+  end)
+  Health.reset()
+end
+
 T["check"]["reports setup validation and agent version"] = function()
   local skill_path = nvim.fn.tempname()
   assert(nvim.fn.mkdir(skill_path, "p") == 1)
-  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { skill_path } } }))
+  assert(Louiselm.setup({
+    agents = { agent = { provider = "test-service", command = "agent" } },
+    skills = { paths = { skill_path } },
+  }))
 
   with_health_stubs(function(calls)
     Health.check()
@@ -84,7 +99,7 @@ end
 
 T["check"]["reports declared agent capabilities without starting the version check"] = function()
   assert(Louiselm.setup({
-    agents = { agent = { command = "agent", capabilities = { "image-generation", "ocr" } } },
+    agents = { agent = { provider = "test-service", command = "agent", capabilities = { "image-generation", "ocr" } } },
   }))
 
   with_health_stubs(function(calls)
@@ -99,6 +114,7 @@ T["check"]["warns instead of failing when the installed agent trails the latest 
   assert(Louiselm.setup({
     agents = {
       agent = {
+        provider = "test-service",
         command = "agent",
         latest = { command = "npm", args = { "view", "agent", "version" } },
       },
@@ -136,7 +152,10 @@ T["check"]["reports discovered skills alongside invalid siblings"] = function()
   assert(nvim.uv.fs_symlink(source, nvim.fs.joinpath(valid_dir, "SKILL.md")))
   local invalid = nvim.fs.joinpath(invalid_dir, "SKILL.md")
   assert(nvim.fn.writefile({ "# no frontmatter" }, invalid) == 0)
-  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { skill_path } } }))
+  assert(Louiselm.setup({
+    agents = { agent = { provider = "test-service", command = "agent" } },
+    skills = { paths = { skill_path } },
+  }))
 
   with_health_stubs(function(calls)
     Health.check()
@@ -150,7 +169,7 @@ end
 
 T["check"]["reports injected catalog budget diagnostics"] = function()
   assert(Louiselm.setup({
-    agents = { agent = { command = "agent", skills = { policy = "inject" } } },
+    agents = { agent = { provider = "test-service", command = "agent", skills = { policy = "inject" } } },
     skills = { paths = { "/tmp/skills" } },
   }))
   local original_discover = Skills.discover
@@ -190,7 +209,10 @@ T["check"]["reports the Neovim working directory used for relative skill roots"]
   local skill_path = nvim.fs.joinpath(workspace, "skills")
   assert(nvim.fn.mkdir(skill_path, "p") == 1)
   nvim.api.nvim_set_current_dir(workspace)
-  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { "skills" } } }))
+  assert(Louiselm.setup({
+    agents = { agent = { provider = "test-service", command = "agent" } },
+    skills = { paths = { "skills" } },
+  }))
 
   local call_ok, call_error = pcall(function()
     with_health_stubs(function(calls)
@@ -224,7 +246,10 @@ T["check"]["reports persistent LuaRocks path guidance"] = function()
       nvim.fs.joinpath(skill_dir, "SKILL.md")
     ) == 0
   )
-  assert(Louiselm.setup({ agents = { agent = { command = "agent" } }, skills = { paths = { skill_path } } }))
+  assert(Louiselm.setup({
+    agents = { agent = { provider = "test-service", command = "agent" } },
+    skills = { paths = { skill_path } },
+  }))
   local loaded = package.loaded.lyaml
   local preload = package.preload.lyaml
   package.loaded.lyaml = nil

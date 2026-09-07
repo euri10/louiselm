@@ -60,6 +60,7 @@ end
 
 local function mock_definition()
   return {
+    provider = "test-service",
     command = nvim.v.progpath,
     args = {
       "--headless",
@@ -102,7 +103,7 @@ local function run_exit_child(mode, recoverable)
     "  }",
     "  return process.handle",
     "end",
-    "Command.configure({ agents = { codex = { command = 'agent', args = {} } } })",
+    "Command.configure({ agents = { codex = { provider = 'test-service', command = 'agent', args = {} } } })",
     "Command.register()",
     "vim.cmd('LouiselmChat')",
     "local capabilities = vim.env.LOUISELM_TEST_RECOVERABLE == '1' and { loadSession = true } or {}",
@@ -250,7 +251,7 @@ T["command"]["opens the Tutor without a configured Agent"] = function()
 end
 
 T["command"]["inspects Beads from the active Session workspace"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_inspect = Beads.inspect
   local original_cwd = nvim.fn.getcwd()
@@ -278,7 +279,7 @@ T["command"]["inspects Beads from the active Session workspace"] = function()
 end
 
 T["command"]["shows and refreshes the active Agent account limits"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_notify = nvim.notify
   rawset(nvim, "notify", function() end)
@@ -339,7 +340,7 @@ T["command"]["shows and refreshes the active Agent account limits"] = function()
 end
 
 T["command"]["shows an explicitly named unobserved Agent without starting it"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   Command.register()
 
@@ -355,7 +356,7 @@ T["command"]["shows an explicitly named unobserved Agent without starting it"] =
 end
 
 T["command"]["refuses real :q and :q! for an unrecoverable Session"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_notify = nvim.notify
   local notifications = {}
@@ -385,7 +386,7 @@ T["command"]["refuses real :q and :q! for an unrecoverable Session"] = function(
 end
 
 T["command"]["refuses real :q for a recoverable Session with a turn in flight"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_notify = nvim.notify
   local notification
@@ -407,7 +408,7 @@ T["command"]["refuses real :q for a recoverable Session with a turn in flight"] 
 end
 
 T["command"]["refuses real :q when a recoverable Session has Staged context"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_notify = nvim.notify
   local notification
@@ -436,7 +437,7 @@ T["command"]["guards a headless API Session with no chat buffer"] = function()
     notification = { message = message, level = level }
   end)
   Command.register()
-  local api = assert(Session.new({ codex = { command = "codex-agent", args = {} } }))
+  local api = assert(Session.new({ codex = { provider = "test-service", command = "codex-agent", args = {} } }))
   assert(api:create_session("codex"))
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "headless-acp" })
@@ -466,7 +467,7 @@ T["command"]["allows recoverable idle :q and surfaces its breadcrumb once at set
   rawset(nvim, "notify", function(message, level)
     notification = { message = message, level = level }
   end)
-  assert(Louiselm.setup({ agents = { codex = { command = "agent", args = {} } } }))
+  assert(Louiselm.setup({ agents = { codex = { provider = "test-service", command = "agent", args = {} } } }))
   rawset(nvim, "notify", original_notify)
   nvim.env.XDG_STATE_HOME = original_state_home
 
@@ -491,7 +492,7 @@ T["command"]["allows :qa past refusal clauses and records an unrecoverable Sessi
 end
 
 T["command"]["routes a window bar click through its clicked window"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_getmousepos = nvim.fn.getmousepos
   MiniTest.finally(function()
@@ -540,7 +541,7 @@ T["command"]["reports when no session id is available"] = function()
 end
 
 T["command"]["copies and reports the current ACP session id"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_notify = nvim.notify
   local original_clipboard = nvim.fn.getreg("+")
@@ -568,7 +569,7 @@ T["command"]["copies and reports the current ACP session id"] = function()
 end
 
 T["command"]["copies the current OpenCode session id without an environment variable"] = function()
-  Command.configure({ agents = { opencode = { command = "opencode", args = {} } } })
+  Command.configure({ agents = { opencode = { provider = "test-service", command = "opencode", args = {} } } })
   local process, original_system = fake_process()
   local original_clipboard = nvim.fn.getreg("+")
   Command.register()
@@ -630,7 +631,9 @@ end
 
 T["command"]["queues the source buffer as context through LouiselmMentionBuffer and sends it with the next prompt"] = function()
   local process, original_system = fake_process()
-  assert(Louiselm.setup({ agents = { claude = { command = "claude-agent-acp", args = {} } } }))
+  assert(
+    Louiselm.setup({ agents = { claude = { provider = "test-service", command = "claude-agent-acp", args = {} } } })
+  )
   Command.register()
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
@@ -663,7 +666,7 @@ T["command"]["queues the source buffer as context through LouiselmMentionBuffer 
 end
 
 T["command"]["prompts for a path and exports the current session's transcript to a generated default"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_input = nvim.ui.input
   local input_prompt
@@ -700,7 +703,7 @@ T["command"]["prompts for a path and exports the current session's transcript to
 end
 
 T["command"]["passes an explicit session id argument to LouiselmToMarkdown"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_input = nvim.ui.input
   nvim.ui.input = function(_, callback)
@@ -731,7 +734,7 @@ T["command"]["passes an explicit session id argument to LouiselmToMarkdown"] = f
 end
 
 T["command"]["rejects an unknown session id without prompting for a path"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_input = nvim.ui.input
   -- The sibling test above stubs vim.ui.input to invoke its callback at once,
@@ -773,7 +776,7 @@ T["command"]["rejects an unknown session id without prompting for a path"] = fun
 end
 
 T["command"]["still prompts for a path when an explicit session id is attached"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_input = nvim.ui.input
   local input_calls = 0
@@ -834,11 +837,13 @@ T["command"]["manual init configures current logged agents"] = function()
   MiniTest.expect.equality(configured, {
     agents = {
       claude = {
+        provider = "Anthropic",
         command = "acp-proxy",
         args = { "--", "claude-agent-acp" },
         version = { command = "claude-agent-acp", args = { "--version" } },
       },
       deepseek = {
+        provider = "DeepSeek",
         command = "acp-llm-adapter",
         args = { "serve", "--backend", "deepseek" },
         env = { ACP_LOG = "1", LLM_API_KEY = "test-key" },
@@ -878,7 +883,7 @@ T["command"]["quickstart installs LouiseLM and configures Codex"] = function()
     },
     options = { confirm = false },
   })
-  MiniTest.expect.equality(configured, { agents = { codex = { command = "codex-acp" } } })
+  MiniTest.expect.equality(configured, { agents = { codex = { provider = "OpenAI", command = "codex-acp" } } })
 end
 
 T["command"]["register is repeatable"] = function()
@@ -936,7 +941,12 @@ end
 T["command"]["launches a configured named agent"] = function()
   Command.configure({
     agents = {
-      claude = { command = "claude-agent-acp", args = { "--test" }, env = { TOKEN = "secret" } },
+      claude = {
+        provider = "test-service",
+        command = "claude-agent-acp",
+        args = { "--test" },
+        env = { TOKEN = "secret" },
+      },
     },
   })
   local process, original_system = fake_process()
@@ -953,7 +963,10 @@ T["command"]["launches a configured named agent"] = function()
 end
 
 T["command"]["uses the configuration published by setup"] = function()
-  assert(Louiselm.setup({ agents = { claude = { command = "configured-agent" } }, skills = { paths = {} } }))
+  assert(Louiselm.setup({
+    agents = { claude = { provider = "test-service", command = "configured-agent" } },
+    skills = { paths = {} },
+  }))
   local process, original_system = fake_process()
 
   Command.register()
@@ -977,7 +990,7 @@ T["command"]["does not block a native session when local picker discovery lacks 
     ) == 0
   )
   assert(Louiselm.setup({
-    agents = { claude = { command = "configured-agent" } },
+    agents = { claude = { provider = "test-service", command = "configured-agent" } },
     skills = { paths = { skill_root }, policy = "native" },
   }))
   local process, original_system = fake_process()
@@ -1018,7 +1031,7 @@ T["command"]["reports a terse lyaml error for an injected session"] = function()
     ) == 0
   )
   assert(Louiselm.setup({
-    agents = { claude = { command = "configured-agent" } },
+    agents = { claude = { provider = "test-service", command = "configured-agent" } },
     skills = { paths = { skill_root }, policy = "inject" },
   }))
   local original_notify = nvim.notify
@@ -1049,7 +1062,7 @@ T["command"]["reports a terse lyaml error for an injected session"] = function()
 end
 
 T["command"]["resume discovers the current workspace and bang discovers all without creating a session"] = function()
-  Command.configure({ agents = { codex = { command = "codex-agent", args = {} } } })
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local process, original_system = fake_process()
   local original_notify = nvim.notify
   local notifications = 0
@@ -1290,8 +1303,14 @@ T["command"]["groups upgrade guidance after async checks in either completion or
       spawn_failure = scenario == "spawn_failure"
       Command.configure({
         agents = {
-          alpha = { command = "alpha", args = {}, upgrade = { "npm", "install", "-g", "alpha@latest" } },
+          alpha = {
+            provider = "test-service",
+            command = "alpha",
+            args = {},
+            upgrade = { "npm", "install", "-g", "alpha@latest" },
+          },
           beta = {
+            provider = "test-service",
             command = "beta",
             args = {},
             upgrade = scenario ~= "missing" and { "/path with spaces/updater", "a'b;$(no)" } or nil,
@@ -1392,7 +1411,7 @@ T["command"]["injects the hidden bounded catalog through the normal chat path"] 
 
   local process, original_system = fake_process()
   assert(Louiselm.setup({
-    agents = { claude = { command = "claude-agent-acp", args = {} } },
+    agents = { claude = { provider = "test-service", command = "claude-agent-acp", args = {} } },
     skills = { paths = { generated_root }, policy = "inject" },
   }))
   Command.register()
@@ -1437,7 +1456,7 @@ T["command"]["attaches a project instructions resource_link on a new session thr
 
   local process, original_system = fake_process()
   assert(Louiselm.setup({
-    agents = { claude = { command = "claude-agent-acp", args = {} } },
+    agents = { claude = { provider = "test-service", command = "claude-agent-acp", args = {} } },
     context = { instructions_file = "AGENTS.md" },
   }))
   Command.register()
