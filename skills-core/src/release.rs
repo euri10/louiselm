@@ -675,7 +675,7 @@ fn schema_identifiers() -> Vec<String> {
         crate::generation::RECORD_SCHEMA,
         crate::trust::TRUST_SCHEMA,
         crate::trust::TRUST_CHANGE_SCHEMA,
-        crate::trust::paper::PAPER_NAMESPACE,
+        crate::trust::recovery::RECOVERY_NAMESPACE,
         crate::quarantine::QUARANTINE_SCHEMA,
         crate::admission::STATUS_SCHEMA,
         crate::launch::REQUEST_SCHEMA,

@@ -4,12 +4,13 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::MetadataExt,
+    time::Instant,
 };
 
 use rustix::termios::{self, OptionalActions, Termios};
 use zeroize::Zeroizing;
 
-use super::PaperError;
+use super::recovery::RecoveryError;
 use crate::store::Store;
 
 pub(crate) struct Terminal {
@@ -19,15 +20,15 @@ pub(crate) struct Terminal {
 }
 
 impl Terminal {
-    pub(crate) fn open() -> Result<Self, PaperError> {
+    pub(crate) fn open() -> Result<Self, RecoveryError> {
         let file = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
         if termios::tcgetpgrp(&file).map_err(std::io::Error::from)? != rustix::process::getpgrp() {
-            return Err(PaperError::UntrustedAuthority);
+            return Err(RecoveryError::UntrustedAuthority);
         }
         Self::from_file(file)
     }
 
-    fn from_file(file: File) -> Result<Self, PaperError> {
+    fn from_file(file: File) -> Result<Self, RecoveryError> {
         let original = termios::tcgetattr(&file).map_err(std::io::Error::from)?;
         let mut terminal = Self {
             file,
@@ -44,20 +45,51 @@ impl Terminal {
         Ok(terminal)
     }
 
-    pub(crate) fn write(&mut self, text: &str) -> Result<(), PaperError> {
+    pub(crate) fn write(&mut self, text: &str) -> Result<(), RecoveryError> {
         self.file.write_all(text.as_bytes())?;
         self.file.flush()?;
         Ok(())
     }
 
-    pub(crate) fn clear(&mut self) -> Result<(), PaperError> {
+    pub(crate) fn clear(&mut self) -> Result<(), RecoveryError> {
         self.write("\x1b[2J\x1b[H")
     }
 
-    pub(crate) fn read_hidden(&mut self) -> Result<Zeroizing<String>, PaperError> {
+    pub(crate) fn read_hidden(&mut self) -> Result<Zeroizing<String>, RecoveryError> {
+        self.read_hidden_before(None)
+    }
+
+    pub(crate) fn read_hidden_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<Zeroizing<String>, RecoveryError> {
+        self.read_hidden_before(Some(deadline))
+    }
+
+    fn read_hidden_before(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> Result<Zeroizing<String>, RecoveryError> {
         let mut input = Zeroizing::new(String::with_capacity(512));
         let mut byte = Zeroizing::new([0_u8; 1]);
         loop {
+            if let Some(deadline) = deadline {
+                let remaining = deadline
+                    .checked_duration_since(Instant::now())
+                    .ok_or(RecoveryError::Passkey)?;
+                let timeout = rustix::event::Timespec::try_from(remaining)
+                    .map_err(|_| RecoveryError::Passkey)?;
+                let mut descriptors = [rustix::event::PollFd::new(
+                    &self.file,
+                    rustix::event::PollFlags::IN,
+                )];
+                match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+                    Ok(0) => return Err(RecoveryError::Passkey),
+                    Ok(_) => (),
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(error) => return Err(RecoveryError::Io(error.into())),
+                }
+            }
             match self.file.read_exact(&mut *byte) {
                 Ok(()) => (),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -65,17 +97,17 @@ impl Terminal {
             }
             match byte[0] {
                 b'\r' | b'\n' => return Ok(input),
-                3 | 4 | 27 => return Err(PaperError::Cancelled),
+                3 | 4 | 27 => return Err(RecoveryError::Cancelled),
                 8 | 127 => {
                     input.pop();
                 }
                 b' '..=b'~' if input.len() < 512 => input.push(char::from(byte[0])),
-                _ => return Err(PaperError::InvalidPhrase),
+                _ => return Err(RecoveryError::InvalidPhrase),
             }
         }
     }
 
-    pub(crate) fn restore(&mut self) -> Result<(), PaperError> {
+    pub(crate) fn restore(&mut self) -> Result<(), RecoveryError> {
         // Attempt both even if clearing fails. Do not mutate authority if either
         // terminal cleanup step cannot be acknowledged.
         let clear = self.write("\x1b[2J\x1b[H\x1b[?1049l");
@@ -134,7 +166,7 @@ mod tests {
                 assert_eq!(answer.unwrap().as_str(), "abc");
                 terminal.restore().unwrap();
             } else {
-                assert!(matches!(answer, Err(PaperError::Cancelled)));
+                assert!(matches!(answer, Err(RecoveryError::Cancelled)));
             }
             drop(terminal);
             let restored = termios::tcgetattr(&observer).unwrap();
@@ -149,23 +181,77 @@ mod tests {
             ] {
                 assert_eq!(restored.special_codes[index], original.special_codes[index]);
             }
+            // Closing the final slave makes EIO the Linux PTY's end-of-stream.
+            // Force small reads: screen writes need not arrive as one packet.
+            drop(observer);
             rustix::io::ioctl_fionbio(&master, true).unwrap();
-            let mut output = [0_u8; 256];
-            let count = master.read(&mut output).unwrap();
-            assert_eq!(
-                &output[..count],
-                b"\x1b[?1049h\x1b[2J\x1b[H\x1b[2J\x1b[H\x1b[?1049l"
-            );
+            let deadline = Instant::now() + std::time::Duration::from_secs(1);
+            let mut output = Vec::new();
+            loop {
+                let remaining = deadline.checked_duration_since(Instant::now()).unwrap();
+                let timeout = rustix::event::Timespec::try_from(remaining).unwrap();
+                let mut descriptors = [rustix::event::PollFd::new(
+                    &master,
+                    rustix::event::PollFlags::IN,
+                )];
+                assert_ne!(
+                    rustix::event::poll(&mut descriptors, Some(&timeout)).unwrap(),
+                    0
+                );
+                let mut chunk = [0_u8; 7];
+                match master.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => output.extend_from_slice(&chunk[..count]),
+                    Err(error)
+                        if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) =>
+                    {
+                        break;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => panic!("PTY output failed: {error}"),
+                }
+                assert!(output.len() <= 256, "unexpected terminal output");
+            }
+            assert_eq!(output, b"\x1b[?1049h\x1b[2J\x1b[H\x1b[2J\x1b[H\x1b[?1049l");
         }
+    }
+
+    #[test]
+    fn pending_registration_terminal_input_expires_and_restores_echo() {
+        let master = pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
+        pty::grantpt(&master).unwrap();
+        pty::unlockpt(&master).unwrap();
+        let slave = File::from(
+            pty::ioctl_tiocgptpeer(&master, OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap(),
+        );
+        let original = termios::tcgetattr(&slave).unwrap();
+        let observer = slave.try_clone().unwrap();
+        let mut terminal = Terminal::from_file(slave).unwrap();
+        assert!(matches!(
+            terminal.read_hidden_until(Instant::now() + std::time::Duration::from_millis(5)),
+            Err(RecoveryError::Passkey)
+        ));
+        drop(terminal);
+        assert_eq!(
+            termios::tcgetattr(&observer).unwrap().local_modes,
+            original.local_modes
+        );
     }
 }
 
-pub(crate) fn require_production(store: &Store) -> Result<(), PaperError> {
+pub(crate) fn require_production(store: &Store) -> Result<(), RecoveryError> {
     if !crate::release::running_identity().verified
         || !store.provenance()?.trusted
         || rustix::process::geteuid().as_raw() != 0
     {
-        return Err(PaperError::UntrustedAuthority);
+        return Err(RecoveryError::UntrustedAuthority);
     }
     let root = std::path::absolute(store.root())?;
     for path in root.ancestors().map(std::path::Path::to_path_buf).chain([
@@ -176,7 +262,7 @@ pub(crate) fn require_production(store: &Store) -> Result<(), PaperError> {
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0
         {
-            return Err(PaperError::UntrustedAuthority);
+            return Err(RecoveryError::UntrustedAuthority);
         }
     }
     Ok(())

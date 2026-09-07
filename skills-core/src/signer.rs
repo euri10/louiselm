@@ -6,15 +6,14 @@
 //! key and its assertion policy regardless of what produced it.
 
 use std::{
-    fs, io,
+    fs,
+    io::{self, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 
 use thiserror::Error;
-
-static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A signature that could not be produced.
 #[derive(Debug, Error)]
@@ -22,9 +21,6 @@ pub enum SignerError {
     /// Scratch files could not be written.
     #[error("cannot prepare signing input: {0}")]
     Io(#[from] io::Error),
-    /// `ssh-keygen` is not installed.
-    #[error("ssh-keygen is required to sign: {0}")]
-    ToolMissing(String),
     /// `ssh-keygen` refused to sign.
     #[error("signing failed: {0}")]
     Failed(String),
@@ -60,35 +56,111 @@ impl SshKeygenSigner {
 
 impl Signer for SshKeygenSigner {
     fn sign(&self, namespace: &str, payload: &[u8]) -> Result<String, SignerError> {
-        let counter = SCRATCH_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let scratch = std::env::temp_dir().join(format!(
-            "louiselm-skills-sign-{}-{counter}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&scratch)?;
-        let message = scratch.join("payload");
-        fs::write(&message, payload)?;
+        self.sign_until(namespace, payload, Instant::now() + Duration::from_mins(5))
+    }
+}
 
-        let output = Command::new("ssh-keygen")
-            .arg("-Y")
-            .arg("sign")
-            .arg("-q")
-            .arg("-n")
-            .arg(namespace)
-            .arg("-f")
-            .arg(&self.key_path)
-            .arg(&message)
-            .output()
-            .map_err(|error| SignerError::ToolMissing(error.to_string()))?;
+impl SshKeygenSigner {
+    /// Signs before one absolute deadline, cleaning up the child process group
+    /// and restoring foreground terminal ownership before returning.
+    ///
+    /// # Errors
+    /// Refuses expired deadlines, lost terminal ownership, process/cleanup
+    /// failures, or a refused signature. Interactive signing requires Linux.
+    pub fn sign_until(
+        &self,
+        namespace: &str,
+        payload: &[u8],
+        deadline: Instant,
+    ) -> Result<String, SignerError> {
+        // Never let a root caller inherit an attacker-selected TMPDIR. tempfile
+        // creates this directory exclusively with mode 0700 in the shared /tmp.
+        let scratch = tempfile::Builder::new()
+            .prefix("louiselm-sign-")
+            .tempdir_in("/tmp")?;
+        let result = (|| {
+            let message = scratch.path().join("payload");
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&message)?;
+            file.write_all(payload)?;
+            let terminal = match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")
+            {
+                Ok(terminal) => Some(terminal),
+                Err(error)
+                    if error.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error())
+                        || error.kind() == io::ErrorKind::NotFound =>
+                {
+                    None
+                }
+                Err(error) => return Err(SignerError::Io(error)),
+            };
+            let output = crate::launcher_install::run_signing_command(
+                &crate::launcher_install::CommandInvocation {
+                    program: PathBuf::from("/usr/bin/ssh-keygen"),
+                    arguments: vec![
+                        "-Y".into(),
+                        "sign".into(),
+                        "-q".into(),
+                        "-n".into(),
+                        namespace.into(),
+                        "-f".into(),
+                        self.key_path.as_os_str().to_owned(),
+                        message.into_os_string(),
+                    ],
+                    stdin: Vec::new(),
+                    current_dir: None,
+                },
+                deadline,
+                terminal.as_ref(),
+            )?;
 
-        let result = if output.status.success() {
-            fs::read_to_string(scratch.join("payload.sig")).map_err(SignerError::Io)
-        } else {
-            Err(SignerError::Failed(crate::scan::escape(
-                String::from_utf8_lossy(&output.stderr).trim(),
-            )))
-        };
-        let _ = fs::remove_dir_all(&scratch);
+            if output.success {
+                fs::read_to_string(scratch.path().join("payload.sig")).map_err(SignerError::Io)
+            } else {
+                Err(SignerError::Failed(crate::scan::escape(
+                    String::from_utf8_lossy(&output.stderr).trim(),
+                )))
+            }
+        })();
+        scratch.close()?;
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "Isolated temporary-file regression fixtures."
+    )]
+    use super::*;
+
+    #[test]
+    fn precreated_payload_symlink_never_overwrites_an_external_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let target = fixture.path().join("unrelated");
+        fs::write(&target, b"must remain unchanged").unwrap();
+        // The displaced implementation starts at zero in this test process.
+        let scratch =
+            std::env::temp_dir().join(format!("louiselm-skills-sign-{}-0", std::process::id()));
+        fs::create_dir(&scratch).unwrap();
+        std::os::unix::fs::symlink(&target, scratch.join("payload")).unwrap();
+        let result = SshKeygenSigner::new(&fixture.path().join("absent-key"))
+            .sign("test/isolated", b"unauthorized overwrite");
+        assert!(result.is_err());
+        let actual = fs::read(&target).unwrap();
+        // Only remove the exact test-owned collision, if the signer left it alone.
+        if scratch.exists() {
+            fs::remove_dir_all(&scratch).unwrap();
+        }
+        assert_eq!(actual, b"must remain unchanged");
     }
 }

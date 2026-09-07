@@ -54,9 +54,9 @@ pub const EXIT_NOT_ADMISSIBLE: i32 = 2;
 /// A command that could not be completed.
 #[derive(Debug, Error)]
 pub enum CliError {
-    /// A local paper ceremony was refused.
+    /// A local recovery ceremony was refused.
     #[error(transparent)]
-    Paper(#[from] crate::trust::paper::PaperError),
+    Recovery(#[from] crate::trust::recovery::RecoveryError),
     /// The command line is not valid.
     #[error("{0}")]
     Invalid(String),

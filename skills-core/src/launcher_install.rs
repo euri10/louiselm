@@ -32,7 +32,24 @@ use crate::{
     sshsig,
 };
 
+mod foreground;
+#[cfg(all(test, target_os = "linux"))]
+mod foreground_tests;
 mod identity;
+
+pub(crate) fn run_signing_command(
+    invocation: &CommandInvocation,
+    deadline: Instant,
+    terminal: Option<&File>,
+) -> io::Result<CommandOutput> {
+    if Instant::now() >= deadline {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "signing deadline expired",
+        ));
+    }
+    run_system_command_with_terminal(invocation, Some(deadline), terminal)
+}
 
 pub use identity::{Identity, IdentityLease, IdentityPool};
 
@@ -392,17 +409,25 @@ impl CommandRunner for BoundedSystemCommandRunner {
 
 type BytesWorker = JoinHandle<io::Result<Vec<u8>>>;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One bounded subprocess transaction owns pipe readers, the deadline and process-group cleanup."
-)]
-#[expect(
-    clippy::expect_used,
-    reason = "Command always pipes stdout and stderr; a deadline always configures a process group before spawn."
-)]
 fn run_system_command(
     invocation: &CommandInvocation,
     deadline: Option<Instant>,
+) -> io::Result<CommandOutput> {
+    run_system_command_with_terminal(invocation, deadline, None)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "One subprocess transaction owns pipe workers, process-group cleanup and terminal restoration."
+)]
+#[expect(
+    clippy::expect_used,
+    reason = "Command always pipes stdout/stderr; a deadline configures the process group."
+)]
+fn run_system_command_with_terminal(
+    invocation: &CommandInvocation,
+    deadline: Option<Instant>,
+    terminal: Option<&File>,
 ) -> io::Result<CommandOutput> {
     let mut command = Command::new(&invocation.program);
     command
@@ -426,129 +451,147 @@ fn run_system_command(
     let process_group = deadline.map(|_| rustix::process::Pid::from_child(&child));
     let cleanup_deadline = deadline.unwrap_or_else(|| Instant::now() + COMMAND_CLEANUP_TIMEOUT);
     let execution_deadline = deadline.map(command_execution_deadline);
-    let stdin_worker = child.stdin.take().map(|mut stdin| {
-        let bytes = invocation.stdin.clone();
-        thread::Builder::new()
-            .name("louiselm-command-stdin".to_owned())
-            .spawn(move || stdin.write_all(&bytes))
-    });
-    let stdin_worker = match stdin_worker.transpose() {
-        Ok(worker) => worker,
+    let mut foreground = match terminal
+        .map(|terminal| {
+            foreground::Foreground::enter(terminal, rustix::process::Pid::from_child(&child))
+        })
+        .transpose()
+    {
+        Ok(foreground) => foreground,
         Err(error) => {
-            let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
-            cleanup?;
+            terminate_child(&mut child, process_group, cleanup_deadline)?;
             return Err(error);
         }
     };
-    let stdout_worker = match command_output_worker(
-        "louiselm-command-stdout",
-        child.stdout.take().expect("command stdout is piped"),
-    ) {
-        Ok(worker) => worker,
-        Err(error) => {
-            let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
-            cleanup?;
-            if let Some(worker) = stdin_worker {
-                drain_worker(worker, cleanup_deadline)?;
+    let result = (|| {
+        let stdin_worker = child.stdin.take().map(|mut stdin| {
+            let bytes = invocation.stdin.clone();
+            thread::Builder::new()
+                .name("louiselm-command-stdin".to_owned())
+                .spawn(move || stdin.write_all(&bytes))
+        });
+        let stdin_worker = match stdin_worker.transpose() {
+            Ok(worker) => worker,
+            Err(error) => {
+                let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+                cleanup?;
+                return Err(error);
             }
-            return Err(error);
-        }
-    };
-    let stderr_worker = match command_output_worker(
-        "louiselm-command-stderr",
-        child.stderr.take().expect("command stderr is piped"),
-    ) {
-        Ok(worker) => worker,
-        Err(error) => {
+        };
+        let stdout_worker = match command_output_worker(
+            "louiselm-command-stdout",
+            child.stdout.take().expect("command stdout is piped"),
+        ) {
+            Ok(worker) => worker,
+            Err(error) => {
+                let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+                cleanup?;
+                if let Some(worker) = stdin_worker {
+                    drain_worker(worker, cleanup_deadline)?;
+                }
+                return Err(error);
+            }
+        };
+        let stderr_worker = match command_output_worker(
+            "louiselm-command-stderr",
+            child.stderr.take().expect("command stderr is piped"),
+        ) {
+            Ok(worker) => worker,
+            Err(error) => {
+                let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+                cleanup?;
+                if let Some(worker) = stdin_worker {
+                    drain_worker(worker, cleanup_deadline)?;
+                }
+                drain_worker(stdout_worker, cleanup_deadline)?;
+                return Err(error);
+            }
+        };
+
+        let status = match execution_deadline {
+            Some(execution_deadline) => {
+                let process_group = process_group.expect("a bounded command has a process group");
+                match wait_until_exit(process_group, execution_deadline) {
+                    Ok(true) => None,
+                    Ok(false) => {
+                        let cleanup =
+                            terminate_child(&mut child, Some(process_group), cleanup_deadline);
+                        cleanup?;
+                        if let Some(worker) = stdin_worker {
+                            drain_worker(worker, cleanup_deadline)?;
+                        }
+                        drain_worker(stdout_worker, cleanup_deadline)?;
+                        drain_worker(stderr_worker, cleanup_deadline)?;
+                        let error = io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "command exceeded its fixed deadline",
+                        );
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        let cleanup =
+                            terminate_child(&mut child, Some(process_group), cleanup_deadline);
+                        cleanup?;
+                        if let Some(worker) = stdin_worker {
+                            drain_worker(worker, cleanup_deadline)?;
+                        }
+                        drain_worker(stdout_worker, cleanup_deadline)?;
+                        drain_worker(stderr_worker, cleanup_deadline)?;
+                        return Err(error);
+                    }
+                }
+            }
+            None => {
+                // A wait error returns directly because numeric PID ownership would be unproven.
+                Some(child.wait()?)
+            }
+        };
+
+        if execution_deadline.is_some_and(|execution_deadline| {
+            !wait_for_command_io(
+                stdin_worker.as_ref(),
+                &stdout_worker,
+                &stderr_worker,
+                execution_deadline,
+            )
+        }) {
             let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
             cleanup?;
             if let Some(worker) = stdin_worker {
                 drain_worker(worker, cleanup_deadline)?;
             }
             drain_worker(stdout_worker, cleanup_deadline)?;
+            drain_worker(stderr_worker, cleanup_deadline)?;
+            let error = io::Error::new(
+                io::ErrorKind::TimedOut,
+                "command I/O exceeded its fixed deadline",
+            );
             return Err(error);
         }
-    };
 
-    let status = match execution_deadline {
-        Some(execution_deadline) => {
-            let process_group = process_group.expect("a bounded command has a process group");
-            match wait_until_exit(process_group, execution_deadline) {
-                Ok(true) => None,
-                Ok(false) => {
-                    let cleanup =
-                        terminate_child(&mut child, Some(process_group), cleanup_deadline);
-                    cleanup?;
-                    if let Some(worker) = stdin_worker {
-                        drain_worker(worker, cleanup_deadline)?;
-                    }
-                    drain_worker(stdout_worker, cleanup_deadline)?;
-                    drain_worker(stderr_worker, cleanup_deadline)?;
-                    let error = io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "command exceeded its fixed deadline",
-                    );
-                    return Err(error);
-                }
-                Err(error) => {
-                    let cleanup =
-                        terminate_child(&mut child, Some(process_group), cleanup_deadline);
-                    cleanup?;
-                    if let Some(worker) = stdin_worker {
-                        drain_worker(worker, cleanup_deadline)?;
-                    }
-                    drain_worker(stdout_worker, cleanup_deadline)?;
-                    drain_worker(stderr_worker, cleanup_deadline)?;
-                    return Err(error);
-                }
+        let status = match status {
+            Some(status) => status,
+            None => terminate_child(&mut child, process_group, cleanup_deadline)?,
+        };
+        if process_group.is_some() {
+            if let Some(worker) = stdin_worker {
+                join_worker_until(worker, cleanup_deadline)??;
             }
+            let stdout = join_worker_until(stdout_worker, cleanup_deadline)??;
+            let stderr = join_worker_until(stderr_worker, cleanup_deadline)??;
+            return Ok(command_output(status, stdout, stderr));
         }
-        None => {
-            // A wait error returns directly because numeric PID ownership would be unproven.
-            Some(child.wait()?)
-        }
-    };
-
-    if execution_deadline.is_some_and(|execution_deadline| {
-        !wait_for_command_io(
-            stdin_worker.as_ref(),
-            &stdout_worker,
-            &stderr_worker,
-            execution_deadline,
-        )
-    }) {
-        let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
-        cleanup?;
         if let Some(worker) = stdin_worker {
-            drain_worker(worker, cleanup_deadline)?;
+            join_worker(worker)??;
         }
-        drain_worker(stdout_worker, cleanup_deadline)?;
-        drain_worker(stderr_worker, cleanup_deadline)?;
-        let error = io::Error::new(
-            io::ErrorKind::TimedOut,
-            "command I/O exceeded its fixed deadline",
-        );
-        return Err(error);
+        let stdout = join_worker(stdout_worker)??;
+        let stderr = join_worker(stderr_worker)??;
+        Ok(command_output(status, stdout, stderr))
+    })();
+    if let Some(foreground) = &mut foreground {
+        foreground.restore()?;
     }
-
-    let status = match status {
-        Some(status) => status,
-        None => terminate_child(&mut child, process_group, cleanup_deadline)?,
-    };
-    if process_group.is_some() {
-        if let Some(worker) = stdin_worker {
-            join_worker_until(worker, cleanup_deadline)??;
-        }
-        let stdout = join_worker_until(stdout_worker, cleanup_deadline)??;
-        let stderr = join_worker_until(stderr_worker, cleanup_deadline)??;
-        return Ok(command_output(status, stdout, stderr));
-    }
-    if let Some(worker) = stdin_worker {
-        join_worker(worker)??;
-    }
-    let stdout = join_worker(stdout_worker)??;
-    let stderr = join_worker(stderr_worker)??;
-    Ok(command_output(status, stdout, stderr))
+    result
 }
 
 fn command_output_worker(

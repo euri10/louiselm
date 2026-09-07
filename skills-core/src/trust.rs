@@ -27,11 +27,15 @@ use crate::{
     store::Store,
 };
 
+pub(crate) mod browser;
 pub mod paper;
+pub mod passkey;
 pub(crate) mod persistence;
+pub mod recovery;
+pub(crate) mod terminal;
 
 /// The trust store schema this build reads and writes.
-pub const TRUST_SCHEMA: &str = "louiselm.skills.trust/2";
+pub const TRUST_SCHEMA: &str = "louiselm.skills.trust/3";
 
 /// The trust-change payload schema.
 pub const TRUST_CHANGE_SCHEMA: &str = "louiselm.skills.trust-change/1";
@@ -164,6 +168,10 @@ pub struct TrustStore {
     pub paper_verifier: Option<String>,
     /// Consumed or replaced paper verifiers, which must never be re-enrolled.
     pub retired_paper_verifiers: BTreeSet<String>,
+    /// Current synced-capable recovery credential; never an ordinary signer.
+    pub passkey: Option<passkey::EnrolledPasskey>,
+    /// Retired credential fingerprints, refused on re-enrollment.
+    pub retired_passkeys: BTreeSet<String>,
 }
 
 /// A trust operation that could not report success.
@@ -228,6 +236,26 @@ impl TrustStore {
             ));
         }
         let mut roles = BTreeSet::new();
+        if self
+            .retired_passkeys
+            .iter()
+            .any(|id| Digest::parse(id).is_err())
+        {
+            return Err(TrustError::Malformed("invalid retired passkey".to_owned()));
+        }
+        if let Some(passkey) = &self.passkey {
+            passkey
+                .validate()
+                .map_err(|_| TrustError::Malformed("invalid passkey".to_owned()))?;
+            let id = passkey
+                .fingerprint()
+                .map_err(|_| TrustError::Malformed("invalid passkey".to_owned()))?;
+            if self.retired_passkeys.contains(&id) {
+                return Err(TrustError::Malformed(
+                    "retired passkey is current".to_owned(),
+                ));
+            }
+        }
         if self.keys.iter().any(|key| !roles.insert(key.role.name())) {
             return Err(TrustError::Malformed(
                 "duplicate current signing role".to_owned(),
@@ -261,6 +289,8 @@ impl TrustStore {
             approved_releases: BTreeSet::new(),
             paper_verifier: None,
             retired_paper_verifiers: BTreeSet::new(),
+            passkey: None,
+            retired_passkeys: BTreeSet::new(),
             keys: vec![
                 EnrolledKey {
                     role: Role::Primary,

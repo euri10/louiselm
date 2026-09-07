@@ -130,7 +130,7 @@ Three roles, kept distinct even on one physical token. **Primary** signs routine
 Admissions. **Recovery** exists only to replace key policy or the primary, and
 is refused as an ordinary signer — a recovery key that could also admit skills
 would just be a second primary. **Release** authorizes trusted builds
-(louiselm-d6fv.7). Paper recovery can authorize replacement signing keys, but
+(louiselm-d6fv.7). Paper and passkey recovery can authorize replacement signing keys, but
 cannot itself sign an Admission or release. Losing every functioning signing
 and recovery method requires explicit `trust reset` and re-Admission.
 
@@ -142,9 +142,9 @@ signing key is retired.
 
 ### Paper recovery
 
-This slice implements paper enrollment and recovery; Android passkeys,
-integrated one-YubiKey first-time onboarding, and installed/hardware acceptance
-remain `louiselm-d6fv.11.3`–`.11.5`. The legacy bootstrap below still needs a
+Paper and browser passkey enrollment/recovery are implemented. Integrated
+one-YubiKey first-time onboarding and installed/hardware/Android acceptance
+remain `louiselm-d6fv.11.4`–`.11.5`. The legacy bootstrap below still needs a
 recovery signing credential; it is not the finished one-YubiKey onboarding.
 
 Run `recovery --help` from a trusted installed release, as root, against an
@@ -183,9 +183,102 @@ papers until success is confirmed**; inspect `trust show` before retrying a
 persistence error. A killed process can leave terminal display settings dirty
 (`stty sane` restores them), but cannot partially publish a key/phrase change.
 
-The new closed trust schema is `louiselm.skills.trust/2`; unsupported or malformed
+The closed trust schema is `louiselm.skills.trust/3`; unsupported or malformed
 state is refused, not silently migrated or initialized. See the public
-`trust::paper` API and `tests/paper_recovery.rs` for deterministic fixture coverage.
+`trust::paper` secret type, shared `trust::recovery` transaction API, and
+`tests/paper_recovery.rs` for fixture coverage.
+
+### Passkey recovery
+
+```sh
+louiselm-skills recovery passkey-enroll --store /protected/store \
+  --authorizer /protected/current-primary
+louiselm-skills recovery passkey-recover --store /protected/store \
+  --primary /protected/new-primary --release /protected/new-release
+# Optionally replace paper recovery too; words stay exclusively on the local TTY.
+louiselm-skills recovery passkey-recover --store /protected/store --paper replace
+```
+
+These commands enforce the same installed-tool, root-owned store and foreground
+TTY boundary as paper recovery. Never run an actual ceremony through an Agent,
+terminal recorder or screen-sharing session. Open the printed localhost URL in
+your normal trusted browser, **never a browser running as root**. Check its
+address against the terminal and review the exact public change. A phone's
+passkey prompt is not an independent display of that full change.
+
+`passkey-enroll` first verifies possession in the browser, then asks for local
+confirmation and a signature from the current Primary or Release key. A second
+browser page confirms the exact resulting credential/change before publication.
+A newly registered passkey cannot enroll itself. The same command replaces an
+existing passkey and retires its credential ID; paper and signing keys are
+unchanged. General method management and one-token bootstrap belong to `.11.4`.
+
+`passkey-recover` authenticates with the current passkey after preparing the
+exact replacement-key possession proofs. It never needs the old signing key
+or paper phrase. Paper stays unchanged unless `--paper replace` is supplied;
+that flag requires writing and confirming the new phrase on the local TTY.
+Passkey counters and backup metadata update in the same locked trust publication.
+Neither recovery method can directly sign an Admission or release.
+
+The maintained [webauthn-rs passkey API](https://docs.rs/webauthn-rs/0.5.5/webauthn_rs/)
+requires user verification and permits synced/backed-up credentials. No hardware
+attestation or device-bound protection is claimed. The fixed RP is `localhost`;
+each listener binds IPv4 loopback on an ephemeral port and verifies that exact
+`http://localhost:PORT` origin. Neither the browser nor capture-service/pairing
+can choose an RP, remote verifier or trust root. Localhost is shared with other
+local applications, so the trusted browser/TTY and protected verifier remain
+part of the security boundary, not interchangeable with arbitrary local pages.
+
+The HTTP adapter uses bounded `httparse` requests, an unguessable path token,
+exact Host/Origin checks, no CORS, no caching and no framing. Pending verifier
+state stays in memory, binds the full predecessor and exact change, and expires
+after five minutes. Attempts are consumed even on failed proofs. Cancellation,
+expiry and normal completion close the listener; browser crashes are bounded
+by expiry. Registration's same deadline covers local confirmation, hardware
+signing and final browser confirmation. The SSH signer uses a private exclusive
+scratch directory, a fixed `/usr/bin/ssh-keygen`, a cleared environment and the
+shared bounded process-group runner. Linux foreground handoff preserves PIN
+input and restores the terminal after success, cancellation or timeout.
+
+The browser reports the result. A lost response **after submitting approval** is
+indeterminate: inspect the trusted terminal and `trust show` before retrying.
+Closing a page cannot undo a committed change; a persistence error can follow
+atomic publication. A failed or expired proof cannot authorize a late change.
+
+Chrome virtual-authenticator registration/authentication and cancellation have
+been exercised with disposable fixtures. Real Android/Google Password Manager,
+cross-device transport and installed YubiKey acceptance remain `.11.5`; this
+implementation does not assert their acceptance or recovery-ready onboarding.
+
+#### Passkey development checks
+
+`webauthn-rs` needs the platform OpenSSL library and build headers/pkg-config.
+`tempfile` is also used by the runtime signer; it is not a second test framework.
+`tests/passkey_recovery.rs` uses a public, disposable Chrome credential and the
+already-transitive Rust OpenSSL library, explicitly declared as an approved
+test dependency, to sign synthetic assertions against fresh verifier challenges.
+Signing stays in memory: no OpenSSL executable or temporary private-key file.
+No test reads personal credentials, relies on a network peer or serializes
+pending WebAuthn server state.
+
+For the opt-in browser check, use an isolated browser session, not your profile:
+
+```sh
+# From the repository root; this fixture creates its own untrusted temporary store.
+./scripts/test-skills-core --lib trust::browser::tests::virtual_browser \
+  -- --ignored --exact --nocapture
+playwright-cli -s=passkey-fixture open --browser=chrome
+# For each PUBLIC_FIXTURE_* URL printed by the test (register, authenticate, cancel):
+playwright-cli -s=passkey-fixture goto URL
+playwright-cli -s=passkey-fixture run-code --filename=skills-core/tests/passkey_browser.js
+playwright-cli -s=passkey-fixture close
+```
+
+Keep that same isolated browser open between the three URLs. The script refuses
+non-fixture action labels, creates only a virtual authenticator, checks exact
+displayed data, verifies both proof results and cancels the final pending change.
+The ordinary Rust suite independently covers transport rejection, expiry,
+replay, UV/origin/challenge/credential failures, atomic recovery and real PTYs.
 
 A signed Generation governs nothing until it is **witnessed**. Its exact bytes
 are published to a protected Git branch and read back from the remote before it
@@ -267,7 +360,9 @@ Session cgroup, then receives only the workload stdin and Bubblewrap's two gate
 descriptors over a private socket and replaces itself with Bubblewrap. Descriptor
 inheritance is configured only in that fresh process; concurrent parent spawns
 cannot inherit the gates. Host identity is still checked before the workload is
-released. The crate forbids unsafe Rust, including in its binaries and tests.
+released. The crate denies unsafe Rust across its binaries and tests. The sole
+reviewed exception temporarily masks SIGTTOU while returning foreground terminal
+ownership after bounded interactive signing (`launcher_install/foreground.rs`).
 
 The privileged launcher pins its bootstrap to the validated release directory.
 Development callers of `BubblewrapBackend` can select the Cargo-built launcher

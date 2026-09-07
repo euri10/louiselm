@@ -7,19 +7,22 @@ description = "Trusted packaging, Inspection, and Dossier rendering for LouiseLM
 
 [dependencies]
 bip39 = { version = "2.2.2", default-features = false, features = ["zeroize"] }
-rustix = { version = "1", features = ["fs", "net", "process", "rand", "termios", "pty"] }
+httparse = "1.10"
+rustix = { version = "1", features = ["fs", "net", "process", "rand", "termios", "pty", "event", "runtime"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
+tempfile = "3"
+webauthn-rs = { version = "0.5.5", default-features = false }
 zeroize = "1.9"
 
 [dev-dependencies]
-tempfile = "3"
+openssl = "0.10"
 
 [lints.rust]
 missing_docs = "deny"
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 
 [lints.clippy]

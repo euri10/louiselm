@@ -191,7 +191,7 @@ fn a_bundle_binds_its_source_toolchain_dependencies_policy_and_bytes() {
     assert!(
         manifest
             .schemas
-            .contains(&louiselm_skills::trust::paper::PAPER_NAMESPACE.to_owned()),
+            .contains(&louiselm_skills::trust::recovery::RECOVERY_NAMESPACE.to_owned()),
         "the paper change schema is bound by the release"
     );
     assert!(

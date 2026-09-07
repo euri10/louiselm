@@ -12,9 +12,10 @@ use louiselm_skills::{
     sshsig::SkPolicy,
     trust::{
         Role, TrustStore,
-        paper::{
-            self, PAPER_NAMESPACE, POSSESSION_NAMESPACE, PaperAuthorization, PaperChange,
-            PaperError, PaperPhrase, ReplacementKey, ReplacementProof,
+        paper::PaperPhrase,
+        recovery::{
+            self, POSSESSION_NAMESPACE, RECOVERY_NAMESPACE, RecoveryAuthorization, RecoveryChange,
+            RecoveryError, ReplacementKey, ReplacementProof,
         },
     },
 };
@@ -69,17 +70,20 @@ fn enrolled(fixture: &Fixture) -> (TrustStore, SshKey) {
     )
     .expect("bootstrap");
     let next = phrase(0);
-    let change = PaperChange::new(&trust, vec![], &next).expect("enrollment plan");
-    let signature = primary.sign(PAPER_NAMESPACE, &change.canonical_bytes());
-    let trust = paper::apply(
+    let change = RecoveryChange::new(&trust, vec![], Some(&next)).expect("enrollment plan");
+    let signature = primary.sign(RECOVERY_NAMESPACE, &change.canonical_bytes());
+    let trust = recovery::apply(
         &fixture.store(),
         &change,
-        PaperAuthorization::SigningKey {
+        RecoveryAuthorization::SigningKey {
             role: Role::Primary,
             signature: &signature,
         },
         &[],
-        &next,
+        recovery::RecoveryConfirmation {
+            paper: Some(&next),
+            registration: None,
+        },
         2,
     )
     .expect("enroll paper recovery");
@@ -92,25 +96,28 @@ fn a_phrase_replaces_the_primary_and_is_consumed_in_the_same_change() {
     let (trust, _) = enrolled(&fixture);
     let replacement = SshKey::generate(&fixture, "replacement");
     let next = phrase(1);
-    let change = PaperChange::new(
+    let change = RecoveryChange::new(
         &trust,
         vec![ReplacementKey {
             role: Role::Primary,
             public_key: replacement.public_key(),
         }],
-        &next,
+        Some(&next),
     )
     .expect("replacement plan");
     let proofs = [ReplacementProof {
         role: Role::Primary,
         signature: replacement.sign(POSSESSION_NAMESPACE, &change.canonical_bytes()),
     }];
-    let recovered = paper::apply(
+    let recovered = recovery::apply(
         &fixture.store(),
         &change,
-        PaperAuthorization::Phrase(&phrase(0)),
+        RecoveryAuthorization::Phrase(&phrase(0)),
         &proofs,
-        &next,
+        recovery::RecoveryConfirmation {
+            paper: Some(&next),
+            registration: None,
+        },
         3,
     )
     .expect("recover with paper");
@@ -120,36 +127,46 @@ fn a_phrase_replaces_the_primary_and_is_consumed_in_the_same_change() {
     );
     assert_eq!(recovered.sequence, trust.sequence + 1);
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::Phrase(&phrase(0)),
+            RecoveryAuthorization::Phrase(&phrase(0)),
             &proofs,
-            &next,
+            recovery::RecoveryConfirmation {
+                paper: Some(&next),
+                registration: None
+            },
             4
         )
         .is_err(),
         "no replay"
     );
-    let rotate_phrase = PaperChange::new(&recovered, vec![], &phrase(2)).expect("fresh plan");
+    let rotate_phrase =
+        RecoveryChange::new(&recovered, vec![], Some(&phrase(2))).expect("fresh plan");
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &rotate_phrase,
-            PaperAuthorization::Phrase(&phrase(0)),
+            RecoveryAuthorization::Phrase(&phrase(0)),
             &[],
-            &phrase(2),
+            recovery::RecoveryConfirmation {
+                paper: Some(&phrase(2)),
+                registration: None
+            },
             4
         )
         .is_err(),
         "consumed phrase fails even for a fresh plan"
     );
-    paper::apply(
+    recovery::apply(
         &fixture.store(),
         &rotate_phrase,
-        PaperAuthorization::Phrase(&next),
+        RecoveryAuthorization::Phrase(&next),
         &[],
-        &phrase(2),
+        recovery::RecoveryConfirmation {
+            paper: Some(&phrase(2)),
+            registration: None,
+        },
         4,
     )
     .expect("replacement phrase works");
@@ -161,13 +178,13 @@ fn wrong_phrase_confirmation_and_missing_possession_leave_every_byte_unchanged()
     let (trust, _) = enrolled(&fixture);
     let replacement = SshKey::generate(&fixture, "replacement");
     let next = phrase(1);
-    let change = PaperChange::new(
+    let change = RecoveryChange::new(
         &trust,
         vec![ReplacementKey {
             role: Role::Primary,
             public_key: replacement.public_key(),
         }],
-        &next,
+        Some(&next),
     )
     .expect("replacement plan");
     let proofs = [ReplacementProof {
@@ -176,34 +193,43 @@ fn wrong_phrase_confirmation_and_missing_possession_leave_every_byte_unchanged()
     }];
     let before = std::fs::read(fixture.path("store/trust/roles.json")).expect("state");
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::Phrase(&phrase(7)),
+            RecoveryAuthorization::Phrase(&phrase(7)),
             &proofs,
-            &next,
+            recovery::RecoveryConfirmation {
+                paper: Some(&next),
+                registration: None
+            },
             3
         )
         .is_err()
     );
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::Phrase(&phrase(0)),
+            RecoveryAuthorization::Phrase(&phrase(0)),
             &proofs,
-            &phrase(2),
+            recovery::RecoveryConfirmation {
+                paper: Some(&phrase(2)),
+                registration: None
+            },
             3
         )
         .is_err()
     );
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::Phrase(&phrase(0)),
+            RecoveryAuthorization::Phrase(&phrase(0)),
             &[],
-            &next,
+            recovery::RecoveryConfirmation {
+                paper: Some(&next),
+                registration: None
+            },
             3
         )
         .is_err()
@@ -221,7 +247,7 @@ fn phrases_are_checksummed_domain_scoped_and_redacted() {
     assert_eq!(format!("{secret:?}"), "PaperPhrase([REDACTED])");
     assert!(matches!(
         PaperPhrase::parse("secret text never echoed"),
-        Err(PaperError::InvalidPhrase)
+        Err(RecoveryError::InvalidPhrase)
     ));
     assert!(
         PaperPhrase::parse(&"abandon ".repeat(24)).is_err(),
@@ -250,7 +276,7 @@ fn stale_wrong_domain_and_confused_roles_never_change_authority() {
     let fixture = Fixture::new();
     let (trust, primary) = enrolled(&fixture);
     let next = phrase(1);
-    let change = PaperChange::new(&trust, vec![], &next).expect("plan");
+    let change = RecoveryChange::new(&trust, vec![], Some(&next)).expect("plan");
     let mut wrong_domain = change.clone();
     wrong_domain.trust_domain = "elsewhere".to_owned();
     let mut wrong_schema = change.clone();
@@ -259,12 +285,15 @@ fn stale_wrong_domain_and_confused_roles_never_change_authority() {
     stale.predecessor = "other snapshot".to_owned();
     for invalid in [wrong_domain, wrong_schema, stale] {
         assert!(
-            paper::apply(
+            recovery::apply(
                 &fixture.store(),
                 &invalid,
-                PaperAuthorization::Phrase(&phrase(0)),
+                RecoveryAuthorization::Phrase(&phrase(0)),
                 &[],
-                &next,
+                recovery::RecoveryConfirmation {
+                    paper: Some(&next),
+                    registration: None
+                },
                 3
             )
             .is_err()
@@ -272,42 +301,48 @@ fn stale_wrong_domain_and_confused_roles_never_change_authority() {
     }
     let wrong_namespace = primary.sign(POSSESSION_NAMESPACE, &change.canonical_bytes());
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::SigningKey {
+            RecoveryAuthorization::SigningKey {
                 role: Role::Primary,
                 signature: &wrong_namespace
             },
             &[],
-            &next,
+            recovery::RecoveryConfirmation {
+                paper: Some(&next),
+                registration: None
+            },
             3
         )
         .is_err()
     );
-    let signature = primary.sign(PAPER_NAMESPACE, &change.canonical_bytes());
+    let signature = primary.sign(RECOVERY_NAMESPACE, &change.canonical_bytes());
     assert!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::SigningKey {
+            RecoveryAuthorization::SigningKey {
                 role: Role::Recovery,
                 signature: &signature
             },
             &[],
-            &next,
+            recovery::RecoveryConfirmation {
+                paper: Some(&next),
+                registration: None
+            },
             3
         )
         .is_err()
     );
     assert!(
-        PaperChange::new(
+        RecoveryChange::new(
             &trust,
             vec![ReplacementKey {
                 role: Role::Recovery,
                 public_key: "replacement".to_owned()
             }],
-            &next
+            Some(&next)
         )
         .is_err()
     );
@@ -323,38 +358,41 @@ fn consumed_phrases_and_retired_keys_cannot_be_reenrolled() {
     let (trust, primary) = enrolled(&fixture);
     let replacement = SshKey::generate(&fixture, "replacement");
     let next = phrase(1);
-    let change = PaperChange::new(
+    let change = RecoveryChange::new(
         &trust,
         vec![ReplacementKey {
             role: Role::Primary,
             public_key: replacement.public_key(),
         }],
-        &next,
+        Some(&next),
     )
     .expect("plan");
     let proof = ReplacementProof {
         role: Role::Primary,
         signature: replacement.sign(POSSESSION_NAMESPACE, &change.canonical_bytes()),
     };
-    let recovered = paper::apply(
+    let recovered = recovery::apply(
         &fixture.store(),
         &change,
-        PaperAuthorization::Phrase(&phrase(0)),
+        RecoveryAuthorization::Phrase(&phrase(0)),
         &[proof],
-        &next,
+        recovery::RecoveryConfirmation {
+            paper: Some(&next),
+            registration: None,
+        },
         3,
     )
     .expect("recovery");
-    assert!(PaperChange::new(&recovered, vec![], &phrase(0)).is_err());
-    assert!(PaperChange::new(&recovered, vec![], &next).is_err());
+    assert!(RecoveryChange::new(&recovered, vec![], Some(&phrase(0))).is_err());
+    assert!(RecoveryChange::new(&recovered, vec![], Some(&next)).is_err());
     assert!(
-        PaperChange::new(
+        RecoveryChange::new(
             &recovered,
             vec![ReplacementKey {
                 role: Role::Primary,
                 public_key: primary.public_key()
             }],
-            &phrase(2)
+            Some(&phrase(2))
         )
         .is_err()
     );
@@ -379,13 +417,13 @@ fn hardware_policy_is_inherited_and_cannot_be_downgraded_by_paper() {
     )
     .expect("hardware-policy fixture");
     let software = SshKey::generate(&fixture, "software");
-    let change = PaperChange::new(
+    let change = RecoveryChange::new(
         &trust,
         vec![ReplacementKey {
             role: Role::Primary,
             public_key: software.public_key(),
         }],
-        &phrase(1),
+        Some(&phrase(1)),
     )
     .expect("plan");
     let proof = ReplacementProof {
@@ -393,15 +431,18 @@ fn hardware_policy_is_inherited_and_cannot_be_downgraded_by_paper() {
         signature: software.sign(POSSESSION_NAMESPACE, &change.canonical_bytes()),
     };
     assert!(matches!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::Phrase(&phrase(0)),
+            RecoveryAuthorization::Phrase(&phrase(0)),
             &[proof],
-            &phrase(1),
+            recovery::RecoveryConfirmation {
+                paper: Some(&phrase(1)),
+                registration: None
+            },
             3
         ),
-        Err(PaperError::Signature(
+        Err(RecoveryError::Signature(
             louiselm_skills::sshsig::SignatureError::NotHardwareBacked { .. }
         ))
     ));
@@ -415,8 +456,8 @@ fn hardware_policy_is_inherited_and_cannot_be_downgraded_by_paper() {
 fn competing_paper_changes_apply_at_most_once() {
     let fixture = Fixture::new();
     let (trust, _) = enrolled(&fixture);
-    let first = PaperChange::new(&trust, vec![], &phrase(1)).expect("first plan");
-    let second = PaperChange::new(&trust, vec![], &phrase(2)).expect("competing plan");
+    let first = RecoveryChange::new(&trust, vec![], Some(&phrase(1))).expect("first plan");
+    let second = RecoveryChange::new(&trust, vec![], Some(&phrase(2))).expect("competing plan");
     let barrier = std::sync::Barrier::new(2);
     let store = fixture.store();
     let results = std::thread::scope(|scope| {
@@ -425,12 +466,15 @@ fn competing_paper_changes_apply_at_most_once() {
             let store = &store;
             scope.spawn(move || {
                 barrier.wait();
-                paper::apply(
+                recovery::apply(
                     store,
                     &change,
-                    PaperAuthorization::Phrase(&phrase(0)),
+                    RecoveryAuthorization::Phrase(&phrase(0)),
                     &[],
-                    &phrase(byte),
+                    recovery::RecoveryConfirmation {
+                        paper: Some(&phrase(byte)),
+                        registration: None,
+                    },
                     3,
                 )
             })
@@ -495,25 +539,28 @@ fn paper_recovery_preserves_history_but_old_keys_cannot_make_new_admissions() {
     let trust = TrustStore::load(&fixture.store()).unwrap().unwrap();
     let replacement = SshKey::generate(&fixture, "replacement");
     let next = phrase(1);
-    let change = PaperChange::new(
+    let change = RecoveryChange::new(
         &trust,
         vec![ReplacementKey {
             role: Role::Primary,
             public_key: replacement.public_key(),
         }],
-        &next,
+        Some(&next),
     )
     .unwrap();
     let proof = ReplacementProof {
         role: Role::Primary,
         signature: replacement.sign(POSSESSION_NAMESPACE, &change.canonical_bytes()),
     };
-    let trust = paper::apply(
+    let trust = recovery::apply(
         &fixture.store(),
         &change,
-        PaperAuthorization::Phrase(&phrase(0)),
+        RecoveryAuthorization::Phrase(&phrase(0)),
         &[proof],
-        &next,
+        recovery::RecoveryConfirmation {
+            paper: Some(&next),
+            registration: None,
+        },
         4,
     )
     .unwrap();
@@ -555,7 +602,7 @@ fn both_signing_roles_require_exact_distinct_possession_proofs() {
         },
     ];
     let next = phrase(1);
-    let change = PaperChange::new(&trust, keys, &next).unwrap();
+    let change = RecoveryChange::new(&trust, keys, Some(&next)).unwrap();
     let proofs = vec![
         ReplacementProof {
             role: Role::Primary,
@@ -569,21 +616,24 @@ fn both_signing_roles_require_exact_distinct_possession_proofs() {
     let mut duplicate = proofs.clone();
     duplicate[1].role = Role::Primary;
     let mut wrong_namespace = proofs.clone();
-    wrong_namespace[1].signature = release.sign(PAPER_NAMESPACE, &change.canonical_bytes());
+    wrong_namespace[1].signature = release.sign(RECOVERY_NAMESPACE, &change.canonical_bytes());
     let mut changed_plan = change.clone();
-    changed_plan.next_verifier = phrase(2).verifier(&trust.trust_domain);
+    changed_plan.next_verifier = Some(phrase(2).verifier(&trust.trust_domain));
     for (plan, proof, confirmed) in [
         (&change, &duplicate, &next),
         (&change, &wrong_namespace, &next),
         (&changed_plan, &proofs, &phrase(2)),
     ] {
         assert!(
-            paper::apply(
+            recovery::apply(
                 &fixture.store(),
                 plan,
-                PaperAuthorization::Phrase(&phrase(0)),
+                RecoveryAuthorization::Phrase(&phrase(0)),
                 proof,
-                confirmed,
+                recovery::RecoveryConfirmation {
+                    paper: Some(confirmed),
+                    registration: None
+                },
                 4
             )
             .is_err()
@@ -593,12 +643,15 @@ fn both_signing_roles_require_exact_distinct_possession_proofs() {
             Some(trust.clone())
         );
     }
-    let recovered = paper::apply(
+    let recovered = recovery::apply(
         &fixture.store(),
         &change,
-        PaperAuthorization::Phrase(&phrase(0)),
+        RecoveryAuthorization::Phrase(&phrase(0)),
         &proofs,
-        &next,
+        recovery::RecoveryConfirmation {
+            paper: Some(&next),
+            registration: None,
+        },
         4,
     )
     .unwrap();
@@ -624,17 +677,20 @@ fn failed_paper_publication_preserves_the_old_phrase_and_all_state() {
         let store = louiselm_skills::Store::open(std::path::Path::new(&path)).unwrap();
         let trust = TrustStore::load(&store).unwrap().unwrap();
         let next = phrase(1);
-        let change = PaperChange::new(&trust, vec![], &next).unwrap();
+        let change = RecoveryChange::new(&trust, vec![], Some(&next)).unwrap();
         assert!(matches!(
-            paper::apply(
+            recovery::apply(
                 &store,
                 &change,
-                PaperAuthorization::Phrase(&phrase(0)),
+                RecoveryAuthorization::Phrase(&phrase(0)),
                 &[],
-                &next,
+                recovery::RecoveryConfirmation {
+                    paper: Some(&next),
+                    registration: None
+                },
                 4
             ),
-            Err(PaperError::Trust(
+            Err(RecoveryError::Trust(
                 louiselm_skills::trust::TrustError::Io { .. }
             ))
         ));
@@ -675,13 +731,16 @@ fn failed_paper_publication_preserves_the_old_phrase_and_all_state() {
         before
     );
     let next = phrase(1);
-    let change = PaperChange::new(&trust, vec![], &next).unwrap();
-    paper::apply(
+    let change = RecoveryChange::new(&trust, vec![], Some(&next)).unwrap();
+    recovery::apply(
         &fixture.store(),
         &change,
-        PaperAuthorization::Phrase(&phrase(0)),
+        RecoveryAuthorization::Phrase(&phrase(0)),
         &[],
-        &next,
+        recovery::RecoveryConfirmation {
+            paper: Some(&next),
+            registration: None,
+        },
         4,
     )
     .expect("failed write did not consume the old phrase");
@@ -692,7 +751,7 @@ fn exhaustion_refuses_paper_planning_and_application_without_consuming_a_phrase(
     let fixture = Fixture::new();
     let (mut trust, _) = enrolled(&fixture);
     let next = phrase(1);
-    let change = PaperChange::new(&trust, vec![], &next).unwrap();
+    let change = RecoveryChange::new(&trust, vec![], Some(&next)).unwrap();
     trust.sequence = u64::MAX;
     std::fs::write(
         fixture.path("store/trust/roles.json"),
@@ -700,21 +759,24 @@ fn exhaustion_refuses_paper_planning_and_application_without_consuming_a_phrase(
     )
     .unwrap();
     assert!(matches!(
-        PaperChange::new(&trust, vec![], &next),
-        Err(PaperError::Trust(
+        RecoveryChange::new(&trust, vec![], Some(&next)),
+        Err(RecoveryError::Trust(
             louiselm_skills::trust::TrustError::SequenceExhausted
         ))
     ));
     assert!(matches!(
-        paper::apply(
+        recovery::apply(
             &fixture.store(),
             &change,
-            PaperAuthorization::Phrase(&phrase(0)),
+            RecoveryAuthorization::Phrase(&phrase(0)),
             &[],
-            &next,
+            recovery::RecoveryConfirmation {
+                paper: Some(&next),
+                registration: None
+            },
             4
         ),
-        Err(PaperError::Trust(
+        Err(RecoveryError::Trust(
             louiselm_skills::trust::TrustError::SequenceExhausted
         ))
     ));
