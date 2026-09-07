@@ -83,14 +83,16 @@ pub(super) fn activate(
     store: &Store,
     previous: Option<&GenerationRecord>,
     current: &GenerationRecord,
+    activated_at_ms: u64,
 ) -> Result<(), AdmissionError> {
-    activate_with(store, previous, current, |_| Ok(()))
+    activate_with(store, previous, current, activated_at_ms, |_| Ok(()))
 }
 
 fn activate_with(
     store: &Store,
     previous: Option<&GenerationRecord>,
     current: &GenerationRecord,
+    activated_at_ms: u64,
     mut checkpoint: impl FnMut(Checkpoint) -> Result<(), AdmissionError>,
 ) -> Result<(), AdmissionError> {
     let pins_path = store.root().join("pins.jsonl");
@@ -103,7 +105,7 @@ fn activate_with(
         pins: read_optional(&pins_path)?,
     };
     let mut pins = journal.pins.clone().unwrap_or_default();
-    pins.push_str(&super::pin_line(current)?);
+    pins.push_str(&super::pin_line(current, activated_at_ms)?);
     let journal_path = store.root().join(JOURNAL);
     let bytes = serde_json::to_vec(&journal)
         .map_err(|error| AdmissionError::Malformed(error.to_string()))?;

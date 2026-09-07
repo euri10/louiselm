@@ -212,6 +212,7 @@ fn a_generation_becomes_current_only_after_the_exact_bytes_are_witnessed() {
     let activated = admission::activate(&store, &record.digest(), 1_756_800_000_003)
         .expect("activation succeeds");
     assert_eq!(activated.state, GenerationState::Current);
+    assert_eq!(activated.admitted_at_ms, 1_756_800_000_000);
     assert_eq!(
         admission::current(&store)
             .expect("current is readable")
@@ -220,6 +221,8 @@ fn a_generation_becomes_current_only_after_the_exact_bytes_are_witnessed() {
     );
     let pins_path = store.root().join("pins.jsonl");
     let pins = std::fs::read(&pins_path).expect("activated lineage is readable");
+    let pin: serde_json::Value = serde_json::from_slice(&pins).expect("one pin was committed");
+    assert_eq!(pin["activated_at_ms"], 1_756_800_000_003_u64);
     assert_eq!(
         admission::activate(&store, &record.digest(), 1_756_800_000_004)
             .expect("retrying the current Generation confirms activation"),

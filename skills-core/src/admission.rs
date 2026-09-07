@@ -417,8 +417,9 @@ pub fn witness(
 /// Makes a witnessed Generation the supply in force.
 ///
 /// Readers and mutations share the trust lock and recover an interrupted
-/// activation before proceeding. Retrying the current digest confirms commit
-/// durability without appending another pin.
+/// activation before proceeding. A new pin records the supplied `activated_at_ms`.
+/// Retrying the current digest confirms commit durability without appending
+/// another pin or changing its original activation timestamp.
 ///
 /// # Errors
 /// Rejects an untrusted release, unwitnessed/invalid Generation, rollback, or
@@ -429,7 +430,7 @@ pub fn witness(
 pub fn activate(
     store: &Store,
     digest: &Digest,
-    _activated_at_ms: u64,
+    activated_at_ms: u64,
 ) -> Result<GenerationRecord, AdmissionError> {
     let identity = crate::release::running_identity();
     if store.is_trusted() && !identity.verified {
@@ -460,7 +461,7 @@ pub fn activate(
         }
     }
     record.state = GenerationState::Current;
-    transaction::activate(store, previous.as_ref(), &record)?;
+    transaction::activate(store, previous.as_ref(), &record, activated_at_ms)?;
     Ok(record)
 }
 
@@ -681,7 +682,7 @@ fn write_record(store: &Store, record: &GenerationRecord) -> Result<(), Admissio
 /// Lineage records which policy and set root were in force and when. It has no
 /// approval authority: reading it can tell an operator what changed, never
 /// that a change was allowed.
-fn pin_line(record: &GenerationRecord) -> Result<String, AdmissionError> {
+fn pin_line(record: &GenerationRecord, activated_at_ms: u64) -> Result<String, AdmissionError> {
     #[derive(Serialize)]
     struct Pin<'a> {
         sequence: u64,
@@ -696,7 +697,7 @@ fn pin_line(record: &GenerationRecord) -> Result<String, AdmissionError> {
         generation: &record.generation,
         policy_digest: &record.payload.policy_digest,
         member_root: &record.payload.member_root,
-        activated_at_ms: record.admitted_at_ms,
+        activated_at_ms,
     };
     let mut line = serde_json::to_string(&pin)
         .map_err(|error| AdmissionError::Malformed(error.to_string()))?;

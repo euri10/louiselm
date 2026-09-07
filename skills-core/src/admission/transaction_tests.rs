@@ -35,7 +35,7 @@ impl Fixture {
         admission::write_record(&store, &candidate).unwrap();
         fs::write(
             store.root().join("pins.jsonl"),
-            admission::pin_line(&previous).unwrap(),
+            admission::pin_line(&previous, 10).unwrap(),
         )
         .unwrap();
         Self {
@@ -63,7 +63,7 @@ impl Fixture {
         );
         assert_eq!(
             fs::read_to_string(self.store.root().join("pins.jsonl")).unwrap(),
-            admission::pin_line(&self.previous).unwrap()
+            admission::pin_line(&self.previous, 10).unwrap()
         );
         assert!(!self.store.root().join(JOURNAL).exists());
     }
@@ -112,6 +112,7 @@ fn every_precommit_failure_restores_supply_and_lineage() {
             &fixture.store,
             Some(&fixture.previous),
             &fixture.activated(),
+            20,
             |point| {
                 if point == stop {
                     Err(injected_error())
@@ -137,6 +138,7 @@ fn a_torn_candidate_write_is_recovered_before_reading_supply() {
         &fixture.store,
         Some(&fixture.previous),
         &fixture.activated(),
+        20,
         |point| {
             if point == Checkpoint::PreviousWritten {
                 fs::write(
@@ -164,6 +166,7 @@ fn rollback_failure_blocks_readers_until_the_fault_is_repaired() {
         &fixture.store,
         Some(&fixture.previous),
         &fixture.activated(),
+        20,
         |point| {
             if point == Checkpoint::PreviousWritten {
                 fs::remove_file(&candidate_path).unwrap();
@@ -194,6 +197,7 @@ fn final_sync_failure_reports_an_uncertain_commit_without_rolling_back() {
         &fixture.store,
         Some(&fixture.previous),
         &fixture.activated(),
+        20,
         |point| {
             if point == Checkpoint::JournalRemoved {
                 Err(injected_error())
@@ -240,7 +244,7 @@ fn crash_child() {
         .clone();
     candidate.state = GenerationState::Current;
     let _locked = lock(&store).unwrap();
-    activate_with(&store, previous, &candidate, |point| {
+    activate_with(&store, previous, &candidate, 20, |point| {
         if format!("{point:?}") == stop {
             std::process::exit(77);
         }
@@ -298,7 +302,7 @@ fn first_activation_rollback_restores_absent_lineage() {
     let mut current = candidate.clone();
     current.state = GenerationState::Current;
     let locked = lock(&store).unwrap();
-    let result = activate_with(&store, None, &current, |point| {
+    let result = activate_with(&store, None, &current, 10, |point| {
         if point == Checkpoint::PinsWritten {
             Err(injected_error())
         } else {
@@ -367,7 +371,8 @@ fn aliased_lineage_is_refused_before_changing_supply() {
             activate(
                 &fixture.store,
                 Some(&fixture.previous),
-                &fixture.activated()
+                &fixture.activated(),
+                20,
             ),
             Err(AdmissionError::Io { .. })
         ));
@@ -375,7 +380,7 @@ fn aliased_lineage_is_refused_before_changing_supply() {
         fixture.assert_restored();
         assert_eq!(
             fs::read_to_string(original).unwrap(),
-            admission::pin_line(&fixture.previous).unwrap()
+            admission::pin_line(&fixture.previous, 10).unwrap()
         );
     }
 }

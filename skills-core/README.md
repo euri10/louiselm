@@ -158,8 +158,9 @@ Generation: a digest already published with different bytes is refused, never
 overwritten. During a witness outage nothing changes, and the previous
 Generation stays in force. Activation refuses an older sequence or a different
 Generation at the current sequence, so intentional rollback requires a newly
-admitted higher sequence. Retrying the exact current digest confirms activation
-without appending another lineage pin.
+admitted higher sequence. Each lineage pin records activation time. Retrying the
+exact current digest confirms activation without appending another pin or
+changing its original timestamp.
 
 Activation serializes its Generation records and Supply lineage under the trust
 lock. It writes and syncs `activation.pending.json` before replacing any of them;
