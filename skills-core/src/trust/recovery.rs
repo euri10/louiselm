@@ -160,6 +160,16 @@ pub enum RecoveryError {
     /// A `WebAuthn` proof, registration or pending-state binding was refused.
     #[error("passkey recovery refused; expired, invalid or already used ceremony")]
     Passkey,
+    /// A pre-submission browser failure, with only allowlisted diagnostic fields.
+    #[error(
+        "passkey {operation} failed ({code}); no change applied; inspect recovery status before retrying"
+    )]
+    Browser {
+        /// Operation named by the trusted ceremony, not browser-supplied text.
+        operation: &'static str,
+        /// Allowlisted browser error name; never an arbitrary native message.
+        code: &'static str,
+    },
     /// Phrase length, words, or checksum is invalid.
     #[error("invalid paper phrase; expected 24 checksummed English words")]
     InvalidPhrase,

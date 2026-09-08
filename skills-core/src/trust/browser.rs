@@ -108,15 +108,20 @@ impl Browser {
                     .map_err(|_| RecoveryError::Passkey)?;
                     respond(&mut stream, "200 OK", "application/json", &document)?;
                 }
-                ("POST", Some("cancel")) => {
+                ("POST", Some(route @ ("cancel" | "failed"))) => {
                     // No callback, and thus no authority write, has occurred.
-                    let _ = respond(
-                        &mut stream,
-                        "200 OK",
-                        "application/json",
-                        br#"{"message":"Cancelled; trust unchanged."}"#,
-                    );
-                    return Err(RecoveryError::Cancelled);
+                    self.check_deadline()?;
+                    let error = if route == "failed" {
+                        browser_failure(kind, &request.body)
+                    } else {
+                        RecoveryError::Cancelled
+                    };
+                    let body = serde_json::to_vec(&json!({"message":if route == "cancel" {
+                        "Cancelled; trust unchanged.".to_owned()
+                    } else { error.to_string() }}))
+                    .map_err(|_| RecoveryError::Passkey)?;
+                    let _ = respond(&mut stream, "200 OK", "application/json", &body);
+                    return Err(error);
                 }
                 ("POST", Some("finish")) => {
                     self.check_deadline()?;
@@ -229,6 +234,36 @@ struct Request {
     method: String,
     path: String,
     body: Vec<u8>,
+}
+
+fn browser_failure(kind: &str, body: &[u8]) -> RecoveryError {
+    let operation = match kind {
+        "register" => "registration",
+        "authenticate" => "authentication",
+        "confirm" => "confirmation",
+        _ => return RecoveryError::Passkey,
+    };
+    let Ok(report) = serde_json::from_slice::<Value>(body) else {
+        return RecoveryError::Passkey;
+    };
+    // Exact object shape and static codes: arbitrary browser text never reaches
+    // terminal diagnostics, including forged names, extra fields or control bytes.
+    [
+        "InvalidStateError",
+        "NotAllowedError",
+        "AbortError",
+        "NotSupportedError",
+        "SecurityError",
+        "ConstraintError",
+        "TypeError",
+        "UnknownError",
+    ]
+    .into_iter()
+    .find(|code| report == json!({"code":code}))
+    .map_or(RecoveryError::Passkey, |code| RecoveryError::Browser {
+        operation,
+        code,
+    })
 }
 
 fn respond(

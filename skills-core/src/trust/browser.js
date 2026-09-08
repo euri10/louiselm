@@ -34,6 +34,15 @@ async function stop() {
   finish("Cancelled; no approval submitted. The local ceremony expires automatically if unreachable.");
   try { await post("cancel", {}); } catch (_) { /* Expiry also destroys pending state. */ }
 }
+async function failed(error, kind) {
+  // Never display/send native messages, options, or credential material.
+  const codes = ["InvalidStateError", "NotAllowedError", "AbortError", "NotSupportedError", "SecurityError", "ConstraintError", "TypeError", "UnknownError"];
+  const code = codes.includes(error?.name) ? error.name : "UnknownError";
+  const operation = kind === "register" ? "registration" : kind === "authenticate" ? "authentication" : "confirmation";
+  controller.abort();
+  finish(`Passkey ${operation} failed (${code}); no approval submitted. Inspect recovery status in the trusted terminal before retrying. Keep existing passkeys and papers; a new passkey may have been saved without being enrolled.`);
+  try { await post("failed", {code}); } catch (_) { /* Expiry also destroys pending state. */ }
+}
 cancel.addEventListener("click", stop);
 window.addEventListener("pagehide", () => {
   if (!done && !submitted) {
@@ -80,10 +89,10 @@ fetch("ceremony.json", {cache:"no-store"}).then(response => {
       status.textContent = "Approval submitted. Waiting for the trusted tool’s result…";
       const result = await post("finish", proof);
       finish(result.message);
-    } catch (_) {
+    } catch (error) {
       if (done) return;
       if (submitted) finish("Result unknown: inspect the trusted terminal and trust state before retrying. Closing this page cannot undo a committed change.");
-      else if (!expired()) await stop();
+      else if (!expired()) await failed(error, ceremony.kind);
     }
   }, {once:true});
 }).catch(() => finish("Local ceremony unavailable. Return to the trusted terminal."));

@@ -178,6 +178,11 @@ authorize its own enrollment. Existing passkey authority remains reusable; paper
 authority is consumed only by a successful transaction, which also confirms
 its replacement. Neither method can directly sign an Admission or release.
 
+Passkey replacement creates a distinct credential, including in the same
+password manager that holds the current one. Keep the old entry: registration
+alone does not enroll the candidate or retire existing authority. The old paper
+or passkey independently authorizes the exact change before atomic publication.
+
 Current-key authority still requires exact-change confirmation. All routes use
 the shared trust/approval lock and bind the full predecessor, including recorded
 approval history. Successful Admission and `release sign` register exact approved
@@ -197,6 +202,14 @@ terminal modes. Browser cancel/expiry closes the listener; subprocess deadlines
 bound signing and clean up its process group. A killed process can leave terminal
 display modes dirty (`stty sane` repairs them), but cannot partially enroll keys
 and recovery methods.
+
+Pre-submission browser failures report the operation and an allowlisted error
+name (for example, `registration failed (InvalidStateError)`) in the page and
+trusted terminal. Native messages, credential data and challenges are not
+reported. `NotAllowedError` can cover refusal or timeout; it is not proof that
+the operator clicked Cancel. Explicit page cancellation remains distinct.
+Inspect recovery status before retrying; do not delete existing passkey entries
+to work around a registration failure.
 
 **Keep both papers until success is confirmed.** A failure before rename preserves
 the prior state, but a directory-sync error can follow publication. A lost browser

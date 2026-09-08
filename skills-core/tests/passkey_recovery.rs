@@ -400,6 +400,37 @@ fn assertion(challenge: &Value, user: &Value, fault: &str, counter: u32) -> Publ
 }
 
 #[test]
+fn replacement_allows_same_authenticator_but_refuses_current_and_retired_credentials() {
+    let fixture = Fixture::new();
+    let (original, user, _) = enrolled(&fixture);
+    for retired in [false, true] {
+        let mut trust = original.clone();
+        if retired {
+            let old = trust.passkey.take().unwrap();
+            trust.retired_passkeys.insert(old.fingerprint().unwrap());
+        }
+        let (mut pending, options) = PendingRegistration::start(&trust, 45081).unwrap();
+        let options = serde_json::to_value(options).unwrap();
+        // cl1p/C14: excluding the old ID forbids creation on its authenticator,
+        // not just reuse of that ID (WebAuthn 6.3.2 step 3). No phone secrets.
+        assert!(
+            options["publicKey"]["excludeCredentials"].is_null()
+                || options["publicKey"]["excludeCredentials"] == json!([])
+        );
+        assert_ne!(options["publicKey"]["user"]["id"], user);
+        assert!(
+            pending
+                .finish(
+                    &trust,
+                    &registration(&options["publicKey"]["challenge"], "http://localhost:45081")
+                )
+                .is_err()
+        );
+    }
+    assert_eq!(TrustStore::load(&fixture.store()).unwrap(), Some(original));
+}
+
+#[test]
 fn either_old_method_can_replace_passkey_but_candidate_cannot_authorize_itself() {
     for via_paper in [true, false] {
         let fixture = Fixture::new();

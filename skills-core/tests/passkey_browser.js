@@ -12,7 +12,7 @@ async page => {
     await page.getByRole("button", {name:"Cancel", exact:true}).click();
     await page.getByRole("status").filter({hasText:"Cancelled"}).waitFor();
   } else {
-    if (ceremony.kind === "register") {
+    if (ceremony.kind === "register" && ceremony.action.operation !== "PUBLIC FIXTURE REPLACE") {
       const cdp = await page.context().newCDPSession(page);
       await cdp.send("WebAuthn.enable");
       await cdp.send("WebAuthn.addVirtualAuthenticator", {options:{protocol:"ctap2", transport:"internal", hasResidentKey:true, hasUserVerification:true, isUserVerified:true, automaticPresenceSimulation:true, defaultBackupEligibility:true, defaultBackupState:true}});
@@ -20,7 +20,7 @@ async page => {
     const shown = JSON.parse(await page.locator("#action").textContent());
     if (JSON.stringify(shown) !== JSON.stringify(ceremony.action)) throw new Error("Displayed action differs");
     await page.getByRole("button", {name:"Approve this action", exact:true}).click();
-    await page.getByRole("status").filter({hasText:ceremony.kind === "register" ? "Public fixture registration verified" : "Public fixture assertion verified"}).waitFor();
+    await page.getByRole("status").filter({hasText:ceremony.kind === "register" ? "Public fixture registration verified" : "Public fixture assertion verified"}).waitFor({timeout:5000});
   }
   if (!await page.getByRole("button", {name:"Approve this action", exact:true}).isDisabled()) throw new Error("Replay button enabled");
   if (errors.length) throw new Error(errors.join("\n"));

@@ -16,7 +16,7 @@ function pending() {
   return {promise, resolve, reject};
 }
 
-async function page({kind = "register", remaining = 1000, transfer = 0, timeout = 300000} = {}) {
+async function page({kind = "register", remaining = 1000, transfer = 0, timeout = 300000, parseError} = {}) {
   let now = 0;
   let nextTimer = 0;
   const timers = new Map();
@@ -48,8 +48,8 @@ async function page({kind = "register", remaining = 1000, transfer = 0, timeout 
       return {ok: true, json: async () => ({message: "Cancelled"})};
     },
     PublicKeyCredential: {
-      parseCreationOptionsFromJSON: value => ({...value}),
-      parseRequestOptionsFromJSON: value => ({...value}),
+      parseCreationOptionsFromJSON: value => { if (parseError) throw parseError; return {...value}; },
+      parseRequestOptionsFromJSON: value => { if (parseError) throw parseError; return {...value}; },
     },
     navigator: {credentials: Object.fromEntries(["create", "get"].map(method => [method, options => {
       proofs.push({method, ...options});
@@ -133,9 +133,47 @@ test("a shorter WebAuthn timeout is preserved", async () => {
   assert.equal(p.proofs[0].publicKey.timeout, 100);
   p.credential.reject(new Error("Public authenticator refusal"));
   await clicked;
-  assert.match(p.elements.status.textContent, /Cancelled/);
+  assert.match(p.elements.status.textContent, /registration failed \(UnknownError\)/);
   assert.equal(p.calls.some(call => call.path === "finish"), false);
 });
+
+for (const kind of ["register", "authenticate"]) {
+  test(`${kind}: option parsing errors never open an authenticator or leak details`, async () => {
+    const p = await page({kind, parseError: new TypeError("UNSAFE FIXTURE DETAIL")});
+    await p.click();
+    assert.equal(p.proofs.length, 0);
+    assert.match(p.elements.status.textContent, /failed \(TypeError\)/);
+    assert.doesNotMatch(p.elements.status.textContent, /UNSAFE FIXTURE DETAIL|Cancelled/);
+    assert.deepEqual(p.calls.filter(call => call.path !== "ceremony.json").map(call =>
+      ({path:call.path, body:JSON.parse(call.options.body)})), [{path:"failed", body:{code:"TypeError"}}]);
+  });
+
+  test(`${kind}: pre-submit errors are bounded diagnostics, not explicit cancellation`, async () => {
+    // 5bcg/C14: phone selection/biometric preceded generic cancellation.
+    // Error names below are synthetic hypotheses, not a captured native error.
+    for (const name of ["InvalidStateError", "NotAllowedError", "AbortError", "NotSupportedError",
+      "SecurityError", "ConstraintError", "TypeError", "UnknownError", "UNSAFE FIXTURE DETAIL"]) {
+      const p = await page({kind});
+      const clicked = p.click();
+      p.credential.reject(Object.assign(new Error("UNSAFE FIXTURE DETAIL"), {name}));
+      await clicked;
+      const code = name === "UNSAFE FIXTURE DETAIL" ? "UnknownError" : name;
+      assert.match(p.elements.status.textContent, new RegExp(`${kind === "register" ? "registration" : "authentication"} failed \\(${code}\\)`));
+      assert.doesNotMatch(p.elements.status.textContent, /Cancelled;|UNSAFE FIXTURE DETAIL/);
+      assert.equal(p.elements.approve.disabled, true);
+      assert.equal(p.elements.cancel.disabled, true);
+      assert.equal(p.proofs[0].signal.aborted, true);
+      assert.equal(p.calls.some(call => ["finish", "cancel"].includes(call.path)), false);
+      const report = p.calls.find(call => call.path === "failed");
+      assert.deepEqual(JSON.parse(report.options.body), {code});
+      await p.advance(2000);
+      await p.events["cancel:click"]();
+      p.events.pagehide();
+      assert.equal(p.calls.filter(call => call.path === "failed").length, 1);
+      assert.equal(p.calls.some(call => ["finish", "cancel"].includes(call.path)), false);
+    }
+  });
+}
 
 test("cancellation aborts the prompt and ignores its later result", async () => {
   const p = await page();

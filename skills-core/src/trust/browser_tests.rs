@@ -193,6 +193,73 @@ fn expired_browser_reports_expiry_without_calling_finish() {
 }
 
 #[test]
+fn browser_failure_reports_only_known_codes_without_committing() {
+    for (kind, body, expected) in [
+        (
+            "register",
+            r#"{"code":"InvalidStateError"}"#,
+            "registration failed (InvalidStateError)",
+        ),
+        (
+            "authenticate",
+            r#"{"code":"NotAllowedError"}"#,
+            "authentication failed (NotAllowedError)",
+        ),
+        (
+            "confirm",
+            r#"{"code":"TypeError"}"#,
+            "confirmation failed (TypeError)",
+        ),
+        (
+            "register",
+            r#"{"code":"UNSAFE FIXTURE DETAIL"}"#,
+            "passkey recovery refused",
+        ),
+        (
+            "register",
+            r#"{"code":"InvalidStateError","message":"UNSAFE FIXTURE DETAIL"}"#,
+            "passkey recovery refused",
+        ),
+        ("register", r#"{"code":null}"#, "passkey recovery refused"),
+        ("register", "{", "passkey recovery refused"),
+    ] {
+        let browser = Browser::bind()
+            .unwrap()
+            .until(Instant::now() + Duration::from_secs(3));
+        let port = browser.port().unwrap();
+        let prefix = browser.prefix.clone();
+        let worker = thread::spawn(move || {
+            browser.run(
+                kind,
+                &json!({}),
+                &json!({}),
+                |_| -> Result<((), &'static str), RecoveryError> {
+                    panic!("browser failure must not submit proof")
+                },
+            )
+        });
+        let reporting = connect(port);
+        let queued = connect(port);
+        let response = exchange(
+            reporting,
+            &format!(
+                "POST {prefix}failed HTTP/1.1\r\nHost: localhost:{port}\r\nOrigin: http://localhost:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        );
+        if response.starts_with("HTTP/1.1 404") {
+            // Bound the red run before this endpoint exists.
+            request(port, &post(port, &prefix, "cancel"));
+        }
+        let error = worker.join().unwrap().unwrap_err().to_string();
+        assert_listener_disposed(queued);
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("UNSAFE FIXTURE DETAIL"));
+        assert!(!response.contains("UNSAFE FIXTURE DETAIL"));
+    }
+}
+
+#[test]
 fn inherited_listener_delays_teardown_until_its_descriptor_closes() {
     let mut browser = Browser::bind().unwrap();
     let mut pending = connect(browser.port().unwrap());
@@ -225,7 +292,6 @@ fn virtual_browser() {
         sshsig::SkPolicy,
         trust::{
             TrustStore,
-            paper::PaperPhrase,
             passkey::{PendingAuthentication, PendingRegistration},
             recovery::RecoveryChange,
         },
@@ -263,8 +329,36 @@ fn virtual_browser() {
         .unwrap();
     // Only this test fixture assigns a key directly; production uses authorized apply.
     trust.passkey = Some(registration.credential().clone());
-    let paper = PaperPhrase::generate().unwrap();
-    let change = RecoveryChange::new(&trust, vec![], Some(&paper)).unwrap();
+    let original = trust.clone();
+    let browser = Browser::bind().unwrap();
+    let (mut pending, options) =
+        PendingRegistration::start(&trust, browser.port().unwrap()).unwrap();
+    println!("PUBLIC_FIXTURE_REPLACE={}", browser.url());
+    // cl1p: the driver keeps the SAME virtual authenticator and its old key.
+    // This exercises actual browser exclusion behavior, not a forged new ID.
+    let candidate = browser
+        .run(
+            "register",
+            &json!({"operation":"PUBLIC FIXTURE REPLACE", "trust_domain":trust.trust_domain}),
+            &serde_json::to_value(options).unwrap(),
+            |value| {
+                pending
+                    .finish(&trust, &serde_json::from_value(value).unwrap())
+                    .map(|candidate| {
+                        (
+                            candidate,
+                            "Public fixture registration verified; no real authority changed.",
+                        )
+                    })
+            },
+        )
+        .unwrap();
+    assert_ne!(candidate.credential(), registration.credential());
+    assert_eq!(
+        trust, original,
+        "registration alone must not retire the old key"
+    );
+    let change = RecoveryChange::enroll_passkey(&trust, &candidate).unwrap();
     let browser = Browser::bind().unwrap();
     let (mut pending, options) =
         PendingAuthentication::start(&trust, &change, browser.port().unwrap()).unwrap();

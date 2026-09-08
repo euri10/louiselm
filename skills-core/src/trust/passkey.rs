@@ -119,13 +119,14 @@ impl PendingRegistration {
     ) -> Result<(Self, CreationChallengeResponse), RecoveryError> {
         let verifier = verifier(port)?;
         let user_id = Uuid::new_v4();
-        let exclude = trust
-            .passkey
-            .as_ref()
-            .map(|key| key.key().map(|key| vec![key.cred_id().clone()]))
-            .transpose()?;
+        if let Some(key) = &trust.passkey {
+            key.validate()?;
+        }
+        // Excluding the old credential forbids its authenticator from creating
+        // any replacement (WebAuthn 6.3.2 step 3). Use a fresh user handle; finish
+        // still refuses current/retired IDs before independent authorization.
         let (options, state) = verifier
-            .start_passkey_registration(user_id, &trust.trust_domain, "LouiseLM recovery", exclude)
+            .start_passkey_registration(user_id, &trust.trust_domain, "LouiseLM recovery", None)
             .map_err(|_| RecoveryError::Passkey)?;
         Ok((
             Self {
