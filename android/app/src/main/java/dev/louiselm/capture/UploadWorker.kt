@@ -75,4 +75,4 @@ internal fun uploadWorkPolicy(replaceExisting: Boolean): ExistingWorkPolicy = if
 }
 
 internal fun shouldReplaceUploadWorkAfterPairing(transition: PairingTransition): Boolean =
-    transition == PairingTransition.RECEIVER_MIGRATION
+    transition == PairingTransition.RECEIVER_MIGRATION || transition == PairingTransition.CREDENTIAL_RENEWAL

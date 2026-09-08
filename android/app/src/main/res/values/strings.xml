@@ -24,6 +24,9 @@
     <string name="pairing_failed">Pairing failed: %1$s</string>
     <string name="confirm_pairing_title">Confirm receiver</string>
     <string name="confirm_pairing">Confirm</string>
+    <string name="confirm_same_receiver">This QR belongs to your current receiver at %1$s. Keep pairing to update only its address, or renew pairing to replace a revoked credential. Your recordings and capture IDs will stay unchanged.</string>
+    <string name="keep_pairing">Keep pairing</string>
+    <string name="renew_pairing">Renew pairing</string>
     <plurals name="confirm_first_pair">
         <item quantity="one">Pair with %2$s and assign %1$d unowned pending capture to it?</item>
         <item quantity="other">Pair with %2$s and assign %1$d unowned pending captures to it?</item>

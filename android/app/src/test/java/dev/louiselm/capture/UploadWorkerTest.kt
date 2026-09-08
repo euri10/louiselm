@@ -16,6 +16,11 @@ class UploadWorkerTest {
     }
 
     @Test
+    fun credentialRenewalRetriesPendingWorkImmediately() {
+        assertTrue(shouldReplaceUploadWorkAfterPairing(PairingTransition.CREDENTIAL_RENEWAL))
+    }
+
+    @Test
     fun explicitReplacementReplacesBackedOffUploadWork() {
         assertEquals(ExistingWorkPolicy.REPLACE, uploadWorkPolicy(replaceExisting = true))
         assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, uploadWorkPolicy(replaceExisting = false))

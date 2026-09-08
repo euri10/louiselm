@@ -12,6 +12,7 @@ internal enum class UploadDisposition {
 internal enum class PairingTransition {
     FIRST_PAIR,
     ENDPOINT_UPDATE,
+    CREDENTIAL_RENEWAL,
     RECEIVER_MIGRATION,
 }
 

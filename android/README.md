@@ -21,6 +21,29 @@ Connect an API 28+ device, then run:
 ./gradlew installDebug
 ```
 
+### Side-by-side physical QA
+
+Use the `qa` build when the normal `dev.louiselm.capture` app contains real
+pairing or recordings. It uses the same runtime code, with package ID
+`dev.louiselm.capture.qa`, label **LouiseLM QA**, and separate app storage and
+Android Keystore identity. Debug and release package IDs remain unchanged.
+No second Android user or Google account is required.
+
+```sh
+./gradlew test lint lintQa assembleDebug assembleQa
+# Verify this exact APK before installing; never substitute app-debug.apk.
+apkanalyzer manifest application-id app/build/outputs/apk/qa/app-qa.apk
+adb -s DEVICE_SERIAL install --user 0 app/build/outputs/apk/qa/app-qa.apk
+```
+
+The package check must print `dev.louiselm.capture.qa`. Install without `-r`
+for a fresh fixture: an existing QA installation must not be overwritten or
+cleared without deciding whether its data is disposable. Open **LouiseLM QA**,
+verify it is unpaired with zero recordings, and pair only to the disposable
+QA receiver. Preserve the original app, its data, and the production receiver.
+This bypasses the need for secondary-user enrollment; it does not repair an
+OEM setup-wizard failure. Run the same physical acceptance cases below.
+
 `test` includes pure JUnit tests and Robolectric Activity/View/lifecycle tests
 on the JVM; no device is needed for those tests. Activity fixtures retain
 Android 14/API 34 physical-regression coverage and exercise receiver permissions
@@ -35,7 +58,8 @@ Run just that regression with:
 
 Kotlin warnings and Android Lint warnings/errors fail the build. Narrow exceptions
 document receiver SPKI trust and checked credential persistence.
-CI uses JDK 25 and runs `test lint assembleDebug`;
+CI uses JDK 25 and runs `test lint lintQa assembleDebug assembleQa`, then checks
+the packaged QA application ID;
 physical checks remain necessary for hardware, pairing/Keystore and real
 background scheduling. Development rules are in
 [AGENTS.md](AGENTS.md).
@@ -68,8 +92,13 @@ The Android app does not support version-1 exact-certificate pairing offers.
 Each pending capture records its receiver-key owner separately from the
 immutable audio and capture manifest. Captures made before pairing remain
 unowned until the first-pair confirmation states their count. Scanning a QR
-with the same receiver identity verifies `/v1/health` through the existing pin
-and changes only the endpoint, preserving the device credential and queue.
+with the same receiver identity offers **Keep pairing** or **Renew pairing**.
+Keep pairing verifies `/v1/health` through the existing pin and changes only the
+endpoint, preserving the device credential and queue. After revocation, scan a
+fresh QR and choose Renew pairing: it exchanges the one-use offer for a new
+credential and immediately retries pending uploads without moving ownership or
+changing original recordings/capture IDs. A rejected or expired offer leaves
+the saved pairing and recordings unchanged; Cancel performs neither operation.
 Moving pending captures to a different receiver identity requires a separate
 confirmation that states the affected count; reassignment resets upload retry
 state but never changes or removes the original audio or capture UUID.
@@ -103,10 +132,13 @@ stored only in app-private preferences.
   after connectivity returns.
 - Revoke the device with `louiselm-capture revoke-device`, record again, and
   confirm upload needs operator attention while the original remains local.
+- Scan a fresh QR for that same receiver and choose Renew pairing; verify a
+  fresh device registration and successful upload of the retained recording
+  under its original UUID. Its local audio and manifest must remain unchanged.
 - Renew the receiver certificate with the same key and confirm uploads continue;
   replace the receiver key and confirm the app rejects the new identity.
 - Change the configured URL while retaining the receiver key, scan a fresh QR,
-  and confirm the endpoint changes without a new device credential or queue
+  choose Keep pairing, and confirm the endpoint changes without a new device credential or queue
   reassignment.
 - With pending captures, scan a QR for a different receiver key. Cancel once
   and confirm ownership is unchanged; confirm once and verify the displayed

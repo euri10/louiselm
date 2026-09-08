@@ -2,7 +2,6 @@ package dev.louiselm.capture
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -327,7 +326,7 @@ class MainActivity : Activity() {
                 val transition = pairingTransition(existing?.receiverIdentitySha256, offer.receiverIdentitySha256)
                 val count = when (transition) {
                     PairingTransition.FIRST_PAIR -> captureStore.unownedPendingCount()
-                    PairingTransition.ENDPOINT_UPDATE -> 0
+                    PairingTransition.ENDPOINT_UPDATE, PairingTransition.CREDENTIAL_RENEWAL -> 0
                     PairingTransition.RECEIVER_MIGRATION ->
                         captureStore.pendingOwnedBy(checkNotNull(existing).receiverIdentitySha256)
                 }
@@ -336,11 +335,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 result.onSuccess { plan ->
-                    if (plan.transition == PairingTransition.ENDPOINT_UPDATE) {
-                        executePairing(plan)
-                    } else {
-                        confirmPairing(plan)
-                    }
+                    confirmPairing(plan)
                 }.onFailure { error ->
                     setPairingBusy(false)
                     refreshStatus(getString(R.string.pairing_failed, error.message ?: "receiver unavailable"))
@@ -350,26 +345,11 @@ class MainActivity : Activity() {
     }
 
     private fun confirmPairing(plan: PairingPlan) {
-        val message = when (plan.transition) {
-            PairingTransition.FIRST_PAIR ->
-                resources.getQuantityString(
-                    R.plurals.confirm_first_pair, plan.affectedCaptureCount,
-                    plan.affectedCaptureCount, plan.offer.receiverUrl,
-                )
-            PairingTransition.RECEIVER_MIGRATION ->
-                resources.getQuantityString(
-                    R.plurals.confirm_receiver_migration, plan.affectedCaptureCount,
-                    plan.affectedCaptureCount, plan.offer.receiverUrl,
-                )
-            PairingTransition.ENDPOINT_UPDATE -> error("endpoint updates do not require migration consent")
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.confirm_pairing_title)
-            .setMessage(message)
-            .setPositiveButton(R.string.confirm_pairing) { _, _ -> executePairing(plan) }
-            .setNegativeButton(android.R.string.cancel) { _, _ -> cancelPairing() }
-            .setOnCancelListener { cancelPairing() }
-            .show()
+        showPairingConfirmation(
+            this, plan.transition, plan.affectedCaptureCount, plan.offer.receiverUrl,
+            onConfirm = { if (!isDestroyed && !isFinishing) executePairing(plan.copy(transition = it)) },
+            onCancel = ::cancelPairing,
+        )
     }
 
     private fun executePairing(plan: PairingPlan) {
@@ -387,6 +367,10 @@ class MainActivity : Activity() {
                         val existing = checkNotNull(plan.existing)
                         PinnedHttps.verifyEndpoint(plan.offer.receiverUrl, existing.receiverIdentitySha256)
                         pairingStore.save(existing.copy(receiverUrl = plan.offer.receiverUrl))
+                    }
+                    PairingTransition.CREDENTIAL_RENEWAL -> {
+                        val config = PinnedHttps.pair(plan.offer, deviceName())
+                        pairingStore.save(config)
                     }
                     PairingTransition.RECEIVER_MIGRATION -> {
                         val existing = checkNotNull(plan.existing)
