@@ -4664,6 +4664,121 @@ T["chat"]["closing a Session retires its decisions and preserves other Sessions 
   MiniTest.expect.equality(chat:buffer("session-1"), nil)
 end
 
+T["chat"]["Session close switches to its survivor outside a protected permission float"] = function()
+  local first = fake_session("session-8", "codex")
+  first.state.status = "waiting_permission"
+  local second = fake_session("session-7", "codex")
+  local api = fake_api()
+  api.list_sessions = function()
+    return first.disposed and { "session-7" } or { "session-7", "session-8" }
+  end
+  local chat = assert(Chat.new(api))
+  assert(chat:attach(second))
+  local survivor_buffer = chat:buffer()
+  assert(chat:attach(first))
+  local closed_buffer = chat:buffer()
+  local main = nvim.api.nvim_get_current_win()
+  local request, run_scheduled, pickers, responses = permission_harness()
+  local timer = assert(nvim.uv.new_timer())
+  local requested = false
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    request(first, "active")
+    requested = true
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return requested
+  end))
+  run_scheduled()
+
+  local picker_buffer = nvim.api.nvim_create_buf(false, true)
+  local picker_window = nvim.api.nvim_open_win(picker_buffer, true, {
+    relative = "editor",
+    row = 1,
+    col = 1,
+    width = 30,
+    height = 1,
+    style = "minimal",
+  })
+  -- Observed 2026-09-08, codex/01a07ecf-c12f-70d0-83f4-135dc7a91a4b:
+  -- proxy/sessions/<id>/log.jsonl: permission0 -> native Close -> cancelled.
+  -- Snacks win.lua:890,904 restores its own buffer synchronously on BufWinEnter;
+  -- its later split/close is not needed to reproduce the invalid cursor line.
+  local foreign_buffers = 0
+  local autocmd = nvim.api.nvim_create_autocmd("BufWinEnter", {
+    nested = true,
+    callback = function()
+      if nvim.api.nvim_win_is_valid(picker_window) and nvim.api.nvim_win_get_buf(picker_window) ~= picker_buffer then
+        foreign_buffers = foreign_buffers + 1
+        nvim.api.nvim_win_set_buf(picker_window, picker_buffer)
+      end
+    end,
+  })
+  MiniTest.finally(function()
+    nvim.api.nvim_del_autocmd(autocmd)
+    if nvim.api.nvim_win_is_valid(picker_window) then
+      nvim.api.nvim_win_close(picker_window, true)
+    end
+    if nvim.api.nvim_buf_is_valid(picker_buffer) then
+      nvim.api.nvim_buf_delete(picker_buffer, { force = true })
+    end
+    chat:dispose()
+  end)
+  nvim.fn.confirm = function()
+    return 1
+  end
+
+  assert(chat:close_session())
+  run_scheduled()
+
+  MiniTest.expect.equality(first.disposed, true)
+  MiniTest.expect.equality(second.disposed, false)
+  MiniTest.expect.equality({
+    nvim.api.nvim_buf_is_valid(closed_buffer),
+    nvim.api.nvim_buf_is_loaded(closed_buffer),
+    nvim.fn.win_findbuf(closed_buffer),
+  }, { false, false, {} })
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), main)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), survivor_buffer)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(main)[1], 6)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(picker_window), picker_buffer)
+  MiniTest.expect.equality(foreign_buffers, 0)
+  MiniTest.expect.equality(responses, { { id = "active", result = { outcome = { outcome = "cancelled" } } } })
+  -- Guard is released before the provider returns; its late Allow is inert.
+  assert(chat:switch_session())
+  pickers[1].callback(pickers[1].items[2], 2)
+  run_scheduled()
+  MiniTest.expect.equality(#responses, 1)
+  assert(chat:submit("QA-B"))
+  MiniTest.expect.equality(second.prompts, { "QA-B" })
+end
+
+T["chat"]["attaches a Session in a normal window when opened from a float"] = function()
+  local main = nvim.api.nvim_get_current_win()
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  local window = nvim.api.nvim_open_win(buffer, true, {
+    relative = "editor",
+    row = 1,
+    col = 1,
+    width = 30,
+    height = 1,
+    style = "minimal",
+  })
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    nvim.api.nvim_win_close(window, true)
+    nvim.api.nvim_buf_delete(buffer, { force = true })
+    chat:dispose()
+  end)
+
+  assert(chat:attach(fake_session("session-1", "codex")))
+
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), main)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), chat:buffer())
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(window), buffer)
+end
+
 T["chat"]["closing a queued Session leaves another Session's active decision intact"] = function()
   local first = fake_session("session-1", "opencode")
   local second = fake_session("session-2", "codex")

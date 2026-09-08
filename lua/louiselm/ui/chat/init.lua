@@ -3754,17 +3754,31 @@ function Chat:switch(session_id)
   if not nvim.api.nvim_buf_is_valid(view.buffer) then
     return false, "session buffer is invalid"
   end
+  local window = nvim.api.nvim_get_current_win()
+  if nvim.api.nvim_win_get_config(window).relative ~= "" then
+    -- A provider-owned picker can restore its buffer during BufWinEnter.
+    -- Prefer the Chat's last normal window, never replace the picker buffer.
+    for _, candidate in ipairs(nvim.api.nvim_tabpage_list_wins(0)) do
+      if nvim.api.nvim_win_get_config(candidate).relative == "" then
+        window = candidate
+        if candidate == view.window then
+          break
+        end
+      end
+    end
+  end
   restore_winbars(self)
   self.current_id = session_id
   view.unread_turn = false
   local state = view.session:inspect()
   mark_view_seen(self, view)
-  view.window = nvim.api.nvim_get_current_win()
-  nvim.api.nvim_set_current_buf(view.buffer)
-  nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+  view.window = window
+  nvim.api.nvim_set_current_win(window)
+  nvim.api.nvim_win_set_buf(window, view.buffer)
+  nvim.api.nvim_win_set_cursor(window, { view.prompt_line + 1, 2 })
   if self.start_insert_on_switch and #nvim.api.nvim_list_uis() > 0 then
     nvim.cmd.startinsert()
-    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 })
+    nvim.api.nvim_win_set_cursor(window, { view.prompt_line + 1, 2 })
   end
   apply_incremental_folds(view, view.window, view.context_folds, view.fold_counts)
   apply_incremental_folds(view, view.window, view.tool_folds, view.tool_fold_counts)
@@ -4005,15 +4019,16 @@ local function close_view(self, view)
     end
   end
   local _, close_error = view.session:dispose()
-  if nvim.api.nvim_buf_is_valid(view.buffer) then
-    nvim.api.nvim_buf_delete(view.buffer, { force = true })
-  end
   self.current_id = nil
   for _, candidate in ipairs(self.api:list_sessions()) do
     if self.views[candidate] ~= nil then
       self:switch(candidate)
       break
     end
+  end
+  -- Select the survivor before deleting the buffer in its host window.
+  if nvim.api.nvim_buf_is_valid(view.buffer) then
+    nvim.api.nvim_buf_delete(view.buffer, { force = true })
   end
   if close_error ~= nil then
     nvim.notify("louiselm: " .. close_error, nvim.log.levels.ERROR)
