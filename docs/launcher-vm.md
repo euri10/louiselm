@@ -62,10 +62,17 @@ Only after the maintainer authorizes temporary token access, identify the
 connected YubiKey with `lsusb -d 1050:0407`. Use that exact BUS:DEVICE pair,
 not a saved address from a previous boot/replug.
 
-The prepared Debian cloud kernel currently has `CONFIG_USB_SUPPORT` disabled.
-Recovery needs a separately approved USB-capable **guest** kernel first; no
-host kernel change is needed. Startup with `--yubikey` checks guest enumeration
-and stops the VM if hardware is unavailable. SSH readiness alone is not enough.
+The base image's Debian cloud kernel has `CONFIG_USB_SUPPORT` disabled.
+Recovery needs a separately approved USB-capable **guest** kernel; no host
+kernel change is needed. The retained recovery VM was upgraded in
+`louiselm-d5y8`, preserving its cloud kernel and a standalone disk/UEFI backup.
+That does not change the prepared base: a fresh/reset VM still needs this check.
+Inspect `uname -r` and the corresponding `/boot/config-*`; installation alone
+does not prove the right kernel booted. In the retained VM, a guest GRUB drop-in
+selects the USB-capable kernel because the retained cloud flavor otherwise sorts
+first. Exact package authentication, selection and rollback evidence live in
+`louiselm-d5y8`. Startup with `--yubikey` checks guest enumeration and stops the VM if
+hardware is unavailable. SSH readiness alone is not enough.
 
 ```sh
 ./scripts/launcher-vm plan --yubikey 003:002   # inspect only, no device access
