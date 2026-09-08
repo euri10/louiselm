@@ -186,7 +186,13 @@ payloads; retired keys verify only that history, not new or backdated approvals.
 ## Refusal, cancellation and reset
 
 Each local ceremony has a five-minute limit covering input, browser proof,
-hardware signing and final confirmation. Ctrl-C cancels local input and restores
+hardware signing and final confirmation. Opening or reloading a browser page
+does not restart that limit: its approval and passkey prompt use only the server's
+remaining lifetime, conservatively reduced by the request round trip. Expiry
+before submission disables approval, aborts a pending passkey prompt and reports
+that no approval was submitted. A password manager may nevertheless have saved
+an unenrolled candidate; saved-entry presence is not recovery authority.
+Ctrl-C cancels local input and restores
 terminal modes. Browser cancel/expiry closes the listener; subprocess deadlines
 bound signing and clean up its process group. A killed process can leave terminal
 display modes dirty (`stty sane` repairs them), but cannot partially enroll keys

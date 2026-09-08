@@ -132,6 +132,67 @@ fn completed_and_expired_servers_dispose_their_listener() {
 }
 
 #[test]
+fn late_browser_document_reports_only_the_shared_deadline_remaining() {
+    // C14/se0i: paper/tunnel work consumed most of the five-minute setup
+    // before Google registration. Public timing: issue comments 1298-1299,
+    // codex/01a07d34-4adb-7491-8d0a-3f23cd0796e1; no real credential fixture.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let browser = Browser::bind().unwrap().until(deadline);
+    let port = browser.port().unwrap();
+    let prefix = browser.prefix.clone();
+    let worker = thread::spawn(move || {
+        browser.run(
+            "register",
+            &json!({"operation":"PUBLIC DEADLINE FIXTURE"}),
+            &json!({"publicKey":{"timeout":300_000}}),
+            |_| -> Result<((), &'static str), RecoveryError> { panic!("no approval") },
+        )
+    });
+    let before_request = deadline.duration_since(Instant::now()).as_millis();
+    let response = request(
+        port,
+        &format!("GET {prefix}ceremony.json HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n"),
+    );
+    let document: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let remaining = document["remaining_ms"].as_u64();
+    // A later reload must not reuse a budget cached when run() began. Only
+    // compare ordering, not an exact wall-clock duration or scheduler latency.
+    thread::sleep(Duration::from_millis(30));
+    let later = request(
+        port,
+        &format!("GET {prefix}ceremony.json HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n"),
+    );
+    let later: Value = serde_json::from_str(later.split_once("\r\n\r\n").unwrap().1).unwrap();
+    // Dispose even when the assertion below is red.
+    request(port, &post(port, &prefix, "cancel"));
+    assert!(matches!(
+        worker.join().unwrap(),
+        Err(RecoveryError::Cancelled)
+    ));
+    assert!(
+        remaining.is_some(),
+        "ceremony must carry its remaining lifetime"
+    );
+    assert!(u128::from(remaining.unwrap()) <= before_request);
+    assert!(later["remaining_ms"].as_u64().unwrap() < remaining.unwrap());
+    assert_eq!(document["options"]["publicKey"]["timeout"], 300_000);
+}
+
+#[test]
+fn expired_browser_reports_expiry_without_calling_finish() {
+    let browser = Browser::bind().unwrap().until(Instant::now());
+    let error = browser
+        .run(
+            "confirm",
+            &json!({}),
+            &json!({}),
+            |_| -> Result<((), &'static str), RecoveryError> { panic!("expired callback") },
+        )
+        .unwrap_err();
+    assert!(error.to_string().starts_with("recovery ceremony expired"));
+}
+
+#[test]
 fn inherited_listener_delays_teardown_until_its_descriptor_closes() {
     let mut browser = Browser::bind().unwrap();
     let mut pending = connect(browser.port().unwrap());
@@ -145,7 +206,7 @@ fn inherited_listener_delays_teardown_until_its_descriptor_closes() {
             &json!({}),
             |_| -> Result<((), &'static str), RecoveryError> { panic!("expired callback") }
         ),
-        Err(RecoveryError::Passkey)
+        Err(RecoveryError::Expired)
     ));
     pending.set_nonblocking(true).unwrap();
     assert!(

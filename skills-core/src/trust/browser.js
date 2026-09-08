@@ -6,6 +6,8 @@ const status = document.querySelector("#status");
 const controller = new AbortController();
 let done = false;
 let submitted = false;
+let deadline = 0;
+let expiryTimer;
 async function post(path, body) {
   const response = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body), cache: "no-store"});
   if (!response.ok) throw new Error("Local ceremony refused");
@@ -13,9 +15,18 @@ async function post(path, body) {
 }
 function finish(message) {
   done = true;
+  clearTimeout(expiryTimer);
   approve.disabled = true;
   cancel.disabled = true;
   status.textContent = message;
+}
+function expired() {
+  if (performance.now() < deadline) return false;
+  if (!done && !submitted) {
+    controller.abort();
+    finish("Ceremony expired; no approval submitted. Inspect recovery status in the trusted terminal before starting a new ceremony. A passkey may have been saved without being enrolled.");
+  }
+  return true;
 }
 async function stop() {
   if (done || submitted) return;
@@ -30,29 +41,40 @@ window.addEventListener("pagehide", () => {
     fetch("cancel", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}", keepalive:true}).catch(() => {});
   }
 });
-setTimeout(() => { if (!submitted) stop(); }, 300000);
+// Anchor to request start: subtract the full round trip conservatively instead
+// of relying on matching host/VM clocks or granting extra response transit time.
+const requestedAt = performance.now();
 fetch("ceremony.json", {cache:"no-store"}).then(response => {
   if (!response.ok) throw new Error("Local ceremony unavailable");
   return response.json();
 }).then(ceremony => {
   if (done) return;
+  if (!Number.isSafeInteger(ceremony.remaining_ms) || ceremony.remaining_ms < 0) {
+    throw new Error("Invalid ceremony lifetime");
+  }
+  deadline = requestedAt + ceremony.remaining_ms;
+  if (expired()) return;
+  expiryTimer = setTimeout(expired, Math.ceil(deadline - performance.now()));
   action.textContent = JSON.stringify(ceremony.action, null, 2);
   status.textContent = "Review every field, then explicitly approve or cancel.";
   approve.disabled = false;
   approve.addEventListener("click", async () => {
+    if (done || expired()) return;
     approve.disabled = true;
     try {
       let proof = {};
       if (ceremony.kind === "register") {
         const publicKey = PublicKeyCredential.parseCreationOptionsFromJSON(ceremony.options.publicKey);
+        publicKey.timeout = Math.min(publicKey.timeout ?? Infinity, deadline - performance.now());
         proof = (await navigator.credentials.create({publicKey, signal:controller.signal})).toJSON();
       } else if (ceremony.kind === "authenticate") {
         const publicKey = PublicKeyCredential.parseRequestOptionsFromJSON(ceremony.options.publicKey);
+        publicKey.timeout = Math.min(publicKey.timeout ?? Infinity, deadline - performance.now());
         proof = (await navigator.credentials.get({publicKey, signal:controller.signal})).toJSON();
       } else if (ceremony.kind !== "confirm") {
         throw new Error("Unknown ceremony");
       }
-      if (done) return;
+      if (done || expired()) return;
       submitted = true;
       cancel.disabled = true;
       status.textContent = "Approval submitted. Waiting for the trusted tool’s result…";
@@ -61,7 +83,7 @@ fetch("ceremony.json", {cache:"no-store"}).then(response => {
     } catch (_) {
       if (done) return;
       if (submitted) finish("Result unknown: inspect the trusted terminal and trust state before retrying. Closing this page cannot undo a committed change.");
-      else await stop();
+      else if (!expired()) await stop();
     }
   }, {once:true});
 }).catch(() => finish("Local ceremony unavailable. Return to the trusted terminal."));

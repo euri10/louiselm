@@ -154,6 +154,9 @@ pub struct ReplacementProof {
 /// A refused recovery ceremony. Secret input never appears in diagnostics.
 #[derive(Debug, Error)]
 pub enum RecoveryError {
+    /// The local ceremony exhausted its shared lifetime before approval.
+    #[error("recovery ceremony expired; inspect recovery status before starting a new ceremony")]
+    Expired,
     /// A `WebAuthn` proof, registration or pending-state binding was refused.
     #[error("passkey recovery refused; expired, invalid or already used ceremony")]
     Passkey,

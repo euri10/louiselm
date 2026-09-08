@@ -335,6 +335,13 @@ jobs:
         # entrypoint must remove it without weakening bootstrap rejection.
         run: ../scripts/test-skills-core 142</dev/null
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Recovery browser deadline regressions
+        run: node --test --test-timeout=5000 tests/recovery_browser.test.cjs
+
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings

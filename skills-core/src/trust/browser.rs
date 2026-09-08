@@ -57,9 +57,6 @@ impl Browser {
         options: &Value,
         finish: impl FnOnce(Value) -> Result<(T, &'static str), RecoveryError>,
     ) -> Result<T, RecoveryError> {
-        let document =
-            serde_json::to_vec(&json!({"kind":kind, "action":action, "options":options}))
-                .map_err(|_| RecoveryError::Passkey)?;
         loop {
             self.check_deadline()?;
             let mut stream = match self.listener.accept() {
@@ -98,6 +95,17 @@ impl Browser {
                     include_bytes!("browser.js"),
                 )?,
                 ("GET", Some("ceremony.json")) => {
+                    // Compute at response time, not bind/run: terminal work and
+                    // opening the page have already consumed this shared budget.
+                    let remaining_ms = self
+                        .deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis();
+                    let document = serde_json::to_vec(&json!({
+                        "kind":kind, "action":action, "options":options,
+                        "remaining_ms":remaining_ms,
+                    }))
+                    .map_err(|_| RecoveryError::Passkey)?;
                     respond(&mut stream, "200 OK", "application/json", &document)?;
                 }
                 ("POST", Some("cancel")) => {
@@ -139,7 +147,7 @@ impl Browser {
 
     fn check_deadline(&self) -> Result<(), RecoveryError> {
         if Instant::now() >= self.deadline {
-            return Err(RecoveryError::Passkey);
+            return Err(RecoveryError::Expired);
         }
         Ok(())
     }

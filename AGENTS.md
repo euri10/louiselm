@@ -295,6 +295,11 @@ RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
 They are separate crates with separate lockfiles, not a workspace, so a gate run
 in one says nothing about the other. CI runs both as separate jobs.
 
+The `skills-core` browser client also has a Node.js built-in test gate (no npm
+dependencies), run from the repository root:
+`node --test --test-timeout=5000 skills-core/tests/recovery_browser.test.cjs`.
+CI runs it alongside the Rust gates; Cargo alone does not execute the client.
+
 For Linux `skills-core` tests, use `./scripts/test-skills-core` from the
 repository root (optional Cargo test arguments follow). It closes inherited
 runner descriptors before starting Cargo; intentional sandbox descriptor

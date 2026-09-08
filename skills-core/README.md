@@ -561,7 +561,12 @@ them.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ../scripts/test-skills-core
+node --test --test-timeout=5000 tests/recovery_browser.test.cjs
 ```
+
+The recovery browser gate uses Node.js 22+ built-ins, without npm packages or a
+personal browser. It runs the shipped client with deterministic time and async
+browser doubles; it does not replace installed Android/YubiKey acceptance.
 
 ## Scope
 

@@ -64,7 +64,7 @@ impl Terminal {
         loop {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
-                .ok_or(RecoveryError::Passkey)?;
+                .ok_or(RecoveryError::Expired)?;
             let timeout =
                 rustix::event::Timespec::try_from(remaining).map_err(|_| RecoveryError::Passkey)?;
             let mut descriptors = [rustix::event::PollFd::new(
@@ -72,7 +72,7 @@ impl Terminal {
                 rustix::event::PollFlags::IN,
             )];
             match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-                Ok(0) => return Err(RecoveryError::Passkey),
+                Ok(0) => return Err(RecoveryError::Expired),
                 Ok(_) => (),
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(error) => return Err(RecoveryError::Io(error.into())),
@@ -227,7 +227,7 @@ mod tests {
         let mut terminal = Terminal::from_file(slave).unwrap();
         assert!(matches!(
             terminal.read_hidden_until(Instant::now() + std::time::Duration::from_millis(5)),
-            Err(RecoveryError::Passkey)
+            Err(RecoveryError::Expired)
         ));
         drop(terminal);
         assert_eq!(
