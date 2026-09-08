@@ -26,6 +26,8 @@ production relay/loss composition. It is a component gate, not installed authori
   physical disk is exposed to the guest. The VM gets its own SSH client and
   host keys; host checking is pinned, not disabled. SSH ignores user config
   and agents. Only `127.0.0.1:22554` is forwarded to guest SSH.
+  The explicit recovery-only YubiKey exception is described below; ordinary
+  `start` and `prepare` do not enable it.
 - `prepare` temporarily allows guest egress to install distro packages and
   Rust 1.97.1. Normal `start` uses QEMU `restrict=on`: guest-originated traffic
   cannot reach the host or outside networks. Explicit host-to-guest SSH remains.
@@ -53,6 +55,63 @@ the existing host rustup executable provisions the pinned guest toolchain.
 ./scripts/launcher-vm stop                  # guest shutdown, then bounded unit cleanup
 ./scripts/launcher-vm reset --discard       # stopped only; fresh disk AND UEFI variables
 ```
+
+## Explicit recovery connections
+
+Only after the maintainer authorizes temporary token access, identify the
+connected YubiKey with `lsusb -d 1050:0407`. Use that exact BUS:DEVICE pair,
+not a saved address from a previous boot/replug.
+
+The prepared Debian cloud kernel currently has `CONFIG_USB_SUPPORT` disabled.
+Recovery needs a separately approved USB-capable **guest** kernel first; no
+host kernel change is needed. Startup with `--yubikey` checks guest enumeration
+and stops the VM if hardware is unavailable. SSH readiness alone is not enough.
+
+```sh
+./scripts/launcher-vm plan --yubikey 003:002   # inspect only, no device access
+./scripts/launcher-vm start --yubikey 003:002  # stopped VM only
+```
+
+This exposes the **whole selected USB YubiKey**, including its FIDO, OTP and
+CCID interfaces, to the guest until the VM stops. It does not limit access to
+particular resident credentials. Use only the trusted disposable guest; create
+fresh QA credentials with distinct unused resident user IDs. Never reset the
+token, overwrite existing credentials, or use it simultaneously on the host.
+This is native USB passthrough, not software-key emulation or an SSH agent.
+The currently accepted device is 1050:0407; the wrapper pins bus/address and
+vendor/product, requires existing device access, and never changes host
+permissions. A replug or unavailable device is a reason to stop and recheck,
+not to choose another device automatically. Requesting attachment on an already
+running VM refuses. Afterward stop the VM explicitly; verify the token returns
+to the host. Normal startup has no hardware attachment.
+
+For the real ceremony, the **maintainer** opens a private, unrecorded local
+terminal and runs:
+
+```sh
+./scripts/launcher-vm terminal
+```
+
+This opens an interactive SSH TTY as guest `vm`, with no agent forwarding and
+the existing pinned host key. It does not run setup/signing commands. The TTY
+check rejects pipes but cannot detect a terminal recorder: the operator must
+ensure privacy. Never run this command through an Agent terminal for secrets.
+
+When the installed tool prints a temporary `http://localhost:PORT/random-path/`
+URL, the maintainer uses a **second private host terminal**:
+
+```sh
+./scripts/launcher-vm forward PORT  # substitute only the printed numeric port
+```
+
+Keep that foreground tunnel running while opening the exact URL in the trusted
+host browser. It binds only 127.0.0.1 and forwards to the same guest loopback port,
+preserving the WebAuthn origin. It fails if the local port is occupied; do not
+substitute another port or expose it on the LAN. Ctrl-C closes it. Each new URL
+may require a different port/tunnel, including the final confirmation page;
+never paste the random path or browser challenge into chat. Both SSH helpers
+are bounded to one hour, and do not hold the VM mutation lock. The original VM
+deadline still applies; they cannot extend it. Guest egress remains restricted.
 
 `exec` has a 15-minute deadline; transfers have five minutes. Effectful commands
 take an exclusive nonblocking lock, so competing commands fail clearly;

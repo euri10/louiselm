@@ -40,9 +40,12 @@ prompt is not an independent display of the complete change.
 Only do this when no trusted release is installed. Use a disposable Linux VM
 for `lm70`; do not install or change launcher policy on the host as preparation.
 Transfer the reviewed artifacts using the recipe below. The VM wrapper exposes
-neither USB nor a browser: the maintainer must explicitly arrange the hardware
-and trusted-browser access needed by a real ceremony. Agent preparation does
-not attach devices, forward an agent socket or run these signing/setup commands.
+neither USB nor a browser by default. The maintainer must explicitly authorize
+the [recovery connections](launcher-vm.md#explicit-recovery-connections) needed
+by a real ceremony. Only that approval permits preparation to attach the exact
+selected YubiKey temporarily. Never forward a general agent socket or run these
+signing/setup commands in an Agent terminal. Browser URLs and secrets stay in
+the maintainer's private terminal/browser.
 
 Generate two fresh credentials on the same token. Choose unused file names
 and resident user IDs; do not overwrite existing keys. `-C` only supplies a

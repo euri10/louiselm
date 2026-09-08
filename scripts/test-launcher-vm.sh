@@ -20,8 +20,29 @@ jq -e '
   (.systemd | index("MemorySwapMax=0")) != null and
   (.systemd | index("CPUQuota=200%")) != null and
   (.systemd | index("RuntimeMaxSec=3600")) != null and
-  ([.qemu[] | select(test("virtfs|virtiofs|usb-host|vhost-vsock|guestfwd|/dev/sd"))] | length) == 0
+  ([.qemu[] | select(test("virtfs|virtiofs|usb-host|recovery-usb|u2f|pcap|vhost-vsock|guestfwd|/dev/sd"))] | length) == 0
 ' <<<"$plan" >/dev/null
+
+# Recovery access is explicit and pins both the address and the known token.
+recovery_plan=$(bash "$vm" plan --yubikey 003:002)
+jq -e '
+  (.qemu | index("qemu-xhci,id=recovery-usb")) != null and
+  (.qemu | index("usb-host,bus=recovery-usb.0,hostbus=3,hostaddr=2,vendorid=0x1050,productid=0x0407")) != null and
+  (.qemu | index("user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:22554-:22")) != null
+' <<<"$recovery_plan" >/dev/null
+for selector in 0:2 3:0 256:2 3:256 3:2,pcap=/tmp/capture /dev/hidraw2; do
+  if bash "$vm" plan --yubikey "$selector" >/dev/null 2>&1; then
+    echo 'accepted unsafe USB selector' >&2; exit 1
+  fi
+done
+for port in 0 22 22554 65536 123456789123456789 1234:remote:22; do
+  if bash "$vm" forward "$port" >/dev/null 2>&1; then
+    echo 'accepted unsafe browser port' >&2; exit 1
+  fi
+done
+if bash "$vm" terminal </dev/null >/dev/null 2>&1; then
+  echo 'accepted non-operator terminal' >&2; exit 1
+fi
 
 # Refuse unsafe QEMU option characters and malformed invocations before effects.
 if XDG_CACHE_HOME='relative' bash "$vm" plan >/dev/null 2>&1; then
@@ -42,6 +63,7 @@ fi
 test_dir=$(mktemp -d "${TMPDIR:-/var/tmp}/louiselm-vm-test.XXXXXX")
 cleanup() {
   rm -f -- "$test_dir/bin/systemctl" "$test_dir/bin/ssh" "$test_dir/ssh-args" \
+    "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2" \
     "$test_dir/cache/louiselm-launcher-vm/control.lock"
   rmdir -- "$test_dir/cache/louiselm-launcher-vm" "$test_dir/cache" "$test_dir/bin" "$test_dir"
 }
@@ -64,6 +86,10 @@ MOCK
 chmod +x "$test_dir/bin/systemctl" "$test_dir/bin/ssh"
 export XDG_CACHE_HOME="$test_dir/cache" PATH="$test_dir/bin:$PATH"
 export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded VM_TEST_SSH_ARGS="$test_dir/ssh-args"
+touch "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2"
+if bash "$vm" start --yubikey 003:002 >/dev/null 2>&1; then
+  echo 'accepted hardware attachment to active VM' >&2; exit 1
+fi
 if bash "$vm" reset --discard >/dev/null 2>&1; then
   echo 'reset accepted a live unit' >&2; exit 1
 fi
@@ -76,7 +102,33 @@ for option in StrictHostKeyChecking=yes IdentityAgent=none ForwardAgent=no Batch
   grep -Fxq "$option" "$test_dir/ssh-args"
 done
 grep -Fxq 'printf %s space\;\ \$literal ' "$test_dir/ssh-args"
+# Long-lived tunnels must not reserve the mutation lock or expose the LAN.
+exec 8>"$test_dir/cache/louiselm-launcher-vm/control.lock"
+flock -n 8
+set +e
+bash "$vm" forward 043219 >/dev/null 2>&1
+result=$?
+set -e
+[[ $result == 64 ]] || { echo 'accepted ambiguous port spelling' >&2; exit 1; }
+set +e
+bash "$vm" forward 43219
+result=$?
+set -e
+[[ $result == 42 ]] || { echo 'lost tunnel exit status or held control lock' >&2; exit 1; }
+for option in StrictHostKeyChecking=yes IdentityAgent=none ForwardAgent=no BatchMode=yes ExitOnForwardFailure=yes 127.0.0.1:43219:127.0.0.1:43219; do
+  grep -Fxq "$option" "$test_dir/ssh-args"
+done
+grep -Fxq -- '-N' "$test_dir/ssh-args"
+flock -u 8
+exec 8>&-
 export VM_TEST_ACTIVE=0 VM_TEST_LOAD=not-found
+if bash "$vm" start --yubikey 255:255 >/dev/null 2>&1; then
+  echo 'started with missing/inaccessible hardware' >&2; exit 1
+fi
+[[ ! -e $test_dir/cache/louiselm-launcher-vm/run.qcow2 ]] || { echo 'hardware refusal created an image' >&2; exit 1; }
+if bash "$vm" forward 43219 >/dev/null 2>&1; then
+  echo 'forward accepted stopped VM' >&2; exit 1
+fi
 bash "$vm" stop
 bash "$vm" stop
 echo 'launcher-vm safety contract: passed'

@@ -4,19 +4,36 @@ umask 077
 
 die() { echo "launcher-vm: $*" >&2; exit 1; }
 usage() {
-  echo 'Usage: launcher-vm {plan|prepare|start|status|logs|stop|reset --discard|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
+  echo 'Usage: launcher-vm {plan|start} [--yubikey BUS:ADDR] | {prepare|status|logs|stop|terminal|forward PORT|reset --discard|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
 }
 action=${1:-help}
 shift || true
+yubikey_bus= yubikey_addr= browser_port=
 case $action in
   help|--help|-h) usage; exit 0 ;;
-  plan|prepare|start|status|logs|stop) [[ $# == 0 ]] || { usage >&2; exit 64; } ;;
+  plan|start)
+    if [[ $# != 0 ]]; then
+      [[ $# == 2 && $1 == --yubikey && $2 =~ ^([0-9]{1,3}):([0-9]{1,3})$ ]] || { usage >&2; exit 64; }
+      yubikey_bus=$((10#${BASH_REMATCH[1]}))
+      yubikey_addr=$((10#${BASH_REMATCH[2]}))
+      (( yubikey_bus >= 1 && yubikey_bus <= 255 && yubikey_addr >= 1 && yubikey_addr <= 255 )) || { usage >&2; exit 64; }
+    fi
+    ;;
+  prepare|status|logs|stop|terminal) [[ $# == 0 ]] || { usage >&2; exit 64; } ;;
+  forward)
+    [[ $# == 1 && $1 =~ ^[1-9][0-9]{3,4}$ ]] || { usage >&2; exit 64; }
+    browser_port=$1
+    (( browser_port >= 1024 && browser_port <= 65535 && browser_port != 22554 )) || { usage >&2; exit 64; }
+    ;;
   reset) [[ $# == 1 && $1 == --discard ]] || { usage >&2; exit 64; } ;;
   exec) [[ $# -gt 0 ]] || { usage >&2; exit 64; } ;;
   put|get) [[ $# == 2 ]] || { usage >&2; exit 64; } ;;
   *) usage >&2; exit 64 ;;
 esac
 (( UID != 0 )) || die 'never run this host wrapper as root'
+if [[ $action == terminal ]]; then
+  [[ -t 0 && -t 1 ]] || die 'terminal requires a private operator TTY, never an Agent or recorded terminal'
+fi
 cache=${XDG_CACHE_HOME:-"$HOME/.cache"}
 [[ $cache == /* && $cache != *[,$'\n\r']* ]] || die 'cache path must be absolute and contain no comma or newline'
 state="$cache/louiselm-launcher-vm"
@@ -41,6 +58,10 @@ qemu_args() {
     -device virtio-rng-pci
     -netdev "user,id=net0,restrict=$2,hostfwd=tcp:127.0.0.1:22554-:22"
     -device virtio-net-pci,netdev=net0)
+  if [[ -n $yubikey_bus ]]; then
+    qemu+=(-device qemu-xhci,id=recovery-usb
+      -device "usb-host,bus=recovery-usb.0,hostbus=$yubikey_bus,hostaddr=$yubikey_addr,vendorid=0x1050,productid=0x0407")
+  fi
   service=(systemd-run --user --unit="$unit" --collect --service-type=exec
     --property=MemoryMax=5G --property=MemorySwapMax=0
     --property=CPUQuota=200% --property=TasksMax=128
@@ -65,7 +86,7 @@ if [[ ! -d $state && $action == prepare ]]; then
   mkdir -m 700 -- "$state"
 fi
 [[ -d $state && $(stat -c '%u:%a' -- "$state") == "$UID:700" ]] || die 'prepare a private, owned VM directory first'
-if [[ $action != status && $action != logs ]]; then
+if [[ $action != status && $action != logs && $action != terminal && $action != forward ]]; then
   exec 9>"$state/control.lock"
   flock -n 9 || die 'another VM command is running'
 fi
@@ -179,12 +200,35 @@ case $action in
     ;;
   start)
     [[ -f $state/prepared.qcow2 ]] || die 'run prepare first'
-    if active; then wait_ready; exit 0; fi
+    if active; then
+      [[ -z $yubikey_bus ]] || die 'stop the VM before explicitly attaching the selected YubiKey'
+      wait_ready; exit 0
+    fi
     stopped
+    if [[ -n $yubikey_bus ]]; then
+      printf -v yubikey_device '/dev/bus/usb/%03d/%03d' "$yubikey_bus" "$yubikey_addr"
+      [[ -c $yubikey_device && -r $yubikey_device && -w $yubikey_device ]] || die 'selected USB device needs existing read/write access; no permission fallback'
+      yubikey_properties=$(udevadm info --query=property --name="$yubikey_device")
+      grep -Fxq 'ID_VENDOR_ID=1050' <<<"$yubikey_properties" &&
+        grep -Fxq 'ID_MODEL_ID=0407' <<<"$yubikey_properties" || die 'selected USB device is not the approved 1050:0407 YubiKey'
+    fi
     [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/prepared.qcow2" "$state/run.qcow2"
     [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
     trap 'stop_vm' EXIT
     start_image "$state/run.qcow2" on
+    if [[ -n $yubikey_bus ]]; then
+      guest sh -c '
+        test -d /sys/bus/usb/devices || { echo "guest kernel has no USB bus; USB-capable guest kernel required" >&2; exit 1; }
+        for device in /sys/bus/usb/devices/*; do
+          if test -r "$device/idVendor" && test -r "$device/idProduct" &&
+            test "$(head -c 4 "$device/idVendor")" = 1050 && test "$(head -c 4 "$device/idProduct")" = 0407; then
+            exit 0
+          fi
+        done
+        echo "selected YubiKey is not visible in guest; inspect device/driver availability" >&2
+        exit 1
+      ' || die 'hardware readiness failed; stopping this VM without changing host permissions'
+    fi
     trap - EXIT
     ;;
   status)
@@ -208,6 +252,15 @@ case $action in
     install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
     ;;
   exec) active || die 'VM is not running'; guest "$@" ;;
+  terminal)
+    active || die 'VM is not running'
+    timeout --foreground 3600 ssh "${ssh_options[@]}" -t -p 22554 vm@127.0.0.1 'exec bash --noprofile --norc'
+    ;;
+  forward)
+    active || die 'VM is not running'
+    timeout --foreground 3600 ssh "${ssh_options[@]}" -N -o ExitOnForwardFailure=yes \
+      -L "127.0.0.1:$browser_port:127.0.0.1:$browser_port" -p 22554 vm@127.0.0.1
+    ;;
   put) active || die 'VM is not running'; timeout 300 scp "${ssh_options[@]}" -P 22554 -- "$1" "vm@127.0.0.1:$2" ;;
   get) active || die 'VM is not running'; timeout 300 scp "${ssh_options[@]}" -P 22554 -- "vm@127.0.0.1:$1" "$2" ;;
 esac
