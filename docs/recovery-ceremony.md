@@ -51,6 +51,9 @@ Generate two fresh credentials on the same token. Choose unused file names
 and resident user IDs; do not overwrite existing keys. `-C` only supplies a
 comment, so different comments/file names do not distinguish token credentials.
 The explicit `-O user=` values below keep the two resident identities distinct.
+Keep each value at most 31 bytes: OpenSSH's USB provider rejects longer user IDs
+before device access, reporting `Key enrollment failed: invalid format`
+(`louiselm-a2zc`). Use short unique role/suffix combinations, not a full session ID.
 If any token/file overwrite prompt appears, answer `n` and stop. Hardware
 attestation is not validated, but signatures must prove presence and verification.
 
