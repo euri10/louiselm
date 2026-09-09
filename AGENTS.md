@@ -15,6 +15,11 @@ build extension points for hypothetical consumers. The established extension
 boundaries are the headless session API, typed events, permission policies, and
 agent configuration.
 
+Permission prompting depends on both the configured Agent's upstream settings
+and LouiseLM's permission policy. Preserve operator-selected YOLO/auto-approval
+as a supported choice. Approval-UI QA may temporarily enable requests for the
+tested Agent; it must not make human prompts mandatory for every Agent.
+
 ## 2. Work Tracking
 
 Work is tracked in beads (`br`). `.beads/` is committed; its JSONL export is the
