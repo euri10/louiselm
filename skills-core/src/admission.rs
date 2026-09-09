@@ -496,6 +496,34 @@ pub fn current(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError
     current_unlocked(store)
 }
 
+// Materialization keeps this guard until publication completes, preventing
+// activation or key rotation from changing the authority it is reading.
+pub(crate) fn locked_current(
+    store: &Store,
+) -> Result<
+    (
+        crate::trust::persistence::LockedTrust,
+        Option<GenerationRecord>,
+    ),
+    AdmissionError,
+> {
+    let locked = transaction::lock(store)?;
+    let mut records = list_unlocked(store)?
+        .into_iter()
+        .filter(|record| record.state == GenerationState::Current);
+    let current = records.next();
+    if records.next().is_some() {
+        return Err(AdmissionError::Chain(
+            "multiple current Generations".to_owned(),
+        ));
+    }
+    if let Some(record) = &current {
+        let trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
+        verify_record(store, record, &trust)?;
+    }
+    Ok((locked, current))
+}
+
 fn current_unlocked(store: &Store) -> Result<Option<GenerationRecord>, AdmissionError> {
     Ok(list_unlocked(store)?
         .into_iter()

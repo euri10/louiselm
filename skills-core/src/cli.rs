@@ -93,10 +93,13 @@ pub enum CliError {
     /// An install operation failed.
     #[error(transparent)]
     Install(#[from] InstallError),
+    /// An Instruction view could not be materialized or verified.
+    #[error("{}", crate::scan::escape(&.0.to_string()))]
+    View(#[from] crate::instruction_view::ViewError),
     /// A launcher authority operation failed.
     #[error(transparent)]
     Launcher(#[from] LauncherError),
-    /// The launch registry named for --all-agents could not be read.
+    /// A launch registry named for Agent expansion or views could not be read.
     #[error(transparent)]
     Registry(#[from] crate::registry::RegistryError),
     /// A file named on the command line could not be read.
@@ -160,6 +163,7 @@ pub fn run() -> Result<i32, CliError> {
         "policy" => policy(&options),
         "trust" => trust(&options),
         "generation" => generation(&options),
+        "view" => view_command(&options),
         "quarantine" => quarantine_command(&options),
         "release" => release_command(&options),
         "launcher" => launcher_command(&options),
@@ -883,6 +887,39 @@ fn generation(options: &Options) -> Result<i32, CliError> {
     }
 }
 
+fn view_command(options: &Options) -> Result<i32, CliError> {
+    use crate::instruction_view;
+
+    let store = options.store()?;
+    let output = match options.subject("view")? {
+        "materialize" => {
+            let registry = options.registry.as_ref().ok_or_else(|| {
+                CliError::Invalid("view materialize needs --registry <dir>".to_owned())
+            })?;
+            instruction_view::materialize(
+                &store,
+                &options.policy()?,
+                &crate::registry::Registry::open(registry)?,
+            )?
+            .iter()
+            .map(|(agent, view)| (agent.clone(), view_output(view)))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+        }
+        "empty" => view_output(&instruction_view::empty(&store)?),
+        other => return Err(CliError::Invalid(format!("unknown view command '{other}'"))),
+    };
+    report(options, &output, ToString::to_string)
+}
+
+fn view_output(view: &crate::instruction_view::InstructionView) -> serde_json::Value {
+    serde_json::json!({
+        "digest": view.digest().to_string(),
+        "root": view.root(),
+        "skills_root": view.skills_root(),
+    })
+}
+
 fn quarantine_command(options: &Options) -> Result<i32, CliError> {
     let store = options.store()?;
     match options.subject("quarantine")? {
@@ -1239,6 +1276,8 @@ Skill Generations:
   louiselm-skills generation activate <digest>
   louiselm-skills generation status
   louiselm-skills generation list
+  louiselm-skills view materialize --registry <dir>
+  louiselm-skills view empty
 
 Trusted release:
   louiselm-skills release build --output <dir> [--source <dir>]

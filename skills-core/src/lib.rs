@@ -15,6 +15,7 @@ pub mod dossier;
 pub mod generation;
 pub mod inspect;
 pub mod install;
+pub mod instruction_view;
 pub mod isolation;
 pub mod launch;
 pub mod launch_protocol;

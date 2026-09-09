@@ -36,6 +36,9 @@ generation witness DIGEST --remote URL [--branch B]
 generation activate DIGEST
 generation status | list
 
+view materialize --registry DIR
+view empty
+
 quarantine exclude DIGEST... --reason TEXT
 quarantine all --reason TEXT
 quarantine show
@@ -224,6 +227,32 @@ the literal Agent names in that registry at signing time, so the record never
 means something different because a later Agent was registered; scoping a
 package differently is a new Generation, not an edit. Views are keyed by Agent,
 never by Provider (louiselm-5qzq).
+
+After activation, `view materialize --store DIR --registry DIR --robot-json`
+publishes an immutable Instruction view for each registered Agent. It verifies
+the current Generation's signature, witness state, policy and complete package
+set before selecting the signed members. Missing, altered or quarantined supply
+refuses the operation; no member is silently dropped. Repeat the command to
+verify existing artifacts. A registry entry with no members receives the empty
+view; membership naming an unregistered Agent creates nothing on that host.
+
+Each result names a digest, `root` and `skills_root`. The store layout is
+`views/sha256-<view-digest>/view.json` plus
+`skills/sha256-<package-digest>/SKILL.md` and the package's supporting files.
+The digest covers a canonical description of Generation, Agent and package
+identities, independent of host paths. Publication never overwrites an existing
+destination; files and directories are read-only and every reuse checks their
+contents, modes and complete inventory. The store owner must still protect its
+root from untrusted writers.
+
+`view empty --store DIR --robot-json` produces the canonical empty mask for
+`skills=off`, without requiring a Generation or trust enrollment. Its
+`skills_root` exists and contains nothing. A failure produces no usable view.
+Both commands perform blocking local I/O and return `managed_supply` errors.
+Materialization is the artifact step of Admission; it does not mount a view or
+enable Verified launch. Session input binding, native-source masking and the
+read-only mount remain under `louiselm-d6fv.3.2`, `louiselm-d6fv.3.3` and
+`louiselm-d6fv.9`.
 
 Check physical presence and PIN/user verification yourself. The verifier
 requires the signature assertion flags; key-generation options alone do not
