@@ -175,6 +175,8 @@ state and when windows resize.
 
 The Session picker aligns fields in columns, leaving blank cells for missing
 names or metadata. Agent and options precede the full Agent/ACP Session ID.
+Effort aligns by its ACP category; model settings such as Fast mode align by
+label. Ambiguous matches retain separate columns so no option disappears.
 Rows are a snapshot; reopen the picker to refresh their values and column widths.
 
 `:LouiselmSessionRename` changes the human-readable name (`Review` above).

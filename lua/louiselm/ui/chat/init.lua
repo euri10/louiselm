@@ -495,9 +495,6 @@ local function session_cells(state)
   if state.activity ~= nil then
     cells.activity = "activity=" .. state.activity
   end
-  for _, option in ipairs(state.config_options or {}) do
-    cells["option:" .. option.id] = option.name .. "=" .. option_display_value(option)
-  end
   if state.context ~= nil then
     local stale = state.context.stale and " stale" or ""
     cells.context = string.format(
@@ -514,20 +511,53 @@ local function session_cells(state)
   return cells
 end
 
+---@param option louiselm.session.ConfigOption
+---@return string
+local function session_option_column(option)
+  -- Agents use different ids/labels for effort, but advertise its shared meaning.
+  if option.category == "thought_level" then
+    return "category:thought_level"
+  end
+  -- model_config groups distinct controls; only matching labels share a column.
+  if option.category == "model_config" then
+    return "category:model_config:" .. option.name
+  end
+  return "option:" .. option.id
+end
+
 ---@param sessions louiselm.session.Session[]
 ---@return fun(session: louiselm.session.Session): string
 local function session_formatter(sessions)
   local columns = { "id", "name", "status", "skills", "agent", "loaded" }
   local seen_options = {}
   local rows = {}
+  local states = {}
+  local ambiguous = {}
   -- Freeze one opening so filtering and repeated rendering use the same widths/values.
   for index, session in ipairs(sessions) do
     local state = session:inspect()
+    states[index] = state
+    local seen = {}
+    for _, option in ipairs(state.config_options or {}) do
+      local column = session_option_column(option)
+      if seen[column] then
+        ambiguous[column] = true
+      end
+      seen[column] = true
+    end
+  end
+  for index, state in ipairs(states) do
     rows[index] = session_cells(state)
     for _, option in ipairs(state.config_options or {}) do
-      if not seen_options[option.id] then
-        seen_options[option.id] = true
-        columns[#columns + 1] = "option:" .. option.id
+      local column = session_option_column(option)
+      -- Ambiguous semantic matches fall back for the whole opening; retain every control.
+      if ambiguous[column] then
+        column = "option:" .. option.id
+      end
+      rows[index][column] = option.name .. "=" .. option_display_value(option)
+      if not seen_options[column] then
+        seen_options[column] = true
+        columns[#columns + 1] = column
       end
     end
   end
