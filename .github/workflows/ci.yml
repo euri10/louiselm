@@ -1,6 +1,6 @@
 # GitHub Actions pipeline for the Neovim plugin's quality gates.
 #
-# Scope: this runs the gates AGENTS.md section 4 declares authoritative --
+# Scope: this runs the gates docs/agent-testing.md declares authoritative --
 # StyLua for formatting, lua-language-server for static analysis, and
 # mini.test for tests on the Lua side, cargo fmt/clippy/test/doc for each
 # Rust crate, and Gradle test/lint/assemble for Android. It deliberately does NOT
@@ -71,6 +71,13 @@ env:
   RUST_VERSION: 1.97.1
 
 jobs:
+  agent-instructions:
+    name: Agent instruction budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-agent-instructions
+
   launcher-vm-contract:
     name: Launcher VM safety contract (no VM)
     runs-on: ubuntu-latest
@@ -163,7 +170,7 @@ jobs:
   test:
     name: mini.test (nvim ${{ matrix.neovim }})
     runs-on: ubuntu-latest
-    # AGENTS.md section 3 targets the latest stable Neovim, so stable is
+    # docs/agent-lua.md targets the latest stable Neovim, so stable is
     # the contract and must block. Nightly runs for early warning of an
     # upstream break but is advisory: it must not fail the pipeline for
     # a change that honours the stated contract.
@@ -209,7 +216,7 @@ jobs:
       # installed here rather than by the documented setup path. That split is
       # deliberate but temporary: teaching the script to do it would make a
       # LuaRocks/LibYAML toolchain a prerequisite for running the tests, which
-      # sits awkwardly against AGENTS.md section 3 ("Lua runtime dependencies
+      # sits awkwardly against docs/agent-lua.md ("Lua runtime dependencies
       # are forbidden", "mini.test is the sole test dependency"). See
       # louiselm-zpsj before collapsing the two.
       #
