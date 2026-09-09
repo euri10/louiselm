@@ -302,10 +302,22 @@ CI runs it alongside the Rust gates; Cargo alone does not execute the client.
 
 For Linux `skills-core` tests, use `./scripts/test-skills-core` from the
 repository root (optional Cargo test arguments follow). It closes inherited
-runner descriptors before starting Cargo; intentional sandbox descriptor
-injections happen inside the tests. CI injects an extra descriptor to gate this
-boundary. Direct Cargo under a polluted runner fails the bootstrap's correct
-ambient-authority refusal (louiselm-u4c3).
+runner descriptors and isolates Git configuration before starting Cargo;
+intentional sandbox descriptor injections happen inside the tests. CI injects
+an extra descriptor and synthetic Git signing configuration to gate these
+boundaries. Direct Cargo under a polluted runner can trigger the bootstrap's
+ambient-authority refusal (louiselm-u4c3) or personal signing in witness tests
+(louiselm-8zdb).
+
+Run that suite from outside your own ACP Session. `acp-proxy` is a child
+subreaper that never reaps adopted orphans, so a killed descendant lingers as a
+zombie, keeps its process group probeable, and fails three `bounded_system_runner`
+group-death tests on a clean tree — deterministically, with no source change
+involved (louiselm-2fb5). Six sessions have now rediscovered this and one nearly
+attributed it to the launcher. Wrap the script in a transient service, which
+double-forks under the user manager and out of the proxy's reach:
+`systemd-run --user --pipe --wait --collect --working-directory="$PWD" --setenv PATH="$PATH" ./scripts/test-skills-core`.
+`--scope` does not work: it leaves the process in the same parent chain.
 
 Both manifests enforce the strict Rust policy in section 6. New Rust packages
 must configure the same lints and CI gates from their first implementation.

@@ -23,10 +23,14 @@ against the genuine signed release from `louiselm-lm70`. The exact sudo command
 reached `Control broker unavailable`; runtime receipts and Verified activation
 remain downstream work. The historical map below predates that acceptance.
 
-**The launcher parent is not accepted.** Implementation coverage, host-mechanism
-checks, installed authority, and end-to-end Verified posture are separate claims.
-The [disposable VM](launcher-vm.md) is the only privileged test environment used
-here; no desktop sudo, security changes, credentials, or host mounts were used.
+On 2026-09-09 the launcher parent `louiselm-d6fv.4` closed `inert:louiselm-d6fv.9`
+in `claude/3282c3df-a569-4d46-9b35-358157805c69`: all 26 descendants are closed,
+the four skills-core gates pass, and no `lua/` code calls `louiselm-launch`, so no
+production Session reaches the launcher yet. Component completion, host-mechanism
+checks, installed authority, and end-to-end Verified posture stay separate claims;
+`louiselm-d6fv.9` alone activates the user-visible one. The
+[disposable VM](launcher-vm.md) is the only privileged test environment used here;
+no desktop sudo, security changes, credentials, or host mounts were used.
 
 ## Acceptance map — pre-conformance audit snapshot
 
@@ -42,7 +46,7 @@ Verified cutover and conformance-admission provenance remain separate work.
 | 2 — closed identifier request | [`LaunchRequest`, `resolve`](../skills-core/src/launch.rs) and [request tests](../skills-core/tests/launch.rs) reject extra fields, noncanonical/oversized input, malformed IDs and runtime path traversal. Runtime is resolved through the registered Agent, not a caller command. | Generation/input IDs are shape-checked and bound, not loaded or independently verified here. Real authorization is `louiselm-qbr.5.1.1`; materialized inputs are `louiselm-d6fv.3`. |
 | 3 — distinct identity/private state/channels | [Sandbox](../skills-core/src/sandbox.rs), [identity leases](../skills-core/src/launcher_install/identity.rs), and [system platform](../skills-core/src/launch_supervisor/system.rs) own UID/GID, private home/workspace, cgroup and capability socket. Guest root checks established outer identity and private-directory ownership. | Simultaneous hostile cross-Session probes in `louiselm-d6fv.4.8`; actual input/workspace/cache supply remains `louiselm-d6fv.3`/`louiselm-d6fv.5`. Current `resolve` creates paths, not a populated input snapshot. |
 | 4 — no ambient authority | Bubblewrap uses mount/PID/IPC/network namespaces, a cleared environment and fixed system roots. `a_confined_session_cannot_reach_paths_outside_its_plan` denies one secret path. | Full process/socket/config/network denial matrix `louiselm-d6fv.4.8`; one invisible file is insufficient evidence for every listed escape class. |
-| 5 — measured fixed runtime | [`RuntimePackage::measure`](../skills-core/src/registry.rs) hashes the executable and listed adapters, and records version/origin/library baseline/policy version. `Registry::open_trusted` now validates ownership, permissions and types throughout the entire mounted runtime tree (`louiselm-ln30`). Production validates the measured Bubblewrap path before preparation. | Library-baseline/policy strings are recorded, not independently remeasured or compared here. Unlisted files are protected by root ownership, not added to the digest format; root compromise remains outside the boundary. Provider packaging/masking belongs to `louiselm-d6fv.3`. |
+| 5 — measured fixed runtime | [`RuntimePackage::measure`](../skills-core/src/registry.rs) hashes the executable and listed adapters, and records version/origin/library baseline/policy version. `Registry::open_trusted` now validates ownership, permissions and types throughout the entire mounted runtime tree (`louiselm-ln30`). Production validates the measured Bubblewrap path before preparation. | Library-baseline/policy strings are recorded, not independently remeasured or compared here — and `louiselm-etth` records that they are nonetheless bound into the signed receipt, so a runtime may declare a policy version the launcher never enforced. Unlisted files are protected by root ownership, not added to the digest format; root compromise remains outside the boundary. Provider packaging/masking belongs to `louiselm-d6fv.3`. |
 | 6 — complete isolation evidence | [`IsolationEvidence::check`](../skills-core/src/isolation.rs) rejects wrong contract, missing kernel flags, missing/duplicate/unsatisfied dimensions. [Isolation tests](../skills-core/tests/isolation.rs) cover these cases; supervisor rejects bad evidence before signing. | Most backend dimension booleans describe invoked mechanisms, not observed hostile-probe outcomes. Only identity and cgroup lifecycle have stronger direct startup observations. Do not equate structurally complete evidence with completed conformance (`louiselm-d6fv.4.8`). |
 | 7 — hostile conformance | Existing [sandbox tests](../skills-core/tests/sandbox.rs) cover private-path denial, outer identity, forged identity observations, startup gates and descendant cleanup. Bootstrap/transport tests cover their descriptor-transfer and credential boundaries. | Missing composite probes are enumerated below and assigned to `louiselm-d6fv.4.8`. |
 | 8 — whole-tree lifecycle | [Lifecycle owner](../skills-core/src/launch_supervisor/lifecycle.rs) serializes mechanics, loss and receipts. [Supervisor tests](../skills-core/tests/launch_supervisor.rs) cover Park/Resume/interrupt/Disposal, races, reconnect and retained leases using doubles. Real cgroup tests cover freeze/thaw, interrupt and grandchildren. `mthx` adds owned relay cancellation/join and [production tests](../skills-core/src/launch_supervisor/system_relay_tests.rs) proving controller I/O closure on quiescence and direct Disposal. `1mac` preserves spawning-thread lifetime and proves natural exit/controller loss through production relay and lifecycle. `w1ez` adds a real broken-output scenario with a causal terminal receipt. | Hostile fork/loss composition remains `louiselm-d6fv.4.8`; emergency quarantine propagation remains `louiselm-d6fv.6.5`. |
@@ -156,9 +160,10 @@ and source locations also live in the bugs, so the cache is not the sole record.
   launcher authority and waits on `louiselm-lm70` for genuine release acceptance.
 - `louiselm-ln30`, relay worker ownership (`mthx`), creator-thread integration
   (`1mac`), relay-failure terminal receipts (`w1ez`) and hostile conformance
-  (`d6fv.4.8`) are implemented. Installed authority still prevents launcher
-  acceptance; conformance-admission design (`ucj1`) also blocks Verified cutover.
-  The duplicate lifecycle-history allocation issue
+  (`d6fv.4.8`) are implemented. Installed authority passed in `d6fv.4.9`, so the
+  parent closed as a component; conformance-admission design (`ucj1`) still
+  blocks Verified cutover, and `louiselm-xkxf` still keeps the trusted release
+  from bundling `louiselm-launch`. The duplicate lifecycle-history allocation issue
   `louiselm-bound-lifecycle-replay-history-wg2v` remains separately tracked;
   this audit does not claim a bounded-memory production lifecycle.
 - Do not add reverse dependencies on `louiselm-qbr.5.1` or `louiselm-d6fv.9`:
