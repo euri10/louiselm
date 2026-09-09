@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fixture_dir=$(mktemp -d /tmp/louiselm-test-git.XXXXXX)
+cleanup() {
+  rm -f -- "$fixture_dir/config" "$fixture_dir/signer" "$fixture_dir/invoked"
+  rmdir -- "$fixture_dir"
+}
+trap cleanup EXIT
+
+# No real signer or personal configuration participates, even before the fix.
+cat >"$fixture_dir/signer" <<'SIGNER'
+#!/usr/bin/env bash
+touch -- "${0%/*}/invoked"
+exit 1
+SIGNER
+chmod +x "$fixture_dir/signer"
+cat >"$fixture_dir/config" <<CONFIG
+[commit]
+  gpgsign = true
+[gpg]
+  format = openpgp
+  program = $fixture_dir/signer
+CONFIG
+export GIT_CONFIG_GLOBAL="$fixture_dir/config" GIT_CONFIG_SYSTEM="$fixture_dir/config"
+export GIT_CONFIG_NOSYSTEM=0 GIT_CONFIG_COUNT=2
+export GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=true
+export GIT_CONFIG_KEY_1=gpg.program GIT_CONFIG_VALUE_1="$fixture_dir/signer"
+export GIT_CONFIG_PARAMETERS="'commit.gpgsign=true' 'gpg.program=$fixture_dir/signer'"
+
+result=0
+bash "$script_dir/test-skills-core" "$@" || result=$?
+if [[ -e "$fixture_dir/invoked" ]]; then
+  echo 'FAIL: skills-core tests invoked the inherited Git signer' >&2
+  exit 1
+fi
+exit "$result"

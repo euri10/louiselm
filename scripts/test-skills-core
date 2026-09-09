@@ -2,6 +2,10 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../skills-core"
 
+# Witness fixtures must not inherit personal signing or other Git settings.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0
+unset GIT_CONFIG GIT_CONFIG_PARAMETERS
+
 # CI runners can pass non-CLOEXEC descriptors (louiselm-u4c3). Start Cargo
 # with stdio only; sandbox tests inject their deliberate ambient FDs later.
 # Parse this whole block before closing Bash's own script descriptor.

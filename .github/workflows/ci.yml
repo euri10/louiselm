@@ -333,9 +333,9 @@ jobs:
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        # Reproduce the inherited runner FD even on a clean runner. The test
-        # entrypoint must remove it without weakening bootstrap rejection.
-        run: ../scripts/test-skills-core 142</dev/null
+        # Inject runner authority and synthetic signing config on clean CI too.
+        # The launcher must isolate both without changing production behavior.
+        run: bash ../scripts/test-skills-core-git-isolation 142</dev/null
 
       - uses: actions/setup-node@v4
         with:
