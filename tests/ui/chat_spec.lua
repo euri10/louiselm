@@ -4402,6 +4402,153 @@ T["chat"]["opens permission pickers outside insert mode"] = function()
   chat:dispose()
 end
 
+-- Shape captured in opencode/ses_f7bbb4e43fferTp4BCTGDPkVt6, proxy session log
+-- /home/lotso/.local/state/acp-llm-adapter/proxy/sessions/ses_f7bbb4e43fferTp4BCTGDPkVt6/log.jsonl:11698.
+-- Command/path values sanitized; no surrounding tool-update order is assumed.
+local function opencode_permission()
+  local command = "br create 'Example task' --description-file - <<'EOF'\n" .. string.rep("description ", 80) .. "\nEOF"
+  local data = {
+    request_id = 11,
+    toolCall = {
+      toolCallId = "call-11",
+      kind = "other",
+      status = "pending",
+      title = command,
+      rawInput = { command = command, directories = { "/tmp/external" }, patterns = { "/tmp/external/*" } },
+      locations = { { path = "/tmp/external" } },
+    },
+    options = {
+      { optionId = "once", kind = "allow_once", name = "Allow once" },
+      { optionId = "always", kind = "allow_always", name = "Always allow" },
+      { optionId = "reject", kind = "reject_once", name = "Reject" },
+    },
+  }
+  data.operation = require("louiselm.permission.gates").from_acp(data)
+  return data
+end
+
+T["chat"]["shows OpenCode permission context and scrollable details without changing the gate"] = function()
+  local first = fake_session("session-1", "opencode")
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(first))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local selections = {}
+  local responses = {}
+  nvim.ui.select = function(items, options, callback)
+    assert(not nvim.in_fast_event())
+    selections[#selections + 1] = { items = items, options = options, callback = callback }
+  end
+  local data = opencode_permission()
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    assert(nvim.in_fast_event())
+    first:emit({
+      type = "permission_requested",
+      session_id = "session-1",
+      data = data,
+      respond = function(result)
+        responses[#responses + 1] = result
+        return true
+      end,
+    })
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return #selections == 1
+  end))
+  MiniTest.expect.equality(data.operation, { kind = "unknown" })
+  local picker = selections[1]
+  MiniTest.expect.equality(
+    picker.options.prompt,
+    "louiselm permission: " .. nvim.json.encode(data.toolCall.title) .. " "
+  )
+  MiniTest.expect.equality(picker.items[1].optionId, "reject")
+  MiniTest.expect.equality(picker.options.format_item(picker.items[4]), "View request details")
+  picker.callback(picker.items[4], 4)
+  MiniTest.expect.equality(responses, {})
+  local buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_option_value("wrap", { win = 0 }), true)
+  MiniTest.expect.equality(table.concat(buffer_lines(buffer), "\n"), nvim.inspect(data.toolCall))
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
+    if mapping.lhs == "q" then
+      mapping.callback()
+    end
+  end
+  assert(nvim.wait(1000, function()
+    return #selections == 2
+  end))
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  selections[2].callback(selections[2].items[2], 2)
+  MiniTest.expect.equality(responses, { { outcome = { outcome = "selected", optionId = "once" } } })
+  MiniTest.expect.equality(#data.options, 3)
+end
+
+T["chat"]["retires request details without reopening a cancelled or disposed permission"] = function()
+  for _, action in ipairs({ "cancel", "dispose", "queued_dispose", "reopen_failure" }) do
+    local first = fake_session("session-1", "opencode")
+    local chat = assert(Chat.new(fake_api()))
+    assert(chat:attach(first))
+    MiniTest.finally(function()
+      chat:dispose()
+    end)
+    local picker
+    local selections = 0
+    local responses = {}
+    nvim.ui.select = function(items, _, callback)
+      selections = selections + 1
+      picker = { items = items, callback = callback }
+    end
+    first:emit({
+      type = "permission_requested",
+      session_id = "session-1",
+      data = opencode_permission(),
+      respond = function(result)
+        responses[#responses + 1] = result
+        return true
+      end,
+    })
+    if action == "queued_dispose" then
+      chat:dispose()
+    else
+      assert(nvim.wait(1000, function()
+        return picker ~= nil
+      end))
+      picker.callback(picker.items[4], 4)
+      local window = nvim.api.nvim_get_current_win()
+      if action == "cancel" then
+        first:emit({ type = "permission_cancelled", session_id = "session-1", data = { request_ids = { 11 } } })
+        assert(nvim.wait(1000, function()
+          return not nvim.api.nvim_win_is_valid(window)
+        end))
+      elseif action == "reopen_failure" then
+        nvim.ui.select = function()
+          error("select unavailable")
+        end
+        nvim.api.nvim_win_close(window, true)
+      else
+        chat:dispose()
+        MiniTest.expect.equality(nvim.api.nvim_win_is_valid(window), false)
+      end
+    end
+    local drained = false
+    nvim.schedule(function()
+      drained = true
+    end)
+    assert(nvim.wait(1000, function()
+      return drained
+    end))
+    MiniTest.expect.equality(selections, action == "queued_dispose" and 0 or 1)
+    for _, response in ipairs(responses) do
+      MiniTest.expect.equality(response, { outcome = { outcome = "cancelled" } })
+    end
+    MiniTest.expect.equality(#responses, action == "cancel" and 0 or 1)
+    chat:dispose()
+  end
+end
+
 T["chat"]["preserves distinct permission option names with the same kind"] = function()
   local first = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))

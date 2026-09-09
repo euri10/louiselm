@@ -58,6 +58,12 @@ When the Agent asks to run a command or change a file, read the request and
 choose deliberately. A permission decision is not the same as accepting the
 Agent's answer. You remain responsible for allowing effects in your project.
 
+The picker shows the command or the Agent's request title when available.
+Choose **View request details** to scroll through the complete request,
+including long commands and directory or pattern scope. Press `q` or `Esc`
+in the details window to return to the approval choices; viewing details
+does not approve the request.
+
 Inspect or revoke remembered choices with:
 
 ```vim

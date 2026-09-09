@@ -1406,16 +1406,10 @@ local function transcript_tool(view, id)
 end
 
 ---@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
----@param id string
----@return boolean opened
----@return string? error_message
-local function open_tool_inspector(self, view, id)
-  local entry = transcript_tool(view, id)
-  if entry == nil then
-    return false, "tool-call payload is unavailable"
-  end
-  local lines = nvim.split(nvim.inspect(entry.raw or {}), "\n", { plain = true })
+---@param lines string[]
+---@param on_close? fun() Called after the inspector is wiped, outside the autocmd.
+---@return integer window
+local function open_payload_inspector(self, lines, on_close)
   local buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
   nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
@@ -1432,16 +1426,41 @@ local function open_tool_inspector(self, view, id)
     height = height,
     style = "minimal",
     border = "rounded",
+    title = on_close and "Request details · q/Esc: back to choices" or nil,
   })
+  nvim.api.nvim_set_option_value("wrap", true, { win = window })
   self.tool_inspect_windows[window] = true
+  nvim.api.nvim_create_autocmd("BufWipeout", {
+    buffer = buffer,
+    once = true,
+    callback = function()
+      self.tool_inspect_windows[window] = nil
+      if on_close ~= nil then
+        nvim.schedule(on_close)
+      end
+    end,
+  })
   local function close()
-    self.tool_inspect_windows[window] = nil
     if nvim.api.nvim_buf_is_valid(buffer) then
       nvim.api.nvim_buf_delete(buffer, { force = true })
     end
   end
   nvim.keymap.set("n", "q", close, { buffer = buffer, silent = true, nowait = true, desc = "Close tool inspector" })
   nvim.keymap.set("n", "<Esc>", close, { buffer = buffer, silent = true, nowait = true, desc = "Close tool inspector" })
+  return window
+end
+
+---@param self louiselm.ui.Chat
+---@param view louiselm.ui.ChatView
+---@param id string
+---@return boolean opened
+---@return string? error_message
+local function open_tool_inspector(self, view, id)
+  local entry = transcript_tool(view, id)
+  if entry == nil then
+    return false, "tool-call payload is unavailable"
+  end
+  open_payload_inspector(self, nvim.split(nvim.inspect(entry.raw or {}), "\n", { plain = true }))
   return true
 end
 
@@ -1680,15 +1699,21 @@ local function permission_options(value)
   return ordered
 end
 
----@param operation unknown
+---@param data table ACP permission data; raw tool details are display-only.
 ---@return string prompt
-local function permission_prompt(operation)
+local function permission_prompt(data)
+  local operation = data.operation
   local kind = type(operation) == "table" and operation.kind or "unknown"
   if kind == "command" and type(operation.command) == "table" then
     local encoded_ok, encoded_command = pcall(nvim.json.encode, operation.command)
     if encoded_ok and type(encoded_command) == "string" then
       return "louiselm permission (command): " .. encoded_command .. " "
     end
+  end
+  local tool_call = data.toolCall or data.tool_call
+  local title = field(tool_call, "title")
+  if title ~= nil then
+    return "louiselm permission: " .. nvim.json.encode(title) .. " "
   end
   if type(kind) ~= "string" or kind == "" then
     kind = "unknown"
@@ -1746,13 +1771,50 @@ local function prompt_permission(self, view, data, respond)
     cancel_permission(self, view, respond)
     return
   end
+  local decision = self.decision_active
+  local tool_call = data.toolCall or data.tool_call
+  local details = {}
+  if type(tool_call) == "table" then
+    options[#options + 1] = details
+  end
   Picker.select(options, {
-    prompt = permission_prompt(data.operation),
+    prompt = permission_prompt(data),
     format_item = function(option)
+      if option == details then
+        return "View request details"
+      end
       local _, label = permission_option(option)
       return label
     end,
   }, function(choice)
+    if choice == details and decision ~= nil then
+      if decision.answered or not hosts_view(self, view) then
+        cancel_permission(self, view, respond)
+        return
+      end
+      decision.details_window = open_payload_inspector(
+        self,
+        nvim.split(nvim.inspect(tool_call), "\n", { plain = true }),
+        function()
+          decision.details_window = nil
+          if decision.answered then
+            -- Release the picker slot after retirement without reporting a stale answer as an error.
+            respond({ outcome = { outcome = "cancelled" } })
+            return
+          end
+          if self.decision_active ~= decision or not hosts_view(self, view) then
+            cancel_permission(self, view, respond)
+            return
+          end
+          local ok, err = pcall(prompt_permission, self, view, data, respond)
+          if not ok then
+            insert_transcript(self, view, { "Error: permission picker failed: " .. tostring(err) })
+            cancel_permission(self, view, respond)
+          end
+        end
+      )
+      return
+    end
     if choice == nil then
       cancel_permission(self, view, respond)
       return
@@ -1771,6 +1833,16 @@ end
 ---@field data table ACP permission request data.
 ---@field respond fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string? ACP responder.
 ---@field answered boolean Whether this decision was already answered or cancelled.
+---@field details_window? integer Scrollable request inspector, if open.
+
+---@param decision louiselm.ui.ChatDecision
+local function close_permission_details(decision)
+  local window = decision.details_window
+  decision.details_window = nil
+  if window ~= nil and nvim.api.nvim_win_is_valid(window) then
+    nvim.api.nvim_win_close(window, true)
+  end
+end
 
 ---@type fun(self: louiselm.ui.Chat)
 local pump_decisions
@@ -1885,6 +1957,7 @@ local function cancel_decisions(self, view, request_ids)
   end
   active.answered = true
   self.decision_active = nil
+  close_permission_details(active)
   -- A review is ours to close; an open picker is not, and answering it later reports
   -- that the decision was already answered.
   self.diff:close()
@@ -4039,6 +4112,7 @@ local function close_view(self, view)
   if active ~= nil and active.view == view then
     self.decision_active = nil
     active.answered = true
+    close_permission_details(active)
     cancel_permission(self, view, active.respond)
     self.diff:close()
   end
