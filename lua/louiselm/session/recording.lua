@@ -462,11 +462,7 @@ local function drain(self)
         end
       end
       if err == nil then
-        local remaining = {}
-        for index = count + 1, #self.queue do
-          remaining[#remaining + 1] = self.queue[index]
-        end
-        self.queue = remaining
+        self.queue = nvim.list_slice(self.queue, count + 1)
       end
       self.changed(err, #self.queue > 0)
       for _, callback in ipairs(callbacks) do
@@ -522,15 +518,13 @@ local function drain(self)
         stdin = table.concat(sql, "\n"),
         timeout = 5000,
       },
-      function(result)
-        nvim.schedule(function()
-          if result.code == 0 then
-            finished(nil)
-          else
-            finished(sqlite_error(result.stderr or ""))
-          end
-        end)
-      end
+      nvim.schedule_wrap(function(result)
+        if result.code == 0 then
+          finished(nil)
+        else
+          finished(sqlite_error(result.stderr or ""))
+        end
+      end)
     )
     if not started or process_or_error == nil then
       -- Spawn details may contain paths/environment; expose only a typed failure.
@@ -628,21 +622,19 @@ COMMIT;
       nvim.system,
       { "sqlite3", "-readonly", "-batch", "-bail", "-json", "-nofollow", "-init", "/dev/null", self.path },
       { cwd = self.directory, env = {}, text = true, stdin = sql, timeout = 5000 },
-      function(result)
-        nvim.schedule(function()
-          if result.code ~= 0 then
-            callback(nil, sqlite_error(result.stderr or ""))
-            return
-          end
-          local ok, records =
-            pcall(nvim.json.decode, result.stdout ~= "" and result.stdout or "[]", { luanil = { object = true } })
-          if not ok or type(records) ~= "table" then
-            callback(nil, failure("corrupt"))
-            return
-          end
-          callback(records)
-        end)
-      end
+      nvim.schedule_wrap(function(result)
+        if result.code ~= 0 then
+          callback(nil, sqlite_error(result.stderr or ""))
+          return
+        end
+        local ok, records =
+          pcall(nvim.json.decode, result.stdout ~= "" and result.stdout or "[]", { luanil = { object = true } })
+        if not ok or type(records) ~= "table" then
+          callback(nil, failure("corrupt"))
+          return
+        end
+        callback(records)
+      end)
     )
     if not started or process == nil then
       callback(nil, failure("unavailable"))

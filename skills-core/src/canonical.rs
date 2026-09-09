@@ -14,7 +14,7 @@
 //!   and the remaining permission bits never reach a manifest.
 //! * Content is addressed by SHA-256, rendered as `sha256:<64 lowercase hex>`.
 
-use std::fmt::{self, Write as _};
+use std::fmt;
 
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -153,9 +153,7 @@ impl Digest {
     /// Computes the digest of `bytes`.
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        Self(hex(&hasher.finalize()))
+        Self(format!("{:x}", Sha256::digest(bytes)))
     }
 
     /// Parses `sha256:<hex>`, `sha256-<hex>`, or a bare lowercase hex digest.
@@ -225,18 +223,6 @@ impl Hasher {
     /// Consumes the hasher and returns the content address.
     #[must_use]
     pub fn finish(self) -> Digest {
-        Digest(hex(&self.0.finalize()))
+        Digest(format!("{:x}", self.0.finalize()))
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut rendered = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        #[expect(
-            clippy::expect_used,
-            reason = "Formatting a u8 into String is infallible."
-        )]
-        write!(rendered, "{byte:02x}").expect("integer formatting into String is infallible");
-    }
-    rendered
 }
