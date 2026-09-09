@@ -23,7 +23,7 @@ use thiserror::Error;
 mod recovery;
 
 use crate::{
-    admission::{self, AdmissionError, AdmissionRequest},
+    admission::{self, AdmissionError, AdmissionMember, AdmissionRequest},
     canonical::{Digest, DigestError},
     dossier::{Dossier, DossierError, DossierRequest, ReviewDepth},
     install::{self, InstallError},
@@ -96,6 +96,9 @@ pub enum CliError {
     /// A launcher authority operation failed.
     #[error(transparent)]
     Launcher(#[from] LauncherError),
+    /// The launch registry named for --all-agents could not be read.
+    #[error(transparent)]
+    Registry(#[from] crate::registry::RegistryError),
     /// A file named on the command line could not be read.
     #[error("cannot read '{path}': {source}")]
     Read {
@@ -171,7 +174,8 @@ pub fn run() -> Result<i32, CliError> {
 struct Options {
     positional: Vec<String>,
     members: Vec<String>,
-    views: Vec<String>,
+    all_agents: bool,
+    registry: Option<PathBuf>,
     primary: Option<String>,
     release_key: Option<String>,
     trust_domain: Option<String>,
@@ -215,7 +219,8 @@ impl Options {
         let mut parsed = Self {
             positional: Vec::new(),
             members: Vec::new(),
-            views: Vec::new(),
+            all_agents: false,
+            registry: None,
             primary: None,
             release_key: None,
             trust_domain: None,
@@ -267,8 +272,9 @@ impl Options {
                     parsed.members.push(value("--member")?);
                     index += 1;
                 }
-                "--view" => {
-                    parsed.views.push(value("--view")?);
+                "--all-agents" => parsed.all_agents = true,
+                "--registry" => {
+                    parsed.registry = Some(PathBuf::from(value("--registry")?));
                     index += 1;
                 }
                 "--primary" => {
@@ -508,42 +514,83 @@ impl Options {
         Ok(Digest::parse(raw)?)
     }
 
-    fn admission_members(&self) -> Result<Vec<(Digest, ReviewDepth)>, CliError> {
+    fn admission_members(&self) -> Result<Vec<AdmissionMember>, CliError> {
         if self.members.is_empty() {
             return Err(CliError::Invalid(
-                "generation admit needs at least one --member <digest>[:<review-depth>]".to_owned(),
+                "generation admit needs at least one --member <digest>[:<review-depth>][=<agent>,...]"
+                    .to_owned(),
             ));
         }
+        // --all-agents supplies the scope for members that do not name one. It
+        // expands here, at signing time, so the payload always carries literal
+        // names and never a wildcard whose meaning the registry could change
+        // afterwards (louiselm-5qzq).
+        let expanded = if self.all_agents {
+            Some(self.registered_agents()?)
+        } else {
+            None
+        };
         self.members
             .iter()
             .map(|raw| {
-                // A digest is spelled `sha256:<hex>`, so splitting on the last
-                // colon would read the hex as a review depth. Try the whole
-                // string as a digest first; only then treat a suffix as depth.
-                if let Ok(digest) = Digest::parse(raw) {
-                    return Ok((digest, ReviewDepth::Unstated));
-                }
-                let (digest, depth) = raw
-                    .rsplit_once(':')
-                    .ok_or_else(|| CliError::Invalid(format!("'{raw}' is not a digest")))?;
-                let depth = ReviewDepth::parse(depth)
-                    .ok_or_else(|| CliError::Invalid(format!("'{depth}' is not a review depth")))?;
-                Ok((Digest::parse(digest)?, depth))
+                let (subject, agents) = match raw.split_once('=') {
+                    Some((subject, agents)) => (
+                        subject,
+                        agents
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(ToOwned::to_owned)
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => (
+                        raw.as_str(),
+                        expanded.clone().ok_or_else(|| {
+                            CliError::Invalid(format!(
+                                "'{raw}' names no Agent: append =<agent>,... or pass --all-agents"
+                            ))
+                        })?,
+                    ),
+                };
+                let (package, depth) = Self::member_subject(subject)?;
+                Ok(AdmissionMember {
+                    package,
+                    depth,
+                    agents,
+                })
             })
             .collect()
     }
 
-    fn view_roots(&self) -> Result<std::collections::BTreeMap<String, String>, CliError> {
-        self.views
-            .iter()
-            .map(|raw| {
-                raw.split_once('=')
-                    .map(|(provider, root)| (provider.to_owned(), root.to_owned()))
-                    .ok_or_else(|| {
-                        CliError::Invalid(format!("--view expects <provider>=<root>, got '{raw}'"))
-                    })
-            })
-            .collect()
+    fn member_subject(raw: &str) -> Result<(Digest, ReviewDepth), CliError> {
+        // A digest is spelled `sha256:<hex>`, so splitting on the last colon
+        // would read the hex as a review depth. Try the whole string as a
+        // digest first; only then treat a suffix as depth.
+        if let Ok(digest) = Digest::parse(raw) {
+            return Ok((digest, ReviewDepth::Unstated));
+        }
+        let (digest, depth) = raw
+            .rsplit_once(':')
+            .ok_or_else(|| CliError::Invalid(format!("'{raw}' is not a digest")))?;
+        let depth = ReviewDepth::parse(depth)
+            .ok_or_else(|| CliError::Invalid(format!("'{depth}' is not a review depth")))?;
+        Ok((Digest::parse(digest)?, depth))
+    }
+
+    fn registered_agents(&self) -> Result<Vec<String>, CliError> {
+        let root = self.registry.as_ref().ok_or_else(|| {
+            CliError::Invalid(
+                "--all-agents needs --registry <dir> to expand to literal Agent names".to_owned(),
+            )
+        })?;
+        let agents = crate::registry::Registry::open(root)?.agent_ids();
+        if agents.is_empty() {
+            return Err(CliError::Invalid(format!(
+                "--all-agents found no Agent in {}",
+                root.display()
+            )));
+        }
+        Ok(agents)
     }
 
     fn witness(&self) -> Result<GitWitness, CliError> {
@@ -776,7 +823,6 @@ fn generation(options: &Options) -> Result<i32, CliError> {
                 &policy,
                 &AdmissionRequest {
                     members: options.admission_members()?,
-                    view_roots: options.view_roots()?,
                     signer: &SshKeygenSigner::new(&key),
                     admitted_at_ms: now_ms(),
                 },
@@ -1186,8 +1232,9 @@ Trust roles:
   louiselm-skills trust reset --confirm
 
 Skill Generations:
-  louiselm-skills generation admit --member <digest>[:<depth>] ... --key <privkey>
-                                   [--view <provider>=<root>]
+  louiselm-skills generation admit --member <digest>[:<depth>][=<agent>,...] ...
+                                   --key <privkey>
+                                   [--all-agents --registry <dir>]
   louiselm-skills generation witness <digest> --remote <url> [--branch <b>]
   louiselm-skills generation activate <digest>
   louiselm-skills generation status

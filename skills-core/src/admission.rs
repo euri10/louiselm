@@ -24,7 +24,7 @@
 
 mod transaction;
 
-use std::{collections::BTreeMap, fs, io, path::PathBuf};
+use std::{fs, io, path::PathBuf};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -48,12 +48,21 @@ use crate::{
 /// The status schema this build reports.
 pub const STATUS_SCHEMA: &str = "louiselm.skills.generation-status/1";
 
+/// One package to admit, and the Instruction views it enters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmissionMember {
+    /// The package being admitted.
+    pub package: Digest,
+    /// The review depth the reviewer claims for it.
+    pub depth: ReviewDepth,
+    /// Agents whose Instruction view it enters. Naming none is a refusal.
+    pub agents: Vec<String>,
+}
+
 /// What to admit.
 pub struct AdmissionRequest<'a> {
-    /// Packages to admit, with the review depth claimed for each.
-    pub members: Vec<(Digest, ReviewDepth)>,
-    /// Provider view roots to bind, keyed by Provider name.
-    pub view_roots: BTreeMap<String, String>,
+    /// Packages to admit, each with its review depth and Agent scope.
+    pub members: Vec<AdmissionMember>,
     /// What will authorize the payload.
     pub signer: &'a dyn Signer,
     /// When the ceremony ran.
@@ -214,7 +223,19 @@ pub fn admit(
     let signing_key = trust.admission_key()?.clone();
 
     let mut members = Vec::with_capacity(request.members.len());
-    for (digest, depth) in &request.members {
+    for AdmissionMember {
+        package: digest,
+        depth,
+        agents,
+    } in &request.members
+    {
+        if agents.is_empty() {
+            return Err(AdmissionError::NotReviewable {
+                package: digest.to_string(),
+                reason: "no Agent was named, so the package would enter no Instruction view"
+                    .to_owned(),
+            });
+        }
         let dossier = Dossier::build(
             store,
             policy,
@@ -245,6 +266,7 @@ pub fn admit(
             package_digest: digest.to_string(),
             dossier_digest: dossier.portable_digest().to_string(),
             review_depth: depth.name().to_owned(),
+            agents: agents.clone(),
         });
     }
 
@@ -257,7 +279,6 @@ pub fn admit(
         previous.as_ref().map(|record| record.digest().to_string()),
         &policy.digest().to_string(),
         members,
-        request.view_roots.clone(),
     );
 
     let signature = request

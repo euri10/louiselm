@@ -97,7 +97,7 @@ fn the_whole_ceremony_runs_from_the_command_line() {
             "generation",
             "admit",
             "--member",
-            &format!("{digest}:read"),
+            &format!("{digest}:read=claude"),
             "--key",
             &key_argument(&primary),
             "--robot-json",
@@ -141,7 +141,7 @@ fn admitting_without_trust_is_refused_before_anything_is_signed() {
             "generation",
             "admit",
             "--member",
-            &digest,
+            &format!("{digest}=claude"),
             "--key",
             &key_argument(&key),
         ],
@@ -169,9 +169,9 @@ fn quarantine_narrows_from_the_command_line_and_refuses_to_widen() {
             "generation",
             "admit",
             "--member",
-            &format!("{alpha}:read"),
+            &format!("{alpha}:read=claude"),
             "--member",
-            &format!("{beta}:read"),
+            &format!("{beta}:read=claude,codex"),
             "--key",
             &key_argument(&primary),
             "--robot-json",
@@ -280,7 +280,7 @@ fn a_directory_that_is_not_a_candidate_cannot_reach_the_ceremony() {
             "generation",
             "admit",
             "--member",
-            &digest,
+            &format!("{digest}=claude"),
             "--key",
             &key_argument(&primary),
         ],
@@ -291,5 +291,135 @@ fn a_directory_that_is_not_a_candidate_cannot_reach_the_ceremony() {
         admitted.stderr.contains("cannot be admitted"),
         "stderr was: {}",
         admitted.stderr,
+    );
+}
+
+// louiselm-d6fv.3.5: the ceremony records literal Agent scope.
+
+#[test]
+fn all_agents_expands_to_the_registered_agent_names() {
+    let fixture = Fixture::new();
+    let (primary, _) = bootstrap(&fixture);
+    let digest = package(&fixture, "alpha");
+    let registry_root = fixture.path("registry");
+    let runtime_root = fixture.path("runtime");
+    write_file(&runtime_root.join("bin/agent"), "#!/bin/sh\nexec cat\n");
+    write_file(&runtime_root.join("lib/adapter.js"), "// adapter\n");
+    support::write_registry(&registry_root, &runtime_root);
+    // Two Agents on one runtime: expansion must record both, not the runtime.
+    let agents = std::fs::read_to_string(registry_root.join("agents.json")).expect("agents.json");
+    write_file(
+        &registry_root.join("agents.json"),
+        &agents.replace(
+            r#""id":"demo","#,
+            r#""id":"zeta","#,
+        ).replace(
+            "}]}",
+            r#"},{"id":"alpha-agent","provider":"demo-provider","runtime_id":"demo-runtime","arguments":["--acp"],"environment":{}}]}"#,
+        ),
+    );
+
+    let admitted = run(
+        &fixture,
+        &[
+            "generation",
+            "admit",
+            "--member",
+            &format!("{digest}:read"),
+            "--all-agents",
+            "--registry",
+            registry_root.to_str().expect("path is UTF-8"),
+            "--key",
+            &key_argument(&primary),
+            "--robot-json",
+        ],
+    );
+
+    assert_eq!(admitted.status, 0, "admit failed: {}", admitted.stderr);
+    let record: serde_json::Value = serde_json::from_str(&admitted.stdout).expect("JSON");
+    let scope = &record["payload"]["members"][0]["agents"];
+    assert_eq!(
+        scope,
+        &serde_json::json!(["alpha-agent", "zeta"]),
+        "--all-agents must sign the literal names, sorted, never a wildcard",
+    );
+}
+
+#[test]
+fn all_agents_without_a_registry_is_refused() {
+    let fixture = Fixture::new();
+    let (primary, _) = bootstrap(&fixture);
+    let digest = package(&fixture, "alpha");
+
+    let admitted = run(
+        &fixture,
+        &[
+            "generation",
+            "admit",
+            "--member",
+            &format!("{digest}:read"),
+            "--all-agents",
+            "--key",
+            &key_argument(&primary),
+        ],
+    );
+
+    assert_eq!(admitted.status, 1);
+    assert!(
+        admitted.stderr.contains("--registry"),
+        "stderr was: {}",
+        admitted.stderr,
+    );
+}
+
+#[test]
+fn a_member_without_a_scope_is_refused() {
+    let fixture = Fixture::new();
+    let (primary, _) = bootstrap(&fixture);
+    let digest = package(&fixture, "alpha");
+
+    let admitted = run(
+        &fixture,
+        &[
+            "generation",
+            "admit",
+            "--member",
+            &format!("{digest}:read"),
+            "--key",
+            &key_argument(&primary),
+        ],
+    );
+
+    assert_eq!(admitted.status, 1);
+    assert!(
+        admitted.stderr.contains("names no Agent"),
+        "stderr was: {}",
+        admitted.stderr,
+    );
+}
+
+#[test]
+fn the_view_flag_no_longer_exists() {
+    let fixture = Fixture::new();
+    let (primary, _) = bootstrap(&fixture);
+    let digest = package(&fixture, "alpha");
+
+    let admitted = run(
+        &fixture,
+        &[
+            "generation",
+            "admit",
+            "--member",
+            &format!("{digest}:read=claude"),
+            "--view",
+            "claude=/home/operator/.claude/skills",
+            "--key",
+            &key_argument(&primary),
+        ],
+    );
+
+    assert_eq!(
+        admitted.status, 1,
+        "a host path must not be accepted into a portable signed record",
     );
 }

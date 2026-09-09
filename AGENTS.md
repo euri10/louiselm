@@ -319,6 +319,13 @@ double-forks under the user manager and out of the proxy's reach:
 `systemd-run --user --pipe --wait --collect --working-directory="$PWD" --setenv PATH="$PATH" ./scripts/test-skills-core`.
 `--scope` does not work: it leaves the process in the same parent chain.
 
+Fix formatting with `rustfmt --edition 2024 <the files you changed>`, not bare
+`cargo fmt`. The crate-wide command rewrites every unformatted file, and in this
+tree that includes whatever another session is editing right now — the same
+hazard as `git add -A`, one step earlier. For the same reason, a `cargo fmt
+--check` or full-suite failure in a file you did not touch is someone else's
+work in progress: report it, do not fix it.
+
 Both manifests enforce the strict Rust policy in section 6. New Rust packages
 must configure the same lints and CI gates from their first implementation.
 

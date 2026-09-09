@@ -2,19 +2,22 @@
 //!
 //! A Generation is the whole supply or it is nothing. It binds every admitted
 //! package, the Dossier each was approved from, the claimed review depth, the
-//! governing policy, the Provider view roots, and its place in the chain —
-//! sequence and predecessor — so that additions, deletions, replacements,
-//! policy changes, and rollback are all visible as changes to a signed record
-//! rather than as edits to a directory.
-
-use std::collections::BTreeMap;
+//! Agents whose Instruction view the package enters, the governing policy, and
+//! its place in the chain — sequence and predecessor — so that additions,
+//! deletions, replacements, re-scoping, policy changes, and rollback are all
+//! visible as changes to a signed record rather than as edits to a directory.
+//!
+//! Membership is per Agent, never per Provider: the harness decides whether a
+//! skill applies, and one Agent may route through several Providers
+//! (louiselm-5qzq). It is stored as literal Agent names, never a wildcard, so
+//! the record's meaning cannot change when the registry gains an entry.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{canonical::Digest, witness::WitnessEvidence};
 
 /// The Generation payload schema this build signs and reads.
-pub const GENERATION_SCHEMA: &str = "louiselm.skills.generation/1";
+pub const GENERATION_SCHEMA: &str = "louiselm.skills.generation/2";
 
 /// The stored record schema.
 pub const RECORD_SCHEMA: &str = "louiselm.skills.generation-record/1";
@@ -28,6 +31,11 @@ pub struct Member {
     pub dossier_digest: String,
     /// The reviewer's claimed review depth. A claim, not a proof.
     pub review_depth: String,
+    /// Agents whose Instruction view this package enters, sorted and unique.
+    ///
+    /// Literal names only. An Agent this host does not run is valid: the same
+    /// Generation is meant to be readable on another machine.
+    pub agents: Vec<String>,
 }
 
 /// The bytes a hardware key signs to admit a Generation.
@@ -49,12 +57,14 @@ pub struct GenerationPayload {
     pub member_root: String,
     /// Admitted members, sorted by package digest.
     pub members: Vec<Member>,
-    /// Provider view roots, keyed by Provider name.
-    pub view_roots: BTreeMap<String, String>,
 }
 
 impl GenerationPayload {
-    /// Builds a payload, sorting members and computing the set root.
+    /// Builds a payload, normalizing membership and computing the set root.
+    ///
+    /// Members sort by package digest and each Agent list sorts and
+    /// deduplicates, so the same scoping decision always signs to the same
+    /// bytes.
     #[must_use]
     pub fn new(
         trust_domain: &str,
@@ -62,9 +72,12 @@ impl GenerationPayload {
         predecessor: Option<String>,
         policy_digest: &str,
         mut members: Vec<Member>,
-        view_roots: BTreeMap<String, String>,
     ) -> Self {
         members.sort_by(|left, right| left.package_digest.cmp(&right.package_digest));
+        for member in &mut members {
+            member.agents.sort();
+            member.agents.dedup();
+        }
         let member_root = member_root(&members).to_string();
         Self {
             schema: GENERATION_SCHEMA.to_owned(),
@@ -75,7 +88,6 @@ impl GenerationPayload {
             policy_digest: policy_digest.to_owned(),
             member_root,
             members,
-            view_roots,
         }
     }
 

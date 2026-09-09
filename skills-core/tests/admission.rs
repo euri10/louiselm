@@ -17,7 +17,7 @@ mod support;
 
 use louiselm_skills::{
     Policy,
-    admission::{self, AdmissionError, AdmissionRequest},
+    admission::{self, AdmissionError, AdmissionMember, AdmissionRequest},
     dossier::ReviewDepth,
     generation::GenerationState,
     quarantine,
@@ -65,17 +65,36 @@ impl Ceremony {
         package.digest
     }
 
+    /// Admits with a single-Agent scope, which is what most cases care about.
     fn admit(
         &self,
         members: &[(louiselm_skills::Digest, ReviewDepth)],
+        key: &SshKey,
+    ) -> Result<louiselm_skills::generation::GenerationRecord, AdmissionError> {
+        let scoped = members
+            .iter()
+            .map(|(package, depth)| (package.clone(), *depth, vec!["claude".to_owned()]))
+            .collect::<Vec<_>>();
+        self.admit_scoped(&scoped, key)
+    }
+
+    fn admit_scoped(
+        &self,
+        members: &[(louiselm_skills::Digest, ReviewDepth, Vec<String>)],
         key: &SshKey,
     ) -> Result<louiselm_skills::generation::GenerationRecord, AdmissionError> {
         admission::admit(
             &self.fixture.store(),
             &Policy::embedded(),
             &AdmissionRequest {
-                members: members.to_vec(),
-                view_roots: std::collections::BTreeMap::default(),
+                members: members
+                    .iter()
+                    .map(|(package, depth, agents)| AdmissionMember {
+                        package: package.clone(),
+                        depth: *depth,
+                        agents: agents.clone(),
+                    })
+                    .collect(),
                 signer: &SshKeygenSigner::new(key.private_key_path()),
                 admitted_at_ms: 1_756_800_000_000,
             },
@@ -684,10 +703,9 @@ fn retired_keys_verify_only_admissions_recorded_before_retirement() {
     admission::verify_record(&store, &historical, &rotated).expect("real history still verifies");
 
     let mut forged = historical;
-    forged
-        .payload
-        .view_roots
-        .insert("new-after-retirement".to_owned(), "new root".to_owned());
+    forged.payload.members[0]
+        .agents
+        .push("added-after-retirement".to_owned());
     forged.generation = forged.payload.digest().to_string();
     forged.signature = ceremony.primary.sign(
         louiselm_skills::sshsig::ADMISSION_NAMESPACE,
@@ -740,7 +758,6 @@ fn key_retirement_cannot_overtake_an_admission_waiting_for_hardware() {
                 &Policy::embedded(),
                 &AdmissionRequest {
                     members: vec![],
-                    view_roots: std::collections::BTreeMap::new(),
                     signer: &signer,
                     admitted_at_ms: 2,
                 },
@@ -795,7 +812,6 @@ fn failed_approval_registration_never_becomes_retired_key_history() {
         &Policy::embedded(),
         &AdmissionRequest {
             members: vec![],
-            view_roots: std::collections::BTreeMap::new(),
             signer: &signer,
             admitted_at_ms: 2,
         },
@@ -826,4 +842,104 @@ fn failed_approval_registration_never_becomes_retired_key_history() {
     )
     .unwrap();
     assert!(admission::verify_record(&store, &pending, &trust).is_err());
+}
+
+// louiselm-d6fv.3.5: per-Agent Instruction view membership, signed.
+
+#[test]
+fn the_member_root_covers_the_agent_list() {
+    let member = |agents: &[&str]| louiselm_skills::generation::Member {
+        package_digest: "sha256:aa".to_owned(),
+        dossier_digest: "sha256:bb".to_owned(),
+        review_depth: "read".to_owned(),
+        agents: agents.iter().map(|name| (*name).to_owned()).collect(),
+    };
+    let payload = |agents: &[&str]| {
+        louiselm_skills::generation::GenerationPayload::new(
+            "louiselm/skills",
+            1,
+            None,
+            "sha256:cc",
+            vec![member(agents)],
+        )
+    };
+
+    assert_ne!(
+        payload(&["claude"]).recomputed_member_root(),
+        payload(&["claude", "codex"]).recomputed_member_root(),
+        "widening a view must change the root the signature covers",
+    );
+}
+
+#[test]
+fn the_agent_list_is_sorted_and_deduplicated() {
+    let payload = louiselm_skills::generation::GenerationPayload::new(
+        "louiselm/skills",
+        1,
+        None,
+        "sha256:cc",
+        vec![louiselm_skills::generation::Member {
+            package_digest: "sha256:aa".to_owned(),
+            dossier_digest: "sha256:bb".to_owned(),
+            review_depth: "read".to_owned(),
+            agents: vec!["codex".to_owned(), "claude".to_owned(), "codex".to_owned()],
+        }],
+    );
+
+    assert_eq!(
+        payload.members[0].agents,
+        vec!["claude".to_owned(), "codex".to_owned()],
+        "the same scoping decision must sign to the same bytes",
+    );
+}
+
+#[test]
+fn a_member_naming_no_agent_is_refused() {
+    let ceremony = Ceremony::new();
+    let package = ceremony.skill("alpha");
+
+    let refusal = ceremony.admit_scoped(&[(package, ReviewDepth::Read, vec![])], &ceremony.primary);
+
+    assert!(
+        matches!(refusal, Err(AdmissionError::NotReviewable { .. })),
+        "a package that enters no view is not admissible: {refusal:?}",
+    );
+}
+
+#[test]
+fn an_agent_name_no_registry_knows_is_admitted() {
+    let ceremony = Ceremony::new();
+    let package = ceremony.skill("alpha");
+
+    let record = ceremony
+        .admit_scoped(
+            &[(package, ReviewDepth::Read, vec!["kimi".to_owned()])],
+            &ceremony.primary,
+        )
+        .expect("an Agent this host does not run is still a valid scope");
+
+    assert_eq!(record.payload.members[0].agents, vec!["kimi".to_owned()]);
+}
+
+#[test]
+fn a_generation_one_payload_is_refused() {
+    let ceremony = Ceremony::new();
+    let package = ceremony.skill("alpha");
+    let store = ceremony.fixture.store();
+    let mut record = ceremony
+        .admit(&[(package, ReviewDepth::Read)], &ceremony.primary)
+        .expect("admission succeeds");
+    let trust = TrustStore::load(&store)
+        .expect("trust loads")
+        .expect("trust exists");
+
+    record.payload.schema = "louiselm.skills.generation/1".to_owned();
+
+    assert!(
+        matches!(
+            admission::verify_record(&store, &record, &trust),
+            Err(AdmissionError::Chain(_)),
+        ),
+        "a /1 payload is refused as unsupported, never silently upgraded",
+    );
 }

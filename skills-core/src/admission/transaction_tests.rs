@@ -76,7 +76,6 @@ fn record(sequence: u64, predecessor: Option<String>, state: GenerationState) ->
         predecessor,
         &Digest::of(b"policy").to_string(),
         Vec::new(),
-        std::collections::BTreeMap::new(),
     );
     assert_eq!(payload.schema, GENERATION_SCHEMA);
     GenerationRecord {

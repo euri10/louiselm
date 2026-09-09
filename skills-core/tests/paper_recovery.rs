@@ -518,7 +518,6 @@ fn paper_recovery_preserves_history_but_old_keys_cannot_make_new_admissions() {
     let signer = SshKeygenSigner::new(primary.private_key_path());
     let request = AdmissionRequest {
         members: vec![],
-        view_roots: std::collections::BTreeMap::default(),
         signer: &signer,
         admitted_at_ms: 3,
     };

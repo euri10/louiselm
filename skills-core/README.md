@@ -30,7 +30,8 @@ recovery change --store PATH --via primary|release|paper|passkey
                 [--release NEW_PRIVATE_KEY] [--paper replace] [--passkey replace]
 recovery reset --store PATH
 
-generation admit --member DIGEST[:DEPTH] ... --key PRIVKEY
+generation admit --member DIGEST[:DEPTH][=AGENT,...] ... --key PRIVKEY
+                 [--all-agents --registry DIR]
 generation witness DIGEST --remote URL [--branch B]
 generation activate DIGEST
 generation status | list
@@ -210,12 +211,19 @@ protected production store for Admission. Replace digest/remote placeholders:
 skills=/usr/local/lib/louiselm/current/bin/louiselm-skills
 production_store=/var/lib/louiselm/skills
 sudo "$skills" generation admit --store "$production_store" \
-  --member 'sha256:<pkg>:read' --key "$HOME/.ssh/id_louiselm_primary"
+  --member 'sha256:<pkg>:read=claude,codex' --key "$HOME/.ssh/id_louiselm_primary"
 sudo "$skills" generation witness --store "$production_store" \
   'sha256:<generation>' --remote git@your.host:infra/skill-witness.git
 sudo "$skills" generation activate --store "$production_store" 'sha256:<generation>'
 sudo "$skills" generation status --store "$production_store"
 ```
+
+Every `--member` names the Agents whose Instruction view the package enters, and
+that scope is part of the signed bytes. `--all-agents --registry DIR` expands to
+the literal Agent names in that registry at signing time, so the record never
+means something different because a later Agent was registered; scoping a
+package differently is a new Generation, not an edit. Views are keyed by Agent,
+never by Provider (louiselm-5qzq).
 
 Check physical presence and PIN/user verification yourself. The verifier
 requires the signature assertion flags; key-generation options alone do not
