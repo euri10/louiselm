@@ -15,7 +15,7 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use super::{
@@ -23,6 +23,10 @@ use super::{
 };
 
 const IDLE_POLL: Duration = Duration::from_millis(10);
+// Once the Agent has ended, inherited tool descriptors cannot keep its
+// Session alive. Drain available ACP output, with a bound for active writers
+// or a stalled controller; authority has already expired at the process pin.
+const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(super) struct RelayWorker {
     stopped: Arc<AtomicBool>,
@@ -75,8 +79,13 @@ impl RelayWorker {
                 stderr_eof: false,
             };
             let result = relay.run(&worker_stop, &events, try_wait);
-            if result.is_err() {
-                emit(&worker_stop, &events, RunningAgentEvent::RelayFailed);
+            if let Err(error) = result {
+                let event = if error == SupervisorError::AgentIdentityRejected {
+                    RunningAgentEvent::AgentIdentityLost
+                } else {
+                    RunningAgentEvent::RelayFailed
+                };
+                emit(&worker_stop, &events, event);
             }
             relay.close().map_err(|_| SupervisorError::CleanupUnproven)
         }))
@@ -195,6 +204,7 @@ impl RelayLoop {
         mut try_wait: impl FnMut() -> Result<Option<i32>, SupervisorError>,
     ) -> Result<(), SupervisorError> {
         let mut exit = None;
+        let mut exit_deadline = None;
         while !stopped.load(Ordering::Acquire) {
             self.attach();
             if exit.is_none() {
@@ -202,6 +212,7 @@ impl RelayLoop {
             }
             if exit.is_some() {
                 self.input = None;
+                exit_deadline.get_or_insert_with(|| Instant::now() + EXIT_DRAIN_TIMEOUT);
             }
             let mut progress = false;
             if let Some(input) = self.input.as_mut() {
@@ -235,8 +246,9 @@ impl RelayLoop {
                 }
             }
             if let Some(code) = exit
-                && self.to_controller.done()
-                && self.stderr_eof
+                && ((self.to_controller.done() && self.stderr_eof)
+                    || (!progress && self.to_controller.bytes.is_empty())
+                    || exit_deadline.is_some_and(|deadline| Instant::now() >= deadline))
             {
                 emit(
                     stopped,

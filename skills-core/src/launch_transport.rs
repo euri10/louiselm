@@ -6,6 +6,9 @@
 
 #![cfg(target_os = "linux")]
 
+mod process;
+pub use process::KernelProcess;
+
 use std::{
     fmt,
     io::IoSliceMut,
@@ -93,7 +96,7 @@ impl From<UCred> for KernelCredentials {
 }
 
 /// Kernel identity required for a connection and every packet on it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CredentialPin {
     /// Accept any process running under one assigned host identity.
     Identity {
@@ -104,14 +107,33 @@ pub enum CredentialPin {
     },
     /// Accept only one exact host process identity.
     Process(KernelCredentials),
+    /// Accept only the launcher-authenticated process while its lifetime and executable hold.
+    LiveProcess(Arc<KernelProcess>),
 }
 
 impl CredentialPin {
-    fn matches(self, credentials: KernelCredentials) -> bool {
-        match self {
-            Self::Identity { uid, gid } => credentials.uid == uid && credentials.gid == gid,
-            Self::Process(expected) => credentials == expected,
+    fn check_lifetime(&self) -> Result<(), TransportError> {
+        if let Self::LiveProcess(process) = self
+            && !process
+                .valid()
+                .map_err(|_| TransportError::ProcessIdentityUnavailable)?
+        {
+            return Err(TransportError::ProcessIdentityUnavailable);
         }
+        Ok(())
+    }
+
+    fn matches(&self, credentials: KernelCredentials) -> Result<bool, TransportError> {
+        Ok(match self {
+            Self::Identity { uid, gid } => credentials.uid == *uid && credentials.gid == *gid,
+            Self::Process(expected) => credentials == *expected,
+            Self::LiveProcess(process) => {
+                credentials == process.credentials()
+                    && process
+                        .valid()
+                        .map_err(|_| TransportError::ProcessIdentityUnavailable)?
+            }
+        })
     }
 }
 
@@ -175,6 +197,9 @@ pub enum TransportError {
     /// A fixed background worker could not be started.
     #[error("launcher transport worker unavailable")]
     WorkerUnavailable,
+    /// The authenticated process lifetime or executable could not be observed.
+    #[error("Agent process identity unavailable")]
+    ProcessIdentityUnavailable,
     /// The connection peer did not match the caller's kernel identity pin.
     #[error("launcher connection peer credentials did not match")]
     PeerCredentialsMismatch {
@@ -355,6 +380,9 @@ impl ChannelCore {
             let _completion = lock(&self.completion_gate);
             if self.is_closed() {
                 Err(TransportError::Closed)
+            } else if let Err(error) = self.pin.check_lifetime() {
+                self.close_locked();
+                Err(error)
             } else {
                 if fatal {
                     self.close_locked();
@@ -545,7 +573,11 @@ fn send_loop(fd: OwnedFd, commands: Receiver<SendCommand>, core: Arc<ChannelCore
             drain_sends(&commands);
             return;
         }
-        let result = command.packet.and_then(|bytes| send_one(&fd, &bytes));
+        let result = core
+            .pin
+            .check_lifetime()
+            .and(command.packet)
+            .and_then(|bytes| send_one(&fd, &bytes));
         let fatal = result.is_err();
         if core.finish(command.completion, result, fatal) {
             drain_sends(&commands);
@@ -589,7 +621,7 @@ fn receive_loop(fd: OwnedFd, commands: Receiver<ReceiveCommand>, core: Arc<Chann
             drain_receives(&commands);
             return;
         }
-        let result = receive_one(&fd, core.pin, core.peer_credentials);
+        let result = receive_one(&fd, &core.pin, core.peer_credentials);
         let fatal = result.is_err();
         if core.finish(command.completion, result, fatal) {
             drain_receives(&commands);
@@ -606,7 +638,7 @@ fn drain_receives(commands: &Receiver<ReceiveCommand>) {
 
 fn receive_one(
     fd: &OwnedFd,
-    pin: CredentialPin,
+    pin: &CredentialPin,
     peer_credentials: KernelCredentials,
 ) -> Result<AuthenticatedPacket, TransportError> {
     let mut bytes = vec![0_u8; MAX_PACKET_BYTES];
@@ -664,9 +696,9 @@ fn receive_one(
         };
     }
     let message_credentials = credentials.ok_or(TransportError::MissingCredentials)?;
-    if !pin.matches(message_credentials) {
+    if !pin.matches(message_credentials)? {
         return Err(TransportError::MessageCredentialsMismatch {
-            expected: pin,
+            expected: pin.clone(),
             actual: message_credentials,
         });
     }
@@ -883,7 +915,7 @@ fn accept_one(fd: &OwnedFd, pin: CredentialPin) -> Result<SeqpacketChannel, Tran
     configure_passcred(&accepted)?;
     configure_packet_buffers(&accepted)?;
     let actual = peer_credentials(&accepted)?;
-    if !pin.matches(actual) {
+    if !pin.matches(actual)? {
         return Err(TransportError::PeerCredentialsMismatch {
             expected: pin,
             actual,
@@ -1046,7 +1078,7 @@ fn connect_one(path: &Path, pin: CredentialPin) -> Result<SeqpacketChannel, Tran
     flags.remove(OFlags::NONBLOCK);
     fcntl_setfl(&fd, flags).map_err(|_| TransportError::SocketConfigurationFailed)?;
     let actual = peer_credentials(&fd)?;
-    if !pin.matches(actual) {
+    if !pin.matches(actual)? {
         return Err(TransportError::PeerCredentialsMismatch {
             expected: pin,
             actual,

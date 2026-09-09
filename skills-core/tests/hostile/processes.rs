@@ -101,9 +101,11 @@ fn lifecycle(fixture: &Fixture) {
     let heartbeat = plan.workspace.join("heartbeat");
     let foreground = plan.workspace.join("foreground");
     plan.executable = plan.runtime_root.join("fork-agent");
-    fs::write(&plan.executable, b"#!/bin/bash\n( trap '' INT; while :; do printf x >> \"$HEARTBEAT\"; sleep .01; done ) &\nwhile :; do printf x >> \"$FOREGROUND\"; sleep .01; done\n").unwrap();
+    // The authenticated principal is this measured ELF, not a shebang path
+    // that exec resolves to a different interpreter inode.
+    fs::copy("/bin/bash", &plan.executable).unwrap();
     mode(&plan.executable, 0o755);
-    plan.arguments.clear();
+    plan.arguments = vec!["-c".to_owned(), "( trap '' INT; while :; do printf x >> \"$HEARTBEAT\"; sleep .01; done ) &\nwhile :; do printf x >> \"$FOREGROUND\"; sleep .01; done\n".to_owned()];
     plan.environment
         .insert("HEARTBEAT".into(), heartbeat.display().to_string());
     plan.environment

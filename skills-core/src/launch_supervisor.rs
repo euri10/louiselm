@@ -40,6 +40,7 @@ use crate::{
         ReceiptCause, ReceiptHead, ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA,
         SessionState, SignedReceipt,
     },
+    launch_transport::{KernelCredentials, KernelProcess},
     launcher_install::Identity,
     registry::Registry,
     sandbox::{Channel, ConfinementPlan},
@@ -78,6 +79,8 @@ pub enum RunningAgentEvent {
     ControllerEof,
     /// The supervised process ended with a bounded public classification.
     ProcessExited(ProcessExitClassification),
+    /// Authenticated Agent lifetime or executable proof ended without an exit status.
+    AgentIdentityLost,
     /// An opaque relay worker failed without exposing payload or process details.
     RelayFailed,
 }
@@ -138,8 +141,10 @@ impl SupervisorTimer for ThreadSupervisorTimer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityBinding {
-    /// Session whose confined tree may use the listener.
+    /// Session whose authenticated Agent may use the listener.
     pub session_id: String,
+    /// Run that authorized this Agent lifetime.
+    pub run_id: String,
     /// Channel identifier recorded in sequence zero.
     pub channel_id: String,
     /// Capability-envelope revision in force for the listener.
@@ -150,11 +155,18 @@ pub struct CapabilityBinding {
     pub assigned_uid: u32,
     /// Host GID proven for the prepared process tree.
     pub assigned_gid: u32,
-    /// Bubblewrap's host-view PID-namespace leader.
-    ///
-    /// This is evidence and a cgroup anchor, not the identity expected on
-    /// every Agent packet: the Agent itself is a descendant of this reaper.
-    pub sandbox_leader_pid: u32,
+    /// Authenticated workload's host PID, never the namespace reaper.
+    pub agent_pid: u32,
+}
+
+/// Identity supplied by the trusted launch platform after restricted startup.
+#[derive(Clone, Debug)]
+pub struct AgentAuthentication {
+    /// Kernel credentials authenticated by the platform, not a peer claim.
+    pub credentials: KernelCredentials,
+    /// Actual kernel lifetime proof. Production gates refuse an absent proof;
+    /// deterministic platform doubles may model it without an OS process.
+    pub process: Option<Arc<KernelProcess>>,
 }
 
 /// Broker operations needed by the one-shot launch transaction.
@@ -305,7 +317,7 @@ pub trait CapabilityGate: Send {
     fn bind(
         &mut self,
         binding: CapabilityBinding,
-        membership: Arc<dyn ProcessMembership>,
+        authentication: AgentAuthentication,
     ) -> Result<(), SupervisorError>;
 
     /// Makes the listener reachable after the exact receipt is durable.
@@ -330,7 +342,8 @@ pub trait CapabilityGate: Send {
 }
 
 /// A confined Agent process tree still blocked before workload execution.
-pub trait PreparedAgent: Send {
+/// Preparation and start stay on one thread: Linux startup tracing is thread-owned.
+pub trait PreparedAgent {
     /// Evidence established while the workload is blocked.
     fn evidence(&self) -> &IsolationEvidence;
 
@@ -346,7 +359,7 @@ pub trait PreparedAgent: Send {
     /// Returns a process-boundary read error when the enclosed process set cannot be established.
     fn processes(&self) -> Result<Vec<u32>, SupervisorError>;
 
-    /// Dynamic cgroup membership used when a capability peer connects later.
+    /// Containment proof, never a source of Agent channel authority.
     fn process_membership(&self) -> Arc<dyn ProcessMembership>;
 
     /// Releases the startup gate.
@@ -368,6 +381,12 @@ pub trait PreparedAgent: Send {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Returns the cached identity established during restricted startup.
+    ///
+    /// # Errors
+    /// Returns a refusal when the actual workload could not be authenticated.
+    fn authentication(&self) -> Result<AgentAuthentication, SupervisorError>;
+
     /// Starts relaying ACP bytes without parsing, logging, or copying them into receipts.
     ///
     /// Implementations also drain Agent stderr without presenting its content
@@ -423,6 +442,18 @@ pub trait RunningAgent: Send {
 
 /// OS operations whose concrete implementation holds root authority.
 pub trait LaunchPlatform: Send + Sync {
+    /// Verifies enforced separation between this Agent and its tools before
+    /// brokered effects are enabled. Missing integration must fail closed.
+    ///
+    /// # Errors
+    /// Returns admission errors; verification results arrive through `complete`.
+    fn verify_tool_isolation(
+        &self,
+        request: &LaunchRequest,
+        agent: &AgentAuthentication,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Validates and exclusively leases the broker-assigned installed identity.
     ///
     /// # Errors
@@ -486,6 +517,12 @@ pub enum SupervisorError {
     /// Prepared isolation evidence did not satisfy the complete contract.
     #[error("isolation evidence rejected")]
     IsolationRejected,
+    /// The actual Agent process identity could not be authenticated.
+    #[error("Agent process identity rejected")]
+    AgentIdentityRejected,
+    /// No enforced Agent/tool separation was proved for this integration.
+    #[error("Agent/tool isolation unproven")]
+    ToolIsolationUnproven,
     /// A launch receipt signing operation failed or timed out.
     #[error("launcher receipt signing failed")]
     SigningUnavailable,
@@ -765,24 +802,6 @@ fn run_launch(
         ));
     }
     let channel_id = capability_channel.id().to_owned();
-    let binding = CapabilityBinding {
-        session_id: request.session_id.clone(),
-        channel_id,
-        envelope_revision: request.envelope_revision,
-        identity_slot: assigned.slot,
-        assigned_uid: assigned.uid,
-        assigned_gid: assigned.gid,
-        sandbox_leader_pid: leader_pid,
-    };
-    if capability.bind(binding.clone(), membership).is_err() {
-        return Err(cleanup_prepared(
-            prepared,
-            capability,
-            identity,
-            SupervisorError::CapabilityUnavailable,
-        ));
-    }
-
     let evidence = match launch_evidence(
         request,
         &resolution.runtime,
@@ -823,14 +842,6 @@ fn run_launch(
         }
     };
 
-    if capability.enable().is_err() {
-        return Err(cleanup_prepared(
-            prepared,
-            capability,
-            identity,
-            SupervisorError::CapabilityUnavailable,
-        ));
-    }
     let running = match prepared.start() {
         Ok(running) => running,
         Err(error) => {
@@ -842,6 +853,61 @@ fn run_launch(
             return Err(release_identity(identity, error));
         }
     };
+
+    let authentication = match running.authentication() {
+        Ok(proof)
+            if proof.credentials.pid != leader_pid
+                && proof.credentials.pid != 0
+                && proof.credentials.uid == assigned.uid
+                && proof.credentials.gid == assigned.gid
+                && membership.contains(proof.credentials.pid) == Ok(true) =>
+        {
+            proof
+        }
+        _ => {
+            return Err(cleanup_running(
+                running,
+                capability,
+                identity,
+                SupervisorError::AgentIdentityRejected,
+            ));
+        }
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let isolated = inner
+        .platform
+        .verify_tool_isolation(
+            request,
+            &authentication,
+            Box::new(move |result| {
+                let _ = sender.try_send(result);
+            }),
+        )
+        .and_then(|()| {
+            receiver
+                .recv_timeout(inner.timeout)
+                .map_err(|_| SupervisorError::ToolIsolationUnproven)?
+        });
+    if let Err(error) = isolated {
+        return Err(cleanup_running(running, capability, identity, error));
+    }
+    let binding = CapabilityBinding {
+        session_id: request.session_id.clone(),
+        run_id: request.run_id.clone(),
+        channel_id,
+        envelope_revision: request.envelope_revision,
+        identity_slot: assigned.slot,
+        assigned_uid: assigned.uid,
+        assigned_gid: assigned.gid,
+        agent_pid: authentication.credentials.pid,
+    };
+    let agent_process = authentication.process.clone();
+    if let Err(error) = capability
+        .bind(binding.clone(), authentication)
+        .and_then(|()| capability.enable())
+    {
+        return Err(cleanup_running(running, capability, identity, error));
+    }
 
     let launch_digest = launch_receipt.digest();
     let start_payload = ReceiptPayload {
@@ -868,6 +934,16 @@ fn run_launch(
         }
     };
 
+    if let Some(process) = agent_process
+        && process.valid().ok() != Some(true)
+    {
+        return Err(cleanup_running(
+            running,
+            capability,
+            identity,
+            SupervisorError::AgentIdentityRejected,
+        ));
+    }
     let resources =
         lifecycle::SessionResources::new(running, capability, identity, Arc::clone(&inner.broker));
     LaunchedSession::new(

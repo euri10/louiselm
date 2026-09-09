@@ -55,11 +55,11 @@ use louiselm_skills::{
         ReceiptOutcome, SessionState, SignedReceipt, verify_chain,
     },
     launch_supervisor::{
-        CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker, LaunchPlatform,
-        LaunchSigner, LaunchSupervisor, LaunchedSession, MechanicFailure, PreparedAgent,
-        ProcessMembership, RelayStdio, RunningAgent, RunningAgentEvent, RunningAgentEvents,
-        SupervisorCompletion, SupervisorError, SupervisorTimer, SystemRunningAgent,
-        read_launch_frame,
+        AgentAuthentication, CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker,
+        LaunchPlatform, LaunchSigner, LaunchSupervisor, LaunchedSession, MechanicFailure,
+        PreparedAgent, ProcessMembership, RelayStdio, RunningAgent, RunningAgentEvent,
+        RunningAgentEvents, SupervisorCompletion, SupervisorError, SupervisorTimer,
+        SystemRunningAgent, read_launch_frame,
     },
     launcher_install::Identity,
     registry::Registry,
@@ -1037,10 +1037,10 @@ impl CapabilityGate for FakeCapabilityGate {
     fn bind(
         &mut self,
         binding: CapabilityBinding,
-        membership: Arc<dyn ProcessMembership>,
+        authentication: AgentAuthentication,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "capability.bind");
-        if !membership.contains(binding.sandbox_leader_pid)? {
+        if binding.agent_pid != authentication.credentials.pid {
             return Err(SupervisorError::CapabilityUnavailable);
         }
         lock(&self.state).binding = Some(binding);
@@ -1101,6 +1101,7 @@ struct AgentState {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct FakePreparedAgent {
+    credentials: louiselm_skills::launch_transport::KernelCredentials,
     events: Events,
     state: Arc<Mutex<AgentState>>,
     agent_changed: Arc<Condvar>,
@@ -1150,6 +1151,7 @@ impl PreparedAgent for FakePreparedAgent {
         lock(&self.state).started = true;
         self.active = false;
         Ok(Box::new(FakeRunningAgent {
+            credentials: self.credentials,
             events: Arc::clone(&self.events),
             state: Arc::clone(&self.state),
             agent_changed: Arc::clone(&self.agent_changed),
@@ -1192,6 +1194,7 @@ impl Drop for FakePreparedAgent {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct FakeRunningAgent {
+    credentials: louiselm_skills::launch_transport::KernelCredentials,
     events: Events,
     state: Arc<Mutex<AgentState>>,
     agent_changed: Arc<Condvar>,
@@ -1259,6 +1262,13 @@ fn run_fake_relay(
 }
 
 impl RunningAgent for FakeRunningAgent {
+    fn authentication(&self) -> Result<AgentAuthentication, SupervisorError> {
+        Ok(AgentAuthentication {
+            credentials: self.credentials,
+            process: None,
+        })
+    }
+
     fn start_relay(
         &mut self,
         controller: Receiver<RelayStdio>,
@@ -1458,6 +1468,17 @@ struct BubblewrapLaunchPlatform {
 }
 
 impl LaunchPlatform for BubblewrapLaunchPlatform {
+    fn verify_tool_isolation(
+        &self,
+        _request: &LaunchRequest,
+        _agent: &AgentAuthentication,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        // This fixture proves host process identity only, not tool separation.
+        complete(Ok(()));
+        Ok(())
+    }
+
     fn acquire_identity(
         &self,
         assigned: Identity,
@@ -1586,6 +1607,8 @@ fn process_status_values(pid: u32, field: &str) -> Option<Vec<u32>> {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct PlatformBehavior {
+    agent_credentials: Option<louiselm_skills::launch_transport::KernelCredentials>,
+    tool_isolation_unproven: bool,
     identity_unavailable: bool,
     identity_occupied: bool,
     identity_poisoned: bool,
@@ -1648,6 +1671,7 @@ impl FakePlatform {
                 "agent.event.process_exited.signaled"
             }
             RunningAgentEvent::RelayFailed => "agent.event.relay_failed",
+            RunningAgentEvent::AgentIdentityLost => "agent.event.agent_identity_lost",
         };
         record(&self.events, event_name);
         thread::Builder::new()
@@ -1693,6 +1717,21 @@ impl FakePlatform {
 }
 
 impl LaunchPlatform for FakePlatform {
+    fn verify_tool_isolation(
+        &self,
+        _request: &LaunchRequest,
+        _agent: &AgentAuthentication,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        record(&self.events, "platform.verify_tool_isolation");
+        if self.behavior.tool_isolation_unproven {
+            complete(Err(SupervisorError::ToolIsolationUnproven));
+        } else {
+            complete(Ok(()));
+        }
+        Ok(())
+    }
+
     fn acquire_identity(
         &self,
         assigned: Identity,
@@ -1751,6 +1790,13 @@ impl LaunchPlatform for FakePlatform {
             return Err(SupervisorError::SpawnFailed);
         }
         Ok(Box::new(FakePreparedAgent {
+            credentials: self.behavior.agent_credentials.unwrap_or(
+                louiselm_skills::launch_transport::KernelCredentials {
+                    pid: 42_425,
+                    uid: self.expected_identity.uid,
+                    gid: self.expected_identity.gid,
+                },
+            ),
             events: Arc::clone(&self.events),
             state: Arc::clone(&self.agent),
             agent_changed: Arc::clone(&self.agent_changed),
@@ -1758,7 +1804,7 @@ impl LaunchPlatform for FakePlatform {
             backend_id: Digest::of(b"bubblewrap-binary").to_string(),
             sandbox_leader_pid: Some(42_424),
             membership: Arc::new(FakeProcessMembership {
-                members: vec![42_424],
+                members: vec![42_424, 42_425],
             }),
             output: self.agent_output.clone(),
             dispose_fails: self.behavior.dispose_fails,
@@ -2481,6 +2527,123 @@ fn dispose_retained_controller_loss_session(
 }
 
 #[test]
+fn capability_binding_waits_for_restricted_agent_startup() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    let bound_before_start = lock(&setup.platform.gate_state()).binding.is_some();
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    let events = event_snapshot(&setup.events);
+    setup.broker.acknowledge();
+    let session = receiver
+        .recv_timeout(CALLBACK_TIMEOUT)
+        .expect("launch completes")
+        .expect("fake launch succeeds");
+    drop(session);
+
+    assert!(
+        !bound_before_start,
+        "a blocked reaper is not Agent identity"
+    );
+    let started = events
+        .iter()
+        .position(|event| event == "agent.start")
+        .unwrap();
+    let bound = events
+        .iter()
+        .position(|event| event == "capability.bind")
+        .unwrap();
+    let enabled = events
+        .iter()
+        .position(|event| event == "capability.enable")
+        .unwrap();
+    assert!(started < bound && bound < enabled);
+}
+
+#[test]
+fn missing_tool_isolation_disposes_restricted_startup_without_enabling_effects() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            tool_isolation_unproven: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, count) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(SupervisorError::ToolIsolationUnproven)
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(setup.broker.receipts().len(), 1);
+    let events = event_snapshot(&setup.events);
+    assert!(events.iter().any(|event| event == "agent.start"));
+    assert!(
+        !events
+            .iter()
+            .any(|event| event == "capability.bind" || event == "capability.enable")
+    );
+    assert!(
+        events
+            .windows(3)
+            .any(|events| events == ["capability.close", "agent.dispose", "identity.release"])
+    );
+}
+
+#[test]
+fn reaper_foreign_process_and_mismatched_agent_ids_never_bind_authority() {
+    for (pid, uid, gid) in [
+        (42_424, 200_003, 300_003),
+        (0, 200_003, 300_003),
+        (42_426, 200_003, 300_003),
+        (42_425, 200_004, 300_003),
+        (42_425, 200_003, 300_004),
+    ] {
+        let setup = setup(
+            true,
+            |_| {},
+            AppendBehavior::Hold,
+            PlatformBehavior {
+                agent_credentials: Some(louiselm_skills::launch_transport::KernelCredentials {
+                    pid,
+                    uid,
+                    gid,
+                }),
+                ..PlatformBehavior::default()
+            },
+            SUPERVISOR_TIMEOUT,
+        );
+        let (receiver, count) = begin_launch(&setup, CONTROLLER_UID);
+        setup.broker.wait_for_append(0);
+        setup.broker.acknowledge();
+        assert_eq!(
+            receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+            Some(SupervisorError::AgentIdentityRejected)
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let events = event_snapshot(&setup.events);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event == "capability.bind" || event == "capability.enable")
+        );
+        assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    }
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "One launch acks starting then starts and acks linked running before success scenario keeps its causal steps and assertions together."
@@ -2503,7 +2666,6 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
             "identity.acquire",
             "capability.create",
             "platform.prepare",
-            "capability.bind",
             "signer.sign",
             "broker.append",
             "broker.fsync",
@@ -2616,12 +2778,13 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
         session.capability_binding(),
         &CapabilityBinding {
             session_id: "session-1".to_owned(),
+            run_id: setup.request.run_id.clone(),
             channel_id: "broker".to_owned(),
             envelope_revision: 7,
             identity_slot: 3,
             assigned_uid: 200_003,
             assigned_gid: 300_003,
-            sandbox_leader_pid: 42_424,
+            agent_pid: 42_425,
         },
     );
     assert_eq!(
@@ -2648,13 +2811,14 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
             "identity.acquire",
             "capability.create",
             "platform.prepare",
-            "capability.bind",
             "signer.sign",
             "broker.append",
             "broker.fsync",
             "broker.ack",
-            "capability.enable",
             "agent.start",
+            "platform.verify_tool_isolation",
+            "capability.bind",
+            "capability.enable",
             "signer.sign",
             "broker.append",
             "broker.fsync",
@@ -4419,6 +4583,23 @@ fn failed_resume_signature_after_process_exit_preserves_terminal_audit() {
     }
 }
 
+#[test]
+fn agent_identity_loss_revokes_before_cleanup_and_cannot_be_revived_by_pending_audit() {
+    for action in [LifecycleAction::Interrupt, LifecycleAction::Resume] {
+        for pending in [
+            PendingAudit::Signing,
+            PendingAudit::FailedSigning,
+            PendingAudit::RejectedAck,
+        ] {
+            terminal_event_during_pending_receipt(
+                action,
+                pending,
+                RunningAgentEvent::AgentIdentityLost,
+            );
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PendingAudit {
     Signing,
@@ -4478,6 +4659,17 @@ fn terminal_event_during_pending_receipt(
     setup.platform.send_running_event(event);
     let terminal = request_supervisor_status(&setup, "queued-relay-failure");
     assert_eq!(terminal.state, SessionState::Terminal);
+    assert_eq!(terminal.channel_state, ChannelState::Closed);
+    let events = event_snapshot(&setup.events);
+    let closed = events
+        .iter()
+        .rposition(|event| event == "capability.close")
+        .unwrap();
+    let disposed = events
+        .iter()
+        .rposition(|event| event == "agent.dispose")
+        .unwrap();
+    assert!(closed < disposed);
     let (authority, classification, finish) = match event {
         RunningAgentEvent::ProcessExited(classification) => (
             ReceiptAuthority::ProcessExited { classification },
@@ -4490,6 +4682,13 @@ fn terminal_event_during_pending_receipt(
             },
             None,
             Err(SupervisorError::RelayFailed),
+        ),
+        RunningAgentEvent::AgentIdentityLost => (
+            ReceiptAuthority::Cause {
+                cause: ReceiptCause::AgentIdentityLost,
+            },
+            None,
+            Err(SupervisorError::AgentIdentityRejected),
         ),
         RunningAgentEvent::ControllerEof => panic!("only terminal events in this fixture"),
     };
@@ -8589,19 +8788,29 @@ fn privileged_supervisor_case(ending: PrivilegedEnding) {
         PlatformBehavior::default(),
         PRIVILEGED_TIMEOUT,
     );
-    if ending == PrivilegedEnding::NaturalExit {
-        // Natural exit must not depend on controller EOF, which means loss to
-        // the production relay and can freeze cat before it observes pipe EOF.
-        write_file(
-            &setup.fixture.path("runtime/bin/agent"),
-            "#!/bin/sh\nIFS= read -r frame || exit 1\nprintf '%s\\n' \"$frame\"\n",
-        );
-        write_registry(
-            &setup.fixture.path("registry"),
-            &setup.fixture.path("runtime"),
-        );
-        setup.registry = Arc::new(Registry::open(&setup.fixture.path("registry")).unwrap());
-    }
+    // Exercise the measured executable itself, not a script whose interpreter
+    // or subsequent exec would name another principal. head exits after one
+    // ACP line while cat remains alive for controller/relay failure cases.
+    let (executable, arguments) = if ending == PrivilegedEnding::NaturalExit {
+        ("/bin/head", vec!["-n", "1"])
+    } else {
+        ("/bin/cat", vec![])
+    };
+    fs::copy(executable, setup.fixture.path("runtime/bin/agent")).unwrap();
+    write_registry(
+        &setup.fixture.path("registry"),
+        &setup.fixture.path("runtime"),
+    );
+    write_file(
+        &setup.fixture.path("registry/agents.json"),
+        &serde_json::json!({
+            "schema": "louiselm.launch.registry/1",
+            "entries": [{"id": "demo", "provider": "demo-provider", "runtime_id": "demo-runtime",
+                "arguments": arguments, "environment": {}}]
+        })
+        .to_string(),
+    );
+    setup.registry = Arc::new(Registry::open(&setup.fixture.path("registry")).unwrap());
     for path in [
         setup.fixture.path(""),
         setup.fixture.path("runtime"),
@@ -8649,6 +8858,17 @@ fn privileged_supervisor_case(ending: PrivilegedEnding) {
         .recv_timeout(CALLBACK_TIMEOUT)
         .expect("the privileged launch completes")
         .expect("the real Bubblewrap Session launches");
+    let agent_pid = session.capability_binding().agent_pid;
+    let actual_agent =
+        observe_sandbox_leader(agent_pid, lock(&observation).as_ref().unwrap().monitor_pid)
+            .unwrap();
+    assert!(actual_agent.uids.iter().all(|uid| *uid == assigned));
+    assert!(actual_agent.gids.iter().all(|gid| *gid == assigned));
+    assert!(actual_agent.groups.is_empty());
+    assert_ne!(
+        agent_pid,
+        lock(&observation).as_ref().unwrap().sandbox_leader_pid
+    );
     assert_eq!(rustix::process::geteuid().as_raw(), 0);
 
     let acp = b"composite ACP bytes\n".to_vec();

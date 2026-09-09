@@ -77,6 +77,8 @@ pub enum ReceiptCause {
     AcknowledgementFailed,
     /// The supervisor's ACP relay failed; no raw I/O detail is retained.
     RelayFailed,
+    /// The authenticated Agent lifetime or executable proof ended without an exit status.
+    AgentIdentityLost,
 }
 
 /// Why the supervisor performed one non-launch lifecycle action.
@@ -316,6 +318,7 @@ impl ReceiptPayload {
                             cause: ReceiptCause::ControllerLost
                                 | ReceiptCause::AcknowledgementFailed
                                 | ReceiptCause::RelayFailed
+                                | ReceiptCause::AgentIdentityLost
                         }
                         | ReceiptAuthority::ProcessExited { .. }
                 ) =>

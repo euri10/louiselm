@@ -81,6 +81,41 @@ fn controller() -> (RelayStdio, UnixStream, UnixStream) {
 }
 
 #[test]
+fn process_exit_does_not_wait_for_a_survivors_inherited_stdio() {
+    let child = ChildProbe(Arc::new(Mutex::new(
+        Command::new("/bin/sh")
+            .args(["-c", "sleep 2 & printf ready"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    )));
+    let (attachment, receiver) = mpsc::sync_channel(1);
+    let (stdio, _input, mut output) = controller();
+    attachment.send(stdio).unwrap();
+    let (sender, events) = mpsc::channel();
+    let (input, stdout, stderr) = child.pipes();
+    let mut relay = RelayWorker::start(
+        receiver,
+        input,
+        stdout,
+        stderr,
+        child.wait_callback(),
+        Arc::new(move |event| sender.send(event).is_ok()),
+    )
+    .unwrap();
+    assert_eq!(
+        events.recv_timeout(Duration::from_millis(500)).unwrap(),
+        RunningAgentEvent::ProcessExited(super::super::ProcessExitClassification::Success)
+    );
+    relay.stop().unwrap();
+    let mut bytes = Vec::new();
+    output.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"ready");
+}
+
+#[test]
 fn cancellation_before_attachment_joins_the_worker_and_closes_child_pipes() {
     let child = ChildProbe::spawn();
     let (_attachment, receiver) = mpsc::sync_channel(1);

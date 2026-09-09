@@ -213,7 +213,7 @@ fn connected_pair(pin: CredentialPin) -> ConnectedPair {
     let directory = TempDir::new().expect("temporary rendezvous directory");
     let path = path_in(&directory);
     let listener = SeqpacketListener::bind(&path).expect("listener binds");
-    let accept_result = accepted(&listener, pin);
+    let accept_result = accepted(&listener, pin.clone());
     let connector = SeqpacketConnector::new().expect("connector starts");
     let connect_result = connected(&connector, &path, pin);
     let client = wait(connect_result).expect("client connects");

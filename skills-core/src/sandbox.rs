@@ -18,6 +18,7 @@
 //!   decided by the conformance suite running hostile probes inside the thing,
 //!   not by this module asserting it passed a flag.
 
+mod agent_identity;
 #[doc(hidden)]
 pub mod bootstrap;
 mod host_identity;
@@ -33,6 +34,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -479,6 +481,7 @@ pub struct SandboxedSession {
     disposed: bool,
     // Keep Bubblewrap's status reader alive for its terminal status write.
     status_guard: Option<UnixStream>,
+    agent_identity: Option<Arc<crate::launch_transport::KernelProcess>>,
 }
 
 /// Kernel-proved execution state of one live sandbox process tree.
@@ -497,6 +500,15 @@ pub enum SandboxMechanicalState {
 pub struct PreparedSession {
     session: Option<SandboxedSession>,
     startup_gate: Option<HostIdentityGate>,
+    authentication: Option<PendingAgentIdentity>,
+}
+
+#[derive(Debug)]
+struct PendingAgentIdentity {
+    trace: agent_identity::Trace,
+    executable: fs::File,
+    uid: u32,
+    gid: u32,
 }
 
 /// What disposal actually did.
@@ -514,6 +526,14 @@ pub struct DisposalReport {
 }
 
 impl SandboxedSession {
+    /// Returns the actual Agent process captured from kernel creation and exec events.
+    ///
+    /// Namespace-only development Sessions do not establish this authority.
+    #[must_use]
+    pub fn agent_identity(&self) -> Option<Arc<crate::launch_transport::KernelProcess>> {
+        self.agent_identity.clone()
+    }
+
     /// Returns the host PID of Bubblewrap's outer monitor process.
     #[must_use]
     pub fn monitor_pid(&self) -> u32 {
@@ -1100,6 +1120,35 @@ impl PreparedSession {
             };
         }
 
+        if let Some(authentication) = self.authentication.take() {
+            match authentication.trace.authenticate(
+                &authentication.executable,
+                authentication.uid,
+                authentication.gid,
+            ) {
+                Ok(identity) => {
+                    if let Some(session) = self.session.as_mut() {
+                        session.agent_identity = Some(identity);
+                    }
+                }
+                Err(source) => {
+                    let session_id = self.session_id().to_owned();
+                    return match self.dispose() {
+                        Ok(_) => Err(SandboxError::SpawnFailed {
+                            backend: "bubblewrap",
+                            reason: format!("Agent identity verification failed: {source}"),
+                        }),
+                        Err(cleanup) => Err(SandboxError::CleanupUnproven {
+                            session_id,
+                            reason: format!(
+                                "Agent identity verification failed: {source}; {cleanup}"
+                            ),
+                        }),
+                    };
+                }
+            }
+        }
+
         let mut session = self.session.take().ok_or_else(|| {
             SandboxError::Refused("prepared Session is already disposed".to_owned())
         })?;
@@ -1112,6 +1161,8 @@ impl PreparedSession {
     /// # Errors
     /// Returns an already-disposed refusal or any process-tree cleanup error from [`SandboxedSession::dispose`].
     pub fn dispose(&mut self) -> Result<DisposalReport, SandboxError> {
+        // Finish trace ownership before the tree owner waits for cleanup.
+        self.authentication = None;
         let report = self
             .session
             .as_mut()
@@ -1595,6 +1646,13 @@ impl BubblewrapBackend {
         } else {
             None
         };
+        let expected_executable = host_identity
+            .map(|_| fs::File::open(&plan.executable))
+            .transpose()
+            .map_err(|source| SandboxError::Io {
+                path: plan.executable.display().to_string(),
+                source,
+            })?;
         if host_identity.is_some() {
             materialize_session_root(&plan.home, &plan.workspace)?;
         }
@@ -1653,15 +1711,52 @@ impl BubblewrapBackend {
         };
         // Close the parent's copy of the bootstrap's stdin endpoint.
         drop(command);
+        let mut trace = if host_identity.is_some() {
+            match agent_identity::Trace::attach_child(child.id()) {
+                Ok(trace) => Some(trace),
+                Err(error) => {
+                    return Err(startup_failed(
+                        self.name(),
+                        &plan.session_id,
+                        &mut child,
+                        cgroup.as_ref(),
+                        &format!("Agent creation trace failed: {error}"),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         let [status, block] = startup_gate.take_child_fds();
-        self.admit_and_handoff(
+        if let Err(error) = self.admit_and_handoff(
             &plan.session_id,
             &mut child,
             cgroup.as_ref(),
             bootstrap_parent,
             [OwnedFd::from(stdin_reader), status, block],
-        )?;
+        ) {
+            drop(trace);
+            return Err(error);
+        }
         child.stdin = Some(OwnedFd::from(stdin_writer).into());
+
+        let traced_reaper = match trace
+            .as_mut()
+            .map(agent_identity::Trace::prepare_reaper)
+            .transpose()
+        {
+            Ok(reaper) => reaper,
+            Err(error) => {
+                drop(trace);
+                return Err(startup_failed(
+                    self.name(),
+                    &plan.session_id,
+                    &mut child,
+                    cgroup.as_ref(),
+                    &format!("Agent namespace trace failed: {error}"),
+                ));
+            }
+        };
 
         let (identity, sandbox_leader_pid, namespace_leader) =
             if let Some((uid, gid)) = host_identity {
@@ -1671,6 +1766,7 @@ impl BubblewrapBackend {
                 let observation = match startup_gate.verify(child.id(), cgroup, uid, gid) {
                     Ok(observation) => observation,
                     Err(error) => {
+                        drop(trace);
                         return Err(startup_failed(
                             self.name(),
                             &plan.session_id,
@@ -1680,6 +1776,16 @@ impl BubblewrapBackend {
                         ));
                     }
                 };
+                if traced_reaper != Some(observation.sandbox_leader_pid) {
+                    drop(trace);
+                    return Err(startup_failed(
+                        self.name(),
+                        &plan.session_id,
+                        &mut child,
+                        Some(cgroup),
+                        "kernel namespace creation disagrees with Bubblewrap status",
+                    ));
+                }
                 (
                     Some(observation),
                     Some(observation.sandbox_leader_pid),
@@ -1713,8 +1819,18 @@ impl BubblewrapBackend {
                 namespace_leader,
                 disposed: false,
                 status_guard: None,
+                agent_identity: None,
             }),
             startup_gate: Some(startup_gate),
+            authentication: match (trace, expected_executable, host_identity) {
+                (Some(trace), Some(executable), Some((uid, gid))) => Some(PendingAgentIdentity {
+                    trace,
+                    executable,
+                    uid,
+                    gid,
+                }),
+                _ => None,
+            },
         })
     }
 
@@ -2434,6 +2550,7 @@ mod tests {
         let mut prepared = PreparedSession {
             session: Some(test_session("disposed-before-start", fixture.path(), None)),
             startup_gate: Some(HostIdentityGate::new().expect("startup gate opens")),
+            authentication: None,
         };
 
         prepared
@@ -2517,6 +2634,7 @@ mod tests {
             }),
             sandbox_leader_pid: None,
             namespace_leader: None,
+            agent_identity: None,
             disposed: false,
             status_guard,
         }

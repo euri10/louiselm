@@ -390,6 +390,7 @@ struct ActiveControllerLossSettlement {
 #[derive(Clone, Copy)]
 enum TerminalEvent {
     ProcessExited(ProcessExitClassification),
+    AgentIdentityLost,
     RelayFailed,
 }
 
@@ -1211,6 +1212,13 @@ impl SessionOwner {
                 },
                 Err(SupervisorError::RelayFailed),
             ),
+            TerminalEvent::AgentIdentityLost => (
+                "agent-identity-lost",
+                ReceiptAuthority::Cause {
+                    cause: ReceiptCause::AgentIdentityLost,
+                },
+                Err(SupervisorError::AgentIdentityRejected),
+            ),
         };
         let request_id = format!("{event_id}-{}", head.digest().hex());
         let request = LifecycleRequest {
@@ -1284,6 +1292,9 @@ impl SessionOwner {
             }
             RunningAgentEvent::RelayFailed => {
                 self.begin_terminal_event(TerminalEvent::RelayFailed);
+            }
+            RunningAgentEvent::AgentIdentityLost => {
+                self.begin_terminal_event(TerminalEvent::AgentIdentityLost);
             }
         }
     }

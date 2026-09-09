@@ -23,7 +23,7 @@ use crate::{
     },
     launch_receipt::ProcessExitClassification,
     launch_transport::{
-        AuthenticatedPacket, BoundSeqpacketListener, CredentialPin, LauncherPacket,
+        AuthenticatedPacket, BoundSeqpacketListener, CredentialPin, KernelProcess, LauncherPacket,
         SeqpacketChannel, SeqpacketConnector, SeqpacketListener, TransportError,
     },
     launcher_install::{
@@ -37,9 +37,9 @@ use crate::{
 };
 
 use super::{
-    CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker, LaunchPlatform, LaunchSigner,
-    MechanicFailure, PreparedAgent, ProcessMembership, RelayStdio, RunningAgent,
-    RunningAgentEvents, SupervisorCompletion, SupervisorError, relay::RelayWorker,
+    AgentAuthentication, CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker,
+    LaunchPlatform, LaunchSigner, MechanicFailure, PreparedAgent, ProcessMembership, RelayStdio,
+    RunningAgent, RunningAgentEvents, SupervisorCompletion, SupervisorError, relay::RelayWorker,
 };
 
 /// Fixed root-owned launch registry read by the production entrypoint.
@@ -82,7 +82,7 @@ pub fn connect_control_broker(
     connector
         .connect(
             &config.broker_socket_path,
-            broker_pin,
+            broker_pin.clone(),
             Box::new(move |result| {
                 let _ = sender.try_send(result);
             }),
@@ -385,7 +385,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                 .checked_add(1)
                 .ok_or(SupervisorError::BrokerUnavailable)?;
             let socket_path = state.socket_path.clone();
-            let broker_pin = state.broker_pin;
+            let broker_pin = state.broker_pin.clone();
             state.reconnect_generation = generation;
             state.reconnect = Some(PendingBrokerReconnect {
                 generation,
@@ -696,6 +696,18 @@ impl SystemLaunchPlatform {
 }
 
 impl LaunchPlatform for SystemLaunchPlatform {
+    fn verify_tool_isolation(
+        &self,
+        _request: &LaunchRequest,
+        _agent: &AgentAuthentication,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        // qbr.5.1.1.3 supplies enforced per-Agent tool separation. Whole-Session
+        // namespaces/cgroups are not that proof, so no production bypass exists.
+        complete(Err(SupervisorError::ToolIsolationUnproven));
+        Ok(())
+    }
+
     fn acquire_identity(
         &self,
         assigned: Identity,
@@ -877,6 +889,16 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn authentication(&self) -> Result<AgentAuthentication, SupervisorError> {
+        let process = lock(&self.session)
+            .agent_identity()
+            .ok_or(SupervisorError::AgentIdentityRejected)?;
+        Ok(AgentAuthentication {
+            credentials: process.credentials(),
+            process: Some(process),
+        })
+    }
+
     fn start_relay(
         &mut self,
         controller: mpsc::Receiver<RelayStdio>,
@@ -894,12 +916,33 @@ impl RunningAgent for SystemRunningAgent {
             )
         };
         let session = Arc::clone(&self.session);
+        let mut identity_lost_at = None;
         self.relay = Some(RelayWorker::start(
             controller,
             input,
             output,
             error,
-            move || lock(&session).try_wait().map_err(map_sandbox),
+            move || {
+                let mut session = lock(&session);
+                let exited = session.try_wait().map_err(map_sandbox)?;
+                if exited.is_some() {
+                    return Ok(exited);
+                }
+                if let Some(process) = session.agent_identity()
+                    && !process
+                        .valid()
+                        .map_err(|_| SupervisorError::AgentIdentityRejected)?
+                {
+                    // The lifetime pin already denies channel traffic. Allow
+                    // the unchanged Bubblewrap reaper a bounded opportunity to
+                    // report the actual exit status; no tool EOF is required.
+                    let lost_at = identity_lost_at.get_or_insert_with(Instant::now);
+                    if lost_at.elapsed() >= Duration::from_millis(100) {
+                        return Err(SupervisorError::AgentIdentityRejected);
+                    }
+                }
+                Ok(exited)
+            },
             events,
         )?);
         Ok(())
@@ -1029,8 +1072,9 @@ struct SystemCapabilityGate {
     inode: u64,
     channel: Channel,
     binding: Option<CapabilityBinding>,
-    membership: Option<Arc<dyn ProcessMembership>>,
+    process: Option<Arc<KernelProcess>>,
     expected_session_id: String,
+    expected_run_id: String,
     expected_envelope_revision: u64,
     expected_identity: Identity,
     accepted: Arc<Mutex<AcceptedCapability>>,
@@ -1046,13 +1090,13 @@ struct AcceptedCapability {
 fn accept_capability(
     result: Result<SeqpacketChannel, TransportError>,
     accepted: &Mutex<AcceptedCapability>,
-    membership: &dyn ProcessMembership,
+    process: &KernelProcess,
     generation: u64,
 ) {
     let Ok(channel) = result else {
         return;
     };
-    if membership.contains(channel.peer_credentials().pid) != Ok(true) {
+    if channel.peer_credentials() != process.credentials() || process.valid().ok() != Some(true) {
         channel.close();
         return;
     }
@@ -1099,8 +1143,9 @@ impl SystemCapabilityGate {
                 guest_path: PathBuf::from(SYSTEM_CAPABILITY_GUEST_PATH),
             },
             binding: None,
-            membership: None,
+            process: None,
             expected_session_id: request.session_id.clone(),
+            expected_run_id: request.run_id.clone(),
             expected_envelope_revision: request.envelope_revision,
             expected_identity: assigned,
             accepted: Arc::new(Mutex::new(AcceptedCapability::default())),
@@ -1143,27 +1188,49 @@ impl CapabilityGate for SystemCapabilityGate {
     fn bind(
         &mut self,
         binding: CapabilityBinding,
-        membership: Arc<dyn ProcessMembership>,
+        authentication: AgentAuthentication,
     ) -> Result<(), SupervisorError> {
+        let process = authentication
+            .process
+            .ok_or(SupervisorError::AgentIdentityRejected)?;
         if binding.channel_id != self.channel.id()
             || binding.session_id != self.expected_session_id
+            || binding.run_id != self.expected_run_id
             || binding.envelope_revision != self.expected_envelope_revision
             || binding.identity_slot != self.expected_identity.slot
             || binding.assigned_uid != self.expected_identity.uid
             || binding.assigned_gid != self.expected_identity.gid
             || self.binding.is_some()
-            || self.membership.is_some()
+            || self.process.is_some()
             || !matches!(self.state, Some(ListenerState::Bound(_)))
-            || membership.contains(binding.sandbox_leader_pid) != Ok(true)
+            || authentication.credentials != process.credentials()
+            || binding.agent_pid != process.credentials().pid
+            || binding.assigned_uid != process.credentials().uid
+            || binding.assigned_gid != process.credentials().gid
+            || !process
+                .valid()
+                .map_err(|_| SupervisorError::AgentIdentityRejected)?
         {
             return Err(SupervisorError::CapabilityUnavailable);
         }
         self.binding = Some(binding);
-        self.membership = Some(membership);
+        self.process = Some(process);
         Ok(())
     }
 
     fn enable(&mut self) -> Result<(), SupervisorError> {
+        let process = Arc::clone(
+            self.process
+                .as_ref()
+                .ok_or(SupervisorError::AgentIdentityRejected)?,
+        );
+        if !process
+            .valid()
+            .map_err(|_| SupervisorError::AgentIdentityRejected)?
+        {
+            self.close();
+            return Err(SupervisorError::AgentIdentityRejected);
+        }
         if self.binding.is_none() {
             return Err(SupervisorError::CapabilityUnavailable);
         }
@@ -1204,19 +1271,11 @@ impl CapabilityGate for SystemCapabilityGate {
             generation
         };
         let accepted = Arc::clone(&self.accepted);
-        let membership = Arc::clone(
-            self.membership
-                .as_ref()
-                .ok_or(SupervisorError::CapabilityUnavailable)?,
-        );
         if listener
             .accept(
-                CredentialPin::Identity {
-                    uid: self.expected_identity.uid,
-                    gid: self.expected_identity.gid,
-                },
+                CredentialPin::LiveProcess(Arc::clone(&process)),
                 Box::new(move |result| {
-                    accept_capability(result, &accepted, membership.as_ref(), generation);
+                    accept_capability(result, &accepted, &process, generation);
                 }),
             )
             .is_err()
@@ -1444,29 +1503,23 @@ mod tests {
         );
     }
 
-    struct FixedMembership(bool);
-
-    impl ProcessMembership for FixedMembership {
-        fn contains(&self, _pid: u32) -> Result<bool, SupervisorError> {
-            Ok(self.0)
-        }
-    }
-
-    struct BlockingMembership {
-        entered: mpsc::SyncSender<()>,
-        release: Mutex<mpsc::Receiver<()>>,
-    }
-
-    impl ProcessMembership for BlockingMembership {
-        fn contains(&self, _pid: u32) -> Result<bool, SupervisorError> {
-            self.entered
-                .send(())
-                .map_err(|_| SupervisorError::CapabilityUnavailable)?;
-            lock(&self.release)
-                .recv()
-                .map_err(|_| SupervisorError::CapabilityUnavailable)?;
-            Ok(true)
-        }
+    fn pinned_test_process(pid: u32) -> Arc<KernelProcess> {
+        let kernel_pid =
+            rustix::process::Pid::from_raw(i32::try_from(pid).expect("fixture PID fits"))
+                .expect("fixture PID is positive");
+        Arc::new(
+            KernelProcess::from_exec_stop(
+                crate::launch_transport::KernelCredentials {
+                    pid,
+                    uid: rustix::process::getuid().as_raw(),
+                    gid: rustix::process::getgid().as_raw(),
+                },
+                rustix::process::pidfd_open(kernel_pid, rustix::process::PidfdFlags::empty())
+                    .expect("fixture lifetime pins"),
+                &fs::File::open(format!("/proc/{pid}/exe")).expect("fixture executable opens"),
+            )
+            .expect("fixture identity constructs"),
+        )
     }
 
     fn channel_pair() -> (SeqpacketChannel, SeqpacketChannel) {
@@ -1481,7 +1534,7 @@ mod tests {
         let (server_sender, server_receiver) = mpsc::sync_channel(1);
         listener
             .accept(
-                pin,
+                pin.clone(),
                 Box::new(move |result| {
                     server_sender.send(result).expect("server result received");
                 }),
@@ -1491,7 +1544,7 @@ mod tests {
         connector
             .connect(
                 &path,
-                pin,
+                pin.clone(),
                 Box::new(move |result| {
                     client_sender.send(result).expect("client result received");
                 }),
@@ -1525,12 +1578,12 @@ mod tests {
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
         };
-        let accepted = accept_channel(&listener, pin);
+        let accepted = accept_channel(&listener, pin.clone());
         let (connected, connection) = mpsc::sync_channel(1);
         connector
             .connect(
                 &path,
-                pin,
+                pin.clone(),
                 Box::new(move |result| {
                     connected.send(result).expect("connect result received");
                 }),
@@ -1544,7 +1597,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("accept completes")
             .expect("server authenticates");
-        let broker = SeqpacketLaunchBroker::new(connector, path, pin, client);
+        let broker = SeqpacketLaunchBroker::new(connector, path, pin.clone(), client);
         (directory, listener, broker, server, pin)
     }
 
@@ -1720,6 +1773,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One rendezvous is followed from rejected bindings through valid activation, revocation, re-enable and owned-path cleanup."
+    )]
     fn capability_revoke_disconnects_and_preserves_a_reenableable_rendezvous() {
         let directory = TempDir::new().expect("socket fixture opens");
         let path = directory.path().join("capability.sock");
@@ -1747,28 +1804,63 @@ mod tests {
                 guest_path: PathBuf::from(SYSTEM_CAPABILITY_GUEST_PATH),
             },
             binding: None,
-            membership: None,
+            process: None,
             expected_session_id: "session-1".to_owned(),
+            expected_run_id: "run-1".to_owned(),
             expected_envelope_revision: 7,
             expected_identity: identity,
             accepted: Arc::new(Mutex::new(AcceptedCapability::default())),
         };
-        gate.bind(
-            CapabilityBinding {
-                session_id: "session-1".to_owned(),
-                channel_id: "agent-capability".to_owned(),
-                envelope_revision: 7,
-                identity_slot: identity.slot,
-                assigned_uid: identity.uid,
-                assigned_gid: identity.gid,
-                sandbox_leader_pid: 42,
-            },
-            Arc::new(FixedMembership(true)),
-        )
-        .expect("capability binding is valid");
+        let binding = CapabilityBinding {
+            session_id: "session-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            channel_id: "agent-capability".to_owned(),
+            envelope_revision: 7,
+            identity_slot: identity.slot,
+            assigned_uid: identity.uid,
+            assigned_gid: identity.gid,
+            agent_pid: std::process::id(),
+        };
+        let process = pinned_test_process(std::process::id());
+        let authentication = AgentAuthentication {
+            credentials: process.credentials(),
+            process: Some(process),
+        };
+        assert_eq!(
+            gate.bind(
+                binding.clone(),
+                AgentAuthentication {
+                    process: None,
+                    ..authentication.clone()
+                }
+            ),
+            Err(SupervisorError::AgentIdentityRejected)
+        );
+        assert_eq!(
+            gate.bind(
+                CapabilityBinding {
+                    run_id: "another-run".to_owned(),
+                    ..binding.clone()
+                },
+                authentication.clone()
+            ),
+            Err(SupervisorError::CapabilityUnavailable)
+        );
+        assert_eq!(
+            gate.bind(
+                CapabilityBinding {
+                    agent_pid: binding.agent_pid + 1,
+                    ..binding.clone()
+                },
+                authentication.clone()
+            ),
+            Err(SupervisorError::CapabilityUnavailable)
+        );
+        gate.bind(binding, authentication)
+            .expect("capability binding is valid");
 
         gate.enable().expect("capability enables");
-        let first = connect_channel(&path, pin);
+        let first = connect_channel(&path, pin.clone());
         wait_for_accepted(&gate);
         gate.revoke().expect("capability revokes");
         assert_eq!(
@@ -1789,7 +1881,7 @@ mod tests {
                 & 0o777,
             0o600,
         );
-        let second = connect_channel(&path, pin);
+        let second = connect_channel(&path, pin.clone());
         wait_for_accepted(&gate);
         gate.close();
         assert_disconnected(second);
@@ -1797,35 +1889,40 @@ mod tests {
     }
 
     #[test]
-    fn capability_accept_rejects_a_peer_outside_the_session_process_tree() {
+    fn capability_accept_rejects_a_different_process_with_the_same_uid() {
         let (server, client) = channel_pair();
         let accepted = Arc::new(Mutex::new(AcceptedCapability::default()));
-
-        accept_capability(Ok(server), &accepted, &FixedMembership(false), 0);
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("fixture starts");
+        let process = pinned_test_process(child.id());
+        accept_capability(Ok(server), &accepted, &process, 0);
+        child.kill().expect("fixture killed");
+        child.wait().expect("fixture reaped");
 
         assert!(lock(&accepted).channel.is_none());
         assert_disconnected(client);
     }
 
     #[test]
-    fn capability_close_wins_an_accept_callback_already_checking_membership() {
+    fn capability_close_wins_a_pending_accept_callback() {
         let (server, client) = channel_pair();
         let accepted = Arc::new(Mutex::new(AcceptedCapability::default()));
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
-        let membership = Arc::new(BlockingMembership {
-            entered: entered_sender,
-            release: Mutex::new(release_receiver),
-        });
+        let process = pinned_test_process(std::process::id());
         let worker_accepted = Arc::clone(&accepted);
         let worker = thread::spawn(move || {
-            accept_capability(Ok(server), &worker_accepted, membership.as_ref(), 0);
+            entered_sender.send(()).expect("accept callback ready");
+            release_receiver.recv().expect("accept callback releases");
+            accept_capability(Ok(server), &worker_accepted, &process, 0);
         });
         entered_receiver
             .recv_timeout(Duration::from_secs(2))
-            .expect("membership check starts");
+            .expect("accept callback starts");
         lock(&accepted).closed = true;
-        release_sender.send(()).expect("membership check releases");
+        release_sender.send(()).expect("accept callback releases");
         worker.join().expect("accept callback finishes");
 
         assert!(lock(&accepted).channel.is_none());
@@ -1838,25 +1935,24 @@ mod tests {
         let accepted = Arc::new(Mutex::new(AcceptedCapability::default()));
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
-        let membership = Arc::new(BlockingMembership {
-            entered: entered_sender,
-            release: Mutex::new(release_receiver),
-        });
+        let process = pinned_test_process(std::process::id());
         lock(&accepted).generation = 1;
         let worker_accepted = Arc::clone(&accepted);
         let worker = thread::spawn(move || {
-            accept_capability(Ok(server), &worker_accepted, membership.as_ref(), 1);
+            entered_sender.send(()).expect("accept callback ready");
+            release_receiver.recv().expect("accept callback releases");
+            accept_capability(Ok(server), &worker_accepted, &process, 1);
         });
         entered_receiver
             .recv_timeout(Duration::from_secs(2))
-            .expect("membership check starts");
+            .expect("accept callback starts");
         {
             let mut state = lock(&accepted);
             state.closed = true;
             state.generation = 2;
             state.closed = false;
         }
-        release_sender.send(()).expect("membership check releases");
+        release_sender.send(()).expect("accept callback releases");
         worker.join().expect("accept callback finishes");
 
         assert!(
@@ -1870,7 +1966,8 @@ mod tests {
     fn broker_reconnect_swaps_only_after_a_correlated_head_response() {
         let (_directory, listener, broker, old_server, pin) = broker_fixture();
         let request = reconnect_request();
-        let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+        let (candidate, completed) =
+            start_reconnect(&broker, &listener, pin.clone(), request.clone());
 
         let offered = receive_packet(&candidate);
         assert_eq!(offered.bytes, request.canonical_bytes());
@@ -1928,7 +2025,7 @@ mod tests {
         let (_directory, listener, broker, old_server, pin) = broker_fixture();
         let request = reconnect_request();
         let (stale_candidate, stale_completed) =
-            start_reconnect(&broker, &listener, pin, request.clone());
+            start_reconnect(&broker, &listener, pin.clone(), request.clone());
         assert_eq!(
             receive_packet(&stale_candidate).bytes,
             request.canonical_bytes()
@@ -1942,7 +2039,8 @@ mod tests {
             Err(SupervisorError::BrokerUnavailable),
         );
 
-        let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+        let (candidate, completed) =
+            start_reconnect(&broker, &listener, pin.clone(), request.clone());
         assert_eq!(receive_packet(&candidate).bytes, request.canonical_bytes());
         assert_disconnected(stale_candidate);
 
@@ -2002,7 +2100,8 @@ mod tests {
         ];
 
         for response in responses {
-            let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+            let (candidate, completed) =
+                start_reconnect(&broker, &listener, pin.clone(), request.clone());
             let offered = receive_packet(&candidate);
             assert_eq!(offered.bytes, request.canonical_bytes());
             send_packet(&candidate, response.canonical_bytes());
@@ -2037,7 +2136,8 @@ mod tests {
 
         for broker_head in [wrong_subject, wrong_envelope] {
             let (_directory, listener, broker, old_server, pin) = broker_fixture();
-            let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+            let (candidate, completed) =
+                start_reconnect(&broker, &listener, pin.clone(), request.clone());
             assert_eq!(receive_packet(&candidate).bytes, request.canonical_bytes());
             let response = ProtocolResponse {
                 schema: RESPONSE_SCHEMA.to_owned(),
@@ -2145,7 +2245,8 @@ mod tests {
     fn closing_the_broker_cancels_a_pending_reconnect_channel() {
         let (_directory, listener, broker, old_server, pin) = broker_fixture();
         let request = reconnect_request();
-        let (candidate, completed) = start_reconnect(&broker, &listener, pin, request.clone());
+        let (candidate, completed) =
+            start_reconnect(&broker, &listener, pin.clone(), request.clone());
         assert_eq!(receive_packet(&candidate).bytes, request.canonical_bytes());
 
         broker.close();
