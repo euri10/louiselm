@@ -16,7 +16,7 @@
 ---@class louiselm.session.ApiOptions
 ---@field permission_store? louiselm.permission.Store Explicit remembered-permission store.
 ---@field forensics_directory? string Override the private Session Forensics directory.
----@field usage_directory? string Absolute private directory for durable turn recording; defaults to stdpath("state")/louiselm/usage.
+---@field usage_directory? string Absolute private directory for durable turn recording; defaults to usage/ in the shared LouiseLM state directory.
 
 ---@class louiselm.session.ForensicsOptions
 ---@field diagnosing_session_id? string Durable identity of the diagnosing Session.

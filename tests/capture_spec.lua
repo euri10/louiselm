@@ -10,18 +10,13 @@ local T = MiniTest.new_set()
 local function fake_runtime()
   local original_system = nvim.system
   local original_schedule = nvim.schedule
-  local original_stdpath = nvim.fn.stdpath
+  local original_state_home = nvim.env.XDG_STATE_HOME
   local state_directory = nvim.fn.tempname()
   assert(nvim.fn.mkdir(state_directory, "p") == 1)
   local processes = {}
   local scheduled = {}
 
-  nvim.fn.stdpath = function(kind)
-    if kind == "state" then
-      return state_directory
-    end
-    return original_stdpath(kind)
-  end
+  nvim.env.XDG_STATE_HOME = state_directory
   rawset(nvim, "schedule", function(callback)
     scheduled[#scheduled + 1] = callback
   end)
@@ -39,10 +34,11 @@ local function fake_runtime()
   return {
     processes = processes,
     scheduled = scheduled,
+    state_directory = state_directory,
     restore = function()
       rawset(nvim, "system", original_system)
       rawset(nvim, "schedule", original_schedule)
-      nvim.fn.stdpath = original_stdpath
+      nvim.env.XDG_STATE_HOME = original_state_home
       nvim.fn.delete(state_directory, "rf")
     end,
   }
@@ -74,6 +70,7 @@ T["recorder"]["records, stops, then ingests only after leaving the fast event"] 
 
     local id = assert(capture:start())
     local output = runtime.processes[1].command[3]
+    MiniTest.expect.equality(nvim.fs.dirname(output), runtime.state_directory .. "/louiselm/capture-recordings")
     nvim.fn.writefile({ "audio" }, output, "b")
     MiniTest.expect.equality(runtime.processes[1].command[1], "test-recorder")
     MiniTest.expect.equality(output:match("%.wav$") ~= nil, true)

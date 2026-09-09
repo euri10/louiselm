@@ -406,7 +406,7 @@ local function make_rule(context, request, decision, lifetime)
 end
 
 ---Create an explicit permission store.
----@param path? string JSON path. Defaults below stdpath("state").
+---@param path? string JSON path. Defaults to permissions.json in the shared LouiseLM state directory.
 ---@return louiselm.permission.Store? store
 ---@return string? error_message
 function M.new(path)
@@ -414,7 +414,7 @@ function M.new(path)
     return nil, "permission state path must be a non-empty string"
   end
   local editor = nvim()
-  local resolved = path or editor.fs.joinpath(editor.fn.stdpath("state"), "louiselm", "permissions.json")
+  local resolved = path or editor.fs.joinpath(require("louiselm.paths").state(), "permissions.json")
   return setmetatable({ path = canonical_path(resolved), session_rules = {} }, Store), nil
 end
 

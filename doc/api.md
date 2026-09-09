@@ -32,7 +32,7 @@ API reference.
 
 - `forensics_directory: string?` -- Override the private Session Forensics directory.
 - `permission_store: (louiselm.permission.Store)?` -- Explicit remembered-permission store.
-- `usage_directory: string?` -- Absolute private directory for durable turn recording; defaults to stdpath("state")/louiselm/usage.
+- `usage_directory: string?` -- Absolute private directory for durable turn recording; defaults to usage/ in the shared LouiseLM state directory.
 
 ### louiselm.session.ForensicsOptions
 

@@ -1,9 +1,39 @@
 # Durable turn recording
 
 Every production Session, including headless Sessions, records turn metadata in
-`stdpath("state")/louiselm/usage/turns.sqlite3`. There is no opt-out. Headless
+`$XDG_STATE_HOME/louiselm/usage/turns.sqlite3`, falling back to
+`~/.local/state/louiselm/usage/turns.sqlite3` when the variable is unset or empty.
+This is shared across Neovim profiles (`NVIM_APPNAME`). There is no opt-out. Headless
 owners may choose an absolute private directory with `Session.new`'s third
 argument, `{ usage_directory = path }`.
+
+All shared LouiseLM state uses the same root, independently of the editor profile:
+
+| Relative path | Owner and purpose |
+| --- | --- |
+| `usage/turns.sqlite3` | Session registry: durable turn and option facts |
+| `usage.json` | Chat: read-only legacy replay annotations |
+| `forensics/` | Session registry: immutable Forensics records |
+| `permissions.json` | Permission store: remembered rules |
+| `abandoned.json`, `routing-evidence.json` | Neovim: abandonment breadcrumb and routing evidence |
+| `capture-recordings/` | Neovim: private recording scratch, removed after successful ingestion |
+| `capture/`, `workflow/` | Capture service: pairing/TLS, uploads, Runs and Attention |
+| `skills/` | Skills tool: default trusted store |
+
+Explicit headless store paths take precedence. `LOUISELM_CAPTURE_STATE_DIR`
+overrides the service's state base (including the Neovim workflow clients);
+`LOUISELM_SKILLS_STORE` overrides the complete skills-store path. These are
+component-specific overrides, not aliases for the shared root.
+Configuration stays in its existing configuration directory, and canonical
+capture audio stays beneath `$XDG_DATA_HOME/louiselm/captures`.
+
+Older builds used `stdpath("state")/louiselm` for Neovim-owned state. Moving
+existing records is an explicit operator action, never an import/setup side
+effect. Settle all old writers before transferring their state, preserve
+private permissions and a recoverable backup, and resolve existing destination
+files before copying. A running editor retains its existing store paths until
+its owners are disposed or explicitly transferred; installing updated files
+does not change live objects. Do not turn QA backups into active permission rules.
 
 `sqlite3` >= 3.38 with JSON support is required on `PATH`. CI installs it and
 tests use real temporary databases. Each connection verifies the version, JSON

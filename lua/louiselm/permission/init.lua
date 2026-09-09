@@ -17,7 +17,7 @@ M.gates = Gates
 M.human_prompt = HumanPrompt.new
 
 ---Create an explicit remembered-permission store.
----@param path? string JSON path. Defaults below stdpath("state").
+---@param path? string JSON path. Defaults to permissions.json in the shared LouiseLM state directory.
 ---@return louiselm.permission.Store? store
 ---@return string? error_message
 function M.store(path)

@@ -44,6 +44,8 @@ Install `sqlite3` 3.38 or newer with JSON support on `PATH` (for example,
 turn metadata before sending a prompt. Recording failures hold new prompts;
 active work can finish. See [durable turn recording](docs/turn-recording.md)
 for storage, recovery, and the asynchronous headless API contract.
+Shared state defaults to `~/.local/state/louiselm/` (`$XDG_STATE_HOME/louiselm/`
+when set), independently of the Neovim profile.
 
 The public source download is not available yet. If you have a checkout,
 replace the path below and save this as `quickstart.lua`:
@@ -112,7 +114,7 @@ headless Session API sends a prompt. Missing configuration fails setup; missing 
 ambiguous active routes leave the Session ready and report how to fix attribution.
 `Session:inspect().turn_identity` preserves Agent, Provider, advertised Model,
 and the complete supported option tuple at prompt start; later option changes
-do not rewrite it. This snapshot does not yet persist usage history.
+do not rewrite it. Durable turn recording preserves this attribution with usage history.
 
 ## Features
 

@@ -377,7 +377,7 @@ local function find_record(records, agent, option, value)
 end
 
 ---Open the legacy usage ledger for reading only; Session recording owns all new facts.
----@param path? string JSON path. Defaults to stdpath("state")/louiselm/usage.json.
+---@param path? string JSON path. Defaults to usage.json in the shared LouiseLM state directory.
 ---@return louiselm.routing.Usage? store
 ---@return string? error_message
 function M.new(path)
@@ -385,7 +385,7 @@ function M.new(path)
     return nil, "usage history path must be a non-empty string"
   end
   local editor = nvim()
-  local resolved = path or editor.fs.joinpath(editor.fn.stdpath("state"), "louiselm", "usage.json")
+  local resolved = path or editor.fs.joinpath(require("louiselm.paths").state(), "usage.json")
   return setmetatable({ path = editor.fs.normalize(resolved) }, Usage), nil
 end
 

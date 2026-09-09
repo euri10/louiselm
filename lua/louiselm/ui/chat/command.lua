@@ -6,6 +6,7 @@ local ForensicsStore = require("louiselm.forensics.store")
 local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
+local Paths = require("louiselm.paths")
 
 local M = {}
 local configured ---@type table?
@@ -18,7 +19,7 @@ end
 
 ---@return string path
 local function abandonment_path()
-  return nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "abandoned.json")
+  return nvim.fs.joinpath(Paths.state(), "abandoned.json")
 end
 
 ---@param chat louiselm.ui.Chat?
@@ -182,7 +183,7 @@ end
 ---@return louiselm.routing.Coordinator? workflow
 ---@return string? error_message
 local function configured_workflow(definitions)
-  local path = nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "routing-evidence.json")
+  local path = nvim.fs.joinpath(Paths.state(), "routing-evidence.json")
   return Workflow.new(definitions, path)
 end
 

@@ -40,7 +40,7 @@ elseif mode == "editor" then
   table.insert(command, 1, "--")
   table.insert(command, 1, directory .. "/logs")
   table.insert(command, 1, "--log-root")
-  local agents = { mock = { command = arg[3], args = command } }
+  local agents = { mock = { provider = "test-service", command = arg[3], args = command } }
   assert(require("louiselm").setup({ agents = agents }))
   local api = assert(require("louiselm.session").new(agents))
   local ready, ready_error
@@ -125,7 +125,7 @@ local function check(clean)
     local result = editor:wait(5000)
     if clean then
       assert(result.code == 0, result.stderr)
-      local breadcrumb = temporary .. "/state/nvim/louiselm/abandoned.json"
+      local breadcrumb = temporary .. "/state/louiselm/abandoned.json"
       local record = nvim.json.decode(table.concat(nvim.fn.readfile(breadcrumb), "\n"))
       assert(#record.sessions == 1 and record.sessions[1].agent == "mock", "quit lost the abandonment record")
     end

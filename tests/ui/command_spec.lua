@@ -454,7 +454,7 @@ end
 
 T["command"]["allows recoverable idle :q and surfaces its breadcrumb once at setup"] = function()
   local result, state_root, continued_marker, disposed_marker = run_exit_child("q", true)
-  local path = nvim.fs.joinpath(state_root, "nvim", "louiselm", "abandoned.json")
+  local path = nvim.fs.joinpath(state_root, "louiselm", "abandoned.json")
 
   MiniTest.expect.equality(result.code, 0)
   MiniTest.expect.equality(nvim.fn.filereadable(continued_marker), 0)
@@ -481,7 +481,7 @@ end
 
 T["command"]["allows :qa past refusal clauses and records an unrecoverable Session"] = function()
   local result, state_root, continued_marker, disposed_marker = run_exit_child("qa", false)
-  local path = nvim.fs.joinpath(state_root, "nvim", "louiselm", "abandoned.json")
+  local path = nvim.fs.joinpath(state_root, "louiselm", "abandoned.json")
 
   MiniTest.expect.equality(result.code, 0)
   MiniTest.expect.equality(nvim.fn.filereadable(continued_marker), 0)

@@ -1,5 +1,6 @@
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
+local Paths = require("louiselm.paths")
 
 ---@class louiselm.capture.Config
 ---@field recorder? string[] Recorder argv containing one `{output}` placeholder.
@@ -215,7 +216,7 @@ function Capture:start(callback)
   if self.recording ~= nil then
     return nil, "a capture is already recording"
   end
-  local directory = nvim.fn.stdpath("state") .. "/louiselm/capture-recordings"
+  local directory = nvim.fs.joinpath(Paths.state(), "capture-recordings")
   if nvim.fn.mkdir(directory, "p") == 0 and nvim.fn.isdirectory(directory) == 0 then
     return nil, "capture recording directory could not be created"
   end

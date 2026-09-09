@@ -6,6 +6,7 @@ local Limits = require("louiselm.session.limits")
 local Validation = require("louiselm.session.validation")
 local ForensicsStore = require("louiselm.forensics.store")
 local Recording = require("louiselm.session.recording")
+local Paths = require("louiselm.paths")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -198,8 +199,7 @@ function M.new(definitions, default_skills_policy, options)
   if not valid_permission_store(permission_store) then
     return nil, { { path = "session.permission_store", message = "permission_store is malformed" } }
   end
-  local forensics_directory = options and options.forensics_directory
-    or nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "forensics")
+  local forensics_directory = options and options.forensics_directory or nvim.fs.joinpath(Paths.state(), "forensics")
   local forensics_store, forensics_error = ForensicsStore.new(forensics_directory)
   if forensics_store == nil then
     return nil, { { path = "session.forensics_directory", message = forensics_error or "invalid directory" } }
@@ -218,7 +218,7 @@ function M.new(definitions, default_skills_policy, options)
     disposed = false,
   }, Registry)
   local recording, recording_error = Recording.new(
-    options and options.usage_directory or nvim.fs.joinpath(nvim.fn.stdpath("state"), "louiselm", "usage"),
+    options and options.usage_directory or nvim.fs.joinpath(Paths.state(), "usage"),
     function(err, pending)
       for _, session in pairs(registry.sessions) do
         session.state.recording_error = nvim.deepcopy(err or session.attribution_error)
