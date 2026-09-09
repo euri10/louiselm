@@ -13,7 +13,7 @@
 //! refused rather than silently running different bytes.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File},
     io::{self, Read},
     os::unix::fs::MetadataExt,
@@ -44,20 +44,114 @@ pub struct MeasuredFile {
     pub sha256: String,
 }
 
-/// A registered Agent: which Provider, which runtime, and what it runs.
+/// A typed advertised option value used by an exact Provider route.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProviderOption {
+    /// Exact string value, including the empty string.
+    String(String),
+    /// Exact boolean value; never coerced to a string.
+    Boolean(bool),
+}
+
+/// One Provider selected when every named option matches its typed value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRoute {
+    /// Service supplying access or quota, independent of Model manufacturer.
+    pub provider: String,
+    /// Nonempty map of advertised option IDs to exact values.
+    pub options: BTreeMap<String, ProviderOption>,
+}
+
+/// Provider configuration with the same serialized shape as the Lua Agent field.
+///
+/// [`Registry::open`] validates names and nonempty routes/maps. This records
+/// possible services; resolving the active Provider remains a per-turn Lua duty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Provider {
+    /// One fixed access/quota service.
+    Fixed(String),
+    /// Exact typed option routes; all possible services participate in disclosure.
+    Routes(Vec<ProviderRoute>),
+    /// Literal, case-sensitive prefixes of a string-valued advertised option.
+    Prefixes {
+        /// Nonblank advertised option ID.
+        option: String,
+        /// Nonempty prefixes mapped to nonblank service names.
+        prefixes: BTreeMap<String, String>,
+    },
+}
+
+impl Provider {
+    fn validate(&self) -> Result<(), RegistryError> {
+        // Lua's %S excludes these six ASCII whitespace bytes, not Unicode space.
+        let nonblank = |value: &str| {
+            value
+                .bytes()
+                .any(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        };
+        let valid = match self {
+            Self::Fixed(service) => nonblank(service),
+            Self::Routes(routes) => {
+                !routes.is_empty()
+                    && routes.iter().all(|route| {
+                        nonblank(&route.provider)
+                            && !route.options.is_empty()
+                            && route.options.keys().all(|id| !id.is_empty())
+                    })
+            }
+            Self::Prefixes { option, prefixes } => {
+                nonblank(option)
+                    && !prefixes.is_empty()
+                    && prefixes
+                        .iter()
+                        .all(|(prefix, service)| !prefix.is_empty() && nonblank(service))
+            }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(RegistryError::Malformed {
+                kind: "agent".to_owned(),
+                reason: "Provider needs nonblank service/option names and nonempty routes, maps and keys".to_owned(),
+            })
+        }
+    }
+}
+
+/// A registered Agent: possible Providers, which runtime, and what it runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRegistration {
     /// Identifier a request may name.
     pub id: String,
-    /// The Provider behind the Agent.
-    pub provider: String,
+    /// Fixed service or routing configuration, matching the Lua Agent field.
+    pub provider: Provider,
     /// The runtime package the Agent runs from.
     pub runtime_id: String,
     /// Arguments after the runtime executable, fixed at registration.
     pub arguments: Vec<String>,
     /// Environment the Session starts with; the launcher adds nothing else.
     pub environment: BTreeMap<String, String>,
+}
+
+impl AgentRegistration {
+    /// Returns every configured access/quota service, sorted and deduplicated.
+    ///
+    /// Borrows exact names without trimming or resolving active options. Needs
+    /// no running Agent or Session; overlapping routes still disclose all names.
+    #[must_use]
+    pub fn reachable_providers(&self) -> BTreeSet<&str> {
+        match &self.provider {
+            Provider::Fixed(service) => BTreeSet::from([service.as_str()]),
+            Provider::Routes(routes) => {
+                routes.iter().map(|route| route.provider.as_str()).collect()
+            }
+            Provider::Prefixes { prefixes, .. } => prefixes.values().map(String::as_str).collect(),
+        }
+    }
 }
 
 /// A measured Provider runtime.
@@ -329,6 +423,7 @@ impl Registry {
         for agent in &self.agents {
             validate_identifier("agent", &agent.id)?;
             validate_identifier("runtime", &agent.runtime_id)?;
+            agent.provider.validate()?;
         }
         for envelope in &self.envelopes {
             validate_identifier("envelope", &envelope.id)?;

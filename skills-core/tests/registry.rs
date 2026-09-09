@@ -24,6 +24,43 @@ use std::{
 use louiselm_skills::registry::{Registry, RegistryError};
 use support::{write_file, write_registry};
 
+#[test]
+fn provider_configuration_matches_the_lua_contract() {
+    // Shared with tests/agent/provider_spec.lua. The OpenCode prefixes were
+    // read from ~/.config/nvim/lua/config/plugins/louiselm.lua on 2026-09-09,
+    // Session codex/01a08495-ddc0-7151-8a69-731f8f197766.
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../../tests/fixtures/provider_config.json")).unwrap();
+    let fixture = tempfile::tempdir().unwrap();
+    for case in cases {
+        let document = serde_json::json!({
+            "schema": "louiselm.launch.registry/1",
+            "entries": [{"id": "demo", "provider": case["provider"],
+                "runtime_id": "demo-runtime", "arguments": [], "environment": {}}]
+        });
+        fs::write(fixture.path().join("agents.json"), document.to_string()).unwrap();
+        let result = Registry::open(fixture.path());
+        assert_eq!(
+            result.is_ok(),
+            case.get("services").is_some(),
+            "{case}: {result:?}"
+        );
+        if let Some(services) = case.get("services") {
+            let agent = result.unwrap().agent("demo").unwrap();
+            let expected: Vec<String> = serde_json::from_value(services.clone()).unwrap();
+            assert_eq!(
+                agent.reachable_providers().into_iter().collect::<Vec<_>>(),
+                expected
+            );
+            // In particular, false stays a boolean and the routing shape is unchanged.
+            assert_eq!(
+                serde_json::to_value(&agent.provider).unwrap(),
+                case["provider"]
+            );
+        }
+    }
+}
+
 fn root_fixture() -> Option<tempfile::TempDir> {
     if !rustix::process::geteuid().is_root() {
         assert!(

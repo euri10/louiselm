@@ -180,7 +180,10 @@ fn the_registry_resolves_only_what_it_was_given() {
     let registry = Registry::open(&registry_root).expect("the registry opens");
 
     let agent = registry.agent("demo").expect("the agent is registered");
-    assert_eq!(agent.provider, "demo-provider");
+    assert_eq!(
+        agent.reachable_providers().into_iter().collect::<Vec<_>>(),
+        ["demo-provider"]
+    );
     assert_eq!(agent.runtime_id, "demo-runtime");
 
     let runtime = registry

@@ -1,7 +1,18 @@
 local MiniTest = require("mini.test")
 local Provider = require("louiselm.agent.provider")
 
+---@diagnostic disable-next-line: undefined-global -- Neovim injects its runtime API.
+local nvim = vim
 local T = MiniTest.new_set()
+
+T["accepts the same Provider configurations as the Rust registry"] = function()
+  local cases = nvim.json.decode(table.concat(nvim.fn.readfile("tests/fixtures/provider_config.json"), "\n"))
+  for _, case in ipairs(cases) do
+    local provider, errors = Provider.normalize(case.provider)
+    MiniTest.expect.equality(provider ~= nil, case.services ~= nil)
+    MiniTest.expect.equality(#errors == 0, case.services ~= nil)
+  end
+end
 
 T["resolves candidate routes against the remaining typed tuple without guessing"] = function()
   local routes = assert(Provider.normalize({
