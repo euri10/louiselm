@@ -245,7 +245,7 @@ graph without operator decisions.
 - [API appendix](doc/api.md): headless Session API and public Lua types.
 - [Example workflow](docs/example-workflow.md): the maintainer's configuration,
   not a product contract.
-- [ACP log backups](docs/acp-log-backups.md): opt-in encrypted snapshots, cloud
+- [ACP log backups](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/acp-log-backups.md): opt-in encrypted snapshots, cloud
   copy, staged restore and reviewed retention; live setup remains pending.
 - [Contributing](CONTRIBUTING.md) and `AGENTS.md`: project policy and quality
   gates.

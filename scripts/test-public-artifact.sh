@@ -63,6 +63,7 @@ for forbidden in \
 	".env" \
 	"source.md" \
 	"build/AGENTS-0123456789abcdef0123456789abcdef.md" \
+	"build/acp-log-backups-0123456789abcdef0123456789abcdef.md" \
 	"build/private-0123456789abcdef0123456789abcdef.md" \
 	"build/nested/source.md" \
 	"demo/runtime/private.data" \
