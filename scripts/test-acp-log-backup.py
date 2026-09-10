@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -44,12 +45,12 @@ class BackupTests(unittest.TestCase):
         self.config.write_text(json.dumps(self.settings))
         self.config.chmod(0o600)
 
-    def run_command(self, *args, config=True, ok=True):
+    def run_command(self, *args, config=True, ok=True, timeout=30):
         command = [sys.executable, str(SCRIPT)]
         if config:
             command += ["--config", str(self.config)]
         result = subprocess.run(command + list(args), env=self.env,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=timeout)
         if ok:
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
@@ -168,7 +169,7 @@ elif "check" in sys.argv and os.environ.get("TEST_CHECK_EXIT"):
     def test_failed_or_incomplete_backup_preserves_previous_verification(self):
         self.fake_restic()
         first = json.loads(self.run_command("run").stdout)["last_verified"]
-        for code in (1, 3, 10):
+        for code in (1, 3, 10, 11):
             with self.subTest(code=code):
                 self.env["TEST_EXIT"] = str(code)
                 result = self.run_command("run", ok=False)
@@ -180,11 +181,15 @@ elif "check" in sys.argv and os.environ.get("TEST_CHECK_EXIT"):
     def test_failed_integrity_check_does_not_advance_verified_status(self):
         self.fake_restic()
         first = json.loads(self.run_command("run").stdout)["last_verified"]
-        self.env["TEST_CHECK_EXIT"] = "1"
-        result = self.run_command("run", ok=False)
-        self.assertIn("check failed", result.stderr)
-        self.assertNotIn("PRIVATE-SENTINEL", result.stdout + result.stderr)
-        self.assertEqual(json.loads(self.run_command("status").stdout)["last_verified"], first)
+        for code in (1, 11):
+            with self.subTest(code=code):
+                self.env["TEST_CHECK_EXIT"] = str(code)
+                result = self.run_command("run", ok=False)
+                self.assertIn("check failed", result.stderr)
+                self.assertNotIn("PRIVATE-SENTINEL", result.stdout + result.stderr)
+                status = json.loads(self.run_command("status").stdout)
+                self.assertEqual(status["last_verified"], first)
+                self.assertEqual(status["last_attempt"]["state"], "failed")
 
     def test_only_successfully_checked_snapshots_enter_copy_ledger(self):
         self.fake_restic()
@@ -240,6 +245,8 @@ if cloud:
     if "copy" in args and os.environ.get("TEST_FULL"):
         print("no space left: PRIVATE-SENTINEL", file=sys.stderr)
         sys.exit(1)
+    if "copy" in args and os.environ.get("TEST_SLOW_COPY"):
+        args += ["--limit-upload", "32"]
 if not cloud and "check" in args and os.environ.get("TEST_LOCAL_CHECK_FAIL"):
     sys.exit(1)
 with open(os.environ["TEST_TRACE"], "a") as trace:
@@ -372,6 +379,37 @@ sys.exit(result.returncode)
         self.run_command("cloud-verify", receipt, ok=False)
         self.assertEqual(json.loads(self.run_command("status").stdout)["cloud"]["last_verified"], good)
         self.run_command("retention-preview", "local", ok=False)
+
+    @unittest.skipUnless(shutil.which("restic"), "restic runtime missing")
+    def test_real_copy_overlap_does_not_fail_local_verification(self):
+        # louiselm-l1q8: both live timers fired at 16:00:02; check exited11.
+        self.cloud_bridge()
+        self.log.write_text(json.dumps({"synthetic": os.urandom(256 * 1024).hex()}) + "\n")
+        self.run_command("init")
+        first = json.loads(self.run_command("run").stdout)["last_verified"]
+        self.run_command("cloud-init")
+        self.env["TEST_SLOW_COPY"] = "1"
+        with subprocess.Popen([sys.executable, str(SCRIPT), "--config", str(self.config),
+                               "cloud-copy"], env=self.env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) as copying:
+            try:
+                deadline = time.monotonic() + 15
+                while not any((self.destination / "repository/locks").iterdir()):
+                    self.assertIsNone(copying.poll(), "copy ended before source lock was observed")
+                    self.assertLess(time.monotonic(), deadline, "copy never acquired source lock")
+                    time.sleep(0.02)
+                self.assertIsNone(copying.poll())
+                local = json.loads(self.run_command("run", timeout=90).stdout)
+            finally:
+                stdout, stderr = copying.communicate(timeout=30)
+            self.assertEqual(copying.returncode, 0, stderr)
+        self.assertEqual(local["last_attempt"]["state"], "verified")
+        self.assertIn(first["snapshot"], json.loads(stdout)["receipts"])
+        for line in Path(self.env["TEST_TRACE"]).read_text().splitlines():
+            args = json.loads(line)
+            self.assertEqual(args[args.index("--retry-lock") + 1], "1m")
+            self.assertNotIn("--no-lock", args)
+            self.assertNotIn("unlock", args)
 
     @unittest.skipUnless(shutil.which("restic"), "restic runtime missing")
     def test_cloud_does_not_hold_local_wrapper_lock(self):

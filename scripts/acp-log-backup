@@ -129,7 +129,9 @@ def restic(paths, *arguments, cwd=None, cloud=False):
     command = ["restic", "--repo", repository,
                "--password-file", str(paths["password_file"]),
                "--cache-dir", str(paths["destination"] / ("cloud-cache" if cloud else "cache")),
-               "--json", *arguments]
+               # Local check and cloud copy share native repository locks even
+               # though their wrapper locks are independent (louiselm-l1q8).
+               "--retry-lock", "1m", "--json", *arguments]
     try:
         result = subprocess.run(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=2700)

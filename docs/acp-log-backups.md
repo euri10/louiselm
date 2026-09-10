@@ -51,6 +51,11 @@ successful backup. A local lock prevents overlapping local backup, init, preview
 and restore. Cloud operations have their own lock and status file, so an offline
 copy does not hold up the hourly local job. Retention takes both locks. Restic
 also maintains its native repository locks; failures never trigger force-unlocking.
+Commands retry a conflicting native Restic lock for up to one minute, allowing
+short overlaps between local verification and cloud copying to finish. A longer
+conflict still fails explicitly and preserves the previous verified snapshot;
+the next scheduled attempt retries. The wrapper locks remain independent, so
+an offline cloud operation does not take the local wrapper lock.
 
 ## Prepare configuration (not enablement)
 
