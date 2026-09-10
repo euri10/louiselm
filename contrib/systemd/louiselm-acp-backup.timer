@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly local ACP log snapshot while logged in
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

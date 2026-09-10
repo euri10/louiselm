@@ -1,0 +1,6 @@
+[Unit]
+Description=Notify about an ACP backup failure without private payloads
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env notify-send --urgency=critical "LouiseLM backup failed" "Check the ACP backup/cloud-copy user services. Previous verified snapshots are retained."

@@ -1,0 +1,541 @@
+#!/usr/bin/env python3
+"""Opt-in encrypted ACP snapshots; cloud and retention require explicit commands."""
+
+import argparse
+from contextlib import ExitStack
+from datetime import datetime, timezone
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+CLOUD_REPOSITORY = "gs:louiselm-acp-backups:/restic"
+CLOUD_UPLOADER = "louiselm-acp-backup@louiselm.iam.gserviceaccount.com"
+
+
+def identifier(value):
+    return isinstance(value, str) and re.fullmatch("[0-9a-f]{64}", value) is not None
+
+
+class Failure(Exception):
+    """Safe operator diagnostic: never includes source content or tool output."""
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def overlaps(left, right):
+    return left == right or left in right.parents or right in left.parents
+
+
+def private_file(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise Failure("config and password files must be private, owned regular files (0600)")
+
+
+def configuration(path):
+    private_file(path)
+    data = json.loads(path.read_text())
+    required = {"source", "destination", "password_file"}
+    allowed = required | {"cloud_credentials_file"}
+    if not isinstance(data, dict):
+        raise Failure("config must be a JSON object")
+    problems = []
+    if set(data) - allowed:
+        problems.append("unknown config keys")
+    for key in sorted(required | (set(data) & allowed)):
+        value = data.get(key)
+        if not isinstance(value, str) or not value or not Path(value).is_absolute():
+            problems.append(f"{key} must be an absolute path string")
+    if problems:
+        raise Failure("config: " + "; ".join(problems))
+    paths = {}
+    for key, value in data.items():
+        raw = Path(value)
+        if raw.is_symlink():
+            raise Failure("config paths must not be symlinks")
+        paths[key] = raw.resolve()
+    # These are validated filesystem paths, not embedded password contents.
+    source, destination, password = (paths[k] for k in ("source", "destination", "password_file"))  # betterleaks:allow
+    state_roots = {Path.home() / ".local/state",
+                   Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")).resolve()}
+    if any(overlaps(destination, root) for root in [source, *state_roots]):
+        raise Failure("destination must not overlap source or state roots")
+    if any(overlaps(password, root) for root in [source, destination, *state_roots]):
+        raise Failure("password file must not overlap source, destination or state roots")
+    if source in {Path("/"), Path.home(), *state_roots}:
+        raise Failure("source must be the adapter directory, not a broad state or home root")
+    private_file(password)
+    if not password.stat().st_size:
+        raise Failure("password file is empty")
+    if destination.exists():
+        info = destination.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise Failure("destination must be a private owned directory (0700)")
+    if "cloud_credentials_file" in paths:
+        credentials = paths["cloud_credentials_file"]
+        if any(overlaps(credentials, root) for root in [source, destination, *state_roots]):
+            raise Failure("cloud credentials must not overlap source, backup or state roots")
+        private_file(credentials)
+        credential = json.loads(credentials.read_text())
+        if (not isinstance(credential, dict) or credential.get("type") != "service_account"
+                or credential.get("client_email") != CLOUD_UPLOADER):
+            raise Failure("cloud credentials must belong to the dedicated backup uploader")
+    for name in ("repository", "cache", "status.json", "lock", "cloud-cache",
+                 "cloud-status.json", "cloud-lock"):
+        if (destination / name).is_symlink():
+            raise Failure("managed backup paths must not be symlinks")
+    return paths
+
+
+def inventory(source):
+    if not source.is_dir():
+        raise Failure("source directory is missing")
+    files = {}
+    nonempty_log = False
+    def failed_walk(_error):
+        raise Failure("source inventory could not be read")
+    for directory, dirs, names in os.walk(source, followlinks=False, onerror=failed_walk):
+        dirs[:] = [name for name in dirs if name != "recovered-partials"]
+        names = [name for name in names if name != "recovered-partials"]
+        for name in names:
+            path = Path(directory) / name
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode):
+                files[str(path.relative_to(source))] = (info.st_ino, info.st_size, info.st_mtime_ns)
+                nonempty_log |= path.suffix == ".jsonl" and info.st_size > 0
+    if not nonempty_log:
+        raise Failure("source is empty of nonempty regular JSONL logs")
+    return files
+
+
+def restic(paths, *arguments, cwd=None, cloud=False):
+    # The access-token variable overrides Google's explicit credentials file.
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("RESTIC_", "GOOGLE_"))}
+    if cloud:
+        environment.update(GOOGLE_APPLICATION_CREDENTIALS=str(paths["cloud_credentials_file"]),
+                           GOOGLE_PROJECT_ID="louiselm")
+    repository = CLOUD_REPOSITORY if cloud else str(paths["destination"] / "repository")
+    command = ["restic", "--repo", repository,
+               "--password-file", str(paths["password_file"]),
+               "--cache-dir", str(paths["destination"] / ("cloud-cache" if cloud else "cache")),
+               "--json", *arguments]
+    try:
+        result = subprocess.run(command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=2700)
+    except FileNotFoundError:
+        raise Failure("restic could not start; check runtime PATH and source availability") from None
+    except subprocess.TimeoutExpired:
+        raise Failure("restic operation timed out; previous verified snapshot retained") from None
+    if result.returncode:
+        detail = " (incomplete snapshot)" if result.returncode == 3 else ""
+        raise Failure(f"restic {arguments[0]} failed: exit {result.returncode}{detail}")
+    return result.stdout
+
+
+def read_status(destination, cloud=False):
+    path = destination / ("cloud-status.json" if cloud else "status.json")
+    if not path.exists():
+        return {"state": "configured", "retention": "manual-only"}
+    private_file(path)
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise Failure("backup status is invalid; inspect private status file")
+    return value
+
+
+def write_status(destination, value, cloud=False):
+    with tempfile.NamedTemporaryFile(mode="w", dir=destination, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            json.dump(value, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.replace(temporary, destination / ("cloud-status.json" if cloud else "status.json"))
+            directory = os.open(destination, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def run_backup(paths):
+    destination = paths["destination"]
+    status = read_status(destination)
+    status["last_attempt"] = {"started_at": now(), "state": "running"}
+    write_status(destination, status)
+    try:
+        before = inventory(paths["source"])
+        if not (destination / "repository" / "config").is_file():
+            raise Failure("repository is not initialized; use explicit init command")
+        repository = repository_id(paths)
+        if status.get("repository_id", repository) != repository:
+            raise Failure("local repository identity changed; inspect before proceeding")
+        ledger = verified_snapshots(status)
+        output = restic(paths, "backup", "--tag", "louiselm-acp", "--exclude",
+                        "recovered-partials", ".", cwd=paths["source"])
+        summary = [json.loads(line) for line in output.splitlines() if line.strip()]
+        if any(not isinstance(entry, dict) for entry in summary):
+            raise Failure("restic backup returned invalid JSON records")
+        summary = [entry for entry in summary if entry.get("message_type") == "summary"]
+        if len(summary) != 1 or not re.fullmatch("[0-9a-f]{64}", summary[0].get("snapshot_id", "")):
+            raise Failure("restic backup returned no unambiguous snapshot identifier")
+        if any(type(summary[0].get(key)) is not int or summary[0][key] < 0
+               for key in ("total_files_processed", "total_bytes_processed")):
+            raise Failure("restic backup returned invalid inventory counters")
+        if not summary[0]["total_files_processed"] or not summary[0]["total_bytes_processed"]:
+            raise Failure("restic returned an empty snapshot; previous verified snapshot retained")
+        after = inventory(paths["source"])
+        restic(paths, "check", "--read-data")
+        status["last_verified"] = {
+            "snapshot": summary[0]["snapshot_id"], "verified_at": now(),
+            "files": summary[0]["total_files_processed"],
+            "bytes": summary[0]["total_bytes_processed"],
+            "consistency": "non-atomic-live-source", "source_changed": before != after,
+        }
+        status["repository_id"] = repository
+        status["verified_snapshots"] = sorted(ledger | {summary[0]["snapshot_id"]})
+        status["last_attempt"].update(state="verified", finished_at=now())
+        write_status(destination, status)
+        return status
+    except (Failure, OSError, ValueError, KeyError, TypeError) as error:
+        message = str(error) if isinstance(error, Failure) else "backup I/O or result validation failed"
+        status["last_attempt"].update(state="failed", finished_at=now(), error=message)
+        write_status(destination, status)
+        raise Failure(message) from None
+
+
+def repository_id(paths, cloud=False):
+    value = json.loads(restic(paths, "cat", "config", cloud=cloud))
+    if not isinstance(value, dict) or not identifier(value.get("id")):
+        raise Failure("repository returned an invalid identity")
+    return value["id"]
+
+
+def verified_snapshots(status):
+    value = status.get("verified_snapshots", [])
+    if not isinstance(value, list) or not all(identifier(item) for item in value):
+        raise Failure("verified snapshot ledger is invalid")
+    return set(value)
+
+
+def record(status, key):
+    value = status.get(key, {})
+    if not isinstance(value, dict):
+        raise Failure("backup status contains an invalid record")
+    return value
+
+
+def snapshots(paths, cloud=False):
+    values = json.loads(restic(paths, "snapshots", cloud=cloud))
+    if not isinstance(values, list):
+        raise Failure("repository returned an invalid snapshot catalog")
+    result = {}
+    for value in values:
+        if (not isinstance(value, dict) or not identifier(value.get("id"))
+                or not identifier(value.get("tree")) or value["id"] in result
+                or not isinstance(value.get("time"), str) or not value["time"]
+                or not isinstance(value.get("paths"), list) or not value["paths"]
+                or not all(isinstance(path, str) and path for path in value["paths"])
+                or ("original" in value and not identifier(value["original"]))):
+            raise Failure("repository returned an invalid snapshot record")
+        result[value["id"]] = value
+    return result
+
+
+def cloud_state(paths):
+    status = read_status(paths["destination"], cloud=True)
+    if status.get("repository_id") != repository_id(paths, cloud=True):
+        raise Failure("cloud repository identity is not recorded or changed; inspect before proceeding")
+    receipts = status.get("receipts", {})
+    if (not isinstance(receipts, dict)
+            or not all(identifier(key) and identifier(value) for key, value in receipts.items())):
+        raise Failure("cloud copy receipts are invalid")
+    return status
+
+
+def copy_cloud(paths):
+    destination = paths["destination"]
+    status = read_status(destination, cloud=True)
+    status["last_attempt"] = {"state": "running", "started_at": now()}
+    write_status(destination, status, cloud=True)
+    try:
+        cloud_state(paths)
+        local = read_status(destination)
+        source_id = repository_id(paths)
+        if local.get("repository_id") != source_id or status.get("source_repository_id") != source_id:
+            raise Failure("copy source repository identity changed or is unverified")
+        source = snapshots(paths)
+        verified = verified_snapshots(local)
+        eligible = sorted(verified & source.keys())
+        if not eligible:
+            raise Failure("no verified local snapshots to copy")
+        # Explicit IDs only: an incomplete backup can still leave a snapshot.
+        # Retry uses Restic's original-ID deduplication after a lost response.
+        for offset in range(0, len(eligible), 100):
+            restic(paths, "copy", "--from-repo", str(destination / "repository"),
+                   "--from-password-file", str(paths["password_file"]),
+                   *eligible[offset:offset + 100], cloud=True)
+        restic(paths, "check", cloud=True)
+        remote = snapshots(paths, cloud=True)
+        receipts = {original: copied for original, copied in status.get("receipts", {}).items()
+                    if copied in remote and remote[copied].get("original") == original}
+        for original in eligible:
+            matches = [key for key, value in remote.items()
+                       if value.get("original") == original
+                       and all(value.get(field) == source[original].get(field)
+                               for field in ("tree", "time", "paths"))]
+            if len(matches) != 1:
+                raise Failure("copy returned no unambiguous matching remote snapshot")
+            receipts[original] = matches[0]
+        status["receipts"] = receipts
+        status["last_copy"] = {"metadata_checked_at": now(), "snapshots": len(eligible)}
+        status["last_attempt"].update(state="copied-and-metadata-checked", finished_at=now())
+        write_status(destination, status, cloud=True)
+        return status
+    except (Failure, OSError, ValueError, KeyError, TypeError) as error:
+        message = str(error) if isinstance(error, Failure) else "cloud I/O or result validation failed"
+        status["last_attempt"].update(state="failed", finished_at=now(), error=message)
+        write_status(destination, status, cloud=True)
+        raise Failure(message) from None
+
+
+def verify_cloud(paths, snapshot):
+    status = read_status(paths["destination"], cloud=True)
+    status["verification_attempt"] = {"state": "running", "started_at": now()}
+    write_status(paths["destination"], status, cloud=True)
+    try:
+        cloud_state(paths)
+        if snapshot not in snapshots(paths, cloud=True):
+            raise Failure("selected cloud snapshot is missing")
+        restic(paths, "check", "--read-data", cloud=True)
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        status["verification_attempt"].update(state="failed", finished_at=now())
+        write_status(paths["destination"], status, cloud=True)
+        raise
+    status["last_verified"] = {"snapshot": snapshot, "verified_at": now()}
+    status["verification_attempt"].update(state="verified", finished_at=now())
+    write_status(paths["destination"], status, cloud=True)
+    return status
+
+
+def retention_plan(paths, cloud):
+    inventory(paths["source"])
+    local = read_status(paths["destination"])
+    remote = cloud_state(paths)
+    source_id = repository_id(paths)
+    if (local.get("repository_id") != source_id
+            or remote.get("source_repository_id") != source_id):
+        raise Failure("retention repository identities changed or are unverified")
+    if (record(local, "last_attempt").get("state") != "verified"
+            or record(remote, "last_attempt").get("state") != "copied-and-metadata-checked"
+            or record(remote, "verification_attempt").get("state") != "verified"):
+        raise Failure("retention requires successful local backup, cloud copy and full cloud verification")
+    source, destination = snapshots(paths), snapshots(paths, cloud=True)
+    local_good = record(local, "last_verified").get("snapshot")
+    cloud_good = record(remote, "last_verified").get("snapshot")
+    verified = verified_snapshots(local)
+    if local_good not in source or local_good not in verified or cloud_good not in destination:
+        raise Failure("last verified recovery point is missing; retention refused")
+    receipts = {original: copied for original, copied in remote.get("receipts", {}).items()
+                if copied in destination and destination[copied].get("original") == original}
+    if cloud:
+        catalog = destination
+        protected = (set(catalog) - set(receipts.values())) | {cloud_good}
+        # Copies of retained local generations would be re-uploaded on retry.
+        protected.update(copied for original, copied in receipts.items() if original in source)
+        restored = record(remote, "last_restore").get("snapshot")
+        if restored in catalog:
+            protected.add(restored)
+        policy = ["--keep-hourly", "48", "--keep-daily", "30", "--keep-monthly", "12"]
+    else:
+        catalog = source
+        protected = (set(catalog) - (verified & receipts.keys())) | {local_good}
+        protected.update(original for original, copied in receipts.items() if copied == cloud_good)
+        policy = ["--keep-hourly", "48", "--keep-daily", "7"]
+    groups = json.loads(restic(paths, "forget", "--dry-run", "--tag", "louiselm-acp",
+                               "--group-by", "host,paths", *policy, cloud=cloud))
+    if not isinstance(groups, list):
+        raise Failure("retention returned an invalid policy result")
+    candidates = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            raise Failure("retention returned an invalid policy group")
+        remove = group.get("remove")
+        if remove is None:
+            continue
+        if not isinstance(remove, list):
+            raise Failure("retention returned an invalid removal list")
+        for item in remove:
+            if not isinstance(item, dict) or not identifier(item.get("id")) or item["id"] not in catalog:
+                raise Failure("retention returned an unknown removal candidate")
+            candidates.add(item["id"])
+    plan = {"scope": "cloud" if cloud else "local", "policy": policy,
+            "remove": sorted(candidates - protected), "protected": sorted(protected & catalog.keys()),
+            "repositories": [source_id, remote["repository_id"]],
+            "catalogs": {"local": sorted(source), "cloud": sorted(destination)},
+            "verified_local": sorted(verified), "receipts": receipts}
+    # Approval is tied to exact IDs, policy and safety inputs, never a blanket
+    # permission for a later schedule. Both wrapper locks are held by the caller.
+    plan["approval"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+    return plan
+
+
+def apply_retention(paths, cloud, approval):
+    plan = retention_plan(paths, cloud)
+    if approval != plan["approval"]:
+        raise Failure("retention approval is stale; review a fresh preview")
+    destination = paths["destination"]
+    status = read_status(destination, cloud=cloud)
+    status["retention_attempt"] = {"state": "running", "started_at": now()}
+    write_status(destination, status, cloud=cloud)
+    try:
+        # Manual destructive maintenance pays for a full read of both copies.
+        # Hourly/online retries do not incur this cloud download cost.
+        restic(paths, "check", "--read-data")
+        restic(paths, "check", "--read-data", cloud=True)
+        if retention_plan(paths, cloud)["approval"] != approval:
+            raise Failure("retention approval became stale during verification")
+        if plan["remove"]:
+            # Exact reviewed IDs only. Do not let a second policy evaluation
+            # select more snapshots; never use unsafe-remove-all or force unlock.
+            for offset in range(0, len(plan["remove"]), 100):
+                restic(paths, "forget", *plan["remove"][offset:offset + 100], cloud=cloud)
+            # ponytail: no repacking avoids scratch-space/egress amplification;
+            # partly used packs remain until an explicit future maintenance pass.
+            restic(paths, "prune", "--max-repack-size=0", cloud=cloud)
+            restic(paths, "check", cloud=cloud)
+        status["last_retention"] = {"removed": plan["remove"], "finished_at": now()}
+        status["retention_attempt"].update(state="finished", finished_at=now())
+        write_status(destination, status, cloud=cloud)
+        return status
+    except (Failure, OSError, ValueError, KeyError, TypeError):
+        status["retention_attempt"].update(state="failed", finished_at=now(),
+                                            error="retention failed; inspect a fresh preview before retry")
+        write_status(destination, status, cloud=cloud)
+        raise
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("init", "run", "status", "cloud-init", "cloud-copy", "cloud-list"):
+        commands.add_parser(name)
+    for name in ("preview", "restore", "cloud-preview", "cloud-restore", "cloud-verify"):
+        subparser = commands.add_parser(name)
+        subparser.add_argument("snapshot", help="full snapshot ID from status/preview")
+        if name.endswith("restore"):
+            subparser.add_argument("target", type=Path, help="new staging directory, never live state")
+    for name in ("retention-preview", "retention-apply"):
+        subparser = commands.add_parser(name)
+        subparser.add_argument("scope", choices=("local", "cloud"))
+        if name == "retention-apply":
+            subparser.add_argument("approval", help="exact approval token from the reviewed preview")
+    args = parser.parse_args()
+    path = args.config or Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "louiselm/backup.json"
+    if not path.exists():
+        if args.config is None and args.command in {"run", "status", "cloud-copy"}:
+            print(json.dumps({"state": "disabled"}))
+            return
+        raise Failure("config file is missing")
+    paths = configuration(path)
+    destination = paths["destination"]
+    retention = args.command.startswith("retention-")
+    cloud = args.command.startswith("cloud-") or (retention and args.scope == "cloud")
+    if (cloud or retention) and "cloud_credentials_file" not in paths:
+        if args.command == "cloud-copy":
+            print(json.dumps({"state": "cloud-not-configured"}))
+            return
+        raise Failure("cloud credentials are not configured")
+    if args.command == "status":
+        status = read_status(destination)
+        status["cloud"] = (read_status(destination, cloud=True) if "cloud_credentials_file" in paths
+                           else {"state": "not-configured"})
+        print(json.dumps(status))
+        return
+    if hasattr(args, "snapshot"):
+        if not identifier(args.snapshot):
+            raise Failure("select one full snapshot identifier")
+    if args.command.endswith("restore"):
+        if not args.target.is_absolute():
+            raise Failure("restore target must be absolute")
+        if args.target.exists() or args.target.is_symlink():
+            raise Failure("restore target must not already exist")
+        target = args.target.resolve()
+        state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")).resolve()
+        if any(overlaps(target, root) for root in [paths["source"], destination, paths["password_file"], state,
+                                                   Path.home() / ".local/state"]):
+            raise Failure("restore target must not overlap source, backup or state roots")
+    destination.mkdir(mode=0o700, exist_ok=True)
+    with ExitStack() as locks:
+        for name in (["lock", "cloud-lock"] if retention else ["cloud-lock" if cloud else "lock"]):
+            descriptor = os.open(destination / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock = locks.enter_context(os.fdopen(descriptor, "w"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise Failure("another backup operation is running") from None
+        if args.command == "init":
+            if (destination / "repository").exists():
+                raise Failure("repository already exists; refusing initialization")
+            restic(paths, "init")
+            print(json.dumps({"state": "initialized", "retention": "disabled"}))
+        elif args.command == "cloud-init":
+            restic(paths, "init", "--from-repo", str(destination / "repository"),
+                   "--from-password-file", str(paths["password_file"]),
+                   "--copy-chunker-params", cloud=True)
+            status = {"state": "initialized", "repository_id": repository_id(paths, cloud=True),
+                      "source_repository_id": repository_id(paths), "receipts": {}}
+            write_status(destination, status, cloud=True)
+            print(json.dumps(status))
+        elif args.command == "run":
+            print(json.dumps(run_backup(paths)))
+        elif args.command == "cloud-copy":
+            print(json.dumps(copy_cloud(paths)))
+        elif args.command == "cloud-list":
+            print(json.dumps([{"snapshot": key, "time": value.get("time")}
+                              for key, value in snapshots(paths, cloud=True).items()]))
+        elif args.command == "cloud-verify":
+            print(json.dumps(verify_cloud(paths, args.snapshot)))
+        elif args.command == "retention-preview":
+            print(json.dumps(retention_plan(paths, cloud)))
+        elif args.command == "retention-apply":
+            print(json.dumps(apply_retention(paths, cloud, args.approval)))
+        elif args.command.endswith("preview"):
+            print(restic(paths, "ls", args.snapshot, cloud=cloud), end="")
+        else:
+            # Restic's default is overwrite: the wrapper deliberately forbids it.
+            target.mkdir(mode=0o700)
+            restic(paths, "restore", args.snapshot, "--target", str(target),
+                   "--overwrite", "never", "--verify", cloud=cloud)
+            if cloud:
+                status = read_status(destination, cloud=True)
+                status["last_restore"] = {"snapshot": args.snapshot, "verified_at": now()}
+                write_status(destination, status, cloud=True)
+            print(json.dumps({"state": "restored-and-verified", "snapshot": args.snapshot}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Failure as error:
+        print(f"acp-log-backup: {error}", file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError, TypeError):
+        print("acp-log-backup: config/status or filesystem operation failed; check paths and permissions",
+              file=sys.stderr)
+        sys.exit(1)

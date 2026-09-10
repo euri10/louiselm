@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify a local encrypted ACP log snapshot
+OnFailure=louiselm-acp-backup-failure.service
+
+[Service]
+Type=oneshot
+UMask=0077
+NoNewPrivileges=true
+ExecStart=/usr/bin/env %h/.local/bin/acp-log-backup run
+TimeoutStartSec=50min

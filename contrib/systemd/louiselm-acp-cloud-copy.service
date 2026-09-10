@@ -1,0 +1,10 @@
+[Unit]
+Description=Copy verified ACP snapshots to the private cloud repository
+OnFailure=louiselm-acp-backup-failure.service
+
+[Service]
+Type=oneshot
+UMask=0077
+NoNewPrivileges=true
+ExecStart=/usr/bin/env %h/.local/bin/acp-log-backup cloud-copy
+TimeoutStartSec=50min

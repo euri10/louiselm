@@ -1,0 +1,10 @@
+[Unit]
+Description=Retry encrypted ACP cloud copies while logged in
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

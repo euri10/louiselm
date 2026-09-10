@@ -37,6 +37,15 @@ dependencies), run from the repository root:
 `node --test --test-timeout=5000 skills-core/tests/recovery_browser.test.cjs`.
 CI runs it alongside the Rust gates; Cargo alone does not execute the client.
 
+The opt-in ACP backup command uses a Python standard-library suite:
+`python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
+and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is
+missing, not a complete pass. The `acp-local-backup` CI job supplies the pinned,
+checksum-verified runtime and verifies the disabled systemd unit templates.
+The cloud tests replace only the transport with disposable local repositories;
+passing them is not evidence of live GCS credentials, scheduling or recovery.
+See [ACP log backups](acp-log-backups.md) for scope and live-acceptance limits.
+
 For Linux `skills-core` tests, use `./scripts/test-skills-core` from the
 repository root (optional Cargo test arguments follow). It closes inherited
 runner descriptors and isolates Git configuration before starting Cargo;
