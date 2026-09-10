@@ -1085,6 +1085,9 @@ impl CapabilityGate for FakeCapabilityGate {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct AgentState {
+    hold_tool: bool,
+    tool_completion:
+        Option<SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionResult>>,
     started: bool,
     parked: bool,
     resumed: bool,
@@ -1262,10 +1265,33 @@ fn run_fake_relay(
 }
 
 impl RunningAgent for FakeRunningAgent {
+    fn execute_tool(
+        &mut self,
+        _request: louiselm_skills::launch_protocol::ToolExecutionRequest,
+        complete: SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionResult>,
+    ) -> Result<(), SupervisorError> {
+        record(&self.events, "agent.tool");
+        if lock(&self.state).hold_tool {
+            lock(&self.state).tool_completion = Some(complete);
+            self.agent_changed.notify_all();
+            return Ok(());
+        }
+        thread::spawn(move || {
+            complete(Ok(louiselm_skills::launch_protocol::ToolExecutionResult {
+                exit_code: 0,
+                stdout: "tool output".to_owned(),
+                stderr: String::new(),
+                truncated: false,
+                timed_out: false,
+            }));
+        });
+        Ok(())
+    }
     fn authentication(&self) -> Result<AgentAuthentication, SupervisorError> {
         Ok(AgentAuthentication {
             credentials: self.credentials,
             process: None,
+            tool_isolation: None,
         })
     }
 
@@ -2600,6 +2626,121 @@ fn missing_tool_isolation_disposes_restricted_startup_without_enabling_effects()
             .windows(3)
             .any(|events| events == ["capability.close", "agent.dispose", "identity.release"])
     );
+}
+
+#[test]
+fn broker_tool_commands_bind_session_revision_and_nonreplayable_sequence() {
+    use louiselm_skills::launch_protocol::{TOOL_EXECUTION_SCHEMA, ToolExecutionRequest};
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    let (controller, finished, worker) = begin_session_relay(session);
+    let request = ToolExecutionRequest {
+        schema: TOOL_EXECUTION_SCHEMA.to_owned(),
+        protocol_version: 1,
+        request_id: "tool-1".to_owned(),
+        session_id: setup.request.session_id.clone(),
+        run_id: setup.request.run_id.clone(),
+        envelope_revision: setup.request.envelope_revision,
+        sequence: 1,
+        command: "printf tool".to_owned(),
+        timeout_ms: 1000,
+    };
+    for (id, code) in [
+        ("wrong-session", ErrorCode::SubjectMismatch),
+        ("wrong-revision", ErrorCode::EnvelopeRevisionMismatch),
+    ] {
+        let mut invalid = request.clone();
+        invalid.request_id = id.to_owned();
+        if id == "wrong-session" {
+            invalid.session_id = "another".to_owned();
+        } else {
+            invalid.envelope_revision += 1;
+        }
+        setup.broker.wait_for_session_request();
+        setup
+            .broker
+            .deliver_session_request(ProtocolMessage::ToolExecution(invalid));
+        assert!(
+            matches!(setup.broker.wait_for_session_response(id, 0).result, ResponseResult::Error { error } if error.code == code)
+        );
+    }
+    assert_eq!(event_count(&setup.events, "agent.tool"), 0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ToolExecution(request.clone()));
+    assert!(
+        matches!(setup.broker.wait_for_session_response("tool-1", 0).result, ResponseResult::ToolExecution { output } if output.stdout == "tool output")
+    );
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ToolExecution(request));
+    assert!(
+        matches!(setup.broker.wait_for_session_response("tool-1", 1).result, ResponseResult::Error { error } if error.code == ErrorCode::RequestIdConflict)
+    );
+    assert_eq!(event_count(&setup.events, "agent.tool"), 1);
+    finish_session_relay(&setup, controller, finished, worker);
+}
+
+#[test]
+fn tool_completion_after_session_disposal_cannot_send_a_response() {
+    use louiselm_skills::launch_protocol::{
+        TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
+    };
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    lock(&setup.platform.agent).hold_tool = true;
+    let session = complete_launch(&setup);
+    let (controller, finished, worker) = begin_session_relay(session);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ToolExecution(ToolExecutionRequest {
+            schema: TOOL_EXECUTION_SCHEMA.to_owned(),
+            protocol_version: 1,
+            request_id: "late-tool".to_owned(),
+            session_id: setup.request.session_id.clone(),
+            run_id: setup.request.run_id.clone(),
+            envelope_revision: setup.request.envelope_revision,
+            sequence: 1,
+            command: "sleep 1".to_owned(),
+            timeout_ms: 1000,
+        }));
+    let (mut state, timeout) = setup
+        .platform
+        .agent_changed
+        .wait_timeout_while(lock(&setup.platform.agent), CALLBACK_TIMEOUT, |state| {
+            state.tool_completion.is_none()
+        })
+        .unwrap();
+    assert!(!timeout.timed_out());
+    let complete = state.tool_completion.take().unwrap();
+    drop(state);
+    finish_session_relay(&setup, controller, finished, worker);
+    thread::spawn(move || {
+        complete(Ok(ToolExecutionResult {
+            exit_code: 0,
+            stdout: "stale".to_owned(),
+            stderr: String::new(),
+            truncated: false,
+            timed_out: false,
+        }));
+    })
+    .join()
+    .unwrap();
+    assert_eq!(setup.broker.session_response_count_for("late-tool"), 0);
 }
 
 #[test]

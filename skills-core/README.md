@@ -567,8 +567,11 @@ rejected by `sudo -n`. Roll the VM back after these destructive checks; do not
 repair an immutable release in place.
 
 The [Agent process identity boundary](../docs/agent-process-identity.md) pins the
-actual workload, not Bubblewrap's reaper. Production currently refuses launch
-without Agent/tool-isolation proof; whole-Session containment is not that proof.
+actual workload, not Bubblewrap's reaper. The [tool boundary](../docs/tool-isolation.md)
+supports the exact release-bound deterministic test integration, selected with
+Agent registration `tool_integration: "louiselm.test-tool-integration/1"`.
+Unset or unsupported integrations refuse Verified launch; whole-Session
+containment is not Agent/tool-isolation proof.
 
 Capture both receipts from one launch: sequence zero records `Starting`, its
 durable acknowledgement permits startup, and sequence one records `Running`.

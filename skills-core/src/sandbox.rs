@@ -252,9 +252,12 @@ impl Cgroup {
         if path.exists() {
             let _ = fs::remove_dir(&path);
         }
-        fs::create_dir(&path).map_err(|source| {
-            SandboxError::NoCgroup(format!("cannot create {}: {source}", path.display()))
-        })?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .map_err(|source| {
+                SandboxError::NoCgroup(format!("cannot create {}: {source}", path.display()))
+            })?;
         Ok(Self { path })
     }
 
@@ -1457,6 +1460,23 @@ impl Default for BubblewrapBackend {
 }
 
 impl BubblewrapBackend {
+    /// Tool cgroups remain below the owning Session's freeze/kill boundary.
+    pub(crate) fn within_session(&self, session_id: &str) -> Result<Self, SandboxError> {
+        let parent = self
+            .cgroup_parent
+            .as_ref()
+            .ok_or_else(|| {
+                SandboxError::NoCgroup(
+                    "tool execution requires an explicit supervisor cgroup parent".to_owned(),
+                )
+            })?
+            .join(format!("louiselm-session-{session_id}"));
+        Ok(Self {
+            cgroup_parent: Some(parent),
+            discover_cgroup: false,
+            ..self.clone()
+        })
+    }
     /// Uses `bwrap` from the system.
     #[must_use]
     pub fn new() -> Self {

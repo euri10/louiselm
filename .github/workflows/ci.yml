@@ -448,6 +448,19 @@ jobs:
           sudo env LOUISELM_REQUIRE_SYSTEM_RELAY=1 \
             /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::relay_tests --nocapture' bash "$library_test"
 
+      - name: Test measured Agent and zero-authority tools
+        run: |
+          set -eu
+          cargo build --bins --all-features --locked
+          library_test="$(
+            cargo test --lib --all-features --locked --no-run --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty' |
+              tail -n 1
+          )"
+          test -n "$library_test"
+          sudo env LOUISELM_REQUIRE_TOOL_ISOLATION=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle --exact --nocapture' bash "$library_test"
+
       - name: Test privileged launch supervisor composition
         run: |
           set -eu

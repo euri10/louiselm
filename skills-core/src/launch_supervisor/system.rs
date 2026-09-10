@@ -4,6 +4,10 @@
 #[path = "system_relay_tests.rs"]
 mod relay_tests;
 
+#[cfg(test)]
+#[path = "tool_integration_tests.rs"]
+mod tool_integration_tests;
+
 use std::{
     fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
@@ -649,6 +653,7 @@ impl LaunchSigner for InstalledLaunchSigner {
 
 /// Root-backed process, identity, and capability implementation.
 pub struct SystemLaunchPlatform {
+    registry_root: PathBuf,
     paths: LauncherPaths,
     config: LauncherConfig,
     backend: BubblewrapBackend,
@@ -688,6 +693,7 @@ impl SystemLaunchPlatform {
         );
         Ok(Self {
             paths,
+            registry_root: PathBuf::from(SYSTEM_REGISTRY_ROOT),
             config,
             backend,
             timeout,
@@ -698,13 +704,26 @@ impl SystemLaunchPlatform {
 impl LaunchPlatform for SystemLaunchPlatform {
     fn verify_tool_isolation(
         &self,
-        _request: &LaunchRequest,
-        _agent: &AgentAuthentication,
+        request: &LaunchRequest,
+        agent: &AgentAuthentication,
         complete: SupervisorCompletion<()>,
     ) -> Result<(), SupervisorError> {
-        // qbr.5.1.1.3 supplies enforced per-Agent tool separation. Whole-Session
-        // namespaces/cgroups are not that proof, so no production bypass exists.
-        complete(Err(SupervisorError::ToolIsolationUnproven));
+        let result = (|| {
+            let evidence = agent
+                .tool_isolation
+                .as_ref()
+                .ok_or(SupervisorError::ToolIsolationUnproven)?;
+            let registry = crate::registry::Registry::open_trusted(&self.registry_root)
+                .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+            evidence.verify(
+                request,
+                agent,
+                &registry,
+                &self.config.release_id,
+                &self.config.bwrap_digest,
+            )
+        })();
+        complete(result);
         Ok(())
     }
 
@@ -749,10 +768,37 @@ impl LaunchPlatform for SystemLaunchPlatform {
 
     fn prepare(&self, plan: ConfinementPlan) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
         require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
+        let release_root = self
+            .paths
+            .release_prefix
+            .join("releases")
+            .join(&self.config.release_id);
+        let tool_isolation = match super::ToolIsolationEvidence::measure(
+            &plan,
+            &release_root,
+            &self.config.release_id,
+            &self.config.bwrap_digest,
+        ) {
+            Ok(evidence) => Some(evidence),
+            Err(SupervisorError::ToolIsolationUnproven) => None,
+            Err(error) => return Err(error),
+        };
+        let tools = if tool_isolation.is_some() {
+            Some(super::tool_execution::ToolExecutor::new(
+                self.backend
+                    .within_session(&plan.session_id)
+                    .map_err(map_sandbox)?,
+                &plan,
+            )?)
+        } else {
+            None
+        };
         let prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
         Ok(Box::new(SystemPreparedAgent {
             prepared,
             backend_id: self.config.bwrap_digest.clone(),
+            tool_isolation,
+            tools,
         }))
     }
 }
@@ -782,6 +828,8 @@ impl IdentityGuard for SystemIdentityGuard {
 struct SystemPreparedAgent {
     prepared: PreparedSession,
     backend_id: String,
+    tool_isolation: Option<super::ToolIsolationEvidence>,
+    tools: Option<super::tool_execution::ToolExecutor>,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -808,10 +856,11 @@ impl PreparedAgent for SystemPreparedAgent {
     }
 
     fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
-        self.prepared
-            .start()
-            .map(|session| Box::new(SystemRunningAgent::new(session)) as Box<dyn RunningAgent>)
-            .map_err(map_sandbox)
+        let session = self.prepared.start().map_err(map_sandbox)?;
+        let mut running = SystemRunningAgent::new(session);
+        running.tools = self.tools;
+        running.tool_isolation = self.tool_isolation;
+        Ok(Box::new(running))
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
@@ -835,6 +884,8 @@ impl ProcessMembership for SystemProcessMembership {
 
 /// Production lifecycle/relay adapter for an already-confined running Session.
 pub struct SystemRunningAgent {
+    tools: Option<super::tool_execution::ToolExecutor>,
+    tool_isolation: Option<super::ToolIsolationEvidence>,
     session: Arc<Mutex<SandboxedSession>>,
     relay: Option<RelayWorker>,
 }
@@ -849,6 +900,8 @@ impl SystemRunningAgent {
         Self {
             session: Arc::new(Mutex::new(session)),
             relay: None,
+            tools: None,
+            tool_isolation: None,
         }
     }
 }
@@ -889,6 +942,20 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn execute_tool(
+        &mut self,
+        request: crate::launch_protocol::ToolExecutionRequest,
+        complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionResult>,
+    ) -> Result<(), SupervisorError> {
+        let agent = self
+            .authentication()?
+            .process
+            .ok_or(SupervisorError::AgentIdentityRejected)?;
+        self.tools
+            .as_mut()
+            .ok_or(SupervisorError::ToolIsolationUnproven)?
+            .execute(request, agent, complete)
+    }
     fn authentication(&self) -> Result<AgentAuthentication, SupervisorError> {
         let process = lock(&self.session)
             .agent_identity()
@@ -896,6 +963,7 @@ impl RunningAgent for SystemRunningAgent {
         Ok(AgentAuthentication {
             credentials: process.credentials(),
             process: Some(process),
+            tool_isolation: self.tool_isolation.clone(),
         })
     }
 
@@ -970,16 +1038,24 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn interrupt(&mut self) -> Result<(), MechanicFailure> {
+        self.tools
+            .as_mut()
+            .map_or(Ok(()), super::tool_execution::ToolExecutor::cancel)
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         apply_mechanic(&self.session, None, SandboxedSession::interrupt)
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
         let relay = self.relay.as_mut().map_or(Ok(()), RelayWorker::stop);
+        let tools = self
+            .tools
+            .as_mut()
+            .map_or(Ok(()), super::tool_execution::ToolExecutor::dispose);
         let process = lock(&self.session)
             .dispose()
             .map(|_| ())
             .map_err(map_sandbox);
-        if relay.is_err() || process.is_err() {
+        if relay.is_err() || tools.is_err() || process.is_err() {
             Err(SupervisorError::CleanupUnproven)
         } else {
             Ok(())
@@ -991,7 +1067,7 @@ impl RunningAgent for SystemRunningAgent {
     clippy::needless_pass_by_value,
     reason = "Result::map_err transfers ownership of the error into this conversion."
 )]
-fn map_sandbox(error: SandboxError) -> SupervisorError {
+pub(super) fn map_sandbox(error: SandboxError) -> SupervisorError {
     match error {
         SandboxError::CleanupUnproven { .. } | SandboxError::Survivors { .. } => {
             SupervisorError::CleanupUnproven
@@ -1825,6 +1901,7 @@ mod tests {
         let authentication = AgentAuthentication {
             credentials: process.credentials(),
             process: Some(process),
+            tool_isolation: None,
         };
         assert_eq!(
             gate.bind(

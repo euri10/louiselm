@@ -47,6 +47,9 @@ use crate::{
 };
 
 mod lifecycle;
+mod tool_execution;
+mod tool_integration;
+pub use tool_integration::ToolIsolationEvidence;
 mod relay;
 mod stdio;
 mod system;
@@ -167,6 +170,9 @@ pub struct AgentAuthentication {
     /// Actual kernel lifetime proof. Production gates refuse an absent proof;
     /// deterministic platform doubles may model it without an OS process.
     pub process: Option<Arc<KernelProcess>>,
+    /// Exact integration verified from trusted launch inputs before startup.
+    /// Production refuses missing evidence; platform doubles may omit it.
+    pub tool_isolation: Option<ToolIsolationEvidence>,
 }
 
 /// Broker operations needed by the one-shot launch transaction.
@@ -381,6 +387,18 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Executes one broker-authorized command asynchronously without Agent authority.
+    ///
+    /// Disposal cancels and joins execution before releasing the Session identity.
+    /// Completion must not block; output remains untrusted data.
+    ///
+    /// # Errors
+    /// Refuses unsupported integration, concurrent execution, invalid requests or startup failure.
+    fn execute_tool(
+        &mut self,
+        request: crate::launch_protocol::ToolExecutionRequest,
+        complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionResult>,
+    ) -> Result<(), SupervisorError>;
     /// Returns the cached identity established during restricted startup.
     ///
     /// # Errors

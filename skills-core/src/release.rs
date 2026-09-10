@@ -45,8 +45,12 @@ pub const MANIFEST_SCHEMA: &str = "louiselm.release.manifest/1";
 ///
 /// The manifest names components; it does not get to invent them. A caller
 /// cannot introduce a new installed command by writing one into a bundle.
-pub const ALLOWED_COMPONENTS: [&str; 3] =
-    ["louiselm-skills", "louiselm-launch", "louiselm-control"];
+pub const ALLOWED_COMPONENTS: [&str; 4] = [
+    "louiselm-skills",
+    "louiselm-launch",
+    "louiselm-control",
+    "louiselm-tool-test-agent",
+];
 
 /// What the source tree was when the release was built.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -682,6 +686,7 @@ fn schema_identifiers() -> Vec<String> {
         crate::launch::REQUEST_SCHEMA,
         crate::launch_protocol::LAUNCH_AUTHORIZATION_SCHEMA,
         crate::launch_protocol::LIFECYCLE_REQUEST_SCHEMA,
+        crate::launch_protocol::TOOL_EXECUTION_SCHEMA,
         crate::launch_protocol::STATUS_REQUEST_SCHEMA,
         crate::launch_protocol::RECEIPT_ACK_SCHEMA,
         crate::launch_protocol::SUPERVISOR_STATUS_SCHEMA,

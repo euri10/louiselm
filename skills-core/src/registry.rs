@@ -135,6 +135,10 @@ pub struct AgentRegistration {
     pub arguments: Vec<String>,
     /// Environment the Session starts with; the launcher adds nothing else.
     pub environment: BTreeMap<String, String>,
+    /// Explicit measured tool integration. Unset or unsupported values deny
+    /// Verified launch; ordinary unverified Sessions need not opt in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_integration: Option<String>,
 }
 
 impl AgentRegistration {

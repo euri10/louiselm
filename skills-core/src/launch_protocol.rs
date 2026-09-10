@@ -7,6 +7,11 @@ use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
+mod tool;
+pub use tool::{
+    MAX_TOOL_OUTPUT_BYTES, TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
+};
+
 pub use crate::launch::PROTOCOL_VERSION;
 
 use crate::{
@@ -969,6 +974,8 @@ impl LaunchAuthorization {
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Broker-authorized zero-capability workspace command.
+    ToolExecution(ToolExecutionRequest),
     /// Query that atomically consumes one pending launch authorization.
     LaunchAuthorization(LaunchRequest),
     /// Authorized lifecycle mutation.
@@ -995,6 +1002,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        TOOL_EXECUTION_SCHEMA => {
+            let request: ToolExecutionRequest = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::ToolExecution(request))
+        }
         REQUEST_SCHEMA => {
             let request =
                 LaunchRequest::parse_canonical(bytes).map_err(protocol_error_from_launch)?;
@@ -1643,6 +1655,11 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Bounded untrusted command output after cleanup.
+    ToolExecution {
+        /// Result from the isolated tool tree.
+        output: ToolExecutionResult,
+    },
     /// Broker-consumed authorization for one exact launch request.
     LaunchAuthorization {
         /// Single-use authorization and assigned host identity.
@@ -1726,6 +1743,7 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
+            ResponseResult::ToolExecution { output } => output.validate(),
             ResponseResult::LaunchAuthorization { authorization } => {
                 authorization.validate()?;
                 if authorization.request_id != self.request_id {

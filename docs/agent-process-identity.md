@@ -1,9 +1,10 @@
 # Agent process identity
 
 `louiselm-qbr.5.1.1.2` implements the process boundary agreed in `louiselm-9onz`.
-It is a launcher component, not installed Verified acceptance. Production still
-refuses launch without enforced Agent/tool isolation (`qbr.5.1.1.3`); tool grants,
-real broker dispatch and installed integration remain separate work.
+It is a launcher component, not installed Verified acceptance. The
+[tool boundary](tool-isolation.md) supports only an exact measured deterministic
+integration; other integrations still refuse Verified launch. Nonzero tool
+grants, real broker dispatch and installed integration remain separate work.
 
 ## Creation proof
 
@@ -43,8 +44,9 @@ ELFs, not an interpreter whitelist or an exception in production verification.
 6. Persist and exactly acknowledge sequence-one `Start/Running`; recheck the
    lifetime before reporting launch success.
 
-`SystemLaunchPlatform` currently returns `ToolIsolationUnproven` at step 4.
-Test doubles can provide fake isolation evidence, but `SystemCapabilityGate`
+`SystemLaunchPlatform` returns `ToolIsolationUnproven` at step 4 unless the
+explicit integration selection, release-bound executable, unchanged startup
+configuration and kernel pin match. Test doubles can provide fake isolation evidence, but `SystemCapabilityGate`
 refuses a missing kernel process pin. Neither serialized binding metadata nor
 a public PID field can manufacture the production pin.
 

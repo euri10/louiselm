@@ -1,5 +1,8 @@
 //! Long-lived ownership of one launched Session's lifecycle authorities.
 
+#[path = "tool_dispatch.rs"]
+mod tool_dispatch;
+
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, mpsc},
@@ -241,6 +244,7 @@ impl Drop for LaunchedSession {
 }
 
 enum OwnerEvent {
+    ToolFinished,
     ControllerDetached,
     BrokerRequest {
         connection_epoch: u64,
@@ -411,6 +415,10 @@ enum ParkResult {
     reason = "Owner flags track independent I/O, timer, and terminal obligations, not one exclusive state."
 )]
 struct SessionOwner {
+    tool_sequence: u64,
+    pending_tool: Option<(String, u64, u64)>,
+    tool_mailbox:
+        Arc<Mutex<Option<Result<crate::launch_protocol::ToolExecutionResult, SupervisorError>>>>,
     resources: SessionResources,
     signer: Arc<dyn LaunchSigner>,
     receipts: Vec<SignedReceipt>,
@@ -476,6 +484,9 @@ impl SessionOwner {
         let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         Self {
             resources,
+            tool_sequence: 0,
+            pending_tool: None,
+            tool_mailbox: Arc::new(Mutex::new(None)),
             signer,
             receipts,
             binding,
@@ -523,6 +534,10 @@ impl SessionOwner {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One Session owner dispatches its typed events and collects nonblocking completion mailboxes."
+    )]
     fn run(
         &mut self,
         controller: mpsc::Receiver<RelayStdio>,
@@ -621,9 +636,12 @@ impl SessionOwner {
                     process_epoch,
                     event,
                 } if process_epoch == self.process_epoch => self.handle_running_agent_event(event),
-                OwnerEvent::RunningAgent { .. } | OwnerEvent::RelayQuiesced => {}
+                OwnerEvent::RunningAgent { .. }
+                | OwnerEvent::RelayQuiesced
+                | OwnerEvent::ToolFinished => {}
             }
             self.collect_relay_quiescence();
+            self.collect_tool_result();
             if let Some(result) = self.finished.take() {
                 return result;
             }
@@ -696,6 +714,7 @@ impl SessionOwner {
             }
         };
         match message {
+            ProtocolMessage::ToolExecution(request) => self.handle_tool(request),
             ProtocolMessage::Lifecycle(request) => self.handle_lifecycle(request),
             ProtocolMessage::Status(request) => self.handle_status(request),
             ProtocolMessage::BrokerReconnect(reconnect) => {
