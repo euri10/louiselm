@@ -75,8 +75,6 @@ local nvim = vim
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
----@field prompt_progress integer Meaningful updates observed during the active prompt.
----@field prompt_watchdog_revision integer Invalidates obsolete prompt timeout callbacks.
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
@@ -107,12 +105,6 @@ local ACP_RESOURCE_NOT_FOUND = -32002
 -- ACP: without a bound, a Session stuck "starting" stays there forever with
 -- no error (louiselm-8hau).
 local DEFAULT_START_TIMEOUT_MS = 20000
-
--- A provider failure can leave an ACP peer alive without resolving the
--- session/prompt request (as OpenCode Go does when its usage limit is reached).
--- Bound inactivity without killing a long turn that is still making progress
--- (louiselm-5zhl, louiselm-2p53).
-local DEFAULT_PROMPT_TIMEOUT_MS = 300000
 
 -- Keep only the most recent stderr output so an agent that prints
 -- continuously cannot grow this without bound; the failure text that matters
@@ -298,27 +290,6 @@ local function prompt_active(self)
 end
 
 ---@param self louiselm.session.Session
-local function schedule_prompt_timeout(self)
-  self.prompt_watchdog_revision = self.prompt_watchdog_revision + 1
-  local revision = self.prompt_watchdog_revision
-  local turn = self.state.current_turn
-  local progress = self.prompt_progress
-  self.schedule(DEFAULT_PROMPT_TIMEOUT_MS, function()
-    if self.prompt_watchdog_revision ~= revision or self.state.current_turn ~= turn or not prompt_active(self) then
-      return
-    end
-    if self.permission_active ~= nil or #self.permission_queue > 0 then
-      return
-    end
-    if self.prompt_progress ~= progress then
-      schedule_prompt_timeout(self)
-      return
-    end
-    fail(self, "ACP session/prompt made no progress during a " .. DEFAULT_PROMPT_TIMEOUT_MS .. "ms watchdog interval")
-  end)
-end
-
----@param self louiselm.session.Session
 ---@param result unknown
 local function complete_turn(self, result)
   if self.state.status == "disposed" or self.state.status == "error" then
@@ -450,9 +421,6 @@ local function handle_notification(self, message)
       self.replay_user_open = false
     end
   end
-  if prompt_active(self) and is_agent_progress then
-    self.prompt_progress = self.prompt_progress + 1
-  end
   if is_agent_progress and clear_session_failure(self) then
     emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   end
@@ -520,9 +488,6 @@ local function handle_notification(self, message)
       return
     end
     self.state.session_failure = failure
-    if prompt_active(self) then
-      self.prompt_progress = self.prompt_progress + 1
-    end
     emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
   end
 end
@@ -550,9 +515,6 @@ local function send_permission(self, entry, result, rpc_error)
   if self.permission_active == nil and self.state.status == "waiting_permission" then
     local status = self.turn_done_turn == self.state.current_turn and "ready" or "prompting"
     set_status(self, status)
-    if status == "prompting" then
-      schedule_prompt_timeout(self)
-    end
   end
   return true
 end
@@ -638,7 +600,6 @@ pump_permissions = function(self)
     end
     if not apply_remembered_permission(self, entry) then
       self.permission_active = entry
-      self.prompt_watchdog_revision = self.prompt_watchdog_revision + 1
       set_status(self, "waiting_permission")
       emit(self, "permission_requested", entry.data, function(result, rpc_error)
         return respond_permission(self, entry, result, rpc_error)
@@ -901,12 +862,10 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
     ready_callback = ready_callback,
     ready_callback_called = false,
     turn_done_turn = nil,
-    prompt_progress = 0,
     option_observer_id = "",
     option_sequence = 0,
     transcript_turn = 0,
     replay_user_open = false,
-    prompt_watchdog_revision = 0,
     schedule = options.schedule or function(delay_ms, callback)
       nvim.defer_fn(callback, delay_ms)
     end,
@@ -1100,6 +1059,8 @@ function Session:set_name(name)
 end
 
 ---Admit one prompt asynchronously, committing attribution before ACP dispatch.
+---Prompt silence has no deadline: await the peer's result, an explicit error,
+---or Disposal. Cancellation requests a peer response; quiet work may outlast minutes.
 ---@param self louiselm.session.Session
 ---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
 ---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal. Admission errors leave the Session ready to retry.
@@ -1140,7 +1101,6 @@ function Session:prompt(prompt, callback)
     options = values,
   }
   self.turn_done_turn = nil
-  self.prompt_progress = 0
   self.prompt_callback = callback
   self.recording_turn = { id = turn_id, sequence = 0, finished = false, dispatched = false }
   local prepared = nvim.deepcopy(self.state.turn_identity)
@@ -1194,7 +1154,6 @@ function Session:prompt(prompt, callback)
     turn.dispatched = true
     self.transcript_turn = self.transcript_turn + 1
     record_observation(self, "dispatch", { request_id = request_id, transcript_turn = self.transcript_turn })
-    schedule_prompt_timeout(self)
   end)
   return turn_id
 end
@@ -1230,13 +1189,9 @@ function Session:cancel()
     return false, message
   end
   record_observation(self, "cancel_requested", {})
-  local permission_waiting = self.permission_active ~= nil or #self.permission_queue > 0
   cancel_permissions(self)
   clear_session_failure(self)
   set_status(self, "cancelling")
-  if permission_waiting then
-    schedule_prompt_timeout(self)
-  end
   return true
 end
 

@@ -71,8 +71,10 @@ The lifecycle publishes `preparing` only after queuing its start row. An observe
 may synchronously Cancel or Dispose there: the terminal observation follows
 the start row, and the pending callback cannot dispatch or revive the Session.
 Cancellation after dispatch is a request, not proof of completion. A terminal
-ACP response supplies completion/failed/cancelled evidence; watchdog, transport
-loss, and Disposal explicitly record that no terminal response was observed.
+ACP response supplies completion/failed/cancelled evidence; transport loss and
+Disposal explicitly record that no terminal response was observed. Prompt silence
+alone never ends a turn or produces a failed outcome; it remains active until
+the peer responds, an explicit error occurs, or the operator disposes it.
 
 Recording failures publish `recording_changed` with a typed, sanitized error and
 pending-write state. `Session:inspect()` exposes the same fields. Active work

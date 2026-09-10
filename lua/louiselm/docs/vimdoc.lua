@@ -141,6 +141,7 @@ function M.generate(schema, commands)
   emit_overview(lines)
   emit_section(lines, "Sessions", "louiselm-sessions", {
     "A Session is bound to one Agent for its lifetime. Use :LouiselmSessionNew to start another Session without stopping the current one, and :LouiselmSessionSwitch to focus an attached Session.",
+    "Prompt silence has no time limit. A quiet or reconnecting Agent keeps its Session active until it responds, reports an error, or you dispose it. Use :LouiselmCancel to request cancellation; dispose the Session if the Agent cannot respond. LouiseLM never resubmits an interrupted prompt automatically.",
     "A Handoff creates a new Session with a configured Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
   })
   emit_section(lines, "Workflow", "louiselm-workflow", {

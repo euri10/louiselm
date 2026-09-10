@@ -48,6 +48,29 @@ local function restore_processes(original_system)
   rawset(nvim, "system", original_system)
 end
 
+local function fake_clock()
+  local now = 0
+  local timers = {}
+  return function(delay_ms, callback)
+    timers[#timers + 1] = { at = now + delay_ms, callback = callback }
+  end, function(elapsed_ms)
+    local target = now + elapsed_ms
+    while true do
+      table.sort(timers, function(a, b)
+        return a.at < b.at
+      end)
+      local timer = timers[1]
+      if timer == nil or timer.at > target then
+        break
+      end
+      table.remove(timers, 1)
+      now = timer.at
+      timer.callback()
+    end
+    now = target
+  end
+end
+
 -- Existing lifecycle assertions start after durable admission. The recording
 -- specs separately exercise preparing, write errors and cancellation before send.
 local function submit(session, ...)
@@ -2762,64 +2785,142 @@ T["new"]["ignores a stale start timeout after the Session becomes ready"] = func
   restore_processes(original_system)
 end
 
-T["new"]["fails a prompt that never receives a terminal ACP response"] = function()
+for _, responsive in ipairs({ false, true }) do
+  T["new"]["resumes a silent prompt in the same Session; control responsive=" .. tostring(responsive)] = function()
+    local processes, original_system = fake_processes()
+    local schedule, advance = fake_clock()
+    local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+    local session = assert(api:create_session("agent", { cwd = "/tmp/project", schedule = schedule }))
+    local process = processes[#processes]
+    respond(process, 1, { protocolVersion = 1, agentCapabilities = limits_capabilities() })
+    respond(process, 2, { sessionId = "agent-acp" })
+
+    local completion
+    local completion_count = 0
+    local errors = {}
+    local chunks = 0
+    session:on(function(event)
+      if event.type == "error" then
+        errors[#errors + 1] = event.data.message
+      elseif event.type == "chunk" then
+        chunks = chunks + 1
+      end
+    end)
+    local request_id = assert(submit(session, "hello", function(result, err)
+      completion_count = completion_count + 1
+      completion = { result = result, error = err }
+    end))
+
+    -- Captured proxy sessions/01a089d3-192a-7091-8a22-8ee9d0da45fd/log.jsonl:666-674:
+    -- thought -> >5m silence -> successful account-limit reads -> exit.
+    -- OpenCode ses_f74032f54ffehPoLhL5Ffqhgok/log.jsonl:9176-9177 was fully silent.
+    -- Payload text and subsequent recovery below are synthetic; only ordering is captured.
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = { sessionUpdate = "agent_thought_chunk", content = { type = "text", text = "working" } },
+    })
+    advance(360000)
+    if responsive then
+      local refreshed
+      assert(api:refresh_agent_limits("agent", function(state, err)
+        refreshed = { state = state, error = err }
+      end))
+      local request = assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2)))
+      MiniTest.expect.equality(request.method, LIMITS_READ_METHOD)
+      respond(process, request.id, { buckets = {}, unlimited = true })
+      MiniTest.expect.equality(refreshed.error, nil)
+      MiniTest.expect.equality(refreshed.state.status, "unlimited")
+    end
+    advance(360000)
+
+    MiniTest.expect.equality(session:inspect().status, "prompting")
+    MiniTest.expect.equality(process.closed, false)
+    MiniTest.expect.equality(completion_count, 0)
+    MiniTest.expect.equality(errors, {})
+
+    local timer = assert(nvim.uv.new_timer())
+    timer:start(0, 0, function()
+      timer:close()
+      notification(process, "session/update", {
+        sessionId = "agent-acp",
+        update = { sessionUpdate = "agent_message_chunk", content = { type = "text", text = "recovered" } },
+      })
+      respond(process, request_id, { stopReason = "end_turn" })
+      respond(process, request_id, { stopReason = "end_turn" })
+    end)
+    assert(nvim.wait(1000, function()
+      return completion_count > 0
+    end, 10))
+    advance(3600000)
+
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality(session:inspect().acp_session_id, "agent-acp")
+    MiniTest.expect.equality(completion, { result = { stopReason = "end_turn" } })
+    MiniTest.expect.equality(completion_count, 1)
+    MiniTest.expect.equality(chunks, 1)
+    MiniTest.expect.equality(errors, {})
+    local prompts = 0
+    for _, write in ipairs(process.writes) do
+      if assert(Protocol.decode(write:sub(1, -2))).method == "session/prompt" then
+        prompts = prompts + 1
+      end
+    end
+    MiniTest.expect.equality(prompts, 1)
+
+    api:dispose()
+    restore_processes(original_system)
+  end
+end
+
+T["new"]["keeps silent turns cancellable and ignores results after disposal"] = function()
   local processes, original_system = fake_processes()
-  local scheduled = {}
+  local schedule, advance = fake_clock()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
-  local session = assert(api:create_session("agent", {
-    cwd = "/tmp/project",
-    schedule = function(delay_ms, callback)
-      scheduled[#scheduled + 1] = { delay_ms = delay_ms, callback = callback }
-    end,
-  }))
+  local session = assert(api:create_session("agent", { cwd = "/tmp/project", schedule = schedule }))
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
   respond(process, 2, { sessionId = "agent-acp" })
 
   local completion
-  local event
-  local error_count = 0
   local completion_count = 0
-  session:on(function(value)
-    if value.type == "error" then
-      event = value
-      error_count = error_count + 1
-    end
-  end)
-  assert(submit(session, "hello", function(result, err)
+  local request_id = assert(submit(session, "hello", function(result, err)
     completion_count = completion_count + 1
     completion = { result = result, error = err }
   end))
+  advance(720000)
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).method, "session/cancel")
+  respond(process, request_id, { stopReason = "cancelled" })
+  respond(process, request_id, { stopReason = "cancelled" })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(completion, { result = { stopReason = "cancelled" } })
+  MiniTest.expect.equality(completion_count, 1)
 
-  MiniTest.expect.equality(#scheduled, 2)
-  scheduled[2].callback()
-  scheduled[2].callback()
-
-  MiniTest.expect.equality(session:inspect().status, "error")
-  MiniTest.expect.equality(
-    event.data.message,
-    "ACP session/prompt made no progress during a 300000ms watchdog interval"
-  )
-  MiniTest.expect.equality(completion, {
-    result = nil,
-    error = "ACP session/prompt made no progress during a 300000ms watchdog interval",
-  })
-  MiniTest.expect.equality(error_count, 1)
+  request_id = assert(submit(session, "again", function()
+    completion_count = completion_count + 1
+  end))
+  advance(720000)
+  assert(session:cancel())
+  assert(session:dispose())
+  respond(process, request_id, { stopReason = "cancelled" })
+  process.on_exit({ code = 1, signal = 0 })
+  advance(720000)
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(process.closed, true)
   MiniTest.expect.equality(completion_count, 1)
 
   api:dispose()
   restore_processes(original_system)
 end
 
-T["new"]["suspends the prompt watchdog while permission waits for a human"] = function()
+T["new"]["keeps a Session alive through a long human permission wait and subsequent silence"] = function()
   local processes, original_system = fake_processes()
-  local scheduled = {}
+  local schedule, advance = fake_clock()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
-    schedule = function(delay_ms, callback)
-      scheduled[#scheduled + 1] = { delay_ms = delay_ms, callback = callback }
-    end,
+    schedule = schedule,
   }))
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
@@ -2843,39 +2944,34 @@ T["new"]["suspends the prompt watchdog while permission waits for a human"] = fu
   })
   permission_request(process, "agent-acp", 9, { "allow", "deny" })
   MiniTest.expect.equality(session:inspect().status, "waiting_permission")
-  MiniTest.expect.equality(#scheduled, 2)
 
   -- Captured OpenCode trace ses_f9a93a9f9ffeXz1SXPE1DLPAg3 stayed here
   -- beyond two watchdog windows while its permission picker was unanswered.
-  scheduled[2].callback()
-  local second_window = scheduled[3] or scheduled[2]
-  second_window.callback()
+  advance(720000)
   MiniTest.expect.equality(session:inspect().status, "waiting_permission")
   MiniTest.expect.equality(process.closed, false)
-  MiniTest.expect.equality(#scheduled, 2)
 
   assert(permission.respond({ outcome = { outcome = "selected", optionId = "allow" } }))
   MiniTest.expect.equality(session:inspect().status, "prompting")
-  MiniTest.expect.equality(#scheduled, 3)
-  MiniTest.expect.equality(scheduled[3].delay_ms, 300000)
+  advance(720000)
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(process.closed, false)
 
   respond(process, request_id, { stopReason = "end_turn" })
-  scheduled[3].callback()
+  advance(720000)
   MiniTest.expect.equality(session:inspect().status, "ready")
 
   api:dispose()
   restore_processes(original_system)
 end
 
-T["new"]["keeps a prompt alive when a tool completes before the timeout"] = function()
+T["new"]["keeps a prompt alive when a tool completes before prolonged silence"] = function()
   local processes, original_system = fake_processes()
-  local scheduled = {}
+  local schedule, advance = fake_clock()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
   local session = assert(api:create_session("agent", {
     cwd = "/tmp/project",
-    schedule = function(delay_ms, callback)
-      scheduled[#scheduled + 1] = { delay_ms = delay_ms, callback = callback }
-    end,
+    schedule = schedule,
   }))
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
@@ -2890,14 +2986,13 @@ T["new"]["keeps a prompt alive when a tool completes before the timeout"] = func
       status = "completed",
     },
   })
-  scheduled[2].callback()
+  advance(720000)
 
   MiniTest.expect.equality(session:inspect().status, "prompting")
-  MiniTest.expect.equality(#scheduled, 3)
-  MiniTest.expect.equality(scheduled[3].delay_ms, 300000)
+  MiniTest.expect.equality(process.closed, false)
 
   respond(process, request_id, { stopReason = "end_turn" })
-  scheduled[3].callback()
+  advance(720000)
   MiniTest.expect.equality(session:inspect().status, "ready")
 
   api:dispose()
