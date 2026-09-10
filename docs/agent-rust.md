@@ -72,6 +72,11 @@ but must not silently weaken it.
   policy and state transitions from filesystem, process, and transport effects.
   Use plain functions and existing dependencies before new traits, layers, or
   crates. Do not add dependencies solely to hide an unsafe block.
+- Closed record and wire types deny unknown fields. Never combine that with
+  `#[serde(flatten)]`: flattening deserializes through a map the deny rejects,
+  so the type writes its own output and then refuses to read it back. Nothing
+  fails at compile time, and the round trip breaks only at runtime (broker
+  audit entries, 2026-09-10). Nest the value under a named field instead.
 - Keep Tokio as capture-service's async runtime; do not introduce a second
   runtime or require one in synchronous skills-core code. Blocking filesystem,
   process, and network work must stay off async executor threads. Do not hold
