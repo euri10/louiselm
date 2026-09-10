@@ -1,6 +1,6 @@
 # louiselm.nvim Development Contract
 
-## 1. Project Scope
+## Project Scope
 
 louiselm.nvim is an early-stage Neovim plugin with no external users. Breaking
 changes are acceptable. Change the code directly; do not add compatibility
@@ -27,13 +27,13 @@ also binding; read the applicable document before that work, once per session.
 A complete, current copy already in context needs no second read. Recover only
 missing/truncated sections, and re-read when the file changes.
 
-| Before doing this | Read |
-| --- | --- |
-| Any tracker mutation, claim/liveness decision, or live-instance diagnosis | [Agent workflow](docs/agent-workflow.md) |
-| Lua/Neovim implementation, design, review, dependencies, types, or public API docs | [Lua policy](docs/agent-lua.md) |
-| Rust code, manifests, API docs, design, or review in either crate | [Rust policy](docs/agent-rust.md) |
-| Executable changes, test/reliability design or review, gates, or CI monitoring | [Testing and acceptance](docs/agent-testing.md) |
-| Android work | [Android contract](android/AGENTS.md) |
+| Before doing this                                                                  | Read                                            |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Any tracker mutation, claim/liveness decision, or live-instance diagnosis          | [Agent workflow](docs/agent-workflow.md)        |
+| Lua/Neovim implementation, design, review, dependencies, types, or public API docs | [Lua policy](docs/agent-lua.md)                 |
+| Rust code, manifests, API docs, design, or review in either crate                  | [Rust policy](docs/agent-rust.md)               |
+| Executable changes, test/reliability design or review, gates, or CI monitoring     | [Testing and acceptance](docs/agent-testing.md) |
+| Android work                                                                       | [Android contract](android/AGENTS.md)           |
 
 The root file is limited to 12,000 bytes by `./scripts/check-agent-instructions`,
 enforced in CI. Put detailed procedures in the relevant required reference;
