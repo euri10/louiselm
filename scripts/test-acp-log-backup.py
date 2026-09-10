@@ -15,6 +15,12 @@ SCRIPT = Path(__file__).with_name("acp-log-backup")
 
 
 class BackupTests(unittest.TestCase):
+    def test_unit_path_reaches_user_installed_runtime(self):
+        # louiselm-0ols: observed user-manager PATH excludes ~/.local/bin.
+        units = SCRIPT.parent.parent / "contrib/systemd"
+        for name in ("louiselm-acp-backup.service", "louiselm-acp-cloud-copy.service"):
+            self.assertIn("Environment=PATH=%h/.local/bin:", (units / name).read_text())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="acp-backup-test-")
         self.addCleanup(self.temp.cleanup)

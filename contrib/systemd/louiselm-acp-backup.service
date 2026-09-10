@@ -6,5 +6,6 @@ OnFailure=louiselm-acp-backup-failure.service
 Type=oneshot
 UMask=0077
 NoNewPrivileges=true
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/env %h/.local/bin/acp-log-backup run
 TimeoutStartSec=50min

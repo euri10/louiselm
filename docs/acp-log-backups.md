@@ -190,8 +190,9 @@ through this wrapper: direct external Restic mutations bypass its cross-command 
 
 `contrib/systemd/louiselm-acp-backup.{service,timer}` and
 `louiselm-acp-cloud-copy.{service,timer}` are uninstalled templates.
-They expect the command on the maintainer's user-bin path and Restic/Python on
-the user manager's PATH. The timer uses a wall-clock hourly schedule with a
+They expect the command on the maintainer's user-bin path. Each backup service
+prepends `~/.local/bin` to its own PATH to find the installed Restic runtime;
+the user manager's global environment is unchanged. The local timer uses an hourly schedule with a
 one-minute accuracy window. `Persistent=true` catches a missed calendar run when
 the timer becomes active again; it does not wake a powered-off laptop or create
 one snapshot for every missed hour. Cloud copy retries every 15 minutes, independently
