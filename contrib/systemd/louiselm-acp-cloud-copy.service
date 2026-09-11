@@ -1,5 +1,6 @@
 [Unit]
 Description=Copy verified ACP snapshots to the private cloud repository
+After=louiselm-acp-backup.service
 OnFailure=louiselm-acp-backup-failure.service
 
 [Service]

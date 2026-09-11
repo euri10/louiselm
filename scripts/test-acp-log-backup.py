@@ -22,6 +22,11 @@ class BackupTests(unittest.TestCase):
         for name in ("louiselm-acp-backup.service", "louiselm-acp-cloud-copy.service"):
             self.assertIn("Environment=PATH=%h/.local/bin:", (units / name).read_text())
 
+    def test_cloud_copy_waits_for_local_backup(self):
+        unit = (SCRIPT.parent.parent / "contrib/systemd" /
+                "louiselm-acp-cloud-copy.service").read_text()
+        self.assertIn("After=louiselm-acp-backup.service", unit)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="acp-backup-test-")
         self.addCleanup(self.temp.cleanup)
