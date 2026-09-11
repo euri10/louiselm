@@ -38,7 +38,6 @@ impl DiscoveryProof {
     ) -> Result<Self, DiscoveryError> {
         let mut measured = runtime.measure()?;
         measured.adapters.sort_by(|a, b| a.path.cmp(&b.path));
-        measured.library_baseline.sort();
         if measured != bound.manifest.runtime {
             return Err(DiscoveryError::Refused("runtime_mismatch"));
         }

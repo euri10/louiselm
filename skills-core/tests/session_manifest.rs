@@ -44,8 +44,6 @@ fn runtime() -> RuntimeMeasurement {
         }],
         version: "1.2.3".to_owned(),
         origin: "staged release".to_owned(),
-        library_baseline: Vec::new(),
-        isolation_policy_version: "louiselm.isolation/1".to_owned(),
     }
 }
 
@@ -531,7 +529,6 @@ fn required_values_and_nested_wire_fields_are_checked() {
         "/runtime/executable_sha256",
         "/runtime/version",
         "/runtime/origin",
-        "/runtime/isolation_policy_version",
         "/skill_generation/generation_digest",
         "/skill_generation/view_digest",
         "/policy_digest",
@@ -610,12 +607,10 @@ fn metadata_changes_are_bound_and_only_set_order_is_normalized() {
             path: "lib/second.js".into(),
             sha256: "12".repeat(32),
         });
-    inputs.runtime.as_mut().unwrap().library_baseline = vec!["lib-a/1".into(), "lib-b/1".into()];
     let baseline = SessionInputManifest::build(inputs.clone())
         .unwrap()
         .digest();
     inputs.runtime.as_mut().unwrap().adapters.reverse();
-    inputs.runtime.as_mut().unwrap().library_baseline.reverse();
     assert_eq!(
         SessionInputManifest::build(inputs.clone())
             .unwrap()

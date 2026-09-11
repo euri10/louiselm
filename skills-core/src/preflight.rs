@@ -10,7 +10,6 @@ use thiserror::Error;
 
 use crate::{
     Digest, Policy, Store,
-    isolation::CONTRACT_VERSION,
     launch::LaunchRequest,
     posture::{DimensionInput, DimensionName, FailureCode, Posture},
     registry::Registry,
@@ -60,7 +59,7 @@ pub enum IdentityField {
     PluginSchemas,
     /// Governing supply policy digest.
     Policy,
-    /// Recognized isolation contract version, otherwise unresolved.
+    /// Unresolved: the proposed artifacts do not identify the enforced contract.
     IsolationContract,
     /// Proposed isolation evidence identifier, not proof of confinement.
     IsolationReceipt,
@@ -303,12 +302,7 @@ fn identities(
             manifest.map(|m| digest(&m.plugin_schemas)).transpose()?,
         ),
         (F::Policy, manifest.map(|m| m.policy_digest.clone())),
-        (
-            F::IsolationContract,
-            manifest
-                .filter(|m| m.runtime.isolation_policy_version == CONTRACT_VERSION)
-                .map(|_| CONTRACT_VERSION.to_owned()),
-        ),
+        (F::IsolationContract, None),
         (
             F::IsolationReceipt,
             manifest.map(|m| m.isolation_receipt.clone()),

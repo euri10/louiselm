@@ -136,7 +136,7 @@ pub struct SessionInputManifest {
     pub schema: String,
     /// Exact Agent registration, preserving argument and route order.
     pub agent: AgentRegistration,
-    /// Measured runtime, with adapters and library baseline sorted.
+    /// Measured runtime, with adapters sorted.
     pub runtime: RuntimeMeasurement,
     /// Approved supply binding.
     pub skill_generation: SkillInputs,
@@ -335,7 +335,6 @@ impl SessionInputManifest {
             entries.sort_by(|a, b| a.path.cmp(&b.path));
         }
         self.runtime.adapters.sort_by(|a, b| a.path.cmp(&b.path));
-        self.runtime.library_baseline.sort();
     }
 
     /// Serializes in fixed field order, without host metadata or a trailing newline.

@@ -159,8 +159,6 @@ fn runtime_fixture(fixture: &Fixture) -> (RuntimePackage, Inventory) {
         }],
         version: "1".into(),
         origin: "test fixture".into(),
-        library_baseline: vec![],
-        isolation_policy_version: CONTRACT_VERSION.into(),
     };
     (runtime, inventory)
 }

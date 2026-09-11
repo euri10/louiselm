@@ -86,6 +86,41 @@ fn resolve_builds_a_plan_from_registered_agent_runtime_and_envelope() {
     );
     assert_eq!(resolution.plan.network, NetworkPolicy::Denied);
     assert_eq!(resolution.runtime.runtime_id, "demo-runtime");
+    let measurement = serde_json::to_value(&resolution.runtime).unwrap();
+    for field in ["library_baseline", "isolation_policy_version"] {
+        assert!(
+            measurement.get(field).is_none(),
+            "unverified claim: {field}"
+        );
+    }
+}
+
+#[test]
+fn registry_rejects_removed_runtime_claims() {
+    let fixture = Fixture::new();
+    registry_with_runtime(&fixture, "#!/bin/sh\nexec cat\n");
+    let path = fixture.path("registry/runtimes.json");
+    let baseline: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (field, value) in [
+        (
+            "library_baseline",
+            serde_json::json!(["unmeasured-library"]),
+        ),
+        (
+            "isolation_policy_version",
+            serde_json::json!("louiselm.isolation/7"),
+        ),
+    ] {
+        let mut document = baseline.clone();
+        document["entries"][0][field] = value;
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let error = Registry::open(&fixture.path("registry")).unwrap_err();
+        assert!(
+            matches!(error, RegistryError::Malformed { kind, reason }
+                if kind == "runtimes" && reason.contains(&format!("unknown field `{field}`"))),
+            "removed field must be rejected: {field}"
+        );
+    }
 }
 
 #[test]
@@ -394,7 +429,7 @@ fn registry_rejects_runtime_paths_that_escape_the_registered_root() {
     let registry_root = fixture.path("registry");
     write_file(
         &registry_root.join("runtimes.json"),
-        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"runtime","root":"/tmp/runtime","executable":"../agent","executable_sha256":"00","adapters":[],"version":"1","origin":"test","library_baseline":[],"isolation_policy_version":"louiselm.isolation/1"}]}"#,
+        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"runtime","root":"/tmp/runtime","executable":"../agent","executable_sha256":"00","adapters":[],"version":"1","origin":"test"}]}"#,
     );
 
     assert!(matches!(

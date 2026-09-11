@@ -364,8 +364,9 @@ disclosure remain unproven in this prospective mode. A proposed isolation
 reference is not a verified mount. A proposed disclosure digest is not recorded
 disclosure evidence. Network scope is explicitly unresolved: these input records
 do not contain network rules bound to the requested envelope revision, and
-today's registry must not be used to reconstruct a prior revision. Unknown
-isolation-contract versions are also unresolved, not echoed as arbitrary text.
+today's registry must not be used to reconstruct a prior revision. The isolation
+contract is also unresolved: these proposed artifacts do not identify the
+contract enforced by a launcher. Actual launch receipts bind that contract.
 Output therefore exits **2**, never launch-ready success; malformed commands or
 input files exit **1** with fixed diagnostics. Human output omits no robot
 identities or diff results. `preflight --direct` separately reports that a direct

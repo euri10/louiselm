@@ -144,7 +144,6 @@ fn measured_runtime(
         .map_err(|error| runtime_failure(&error))?;
     let mut measurement = package.measure().map_err(|error| runtime_failure(&error))?;
     measurement.adapters.sort_by(|a, b| a.path.cmp(&b.path));
-    measurement.library_baseline.sort();
     if let Some(manifest) = manifest
         && (manifest.runtime != measurement || manifest.agent != agent)
     {

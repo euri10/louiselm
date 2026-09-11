@@ -319,7 +319,7 @@ pub fn write_registry(registry_root: &Path, runtime_root: &Path) {
     write_file(
         &registry_root.join("runtimes.json"),
         &format!(
-            r#"{{"schema":"louiselm.launch.registry/1","entries":[{{"id":"demo-runtime","root":{root},"executable":"bin/agent","executable_sha256":"{executable_digest}","adapters":[{{"path":"lib/adapter.js","sha256":"{adapter_digest}"}}],"version":"1.0.0","origin":"test fixture","library_baseline":["glibc 2.41"],"isolation_policy_version":"louiselm.isolation/1"}}]}}"#,
+            r#"{{"schema":"louiselm.launch.registry/1","entries":[{{"id":"demo-runtime","root":{root},"executable":"bin/agent","executable_sha256":"{executable_digest}","adapters":[{{"path":"lib/adapter.js","sha256":"{adapter_digest}"}}],"version":"1.0.0","origin":"test fixture"}}]}}"#,
             root = serde_json::to_string(&runtime_root.display().to_string())
                 .expect("a path serializes"),
             executable_digest = digest(&executable),

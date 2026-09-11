@@ -173,7 +173,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         &registry_root.join("runtimes.json"),
         &serde_json::json!([{
             "id":"runtime", "root":runtime, "executable":"agent", "executable_sha256":release.components[0].sha256,
-            "adapters":[], "version":"fixture", "origin":"fixture", "library_baseline":[], "isolation_policy_version":"fixture"
+            "adapters":[], "version":"fixture", "origin":"fixture"
         }]),
     );
     write_registry(

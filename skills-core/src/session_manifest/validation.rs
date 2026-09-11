@@ -90,10 +90,6 @@ fn runtime(runtime: &crate::registry::RuntimeMeasurement) -> Result<(), SessionM
     for (field, value) in [
         ("runtime.version", &runtime.version),
         ("runtime.origin", &runtime.origin),
-        (
-            "runtime.isolation_policy_version",
-            &runtime.isolation_policy_version,
-        ),
     ] {
         nonempty(field, value)?;
     }
@@ -109,15 +105,6 @@ fn runtime(runtime: &crate::registry::RuntimeMeasurement) -> Result<(), SessionM
             .iter()
             .map(|file| (file.path.as_str(), file.sha256.as_str())),
     )?;
-    let mut libraries = BTreeSet::new();
-    for library in &runtime.library_baseline {
-        nonempty("runtime.library_baseline", library)?;
-        if !libraries.insert(library) {
-            return Err(SessionManifestError::Duplicate {
-                field: "runtime.library_baseline",
-            });
-        }
-    }
     Ok(())
 }
 

@@ -275,7 +275,7 @@ fn install_fixture(root: &Path) -> (LauncherPaths, LauncherConfig, PathBuf) {
         &registry.join("runtimes.json"),
         &serde_json::json!([{
             "id":"runtime","root":runtime,"executable":"agent","executable_sha256":manifest.components[0].sha256,
-            "adapters":[],"version":"fixture","origin":"fixture","library_baseline":[],"isolation_policy_version":"fixture"
+            "adapters":[],"version":"fixture","origin":"fixture"
         }]),
     );
     registry_record(

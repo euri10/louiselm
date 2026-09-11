@@ -195,7 +195,7 @@ fn preflight_refuses_malformed_inputs_and_incomparable_priors() {
 }
 
 #[test]
-fn absent_supply_store_does_not_hide_runtime_and_unknown_contracts_are_not_echoed() {
+fn absent_supply_store_does_not_hide_runtime_or_invent_an_isolation_contract() {
     let supply = Supply::new();
     let discovery = &supply.discovery;
     let preview = preflight::inspect(
@@ -216,7 +216,7 @@ fn absent_supply_store_does_not_hide_runtime_and_unknown_contracts_are_not_echoe
         Some(FailureCode::EvidenceMissing)
     );
     let mut manifest = discovery.manifest.clone();
-    manifest.runtime.isolation_policy_version = "private-marker\nunknown-contract".into();
+    manifest.runtime.origin = "private-marker\nuntrusted-origin".into();
     let mut request = discovery.request.clone();
     request.session_input_manifest_id = manifest.digest().to_string();
     let preview = preflight::inspect(

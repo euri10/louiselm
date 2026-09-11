@@ -2937,6 +2937,7 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
         setup.request.digest().to_string()
     );
     assert_eq!(evidence.capability_channel_ids, ["acp", "broker"]);
+    assert_eq!(evidence.isolation_contract, CONTRACT_VERSION);
     for sensitive in ["do-not-copy", "secret-argument", "tool-payload"] {
         assert!(
             !String::from_utf8_lossy(&starting_bytes).contains(sensitive),

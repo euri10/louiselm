@@ -176,10 +176,6 @@ pub struct RuntimePackage {
     pub version: String,
     /// Where the runtime came from.
     pub origin: String,
-    /// Library baseline the runtime was registered against.
-    pub library_baseline: Vec<String>,
-    /// Isolation policy version this runtime was registered under.
-    pub isolation_policy_version: String,
 }
 
 /// What a runtime measured to, right now.
@@ -196,10 +192,6 @@ pub struct RuntimeMeasurement {
     pub version: String,
     /// Origin recorded at registration.
     pub origin: String,
-    /// Library baseline recorded at registration.
-    pub library_baseline: Vec<String>,
-    /// Isolation policy version recorded at registration.
-    pub isolation_policy_version: String,
 }
 
 /// Whether a Session may reach the network.
@@ -504,8 +496,6 @@ impl RuntimePackage {
             adapters,
             version: self.version.clone(),
             origin: self.origin.clone(),
-            library_baseline: self.library_baseline.clone(),
-            isolation_policy_version: self.isolation_policy_version.clone(),
         })
     }
 

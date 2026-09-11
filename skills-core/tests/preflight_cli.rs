@@ -60,6 +60,7 @@ fn robot_and_human_preflight_name_the_same_exact_request_without_claiming_launch
     let text = String::from_utf8(human.stdout).unwrap();
     assert!(text.contains(&fixture.request.digest().to_string()));
     assert!(text.contains("network_scope: unresolved"));
+    assert!(text.contains("isolation_contract: unresolved"));
     assert!(text.contains("not authorization or live Session state"));
 }
 
