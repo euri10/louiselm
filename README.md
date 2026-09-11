@@ -80,7 +80,7 @@ Direct Agent commands, including wrappers, have no LouiseLM Verified posture.
 For an explicit **prospective artifact snapshot**, use
 `:LouiselmPreflight request.json manifest.json` with `louiselm-skills` on PATH.
 It reads asynchronously and opens health; it does not authorize or start an Agent.
-See [artifact preflight](skills-core/README.md#prospective-artifact-preflight)
+See [artifact preflight](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/skills-core/README.md#prospective-artifact-preflight)
 for the input contract, prior comparison and evidence limits.
 
 Every Agent must declare its access/quota `provider`, independently of the Model

@@ -93,6 +93,19 @@ if "$check_artifact" "$mismatched" "$mismatched_source" >"$work_dir/check.log" 2
 	exit 1
 fi
 
+# A relative link from README.md to a non-curated doc (e.g. skills-core/README.md)
+# makes MyST export that doc under README's own basename, distinguished only by
+# hash. The checker must reject it even though the basename matches a curated
+# source name (louiselm-ejbu).
+readme_collision="$work_dir/readme-collision"
+readme_collision_source="$work_dir/readme-collision-source"
+make_safe_artifact "$readme_collision" "$readme_collision_source"
+printf '# LouiseLM skills core\n' >"$readme_collision/build/README-0123456789abcdef0123456789abcdef.md"
+if "$check_artifact" "$readme_collision" "$readme_collision_source" >"$work_dir/check.log" 2>&1; then
+	echo "expected rejection for a linked doc exported under README's basename" >&2
+	exit 1
+fi
+
 empty_conversations="$work_dir/empty-conversations"
 empty_conversations_source="$work_dir/empty-conversations-source"
 make_safe_artifact "$empty_conversations" "$empty_conversations_source"
