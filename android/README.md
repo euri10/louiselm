@@ -48,7 +48,7 @@ OEM setup-wizard failure. Run the same physical acceptance cases below.
 on the JVM; no device is needed for those tests. Activity fixtures retain
 Android 14/API 34 physical-regression coverage and exercise receiver permissions
 on Android 17/API 37. They use isolated app storage, a shadow recorder, and
-separately controlled background/UI queues. Robolectric is pinned to 4.17-beta-4
+separately controlled background/UI queues. Robolectric is pinned to 4.17
 for API 37 support; its SharedSecrets module export applies only to JVM tests.
 Run just that regression with:
 
