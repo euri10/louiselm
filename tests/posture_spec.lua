@@ -34,6 +34,10 @@ T["decodes the shared Rust posture fixture for human presentation"] = function()
       level = "info",
       message = "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment.",
     },
+    {
+      level = "info",
+      message = "Instructions embedded in the measured executable are part of runtime trust, not admitted Skill supply.",
+    },
   })
 end
 
@@ -50,6 +54,8 @@ T["rejects malformed or contradictory controller output"] = function()
     changed("^%{", '{"unexpected":true,'),
     changed('"state": "verified",', '"state": "verified", "unexpected": true,'),
     changed('"detail": "No action is required%."', '"detail": "agent supplied text"'),
+    changed('"embedded_instructions_notice": "[^"]+",', ""),
+    changed("not admitted Skill supply", "verified managed skills"),
   }
 
   for _, payload in ipairs(cases) do

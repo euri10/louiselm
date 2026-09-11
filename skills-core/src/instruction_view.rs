@@ -40,9 +40,18 @@ pub struct InstructionView {
     digest: Digest,
     root: PathBuf,
     skills_root: PathBuf,
+    generation: Option<String>,
 }
 
 impl InstructionView {
+    /// Generation verified under the materialization lock, including an Agent
+    /// with no members. An explicit `skills=off` mask has no Generation.
+    /// This binding does not change the shared empty tree's content address.
+    #[must_use]
+    pub fn generation(&self) -> Option<&str> {
+        self.generation.as_deref()
+    }
+
     /// Content address of the canonical description.
     #[must_use]
     pub fn digest(&self) -> &Digest {
@@ -166,7 +175,7 @@ pub fn materialize(
             .filter(|member| member.agents.contains(&agent))
             .map(|member| &packages[member.package_digest.as_str()])
             .collect::<Vec<_>>();
-        let view = if selected.is_empty() {
+        let mut view = if selected.is_empty() {
             empty(store)?
         } else {
             publish(
@@ -177,6 +186,7 @@ pub fn materialize(
                 policy,
             )?
         };
+        view.generation = Some(record.generation.clone());
         views.insert(agent, view);
     }
     Ok(views)
@@ -361,6 +371,7 @@ fn publish(
         digest,
         skills_root: root.join("skills"),
         root,
+        generation: generation.map(str::to_owned),
     })
 }
 

@@ -24,6 +24,77 @@ use louiselm_skills::{
 };
 use support::{Fixture, SshKey, write_file};
 
+#[test]
+fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
+    use louiselm_skills::session_manifest::{SessionInputManifest, SessionInputs};
+    let supply = Supply::new();
+    let member = supply.member("session-input", &["demo"]);
+    let record = supply.admit(vec![member]);
+    supply.activate(&record);
+    let runtime = supply.fixture.path("runtime");
+    write_file(&runtime.join("bin/agent"), "measured executable");
+    write_file(&runtime.join("lib/adapter.js"), "measured adapter");
+    let registry_root = supply.fixture.path("manifest-registry");
+    support::write_registry(&registry_root, &runtime);
+    let registry = Registry::open(&registry_root).unwrap();
+    let mut inputs = SessionInputs::resolve(
+        &supply.fixture.store(),
+        &Policy::embedded(),
+        &registry,
+        "demo",
+    )
+    .unwrap();
+    assert_eq!(
+        inputs.skill_generation_id.as_deref(),
+        Some(record.generation.as_str())
+    );
+    assert_eq!(
+        inputs.runtime.as_ref().unwrap().executable_sha256,
+        louiselm_skills::registry::measure_file(&runtime.join("bin/agent"))
+            .unwrap()
+            .hex()
+    );
+    assert!(
+        SessionInputManifest::build(inputs.clone()).is_err(),
+        "unresolved snapshots and envelope must not get defaults"
+    );
+    inputs.project_instructions = Some(vec![]);
+    inputs.tool_schemas = Some(vec![]);
+    inputs.plugin_schemas = Some(vec![]);
+    inputs.acp_mcp_servers = Some(vec![]);
+    inputs.envelope_id = Some("denied".into());
+    inputs.envelope_revision = Some(1);
+    inputs.isolation_receipt = Some("isolation-receipt".into());
+    let manifest = SessionInputManifest::build(inputs).unwrap();
+    let views =
+        instruction_view::materialize(&supply.fixture.store(), &Policy::embedded(), &registry)
+            .unwrap();
+    assert_eq!(
+        manifest.skill_generation.view_digest,
+        views["demo"].digest().to_string()
+    );
+    write_file(&runtime.join("bin/agent"), "self update");
+    let error = SessionInputs::resolve(
+        &supply.fixture.store(),
+        &Policy::embedded(),
+        &registry,
+        "demo",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.dimension(),
+        louiselm_skills::posture::DimensionName::Runtime
+    );
+    write_file(&runtime.join("bin/agent"), "measured executable");
+    let fresh = Fixture::new();
+    let error =
+        SessionInputs::resolve(&fresh.store(), &Policy::embedded(), &registry, "demo").unwrap_err();
+    assert_eq!(
+        error.dimension(),
+        louiselm_skills::posture::DimensionName::ManagedSupply
+    );
+}
+
 struct Supply {
     fixture: Fixture,
     primary: SshKey,
@@ -154,6 +225,10 @@ fn views_route_shared_and_system_packages_by_signed_agent_membership() {
     assert_eq!(entries(views["codex"].skills_root()), expected);
     assert!(entries(views["unused"].skills_root()).is_empty());
     assert_eq!(
+        views["unused"].generation(),
+        Some(record.generation.as_str())
+    );
+    assert_eq!(
         views["unused"].digest(),
         instruction_view::empty(&supply.fixture.store())
             .unwrap()
@@ -203,6 +278,7 @@ fn skills_off_is_one_real_empty_artifact_without_any_generation_or_trust() {
     let first = Fixture::new();
     let second = Fixture::new();
     let view = instruction_view::empty(&first.store()).unwrap();
+    assert_eq!(view.generation(), None);
     assert!(view.skills_root().is_dir());
     assert!(entries(view.skills_root()).is_empty());
     assert_eq!(

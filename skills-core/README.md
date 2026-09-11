@@ -250,14 +250,75 @@ root from untrusted writers.
 `skills_root` exists and contains nothing. A failure produces no usable view.
 Both commands perform blocking local I/O and return `managed_supply` errors.
 Materialization is the artifact step of Admission; it does not mount a view or
-enable Verified launch. Session input binding, native-source masking and the
-read-only mount remain under `louiselm-d6fv.3.2`, `louiselm-d6fv.3.3` and
-`louiselm-d6fv.9`.
+enable Verified launch. Native-source masking and the read-only mount remain
+under `louiselm-d6fv.3.3` and `louiselm-d6fv.9`.
 
 Check physical presence and PIN/user verification yourself. The verifier
 requires the signature assertion flags; key-generation options alone do not
 set its policy. Recovery changes inherit that policy, and a replaced Primary
 must be refused for a new Admission. Verification/status need no token touch.
+
+### Session input binding
+
+`session_manifest::SessionInputs::resolve` reads the registered Agent,
+remeasures its runtime and materializes its current witnessed Instruction view.
+The view carries its Generation identity from the same locked resolution,
+including when that Agent has no admitted members. This blocking API refuses
+runtime drift, missing supply and altered views; it never falls back.
+
+The caller supplies the per-Session project-instruction, tool-schema and
+plugin-schema snapshots, isolation evidence reference and exact capability
+envelope revision. `MeasuredInput::from_bytes` binds captured bytes by path,
+size, executable bit and SHA-256. `None` refuses binding; `Some([])` explicitly
+records an empty snapshot. Verified v1 requires `Some([])` for the ACP MCP list.
+Project instructions remain measured Session inputs, never admitted packages.
+Workspace files stay editable; automatic loading must use the frozen Session
+snapshot. Later edits take effect in a new Session, not through rediscovery.
+
+`SessionInputManifest::build` creates `louiselm.session.input-manifest/1`.
+Its canonical bytes bind all inputs, the governing policy, and disclosure for
+every reachable Provider. File sets and runtime baselines are sorted; Agent
+argument and routing order is preserved. `parse` checks bounded, closed,
+canonical JSON, including nested records. The digest uses the spelling already
+accepted by `LaunchRequest::validate`.
+
+This is an input record, not launch authority. Parsing cannot prove provenance,
+complete discovery-source control, immutable mounts or continued currency.
+Resolve immediately before binding, protect captured snapshots, and require
+the adapter/confinement proofs before reporting Verified posture. Do not log
+manifest bytes: registered arguments and environment can contain secrets.
+
+### Discovery evidence and supply status
+
+`discovery::Inventory` declares every source category for a versioned adapter.
+Its canonical `louiselm-discovery.json` must be registered among the measured
+runtime adapter files. `AuthenticatedInputs::verify` binds the manifest and
+source observations to the existing signed sequence-zero launcher receipt;
+`DiscoveryProof::verify` remeasures the runtime and checks exactly one matching
+snapshot or mask for every declared source. A proof is specific to one complete
+launch request, including its Session and Run. Native MCP is always masked.
+
+These are evidence-consumer APIs, not installed-adapter conformance. Generic
+Bubblewrap evidence has no source observations and fails discovery verification.
+The production launcher must establish lifetime controls before signing source
+observations: fixed executable, no self-update, no mutable instruction reload,
+snapshot routing and complete native masks. Actual adapter inventories, hostile
+discovery probes, snapshot storage/mounting and launch refusal wiring remain
+`louiselm-d6fv.9`; component tests do not enable a user-visible Verified launch.
+
+`supply_posture::derive` independently produces the four supply/disclosure
+`DimensionInput` values. It rechecks the current Agent view and registered
+runtime, and accepts native/disclosure evidence only through authenticated
+launch inputs and request-bound discovery proofs. Missing or mismatched
+artifacts fail their dimension with a fixed code and next action. A runtime
+control known to be unsafe fails even if the executable's bytes still match.
+
+The existing `Posture::evaluate`, human renderer, robot serializer and Lua
+presentation validator share `louiselm.verified-posture/1`. They include fixed
+cloud-plaintext and embedded-executable disclosures, never input contents or
+configured Provider names. The isolation/network owners must supply their own
+evidence; all four supply dimensions passing does not establish a Verified
+launch. Installed status/launch consumption remains `louiselm-d6fv.9`.
 
 ## Sandbox startup
 
@@ -620,7 +681,7 @@ requires `ssh-keygen` for signatures and `git` for witnessing; both are part of
 the trusted base rather than vendored, and this crate implements no
 cryptography of its own.
 
-Provider-scoped views (louiselm-d6fv.3), Session launch and containment
+Agent-scoped Instruction views (louiselm-d6fv.3), Session launch and containment
 (louiselm-d6fv.4), and portable Endorsements (louiselm-d6fv.8) build on the
 canonical contract, the Generation chain, and the release identity defined here.
 `louiselm-launch` is built into the signed bundle. The control-service binary

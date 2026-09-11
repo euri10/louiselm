@@ -480,5 +480,6 @@ pub fn posture(posture: &Posture) -> String {
             posture.provider_disclosure_notice
         ),
     );
+    push(&mut out, &posture.embedded_instructions_notice);
     out
 }

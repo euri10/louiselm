@@ -85,7 +85,7 @@ pub enum Provider {
 }
 
 impl Provider {
-    fn validate(&self) -> Result<(), RegistryError> {
+    pub(crate) fn validate(&self) -> Result<(), RegistryError> {
         // Lua's %S excludes these six ASCII whitespace bytes, not Unicode space.
         let nonblank = |value: &str| {
             value
@@ -184,6 +184,7 @@ pub struct RuntimePackage {
 
 /// What a runtime measured to, right now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeMeasurement {
     /// Runtime identifier.
     pub runtime_id: String,

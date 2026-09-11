@@ -1859,6 +1859,7 @@ fn isolation_evidence(verified: bool) -> IsolationEvidence {
     }
     IsolationEvidence {
         contract_version: CONTRACT_VERSION.to_owned(),
+        native_sources: None,
         backend: "bubblewrap".to_owned(),
         backend_version: "0.12.0".to_owned(),
         kernel: KernelPrerequisites {

@@ -1979,6 +1979,7 @@ impl BubblewrapBackend {
         ];
         IsolationEvidence {
             contract_version: CONTRACT_VERSION.to_owned(),
+            native_sources: None,
             backend: self.name().to_owned(),
             backend_version: self.version().unwrap_or_else(|_| "unknown".to_owned()),
             kernel: self.prerequisites(),
@@ -2634,6 +2635,7 @@ mod tests {
             backend: "test",
             evidence: IsolationEvidence {
                 contract_version: CONTRACT_VERSION.to_owned(),
+                native_sources: None,
                 backend: "test".to_owned(),
                 backend_version: "1".to_owned(),
                 kernel: KernelPrerequisites {

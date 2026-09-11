@@ -169,6 +169,10 @@ pub struct IsolationEvidence {
     pub kernel: KernelPrerequisites,
     /// One entry per dimension.
     pub dimensions: Vec<DimensionEvidence>,
+    /// Optional per-source observations. Absence never proves native supply.
+    /// The complete record is authenticated by the launcher receipt digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_sources: Option<crate::discovery_source::SourceEvidence>,
 }
 
 /// Why isolation evidence cannot support a verified launch.

@@ -18,6 +18,9 @@ pub const POSTURE_SCHEMA: &str = "louiselm.verified-posture/1";
 /// The disclosure that always accompanies a cloud Provider posture.
 pub const PROVIDER_DISCLOSURE_NOTICE: &str = "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment.";
 
+/// Fixed distinction between runtime instructions and admitted supply.
+pub const EMBEDDED_INSTRUCTIONS_NOTICE: &str = "Instructions embedded in the measured executable are part of runtime trust, not admitted Skill supply.";
+
 const MAX_IDENTIFIER_BYTES: usize = 256;
 
 /// One independently evaluated posture dimension.
@@ -435,6 +438,8 @@ pub struct Posture {
     pub state: PostureState,
     /// Fixed cloud disclosure boundary.
     pub provider_disclosure_notice: String,
+    /// Fixed disclosure of executable-embedded instructions as runtime trust.
+    pub embedded_instructions_notice: String,
     /// Independently evaluated dimensions.
     pub dimensions: PostureDimensions,
 }
@@ -493,6 +498,7 @@ impl Posture {
             run_id: run_id.to_owned(),
             state,
             provider_disclosure_notice: PROVIDER_DISCLOSURE_NOTICE.to_owned(),
+            embedded_instructions_notice: EMBEDDED_INSTRUCTIONS_NOTICE.to_owned(),
             dimensions,
         })
     }

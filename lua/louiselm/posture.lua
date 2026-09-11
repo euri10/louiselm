@@ -41,6 +41,7 @@ local M = {}
 ---@field run_id string
 ---@field state louiselm.PostureState
 ---@field provider_disclosure_notice string
+---@field embedded_instructions_notice string Fixed runtime-trust disclosure, never managed Skill supply.
 ---@field dimensions louiselm.PostureDimensions
 
 ---@class louiselm.PostureHealthItem
@@ -50,6 +51,8 @@ local M = {}
 local SCHEMA = "louiselm.verified-posture/1"
 local PROVIDER_DISCLOSURE_NOTICE =
   "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment."
+local EMBEDDED_INSTRUCTIONS_NOTICE =
+  "Instructions embedded in the measured executable are part of runtime trust, not admitted Skill supply."
 local DIMENSIONS = {
   "managed_supply",
   "native_supply",
@@ -267,7 +270,15 @@ end
 
 local function validate(posture)
   if
-    not exact_fields(posture, { "schema", "session_id", "run_id", "state", "provider_disclosure_notice", "dimensions" })
+    not exact_fields(posture, {
+      "schema",
+      "session_id",
+      "run_id",
+      "state",
+      "provider_disclosure_notice",
+      "embedded_instructions_notice",
+      "dimensions",
+    })
   then
     return false, "Verified posture must be a table"
   end
@@ -279,6 +290,9 @@ local function validate(posture)
   end
   if posture.provider_disclosure_notice ~= PROVIDER_DISCLOSURE_NOTICE then
     return false, "Provider disclosure notice is missing or altered"
+  end
+  if posture.embedded_instructions_notice ~= EMBEDDED_INSTRUCTIONS_NOTICE then
+    return false, "Embedded instruction disclosure is missing or altered"
   end
   if type(posture.dimensions) ~= "table" then
     return false, "Verified posture dimensions must be a table"
@@ -354,6 +368,7 @@ function M.health_items(posture)
     }
   end
   items[#items + 1] = { level = "info", message = posture.provider_disclosure_notice }
+  items[#items + 1] = { level = "info", message = posture.embedded_instructions_notice }
   return items
 end
 
