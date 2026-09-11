@@ -419,11 +419,34 @@ closing or dropping a `BrokerSession` closes its channel, including clones.
 This initiates existing broker-loss handling; closing a socket is not proof of
 completed grant revocation or process cleanup.
 
-This connection component is `louiselm-qbr.5.1.1.5.1`. Cross-process command
-authorization, delegated-tool enforcement and complete measured launch acceptance
-remain `.5.2`–`.5.4`, under the confirmed
-`louiselm-cross-process-tool-commit-z288` contract. No installed or fully Verified
-launch is established by the component tests.
+The pending authorization also holds the optional exact `ApprovedCommands`
+record. `serve_launch` derives Agent attribution from the verified Start receipt
+and binds that approval before acknowledging sequence 1. Receipt schema `/4`
+requires the actual Agent PID/assigned identity and tool-isolation evidence
+digest; a signed foreign identity is refused. An absent command approval grants
+no effects. Approval expiry includes time spent awaiting the supervisor and
+completing startup.
+
+`inspect` separates the durable receipt state/head and signed prerequisites from
+launch acknowledgement. `inspect_active` adds the owning worker's final ACK send
+and local channel state. A stored Running receipt alone is not launch success or
+current Agent liveness; inspection without the owner deliberately makes neither
+claim.
+
+`InstalledBroker::bind` composes this service using the installer's root-owned
+`launcher/public-config.json` and public keyring. It requires the dedicated
+installed UID/GID, no supplementary groups, and pre-provisioned private broker
+state and rendezvous directories with mode `0700` below root-owned ancestors.
+The public configuration contains measured paths/digests and numeric identities,
+not keys or credentials. The private configuration and signing keys remain
+root-only. Signature checks use the measured absolute OpenSSH executable, empty
+environment and a bounded process deadline. `InstalledBroker::step` processes
+commands and signed lifecycle outcomes on the retained connection.
+
+The [broker launch gate](../docs/broker-launch-acceptance.md) exercises this
+composition with measured fixtures in the disposable VM. It does not install a
+desktop service, enable vendor Agents, or establish fully Verified posture.
+Recovery remains `louiselm-qbr.5.1.2`; user-visible cutover remains `louiselm-d6fv.9`.
 
 ## Sandbox startup
 

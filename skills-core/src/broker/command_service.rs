@@ -2,48 +2,12 @@
 
 use super::{BrokerError, BrokerSession, receive, send};
 use crate::{
-    broker::{
-        commands::CommandAuthority,
-        delegation::{DelegationError, DelegationPolicy},
-    },
+    broker::{commands::CommandAuthority, delegation::DelegationError},
     launch_protocol::{CommandOperation, ErrorCode, ProtocolMessage},
-    launch_supervisor::CapabilityBinding,
     launch_transport::LauncherPacket,
 };
 
 impl BrokerSession {
-    /// Installs the already approved Agent policy once for this launch lifetime.
-    /// `binding` comes from trusted supervisor launch context, not Agent payloads.
-    /// No kernel handle is reconstructed here and no operator prompt is introduced.
-    ///
-    /// # Errors
-    /// Refuses contradictory launch context, policy replacement or unavailable audit.
-    pub fn enable_commands(
-        &mut self,
-        binding: CapabilityBinding,
-        policy: DelegationPolicy,
-    ) -> Result<(), DelegationError> {
-        let launch = &self.authorization;
-        if self.commands.is_some()
-            || self.channel.is_closed()
-            || binding.session_id != launch.session_id
-            || binding.run_id != launch.run_id
-            || binding.envelope_revision != launch.envelope_revision
-            || binding.identity_slot != launch.identity_slot
-            || binding.assigned_uid != launch.assigned_uid
-            || binding.assigned_gid != launch.assigned_gid
-            || binding.channel_id != "agent-capability"
-        {
-            return Err(DelegationError::ScopeMismatch);
-        }
-        self.commands = Some(CommandAuthority::new(
-            binding,
-            policy,
-            std::sync::Arc::clone(&self.audit),
-        )?);
-        Ok(())
-    }
-
     /// Processes one command packet on the retained supervisor connection.
     ///
     /// Blocks only on the broker worker, with the launch transport's fixed step
@@ -63,6 +27,13 @@ impl BrokerSession {
 
     fn command_step(&mut self) -> Result<(), BrokerError> {
         let packet = receive(&self.channel)?;
+        self.handle_command(packet)
+    }
+
+    pub(in crate::broker) fn handle_command(
+        &mut self,
+        packet: crate::launch_transport::AuthenticatedPacket,
+    ) -> Result<(), BrokerError> {
         // CredentialPin also checks each packet; retain this exact-process
         // constraint even if installation accepted a supervisor UID initially.
         if packet.peer_credentials != self.channel.peer_credentials()
@@ -73,7 +44,18 @@ impl BrokerSession {
         let LauncherPacket::Request(ProtocolMessage::Command(mut message)) = packet.packet else {
             return Err(BrokerError::InvalidGrant);
         };
-        let authority = self.commands.as_mut().ok_or(BrokerError::InvalidGrant)?;
+        let Some(authority) = self.commands.as_mut() else {
+            if matches!(
+                message.operation,
+                CommandOperation::Request { .. } | CommandOperation::DelegationRequest { .. }
+            ) {
+                message.operation = CommandOperation::Reject {
+                    error: ErrorCode::InvalidRequest,
+                };
+                return send(&self.channel, message.canonical_bytes());
+            }
+            return Err(BrokerError::InvalidGrant);
+        };
         match authority.handle(&message) {
             Ok(reply) => {
                 if !matches!(

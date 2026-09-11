@@ -8,6 +8,10 @@ mod relay_tests;
 #[path = "tool_integration_tests.rs"]
 mod tool_integration_tests;
 
+#[cfg(test)]
+#[path = "installed_tests.rs"]
+mod installed_tests;
+
 #[path = "system_command.rs"]
 mod command_io;
 
@@ -729,11 +733,28 @@ impl SystemLaunchPlatform {
 }
 
 impl LaunchPlatform for SystemLaunchPlatform {
+    fn check_integration(
+        &self,
+        request: &LaunchRequest,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let result = (|| {
+            let registry = crate::registry::Registry::open_trusted(&self.registry_root)
+                .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+            let agent = registry
+                .agent(&request.agent_id)
+                .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+            super::tool_integration::validate_registration(&agent)
+        })();
+        complete(result);
+        Ok(())
+    }
+
     fn verify_tool_isolation(
         &self,
         request: &LaunchRequest,
         agent: &AgentAuthentication,
-        complete: SupervisorCompletion<()>,
+        complete: SupervisorCompletion<Digest>,
     ) -> Result<(), SupervisorError> {
         let result = (|| {
             let evidence = agent
@@ -748,7 +769,8 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 &registry,
                 &self.config.release_id,
                 &self.config.bwrap_digest,
-            )
+            )?;
+            Ok(Digest::of(&evidence.canonical_bytes()))
         })();
         complete(result);
         Ok(())
@@ -800,41 +822,32 @@ impl LaunchPlatform for SystemLaunchPlatform {
             .release_prefix
             .join("releases")
             .join(&self.config.release_id);
-        let tool_isolation = match super::ToolIsolationEvidence::measure(
+        let tool_isolation = super::ToolIsolationEvidence::measure(
             &plan,
             &release_root,
             &self.config.release_id,
             &self.config.bwrap_digest,
+        )?;
+        let mut tools = super::tool_execution::ToolExecutor::new(
+            self.backend
+                .within_session(&plan.session_id)
+                .map_err(map_sandbox)?,
+            &plan,
+        )?;
+        tools.measured_helper = match super::tool_helper::MeasuredHelper::measure(
+            &release_root,
+            &self.config.release_id,
         ) {
-            Ok(evidence) => Some(evidence),
+            Ok(helper) => Some(helper),
             Err(SupervisorError::ToolIsolationUnproven) => None,
             Err(error) => return Err(error),
-        };
-        let tools = if tool_isolation.is_some() {
-            let mut tools = super::tool_execution::ToolExecutor::new(
-                self.backend
-                    .within_session(&plan.session_id)
-                    .map_err(map_sandbox)?,
-                &plan,
-            )?;
-            tools.measured_helper = match super::tool_helper::MeasuredHelper::measure(
-                &release_root,
-                &self.config.release_id,
-            ) {
-                Ok(helper) => Some(helper),
-                Err(SupervisorError::ToolIsolationUnproven) => None,
-                Err(error) => return Err(error),
-            };
-            Some(tools)
-        } else {
-            None
         };
         let prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
         Ok(Box::new(SystemPreparedAgent {
             prepared,
             backend_id: self.config.bwrap_digest.clone(),
-            tool_isolation,
-            tools,
+            tool_isolation: Some(tool_isolation),
+            tools: Some(tools),
         }))
     }
 }

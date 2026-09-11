@@ -1542,14 +1542,22 @@ struct BubblewrapLaunchPlatform {
 }
 
 impl LaunchPlatform for BubblewrapLaunchPlatform {
+    fn check_integration(
+        &self,
+        _: &LaunchRequest,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        complete(Ok(()));
+        Ok(())
+    }
     fn verify_tool_isolation(
         &self,
         _request: &LaunchRequest,
         _agent: &AgentAuthentication,
-        complete: SupervisorCompletion<()>,
+        complete: SupervisorCompletion<Digest>,
     ) -> Result<(), SupervisorError> {
         // This fixture proves host process identity only, not tool separation.
-        complete(Ok(()));
+        complete(Ok(Digest::of(b"fixture-tool-isolation")));
         Ok(())
     }
 
@@ -1683,6 +1691,7 @@ fn process_status_values(pid: u32, field: &str) -> Option<Vec<u32>> {
 struct PlatformBehavior {
     agent_credentials: Option<louiselm_skills::launch_transport::KernelCredentials>,
     tool_isolation_unproven: bool,
+    integration_unsupported: bool,
     identity_unavailable: bool,
     identity_occupied: bool,
     identity_poisoned: bool,
@@ -1791,17 +1800,29 @@ impl FakePlatform {
 }
 
 impl LaunchPlatform for FakePlatform {
+    fn check_integration(
+        &self,
+        _: &LaunchRequest,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        complete(if self.behavior.integration_unsupported {
+            Err(SupervisorError::ToolIsolationUnproven)
+        } else {
+            Ok(())
+        });
+        Ok(())
+    }
     fn verify_tool_isolation(
         &self,
         _request: &LaunchRequest,
         _agent: &AgentAuthentication,
-        complete: SupervisorCompletion<()>,
+        complete: SupervisorCompletion<Digest>,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "platform.verify_tool_isolation");
         if self.behavior.tool_isolation_unproven {
             complete(Err(SupervisorError::ToolIsolationUnproven));
         } else {
-            complete(Ok(()));
+            complete(Ok(Digest::of(b"fixture-tool-isolation")));
         }
         Ok(())
     }
@@ -2643,6 +2664,32 @@ fn capability_binding_waits_for_restricted_agent_startup() {
 }
 
 #[test]
+fn known_unsupported_integration_refuses_before_authorization_or_spawn() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            integration_unsupported: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, count) = begin_launch(&setup, CONTROLLER_UID);
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(SupervisorError::ToolIsolationUnproven)
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert!(setup.broker.receipts().is_empty());
+    let events = event_snapshot(&setup.events);
+    assert!(!events.iter().any(|event| matches!(
+        event.as_str(),
+        "identity.acquire" | "agent.start" | "capability.enable"
+    )));
+}
+
+#[test]
 fn missing_tool_isolation_disposes_restricted_startup_without_enabling_effects() {
     let setup = setup(
         true,
@@ -2935,6 +2982,12 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
     assert_eq!(
         running.payload.outcome,
         ReceiptOutcome::Start {
+            evidence: louiselm_skills::launch_receipt::StartEvidence {
+                agent_pid: 42_425,
+                assigned_uid: setup.platform.expected_identity.uid,
+                assigned_gid: setup.platform.expected_identity.gid,
+                tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+            },
             authority: ReceiptAuthority::Cause {
                 cause: ReceiptCause::LaunchAcknowledged,
             },

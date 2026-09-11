@@ -18,6 +18,7 @@ pub mod audit;
 pub mod authorization;
 pub mod commands;
 pub mod delegation;
+pub mod installed;
 pub mod receipts;
 pub mod service;
 
@@ -40,9 +41,10 @@ use crate::{
 };
 
 pub use audit::{AuditDecision, AuditEntry, AuditLog};
-pub use authorization::{AuthorizationStore, GrantRequest, PendingAuthorization};
+pub use authorization::{ApprovedCommands, AuthorizationStore, GrantRequest, PendingAuthorization};
+pub use installed::InstalledBroker;
 pub use receipts::{ReceiptStore, TrustedRelease};
-pub use service::{BrokerService, BrokerSession, SessionInspection};
+pub use service::{BrokerService, BrokerSession, LaunchObservation, SessionInspection};
 
 /// Longest durable broker record this build reads back.
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
@@ -56,6 +58,15 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Public installation or dedicated broker identity is not trustworthy.
+    #[error("installed broker authority is invalid")]
+    Installation,
+    /// Installed public authority could not be validated; the cause stays internal.
+    #[error("installed broker public authority is unavailable")]
+    InstallationAuthority(#[source] crate::launcher_install::LauncherError),
+    /// Installed public-key verification failed; no durable ACK was sent.
+    #[error("launcher receipt verification failed")]
+    Verification(#[source] crate::launcher_install::LauncherError),
     /// No pending authorization answers this identity; it never existed,
     /// expired out of the store, or was already consumed.
     #[error("authorization is unknown or already consumed")]

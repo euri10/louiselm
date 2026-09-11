@@ -442,6 +442,10 @@ jobs:
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_TOOL_GRANTS=1 \
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success --exact --nocapture' bash "$library_test"
 
       - name: Test privileged launch supervisor composition
         run: |

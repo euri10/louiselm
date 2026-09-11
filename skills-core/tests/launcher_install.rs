@@ -379,6 +379,12 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     )
     .expect("first install succeeds");
     let first_key = first.active_key_id.clone().expect("active key is reported");
+    let public_config = fixture.paths.state_root.join("public-config.json");
+    assert_eq!(
+        fs::read(&public_config).unwrap(),
+        fs::read(fixture.paths.state_root.join("config.json")).unwrap()
+    );
+    assert_eq!(mode(&public_config), 0o444);
     let second = install(
         &fixture.paths,
         &runner,

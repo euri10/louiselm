@@ -45,6 +45,9 @@ use louiselm_skills::{
 use rustix::process::{getgid, getuid};
 use tempfile::TempDir;
 
+#[path = "broker/launch_gates.rs"]
+mod launch_gates;
+
 /// Installed pool wide enough that slot assignment is not the subject.
 fn pool(slots: u32) -> IdentityPool {
     IdentityPool {
@@ -80,7 +83,155 @@ fn grant(request: &LaunchRequest) -> GrantRequest {
         controller_uid: CONTROLLER_UID,
         expires_at_ms: 30_000,
         broker_loss_grace_ms: 5_000,
+        commands: Some(louiselm_skills::broker::ApprovedCommands {
+            command_digest: Digest::of(b"printf sensitive").to_string(),
+            timeout_ms: 1000,
+            uses: 3,
+            allow_delegation: true,
+            expires_at_ms: 60_000,
+        }),
     }
+}
+
+#[test]
+fn absent_command_approval_denies_effects_without_ending_the_session() {
+    use louiselm_skills::launch_protocol::{
+        COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandPrincipal, TOOL_EXECUTION_SCHEMA,
+        ToolExecutionRequest,
+    };
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let authorizations =
+        AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
+    let mut approval = grant(&request);
+    approval.commands = None;
+    authorizations.authorize(&approval, 1000).unwrap();
+    let service = BrokerService::bind(
+        &socket,
+        authorizations,
+        ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap(),
+        AuditLog::open(&root.path().join("audit")).unwrap(),
+        local_pin(),
+    )
+    .unwrap();
+    let peer = thread::spawn(move || fake_supervisor(&socket, &request, 2000));
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let (authorization, channel) = peer.join().unwrap();
+    let command = CommandMessage {
+        schema: COMMAND_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "unapproved".into(),
+        session_id: authorization.session_id.clone(),
+        run_id: authorization.run_id.clone(),
+        envelope_revision: authorization.envelope_revision,
+        operation: CommandOperation::Request {
+            principal: CommandPrincipal {
+                channel_id: "agent-capability".into(),
+                pid: 123,
+                uid: authorization.assigned_uid,
+                gid: authorization.assigned_gid,
+            },
+            command: ToolExecutionRequest {
+                schema: TOOL_EXECUTION_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "unapproved".into(),
+                session_id: authorization.session_id,
+                run_id: authorization.run_id,
+                envelope_revision: authorization.envelope_revision,
+                sequence: 1,
+                command: "printf sensitive".into(),
+                timeout_ms: 1000,
+            },
+        },
+    };
+    settle(|complete| channel.send(command.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    let packet = settle(|complete| channel.receive(complete));
+    assert!(matches!(
+        packet.packet,
+        LauncherPacket::Request(ProtocolMessage::Command(CommandMessage {
+            operation: CommandOperation::Reject { .. },
+            ..
+        }))
+    ));
+    assert!(!session.channel().is_closed());
+}
+
+#[test]
+fn a_signed_start_cannot_change_the_installed_identity() {
+    let root = TempDir::new().unwrap();
+    let authorization = consumed_authorization(root.path(), &request("session-1"));
+    let receipts = ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap();
+    let launch = launch_receipt(&authorization);
+    receipts
+        .append(
+            &authorization,
+            &launch.canonical_bytes(),
+            verify_fixture_signature,
+        )
+        .unwrap();
+    let mut start = start_receipt(&authorization, &launch);
+    let ReceiptOutcome::Start { evidence, .. } = &mut start.payload.outcome else {
+        panic!("start");
+    };
+    evidence.assigned_uid += 1;
+    let changed = signed(start.payload);
+    assert!(matches!(
+        receipts.append(
+            &authorization,
+            &changed.canonical_bytes(),
+            verify_fixture_signature
+        ),
+        Err(BrokerError::ReceiptUnauthorized)
+    ));
+    assert_eq!(
+        receipts.state("session-1").unwrap(),
+        Some(SessionState::Starting)
+    );
+    assert_eq!(receipts.head("session-1").unwrap().unwrap().sequence, 0);
+}
+
+#[test]
+fn pending_approval_is_exact_durable_and_expiring() {
+    let root = TempDir::new().unwrap();
+    let store = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    let mut approval = grant(&request("session-1"));
+    let expected = approval.commands.clone();
+    store.authorize(&approval, 1000).unwrap();
+    store.consume_for_launcher(&approval.request, 2000).unwrap();
+    drop(store);
+    let reopened = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    assert_eq!(
+        reopened
+            .consumed_for_session("session-1")
+            .unwrap()
+            .unwrap()
+            .commands,
+        expected
+    );
+    approval.request = request("session-2");
+    approval.commands.as_mut().unwrap().expires_at_ms = 1000;
+    assert!(matches!(
+        reopened.authorize(&approval, 1000),
+        Err(BrokerError::Expired)
+    ));
+    approval.commands.as_mut().unwrap().expires_at_ms = 30_000;
+    approval.commands.as_mut().unwrap().command_digest = "invalid".into();
+    assert!(matches!(
+        reopened.authorize(&approval, 1000),
+        Err(BrokerError::InvalidGrant)
+    ));
+    approval.commands = None;
+    assert!(
+        reopened
+            .authorize(&approval, 1000)
+            .unwrap()
+            .commands
+            .is_none()
+    );
 }
 
 #[test]
@@ -285,6 +436,12 @@ fn start_receipt(authorization: &LaunchAuthorization, launch: &SignedReceipt) ->
         1,
         Some(launch.digest().to_string()),
         ReceiptOutcome::Start {
+            evidence: louiselm_skills::launch_receipt::StartEvidence {
+                agent_pid: 123,
+                assigned_uid: authorization.assigned_uid,
+                assigned_gid: authorization.assigned_gid,
+                tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+            },
             authority: ReceiptAuthority::Cause {
                 cause: ReceiptCause::LaunchAcknowledged,
             },
@@ -615,21 +772,13 @@ fn assert_post_launch_exchange(
     assert_eq!(received.peer_credentials, received.message_credentials);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One retained-connection scenario follows policy binding, authorization, uncertainty and enforced revocation."
-)]
 fn assert_command_exchange(
     session: &mut louiselm_skills::broker::BrokerSession,
     supervisor: &SeqpacketChannel,
 ) {
-    use louiselm_skills::{
-        broker::delegation::{CommandScope, DelegationPolicy},
-        launch_protocol::{
-            COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandOutcome, CommandPrincipal,
-            TOOL_EXECUTION_SCHEMA, ToolExecutionRequest,
-        },
-        launch_supervisor::CapabilityBinding,
+    use louiselm_skills::launch_protocol::{
+        COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandOutcome, CommandPrincipal,
+        TOOL_EXECUTION_SCHEMA, ToolExecutionRequest,
     };
     let authorization = session.authorization().clone();
     let principal = CommandPrincipal {
@@ -638,33 +787,6 @@ fn assert_command_exchange(
         uid: authorization.assigned_uid,
         gid: authorization.assigned_gid,
     };
-    let binding = CapabilityBinding {
-        session_id: authorization.session_id.clone(),
-        run_id: authorization.run_id.clone(),
-        channel_id: principal.channel_id.clone(),
-        envelope_revision: authorization.envelope_revision,
-        identity_slot: authorization.identity_slot,
-        assigned_uid: principal.uid,
-        assigned_gid: principal.gid,
-        agent_pid: principal.pid,
-    };
-    let policy = DelegationPolicy {
-        authorization_id: "approved-command".to_owned(),
-        scope: CommandScope {
-            command_digest: Digest::of(b"printf sensitive"),
-            timeout_ms: 1000,
-            uses: 3,
-        },
-        allow_delegation: true,
-        expires_at: std::time::Instant::now() + Duration::from_secs(30),
-    };
-    let mut wrong = binding.clone();
-    "another-run".clone_into(&mut wrong.run_id);
-    assert!(session.enable_commands(wrong, policy.clone()).is_err());
-    session
-        .enable_commands(binding.clone(), policy.clone())
-        .unwrap();
-    assert!(session.enable_commands(binding, policy).is_err());
     let mut message = CommandMessage {
         schema: COMMAND_SCHEMA.to_owned(),
         protocol_version: 1,
@@ -947,6 +1069,12 @@ fn an_incomplete_launch_never_hands_off_a_live_session() {
             .expect("consumed");
         assert_eq!(inspection.state, SessionState::Starting);
         assert_eq!(
+            inspection.launch,
+            louiselm_skills::broker::LaunchObservation::DurableOnly
+        );
+        assert_eq!(inspection.launch_evidence.is_some(), rejected_sequence == 1);
+        assert!(inspection.start_evidence.is_none());
+        assert_eq!(
             inspection.broker_head.map(|head| head.sequence),
             if rejected_sequence == 0 {
                 None
@@ -1032,6 +1160,23 @@ fn the_operator_record_stays_normalized_after_a_launch() {
     assert_eq!(inspection.state, SessionState::Running);
     assert_eq!(inspection.broker_head.expect("head").sequence, 1);
     assert!(inspection.last_failure.is_none());
+    assert_eq!(
+        inspection.launch,
+        louiselm_skills::broker::LaunchObservation::DurableOnly
+    );
+    assert!(inspection.launch_evidence.is_some());
+    assert!(inspection.start_evidence.is_some());
+    assert_eq!(
+        service.inspect_active(&session).unwrap().launch,
+        louiselm_skills::broker::LaunchObservation::Acknowledged { channel_open: true }
+    );
+    session.close();
+    assert_eq!(
+        service.inspect_active(&session).unwrap().launch,
+        louiselm_skills::broker::LaunchObservation::Acknowledged {
+            channel_open: false
+        }
+    );
 
     let decisions: Vec<AuditDecision> = service
         .audit()

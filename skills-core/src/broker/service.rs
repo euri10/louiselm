@@ -14,7 +14,7 @@
 use std::{
     path::Path,
     sync::{Arc, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[path = "command_service.rs"]
@@ -25,9 +25,10 @@ use crate::{
     launch::PROTOCOL_VERSION,
     launch_protocol::{
         ErrorCode, LaunchAuthorization, ProtocolError, ProtocolMessage, ProtocolResponse,
-        RESPONSE_SCHEMA, ResponseResult,
+        RESPONSE_SCHEMA, ReceiptAcknowledgement, ResponseResult,
     },
-    launch_receipt::{ReceiptHead, SessionState},
+    launch_receipt::{LaunchEvidence, ReceiptHead, ReceiptOutcome, SessionState, StartEvidence},
+    launch_supervisor::CapabilityBinding,
     launch_transport::{
         AuthenticatedPacket, CredentialPin, LauncherPacket, SeqpacketChannel, SeqpacketListener,
         TransportError,
@@ -51,7 +52,6 @@ pub struct BrokerSession {
     authorization: LaunchAuthorization,
     launch_head: ReceiptHead,
     channel: SeqpacketChannel,
-    audit: Arc<AuditLog>,
     commands: Option<super::commands::CommandAuthority>,
 }
 
@@ -91,9 +91,9 @@ impl Drop for BrokerSession {
 
 /// Broker-owned state an operator may read about one Session.
 ///
-/// Every field is a bounded normalized identifier, a slot number, a durable
-/// head, or a stable typed failure. Nothing derived from a prompt, an
-/// environment, a command, or a receipt payload appears here.
+/// Evidence contains only validated measurements and identifiers, never prompts,
+/// environments or command payloads. Durable state is not current liveness or
+/// proof that a supervisor received its final acknowledgement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionInspection {
     /// Session being described.
@@ -110,6 +110,24 @@ pub struct SessionInspection {
     pub broker_head: Option<ReceiptHead>,
     /// Latest stable failure the broker recorded for this Session.
     pub last_failure: Option<ProtocolError>,
+    /// Sequence-zero prerequisites fixed before restricted initialization.
+    pub launch_evidence: Option<LaunchEvidence>,
+    /// Initial signed Agent/isolation proof; never a current liveness claim.
+    pub start_evidence: Option<StartEvidence>,
+    /// What this caller can establish about the completed launch/channel.
+    pub launch: LaunchObservation,
+}
+
+/// Initial launch acknowledgement and locally owned transport observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaunchObservation {
+    /// Only stored evidence is available; no completed handshake is inferred.
+    DurableOnly,
+    /// The owning worker sent the final durable ACK and returned a Session.
+    Acknowledged {
+        /// Whether that owned channel is locally open, not a peer liveness proof.
+        channel_open: bool,
+    },
 }
 
 /// The Control broker's local-only rendezvous service.
@@ -164,6 +182,8 @@ impl BrokerService {
         let Some(authorization) = self.authorizations.consumed_for_session(session_id)? else {
             return Ok(None);
         };
+        let chain = self.receipts.chain(session_id)?;
+        let head = chain.last();
         let last_failure = self
             .audit()?
             .into_iter()
@@ -181,13 +201,51 @@ impl BrokerService {
             run_id: authorization.run_id.clone(),
             envelope_revision: authorization.envelope_revision,
             identity_slot: authorization.identity.slot,
-            state: self
-                .receipts
-                .state(session_id)?
-                .unwrap_or(SessionState::Starting),
-            broker_head: self.receipts.head(session_id)?,
+            state: head.map_or(SessionState::Starting, |receipt| {
+                receipt.payload.resulting_state
+            }),
+            broker_head: head.map(|receipt| ReceiptHead {
+                sequence: receipt.payload.sequence,
+                digest: receipt.digest().to_string(),
+            }),
             last_failure,
+            launch_evidence: chain
+                .first()
+                .and_then(|receipt| match &receipt.payload.outcome {
+                    ReceiptOutcome::Launch { evidence, .. } => Some((**evidence).clone()),
+                    _ => None,
+                }),
+            start_evidence: chain
+                .get(1)
+                .and_then(|receipt| match &receipt.payload.outcome {
+                    ReceiptOutcome::Start { evidence, .. } => Some(evidence.clone()),
+                    _ => None,
+                }),
+            launch: LaunchObservation::DurableOnly,
         }))
+    }
+
+    /// Adds the completed handshake and local channel observation from its owner.
+    /// Neither an open channel nor a stored Running receipt proves current liveness.
+    ///
+    /// # Errors
+    /// Refuses missing/foreign authorization or unreadable durable evidence.
+    pub fn inspect_active(
+        &self,
+        session: &BrokerSession,
+    ) -> Result<SessionInspection, BrokerError> {
+        let authorization = self
+            .authorizations
+            .consumed_for_session(&session.authorization.session_id)?
+            .filter(|pending| pending.authorization_id == session.authorization.authorization_id)
+            .ok_or(BrokerError::InvalidGrant)?;
+        let mut inspection = self
+            .inspect(&authorization.session_id)?
+            .ok_or(BrokerError::InvalidGrant)?;
+        inspection.launch = LaunchObservation::Acknowledged {
+            channel_open: !session.channel.is_closed(),
+        };
+        Ok(inspection)
     }
 
     /// The durable authorizations this service consumes.
@@ -223,14 +281,16 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        let clock = Instant::now();
         let channel = self.accept()?;
+        let now_ms =
+            now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
         match self.transaction(&channel, now_ms, &mut verify_signature) {
-            Ok((authorization, launch_head)) => Ok(BrokerSession {
+            Ok((authorization, launch_head, commands)) => Ok(BrokerSession {
                 authorization,
                 launch_head,
                 channel,
-                audit: Arc::clone(&self.audit),
-                commands: None,
+                commands,
             }),
             Err(error) => {
                 channel.close();
@@ -246,15 +306,27 @@ impl BrokerService {
         self.listener.close();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One ordered transaction consumes approval, stores both receipts and binds policy before the final ACK."
+    )]
     fn transaction<F>(
         &self,
         channel: &SeqpacketChannel,
         now_ms: u64,
         verify_signature: &mut F,
-    ) -> Result<(LaunchAuthorization, ReceiptHead), BrokerError>
+    ) -> Result<
+        (
+            LaunchAuthorization,
+            ReceiptHead,
+            Option<super::commands::CommandAuthority>,
+        ),
+        BrokerError,
+    >
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        let clock = Instant::now();
         let packet = receive(channel)?;
         let LauncherPacket::Request(ProtocolMessage::LaunchAuthorization(request)) = packet.packet
         else {
@@ -263,7 +335,12 @@ impl BrokerService {
             return Err(BrokerError::InvalidGrant);
         };
 
-        let authorization = match self.authorizations.consume_for_launcher(&request, now_ms) {
+        let consumed_at_ms =
+            now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+        let authorization = match self
+            .authorizations
+            .consume_for_launcher(&request, consumed_at_ms)
+        {
             Ok(authorization) => authorization,
             Err(BrokerError::IdentityExhausted(exhaustion)) => {
                 send(
@@ -312,20 +389,65 @@ impl BrokerService {
             ),
         )?;
 
-        self.acknowledge(channel, &authorization, 0, now_ms, verify_signature)?;
-        let broker_head = self.acknowledge(channel, &authorization, 1, now_ms, verify_signature)?;
-        Ok((authorization, broker_head))
+        let pending = self
+            .authorizations
+            .consumed_for_session(&authorization.session_id)?
+            .filter(|pending| pending.authorization_id == authorization.authorization_id)
+            .ok_or(BrokerError::InvalidGrant)?;
+        let approved = pending
+            .commands
+            .as_ref()
+            .map(|commands| {
+                let policy_at_ms = now_ms
+                    .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+                commands.policy(&authorization.authorization_id, policy_at_ms)
+            })
+            .transpose()?;
+        let (ack, _) =
+            self.store_next_receipt(channel, &authorization, 0, now_ms, verify_signature)?;
+        send(channel, ack.canonical_bytes())?;
+        let (ack, evidence) =
+            self.store_next_receipt(channel, &authorization, 1, now_ms, verify_signature)?;
+        let evidence = evidence.ok_or(BrokerError::ReceiptUnauthorized)?;
+        let commands = approved
+            .map(|policy| {
+                super::commands::CommandAuthority::new(
+                    CapabilityBinding {
+                        session_id: authorization.session_id.clone(),
+                        run_id: authorization.run_id.clone(),
+                        channel_id: "agent-capability".to_owned(),
+                        envelope_revision: authorization.envelope_revision,
+                        identity_slot: authorization.identity_slot,
+                        assigned_uid: evidence.assigned_uid,
+                        assigned_gid: evidence.assigned_gid,
+                        agent_pid: evidence.agent_pid,
+                    },
+                    policy,
+                    Arc::clone(&self.audit),
+                )
+                .map_err(|error| match error {
+                    super::delegation::DelegationError::Audit(error) => error,
+                    _ => BrokerError::InvalidGrant,
+                })
+            })
+            .transpose()?;
+        let broker_head = ReceiptHead {
+            sequence: ack.sequence,
+            digest: ack.receipt_digest.clone(),
+        };
+        send(channel, ack.canonical_bytes())?;
+        Ok((authorization, broker_head, commands))
     }
 
-    /// Stores one exact signed receipt and acknowledges it after it is durable.
-    fn acknowledge<F>(
+    /// Stores exact signed bytes; the caller sends the ACK after policy setup.
+    fn store_next_receipt<F>(
         &self,
         channel: &SeqpacketChannel,
         authorization: &LaunchAuthorization,
         expected_sequence: u64,
         now_ms: u64,
         verify_signature: &mut F,
-    ) -> Result<ReceiptHead, BrokerError>
+    ) -> Result<(ReceiptAcknowledgement, Option<StartEvidence>), BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -336,6 +458,13 @@ impl BrokerService {
         if receipt.payload.sequence != expected_sequence {
             return Err(BrokerError::ReceiptUnauthorized);
         }
+        let evidence = match &receipt.payload.outcome {
+            ReceiptOutcome::Launch { .. } if expected_sequence == 0 => None,
+            ReceiptOutcome::Start { evidence, .. } if expected_sequence == 1 => {
+                Some(evidence.clone())
+            }
+            _ => return Err(BrokerError::ReceiptUnauthorized),
+        };
         // The exact bytes from the wire are what gets stored: nothing here
         // reserializes the supervisor's signed envelope.
         let acknowledgement =
@@ -363,12 +492,7 @@ impl BrokerService {
                 sequence: acknowledgement.sequence,
             },
         )?;
-        let head = ReceiptHead {
-            sequence: acknowledgement.sequence,
-            digest: acknowledgement.receipt_digest.clone(),
-        };
-        send(channel, acknowledgement.canonical_bytes())?;
-        Ok(head)
+        Ok((acknowledgement, evidence))
     }
 
     /// Records one decision the broker already made about an authorization.
@@ -435,18 +559,24 @@ fn response(request_id: &str, result: ResponseResult) -> Vec<u8> {
 }
 
 /// Receives one authenticated packet, or fails the transaction.
-fn receive(channel: &SeqpacketChannel) -> Result<AuthenticatedPacket, BrokerError> {
+pub(super) fn receive(channel: &SeqpacketChannel) -> Result<AuthenticatedPacket, BrokerError> {
     let (sender, receiver) = mpsc::sync_channel(1);
     channel
         .receive(Box::new(move |received| {
             let _delivered = sender.send(received);
         }))
         .map_err(BrokerError::Transport)?;
-    settle(&receiver)
+    let packet: AuthenticatedPacket = settle(&receiver)?;
+    if packet.peer_credentials != channel.peer_credentials()
+        || packet.message_credentials != packet.peer_credentials
+    {
+        return Err(BrokerError::InvalidGrant);
+    }
+    Ok(packet)
 }
 
 /// Sends one exact packet, or fails the transaction.
-fn send(channel: &SeqpacketChannel, bytes: Vec<u8>) -> Result<(), BrokerError> {
+pub(super) fn send(channel: &SeqpacketChannel, bytes: Vec<u8>) -> Result<(), BrokerError> {
     let (sender, receiver) = mpsc::sync_channel(1);
     channel
         .send(

@@ -14,10 +14,10 @@ use thiserror::Error;
 use crate::{canonical::Digest, isolation::CONTRACT_VERSION, launch::MAX_BROKER_LOSS_GRACE_MS};
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/3";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/4";
 
 /// Schema for the payload plus its launcher signature.
-pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/3";
+pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/4";
 
 /// Largest canonical payload or signed envelope accepted at the trust boundary.
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
@@ -125,6 +125,23 @@ pub struct LaunchEvidence {
     pub capability_channel_ids: Vec<String>,
 }
 
+/// Supervisor-established authority after restricted initialization.
+///
+/// The broker uses these signed identifiers for attribution only. Kernel handles
+/// and per-packet identity/lifetime checks remain owned by the supervisor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartEvidence {
+    /// Actual Agent runtime PID in the supervisor's host namespace, not its reaper.
+    pub agent_pid: u32,
+    /// Kernel-confirmed installed Session UID.
+    pub assigned_uid: u32,
+    /// Kernel-confirmed installed Session GID.
+    pub assigned_gid: u32,
+    /// Digest of the exact integration evidence verified before channel enablement.
+    pub tool_isolation_digest: String,
+}
+
 /// Privileged lifecycle result recorded by one receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -140,6 +157,8 @@ pub enum ReceiptOutcome {
     Start {
         /// Closed supervisor-observed launch acknowledgement.
         authority: ReceiptAuthority,
+        /// Actual Agent identity and enforced tool-isolation proof.
+        evidence: StartEvidence,
     },
     /// The process tree was frozen.
     Park {
@@ -287,15 +306,30 @@ impl ReceiptPayload {
                     return Err(ReceiptError::LaunchRequestMismatch);
                 }
             }
-            ReceiptOutcome::Start { authority }
+            ReceiptOutcome::Start {
+                authority,
+                evidence,
+            } => {
                 if !matches!(
                     authority,
                     ReceiptAuthority::Cause {
                         cause: ReceiptCause::LaunchAcknowledged
                     }
-                ) =>
-            {
-                return Err(ReceiptError::ContradictoryCause);
+                ) {
+                    return Err(ReceiptError::ContradictoryCause);
+                }
+                if evidence.agent_pid == 0
+                    || evidence.assigned_uid == 0
+                    || evidence.assigned_gid == 0
+                {
+                    return Err(ReceiptError::Malformed(
+                        "invalid Agent authority identity".to_owned(),
+                    ));
+                }
+                validate_digest("tool_isolation_digest", &evidence.tool_isolation_digest)?;
+                if self.sequence == 0 {
+                    return Err(ReceiptError::GenesisNotLaunch);
+                }
             }
             ReceiptOutcome::Park { authority }
                 if !matches!(

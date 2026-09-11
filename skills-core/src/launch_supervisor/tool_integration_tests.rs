@@ -265,7 +265,16 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
             .unwrap();
         rx.recv_timeout(Duration::from_secs(5)).unwrap()
     };
-    assert_eq!(verify(&authentication), Ok(()));
+    assert_eq!(
+        verify(&authentication),
+        Ok(Digest::of(
+            &authentication
+                .tool_isolation
+                .as_ref()
+                .unwrap()
+                .canonical_bytes()
+        ))
+    );
     let mut missing = authentication.clone();
     missing.tool_isolation = None;
     assert_eq!(
@@ -289,6 +298,14 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
             invalid.as_object_mut().unwrap().remove("tool_integration");
         }
         write_registry(&registry_root.join("agents.json"), &vec![invalid]);
+        let (tx, rx) = mpsc::channel();
+        platform
+            .check_integration(&request, Box::new(move |result| tx.send(result).unwrap()))
+            .unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err(SupervisorError::ToolIsolationUnproven)
+        );
         assert_eq!(
             verify(&authentication),
             Err(SupervisorError::ToolIsolationUnproven)

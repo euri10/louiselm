@@ -234,6 +234,12 @@ impl Harness {
                 release_id: Digest::of(b"release").to_string(),
                 signing_key_id: Digest::of(b"key").to_string(),
                 outcome: ReceiptOutcome::Start {
+                    evidence: crate::launch_receipt::StartEvidence {
+                        agent_pid: binding.agent_pid,
+                        assigned_uid: binding.assigned_uid,
+                        assigned_gid: binding.assigned_gid,
+                        tool_isolation_digest: Digest::of(b"fixture-tool-isolation").to_string(),
+                    },
                     authority: ReceiptAuthority::Cause {
                         cause: ReceiptCause::LaunchAcknowledged,
                     },

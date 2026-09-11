@@ -130,7 +130,7 @@ impl ToolIsolationEvidence {
     }
 }
 
-fn validate_registration(agent: &AgentRegistration) -> Result<(), SupervisorError> {
+pub(super) fn validate_registration(agent: &AgentRegistration) -> Result<(), SupervisorError> {
     if agent.tool_integration.as_deref() != Some(CONTRACT)
         || !agent.arguments.is_empty()
         || !agent.environment.is_empty()

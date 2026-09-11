@@ -15,12 +15,21 @@ use louiselm_skills::{
         Authorization, ChainAnchor, Completion, LaunchEvidence, ProcessExitClassification,
         RECEIPT_SCHEMA, ReceiptAppender, ReceiptAuthority, ReceiptCause, ReceiptError,
         ReceiptOutcome, ReceiptPayload, ReceiptSigner, SIGNED_RECEIPT_SCHEMA, SessionState,
-        SignedReceipt,
+        SignedReceipt, StartEvidence,
     },
 };
 
 fn digest(label: &str) -> String {
     Digest::of(label.as_bytes()).to_string()
+}
+
+fn start_evidence() -> StartEvidence {
+    StartEvidence {
+        agent_pid: 123,
+        assigned_uid: 2_000_000,
+        assigned_gid: 3_000_000,
+        tool_isolation_digest: digest("fixture-tool-isolation"),
+    }
 }
 
 fn authorization(request_id: &str) -> Authorization {
@@ -85,6 +94,19 @@ fn signed(payload: ReceiptPayload) -> SignedReceipt {
     }
 }
 
+#[test]
+fn start_receipt_requires_agent_authority_evidence() {
+    let mut document = serde_json::to_value(&chain()[1].payload).unwrap();
+    document["outcome"]
+        .as_object_mut()
+        .unwrap()
+        .remove("evidence");
+    assert!(
+        serde_json::from_value::<ReceiptPayload>(document).is_err(),
+        "Running must carry the supervisor's actual Agent and isolation proof"
+    );
+}
+
 fn chain() -> Vec<SignedReceipt> {
     let launch = signed(payload(
         0,
@@ -103,6 +125,7 @@ fn chain() -> Vec<SignedReceipt> {
         3,
         "request-start",
         ReceiptOutcome::Start {
+            evidence: start_evidence(),
             authority: ReceiptAuthority::Cause {
                 cause: ReceiptCause::LaunchAcknowledged,
             },
@@ -183,7 +206,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/3\",",
+                "{{\"schema\":\"louiselm.launch.receipt/4\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -216,7 +239,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
     assert_eq!(
         String::from_utf8(envelope_bytes.clone()).unwrap(),
         format!(
-            "{{\"schema\":\"louiselm.launch.signed-receipt/3\",\"payload\":{},\"signature\":\"{}\"}}",
+            "{{\"schema\":\"louiselm.launch.signed-receipt/4\",\"payload\":{},\"signature\":\"{}\"}}",
             String::from_utf8(payload_bytes.clone()).unwrap(),
             receipt.signature,
         ),
@@ -235,18 +258,21 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(start.payload.canonical_bytes()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/3\",",
+                "{{\"schema\":\"louiselm.launch.receipt/4\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-start\",\"envelope_revision\":3,",
                 "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
                 "\"release_id\":\"{}\",\"signing_key_id\":\"{}\",",
                 "\"outcome\":{{\"action\":\"start\",\"authority\":{{",
-                "\"kind\":\"cause\",\"cause\":\"launch_acknowledged\"}}}},",
+                "\"kind\":\"cause\",\"cause\":\"launch_acknowledged\"}},",
+                "\"evidence\":{{\"agent_pid\":123,\"assigned_uid\":2000000,\"assigned_gid\":3000000,",
+                "\"tool_isolation_digest\":\"{}\"}}}},",
                 "\"resulting_state\":\"running\"}}"
             ),
             chain()[0].digest(),
             digest("release"),
             digest("launcher-key"),
+            digest("fixture-tool-isolation"),
         ),
     );
 
@@ -290,7 +316,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
 
 #[test]
 fn launch_evidence_binds_the_exact_broker_loss_grace() {
-    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/3");
+    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/4");
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
 
     let maximum = chain().remove(0).payload;
@@ -360,7 +386,13 @@ fn relay_failure_is_a_closed_terminal_cause_only() {
             },
             SessionState::Parked,
         ),
-        (ReceiptOutcome::Start { authority }, SessionState::Running),
+        (
+            ReceiptOutcome::Start {
+                authority,
+                evidence: start_evidence(),
+            },
+            SessionState::Running,
+        ),
     ] {
         payload.outcome = outcome;
         payload.resulting_state = state;
@@ -555,6 +587,7 @@ fn payload_validation_rejects_each_contradictory_shape() {
 
     let mut authorized_start = chain().remove(1).payload;
     authorized_start.outcome = ReceiptOutcome::Start {
+        evidence: start_evidence(),
         authority: ReceiptAuthority::Authorized(authorization("request-start")),
     };
     assert_eq!(
@@ -564,6 +597,7 @@ fn payload_validation_rejects_each_contradictory_shape() {
 
     let mut wrongly_caused_start = chain().remove(1).payload;
     wrongly_caused_start.outcome = ReceiptOutcome::Start {
+        evidence: start_evidence(),
         authority: ReceiptAuthority::Cause {
             cause: ReceiptCause::BrokerLost,
         },
@@ -772,6 +806,7 @@ fn verification_rejects_mutation_order_gaps_duplicates_foreign_prefixes_and_spli
 fn verification_enforces_state_and_envelope_transitions() {
     let mut receipts = chain();
     receipts[2].payload.outcome = ReceiptOutcome::Start {
+        evidence: start_evidence(),
         authority: ReceiptAuthority::Cause {
             cause: ReceiptCause::LaunchAcknowledged,
         },

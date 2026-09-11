@@ -32,10 +32,12 @@ use crate::{
     sshsig,
 };
 
+mod broker;
 mod foreground;
 #[cfg(all(test, target_os = "linux"))]
 mod foreground_tests;
 mod identity;
+pub use broker::{LauncherVerifier, public_runtime_config};
 
 pub(crate) fn run_signing_command(
     invocation: &CommandInvocation,
@@ -131,6 +133,10 @@ impl LauncherPaths {
 
     fn config(&self) -> PathBuf {
         self.state_root.join("config.json")
+    }
+
+    fn public_config(&self) -> PathBuf {
+        self.state_root.join("public-config.json")
     }
 
     fn keyring(&self) -> PathBuf {
@@ -945,6 +951,7 @@ pub fn install(
     }
 
     identity::ensure_slot_files(paths, request.pool.slots)?;
+    write_json_atomic(&paths.public_config(), &config, 0o444)?;
     let sudoers = render_sudoers(&config)?;
     write_atomic(&paths.sudoers, sudoers.as_bytes(), 0o440)?;
 
@@ -1714,6 +1721,7 @@ fn require_system_existing_state_files(paths: &LauncherPaths) -> Result<(), Laun
     }
     for (path, mode, label) in [
         (paths.config(), 0o600, "launcher config"),
+        (paths.public_config(), 0o444, "public launcher config"),
         (paths.keyring(), 0o444, "launcher keyring"),
         (paths.pending_rotation(), 0o600, "pending launcher rotation"),
     ] {

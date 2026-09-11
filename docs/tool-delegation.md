@@ -3,9 +3,9 @@
 `louiselm-qbr.5.1.1.5.2` implements the Agent-command path described by
 `louiselm-cross-process-tool-commit-z288`: broker-owned approval and budget,
 supervisor-owned process identity and actual execution. `.5.3` extends that
-path to one explicitly granted, measured isolated helper. Installed integration
-and user-visible Verified cutover remain `.5.4`. This component does not enable
-an installed vendor Agent.
+path to one explicitly granted, measured isolated helper. `.5.4` composes the
+installed broker and supervisor with those measured fixtures. User-visible
+Verified cutover and installed vendor integration remain `louiselm-d6fv.9`.
 
 ## Cross-process Agent commands
 
@@ -16,14 +16,20 @@ The Session owner forwards the original request and supervisor-authored
 The broker never receives a kernel handle and never constructs one from a PID.
 An ungranted child, passed descriptor, or first connector cannot become the Agent.
 
-The broker worker attaches an existing approved `DelegationPolicy` to its
-`BrokerSession` with `enable_commands`. Its trusted binding must match the
-consumed launch's Session, Run, revision and assigned identity. `serve_command`
-handles the bounded command conversation on that original connection; it must
-not run beside another reader of the same channel. No new human prompt or
-Agent permission setting is introduced. Unconfigured command policy denies
-commands. The installed broker's overall lifecycle composition is not supplied
-by this component.
+The broker persists `ApprovedCommands` with the original single-use launch
+authorization: exact command digest, timeout, aggregate budget, explicit
+delegation permission and absolute expiry. The signed Start receipt binds the
+supervisor-proven Agent PID, assigned UID/GID and tool-isolation evidence digest.
+Only these records construct the command authority, before the sequence-1 ACK.
+There is no post-launch API to replace the identity or policy. Absent approval
+denies command requests without ending the Session.
+
+`InstalledBroker` checks its dedicated installed UID/GID, private state and
+rendezvous directories, and root-owned public authority. It verifies signatures
+with the measured OpenSSH executable. `step` handles commands and exact signed
+outcomes on the original connection; it must not run beside another reader of
+that channel. This adds no human prompt or Agent permission setting. Later
+recovery, reconnect and controller-loss settlement remain `louiselm-qbr.5.1.2`.
 
 `CommandAuthority` validates exact command digest, timeout, principal, revision,
 expiry, request sequence and remaining budget. It spends one use and persists

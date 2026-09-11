@@ -197,7 +197,7 @@ impl ReceiptStore {
 
     /// Parses the stored chain, which the broker wrote and therefore trusts to
     /// be canonical; corrupted bytes are a storage failure, not a refusal.
-    fn chain(&self, session_id: &str) -> Result<Vec<SignedReceipt>, BrokerError> {
+    pub(super) fn chain(&self, session_id: &str) -> Result<Vec<SignedReceipt>, BrokerError> {
         let mut chain = Vec::new();
         for bytes in self.stored_bytes(session_id)? {
             let receipt = SignedReceipt::parse_canonical(&bytes)
@@ -268,6 +268,12 @@ fn check_authorized(
             || claimed.request_digest != authorization.request_digest
             || evidence.launch_request_digest != authorization.request_digest
             || evidence.broker_loss_grace_ms != authorization.broker_loss_grace_ms)
+    {
+        return Err(BrokerError::ReceiptUnauthorized);
+    }
+    if let ReceiptOutcome::Start { evidence, .. } = &payload.outcome
+        && (evidence.assigned_uid != authorization.assigned_uid
+            || evidence.assigned_gid != authorization.assigned_gid)
     {
         return Err(BrokerError::ReceiptUnauthorized);
     }

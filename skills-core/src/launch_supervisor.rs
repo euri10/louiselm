@@ -536,6 +536,17 @@ pub trait RunningAgent: Send {
 
 /// OS operations whose concrete implementation holds root authority.
 pub trait LaunchPlatform: Send + Sync {
+    /// Rejects known unsupported registrations before privileged resource acquisition.
+    /// This prerequisite is rechecked against the actual runtime after restricted start.
+    ///
+    /// # Errors
+    /// Returns `ToolIsolationUnproven` for missing or unsupported integration.
+    fn check_integration(
+        &self,
+        request: &LaunchRequest,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Verifies enforced separation between this Agent and its tools before
     /// brokered effects are enabled. Missing integration must fail closed.
     ///
@@ -545,7 +556,7 @@ pub trait LaunchPlatform: Send + Sync {
         &self,
         request: &LaunchRequest,
         agent: &AgentAuthentication,
-        complete: SupervisorCompletion<()>,
+        complete: SupervisorCompletion<Digest>,
     ) -> Result<(), SupervisorError>;
 
     /// Validates and exclusively leases the broker-assigned installed identity.
@@ -795,6 +806,16 @@ fn run_launch(
     request
         .validate()
         .map_err(|_| SupervisorError::LaunchDocumentRejected)?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    inner.platform.check_integration(
+        request,
+        Box::new(move |result| {
+            let _ = sender.try_send(result);
+        }),
+    )?;
+    receiver
+        .recv_timeout(inner.timeout)
+        .map_err(|_| SupervisorError::ToolIsolationUnproven)??;
     let authorization = await_broker(inner, |complete| {
         inner
             .broker
@@ -982,9 +1003,10 @@ fn run_launch(
                 .recv_timeout(inner.timeout)
                 .map_err(|_| SupervisorError::ToolIsolationUnproven)?
         });
-    if let Err(error) = isolated {
-        return Err(cleanup_running(running, capability, identity, error));
-    }
+    let tool_isolation_digest = match isolated {
+        Ok(digest) => digest.to_string(),
+        Err(error) => return Err(cleanup_running(running, capability, identity, error)),
+    };
     let binding = CapabilityBinding {
         session_id: request.session_id.clone(),
         run_id: request.run_id.clone(),
@@ -1017,6 +1039,12 @@ fn run_launch(
         outcome: ReceiptOutcome::Start {
             authority: ReceiptAuthority::Cause {
                 cause: ReceiptCause::LaunchAcknowledged,
+            },
+            evidence: crate::launch_receipt::StartEvidence {
+                agent_pid: binding.agent_pid,
+                assigned_uid: assigned.uid,
+                assigned_gid: assigned.gid,
+                tool_isolation_digest,
             },
         },
         resulting_state: SessionState::Running,

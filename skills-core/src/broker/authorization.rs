@@ -9,11 +9,13 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Digest,
     broker::{
         BrokerError, CONSUMED_DIRECTORY, PENDING_DIRECTORY, lock, read_record, record_name,
         sync_directory, write_new_record,
@@ -27,6 +29,54 @@ use crate::{
     launcher_install::{Identity, IdentityPool},
 };
 
+/// Exact operator-approved command scope persisted before launch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovedCommands {
+    /// Canonical digest of the exact shell input, never the input itself.
+    pub command_digest: String,
+    /// Maximum execution duration, bounded by the command protocol.
+    pub timeout_ms: u32,
+    /// Non-refundable aggregate invocation budget.
+    pub uses: u32,
+    /// Whether the existing operator approval explicitly permits delegation.
+    pub allow_delegation: bool,
+    /// Exclusive absolute expiry; reconstruction never renews this authority.
+    pub expires_at_ms: u64,
+}
+
+impl ApprovedCommands {
+    pub(super) fn policy(
+        &self,
+        authorization_id: &str,
+        now_ms: u64,
+    ) -> Result<super::delegation::DelegationPolicy, BrokerError> {
+        let digest = Digest::parse(&self.command_digest).map_err(|_| BrokerError::InvalidGrant)?;
+        let scope = super::delegation::CommandScope {
+            command_digest: digest.clone(),
+            timeout_ms: self.timeout_ms,
+            uses: self.uses,
+        };
+        if digest.to_string() != self.command_digest || !scope.valid() {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let remaining = self
+            .expires_at_ms
+            .checked_sub(now_ms)
+            .filter(|ms| *ms > 0)
+            .ok_or(BrokerError::Expired)?;
+        let expires_at = Instant::now()
+            .checked_add(Duration::from_millis(remaining))
+            .ok_or(BrokerError::InvalidGrant)?;
+        Ok(super::delegation::DelegationPolicy {
+            authorization_id: authorization_id.to_owned(),
+            scope,
+            allow_delegation: self.allow_delegation,
+            expires_at,
+        })
+    }
+}
+
 /// A launch the operator's controller has authorized but not yet started.
 #[derive(Clone, Debug)]
 pub struct GrantRequest {
@@ -38,6 +88,8 @@ pub struct GrantRequest {
     pub expires_at_ms: u64,
     /// Signed fail-closed interval allowed for authenticated broker reattachment.
     pub broker_loss_grace_ms: u32,
+    /// Explicit approved effects; absence grants no command authority.
+    pub commands: Option<ApprovedCommands>,
 }
 
 /// One durable single-use authorization awaiting its supervisor.
@@ -64,6 +116,8 @@ pub struct PendingAuthorization {
     pub expires_at_ms: u64,
     /// Fail-closed interval allowed for authenticated broker reattachment.
     pub broker_loss_grace_ms: u32,
+    /// Exact effect approval bound to this single-use launch.
+    pub commands: Option<ApprovedCommands>,
 }
 
 /// Durable evidence that one authorization was spent.
@@ -132,6 +186,9 @@ impl AuthorizationStore {
         if grant.expires_at_ms <= now_ms || grant.controller_uid == 0 {
             return Err(BrokerError::InvalidGrant);
         }
+        if let Some(commands) = &grant.commands {
+            commands.policy(&grant.request.authorization_id, now_ms)?;
+        }
         let record_name = record_name(&grant.request.authorization_id)?;
 
         let assignment = lock(&self.assignment);
@@ -150,6 +207,7 @@ impl AuthorizationStore {
             identity,
             expires_at_ms: grant.expires_at_ms,
             broker_loss_grace_ms: grant.broker_loss_grace_ms,
+            commands: grant.commands.clone(),
         };
         write_new_record(&self.pending_path(&record_name), &pending)?;
         drop(assignment);
