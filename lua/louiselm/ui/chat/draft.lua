@@ -12,6 +12,7 @@
 ---@field prompt_text fun(self: louiselm.ui.ChatDraft, text: unknown, reconciled?: boolean): string?, string?
 ---@field reconcile_skills fun(self: louiselm.ui.ChatDraft, text: string): string
 ---@field context_content fun(self: louiselm.ui.ChatDraft, embedded_context?: boolean): table[], louiselm.ui.ContextItem[]
+---@field with_context fun(self: louiselm.ui.ChatDraft, content: string|table[], embedded_context?: boolean): string|table[], louiselm.ui.ContextItem[]
 ---@field content fun(self: louiselm.ui.ChatDraft, text: string, command_name?: string, embedded_context?: boolean): string|table[], louiselm.ui.ContextItem[]
 ---@field clear_context fun(self: louiselm.ui.ChatDraft)
 ---@field queue fun(self: louiselm.ui.ChatDraft, text?: string)
@@ -210,6 +211,29 @@ function Draft:context_content(embedded_context)
   return content, contexts
 end
 
+---Prepend resolved staged context to text or typed blocks without consuming it.
+---@param self louiselm.ui.ChatDraft
+---@param body string|table[] Caller-owned prompt content; not mutated.
+---@param embedded_context? boolean Current Session capability.
+---@return string|table[] content
+---@return louiselm.ui.ContextItem[] contexts Exact contexts in transport order.
+function Draft:with_context(body, embedded_context)
+  local content, contexts = self:context_content(embedded_context)
+  if #content == 0 then
+    return body, contexts
+  end
+  if type(body) == "string" then
+    if body ~= "" then
+      content[#content + 1] = { type = "text", text = body }
+    end
+  else
+    for _, block in ipairs(body) do
+      content[#content + 1] = block
+    end
+  end
+  return content, contexts
+end
+
 ---Assemble a prompt from resolved inputs without consuming staged content.
 ---The caller reads missing skill bodies and resolves the native command against
 ---the current Session immediately before calling this pure transformation.
@@ -227,14 +251,7 @@ function Draft:content(text, command_name, embedded_context)
   if command_name ~= nil then
     final_text = text == "" and ("/" .. command_name) or ("/" .. command_name .. " " .. text)
   end
-  local content, contexts = self:context_content(embedded_context)
-  if #content == 0 then
-    return final_text, contexts
-  end
-  if final_text ~= "" then
-    content[#content + 1] = { type = "text", text = final_text }
-  end
-  return content, contexts
+  return self:with_context(final_text, embedded_context)
 end
 
 ---Consume staged contexts only after an ordinary prompt or Handoff is accepted.

@@ -6,15 +6,12 @@ local Limits = require("louiselm.ui.limits")
 local Status = require("louiselm.ui.chat.status")
 local ChatBuffer = require("louiselm.ui.chat.buffer")
 local Draft = require("louiselm.ui.chat.draft")
+local Handoffs = require("louiselm.ui.chat.handoff")
+local Recovery = require("louiselm.workflow.recovery")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
 local Usage = require("louiselm.routing.usage")
-local Workflow = require("louiselm.workflow")
-local ParkObserver = require("louiselm.workflow.park_observer")
-local ResumeController = require("louiselm.workflow.resume_controller")
-local RunClient = require("louiselm.workflow.run_client")
-local WorkflowService = require("louiselm.workflow.service")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -49,11 +46,6 @@ local nvim = vim
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
 
----@class louiselm.ui.ChatEventRelay
----@field events louiselm.session.Event[]? Events waiting for a cold-resumed view.
----@field chat louiselm.ui.Chat? Bound chat after Run finalization.
----@field view louiselm.ui.ChatView? Bound view after Run finalization.
-
 ---@class louiselm.ui.Chat
 ---@field api louiselm.session.Api Session API used to create sessions.
 ---@field agents string[] Agent names for the picker.
@@ -81,17 +73,8 @@ local nvim = vim
 ---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget>> Click targets by window and minwid.
 ---@field winbar_resize_autocmd? integer Resize observer removed on disposal.
 ---@field current_id string? Currently displayed session id.
----@field handoffs table<integer, louiselm.ui.Handoff>
----@field resume_client? louiselm.workflow.RunClient Client for durable Run mutations.
----@field resume_controller? louiselm.workflow.ResumeController Operator resume orchestration.
----@field park_observer? louiselm.workflow.ParkObserver Reconciles durable Park snapshots into live Runs.
----@field resume_initializing boolean Whether the durable Run client is connecting.
----@field resume_waiters fun(controller: louiselm.workflow.ResumeController?, error_message?: string)[] Callbacks waiting for the durable Run client.
----@field resume_revisions table<string, integer> Revisions from the authoritative Run socket snapshot.
----@field resume_summaries table<string, louiselm.workflow.ParkSummary> Selected durable Run metadata.
----@field pending_resume_runs table<string, louiselm.workflow.Run> Locally reconstructed cold Runs awaiting finalization.
----@field pending_resume_sessions table<string, louiselm.session.Session> Loaded Sessions awaiting finalization.
----@field pending_resume_relays table<string, louiselm.ui.ChatEventRelay> Session event relays awaiting finalization.
+---@field handoffs louiselm.ui.Handoffs Review buffers and takeover validation.
+---@field recovery louiselm.workflow.Recovery Park admission and pending resume resources.
 ---@field disposed boolean Whether the chat UI has been disposed.
 ---@field attach fun(self: louiselm.ui.Chat, session: louiselm.session.Session): boolean, string? Attach or focus a session.
 ---@field buffer fun(self: louiselm.ui.Chat, session_id?: string): integer? Return a session buffer.
@@ -131,82 +114,6 @@ local nvim = vim
 local M = {}
 local Chat = {}
 Chat.__index = Chat
-
-local PARK_GENERATED_WORK_MAX = 1
-local PARK_TTL_MS = 24 * 60 * 60 * 1000
-
----@return string run_id
-local function park_run_id()
-  local seed = table.concat({ tostring(nvim.uv.hrtime()), tostring(nvim.fn.getpid()), nvim.fn.tempname() }, ":")
-  local hex = nvim.fn.sha256(seed)
-  local variant = string.format("%x", 8 + (tonumber(hex:sub(17, 17), 16) % 4))
-  return table.concat({
-    hex:sub(1, 8),
-    hex:sub(9, 12),
-    "4" .. hex:sub(14, 16),
-    variant .. hex:sub(18, 20),
-    hex:sub(21, 32),
-  }, "-")
-end
-
-local function capture_state_root()
-  local root = nvim.env.LOUISELM_CAPTURE_STATE_DIR
-  if root == nil or root == "" then
-    root = nvim.env.XDG_STATE_HOME
-  end
-  if root == nil or root == "" then
-    root = nvim.fs.joinpath(nvim.fn.expand("~"), ".local", "state")
-  end
-  return root
-end
-
-local function resume_paths()
-  local root = capture_state_root()
-  local workflow = nvim.fs.joinpath(root, "louiselm", "workflow")
-  return nvim.fs.joinpath(workflow, "run.sock"), nvim.fs.joinpath(workflow, "operator-capability")
-end
-
----@param session_id string Agent-scoped Session identity.
----@param cwd string Beads workspace directory.
----@param callback fun(claims: string[], error_message?: string)
----@return boolean started
----@return string? error_message
-local function live_claims(session_id, cwd, callback)
-  local started = pcall(nvim.system, { "br", "list", "--assignee", session_id, "--status", "in_progress", "--json" }, {
-    text = true,
-    cwd = cwd,
-  }, function(result)
-    nvim.schedule(function()
-      if result.code ~= 0 then
-        callback({}, result.stderr ~= "" and result.stderr or "could not query live Beads claims")
-        return
-      end
-      local decoded_ok, decoded = pcall(nvim.json.decode, result.stdout)
-      if not decoded_ok or type(decoded) ~= "table" or type(decoded.issues) ~= "table" then
-        callback({}, "br returned malformed claim data")
-        return
-      end
-      local claims = {}
-      for _, issue in ipairs(decoded.issues) do
-        if type(issue) ~= "table" or type(issue.id) ~= "string" or issue.id == "" then
-          callback({}, "br returned malformed claim data")
-          return
-        end
-        claims[#claims + 1] = issue.id
-      end
-      callback(claims)
-    end)
-  end)
-  if not started then
-    return false, "could not start Beads claim query"
-  end
-  return true
-end
-
----@class louiselm.ui.Handoff
----@field target_session louiselm.session.Session
----@field target_session_id string
----@field source_session_id? string Durable source Session identity.
 
 ---@class louiselm.ui.LimitsTimer
 ---@field is_closing fun(self: louiselm.ui.LimitsTimer): boolean
@@ -338,15 +245,6 @@ local DEFAULT_HIGHLIGHTS = {
 local function setup_highlights()
   for name, link in pairs(DEFAULT_HIGHLIGHTS) do
     nvim.api.nvim_set_hl(0, name, { default = true, link = link })
-  end
-end
-
----@param self louiselm.ui.Chat
----@param buffer integer
-local function close_handoff(self, buffer)
-  self.handoffs[buffer] = nil
-  if nvim.api.nvim_buf_is_valid(buffer) then
-    nvim.api.nvim_buf_delete(buffer, { force = true })
   end
 end
 
@@ -1257,14 +1155,21 @@ local function observe_view_event(self, view, event)
   end)
 end
 
----@param relay? louiselm.ui.ChatEventRelay
-local function deactivate_event_relay(relay)
-  if relay == nil then
-    return
-  end
-  relay.events = nil
-  relay.chat = nil
-  relay.view = nil
+---@param self louiselm.ui.Chat
+---@param presentation louiselm.workflow.ParkPresentation
+local function present_park(self, presentation)
+  self.attention:run_parked(presentation.id)
+  nvim.notify(
+    string.format(
+      "louiselm: budget Park: generated work %d/%d, reserved %d, pending %d, mutation %s",
+      presentation.consumed,
+      presentation.ceiling,
+      presentation.reserved,
+      #presentation.pending_mutation_ids,
+      presentation.triggering_mutation_id or "none"
+    ),
+    nvim.log.levels.WARN
+  )
 end
 
 ---@param rule louiselm.permission.Rule
@@ -1414,20 +1319,61 @@ function M.new(api, options)
     limits_unsubscribe = function() end,
     winbars = {},
     winbar_targets = {},
-    handoffs = {},
-    resume_client = nil,
-    resume_controller = nil,
-    park_observer = nil,
-    resume_initializing = false,
-    resume_waiters = {},
-    resume_revisions = {},
-    resume_summaries = {},
-    pending_resume_runs = {},
-    pending_resume_sessions = {},
-    pending_resume_relays = {},
     current_id = nil,
     disposed = false,
   }, Chat)
+  chat.handoffs = Handoffs.new({
+    submit = function(handoff, text, content)
+      local target_view = chat.views[handoff.target_session_id]
+      local contexts = {}
+      if target_view ~= nil then
+        local context_error = read_context_skills(target_view.draft)
+        if context_error ~= nil then
+          return false, context_error
+        end
+        content, contexts = target_view.draft:with_context(content, target_view.session:inspect().embedded_context)
+      end
+      local request_id, prompt_error = handoff.target_session:prompt(content)
+      if request_id == nil then
+        return false, prompt_error or "handoff prompt could not be sent"
+      end
+      if target_view ~= nil then
+        if handoff.source_session_id ~= nil then
+          record_handoff_prompt(target_view, text, handoff.source_session_id, contexts)
+        end
+        target_view.draft:clear_context()
+      end
+      return true
+    end,
+    focus = function(id)
+      if chat.views[id] ~= nil then
+        chat:switch(id)
+      end
+    end,
+  })
+  chat.recovery = Recovery.new({
+    load_session = function(agent, acp_session_id, load_options, callback)
+      return api:load_session(agent, acp_session_id, load_options, callback)
+    end,
+    find_run = function(id)
+      for _, view in pairs(chat.views) do
+        local run = view.session.owner_run
+        if run ~= nil and run.id == id then
+          return run
+        end
+      end
+    end,
+    is_live = function(session)
+      local view = chat.views[session:inspect().id]
+      return not chat.disposed and view ~= nil and view.session == session
+    end,
+    on_park = function(presentation)
+      present_park(chat, presentation)
+    end,
+    on_error = function(message)
+      nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
+    end,
+  })
   chat.decisions = Decisions.new({
     is_live = function(session)
       local view = chat.views[session:inspect().id]
@@ -1484,7 +1430,7 @@ end
 ---cold-resume event relay.
 ---@param self louiselm.ui.Chat
 ---@param session louiselm.session.Session Session to display.
----@param event_relay? louiselm.ui.ChatEventRelay Events captured before Run finalization.
+---@param event_relay? louiselm.workflow.EventRelay Events captured before Run finalization.
 ---@return boolean attached
 ---@return string? error_message Validation or buffer creation error.
 local function attach_session(self, session, event_relay)
@@ -1555,9 +1501,7 @@ local function attach_session(self, session, event_relay)
     end)
   else
     view.unsubscribe = function()
-      if event_relay.view == view then
-        deactivate_event_relay(event_relay)
-      end
+      Recovery.discard_relay(event_relay)
     end
   end
   self.views[state.id] = view
@@ -1565,8 +1509,9 @@ local function attach_session(self, session, event_relay)
   if event_relay ~= nil then
     local events = event_relay.events or {}
     event_relay.events = nil
-    event_relay.chat = self
-    event_relay.view = view
+    event_relay.deliver = function(event)
+      observe_view_event(self, view, event)
+    end
     for _, event in ipairs(events) do
       observe_view_event(self, view, event)
     end
@@ -1634,236 +1579,40 @@ function Chat:buffer(session_id)
   return view and view.renderer.buffer or nil
 end
 
----Placeholder marking an unfilled takeover task in a Handoff review buffer;
----`submit_handoff` refuses to send while this exact text is still present.
-local HANDOFF_TASK_PLACEHOLDER = "<replace with the concrete action the target must take>"
-
----Read the filled takeover task from a Handoff review buffer's contents, or nil
----when the line is missing, blank, or still holds the template placeholder.
----@param text string
----@return string? task
-local function takeover_task(text)
-  for line in text:gmatch("[^\n]+") do
-    local value = line:match("^%s*%-%s*takeover task:%s*(.-)%s*$")
-    if value ~= nil then
-      if value == "" or value:find(HANDOFF_TASK_PLACEHOLDER, 1, true) ~= nil then
-        return nil
-      end
-      return value
-    end
-  end
-  return nil
-end
-
----Open a Handoff review buffer for another session: an editable three-section
----brief — a `## Handoff` takeover-task template first, the compacted source
----transcript as `## Context`, and `## Source` metadata — that `submit_handoff`
----validates and sends.
+---Open an editable takeover brief from an attached source Session.
 ---@param self louiselm.ui.Chat
----@param target_session louiselm.session.Session Session that will receive the reviewed prompt.
----@param source_session_id? string Attached source session; defaults to the current session.
+---@param target_session louiselm.session.Session
+---@param source_session_id? string Defaults to the currently displayed Session.
 ---@return integer? buffer
----@return string? error_message Validation or session state error.
+---@return string? error_message Validation or Session state error.
 function Chat:open_handoff(target_session, source_session_id)
   if self.disposed then
     return nil, "chat UI is disposed"
-  end
-  if
-    type(target_session) ~= "table"
-    or type(target_session.inspect) ~= "function"
-    or type(target_session.prompt) ~= "function"
-  then
-    return nil, "handoff requires a target session"
   end
   local source_id = source_session_id or self.current_id
   local source_view = source_id and self.views[source_id]
   if source_view == nil then
     return nil, "no source chat session is attached"
   end
-  local source_state = source_view.session:inspect()
-  local target_state = target_session:inspect()
-  if type(target_state) ~= "table" or type(target_state.id) ~= "string" then
-    return nil, "target session has invalid state"
-  end
-  if target_state.id == source_id then
-    return nil, "handoff target must differ from source session"
-  end
-
-  local buffer = nvim.api.nvim_create_buf(false, true)
-  nvim.api.nvim_buf_set_name(buffer, "louiselm://handoff-" .. source_id .. "-" .. target_state.id)
-  nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
-  nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buffer })
-  nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
-  nvim.api.nvim_set_option_value("filetype", "markdown", { buf = buffer })
-  local entries = source_view.transcript:snapshot()
-  local user_turns = 0
-  for _, entry in ipairs(entries) do
-    if entry.kind == "user" then
-      user_turns = user_turns + 1
-    end
-  end
-  local context = Transcript.render_compact(entries, source_view.session:inspect())
-  local source_ref = source_state.acp_session_id ~= nil and report_id(source_state.agent, source_state.acp_session_id)
-    or source_state.agent
-  local brief = table.concat({
-    "## Handoff",
-    "",
-    "- source: `" .. source_ref .. "`",
-    "- takeover task: " .. HANDOFF_TASK_PLACEHOLDER,
-    "- constraints: (none)",
-    "",
-    "## Context",
-    "",
-    context,
-    "## Source",
-    "",
-    "- agent: " .. source_state.agent,
-    "- acp session: " .. (source_state.acp_session_id or "none"),
-    "- user turns: " .. tostring(user_turns),
-    "",
-  }, "\n")
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, nvim.split(brief, "\n", { plain = true }))
-  self.handoffs[buffer] = {
-    target_session = target_session,
-    target_session_id = target_state.id,
-    source_session_id = source_state.acp_session_id and report_id(source_state.agent, source_state.acp_session_id)
-      or nil,
-    source_id = source_id,
-  }
-  nvim.api.nvim_set_current_buf(buffer)
-  nvim.keymap.set("n", "<C-s>", function()
-    self:submit_handoff(buffer)
-  end, { buffer = buffer, silent = true, desc = "Submit louiselm handoff" })
-  nvim.keymap.set("n", "q", function()
-    self:abandon_handoff(buffer)
-  end, { buffer = buffer, silent = true, desc = "Abandon louiselm handoff" })
-  nvim.keymap.set("n", "<Esc>", function()
-    self:abandon_handoff(buffer)
-  end, { buffer = buffer, silent = true, desc = "Abandon louiselm handoff" })
-  return buffer
+  return self.handoffs:open(target_session, source_view.session:inspect(), source_view.transcript:snapshot())
 end
 
----Split a reviewed Handoff brief at its `## Context` header, or nil when the
----header is absent (the operator edited it out). The Handoff section — the
----takeover instruction — travels as the prompt's text block; everything from
----`## Context` on, including `## Source`, travels as the resource block.
----@param text string
----@return string? handoff_section
----@return string? context_section
-local function split_handoff_brief(text)
-  local marker = text:find("\n## Context", 1, true)
-  if marker == nil then
-    return nil, nil
-  end
-  return text:sub(1, marker - 1), text:sub(marker + 1)
-end
-
----Build the prompt content for a reviewed Handoff brief. Any context staged
----for the target's first prompt travels with the Handoff and is consumed.
----Targets advertising `embeddedContext` receive the Handoff instruction as a
----text block and the compacted context as a typed resource block; everyone
----else receives the whole brief as one flattened text prompt when no staged
----context is present. A brief whose `## Context` header was edited out
----degrades to the flattened form rather than failing the Handoff.
----@param handoff table Review-buffer record from `open_handoff`.
----@param text string Reviewed brief text.
----@param target_view louiselm.ui.ChatView? Handoff target's attached view.
----@return string|table? content
----@return louiselm.ui.ContextItem[] contexts
----@return string? error_message
-local function handoff_content(handoff, text, target_view)
-  ---@type string|table
-  local content = text
-  if handoff.target_session:inspect().embedded_context == true then
-    local handoff_section, context_section = split_handoff_brief(text)
-    if handoff_section ~= nil then
-      local source_ref = handoff.source_session_id or handoff.source_id
-      content = {
-        { type = "text", text = handoff_section },
-        {
-          type = "resource",
-          resource = {
-            uri = "louiselm://handoff/" .. source_ref,
-            mimeType = "text/markdown",
-            text = context_section,
-          },
-        },
-      }
-    end
-  end
-  if target_view == nil then
-    return content, {}, nil
-  end
-  local context_error = read_context_skills(target_view.draft)
-  if context_error ~= nil then
-    return nil, {}, context_error
-  end
-  local context_blocks, contexts = target_view.draft:context_content(target_view.session:inspect().embedded_context)
-  if #context_blocks == 0 then
-    return content, {}, nil
-  end
-  if type(content) == "string" then
-    context_blocks[#context_blocks + 1] = { type = "text", text = content }
-  else
-    nvim.list_extend(context_blocks, content)
-  end
-  return context_blocks, contexts, nil
-end
-
----Submit the current contents of a handoff review buffer.
+---Submit the current contents of a Handoff review buffer.
 ---@param self louiselm.ui.Chat
----@param buffer integer Handoff buffer returned by `open_handoff`.
+---@param buffer integer
 ---@return boolean sent
----@return string? error_message Validation or target-session error.
+---@return string? error_message Validation or target Session error.
 function Chat:submit_handoff(buffer)
-  local handoff = self.handoffs[buffer]
-  if handoff == nil or not nvim.api.nvim_buf_is_valid(buffer) then
-    return false, "handoff buffer is not open"
-  end
-  local text = table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
-  if text:match("%S") == nil then
-    return false, "handoff prompt must be a non-empty string"
-  end
-  if takeover_task(text) == nil then
-    return false, "handoff takeover task must be filled in before submitting"
-  end
-  local target_view = self.views[handoff.target_session_id]
-  local content, contexts, content_error = handoff_content(handoff, text, target_view)
-  if content == nil then
-    return false, content_error or "handoff prompt could not be built"
-  end
-  local request_id, prompt_error = handoff.target_session:prompt(content)
-  if request_id == nil then
-    return false, prompt_error or "handoff prompt could not be sent"
-  end
-  if target_view ~= nil then
-    if handoff.source_session_id ~= nil then
-      record_handoff_prompt(target_view, text, handoff.source_session_id, contexts)
-    end
-    target_view.draft:clear_context()
-  end
-  close_handoff(self, buffer)
-  if self.views[handoff.target_session_id] ~= nil then
-    self:switch(handoff.target_session_id)
-  end
-  return true
+  return self.handoffs:submit(buffer)
 end
 
----Close a handoff review buffer without sending its contents.
+---Close a Handoff review without sending.
 ---@param self louiselm.ui.Chat
----@param buffer integer Handoff buffer returned by `open_handoff`.
+---@param buffer integer
 ---@return boolean abandoned
----@return string? error_message Validation error.
+---@return string? error_message Invalid review buffer.
 function Chat:abandon_handoff(buffer)
-  local handoff = self.handoffs[buffer]
-  if handoff == nil then
-    return false, "handoff buffer is not open"
-  end
-  close_handoff(self, buffer)
-  if self.views[handoff.target_session_id] ~= nil then
-    self:switch(handoff.target_session_id)
-  end
-  return true
+  return self.handoffs:abandon(buffer)
 end
 
 ---Open the full raw payload for the tool call under the cursor.
@@ -1945,75 +1694,19 @@ function Chat:park()
   local has_staged = staged_count > 0 or staged.pending_skill or staged.queued_prompt
 
   local function begin()
-    local session_id = state.agent .. "/" .. state.acp_session_id
-    local claims_started, claims_error = live_claims(session_id, state.working_dir, function(claims, claim_error)
+    local started, park_error = self.recovery:park(session, function(run_id, error_message)
       if self.disposed or self.views[state.id] ~= view then
         return
       end
-      if claim_error ~= nil then
-        nvim.notify("louiselm: " .. claim_error, nvim.log.levels.ERROR)
+      if run_id == nil then
+        nvim.notify("louiselm: " .. (error_message or "could not cold-Park Session"), nvim.log.levels.ERROR)
         return
       end
-
-      local run = session.owner_run
-      local run_id = run and run.id or park_run_id()
-      if run == nil then
-        run = assert(Workflow.new_run({ id = run_id }))
-      end
-
-      local function cold_park()
-        local started, park_error = run:park_cold({ id = run_id, claims = claims }, function(ok, error_message)
-          if not ok then
-            nvim.notify("louiselm: " .. (error_message or "could not cold-Park Session"), nvim.log.levels.ERROR)
-            return
-          end
-          self.attention:run_parked(run_id)
-          nvim.notify("louiselm: Session cold-Parked", nvim.log.levels.INFO)
-        end)
-        if not started then
-          nvim.notify("louiselm: " .. (park_error or "could not cold-Park Session"), nvim.log.levels.ERROR)
-        end
-      end
-
-      if session.owner_run ~= nil then
-        cold_park()
-        return
-      end
-
-      local admitted, admission_error = WorkflowService.admit({
-        id = run_id,
-        generated_work_max = PARK_GENERATED_WORK_MAX,
-        park_ttl_ms = PARK_TTL_MS,
-      }, function()
-        local attached, attach_error = WorkflowService.attach({
-          id = run_id,
-          session_id = session_id,
-          agent = state.agent,
-          acp_session_id = state.acp_session_id,
-          cwd = state.working_dir,
-          load_session = true,
-        }, function(ok, error_message)
-          if not ok then
-            nvim.notify("louiselm: " .. (error_message or "could not attach Session to Run"), nvim.log.levels.ERROR)
-            return
-          end
-          local adopted, adopt_error = run:adopt_session(session)
-          if not adopted then
-            nvim.notify("louiselm: " .. (adopt_error or "could not attach Session to Run"), nvim.log.levels.ERROR)
-            return
-          end
-          cold_park()
-        end)
-        if not attached then
-          nvim.notify("louiselm: " .. (attach_error or "could not attach Session to Run"), nvim.log.levels.ERROR)
-        end
-      end)
-      if not admitted then
-        nvim.notify("louiselm: " .. (admission_error or "could not admit Run"), nvim.log.levels.ERROR)
-      end
+      self.attention:run_parked(run_id)
+      nvim.notify("louiselm: Session cold-Parked", nvim.log.levels.INFO)
     end)
-    if not claims_started then
-      nvim.notify("louiselm: " .. (claims_error or "could not query live Beads claims"), nvim.log.levels.ERROR)
+    if not started then
+      nvim.notify("louiselm: " .. (park_error or "could not query live Beads claims"), nvim.log.levels.ERROR)
     end
   end
 
@@ -2816,234 +2509,6 @@ function Chat:resume_session(all_workspaces)
   end)
 end
 
----@param self louiselm.ui.Chat
----@param id string Durable Run UUID.
----@return louiselm.workflow.Run? run
-local function resume_run(self, id)
-  local pending = self.pending_resume_runs[id]
-  if pending ~= nil then
-    return pending
-  end
-  for _, view in pairs(self.views) do
-    local run = view.session.owner_run
-    if run ~= nil and run.id == id then
-      return run
-    end
-  end
-  return nil
-end
-
----@param self louiselm.ui.Chat
----@param presentation louiselm.workflow.ParkPresentation
-local function present_park(self, presentation)
-  self.attention:run_parked(presentation.id)
-  nvim.notify(
-    string.format(
-      "louiselm: budget Park: generated work %d/%d, reserved %d, pending %d, mutation %s",
-      presentation.consumed,
-      presentation.ceiling,
-      presentation.reserved,
-      #presentation.pending_mutation_ids,
-      presentation.triggering_mutation_id or "none"
-    ),
-    nvim.log.levels.WARN
-  )
-end
-
----@param self louiselm.ui.Chat
----@param run louiselm.workflow.RunView
----@param callback fun(worker: louiselm.workflow.RunWorker?, error_message?: string)
-local function load_cold_run(self, run, callback)
-  local summary = self.resume_summaries[run.id]
-  if summary == nil then
-    callback(nil, "cold Run metadata is unavailable")
-    return
-  end
-  ---@type louiselm.ui.ChatEventRelay
-  local event_relay = { events = {} }
-  self.pending_resume_relays[run.id] = event_relay
-  local session, load_error = self.api:load_session(summary.agent, summary.acp_session_id, {
-    cwd = summary.cwd,
-    name = summary.acp_session_id,
-    on_event = function(event)
-      if event_relay.chat ~= nil and event_relay.view ~= nil then
-        observe_view_event(event_relay.chat, event_relay.view, event)
-        return
-      end
-      local events = event_relay.events
-      if events ~= nil then
-        events[#events + 1] = event
-      end
-    end,
-  }, function(loaded_session, ready_error)
-    if self.pending_resume_relays[run.id] ~= event_relay then
-      deactivate_event_relay(event_relay)
-      if loaded_session ~= nil then
-        loaded_session:dispose()
-      end
-      callback(nil, "cold Park load was cancelled")
-      return
-    end
-    if ready_error ~= nil then
-      self.pending_resume_relays[run.id] = nil
-      deactivate_event_relay(event_relay)
-      if loaded_session ~= nil then
-        loaded_session:dispose()
-      end
-      callback(nil, ready_error)
-      return
-    end
-    if loaded_session == nil then
-      self.pending_resume_relays[run.id] = nil
-      deactivate_event_relay(event_relay)
-      callback(nil, "cold Park load returned no Session")
-      return
-    end
-    local local_run, run_error = Workflow.new_run({
-      id = summary.id,
-      claims = summary.claims,
-      generated_work = summary.generated_work,
-    })
-    if local_run == nil then
-      self.pending_resume_relays[run.id] = nil
-      deactivate_event_relay(event_relay)
-      loaded_session:dispose()
-      callback(nil, run_error or "could not reconstruct resumed Run")
-      return
-    end
-    local adopted, adopt_error = local_run:adopt_session(loaded_session)
-    if not adopted then
-      self.pending_resume_relays[run.id] = nil
-      deactivate_event_relay(event_relay)
-      loaded_session:dispose()
-      callback(nil, adopt_error or "could not reconstruct resumed Run")
-      return
-    end
-    self.pending_resume_runs[run.id] = local_run
-    self.pending_resume_sessions[run.id] = loaded_session
-    ---@diagnostic disable-next-line: param-type-mismatch -- Session is the production RunWorker implementation.
-    callback(loaded_session)
-  end)
-  if session == nil then
-    if self.pending_resume_relays[run.id] == event_relay then
-      self.pending_resume_relays[run.id] = nil
-    end
-    deactivate_event_relay(event_relay)
-    callback(nil, load_error or "could not load cold Park")
-  end
-end
-
----@param self louiselm.ui.Chat
----@param callback fun(controller: louiselm.workflow.ResumeController?, error_message?: string)
----@return boolean started
----@return string? error_message
-local function ensure_resume_controller(self, callback)
-  if self.resume_controller ~= nil then
-    callback(self.resume_controller)
-    return true
-  end
-  self.resume_waiters[#self.resume_waiters + 1] = callback
-  if self.resume_initializing then
-    return true
-  end
-  self.resume_initializing = true
-  local settled = false
-  local function finish(controller, error_message)
-    if settled then
-      return
-    end
-    settled = true
-    self.resume_initializing = false
-    local waiters = self.resume_waiters
-    self.resume_waiters = {}
-    for _, waiter in ipairs(waiters) do
-      waiter(controller, error_message)
-    end
-  end
-  local observer, observer_error = ParkObserver.new({
-    find_run = function(id)
-      return resume_run(self, id)
-    end,
-    on_park = function(presentation)
-      present_park(self, presentation)
-    end,
-  })
-  if observer == nil then
-    finish(nil, observer_error or "could not create Park observer")
-    return false, observer_error
-  end
-  local socket_path, capability_path = resume_paths()
-  local capability_started, capability_error = RunClient.read_operator_capability(
-    capability_path,
-    function(capability, read_error)
-      if read_error ~= nil or capability == nil then
-        finish(nil, read_error or "could not read operator capability")
-        return
-      end
-      local connect_client, connect_error
-      connect_client, connect_error = RunClient.connect(socket_path, function(runs)
-        if self.disposed then
-          return
-        end
-        local observed, observe_error = observer:observe(runs)
-        if not observed then
-          if not settled then
-            finish(nil, observe_error or "could not reconcile Park snapshot")
-          else
-            nvim.notify("louiselm: " .. (observe_error or "could not reconcile Park snapshot"), nvim.log.levels.ERROR)
-          end
-          return
-        end
-        for _, run in ipairs(runs) do
-          self.resume_revisions[run.id] = run.revision
-        end
-        if settled then
-          return
-        end
-        if connect_client == nil then
-          finish(nil, "Run service connected without a client")
-          return
-        end
-        local controller, controller_error = ResumeController.new({
-          client = connect_client,
-          find_run = function(id)
-            return resume_run(self, id)
-          end,
-          load_cold = function(run, load_callback)
-            load_cold_run(self, run, load_callback)
-          end,
-        })
-        if controller == nil then
-          finish(nil, controller_error or "could not create resume controller")
-          return
-        end
-        self.resume_client = connect_client
-        self.resume_controller = controller
-        self.park_observer = observer
-        finish(controller)
-      end, {
-        operator_capability = capability,
-        on_error = function(message)
-          if not settled then
-            finish(nil, message)
-          elseif not self.disposed then
-            nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
-          end
-        end,
-      })
-      if connect_client == nil then
-        finish(nil, connect_error or "could not connect to Run service")
-      end
-    end
-  )
-  if not capability_started then
-    self.resume_waiters = {}
-    self.resume_initializing = false
-    return false, capability_error
-  end
-  return true
-end
-
 ---Discover and load a durable cold-Parked Run through an operator picker.
 ---@param self louiselm.ui.Chat
 ---@return boolean started
@@ -3052,91 +2517,47 @@ function Chat:resume_park()
   if self.disposed then
     return false, "chat UI is disposed"
   end
-  local started, setup_error = ensure_resume_controller(self, function(controller, controller_error)
+  return self.recovery:list(function(runs, list_error)
     if self.disposed then
       return
     end
-    if controller == nil then
-      nvim.notify("louiselm: " .. (controller_error or "could not connect to Run service"), nvim.log.levels.ERROR)
+    if list_error ~= nil or runs == nil then
+      nvim.notify("louiselm: " .. (list_error or "could not list cold Parks"), nvim.log.levels.ERROR)
       return
     end
-    WorkflowService.list(function(runs, list_error)
-      if self.disposed then
+    if #runs == 0 then
+      nvim.notify("louiselm: no durable cold Parks found", nvim.log.levels.INFO)
+      return
+    end
+    Picker.select(runs, {
+      prompt = "louiselm cold Park: ",
+      format_item = function(run)
+        return string.format("%s/%s · %s · cwd=%s", run.agent, run.acp_session_id, run.id, run.cwd)
+      end,
+    }, function(selected)
+      if selected == nil or self.disposed then
         return
       end
-      if list_error ~= nil then
-        nvim.notify("louiselm: " .. list_error, nvim.log.levels.ERROR)
-        return
-      end
-      if #runs == 0 then
-        nvim.notify("louiselm: no durable cold Parks found", nvim.log.levels.INFO)
-        return
-      end
-      Picker.select(runs, {
-        prompt = "louiselm cold Park: ",
-        format_item = function(run)
-          return string.format("%s/%s · %s · cwd=%s", run.agent, run.acp_session_id, run.id, run.cwd)
-        end,
-      }, function(selected)
-        if selected == nil or self.disposed then
+      local started, resume_error = self.recovery:resume(selected, function(result, error_message)
+        if result == nil then
+          nvim.notify("louiselm: " .. (error_message or "could not resume cold Park"), nvim.log.levels.ERROR)
           return
         end
-        local revision = self.resume_revisions[selected.id]
-        if revision == nil then
-          nvim.notify("louiselm: selected Run revision is unavailable", nvim.log.levels.ERROR)
+        local attached, attach_error = attach_session(self, result.session, result.relay)
+        if not attached then
+          Recovery.discard_relay(result.relay)
+          result.session:dispose()
+          nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
           return
         end
-        self.resume_summaries[selected.id] = selected
-        local resume_view = {
-          id = selected.id,
-          revision = revision,
-          state = selected.state,
-          generated_work_ceiling = selected.generated_work.ceiling,
-          generated_work_consumed = selected.generated_work.consumed,
-          generated_work_reserved = selected.generated_work.reserved,
-          pending_mutation_ids = {},
-          park_expires_at_ms = selected.expires_at_ms,
-        }
-        local resume_started, resume_error = controller:resume(resume_view, function(_, error_message)
-          local session = self.pending_resume_sessions[selected.id]
-          local event_relay = self.pending_resume_relays[selected.id]
-          self.pending_resume_sessions[selected.id] = nil
-          self.pending_resume_relays[selected.id] = nil
-          self.pending_resume_runs[selected.id] = nil
-          self.resume_summaries[selected.id] = nil
-          if error_message ~= nil then
-            deactivate_event_relay(event_relay)
-            nvim.notify("louiselm: " .. error_message, nvim.log.levels.ERROR)
-            return
-          end
-          if session == nil then
-            deactivate_event_relay(event_relay)
-            nvim.notify("louiselm: resumed Run has no loaded Session", nvim.log.levels.ERROR)
-            return
-          end
-          if event_relay == nil or event_relay.events == nil then
-            session:dispose()
-            nvim.notify("louiselm: resumed Run has no Session event relay", nvim.log.levels.ERROR)
-            return
-          end
-          local attached, attach_error = attach_session(self, session, event_relay)
-          if not attached then
-            deactivate_event_relay(event_relay)
-            session:dispose()
-            nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
-            return
-          end
-          self.attention:run_resumed(selected.id)
-          nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
-        end)
-        if not resume_started then
-          self.resume_summaries[selected.id] = nil
-          nvim.notify("louiselm: " .. (resume_error or "could not resume cold Park"), nvim.log.levels.ERROR)
-        end
+        self.attention:run_resumed(selected.id)
+        nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
       end)
+      if not started then
+        nvim.notify("louiselm: " .. (resume_error or "could not resume cold Park"), nvim.log.levels.ERROR)
+      end
     end)
   end)
-  return started, setup_error
 end
 
 ---Remove chat buffers and event listeners without disposing the sessions.
@@ -3152,25 +2573,7 @@ function Chat:dispose()
     self.winbar_resize_autocmd = nil
   end
   self.attention:dispose()
-  if self.park_observer ~= nil then
-    self.park_observer:dispose()
-  end
-  if self.resume_controller ~= nil then
-    self.resume_controller:dispose()
-  end
-  if self.resume_client ~= nil then
-    self.resume_client:dispose()
-  end
-  for _, event_relay in pairs(self.pending_resume_relays) do
-    deactivate_event_relay(event_relay)
-  end
-  self.pending_resume_relays = {}
-  for _, session in pairs(self.pending_resume_sessions) do
-    session:dispose()
-  end
-  self.pending_resume_sessions = {}
-  self.pending_resume_runs = {}
-  self.resume_summaries = {}
+  self.recovery:dispose()
   self.limits_unsubscribe()
   for agent_name in pairs(self.limits_timers) do
     close_limits_timer(self, agent_name)
@@ -3189,9 +2592,7 @@ function Chat:dispose()
     end
   end
   self.limits_buffers = {}
-  for buffer in pairs(self.handoffs) do
-    close_handoff(self, buffer)
-  end
+  self.handoffs:dispose()
   for id, view in pairs(self.views) do
     clear_queued_prompt(view)
     view.unsubscribe()

@@ -779,6 +779,50 @@ T["chat"]["reconciles service Parks into live Runs and bounded operator state"] 
   )
 end
 
+T["chat"]["reports cold Park list errors instead of announcing an empty list"] = function()
+  local chat = assert(Chat.new(fake_api()))
+  local read, connect, list, notify =
+    RunClient.read_operator_capability, RunClient.connect, WorkflowService.list, nvim.notify
+  local messages = {}
+  rawset(RunClient, "read_operator_capability", function(_, callback)
+    nvim.schedule(function()
+      callback("capability")
+    end)
+    return true
+  end)
+  rawset(RunClient, "connect", function(_, callback)
+    nvim.schedule(function()
+      callback({})
+    end)
+    return {
+      dispose = function()
+        return true
+      end,
+    }
+  end)
+  rawset(WorkflowService, "list", function(callback)
+    nvim.schedule(function()
+      callback({}, "cold Park service returned invalid data")
+    end)
+    return true
+  end)
+  rawset(nvim, "notify", function(message)
+    messages[#messages + 1] = message
+  end)
+  MiniTest.finally(function()
+    chat:dispose()
+    rawset(RunClient, "read_operator_capability", read)
+    rawset(RunClient, "connect", connect)
+    rawset(WorkflowService, "list", list)
+    rawset(nvim, "notify", notify)
+  end)
+  assert(chat:resume_park())
+  assert(nvim.wait(1000, function()
+    return #messages > 0
+  end))
+  MiniTest.expect.equality(messages, { "louiselm: cold Park service returned invalid data" })
+end
+
 T["chat"]["focuses the prompt"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
@@ -935,49 +979,34 @@ T["chat"]["does not record local provenance before the source has an ACP session
   chat:dispose()
 end
 
-T["chat"]["abandons a handoff without sending"] = function()
-  local source = fake_session("source", "claude")
+T["chat"]["retains Handoff contexts on failure and consumes them once after acceptance"] = function()
+  local source = fake_session("source", "codex")
+  source.state.acp_session_id = "source-acp"
   local target = fake_session("target", "codex")
+  target.prompt_error = "Agent is unavailable"
   local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
   assert(chat:attach(source))
-
-  local buffer = assert(chat:open_handoff(target))
-  assert(chat:abandon_handoff(buffer))
-  MiniTest.expect.equality(target.prompts, {})
-  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
-  chat:dispose()
-end
-
-T["chat"]["refuses an empty handoff buffer"] = function()
-  local source = fake_session("source", "claude")
-  local target = fake_session("target", "codex")
-  local chat = assert(Chat.new(fake_api()))
-  assert(chat:attach(source))
-
-  local buffer = assert(chat:open_handoff(target))
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "  " })
-  local sent, error_message = chat:submit_handoff(buffer)
-  MiniTest.expect.equality(sent, false)
-  MiniTest.expect.equality(error_message, "handoff prompt must be a non-empty string")
-  MiniTest.expect.equality(target.prompts, {})
+  assert(chat:attach(target))
+  assert(chat:queue_context({ label = "staged", text = "target context" }))
+  local buffer = assert(chat:open_handoff(target, "source"))
+  fill_takeover_task(buffer, "continue implementation")
+  MiniTest.expect.equality({ chat:submit_handoff(buffer) }, { false, "Agent is unavailable" })
+  MiniTest.expect.equality(chat:staged_context()[target].contexts, 1)
+  MiniTest.expect.equality(chat.views.target.transcript:snapshot(), {})
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
-  chat:dispose()
-end
 
-T["chat"]["refuses a handoff whose takeover task is blank"] = function()
-  local source = fake_session("source", "claude")
-  local target = fake_session("target", "codex")
-  local chat = assert(Chat.new(fake_api()))
-  assert(chat:attach(source))
-
-  local buffer = assert(chat:open_handoff(target))
-  fill_takeover_task(buffer, "")
-  local sent, error_message = chat:submit_handoff(buffer)
-  MiniTest.expect.equality(sent, false)
-  MiniTest.expect.equality(error_message, "handoff takeover task must be filled in before submitting")
-  MiniTest.expect.equality(target.prompts, {})
-  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), true)
-  chat:dispose()
+  target.prompt_error = nil
+  assert(chat:submit_handoff(buffer))
+  MiniTest.expect.equality(target.prompts[1][1], { type = "text", text = "target context" })
+  MiniTest.expect.equality(chat:staged_context()[target].contexts, 0)
+  local entries = chat.views.target.transcript:snapshot()
+  MiniTest.expect.equality(entries[1].handoff_source_session_id, "codex/source-acp")
+  MiniTest.expect.equality(source.disposed, false)
+  assert(chat:submit("follow-up"))
+  MiniTest.expect.equality(target.prompts[2], "follow-up")
 end
 
 T["chat"]["carries the compacted source transcript in the handoff context"] = function()

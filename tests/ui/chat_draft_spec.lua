@@ -92,4 +92,22 @@ T["skill reconciliation requires an intact leading chip and preserves literal ed
   end
 end
 
+T["prepends staged context to typed Handoff blocks without mutating or consuming inputs"] = function()
+  local draft = Draft.new()
+  draft:set_catalog("catalog")
+  local body = {
+    { type = "text", text = "take over" },
+    { type = "resource", resource = { uri = "louiselm://handoff/source", mimeType = "text/markdown", text = "brief" } },
+  }
+  local content, contexts = draft:with_context(body, true)
+  MiniTest.expect.equality(#body, 2)
+  MiniTest.expect.equality(#content, 3)
+  MiniTest.expect.equality(content[1].resource.uri, "louiselm://skills/index")
+  MiniTest.expect.equality({ content[2], content[3] }, body)
+  MiniTest.expect.equality(contexts, { { label = "skill-index", text = "catalog" } })
+  MiniTest.expect.equality(draft:with_context(body, true), content)
+  draft:clear_context()
+  MiniTest.expect.equality({ draft:with_context(body, true) }, { body, {} })
+end
+
 return T
