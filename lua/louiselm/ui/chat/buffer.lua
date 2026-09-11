@@ -17,7 +17,6 @@ local nvim = vim
 ---@field package prompt_mark integer Extmark tracking the prompt boundary through buffer edits.
 ---@field package prompt_namespace integer Extmark namespace for the prompt boundary.
 ---@field package transcript_tail integer? Zero-based last rendered transcript line.
----@field package response_line integer? Zero-based first streamed response line.
 ---@field package response_tail integer? Zero-based last streamed response line.
 ---@field package response_started boolean Whether the assistant has rendered response text for this turn.
 ---@field package pending_terminal_completion? string Text from a terminal completion tool, flushed at turn end or immediately if it arrives after turn end.
@@ -93,15 +92,6 @@ local function single_line(value)
   return (value:gsub("[\r\n]", " "))
 end
 
----@param item louiselm.ui.ContextItem
----@return table block
-local function context_content(item)
-  if item.uri ~= nil then
-    return { type = "resource_link", uri = item.uri, name = item.label }
-  end
-  return { type = "text", text = item.text }
-end
-
 ---@param value unknown
 ---@return string? text
 local function field(value, name)
@@ -118,16 +108,17 @@ local function set_line(buffer, line, value)
   nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
 end
 
----@param view louiselm.ui.ChatBuffer
+---Update diagnostic header values from a Session snapshot.
+---@param self louiselm.ui.ChatBuffer
 ---@param state louiselm.session.State
-local function render_header(view, state)
+function Buffer:header(state)
   local lines, highlights = Status.session_header(state)
-  nvim.api.nvim_buf_set_lines(view.buffer, 0, HEADER_LINE_COUNT, false, lines)
-  nvim.api.nvim_buf_clear_namespace(view.buffer, view.header_namespace, 0, HEADER_LINE_COUNT)
+  nvim.api.nvim_buf_set_lines(self.buffer, 0, HEADER_LINE_COUNT, false, lines)
+  nvim.api.nvim_buf_clear_namespace(self.buffer, self.header_namespace, 0, HEADER_LINE_COUNT)
   for _, highlight in ipairs(highlights) do
     nvim.api.nvim_buf_add_highlight(
-      view.buffer,
-      view.header_namespace,
+      self.buffer,
+      self.header_namespace,
       highlight.group,
       highlight.line,
       highlight.start_col,
@@ -286,10 +277,9 @@ local function replace_submitted_prompt(view, text, contexts)
       if item.text ~= nil then
         nvim.list_extend(lines, nvim.split(item.text, "\n", { plain = true }))
       else
-        local block = context_content(item)
-        lines[#lines + 1] = "type: " .. block.type
-        lines[#lines + 1] = "name: " .. block.name
-        lines[#lines + 1] = "uri: " .. block.uri
+        lines[#lines + 1] = "type: resource_link"
+        lines[#lines + 1] = "name: " .. item.label
+        lines[#lines + 1] = "uri: " .. item.uri
       end
     end
     view.context_folds[#view.context_folds + 1] = {
@@ -327,27 +317,28 @@ local function current_prompt_line(view)
   return view.prompt_line
 end
 
----@param view louiselm.ui.ChatBuffer
-local function reconcile_prompt_boundary(view)
+---Reconcile Lua-side indexes after undo moved the prompt marker.
+---@param self louiselm.ui.ChatBuffer
+function Buffer:reconcile()
   -- Undo restores the extmark but not these Lua-side indexes.
-  if view.prompt_line < nvim.api.nvim_buf_line_count(view.buffer) then
+  if self.prompt_line < nvim.api.nvim_buf_line_count(self.buffer) then
     return
   end
-  local prompt_line = current_prompt_line(view)
-  view.transcript_tail = prompt_line - 1
-  view.response_line = nil
-  view.response_tail = nil
-  view.response_started = false
-  view.last_block_kind = nil
-  view.trailing_blank = false
-  view.thought_run = nil
-  view.tool_fold_run = nil
+  local prompt_line = current_prompt_line(self)
+  self.transcript_tail = prompt_line - 1
+  self.response_tail = nil
+  self.response_started = false
+  self.last_block_kind = nil
+  self.trailing_blank = false
+  self.thought_run = nil
+  self.tool_fold_run = nil
 end
 
----@param view louiselm.ui.ChatBuffer
----@return string text
-local function prompt_text(view)
-  local lines = nvim.api.nvim_buf_get_lines(view.buffer, current_prompt_line(view), -1, false)
+---Read the editable prompt after resolving its undo-restored extmark.
+---@param self louiselm.ui.ChatBuffer
+---@return string text Without prompt chevrons.
+function Buffer:prompt_text()
+  local lines = nvim.api.nvim_buf_get_lines(self.buffer, current_prompt_line(self), -1, false)
   for index, line in ipairs(lines) do
     lines[index] = line:sub(1, 2) == "> " and line:sub(3) or line
   end
@@ -464,14 +455,15 @@ local function flush_terminal_completion(view, text)
   view.trailing_blank = true
 end
 
----@param view louiselm.ui.ChatBuffer
+---Insert a usage row with its surrounding separators.
+---@param self louiselm.ui.ChatBuffer
 ---@param line string
-local function insert_usage(view, line)
-  local insertion_line = view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1
+function Buffer:usage(line)
+  local insertion_line = self.transcript_tail == nil and self.prompt_line or self.transcript_tail + 1
   local before = insertion_line > 0
-      and nvim.api.nvim_buf_get_lines(view.buffer, insertion_line - 1, insertion_line, false)[1]
+      and nvim.api.nvim_buf_get_lines(self.buffer, insertion_line - 1, insertion_line, false)[1]
     or nil
-  local after = nvim.api.nvim_buf_get_lines(view.buffer, insertion_line, insertion_line + 1, false)[1]
+  local after = nvim.api.nvim_buf_get_lines(self.buffer, insertion_line, insertion_line + 1, false)[1]
   local lines = {}
   if before ~= nil and before ~= "" then
     lines[#lines + 1] = ""
@@ -480,7 +472,7 @@ local function insert_usage(view, line)
   if after ~= nil and after ~= "" then
     lines[#lines + 1] = ""
   end
-  insert_transcript(view, lines)
+  insert_transcript(self, lines)
 end
 
 ---Collect the Normal-mode navigation targets in the transcript history above
@@ -594,13 +586,6 @@ local function navigate_transcript(view, kind, direction, count)
   nvim.api.nvim_win_set_cursor(view.window, { selected + 1, #(line:match("^%s*")) })
 end
 
----Update diagnostic header values from a Session snapshot.
----@param self louiselm.ui.ChatBuffer
----@param state louiselm.session.State
-function Buffer:header(state)
-  render_header(self, state)
-end
-
 ---Append diagnostic or transcript rows, preserving the editable prompt.
 ---@param self louiselm.ui.ChatBuffer
 ---@param lines string[]
@@ -608,31 +593,11 @@ function Buffer:append(lines)
   insert_transcript(self, lines)
 end
 
----Insert a usage row with its surrounding separators.
----@param self louiselm.ui.ChatBuffer
----@param line string
-function Buffer:usage(line)
-  insert_usage(self, line)
-end
-
----Read the editable prompt after resolving its undo-restored extmark.
----@param self louiselm.ui.ChatBuffer
----@return string text Without prompt chevrons.
-function Buffer:prompt_text()
-  return prompt_text(self)
-end
-
 ---Replace the editable prompt and retain its boundary marker.
 ---@param self louiselm.ui.ChatBuffer
 ---@param text string Including any caller-owned context prefix.
 function Buffer:replace_prompt(text)
   replace_prompt(self, text)
-end
-
----Reconcile Lua-side indexes after undo moved the prompt marker.
----@param self louiselm.ui.ChatBuffer
-function Buffer:reconcile()
-  reconcile_prompt_boundary(self)
 end
 
 ---Finish the current reasoning paragraph and restore its fold.
@@ -680,7 +645,6 @@ function Buffer:accept_prompt(text, contexts, next_prefix, focus)
   local prompt_line_count = replace_submitted_prompt(self, text, contexts)
   local response_line = self.prompt_line + prompt_line_count
   nvim.api.nvim_buf_set_lines(self.buffer, response_line, response_line, false, { "", "> " .. next_prefix })
-  self.response_line = response_line
   self.response_tail = response_line
   self.response_started = false
   self.pending_terminal_completion = nil
@@ -730,7 +694,6 @@ function Buffer:render(event, replay_active, continuing_prompt)
     if replay_active then
       view.replay_prompt_mark = mark
     end
-    view.response_line = nil
     view.response_tail = nil
     view.response_started = false
     view.turn_prose = ""
@@ -760,7 +723,6 @@ function Buffer:render(event, replay_active, continuing_prompt)
       local response_line_count = #lines
       lines[#lines + 1] = ""
       nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, lines)
-      view.response_line = insertion_line
       view.response_tail = insertion_line + response_line_count - 1
       view.transcript_tail = view.response_tail + 1
       mark_prompt(view, view.prompt_line + separator + #lines)
@@ -798,7 +760,6 @@ function Buffer:render(event, replay_active, continuing_prompt)
       view.thought_run = run
       -- Inserting below the submitted prompt invalidates its response bookkeeping,
       -- exactly like a tool paragraph does.
-      view.response_line = nil
       view.response_tail = nil
       view.response_started = false
       view.last_block_kind = "reasoning"
@@ -901,7 +862,6 @@ function Buffer:render(event, replay_active, continuing_prompt)
         view.pending_terminal_completion = completion_text
       end
     end
-    view.response_line = nil
     view.response_tail = nil
     view.response_started = false
   end
@@ -923,7 +883,6 @@ end
 ---Forget active response coordinates after completion or error.
 ---@param self louiselm.ui.ChatBuffer
 function Buffer:reset_response()
-  self.response_line = nil
   self.response_tail = nil
   self.response_started = false
   self.last_block_kind = nil
@@ -1005,7 +964,6 @@ function M.new(state, options)
     window = window,
     prompt_line = HEADER_LINE_COUNT + 1,
     transcript_tail = nil,
-    response_line = nil,
     response_tail = nil,
     response_started = false,
     turn_prose = "",
