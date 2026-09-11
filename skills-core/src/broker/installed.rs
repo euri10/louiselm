@@ -13,7 +13,10 @@ use super::{
     service::{receive, send},
 };
 use crate::{
+    broker::lifecycle::LifecycleCaller,
+    launch_protocol::LifecycleRequest,
     launch_receipt::SessionState,
+    launch_receipt::SignedReceipt,
     launch_transport::{CredentialPin, LauncherPacket},
     launcher_install::{LauncherPaths, LauncherVerifier},
 };
@@ -30,6 +33,80 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Delivers one pending normalized Attention entry independently of Neovim.
+    /// Run on the broker's delivery worker. Failure retains the durable entry
+    /// and never changes Session authorization or launcher receipts.
+    ///
+    /// # Errors
+    /// Returns projection transport/authentication failure or unavailable outbox state.
+    pub fn deliver_attention(
+        &self,
+        endpoint: &super::attention::AttentionEndpoint,
+    ) -> Result<bool, BrokerError> {
+        self.service.attention.deliver_next(endpoint)
+    }
+
+    /// Applies emergency quarantine with installed receipt verification.
+    /// Broker approval revocation precedes the supervisor Park request.
+    ///
+    /// # Errors
+    /// Refuses unauthorized requests, failed revocation, invalid signatures or unavailable storage/transport.
+    pub fn quarantine(
+        &self,
+        session: &mut BrokerSession,
+        caller: &LifecycleCaller,
+        request: &LifecycleRequest,
+    ) -> Result<SignedReceipt, BrokerError> {
+        let mut verification_failure = None;
+        let result = self.service.quarantine(
+            session,
+            caller,
+            request,
+            now_ms()?,
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    verification_failure = Some(error);
+                    false
+                }
+            },
+        );
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+    /// Runs one authorized lifecycle operation using the installed signature verifier.
+    /// Caller identity and coordinator scope must come from the trusted control boundary.
+    /// This blocks the owning Session worker while asynchronous transport completes.
+    ///
+    /// # Errors
+    /// Returns typed policy/CAS, installed-verification, storage or transport failure.
+    pub fn request_lifecycle(
+        &self,
+        session: &mut BrokerSession,
+        caller: &LifecycleCaller,
+        request: &LifecycleRequest,
+    ) -> Result<SignedReceipt, BrokerError> {
+        let mut verification_failure = None;
+        let result = self.service.request_lifecycle(
+            session,
+            caller,
+            request,
+            now_ms()?,
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    verification_failure = Some(error);
+                    false
+                }
+            },
+        );
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
     /// Opens installed public authority and binds its exact local rendezvous.
     /// Provision the state/rendezvous directories under the installed broker
     /// identity first. An existing socket is never replaced.
@@ -125,6 +202,7 @@ impl InstalledBroker {
         let result = (|| {
             let packet = receive(session.channel())?;
             if let LauncherPacket::SignedReceipt(ref receipt) = packet.packet {
+                self.service.lifecycle.check_receipt(receipt)?;
                 let mut verification_failure = None;
                 let stored = self.service.receipts().append(
                     session.authorization(),

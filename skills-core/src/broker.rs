@@ -14,11 +14,13 @@
 //!
 //! [Launch supervisor]: crate::launch_supervisor
 
+pub mod attention;
 pub mod audit;
 pub mod authorization;
 pub mod commands;
 pub mod delegation;
 pub mod installed;
+pub mod lifecycle;
 pub mod receipts;
 pub mod service;
 
@@ -58,6 +60,12 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Projection delivery failed; canonical authorization/receipt state is unchanged.
+    #[error("Attention projection is unavailable")]
+    Attention(#[source] io::Error),
+    /// A lifecycle request failed authorization or compare-and-swap validation.
+    #[error("{0}")]
+    Policy(#[from] crate::launch_protocol::ProtocolError),
     /// Public installation or dedicated broker identity is not trustworthy.
     #[error("installed broker authority is invalid")]
     Installation,

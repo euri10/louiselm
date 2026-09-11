@@ -138,7 +138,7 @@ struct ConsumedAuthorization {
 /// authorization stays consumed.
 #[derive(Debug)]
 pub struct AuthorizationStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
     pool: IdentityPool,
     /// Serializes slot assignment so two grants cannot pick the same slot.
     assignment: Mutex<()>,

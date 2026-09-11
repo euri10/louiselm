@@ -20,6 +20,9 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+#[path = "recovery_system_tests.rs"]
+mod recovery;
+
 fn write_json(path: &Path, value: &impl serde::Serialize) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
 }
@@ -248,7 +251,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     .unwrap()
     .plan;
     let workspace = plan.workspace.clone();
-    let prepared = platform.prepare(plan).unwrap();
+    let prepared = platform.prepare(&request, plan).unwrap();
     let mut running = prepared.start().unwrap();
     let authentication = running.authentication().unwrap();
     assert_eq!(authentication.credentials.uid, 4_008_000);
@@ -312,6 +315,8 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         );
     }
     write_registry(&registry_root.join("agents.json"), &vec![agent_json]);
+    let (recovery_evidence, _recovery_input, _recovery_output) =
+        recovery::checkpoint(&mut *running, &request);
     let credentials = authentication.credentials;
     let principal = crate::launch_protocol::CommandPrincipal {
         channel_id: "agent-capability".to_owned(),
@@ -413,7 +418,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     }
     assert!(workspace.join("resumed").exists());
     let queued_after_disposal = command(3, "touch after-disposal");
-    running.dispose().unwrap();
+    recovery::dispose_with_failed_seal(&mut *running);
     assert!(rx.recv_timeout(Duration::from_secs(3)).unwrap().is_err());
     assert!(
         running
@@ -424,6 +429,12 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     assert!(!workspace.join("escaped").exists());
     assert!(!workspace.join("after-disposal").exists());
     assert!(!authentication.process.unwrap().valid().unwrap());
+    recovery::reconstruct(
+        &platform,
+        &Registry::open_trusted(&registry_root).unwrap(),
+        &sessions,
+        &recovery_evidence,
+    );
     assert_eq!(
         fs::read_dir(&cgroup_root)
             .unwrap()

@@ -569,19 +569,32 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
         ),
     )
     .expect("measured bwrap is replaced after runtime configuration");
-    let result = platform.prepare(ConfinementPlan {
-        session_id: "changed-bwrap".to_owned(),
-        runtime_root: fixture.root().join("runtime"),
-        executable: PathBuf::from("/bin/true"),
-        arguments: Vec::new(),
-        environment: std::collections::BTreeMap::default(),
-        home: fixture.root().join("sessions/changed-bwrap/home"),
-        workspace: fixture.root().join("sessions/changed-bwrap/workspace"),
-        system_roots: Vec::new(),
-        network: NetworkPolicy::Denied,
-        identity: IdentityPlan::NamespaceOnly,
-        channels: Vec::new(),
-    });
+    let launch_request = serde_json::from_value(serde_json::json!({
+        "schema": louiselm_skills::launch::REQUEST_SCHEMA,
+        "protocol_version": louiselm_skills::launch::PROTOCOL_VERSION,
+        "request_id": "launch", "authorization_id": "authorization",
+        "session_id": "changed-bwrap", "run_id": "run", "agent_id": "agent",
+        "envelope_id": "empty", "envelope_revision": 1,
+        "skill_generation_id": Digest::of(b"generation").to_string(),
+        "session_input_manifest_id": Digest::of(b"input").to_string(),
+    }))
+    .unwrap();
+    let result = platform.prepare(
+        &launch_request,
+        ConfinementPlan {
+            session_id: "changed-bwrap".to_owned(),
+            runtime_root: fixture.root().join("runtime"),
+            executable: PathBuf::from("/bin/true"),
+            arguments: Vec::new(),
+            environment: std::collections::BTreeMap::default(),
+            home: fixture.root().join("sessions/changed-bwrap/home"),
+            workspace: fixture.root().join("sessions/changed-bwrap/workspace"),
+            system_roots: Vec::new(),
+            network: NetworkPolicy::Denied,
+            identity: IdentityPlan::NamespaceOnly,
+            channels: Vec::new(),
+        },
+    );
 
     assert!(matches!(result, Err(SupervisorError::SpawnFailed)));
     assert!(

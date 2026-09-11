@@ -20,6 +20,9 @@ use std::{
 #[path = "command_service.rs"]
 mod command_service;
 
+#[path = "lifecycle_service.rs"]
+mod lifecycle_service;
+
 use crate::{
     broker::{AuditDecision, AuditEntry, AuditLog, AuthorizationStore, BrokerError, ReceiptStore},
     launch::PROTOCOL_VERSION,
@@ -137,6 +140,8 @@ pub struct BrokerService {
     receipts: ReceiptStore,
     audit: Arc<AuditLog>,
     supervisor: CredentialPin,
+    pub(super) lifecycle: super::lifecycle::LifecycleStore,
+    pub(super) attention: super::attention::Outbox,
 }
 
 impl BrokerService {
@@ -155,6 +160,10 @@ impl BrokerService {
         audit: AuditLog,
         supervisor: CredentialPin,
     ) -> Result<Self, BrokerError> {
+        let lifecycle =
+            super::lifecycle::LifecycleStore::open(&authorizations.root.join("lifecycle"))?;
+        let attention =
+            super::attention::Outbox::open(&authorizations.root.join("attention-outbox"))?;
         let listener = SeqpacketListener::bind(socket_path).map_err(BrokerError::Transport)?;
         Ok(Self {
             listener,
@@ -162,6 +171,8 @@ impl BrokerService {
             receipts,
             audit: Arc::new(audit),
             supervisor,
+            lifecycle,
+            attention,
         })
     }
 

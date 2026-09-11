@@ -17,7 +17,7 @@ use thiserror::Error;
 use crate::{CanonicalPath, Digest, Manifest, ManifestEntry};
 
 pub mod bundle;
-mod filesystem;
+pub(crate) mod filesystem;
 mod git;
 mod tree;
 
@@ -102,8 +102,8 @@ struct SnapshotRecord {
     changes: Vec<SourceChange>,
 }
 
-struct SourceFile {
-    bytes: Vec<u8>,
+pub(crate) struct SourceFile {
+    pub(crate) bytes: Vec<u8>,
     executable: bool,
 }
 

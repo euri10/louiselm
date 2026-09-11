@@ -815,7 +815,17 @@ impl LaunchPlatform for SystemLaunchPlatform {
             .map(|gate| Box::new(gate) as Box<dyn CapabilityGate>)
     }
 
-    fn prepare(&self, plan: ConfinementPlan) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
+    fn prepare(
+        &self,
+        request: &LaunchRequest,
+        plan: ConfinementPlan,
+    ) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
+        request
+            .validate()
+            .map_err(|_| SupervisorError::LaunchDocumentRejected)?;
+        if request.session_id != plan.session_id || plan.home.parent() != plan.workspace.parent() {
+            return Err(SupervisorError::ResolutionFailed);
+        }
         require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
         let release_root = self
             .paths
@@ -842,12 +852,27 @@ impl LaunchPlatform for SystemLaunchPlatform {
             Err(SupervisorError::ToolIsolationUnproven) => None,
             Err(error) => return Err(error),
         };
-        let prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
+        let mut prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
+        let directory = plan
+            .home
+            .parent()
+            .ok_or(SupervisorError::ResolutionFailed)?;
+        let recovery = if let Ok(storage) =
+            super::recovery::SessionStorage::open(directory, request, &tool_isolation)
+        {
+            Arc::new(storage)
+        } else {
+            prepared
+                .dispose()
+                .map_err(|_| SupervisorError::CleanupUnproven)?;
+            return Err(SupervisorError::DurabilityUnavailable);
+        };
         Ok(Box::new(SystemPreparedAgent {
             prepared,
             backend_id: self.config.bwrap_digest.clone(),
             tool_isolation: Some(tool_isolation),
             tools: Some(tools),
+            recovery,
         }))
     }
 }
@@ -879,6 +904,7 @@ struct SystemPreparedAgent {
     backend_id: String,
     tool_isolation: Option<super::ToolIsolationEvidence>,
     tools: Option<super::tool_execution::ToolExecutor>,
+    recovery: Arc<super::recovery::SessionStorage>,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -909,6 +935,7 @@ impl PreparedAgent for SystemPreparedAgent {
         let mut running = SystemRunningAgent::new(session);
         running.tools = self.tools;
         running.tool_isolation = self.tool_isolation;
+        running.recovery = Some(self.recovery);
         Ok(Box::new(running))
     }
 
@@ -937,6 +964,8 @@ pub struct SystemRunningAgent {
     tool_isolation: Option<super::ToolIsolationEvidence>,
     session: Arc<Mutex<SandboxedSession>>,
     relay: Option<RelayWorker>,
+    recovery: Option<Arc<super::recovery::SessionStorage>>,
+    recovery_worker: Option<thread::JoinHandle<()>>,
 }
 
 impl SystemRunningAgent {
@@ -951,7 +980,15 @@ impl SystemRunningAgent {
             relay: None,
             tools: None,
             tool_isolation: None,
+            recovery: None,
+            recovery_worker: None,
         }
+    }
+
+    fn join_recovery(&mut self) -> Result<(), SupervisorError> {
+        self.recovery_worker.take().map_or(Ok(()), |worker| {
+            worker.join().map_err(|_| SupervisorError::CleanupUnproven)
+        })
     }
 }
 
@@ -991,12 +1028,68 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn retain_recovery(
+        &mut self,
+        request: super::recovery::RetentionRequest,
+        complete: super::recovery::RecoveryCompletion,
+    ) -> Result<(), SupervisorError> {
+        use super::recovery::RecoveryError;
+        if self
+            .recovery_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            complete(Err(RecoveryError::NotParked));
+            return Ok(());
+        }
+        self.join_recovery()?;
+        let Some(storage) = self.recovery.clone() else {
+            complete(Err(RecoveryError::Unsupported));
+            return Ok(());
+        };
+        if !matches!(
+            lock(&self.session).mechanical_state(),
+            Ok(SandboxMechanicalState::Parked)
+        ) {
+            complete(Err(RecoveryError::NotParked));
+            return Ok(());
+        }
+        self.cancel_tool()?;
+        self.cancel_helper()?;
+        let session = self.session.clone();
+        self.recovery_worker = Some(
+            thread::Builder::new()
+                .name("louiselm-retain-recovery".into())
+                .spawn(move || {
+                    let result = (|| {
+                        let mut session = lock(&session);
+                        if !matches!(
+                            session.mechanical_state(),
+                            Ok(SandboxMechanicalState::Parked)
+                        ) {
+                            return Err(RecoveryError::NotParked);
+                        }
+                        let now = recovery_now_ms()?;
+                        let evidence = storage.retain(&request, now)?;
+                        if recovery_now_ms()? >= request.expires_at_ms {
+                            return Err(RecoveryError::Expired);
+                        }
+                        Ok(evidence)
+                    })();
+                    complete(result);
+                })
+                .map_err(|_| SupervisorError::WorkerUnavailable)?,
+        );
+        Ok(())
+    }
+
     fn launch_helper(
         &mut self,
         request: crate::launch_protocol::CommandMessage,
         enforcer: Arc<super::command::CommandEnforcer>,
         complete: SupervisorCompletion<super::HelperPrincipal>,
     ) -> Result<(), SupervisorError> {
+        self.join_recovery()?;
         self.tools
             .as_mut()
             .ok_or(SupervisorError::ToolIsolationUnproven)?
@@ -1013,6 +1106,7 @@ impl RunningAgent for SystemRunningAgent {
         permit: super::command::CommandPermit,
         complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionResult>,
     ) -> Result<(), SupervisorError> {
+        self.join_recovery()?;
         self.tools
             .as_mut()
             .ok_or(SupervisorError::ToolIsolationUnproven)?
@@ -1098,6 +1192,8 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn resume(&mut self) -> Result<(), MechanicFailure> {
+        self.join_recovery()
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         apply_mechanic(
             &self.session,
             Some(SandboxMechanicalState::Running),
@@ -1106,6 +1202,8 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn interrupt(&mut self) -> Result<(), MechanicFailure> {
+        self.join_recovery()
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         self.tools
             .as_mut()
             .map_or(Ok(()), super::tool_execution::ToolExecutor::cancel)
@@ -1114,6 +1212,7 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
+        let recovery = self.join_recovery();
         let relay = self.relay.as_mut().map_or(Ok(()), RelayWorker::stop);
         let tools = self
             .tools
@@ -1123,11 +1222,39 @@ impl RunningAgent for SystemRunningAgent {
             .dispose()
             .map(|_| ())
             .map_err(map_sandbox);
-        if relay.is_err() || tools.is_err() || process.is_err() {
+        let sealed = if process.is_ok() && tools.is_ok() {
+            self.recovery
+                .as_ref()
+                .map_or(Ok(()), |storage| storage.seal())
+        } else {
+            Err(super::recovery::RecoveryError::NotParked)
+        };
+        if recovery.is_err()
+            || relay.is_err()
+            || tools.is_err()
+            || process.is_err()
+            || sealed.is_err()
+        {
             Err(SupervisorError::CleanupUnproven)
         } else {
             Ok(())
         }
+    }
+}
+
+fn recovery_now_ms() -> Result<u64, super::recovery::RecoveryError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| elapsed.as_millis().try_into().ok())
+        .ok_or(super::recovery::RecoveryError::Invalid)
+}
+
+impl Drop for SystemRunningAgent {
+    fn drop(&mut self) {
+        // No retention worker may outlive this owner. A panic cannot release a
+        // host identity: the outer lifecycle owner requires successful dispose.
+        let _ = self.join_recovery();
     }
 }
 

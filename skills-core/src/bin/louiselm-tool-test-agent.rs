@@ -6,6 +6,8 @@
 
 #[path = "tool_fixture/channel.rs"]
 mod channel;
+#[path = "tool_fixture/recovery.rs"]
+mod recovery;
 
 use louiselm_skills::launch_protocol::{
     CommandOperation, MAX_PROTOCOL_MESSAGE_BYTES, ProtocolMessage, decode_message,
@@ -20,8 +22,16 @@ fn run() -> io::Result<()> {
     let mut output = io::stdout().lock();
     let mut channel = None;
     let mut byte = [0];
+    let mut counter = 0_u64;
     while input.read(&mut byte)? != 0 {
+        if byte[0] == 0x1d {
+            recovery::handle(&mut input, &mut output, &mut counter)?;
+            continue;
+        }
         if byte[0] != 0x1e {
+            counter = counter
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("fixture counter exhausted"))?;
             output.write_all(&byte)?;
             output.flush()?;
             continue;

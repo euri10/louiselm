@@ -48,6 +48,7 @@ use crate::{
 
 pub mod command;
 mod lifecycle;
+pub mod recovery;
 mod tool_execution;
 mod tool_helper;
 mod tool_integration;
@@ -438,6 +439,24 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Retains a verified recovery point while the tree is frozen.
+    ///
+    /// Production performs I/O on an owned worker; disposal joins that worker
+    /// before identity release. Unsupported adapters return no evidence.
+    /// Callbacks must not block or synchronously call back into the adapter.
+    ///
+    /// # Errors
+    /// Returns worker-admission errors. Layout, state and persistence failures
+    /// arrive through `complete`; this never authorizes disposal or Resume.
+    fn retain_recovery(
+        &mut self,
+        _request: recovery::RetentionRequest,
+        complete: recovery::RecoveryCompletion,
+    ) -> Result<(), SupervisorError> {
+        complete(Err(recovery::RecoveryError::Unsupported));
+        Ok(())
+    }
+
     /// Starts the fixed measured isolated helper, without granting command authority.
     /// The callback returns its independently authenticated process and channel.
     /// The running Agent retains the helper tree and joins it on disposal.
@@ -579,10 +598,16 @@ pub trait LaunchPlatform: Send + Sync {
     ) -> Result<Box<dyn CapabilityGate>, SupervisorError>;
 
     /// Materializes the resolved confinement plan behind a startup gate.
+    /// The coordinator supplies the already-authorized request used to resolve
+    /// this plan, so retained storage stays bound to that exact launch.
     ///
     /// # Errors
     /// Returns confinement validation, resource setup, spawn, or host-identity verification errors.
-    fn prepare(&self, plan: ConfinementPlan) -> Result<Box<dyn PreparedAgent>, SupervisorError>;
+    fn prepare(
+        &self,
+        request: &LaunchRequest,
+        plan: ConfinementPlan,
+    ) -> Result<Box<dyn PreparedAgent>, SupervisorError>;
 }
 
 /// Stable launch failures. Variants deliberately carry no prompts, environment,
@@ -869,7 +894,7 @@ fn run_launch(
     resolution.plan.channels.push(capability_channel.clone());
     let receipt_channels = resolution.plan.channels.clone();
 
-    let prepared = match inner.platform.prepare(resolution.plan) {
+    let prepared = match inner.platform.prepare(request, resolution.plan) {
         Ok(prepared) => prepared,
         Err(error) => {
             capability.close();

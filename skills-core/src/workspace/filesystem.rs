@@ -16,13 +16,13 @@ const DIRECTORY: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-pub(super) fn open_directory(path: &Path) -> Result<File, WorkspaceError> {
+pub(crate) fn open_directory(path: &Path) -> Result<File, WorkspaceError> {
     rustix::fs::open(path, DIRECTORY, Mode::empty())
         .map(File::from)
         .map_err(|error| std::io::Error::from(error).into())
 }
 
-pub(super) fn read_source(
+pub(crate) fn read_source(
     root: &File,
     path: &str,
     limit: usize,
@@ -112,7 +112,7 @@ pub(super) fn validate_output(output: &Path, source: &Path) -> Result<(), Worksp
     }
 }
 
-pub(super) fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), WorkspaceError> {
+pub(crate) fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), WorkspaceError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -146,7 +146,7 @@ pub(super) fn write_files(
     Ok(())
 }
 
-pub(super) fn publish(
+pub(crate) fn publish(
     output: &Path,
     write: impl FnOnce(&Path) -> Result<(), WorkspaceError>,
 ) -> Result<(), WorkspaceError> {

@@ -1,5 +1,8 @@
 # Broker launch authority gate
 
+Continuing lifecycle authorization and Attention projection are documented in
+[Broker lifecycle and Attention delivery](broker-lifecycle.md).
+
 `louiselm-qbr.5.1.1.5.4` composes the real `InstalledBroker`,
 `InstalledLaunchSigner`, `SystemLaunchPlatform` and `LaunchSupervisor` with the
 release-measured native Agent/helper. The broker runs as its own unprivileged

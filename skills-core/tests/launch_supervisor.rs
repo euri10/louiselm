@@ -1605,7 +1605,11 @@ impl LaunchPlatform for BubblewrapLaunchPlatform {
         }))
     }
 
-    fn prepare(&self, plan: ConfinementPlan) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
+    fn prepare(
+        &self,
+        _request: &LaunchRequest,
+        plan: ConfinementPlan,
+    ) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
         if plan.identity
             != (IdentityPlan::HostIdentity {
                 uid: self.expected_identity.uid,
@@ -1878,7 +1882,11 @@ impl LaunchPlatform for FakePlatform {
         }))
     }
 
-    fn prepare(&self, plan: ConfinementPlan) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
+    fn prepare(
+        &self,
+        _request: &LaunchRequest,
+        plan: ConfinementPlan,
+    ) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
         record(&self.events, "platform.prepare");
         lock(&self.state).plan = Some(plan);
         if self.behavior.prepare_fails {

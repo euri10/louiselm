@@ -80,6 +80,32 @@ fn disposal_closes_controller_io_without_prior_quiescence() {
     close_without_controller_eof(false);
 }
 
+#[test]
+fn ordinary_running_adapter_never_infers_a_recovery_layout() {
+    let Some((_fixture, mut agent)) = running_agent() else {
+        return;
+    };
+    let (sender, receiver) = mpsc::channel();
+    agent
+        .retain_recovery(
+            super::super::recovery::RetentionRequest {
+                request_id: "retain".into(),
+                acp_session_id: "conversation".into(),
+                expires_at_ms: u64::MAX,
+            },
+            Box::new(move |result| {
+                sender.send(result).unwrap();
+            }),
+        )
+        .unwrap();
+    let result = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    agent.dispose().unwrap();
+    assert!(matches!(
+        result,
+        Err(super::super::recovery::RecoveryError::Unsupported)
+    ));
+}
+
 fn close_without_controller_eof(quiesce_first: bool) {
     let Some((_fixture, mut agent)) = running_agent() else {
         return;

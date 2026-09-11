@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+#[path = "attention_projection.rs"]
+mod projection;
+pub use projection::{BrokerProjection, ProjectionChange, ProjectionResult};
+
 use crate::permissions::set_private_permissions;
 
 const SCHEMA_VERSION: u8 = 1;
@@ -218,6 +222,8 @@ struct PersistedAttention {
     schema_version: u8,
     generation: u64,
     items: Vec<AttentionItem>,
+    #[serde(default)]
+    broker_projection: Option<projection::ProjectionCursor>,
 }
 
 /// Filesystem-backed owner of unresolved Attention state.
@@ -247,6 +253,7 @@ impl AttentionStore {
                     schema_version: SCHEMA_VERSION,
                     generation: 0,
                     items: Vec::new(),
+                    broker_projection: None,
                 };
                 store.persist(&state).map(|()| state)
             }
@@ -486,6 +493,9 @@ fn snapshot(state: PersistedAttention) -> AttentionSnapshot {
 }
 
 fn validate_state(state: &PersistedAttention) -> Result<(), AttentionError> {
+    if let Some(cursor) = &state.broker_projection {
+        cursor.validate()?;
+    }
     if state.schema_version != SCHEMA_VERSION {
         return Err(AttentionError::Invalid(
             "Attention schema version is unsupported".to_owned(),

@@ -21,6 +21,108 @@ const SESSION_ID: &str = "codex/session-1";
 const RUN_ID: &str = "11111111-2222-4333-8444-555555555555";
 const OPERATION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
+#[test]
+fn broker_projection_order_survives_clear_and_receiver_restart() {
+    use louiselm_capture::{BrokerProjection, ProjectionChange};
+    let temporary = tempfile::tempdir().unwrap();
+    let store = AttentionStore::new(temporary.path()).unwrap();
+    let item = draft();
+    let created = BrokerProjection {
+        sequence: 1,
+        change: ProjectionChange::Upsert {
+            attention: item.clone(),
+        },
+    };
+    let first = store.project(&created).unwrap();
+    assert!(first.applied);
+    assert!(!store.project(&created).unwrap().applied);
+    let mut conflicting = created.clone();
+    if let ProjectionChange::Upsert { attention } = &mut conflicting.change {
+        attention.created_at_ms += 1;
+    }
+    assert!(store.project(&conflicting).is_err());
+    let cleared = BrokerProjection {
+        sequence: 2,
+        change: ProjectionChange::Clear {
+            key: AttentionKey {
+                subject_kind: item.subject_kind,
+                subject_id: item.subject_id,
+                kind: item.kind,
+                source_operation_id: item.source_operation_id,
+            },
+        },
+    };
+    store.project(&cleared).unwrap();
+    drop(store);
+    let restarted = AttentionStore::new(temporary.path()).unwrap();
+    assert!(!restarted.project(&created).unwrap().applied);
+    assert!(restarted.snapshot().unwrap().items.is_empty());
+    let mut gap = created;
+    gap.sequence = 4;
+    assert!(restarted.project(&gap).is_err());
+    assert!(restarted.snapshot().unwrap().items.is_empty());
+}
+
+#[tokio::test]
+async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fixture() {
+    use sha2::{Digest, Sha256};
+    let temporary = tempfile::tempdir().unwrap();
+    let store = AttentionStore::new(temporary.path().join("attention")).unwrap();
+    let socket_path = temporary.path().join("attention.sock");
+    let capability_path = temporary.path().join("capability");
+    let socket = AttentionSocket::bind(&socket_path, &capability_path, store.clone())
+        .await
+        .unwrap();
+    let server = tokio::spawn(socket.serve());
+    let stream = UnixStream::connect(&socket_path).await.unwrap();
+    let mut lines = BufReader::new(stream).lines();
+    lines.next_line().await.unwrap().unwrap();
+    let projection: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/broker_attention_projection.json"
+    ))
+    .unwrap();
+    for valid in [false, true] {
+        let capability = if valid {
+            fs::read_to_string(&capability_path).unwrap()
+        } else {
+            "wrong".into()
+        };
+        let request = serde_json::json!({"type":"project", "request_id":"projection-1", "projection":projection, "capability":capability});
+        lines
+            .get_mut()
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let line = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let reply: AttentionSocketMessage = serde_json::from_str(&line).unwrap();
+        if valid {
+            let AttentionSocketMessage::ProjectionResult { result, .. } = reply else {
+                panic!("projection ACK")
+            };
+            assert_eq!(
+                result.digest,
+                format!("{:x}", Sha256::digest(projection.to_string().as_bytes()))
+            );
+            assert!(result.applied);
+            let snapshot = store.snapshot().unwrap();
+            assert_eq!(snapshot.items.len(), 1);
+            assert!(snapshot.items[0].eligible);
+        } else {
+            assert!(matches!(
+                reply,
+                AttentionSocketMessage::MutationError { .. }
+            ));
+            assert!(store.snapshot().unwrap().items.is_empty());
+        }
+    }
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
 fn draft() -> AttentionDraft {
     AttentionDraft {
         subject_kind: AttentionSubjectKind::Session,

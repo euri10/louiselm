@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::dossier::NextAction;
@@ -226,7 +226,8 @@ impl EvidenceRef {
 }
 
 /// Stable reason one dimension does not satisfy policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// Parsing a diagnostic code never constructs trusted evidence or posture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCode {
     /// The trusted release is absent or not root-owned.

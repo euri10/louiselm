@@ -20,7 +20,8 @@ mod transcription;
 
 pub use attention::{
     AttentionCode, AttentionDraft, AttentionError, AttentionItem, AttentionKey, AttentionKind,
-    AttentionSnapshot, AttentionStore, AttentionSubjectKind, AttentionSummary,
+    AttentionSnapshot, AttentionStore, AttentionSubjectKind, AttentionSummary, BrokerProjection,
+    ProjectionChange, ProjectionResult,
 };
 pub use attention_socket::{AttentionSocket, AttentionSocketError, AttentionSocketMessage};
 pub use generation::{

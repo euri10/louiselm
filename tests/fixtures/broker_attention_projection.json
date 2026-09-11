@@ -1,0 +1,1 @@
+{"sequence":1,"change":{"type":"upsert","attention":{"subject_kind":"session","subject_id":"session-1","kind":"session_failed","source_operation_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","created_at_ms":100,"linked_run_id":null,"stage":null}}}

@@ -48,6 +48,12 @@ use tempfile::TempDir;
 #[path = "broker/launch_gates.rs"]
 mod launch_gates;
 
+#[path = "broker/lifecycle.rs"]
+mod lifecycle;
+
+#[path = "broker/attention.rs"]
+mod attention;
+
 /// Installed pool wide enough that slot assignment is not the subject.
 fn pool(slots: u32) -> IdentityPool {
     IdentityPool {
