@@ -5,7 +5,8 @@
 never with desktop sudo. CI invokes the same recipe.
 
 ```sh
-git archive HEAD skills-core scripts/launcher-conformance tests/fixtures/verified_posture_v1.json |
+git archive HEAD skills-core scripts/launcher-conformance \
+  tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json |
   ./scripts/launcher-vm exec tar -x -C /home/vm
 ./scripts/launcher-vm exec env \
   PATH=/home/vm/.cargo/bin:/usr/bin:/bin \
@@ -16,6 +17,11 @@ git archive HEAD skills-core scripts/launcher-conformance tests/fixtures/verifie
 
 Select uncommitted paths explicitly when transferring work under test. The gate
 builds as the guest operator, then runs root checks with private fixture modes.
+It includes the sandbox `host_identity` tests under initial-namespace root,
+UID/GID 60000 and umask 077, with backtraces enabled. CI consumes this same
+recipe. Ordinary Cargo runs skip these privileged cases; the unprivileged
+executable-identity regression additionally checks that their shared runtime
+fixture matches the kernel executable, including when it uses an interpreter.
 UID/GID 60000 and 60001 are the simultaneous Sessions; 60002 is the broker
 process double. Allocated accounts/groups, live processes using those UIDs,
 missing root, mapped user namespaces, missing tools or kernel controls fail.

@@ -11,14 +11,17 @@ cd -- "$(dirname -- "$0")/../skills-core"
 for tool in cargo jq bwrap strace getent timeout unshare ip; do
   command -v "$tool" >/dev/null || { echo "required prerequisite missing: $tool" >&2; exit 1; }
 done
-artifacts=$(cargo test --test hostile_isolation --test registry --test launch_supervisor --all-features --locked --no-run --message-format=json)
+artifacts=$(cargo test --test sandbox --test hostile_isolation --test registry --test launch_supervisor --all-features --locked --no-run --message-format=json)
+sandbox_test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "sandbox" and .profile.test) | .executable // empty' <<< "$artifacts")
 hostile_test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "hostile_isolation" and .profile.test) | .executable // empty' <<< "$artifacts")
 registry_test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "registry" and .profile.test) | .executable // empty' <<< "$artifacts")
 supervisor_test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "launch_supervisor" and .profile.test) | .executable // empty' <<< "$artifacts")
 [[ -x $hostile_test ]] || { echo 'hostile test executable missing' >&2; exit 1; }
+[[ -x $sandbox_test ]] || { echo 'sandbox test executable missing' >&2; exit 1; }
 [[ -x $registry_test && -x $supervisor_test ]] || { echo 'existing acceptance executable missing' >&2; exit 1; }
 "$hostile_test" --ignored --list | grep -Fx 'hostile_host_identity_matrix: test' >/dev/null
 "$supervisor_test" --list | grep -Fx 'privileged_supervisor_launches_agent_under_the_assigned_outer_identity: test' >/dev/null
+"$sandbox_test" --list | grep -Fx 'host_identity_changes_outer_credentials_and_owns_private_directories: test' >/dev/null
 sudo -n env "LOUISELM_TEST_OPERATOR_UID=$UID" \
   LOUISELM_AMBIENT_SENTINEL=hostile-ambient-sentinel \
   timeout --foreground --kill-after=10s 120s \
@@ -40,3 +43,9 @@ sudo -n env LOUISELM_TEST_HOST_ID=60000 "LOUISELM_TEST_OPERATOR_UID=$UID" \
   LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
   timeout --foreground --kill-after=10s 120s \
   /bin/bash -c 'umask 077; exec "$1" --exact privileged_supervisor_launches_agent_under_the_assigned_outer_identity --nocapture' bash "$supervisor_test"
+# Run the same initial-host identity acceptance locally and in CI. Ordinary
+# Cargo skips these root-only cases, so it cannot validate their fixtures.
+# The hostile matrix above first verifies that the test UIDs are unused.
+sudo -n env LOUISELM_TEST_HOST_ID=60000 LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
+  RUST_BACKTRACE=1 timeout --foreground --kill-after=10s 120s \
+  /bin/bash -c 'umask 077; exec "$1" host_identity --nocapture' bash "$sandbox_test"

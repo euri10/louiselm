@@ -340,6 +340,7 @@ mod tests {
     use super::*;
     use std::{
         io::Write,
+        os::unix::fs::MetadataExt,
         process::{Child, Command, Stdio},
     };
 
@@ -423,15 +424,49 @@ mod tests {
             !identity.valid().unwrap(),
             "exit irreversibly revokes the original pin"
         );
+        let error = KernelProcess::from_exec_stop(
+            identity.credentials(),
+            pin,
+            &fs::File::open("/bin/sleep").unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Agent process {} exited before executable observation",
+                identity.credentials().pid
+            )
+        );
     }
 
     #[test]
     fn wrong_executable_is_denied_before_workload_execution_and_reaped() {
-        let (mut fixture, trace, _) = Fixture::prepare();
+        let (mut fixture, mut trace, _) = Fixture::prepare();
         fixture.release();
-        let error = observe_unprivileged(trace, &fs::File::open("/bin/cat").unwrap()).unwrap_err();
-        assert_eq!(error.to_string(), "Agent process or executable changed");
+        let agent = trace.stop_at_exec().unwrap();
+        let expected_file = fs::File::open("/bin/cat").unwrap();
+        let expected = expected_file.metadata().unwrap();
+        let observed = fs::metadata("/bin/sleep").unwrap();
+        let error = trace
+            .pin_executable(
+                agent,
+                &expected_file,
+                rustix::process::getuid().as_raw(),
+                rustix::process::getgid().as_raw(),
+            )
+            .unwrap_err();
         fixture.wait();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Agent executable changed for process {}: expected device {} inode {}, observed device {} inode {}",
+                agent.as_raw_nonzero().get(),
+                expected.dev(),
+                expected.ino(),
+                observed.dev(),
+                observed.ino()
+            )
+        );
     }
 
     #[test]

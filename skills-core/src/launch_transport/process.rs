@@ -54,8 +54,8 @@ impl KernelProcess {
             _executable: executable,
             revoked: AtomicBool::new(false),
         };
-        if !process.valid()? {
-            return Err(io::Error::other("Agent process or executable changed"));
+        if let Some(reason) = process.observe()? {
+            return Err(io::Error::other(reason));
         }
         Ok(process)
     }
@@ -78,26 +78,46 @@ impl KernelProcess {
             return Ok(false);
         }
         match self.observe() {
-            Ok(true) => Ok(!self.revoked.load(Ordering::Acquire)),
+            Ok(None) => Ok(!self.revoked.load(Ordering::Acquire)),
             result => {
                 self.revoked.store(true, Ordering::Release);
-                result
+                result.map(|_| false)
             }
         }
     }
 
-    fn observe(&self) -> io::Result<bool> {
+    // None proves the observation; a reason describes permanent invalidation.
+    fn observe(&self) -> io::Result<Option<String>> {
+        let pid = self.credentials.pid;
         if !self.alive()? {
-            return Ok(false);
+            return Ok(Some(format!(
+                "Agent process {pid} exited before executable observation"
+            )));
         }
-        let executable = match fs::metadata(format!("/proc/{}/exe", self.credentials.pid)) {
+        let executable = match fs::metadata(format!("/proc/{pid}/exe")) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Some(format!(
+                    "Agent executable unavailable for process {pid}"
+                )));
+            }
             Err(error) => return Err(error),
         };
-        Ok(executable.dev() == self.executable_device
-            && executable.ino() == self.executable_inode
-            && self.alive()?)
+        if executable.dev() != self.executable_device || executable.ino() != self.executable_inode {
+            return Ok(Some(format!(
+                "Agent executable changed for process {pid}: expected device {} inode {}, observed device {} inode {}",
+                self.executable_device,
+                self.executable_inode,
+                executable.dev(),
+                executable.ino()
+            )));
+        }
+        if !self.alive()? {
+            return Ok(Some(format!(
+                "Agent process {pid} exited during executable observation"
+            )));
+        }
+        Ok(None)
     }
 
     fn alive(&self) -> io::Result<bool> {

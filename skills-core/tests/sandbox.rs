@@ -79,7 +79,11 @@ fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
         .expect("Sessions root has its fixed mode");
     let runtime_directory = runtimes_root.join(id);
     let agent = runtime_directory.join("bin/agent");
-    executable_script(&agent, script);
+    let script_path = runtime_directory.join("bin/scenario.sh");
+    executable_script(&script_path, script);
+    // Pin the executable the kernel actually runs; a shebang script names
+    // its interpreter in /proc/PID/exe (louiselm-skills-core-host-identity-panic-boke).
+    fs::copy("/bin/sh", &agent).expect("the fixture copies its native interpreter");
     for path in [
         &runtimes_root,
         &runtime_directory,
@@ -93,7 +97,7 @@ fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
         session_id: id.to_owned(),
         runtime_root: runtime_directory,
         executable: agent,
-        arguments: Vec::new(),
+        arguments: vec![script_path.display().to_string()],
         environment: BTreeMap::new(),
         home: sessions_root.join(id).join("home"),
         workspace: sessions_root.join(id).join("workspace"),
@@ -249,6 +253,28 @@ fn assert_maps_assigned_identity(pid: u32, name: &str, host_id: u32) {
         vec![[host_id, host_id, 1]],
         "process {pid} must map its assigned namespace identity to the same host identity in {name}",
     );
+}
+
+#[test]
+fn planned_runtime_matches_the_kernel_executable_without_host_privileges() {
+    let fixture = Fixture::new();
+    let mut confinement = plan(
+        &fixture,
+        "executable-identity",
+        "#!/bin/sh\n[ /proc/$$/exe -ef \"$EXPECTED_EXECUTABLE\" ]\n",
+    );
+    confinement.environment.insert(
+        "EXPECTED_EXECUTABLE".to_owned(),
+        confinement.executable.display().to_string(),
+    );
+    let mut session = BubblewrapBackend::new()
+        .with_bootstrap(Path::new(BOOTSTRAP))
+        .without_cgroup()
+        .spawn(&confinement)
+        .expect("the shared runtime fixture starts without host identity");
+    let exit = session.wait().expect("the executable identity probe exits");
+    session.dispose().expect("the probe leaves no processes");
+    assert_eq!(exit, 0, "the kernel must execute the planned inode itself");
 }
 
 #[test]
