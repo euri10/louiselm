@@ -61,6 +61,14 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
     inputs.project_instructions = Some(vec![]);
     inputs.tool_schemas = Some(vec![]);
     inputs.plugin_schemas = Some(vec![]);
+    assert!(inputs.cache_base_digest.is_none());
+    let empty_cache = tempfile::tempdir().unwrap();
+    inputs.cache_base_digest = Some(
+        louiselm_skills::cache::CacheBase::capture(empty_cache.path())
+            .unwrap()
+            .digest()
+            .to_string(),
+    );
     inputs.acp_mcp_servers = Some(vec![]);
     inputs.envelope_id = Some("denied".into());
     inputs.envelope_revision = Some(1);

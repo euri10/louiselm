@@ -51,6 +51,7 @@ impl SessionInputManifest {
         )?;
         digest("view_digest", &self.skill_generation.view_digest, true)?;
         digest("policy_digest", &self.policy_digest, true)?;
+        digest("cache_base_digest", &self.cache_base_digest, true)?;
         identifier("isolation_receipt", &self.isolation_receipt)?;
         identifier("envelope_id", &self.envelope.id)?;
         for (field, entries) in [

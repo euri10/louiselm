@@ -183,6 +183,7 @@ fn manifest_fixture(runtime: &RuntimePackage) -> SessionInputManifest {
         ]),
         tool_schemas: Some(vec![]),
         plugin_schemas: Some(vec![]),
+        cache_base_digest: Some(digest(b"empty-cache")),
         policy_digest: Some(digest(b"policy")),
         isolation_receipt: Some("isolation-1".into()),
         envelope_id: Some("envelope-1".into()),

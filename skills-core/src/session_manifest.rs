@@ -84,6 +84,8 @@ pub struct SessionInputs {
     pub tool_schemas: Option<Vec<MeasuredInput>>,
     /// Complete measured plugin-schema snapshot.
     pub plugin_schemas: Option<Vec<MeasuredInput>>,
+    /// Measured immutable cache base; an empty cache still has an explicit digest.
+    pub cache_base_digest: Option<String>,
     /// Governing supply policy identity.
     pub policy_digest: Option<String>,
     /// Trusted isolation evidence reference.
@@ -144,6 +146,8 @@ pub struct SessionInputManifest {
     pub tool_schemas: Vec<MeasuredInput>,
     /// Measured plugin schemas.
     pub plugin_schemas: Vec<MeasuredInput>,
+    /// Exact immutable cache base used to seed the private Session overlay.
+    pub cache_base_digest: String,
     /// Governing policy identity.
     pub policy_digest: String,
     /// Isolation evidence reference.
@@ -307,6 +311,7 @@ impl SessionInputManifest {
             project_instructions: required(inputs.project_instructions, "project_instructions")?,
             tool_schemas: required(inputs.tool_schemas, "tool_schemas")?,
             plugin_schemas: required(inputs.plugin_schemas, "plugin_schemas")?,
+            cache_base_digest: required(inputs.cache_base_digest, "cache_base_digest")?,
             policy_digest: required(inputs.policy_digest, "policy_digest")?,
             isolation_receipt: required(inputs.isolation_receipt, "isolation_receipt")?,
             envelope: EnvelopeInput {

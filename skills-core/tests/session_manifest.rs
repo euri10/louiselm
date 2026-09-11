@@ -71,6 +71,7 @@ fn complete_inputs() -> SessionInputs {
             measured("plugin/init.lua", "return"),
             measured("plugin/extra.json", "extra"),
         ]),
+        cache_base_digest: Some(Digest::of(b"cache").to_string()),
         policy_digest: Some(POLICY.to_owned()),
         isolation_receipt: Some("isolation-contract-1".to_owned()),
         envelope_id: Some("envelope-7".to_owned()),
@@ -143,6 +144,28 @@ fn identical_inputs_yield_identical_digests() {
         .digest();
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn cache_base_is_required_canonical_and_changes_the_session_identity() {
+    let inputs = complete_inputs();
+    let baseline = SessionInputManifest::build(inputs.clone())
+        .unwrap()
+        .digest();
+    let mut changed = inputs.clone();
+    changed.cache_base_digest = Some(Digest::of(b"different cache").to_string());
+    assert_ne!(
+        SessionInputManifest::build(changed).unwrap().digest(),
+        baseline
+    );
+    for invalid in ["", "unknown", "sha256:ABC", Digest::of(b"bare").hex()] {
+        let mut changed = inputs.clone();
+        changed.cache_base_digest = Some(invalid.to_owned());
+        assert!(SessionInputManifest::build(changed).is_err());
+    }
+    let mut json = serde_json::to_value(SessionInputManifest::build(inputs).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("cache_base_digest");
+    assert!(SessionInputManifest::parse(&serde_json::to_vec(&json).unwrap()).is_err());
 }
 
 #[test]
@@ -223,6 +246,13 @@ fn every_changed_input_changes_the_digest() {
 fn missing_required_inputs_are_refused_without_defaults() {
     type RemoveInput = fn(&mut SessionInputs);
     let cases: Vec<(&str, RemoveInput, SessionManifestError)> = vec![
+        (
+            "cache base",
+            |inputs| inputs.cache_base_digest = None,
+            SessionManifestError::Missing {
+                field: "cache_base_digest",
+            },
+        ),
         (
             "agent",
             |inputs| inputs.agent = None,

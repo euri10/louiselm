@@ -16,6 +16,14 @@
 //! that not every environment has, the test skips with a printed reason
 //! rather than asserting a fact the environment cannot back up.
 
+#[path = "sandbox/cache.rs"]
+mod cache;
+#[path = "support/discovery.rs"]
+#[allow(
+    dead_code,
+    reason = "Cache conformance consumes only the existing manifest fixture."
+)]
+mod discovery_support;
 mod support;
 
 use std::{

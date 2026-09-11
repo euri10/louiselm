@@ -79,6 +79,7 @@ impl SessionInputs {
             project_instructions: None,
             tool_schemas: None,
             plugin_schemas: None,
+            cache_base_digest: None,
             acp_mcp_servers: None,
             isolation_receipt: None,
             envelope_id: None,

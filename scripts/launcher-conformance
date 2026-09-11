@@ -22,6 +22,7 @@ supervisor_test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name 
 "$hostile_test" --ignored --list | grep -Fx 'hostile_host_identity_matrix: test' >/dev/null
 "$supervisor_test" --list | grep -Fx 'privileged_supervisor_launches_agent_under_the_assigned_outer_identity: test' >/dev/null
 "$sandbox_test" --list | grep -Fx 'host_identity_changes_outer_credentials_and_owns_private_directories: test' >/dev/null
+"$sandbox_test" --list | grep -Fx 'cache::host_identity_cache_isolation_and_lifecycle: test' >/dev/null
 sudo -n env "LOUISELM_TEST_OPERATOR_UID=$UID" \
   LOUISELM_AMBIENT_SENTINEL=hostile-ambient-sentinel \
   timeout --foreground --kill-after=10s 120s \

@@ -284,8 +284,10 @@ including when that Agent has no admitted members. This blocking API refuses
 runtime drift, missing supply and altered views; it never falls back.
 
 The caller supplies the per-Session project-instruction, tool-schema and
-plugin-schema snapshots, isolation evidence reference and exact capability
-envelope revision. `MeasuredInput::from_bytes` binds captured bytes by path,
+plugin-schema snapshots, measured cache-base digest, isolation evidence reference
+and exact capability envelope revision. The [private cache APIs](../docs/session-caches.md)
+capture immutable warm bytes and seed independent Session overlays; even an
+empty cache requires its explicit digest. `MeasuredInput::from_bytes` binds captured bytes by path,
 size, executable bit and SHA-256. `None` refuses binding; `Some([])` explicitly
 records an empty snapshot. Verified v1 requires `Some([])` for the ACP MCP list.
 Project instructions remain measured Session inputs, never admitted packages.

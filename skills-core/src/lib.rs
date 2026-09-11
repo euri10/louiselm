@@ -8,6 +8,7 @@
 pub mod admission;
 pub mod assessment;
 pub mod broker;
+pub mod cache;
 pub mod canonical;
 pub mod capture;
 pub mod cli;
