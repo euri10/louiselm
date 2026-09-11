@@ -3,6 +3,7 @@ local Attention = require("louiselm.ui.attention")
 local Diff = require("louiselm.ui.diff")
 local Gates = require("louiselm.permission.gates")
 local Limits = require("louiselm.ui.limits")
+local Status = require("louiselm.ui.chat.status")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
@@ -250,9 +251,6 @@ end
 ---@field target_session_id string
 ---@field source_session_id? string Durable source Session identity.
 
----@class louiselm.ui.LimitsTarget
----@field agent string
-
 ---@class louiselm.ui.LimitsTimer
 ---@field is_closing fun(self: louiselm.ui.LimitsTimer): boolean
 ---@field start fun(self: louiselm.ui.LimitsTimer, timeout: integer, repeat_interval: integer, callback: fun())
@@ -373,57 +371,20 @@ local function single_line(value)
   return (value:gsub("[\r\n]", " "))
 end
 
----Return a human-readable label for an option's current value.
----For select options, resolves the wire value to its ConfigValue name when available.
----@param option louiselm.session.ConfigOption
----@return string
-local function option_display_value(option)
-  if option.type == "select" and type(option.options) == "table" then
-    for _, v in ipairs(option.options) do
-      if v.value == option.current_value then
-        return v.name
-      end
-    end
-  end
-  return tostring(option.current_value)
-end
-
 -- A select provider closes the picker a new one replaces, which would answer an open
 -- permission request without a choice. Commands that open their own picker refuse while
 -- a decision is presented instead of queueing behind it: a decision can open a nested
 -- picker of its own, and the way out of a stuck decision must never be queued behind it.
 local DECISION_OPEN_ERROR = "a louiselm permission decision is open; answer it first"
 local HEADER_LINE_COUNT = 4
-local ACP_HIGHLIGHT = "LouiselmAcpValue"
-local DERIVED_HIGHLIGHT = "LouiselmDerivedValue"
-
-local STATUS_HIGHLIGHTS = {
-  ready = "LouiselmStatusReady",
-  preparing = "LouiselmStatusActive",
-  prompting = "LouiselmStatusActive",
-  configuring = "LouiselmStatusActive",
-  starting = "LouiselmStatusActive",
-  waiting_permission = "LouiselmStatusWarning",
-  cancelling = "LouiselmStatusWarning",
-  error = "LouiselmStatusError",
-  disposed = "LouiselmStatusWarning",
-}
-
 local DEFAULT_HIGHLIGHTS = {
-  [ACP_HIGHLIGHT] = "Identifier",
-  [DERIVED_HIGHLIGHT] = "Number",
+  LouiselmAcpValue = "Identifier",
+  LouiselmDerivedValue = "Number",
   LouiselmStatusReady = "DiagnosticOk",
   LouiselmStatusActive = "DiagnosticInfo",
   LouiselmStatusWarning = "DiagnosticWarn",
   LouiselmStatusError = "DiagnosticError",
 }
-
--- Must be a plain dotted name Vim can resolve at click-dispatch time, not a
--- call expression: `v:lua.require('...').winbar_click` is silently never
--- invoked on a real click (louiselm-7ios). `command.lua` registers this
--- global as a stable forwarder to its own reassignable `M.winbar_click`.
-local WINBAR_CLICK_HANDLER = "v:lua.__louiselm_winbar_click"
-local LIMITS_CLICK_TARGET = 99
 
 local function setup_highlights()
   for name, link in pairs(DEFAULT_HIGHLIGHTS) do
@@ -470,124 +431,6 @@ end
 ---@return string
 local function report_id(agent, acp_session_id)
   return agent .. "/" .. acp_session_id
-end
-
----@param value string
----@return string
-local function statusline_escape(value)
-  return (single_line(value):gsub("%%", function()
-    return "%%"
-  end))
-end
-
----@param state louiselm.session.State
----@return table<string, string>
-local function session_cells(state)
-  local cells = {
-    id = state.id,
-    name = state.name ~= state.id and state.name or "",
-    status = state.status or "unknown",
-    skills = state.skills_policy and "skills: " .. state.skills_policy or "",
-    agent = state.agent,
-    loaded = state.source == "loaded" and "loaded" or "",
-    identity = state.acp_session_id and report_id(state.agent, state.acp_session_id) or "",
-  }
-  if state.activity ~= nil then
-    cells.activity = "activity=" .. state.activity
-  end
-  if state.context ~= nil then
-    local stale = state.context.stale and " stale" or ""
-    cells.context = string.format(
-      "context=%s/%s (%.0f%%%s)",
-      format_number(state.context.used),
-      format_number(state.context.size),
-      state.context.percentage,
-      stale
-    )
-  end
-  if state.cost ~= nil then
-    cells.cost = "cost=" .. format_number(state.cost.amount) .. " " .. state.cost.currency
-  end
-  return cells
-end
-
----@param option louiselm.session.ConfigOption
----@return string
-local function session_option_column(option)
-  -- Agents use different ids/labels for effort, but advertise its shared meaning.
-  if option.category == "thought_level" then
-    return "category:thought_level"
-  end
-  -- model_config groups distinct controls; only matching labels share a column.
-  if option.category == "model_config" then
-    return "category:model_config:" .. option.name
-  end
-  return "option:" .. option.id
-end
-
----@param sessions louiselm.session.Session[]
----@return fun(session: louiselm.session.Session): string
-local function session_formatter(sessions)
-  local columns = { "id", "name", "status", "skills", "agent", "loaded" }
-  local seen_options = {}
-  local rows = {}
-  local states = {}
-  local ambiguous = {}
-  -- Freeze one opening so filtering and repeated rendering use the same widths/values.
-  for index, session in ipairs(sessions) do
-    local state = session:inspect()
-    states[index] = state
-    local seen = {}
-    for _, option in ipairs(state.config_options or {}) do
-      local column = session_option_column(option)
-      if seen[column] then
-        ambiguous[column] = true
-      end
-      seen[column] = true
-    end
-  end
-  for index, state in ipairs(states) do
-    rows[index] = session_cells(state)
-    for _, option in ipairs(state.config_options or {}) do
-      local column = session_option_column(option)
-      -- Ambiguous semantic matches fall back for the whole opening; retain every control.
-      if ambiguous[column] then
-        column = "option:" .. option.id
-      end
-      rows[index][column] = option.name .. "=" .. option_display_value(option)
-      if not seen_options[column] then
-        seen_options[column] = true
-        columns[#columns + 1] = column
-      end
-    end
-  end
-  nvim.list_extend(columns, { "activity", "context", "cost", "identity" })
-
-  local widths = {}
-  for _, row in ipairs(rows) do
-    for _, column in ipairs(columns) do
-      -- Tabs depend on their starting column; normalize them before measuring cells.
-      local value = single_line(row[column] or ""):gsub("\t", " ")
-      row[column] = value
-      widths[column] = math.max(widths[column] or 0, nvim.fn.strdisplaywidth(value))
-    end
-  end
-
-  local labels = {}
-  for index, row in ipairs(rows) do
-    local parts = {}
-    for _, column in ipairs(columns) do
-      local width = widths[column]
-      if width > 0 then
-        local value = row[column]
-        parts[#parts + 1] = value .. string.rep(" ", width - nvim.fn.strdisplaywidth(value))
-      end
-    end
-    labels[sessions[index]] = table.concat(parts, " · ")
-  end
-  return function(session)
-    return labels[session]
-  end
 end
 
 ---@param session louiselm.session.DiscoveredSession
@@ -652,369 +495,36 @@ local function discovery_error_summary(errors)
   return table.concat(messages, "; ")
 end
 
----@param state louiselm.session.State
----@return string
-local function turn_label(state)
-  if state.recording_error ~= nil then
-    return "Recording failed — retry to recover"
-  end
-  if state.status == "preparing" then
-    return "Preparing turn"
-  end
-  if state.status == "ready" then
-    return "Your turn"
-  end
-  if state.status == "prompting" then
-    if state.session_failure ~= nil then
-      return single_line(state.session_failure.title)
-    end
-    return "Model responding"
-  end
-  if state.status == "waiting_permission" then
-    return "Waiting for permission"
-  end
-  if state.status == "cancelling" then
-    return "Stopping"
-  end
-  if state.status == "starting" or state.status == "configuring" then
-    return "Starting"
-  end
-  if state.status == "error" then
-    return "Error"
-  end
-  return "Unavailable"
-end
-
----@param state louiselm.session.State
----@return string group
-local function turn_highlight(state)
-  if state.status == "prompting" and state.session_failure ~= nil then
-    return state.session_failure.severity == "error" and "LouiselmStatusError" or "LouiselmStatusWarning"
-  end
-  return STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"
-end
-
----@param state louiselm.session.State
----@return string raw
----@return string derived
-local function context_display(state)
-  local context = state.context
-  if context == nil then
-    return "", ""
-  end
-  local raw = "context=" .. format_number(context.used) .. "/" .. format_number(context.size)
-  local derived = string.format("%.0f%%", context.percentage)
-  if context.stale then
-    derived = derived .. " stale"
-  end
-  return raw, derived
-end
-
----@param state louiselm.session.State
----@return string?
-local function cost_display(state)
-  if state.cost == nil then
-    return nil
-  end
-  return "cost=" .. format_number(state.cost.amount) .. " " .. single_line(state.cost.currency)
-end
-
----@param state louiselm.session.State
----@return string
-local function header_identity(state)
-  local agent = single_line(state.agent)
-  local parts = {
-    state.acp_session_id and report_id(agent, single_line(state.acp_session_id)) or agent,
-  }
-  if state.name ~= nil and state.name ~= state.id then
-    parts[#parts + 1] = single_line(state.name)
-  end
-  parts[#parts + 1] = single_line(state.id)
-  return "# " .. table.concat(parts, " · ")
-end
-
----@class louiselm.ui.HeaderHighlight
----@field line integer Zero-based header line.
----@field start_col integer Zero-based byte column.
----@field end_col integer Exclusive zero-based byte column.
----@field group string Highlight group name.
-
----@param highlights louiselm.ui.HeaderHighlight[]
----@param line integer
----@param start_col integer
----@param text string
----@param group string
-local function add_header_highlight(highlights, line, start_col, text, group)
-  highlights[#highlights + 1] = {
-    line = line,
-    start_col = start_col,
-    end_col = start_col + #text,
-    group = group,
-  }
-end
-
----@param state louiselm.session.State
----@return string[] lines
----@return louiselm.ui.HeaderHighlight[] highlights
-local function session_header(state)
-  local highlights = {}
-  local session_parts = {
-    "status=" .. tostring(state.status or "unknown"),
-    "display=" .. turn_label(state),
-  }
-  if state.skills_policy ~= nil then
-    session_parts[#session_parts + 1] = "skills=" .. state.skills_policy
-  end
-  if state.source == "loaded" then
-    session_parts[#session_parts + 1] = "source=loaded"
-  end
-  local session_line = "Session: " .. table.concat(session_parts, " · ")
-  local display_text = "display=" .. turn_label(state)
-  local display_start = assert(session_line:find(display_text, 1, true)) - 1
-  add_header_highlight(highlights, 1, display_start, display_text, turn_highlight(state))
-
-  local options_line = "ACP options:"
-  for index, option in ipairs(state.config_options or {}) do
-    options_line = options_line .. (index == 1 and " " or " · ")
-    local option_text = single_line(option.name) .. "=" .. single_line(option_display_value(option))
-    local start_col = #options_line
-    options_line = options_line .. option_text
-    add_header_highlight(highlights, 2, start_col, option_text, ACP_HIGHLIGHT)
-  end
-
-  local telemetry_line = "Telemetry:"
-  local raw_context, derived_context = context_display(state)
-  if raw_context ~= "" then
-    telemetry_line = telemetry_line .. " "
-    local raw_start = #telemetry_line
-    telemetry_line = telemetry_line .. raw_context
-    add_header_highlight(highlights, 3, raw_start, raw_context, ACP_HIGHLIGHT)
-    telemetry_line = telemetry_line .. " ("
-    local derived_start = #telemetry_line
-    telemetry_line = telemetry_line .. derived_context
-    add_header_highlight(highlights, 3, derived_start, derived_context, DERIVED_HIGHLIGHT)
-    telemetry_line = telemetry_line .. ")"
-  end
-  local cost = cost_display(state)
-  if cost ~= nil then
-    telemetry_line = telemetry_line .. (raw_context == "" and " " or " · ")
-    local cost_start = #telemetry_line
-    telemetry_line = telemetry_line .. cost
-    add_header_highlight(highlights, 3, cost_start, cost, ACP_HIGHLIGHT)
-  end
-
-  return { header_identity(state), session_line, options_line, telemetry_line }, highlights
-end
-
----@param group string
----@param text string
----@return string
-local function winbar_segment(group, text)
-  return "%#" .. group .. "#" .. statusline_escape(text) .. "%*"
-end
-
----@class louiselm.ui.WinbarEntry
----@field id string
----@field group string
----@field text string
----@field attention boolean
----@field overflow_glyph? string Glyph for a collapsible entry; absent for pinned permission/error entries.
-
----@param view louiselm.ui.ChatView
----@return louiselm.ui.WinbarEntry entry
-local function background_winbar_entry(view)
-  local state = view.session:inspect()
-  local label = state.name ~= nil and state.name ~= "" and state.name or state.agent
-  label = single_line(label)
-  if state.status == "waiting_permission" then
-    return { id = state.id, group = "LouiselmStatusWarning", text = "! " .. label, attention = true }
-  end
-  if state.status == "error" then
-    return { id = state.id, group = "LouiselmStatusError", text = "✗ " .. label, attention = true }
-  end
-  if view.unread_turn then
-    return {
-      id = state.id,
-      group = "LouiselmStatusWarning",
-      text = "● " .. label,
-      attention = true,
-      overflow_glyph = "●",
-    }
-  end
-  if state.status == "ready" then
-    return {
-      id = state.id,
-      group = "LouiselmStatusReady",
-      text = "● " .. label,
-      attention = false,
-      overflow_glyph = "●",
-    }
-  end
-  if state.status == "disposed" then
-    return { id = state.id, group = "LouiselmStatusWarning", text = "✗ " .. label, attention = true }
-  end
-  return {
-    id = state.id,
-    group = STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning",
-    text = "… " .. label,
-    attention = false,
-    overflow_glyph = "…",
-  }
-end
-
----@param entries louiselm.ui.WinbarEntry[]
----@param visible integer Number of collapsible entries to keep individually labelled.
----@return louiselm.ui.WinbarEntry[]
-local function collapsed_winbar_entries(entries, visible)
-  local result = {} ---@type louiselm.ui.WinbarEntry[]
-  local summaries = {} ---@type louiselm.ui.WinbarEntry[]
-  local by_state = {} ---@type table<string, louiselm.ui.WinbarEntry>
-  local counts = {} ---@type table<string, integer>
-  local pinned = {} ---@type louiselm.ui.WinbarEntry[]
-  for _, entry in ipairs(entries) do
-    if entry.overflow_glyph == nil then
-      pinned[#pinned + 1] = entry
-    elseif visible > 0 then
-      result[#result + 1] = entry
-      visible = visible - 1
-    else
-      -- Color distinguishes unseen/seen dots; glyph distinguishes cancellation from completion.
-      local key = entry.group .. entry.overflow_glyph
-      local summary = by_state[key]
-      if summary == nil then
-        summary = { id = "", group = entry.group, text = "", attention = entry.attention }
-        by_state[key] = summary
-        summaries[#summaries + 1] = summary
-      end
-      counts[key] = (counts[key] or 0) + 1
-      summary.text = "+" .. counts[key] .. entry.overflow_glyph
-    end
-  end
-  nvim.list_extend(result, summaries)
-  nvim.list_extend(result, pinned)
-  return result
-end
-
----@param entries louiselm.ui.WinbarEntry[]
----@return integer width
-local function winbar_entries_width(entries)
-  local width = math.max(0, #entries - 1) * 3
-  for _, entry in ipairs(entries) do
-    width = width + nvim.fn.strdisplaywidth(entry.text)
-  end
-  return width
-end
-
----@param target integer
----@param group string
----@param text string
----@return string
-local function clickable_winbar_segment(target, group, text)
-  return "%" .. target .. "@" .. WINBAR_CLICK_HANDLER .. "@" .. winbar_segment(group, text) .. "%X"
-end
-
----@param self louiselm.ui.Chat
----@param state louiselm.session.State
----@return string winbar
----@return string? limits_agent
-local function session_winbar(self, state)
-  local identity = state.acp_session_id and report_id(state.agent, state.acp_session_id) or state.agent
-  local fields = {
-    winbar_segment(turn_highlight(state), turn_label(state)),
-    -- Truncate identity/telemetry before clipping background attention on the right.
-    "%<" .. winbar_segment("Normal", identity),
-  }
-  local limits_state = self.api:inspect_agent_limits(state.agent)
-  local limits_text
-  local limits_group
-  if limits_state ~= nil then
-    limits_text, limits_group = Limits.summary(limits_state)
-  end
-  if limits_text ~= nil and limits_group ~= nil then
-    fields[#fields + 1] = clickable_winbar_segment(LIMITS_CLICK_TARGET, limits_group, limits_text)
-  end
-  if
-    state.name ~= nil
-    and state.name ~= ""
-    and state.name ~= state.id
-    and state.name ~= state.acp_session_id
-    and state.name ~= state.agent
-    and state.name ~= identity
-  then
-    fields[#fields + 1] = winbar_segment("Normal", state.name)
-  end
-  local raw_context, derived_context = context_display(state)
-  if raw_context ~= "" then
-    fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, raw_context)
-      .. " ("
-      .. winbar_segment(DERIVED_HIGHLIGHT, derived_context)
-      .. ")"
-  end
-  local cost = cost_display(state)
-  if cost ~= nil then
-    fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, cost)
-  end
-  return table.concat(fields, " · "), limits_text ~= nil and state.agent or nil
-end
-
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param win integer
 ---@return string
 local function chat_winbar(self, view, win)
-  local base, limits_agent = session_winbar(self, view.session:inspect())
-  local quiet = {} ---@type louiselm.ui.WinbarEntry[]
-  local attention = {} ---@type louiselm.ui.WinbarEntry[]
-  local current_id = view.session:inspect().id
+  local state = view.session:inspect()
+  local limits_state = self.api:inspect_agent_limits(state.agent)
+  local limits
+  if limits_state ~= nil then
+    local text, group = Limits.summary(limits_state)
+    if text ~= nil and group ~= nil then
+      limits = { text = text, group = group }
+    end
+  end
+  local base, limits_agent = Status.session_winbar(state, limits)
+  local backgrounds = {} ---@type louiselm.ui.BackgroundStatus[]
   for _, id in ipairs(self.view_order) do
     local background = self.views[id]
-    if id ~= current_id and background ~= nil then
-      local entry = background_winbar_entry(background)
-      local entries = entry.attention and attention or quiet
-      entries[#entries + 1] = entry
+    if id ~= state.id and background ~= nil then
+      backgrounds[#backgrounds + 1] = {
+        state = background.session:inspect(),
+        unread_turn = background.unread_turn,
+      }
     end
   end
-  local targets = {} ---@type table<integer, string|false|louiselm.ui.LimitsTarget>
-  if limits_agent ~= nil then
-    targets[LIMITS_CLICK_TARGET] = { agent = limits_agent }
-  end
-  if #quiet == 0 and #attention == 0 then
-    self.winbar_targets[win] = targets
-    return base
-  end
-
   local available = nvim.api.nvim_win_get_width(win)
     - nvim.api.nvim_eval_statusline(base, { winid = win, use_winbar = true }).width
-  local entries = {} ---@type louiselm.ui.WinbarEntry[]
-  for _, entry in ipairs(quiet) do
-    entries[#entries + 1] = entry
-  end
-  for _, entry in ipairs(attention) do
-    entries[#entries + 1] = entry
-  end
-  if winbar_entries_width(entries) > available then
-    local all = entries
-    entries = collapsed_winbar_entries(all, 0)
-    local visible = 0
-    for _, entry in ipairs(all) do
-      if entry.overflow_glyph ~= nil then
-        visible = visible + 1
-        local candidate = collapsed_winbar_entries(all, visible)
-        if winbar_entries_width(candidate) > available then
-          break
-        end
-        entries = candidate
-      end
-    end
-  end
-
-  local segments = {}
-  for index, entry in ipairs(entries) do
-    targets[index] = entry.id ~= "" and entry.id or false
-    segments[index] = clickable_winbar_segment(index, entry.group, entry.text)
-  end
+  local winbar, targets = Status.layout_winbar(base, limits_agent, backgrounds, available)
   self.winbar_targets[win] = targets
-  return base .. "%=" .. table.concat(segments, " · ")
+  return winbar
 end
 
 ---@param self louiselm.ui.Chat
@@ -1153,7 +663,7 @@ end
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 local function render_header(self, view)
-  local lines, highlights = session_header(view.session:inspect())
+  local lines, highlights = Status.session_header(view.session:inspect())
   nvim.api.nvim_buf_set_lines(view.buffer, 0, HEADER_LINE_COUNT, false, lines)
   nvim.api.nvim_buf_clear_namespace(view.buffer, self.header_namespace, 0, HEADER_LINE_COUNT)
   for _, highlight in ipairs(highlights) do
@@ -2268,7 +1778,7 @@ open_session_options = function(self, view, initial)
   Picker.select(state.config_options, {
     prompt = "louiselm session options: ",
     format_item = function(option)
-      return option.name .. ": " .. option_display_value(option)
+      return option.name .. ": " .. Status.option_display_value(option)
     end,
   }, function(option)
     if option == nil or not current() then
@@ -3254,7 +2764,7 @@ local function attach_session(self, session, event_relay)
   if self.markdown_highlighting then
     nvim.treesitter.start(buffer, "markdown")
   end
-  local header = session_header(state)
+  local header = Status.session_header(state)
   local initial_lines = nvim.list_extend(header, { "", "> " })
   nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, initial_lines)
 
@@ -3944,9 +3454,20 @@ function Chat:switch_session()
   if #sessions == 0 then
     return false, "no chat sessions are attached"
   end
+  local states = {}
+  for index, session in ipairs(sessions) do
+    states[index] = session:inspect()
+  end
+  local rows = Status.session_labels(states)
+  local labels = {}
+  for index, session in ipairs(sessions) do
+    labels[session] = rows[index]
+  end
   Picker.select(sessions, {
     prompt = "louiselm session: ",
-    format_item = session_formatter(sessions),
+    format_item = function(session)
+      return labels[session]
+    end,
   }, function(session)
     if session ~= nil then
       self:switch(session:inspect().id)
