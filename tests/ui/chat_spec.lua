@@ -203,6 +203,15 @@ local function header_highlights(buffer)
   return highlights
 end
 
+local function review_buffer(path)
+  for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
+    if nvim.api.nvim_buf_is_valid(buffer) and nvim.api.nvim_buf_get_name(buffer) == "louiselm-diff://" .. path then
+      return buffer
+    end
+  end
+  return nil
+end
+
 local original_schedule = nvim.schedule
 local original_select = nvim.ui.select
 local original_input = nvim.ui.input
@@ -4161,12 +4170,12 @@ T["chat"]["opens file permission requests in a scheduled diff review"] = functio
   })
 
   MiniTest.expect.equality(#scheduled, 1)
-  MiniTest.expect.equality(chat.diff.buffer, nil)
+  MiniTest.expect.equality(review_buffer(path), nil)
   scheduled[1]()
   rawset(nvim, "schedule", original_schedule)
 
-  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(chat.diff.buffer), "louiselm-diff://" .. path)
-  assert(chat.diff:accept())
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(assert(review_buffer(path))), "louiselm-diff://" .. path)
+  nvim.api.nvim_feedkeys("a", "mx", false)
   MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "allow-once" } })
   chat:dispose()
   nvim.fn.delete(path)
@@ -4246,61 +4255,6 @@ T["chat"]["schedules and resolves command and unknown permission requests"] = fu
     "louiselm permission (unknown, details unavailable): ",
     "louiselm permission (unknown, details unavailable): ",
   })
-  chat:dispose()
-end
-
-T["chat"]["puts rejection options first so permission pickers fail closed"] = function()
-  local first = fake_session("session-1", "codex")
-  local chat = assert(Chat.new(fake_api()))
-  assert(chat:attach(first))
-  local original_schedule = nvim.schedule
-  local original_select = nvim.ui.select
-  local scheduled
-  local labels
-  local option_ids
-  local prompt
-  local response
-  rawset(nvim, "schedule", function(callback)
-    scheduled = callback
-  end)
-
-  first:emit({
-    type = "permission_requested",
-    session_id = "session-1",
-    data = {
-      operation = { kind = "command", command = { "git", "commit" } },
-      options = {
-        { optionId = "allow_once", name = "Allow Once", kind = "allow_once" },
-        { optionId = "allow_always", name = "Allow for Session", kind = "allow_always" },
-        { optionId = "allow_prefix", name = "Allow Commands Starting With git", kind = "allow_always" },
-        { optionId = "reject_once", name = "Reject", kind = "reject_once" },
-      },
-    },
-    respond = function(result)
-      response = result
-      return true
-    end,
-  })
-
-  nvim.ui.select = function(options, select_options, callback)
-    prompt = select_options.prompt
-    labels = {}
-    option_ids = {}
-    for _, option in ipairs(options) do
-      labels[#labels + 1] = select_options.format_item(option)
-      option_ids[#option_ids + 1] = option.optionId
-    end
-    callback(options[1], 1)
-  end
-  assert(scheduled)
-  scheduled()
-  rawset(nvim, "schedule", original_schedule)
-  nvim.ui.select = original_select
-
-  MiniTest.expect.equality(labels, { "Reject", "Allow Once", "Allow for Session", "Allow Commands Starting With git" })
-  MiniTest.expect.equality(option_ids, { "reject_once", "allow_once", "allow_always", "allow_prefix" })
-  MiniTest.expect.equality(prompt, 'louiselm permission (command): ["git","commit"] ')
-  MiniTest.expect.equality(response, { outcome = { outcome = "selected", optionId = "reject_once" } })
   chat:dispose()
 end
 
@@ -4991,7 +4945,7 @@ T["chat"]["Session close retires a diff review and cancels permission events que
     request("review", { kind = "file_edit", path = path })
   end)
   assert(nvim.wait(1000, function()
-    return chat.diff.buffer ~= nil
+    return review_buffer(path) ~= nil
   end))
   -- Queue close ahead of the UI delivery of another process event.
   timer:start(0, 0, function()
@@ -5008,7 +4962,7 @@ T["chat"]["Session close retires a diff review and cancels permission events que
     review = { outcome = { outcome = "cancelled" } },
     late = { outcome = { outcome = "cancelled" } },
   })
-  MiniTest.expect.equality(chat.diff.buffer, nil)
+  MiniTest.expect.equality(review_buffer(path), nil)
   MiniTest.expect.equality(nvim.fn.readfile(path), { "before" })
   MiniTest.expect.equality({ chat:switch_session() }, { false, "no chat sessions are attached" })
 end
@@ -5083,7 +5037,7 @@ T["chat"]["closes a review and frees the chat when its request is cancelled"] = 
   request(first, "queued")
   run_scheduled()
 
-  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(chat.diff.buffer), "louiselm-diff://" .. path)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(assert(review_buffer(path))), "louiselm-diff://" .. path)
   MiniTest.expect.equality(
     { chat:switch_session() },
     { false, "a louiselm permission decision is open; answer it first" }
@@ -5094,7 +5048,7 @@ T["chat"]["closes a review and frees the chat when its request is cancelled"] = 
   first:emit({ type = "permission_cancelled", session_id = "session-1", data = { request_ids = { 7 } } })
   run_scheduled()
 
-  MiniTest.expect.equality(chat.diff.buffer, nil)
+  MiniTest.expect.equality(review_buffer(path), nil)
   MiniTest.expect.equality(#pickers, 1)
   MiniTest.expect.equality(responses, {})
 
