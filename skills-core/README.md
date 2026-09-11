@@ -26,6 +26,8 @@ preflight --direct [--robot-json]
 
 workspace prepare --repository DIR --output NEW_DIR [--include FILE ...] [--robot-json]
 workspace materialize --snapshot DIR --digest SHA256 --output NEW_DIR [--robot-json]
+workspace export --snapshot DIR --digest SHA256 --workspace DIR --output NEW_DIR [--robot-json]
+workspace apply --snapshot DIR --digest SHA256 --bundle DIR --bundle-digest SHA256 --output NEW_DIR [--robot-json]
 
 trust bootstrap --primary PUBLIC_KEY --release PUBLIC_KEY [--require-hardware]
 trust show
@@ -59,7 +61,9 @@ the trusted local foreground terminal and refuse robot mode.
 
 The [private source snapshot commands](../docs/workspace-snapshots.md) freeze
 HEAD plus explicitly selected working-copy files and materialize independent
-writable source and Git metadata. They provide local artifacts; launcher
+writable source and Git metadata. Export compares actual workspace bytes with
+that baseline; apply validates exact bundle/base digests and publishes a fresh
+integration tree without executing candidate code. They provide local artifacts; launcher
 integration, confinement and verified promotion remain separate work.
 
 Exit status is part of the contract, so an unattended caller never has to parse

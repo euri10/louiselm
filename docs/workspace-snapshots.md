@@ -1,10 +1,11 @@
 # Private source snapshots
 
-The local `louiselm-skills workspace` commands freeze selected source bytes and
-create an independent writable Git repository. They do not launch a Session or
+The local `louiselm-skills workspace` commands freeze selected source bytes,
+create an independent writable Git repository, and export/apply byte bundles.
+They do not launch a Session or
 establish Verified posture. Launcher consumption and lifecycle retention are
-tracked in `louiselm-d6fv.5.5`; export and independent verification/promotion are
-`louiselm-d6fv.5.2` and `.4`.
+tracked in `louiselm-d6fv.5.5`; independent verification/promotion is
+`louiselm-d6fv.5.4`.
 
 ```sh
 louiselm-skills workspace prepare \
@@ -78,3 +79,68 @@ The public blocking Rust APIs are `workspace::prepare` and
 `workspace::materialize`. Call them outside editor/event-loop callbacks. The
 regressions run through the shipped CLI in `skills-core/tests/workspace_cli.rs`;
 deterministic mutation and failed-publication checks live beside filesystem I/O.
+
+## Export and apply byte bundles
+
+After editing the private workspace, stop its writers before export:
+
+```sh
+louiselm-skills workspace export \
+  --snapshot /private/snapshots/proposal --digest sha256:REVIEWED_SNAPSHOT_DIGEST \
+  --workspace /private/workspaces/session \
+  --output /private/bundles/proposal --robot-json
+
+# Inspect proposal/bundle.json and its payload; use the returned bundle_digest:
+louiselm-skills workspace apply \
+  --snapshot /private/snapshots/proposal --digest sha256:REVIEWED_SNAPSHOT_DIGEST \
+  --bundle /private/bundles/proposal --bundle-digest sha256:REVIEWED_BUNDLE_DIGEST \
+  --output /private/integration/proposal --robot-json
+```
+
+Export compares the complete final filesystem inventory with the validated
+snapshot baseline. Agent commits, index/config/hooks, Git status/diff, ignore
+rules and Agent-provided path lists have no authority. Only the exact root `.git`
+entry is excluded without reading or following it; nested `.git` components are
+refused. All other regular files, including ignored and newly created files,
+participate. Inspect the bundle for sensitive content before sharing it.
+
+The canonical `louiselm.workspace.bundle/1` record binds the normalized base
+digest and complete final inventory. Its digest therefore binds additions,
+deletions, binary bytes and executable-bit changes. `files/` contains only added
+or modified files; unchanged files come from the exact snapshot during apply.
+Empty directories and permission bits other than executable intent are omitted.
+Case and file/directory collisions, links, special files, noncanonical names and
+multiple hardlinks are refused. Root Git metadata is never copied.
+
+Capture pins objects through Linux descriptors before reading them. It checks
+file metadata around reads and compares two complete metadata inventories,
+including directory identities, to reject observed concurrent mutation or
+replacement. It opens no device/FIFO payload and requires Linux procfs for
+reopening pinned regular files. This is race detection, not a freeze primitive:
+the caller must stop workspace writers and protect the workspace parent, input
+stores and output parents. Future launcher integration owns that lifecycle.
+
+The snapshot's file/content/record limits also apply to bundles. Traversal
+additionally permits at most 20,000 total files/directories and 64 directory
+levels, including empty directories but excluding root Git metadata. File
+content stays raw; path encoding remains printable ASCII.
+
+Apply requires both exact digests and the matching normalized baseline, rechecks
+all needed payload bytes and modes, and publishes a fresh source tree with
+private `0600`/`0700` files. It never executes Git, hooks, filters, candidate code
+or verification commands, and creates no Git metadata. Unlisted bundle-store
+files have no effect. Existing destinations and outputs inside either input
+are refused. The same private staging, no-replace publication and failure rules
+described above apply; a failed operation cannot overwrite an existing tree.
+
+Both commands return `louiselm.workspace.bundle-preview/1`, with `bundle_digest`,
+`base_digest`, `result_digest`, final file/byte counts, and sorted `added`,
+`modified`, `deleted` paths. Human output derives from that record. Neither the
+bundle nor the result digest grants authority: cross-Session bundles stay
+untrusted until independent confined verification and exact-digest promotion.
+
+The blocking Rust entrypoints are `workspace::bundle::export` and
+`workspace::bundle::apply`. Their CLI regressions cover hostile Git metadata,
+determinism, byte/mode reconstruction, malformed records, digest substitution,
+unsafe trees and output preservation. Tree-capture unit tests deterministically
+inject mutation, replacement, addition and deletion between scans.

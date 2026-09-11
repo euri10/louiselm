@@ -101,6 +101,311 @@ fn materialize(temp: &TempDir, digest: &str, output: &str) -> Output {
     ])
 }
 
+fn export_bundle(temp: &TempDir, digest: &str, output: &str) -> Output {
+    run(&[
+        "export",
+        "--snapshot",
+        temp.path().join("snapshot").to_str().unwrap(),
+        "--digest",
+        digest,
+        "--workspace",
+        temp.path().join("work").to_str().unwrap(),
+        "--output",
+        temp.path().join(output).to_str().unwrap(),
+        "--robot-json",
+    ])
+}
+
+fn apply_bundle(temp: &TempDir, snapshot: &str, bundle: &str, output: &str) -> Output {
+    run(&[
+        "apply",
+        "--snapshot",
+        temp.path().join("snapshot").to_str().unwrap(),
+        "--digest",
+        snapshot,
+        "--bundle",
+        temp.path().join("bundle").to_str().unwrap(),
+        "--bundle-digest",
+        bundle,
+        "--output",
+        temp.path().join(output).to_str().unwrap(),
+        "--robot-json",
+    ])
+}
+
+#[test]
+fn bundles_reconstruct_exact_bytes_without_trusting_git_or_the_live_checkout() {
+    let temp = fixture();
+    let snapshot = prepare(&temp, "snapshot", &[]);
+    let digest = snapshot["snapshot_digest"].as_str().unwrap();
+    successful(&materialize(&temp, digest, "work"));
+    let work = temp.path().join("work");
+    fs::write(work.join("tracked.txt"), b"changed\0\xff").unwrap();
+    fs::remove_file(work.join("deleted.txt")).unwrap();
+    fs::create_dir(work.join("added")).unwrap();
+    fs::write(work.join("added/run"), b"#!/bin/sh\nexit 99\n").unwrap();
+    fs::set_permissions(work.join("added/run"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(work.join(".git/config"), b"invalid hostile Git config").unwrap();
+    fs::write(work.join(".git/index"), b"invented changes").unwrap();
+    fs::write(
+        temp.path().join("repo/tracked.txt"),
+        b"unrelated checkout mutation",
+    )
+    .unwrap();
+    let receipt = successful(&export_bundle(&temp, digest, "bundle"));
+    let again = successful(&export_bundle(&temp, digest, "again"));
+    assert_eq!(receipt, again);
+    assert_eq!(receipt["schema"], "louiselm.workspace.bundle-preview/1");
+    assert_eq!(receipt["base_digest"], snapshot["base_digest"]);
+    assert_eq!(receipt["added"], serde_json::json!(["added/run"]));
+    assert_eq!(receipt["modified"], serde_json::json!(["tracked.txt"]));
+    assert_eq!(receipt["deleted"], serde_json::json!(["deleted.txt"]));
+    assert!(!temp.path().join("bundle/files/.gitignore").exists());
+    let applied = successful(&apply_bundle(
+        &temp,
+        digest,
+        receipt["bundle_digest"].as_str().unwrap(),
+        "integration",
+    ));
+    assert_eq!(applied, receipt);
+    let integration = temp.path().join("integration");
+    assert_eq!(
+        fs::read(integration.join("tracked.txt")).unwrap(),
+        b"changed\0\xff"
+    );
+    assert_eq!(
+        fs::read(integration.join(".gitignore")).unwrap(),
+        b".env\ncache/\n"
+    );
+    assert_eq!(
+        fs::metadata(integration.join("added/run")).unwrap().mode() & 0o777,
+        0o700
+    );
+    assert!(!integration.join("deleted.txt").exists());
+    assert!(!integration.join(".git").exists());
+}
+
+#[test]
+fn bundle_digest_substitution_and_unsafe_workspace_inputs_never_publish() {
+    let temp = fixture();
+    let snapshot = prepare(&temp, "snapshot", &[]);
+    let digest = snapshot["snapshot_digest"].as_str().unwrap();
+    successful(&materialize(&temp, digest, "work"));
+    let receipt = successful(&export_bundle(&temp, digest, "bundle"));
+    let wrong = format!("sha256:{}", "0".repeat(64));
+    assert!(
+        !apply_bundle(&temp, digest, &wrong, "wrong-bundle")
+            .status
+            .success()
+    );
+    assert!(
+        !apply_bundle(
+            &temp,
+            &wrong,
+            receipt["bundle_digest"].as_str().unwrap(),
+            "wrong-base"
+        )
+        .status
+        .success()
+    );
+    assert!(!temp.path().join("wrong-bundle").exists());
+    assert!(!temp.path().join("wrong-base").exists());
+    symlink("/etc/passwd", temp.path().join("work/link")).unwrap();
+    assert!(!export_bundle(&temp, digest, "linked").status.success());
+    assert!(!temp.path().join("linked").exists());
+}
+
+#[test]
+fn bundle_export_rejects_special_alias_colliding_and_unbounded_trees() {
+    for case in 0..10 {
+        let temp = fixture();
+        let snapshot = prepare(&temp, "snapshot", &[]);
+        let digest = snapshot["snapshot_digest"].as_str().unwrap();
+        successful(&materialize(&temp, digest, "work"));
+        let work = temp.path().join("work");
+        match case {
+            0 => fs::hard_link(work.join("tracked.txt"), work.join("alias")).unwrap(),
+            1 => rustix::fs::mkfifoat(rustix::fs::CWD, work.join("fifo"), rustix::fs::Mode::RUSR)
+                .unwrap(),
+            2 => {
+                let _socket = std::os::unix::net::UnixListener::bind(work.join("socket")).unwrap();
+            }
+            3 => fs::write(work.join("TRACKED.txt"), b"collision").unwrap(),
+            4 => fs::create_dir_all(work.join("nested/.git")).unwrap(),
+            5 => fs::write(work.join("ambiguous\\name"), b"invalid").unwrap(),
+            6 => fs::write(work.join("non-ascii-é"), b"invalid").unwrap(),
+            7 => fs::File::create(work.join("large"))
+                .unwrap()
+                .set_len(louiselm_skills::workspace::MAX_FILE_BYTES as u64 + 1)
+                .unwrap(),
+            8 => fs::create_dir_all(work.join("d/".repeat(65))).unwrap(),
+            _ => {
+                fs::create_dir(work.join("empty")).unwrap();
+                fs::create_dir(work.join("EMPTY")).unwrap();
+            }
+        }
+        let result = export_bundle(&temp, digest, "refused");
+        assert!(!result.status.success(), "accepted unsafe case {case}");
+        assert!(!temp.path().join("refused").exists());
+    }
+}
+
+#[test]
+fn bundles_cover_mode_only_changes_file_directory_replacement_and_empty_results() {
+    let temp = fixture();
+    let snapshot = prepare(&temp, "snapshot", &[]);
+    let digest = snapshot["snapshot_digest"].as_str().unwrap();
+    successful(&materialize(&temp, digest, "work"));
+    let work = temp.path().join("work");
+    // A hostile root Git link is not followed, inventoried, or consulted.
+    fs::remove_dir_all(work.join(".git")).unwrap();
+    symlink("/missing/hostile-git", work.join(".git")).unwrap();
+    fs::set_permissions(work.join("tracked.txt"), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::remove_file(work.join("deleted.txt")).unwrap();
+    fs::create_dir(work.join("deleted.txt")).unwrap();
+    fs::write(work.join("deleted.txt/nested"), b"file became directory").unwrap();
+    let receipt = successful(&export_bundle(&temp, digest, "bundle"));
+    successful(&apply_bundle(
+        &temp,
+        digest,
+        receipt["bundle_digest"].as_str().unwrap(),
+        "integration",
+    ));
+    assert_eq!(
+        fs::metadata(temp.path().join("integration/tracked.txt"))
+            .unwrap()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::read(temp.path().join("integration/deleted.txt/nested")).unwrap(),
+        b"file became directory"
+    );
+    assert_eq!(receipt["modified"], serde_json::json!(["tracked.txt"]));
+    // Empty directories do not enter the normalized regular-file contract.
+    fs::remove_file(work.join("tracked.txt")).unwrap();
+    fs::remove_file(work.join(".gitignore")).unwrap();
+    fs::remove_file(work.join("deleted.txt/nested")).unwrap();
+    let empty = successful(&export_bundle(&temp, digest, "empty-bundle"));
+    assert_eq!(empty["file_count"], 0);
+    let applied = run(&[
+        "apply",
+        "--snapshot",
+        temp.path().join("snapshot").to_str().unwrap(),
+        "--digest",
+        digest,
+        "--bundle",
+        temp.path().join("empty-bundle").to_str().unwrap(),
+        "--bundle-digest",
+        empty["bundle_digest"].as_str().unwrap(),
+        "--output",
+        temp.path().join("empty-tree").to_str().unwrap(),
+        "--robot-json",
+    ]);
+    successful(&applied);
+    assert_eq!(
+        fs::read_dir(temp.path().join("empty-tree"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn forged_bundle_records_and_payloads_are_refused_without_partial_output() {
+    let temp = fixture();
+    let snapshot = prepare(&temp, "snapshot", &[]);
+    let digest = snapshot["snapshot_digest"].as_str().unwrap();
+    successful(&materialize(&temp, digest, "work"));
+    fs::write(temp.path().join("work/tracked.txt"), b"changed payload").unwrap();
+    let receipt = successful(&export_bundle(&temp, digest, "bundle"));
+    let bundle_digest = receipt["bundle_digest"].as_str().unwrap();
+    let record = temp.path().join("bundle/bundle.json");
+    let original = fs::read_to_string(&record).unwrap();
+    let parsed: Value = serde_json::from_str(&original).unwrap();
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    let forged_records = [
+        original.replace(".gitignore", "../outside"),
+        original.replace(".gitignore", ".git/config"),
+        original.replace(".gitignore", "TRACKED.txt"),
+        original.replacen(
+            &format!("\"size\":{}", parsed["files"][0]["size"]),
+            "\"size\":18446744073709551615",
+            1,
+        ),
+        original.replacen("\"executable\":false", "\"executable\":true", 1),
+        original.replacen("\"files\":[{", "\"files\":[{\"unknown\":true,", 1),
+        original.replacen("\"schema\":", "\"unknown\":true,\"schema\":", 1),
+        original.replace(
+            snapshot["base_digest"].as_str().unwrap(),
+            &format!("sha256:{}", "0".repeat(64)),
+        ),
+        format!("{original}\n"),
+    ];
+    for (index, forged) in forged_records.iter().enumerate() {
+        assert_ne!(forged, &original, "ineffective forged fixture {index}");
+        fs::write(&record, forged).unwrap();
+        let expected = louiselm_skills::Digest::of(forged.as_bytes()).to_string();
+        let destination = format!("forged-bundle-{index}");
+        assert!(
+            !apply_bundle(&temp, digest, &expected, &destination)
+                .status
+                .success(),
+            "accepted forged case {index}"
+        );
+        assert!(!temp.path().join(destination).exists());
+    }
+    fs::write(&record, &original).unwrap();
+    let payload = temp.path().join("bundle/files/tracked.txt");
+    fs::set_permissions(&payload, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&payload, b"tampered").unwrap();
+    assert!(
+        !apply_bundle(&temp, digest, bundle_digest, "bad-payload")
+            .status
+            .success()
+    );
+    assert!(!temp.path().join("bad-payload").exists());
+    fs::remove_file(&payload).unwrap();
+    symlink("/etc/passwd", &payload).unwrap();
+    assert!(
+        !apply_bundle(&temp, digest, bundle_digest, "linked-payload")
+            .status
+            .success()
+    );
+    assert!(!temp.path().join("linked-payload").exists());
+    fs::remove_file(&payload).unwrap();
+    fs::write(&payload, b"changed payload").unwrap();
+    fs::create_dir(temp.path().join("existing-tree")).unwrap();
+    fs::write(temp.path().join("existing-tree/keep"), b"untouched").unwrap();
+    assert!(
+        !apply_bundle(&temp, digest, bundle_digest, "existing-tree")
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read(temp.path().join("existing-tree/keep")).unwrap(),
+        b"untouched"
+    );
+    assert!(
+        !export_bundle(&temp, digest, "work/nested-output")
+            .status
+            .success()
+    );
+    assert!(
+        !apply_bundle(&temp, digest, bundle_digest, "bundle/nested-output")
+            .status
+            .success()
+    );
+    assert!(!fs::read_dir(temp.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".workspace-")
+    }));
+}
+
 #[test]
 fn selected_bytes_survive_checkout_mutation_and_get_independent_git_metadata() {
     let temp = fixture();

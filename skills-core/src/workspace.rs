@@ -16,8 +16,10 @@ use thiserror::Error;
 
 use crate::{CanonicalPath, Digest, Manifest, ManifestEntry};
 
+pub mod bundle;
 mod filesystem;
 mod git;
+mod tree;
 
 /// Maximum number of source files or reported changes.
 pub const MAX_FILES: usize = 10_000;
@@ -386,7 +388,20 @@ pub fn materialize(
 ) -> Result<SnapshotPreview, WorkspaceError> {
     let snapshot = fs::canonicalize(snapshot)?;
     filesystem::validate_output(output, &snapshot)?;
-    let root = filesystem::open_directory(&snapshot)?;
+    let (record, files) = load_snapshot(&snapshot, expected)?;
+    filesystem::publish(output, |staging| {
+        filesystem::write_files(staging, &files, false)?;
+        git::initialize(staging, &files)?;
+        Ok(())
+    })?;
+    record.preview()
+}
+
+fn load_snapshot(
+    snapshot: &Path,
+    expected: &Digest,
+) -> Result<(SnapshotRecord, SourceFiles), WorkspaceError> {
+    let root = filesystem::open_directory(snapshot)?;
     let bytes = filesystem::read_source(&root, "snapshot.json", MAX_RECORD_BYTES)?
         .ok_or(WorkspaceError::Invalid("snapshot record is missing"))?
         .bytes;
@@ -415,10 +430,5 @@ pub fn materialize(
         }
         files.insert(entry.path.clone(), file);
     }
-    filesystem::publish(output, |staging| {
-        filesystem::write_files(staging, &files, false)?;
-        git::initialize(staging, &files)?;
-        Ok(())
-    })?;
-    record.preview()
+    Ok((record, files))
 }
