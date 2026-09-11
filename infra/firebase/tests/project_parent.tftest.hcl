@@ -241,6 +241,28 @@ run "isolated_state_project" {
 run "app_identity_bindings_stay_in_app_project" {
   command = plan
 
+  # Match Google 7.40.0 plan-time email computation; never use a live account.
+  override_resource {
+    target = google_service_account.sender
+    values = {
+      email = "louiselm-fcm-sender@louiselm.iam.gserviceaccount.com"
+      name  = "projects/louiselm/serviceAccounts/louiselm-fcm-sender@louiselm.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target = google_service_account.hosting_deployer
+    values = {
+      email = "louiselm-hosting-deployer@louiselm.iam.gserviceaccount.com"
+      name  = "projects/louiselm/serviceAccounts/louiselm-hosting-deployer@louiselm.iam.gserviceaccount.com"
+    }
+  }
+
+  assert {
+    condition     = google_project_iam_member.sender.role == "projects/louiselm/roles/louiselmFcmSender"
+    error_message = "The send-only role must be fully resolved in the saved plan, before its provider-computed name exists."
+  }
+
   assert {
     condition = local.hosting_deployer_roles == toset([
       "roles/firebasehosting.admin",

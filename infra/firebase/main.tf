@@ -212,8 +212,10 @@ resource "google_project_iam_custom_role" "sender" {
 
 resource "google_project_iam_member" "sender" {
   project = google_project.notifications.project_id
-  role    = google_project_iam_custom_role.sender.name
-  member  = "serviceAccount:${google_service_account.sender.email}"
+  # Keep the same dependency and role, but resolve its name before first apply
+  # so the saved-plan IAM gate can inspect the grant without unknown values.
+  role   = "projects/${google_project_iam_custom_role.sender.project}/roles/${google_project_iam_custom_role.sender.role_id}"
+  member = "serviceAccount:${google_service_account.sender.email}"
 
   depends_on = [google_firebase_project.notifications]
 }

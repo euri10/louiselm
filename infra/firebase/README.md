@@ -534,8 +534,9 @@ unset actual_rules expected_rules state_compute
 Use a mode-0600 saved plan. It may normalize each imported project's
 `auto_create_network` value from `true` to `false` in place. It must not create,
 replace, or delete either project or the state bucket. Review every IAM grant,
-API, Firebase resource, key restriction, and Hosting resource; scan both source
-and the concrete plan. A plan file is never a rollback artifact.
+API, Firebase resource, key restriction, and Hosting resource. Run the source
+scanner and the concrete-plan project IAM gate; both must exit zero. A plan file
+is never a rollback artifact.
 
 ```sh
 umask 077
@@ -554,9 +555,32 @@ tofu show -json reviewed.plan > .terraform/reviewed-plan.json
 test -f .terraform/reviewed-plan.json
 test ! -L .terraform/reviewed-plan.json
 test "$(stat -c '%a' .terraform/reviewed-plan.json)" = 600
-trivy config .
-trivy config .terraform/reviewed-plan.json
+trivy config --exit-code 1 --misconfig-scanners=terraform .
+sh check-plan-iam.sh .terraform/reviewed-plan.json
 ```
+
+The source scan is supplemental: unresolved variables and dynamic `for_each`
+grants can look clean without having been checked. `check-plan-iam.sh` uses the
+existing `jq` dependency to inspect resolved resources in the full saved plan,
+including child modules. It allows only these reviewed project IAM combinations:
+
+- `roles/firebasehosting.admin` and `roles/serviceusage.apiKeysViewer` for
+  `louiselm-hosting-deployer@louiselm.iam.gserviceaccount.com` in `louiselm`, at
+  the existing Hosting grant addresses.
+- `projects/louiselm/roles/louiselmFcmSender` for
+  `louiselm-fcm-sender@louiselm.iam.gserviceaccount.com`, at the existing sender
+  grant address; the custom role may contain only `cloudmessaging.messages.create`.
+
+Other project grants, authoritative bindings/policies, widened custom roles,
+and unknown IAM values fail closed. The sender role name is derived from its
+resource project and role ID so it is known before first apply. A failed gate
+requires private plan inspection and a reviewed configuration/policy correction
+followed by a fresh full plan, never an override or a targeted plan to evade it.
+This is not a general cloud-security scanner: service-account/WIF policy,
+non-project IAM, resource destruction, and live effective permissions still
+require the native tests and the operator reviews/proofs in this runbook.
+The checker prints no plan values. Keep both plan files private and out of CI
+artifacts; do not paste their JSON into logs or issue comments.
 
 Apply only that exact reviewed artifact after a separate explicit approval:
 
@@ -972,8 +996,13 @@ approved recovery and verification; they are sensitive, not archives.
 commit `fef22b89d78f356aeac7b7357fd8e5984d05bbca`. It uses the component only for
 credential-free formatting, validation, linting, and source scanning; GitLab
 backend integration and infrastructure plan/apply jobs are disabled. A
-standalone backend-free job runs the native OpenTofu tests. Branches and merge
-requests also build and inspect the public site without an ID token.
+standalone backend-free job runs `sh tests/test-plan-iam.sh`: the native OpenTofu
+suite, a plan produced by its mocked providers through the production IAM gate,
+and negative fixtures for dynamic privileged grants and malformed/unknown input.
+It uses `jq`, already required by the operator runbook, and receives neither
+cloud credentials nor a real plan. This tests the gate; it does not approve the
+operator's production plan. Branches and merge requests also build and inspect
+the public site without an ID token.
 
 After the reviewed operator apply creates WIF and Hosting, configure only these
 protected GitLab variables:

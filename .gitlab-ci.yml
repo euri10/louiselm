@@ -63,10 +63,11 @@ tf-test-static:
   stage: test
   id_tokens: null
   script:
+    - apk add --no-cache jq
     - cd infra/firebase
     - ./tf-pre-init.sh
     - tofu init -backend=false -lockfile=readonly -input=false
-    - tofu test
+    - sh tests/test-plan-iam.sh
   rules:
     - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
 
