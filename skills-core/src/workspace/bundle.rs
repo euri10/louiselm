@@ -178,8 +178,21 @@ pub fn apply(
     let bundle = fs::canonicalize(bundle)?;
     filesystem::validate_output(output, &snapshot)?;
     filesystem::validate_output(output, &bundle)?;
-    let (base, mut files) = load_snapshot(&snapshot, expected_snapshot)?;
-    let root = filesystem::open_directory(&bundle)?;
+    let (preview, files) = load(&snapshot, expected_snapshot, &bundle, expected_bundle)?;
+    filesystem::publish(output, |staging| {
+        filesystem::write_files(staging, &files, false)
+    })?;
+    Ok(preview)
+}
+
+pub(super) fn load(
+    snapshot: &Path,
+    expected_snapshot: &Digest,
+    bundle: &Path,
+    expected_bundle: &Digest,
+) -> Result<(BundlePreview, SourceFiles), WorkspaceError> {
+    let (base, mut files) = load_snapshot(snapshot, expected_snapshot)?;
+    let root = filesystem::open_directory(bundle)?;
     let bytes = filesystem::read_source(&root, "bundle.json", MAX_RECORD_BYTES)?
         .ok_or(WorkspaceError::Invalid("bundle record is missing"))?
         .bytes;
@@ -194,10 +207,7 @@ pub fn apply(
         return Err(WorkspaceError::Invalid("bundle record is not canonical"));
     }
     reconstruct(&base, &record, &root, &mut files)?;
-    filesystem::publish(output, |staging| {
-        filesystem::write_files(staging, &files, false)
-    })?;
-    record.preview(&base)
+    Ok((record.preview(&base)?, files))
 }
 
 fn reconstruct(

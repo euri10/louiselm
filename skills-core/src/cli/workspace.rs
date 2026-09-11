@@ -5,8 +5,14 @@ use std::{collections::BTreeMap, path::Path};
 use super::CliError;
 use crate::{Digest, robot, workspace};
 
+mod verification;
+
 pub(super) fn run(args: &[String]) -> Result<i32, CliError> {
+    if args.first().is_some_and(|arg| arg == "verification") {
+        return verification::run(&args[1..]);
+    }
     if args == ["--help"] {
+        println!("Verification inputs: louiselm-skills workspace verification --help");
         println!(
             "louiselm-skills workspace prepare --repository DIR --output NEW_DIR\n  [--include RELATIVE_FILE ...] [--robot-json]\nlouiselm-skills workspace materialize --snapshot DIR --digest SHA256\n  --output NEW_DIR [--robot-json]\nlouiselm-skills workspace export --snapshot DIR --digest SHA256\n  --workspace DIR --output NEW_DIR [--robot-json]\nlouiselm-skills workspace apply --snapshot DIR --digest SHA256\n  --bundle DIR --bundle-digest SHA256 --output NEW_DIR [--robot-json]\nPrepare freezes HEAD plus explicitly selected working-copy files.\nExport compares actual workspace bytes; apply writes a fresh integration tree.\nInspect preview digests before use. Local bytes only; no launch or promotion authority.\nExit 0: complete. Exit 1: refused or failed; inspect output after persistence errors."
         );

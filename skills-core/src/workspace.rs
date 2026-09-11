@@ -20,6 +20,7 @@ pub mod bundle;
 pub(crate) mod filesystem;
 mod git;
 mod tree;
+pub mod verification;
 
 /// Maximum number of source files or reported changes.
 pub const MAX_FILES: usize = 10_000;

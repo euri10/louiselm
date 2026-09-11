@@ -15,6 +15,9 @@ use std::{
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "workspace_cli/verification.rs"]
+mod verification;
+
 fn git(root: &Path, args: &[&str]) -> Output {
     let output = Command::new("/usr/bin/git")
         .args([

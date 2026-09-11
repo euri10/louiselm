@@ -144,3 +144,65 @@ The blocking Rust entrypoints are `workspace::bundle::export` and
 determinism, byte/mode reconstruction, malformed records, digest substitution,
 unsafe trees and output preservation. Tree-capture unit tests deterministically
 inject mutation, replacement, addition and deletion between scans.
+
+## Prepare verification inputs
+
+`workspace verification prepare` binds an exact snapshot, exported bundle and
+operator-selected plan into a fresh private job. `inspect` remeasures that job.
+Neither command executes the plan, creates a Session, authorizes promotion, or
+establishes Verified posture. Confined execution and evidence-gated promotion
+remain `louiselm-d6fv.5.4.2` and `louiselm-d6fv.5.4.3`.
+
+The closed plan document contains only a schema and ordered commands:
+
+```json
+{"schema":"louiselm.workspace.verification-plan/1","commands":[{"argv":["cargo","test","--locked"],"cwd":".","timeout_ms":300000}]}
+```
+
+Select the SHA-256 of the exact plan file bytes, including whitespace and any
+trailing newline. Every command is required; each has an argument array, a
+relative working directory (`.` or a directory represented in the source
+inventory), and a positive millisecond timeout. Plans are at most 64 KiB, with
+1–32 commands, at most 128 arguments per command, at most 4096 bytes per argument,
+and a total timeout budget of one hour. NUL arguments, empty executables, unsafe
+paths and unknown fields are refused. No environment overrides or implicit
+shell interpretation are provided. The plan file may contain sensitive arguments:
+keep it private. Preparing it is not permission to run it.
+
+```sh
+louiselm-skills workspace verification prepare \
+  --snapshot /private/snapshots/proposal --digest sha256:REVIEWED_SNAPSHOT_DIGEST \
+  --bundle /private/bundles/proposal --bundle-digest sha256:REVIEWED_BUNDLE_DIGEST \
+  --plan /private/plan.json --plan-digest sha256:REVIEWED_PLAN_DIGEST \
+  --output /private/verification/proposal --robot-json
+
+louiselm-skills workspace verification inspect \
+  --job /private/verification/proposal --digest sha256:REVIEWED_JOB_DIGEST \
+  --robot-json
+```
+
+Preparation reuses the trusted byte-only bundle loader. `source/` contains
+read-only `0400`/`0500` source files without Git metadata; `plan.json` retains
+the exact plan bytes; canonical `job.json` binds snapshot, baseline, bundle,
+plan and the complete result inventory. Publication uses the same private
+staging and no-replace rename as snapshots. Existing destinations remain intact.
+
+Inspection checks the selected job digest, canonical record, complete source
+inventory and plan bytes. Added, missing or changed source files, executable-bit
+changes, links, special files and root Git metadata refuse inspection. Unlisted
+files outside `source/` are not inputs. A changed plan, even whitespace-only,
+requires a different job digest. Read-only file modes are not a security boundary
+against the owning user: keep the entire job and its parent inaccessible to
+Session writers, and exclude concurrent writers while inspecting. Later execution
+must use a separate confined copy, not mutate this retained input artifact.
+
+Both commands emit `louiselm.workspace.verification-preview/1` with state
+`prepared`, job/snapshot/bundle/base/result/plan digests and command count. Human
+output uses the same identities. Neither output includes raw commands, arguments,
+source payloads or paths. Exit `0` means preparation or integrity inspection
+completed, never that verification passed; exit `1` means refusal or failure.
+Digests establish byte identity, not trusted origin or approval.
+
+The public blocking APIs are `workspace::verification::prepare` and `inspect`;
+keep them outside editor/event-loop callbacks. The actual-CLI regression suite
+is `skills-core/tests/workspace_cli/verification.rs`.
