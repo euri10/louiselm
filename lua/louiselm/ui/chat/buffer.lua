@@ -49,7 +49,7 @@ local nvim = vim
 ---@field close_reasoning fun(self: louiselm.ui.ChatBuffer)
 ---@field clear_queue_indicator fun(self: louiselm.ui.ChatBuffer)
 ---@field queue_indicator fun(self: louiselm.ui.ChatBuffer)
----@field set_prefix fun(self: louiselm.ui.ChatBuffer, previous: string, prefix: string)
+---@field set_prefix fun(self: louiselm.ui.ChatBuffer, prefix: string, text: string)
 ---@field accept_prompt fun(self: louiselm.ui.ChatBuffer, text: string, contexts: louiselm.ui.ContextItem[], next_prefix: string, focus: boolean)
 ---@field render fun(self: louiselm.ui.ChatBuffer, event: louiselm.session.GenericEvent, replay_active?: boolean, continuing_prompt?: boolean)
 ---@field finish_turn fun(self: louiselm.ui.ChatBuffer)
@@ -661,15 +661,10 @@ end
 
 ---Render a changed context prefix without changing the caller's draft content.
 ---@param self louiselm.ui.ChatBuffer
----@param previous string Previous visible prefix.
 ---@param prefix string New visible prefix.
-function Buffer:set_prefix(previous, prefix)
-  local line = nvim.api.nvim_buf_get_lines(self.buffer, self.prompt_line, self.prompt_line + 1, false)[1] or "> "
-  local text = line:sub(1, 2) == "> " and line:sub(3) or line
-  if previous ~= "" and text:sub(1, #previous) == previous then
-    text = text:sub(#previous + 1)
-  end
-  set_line(self.buffer, self.prompt_line, "> " .. prefix .. text)
+---@param text string Reconciled user text without context chips.
+function Buffer:set_prefix(prefix, text)
+  replace_prompt(self, prefix .. text)
   if nvim.api.nvim_get_current_buf() == self.buffer then
     nvim.api.nvim_win_set_cursor(0, { self.prompt_line + 1, 2 + #prefix })
   end

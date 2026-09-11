@@ -152,6 +152,7 @@ function M.generate(schema, commands)
   })
   emit_section(lines, "Context and skills", "louiselm-context", {
     "Use the context commands to queue a buffer, visual selection, file, or skill for the next prompt. Queued context is sent only when you submit that prompt.",
+    "To remove a staged skill, erase its [context: skill: NAME] chip from the prompt. Before submitting or staging another item, LouiseLM keeps only skills with intact leading chips. Edited chip fragments remain ordinary text; other queued context and the hidden skill catalog are retained.",
   })
   emit_section(lines, "Troubleshooting", "louiselm-troubleshooting", {
     "Run :checkhealth louiselm to validate configuration and local tool availability. For Session-specific reports, :LouiselmSessionId copies the Agent-scoped ACP Session identifier.",

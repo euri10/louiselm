@@ -2772,6 +2772,134 @@ T["chat"]["prefers the dollar form over a colliding bare built-in and sends it a
   nvim.fn.delete(workspace, "rf")
 end
 
+for _, policy in ipairs({ "native", "inject" }) do
+  for _, marker in ipairs({ "", "[context: skill: ponytail-ga] ", "[context: skill: ponytail-gain] " }) do
+    T["chat"]["reconciles edited " .. policy .. " skill marker: " .. marker] = function()
+      local workspace = nvim.fn.tempname()
+      write_skill_file(workspace, "ponytail-gain", "Show measured impact")
+      local first = fake_session("session-1", "codex")
+      first.state.skills_policy = policy
+      first.state.commands = { { name = "$ponytail-gain", description = "Show measured impact" } }
+      local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+      MiniTest.finally(function()
+        chat:dispose()
+        nvim.fn.delete(workspace, "rf")
+      end)
+      assert(chat:attach(first))
+      assert(chat:queue_context({ label = "notes", text = "keep these notes" }))
+      local restore = select_first()
+      assert(chat:pick_skill())
+      restore()
+      assert(chat:queue_context({ label = "AGENTS.md", uri = "file:///repo/AGENTS.md" }))
+
+      local kept = marker == "[context: skill: ponytail-gain] "
+      nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, {
+        "> [context: notes] " .. marker .. "[context: AGENTS.md] ordinary task",
+        "second line",
+      })
+      first.prompt_error = "write failed"
+      local request_id, prompt_error = chat:submit()
+      MiniTest.expect.equality({ request_id, prompt_error }, { nil, "write failed" })
+      first.prompt_error = nil
+      assert(chat:submit())
+
+      local expected = { { type = "text", text = "keep these notes" } }
+      if kept and policy == "inject" then
+        expected[#expected + 1] = {
+          type = "text",
+          text = table.concat(nvim.fn.readfile(workspace .. "/ponytail-gain/SKILL.md"), "\n") .. "\n",
+        }
+      end
+      expected[#expected + 1] = { type = "resource_link", uri = "file:///repo/AGENTS.md", name = "AGENTS.md" }
+      local task = kept and "ordinary task" or (marker .. "ordinary task")
+      if kept and policy == "native" then
+        task = "/$ponytail-gain " .. task
+      end
+      expected[#expected + 1] = { type = "text", text = task .. "\nsecond line" }
+      MiniTest.expect.equality(first.prompts, { expected })
+      assert(chat:submit("follow-up"))
+      MiniTest.expect.equality(first.prompts[2], "follow-up")
+    end
+  end
+end
+
+T["chat"]["erasing a queued skill marker cancels release and submits only the edited task"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "ponytail-gain", "Show measured impact")
+  local first = fake_session("session-1", "codex")
+  first.state.skills_policy = "native"
+  first.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.fn.delete(workspace, "rf")
+  end)
+  assert(chat:attach(first))
+  local restore = select_first()
+  assert(chat:pick_skill())
+  restore()
+  assert(chat:submit("original task"))
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, { "> ordinary task" })
+  first.state.status = "ready"
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(20)
+  MiniTest.expect.equality(first.prompts, {})
+  MiniTest.expect.equality(virtual_text(chat:buffer()), {})
+  assert(chat:submit())
+  MiniTest.expect.equality(first.prompts, { "ordinary task" })
+end
+
+T["chat"]["staging new context after erasing an injected skill keeps the catalog without restoring the skill"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "ponytail-gain", "Show measured impact")
+  local first = fake_session("session-1", "claude")
+  first.state.skills_policy = "inject"
+  local api = fake_api()
+  api.create_session = function()
+    return first
+  end
+  local chat = assert(Chat.new(api, { skill_paths = { workspace }, skill_catalog = "hidden catalog" }))
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.fn.delete(workspace, "rf")
+  end)
+  assert(chat:new_session("claude"))
+  local restore = select_first()
+  assert(chat:pick_skill())
+  restore()
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, { "> ordinary task", "second line" })
+  assert(chat:queue_context({ label = "notes", text = "new notes" }))
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: notes] ordinary task")
+  assert(chat:submit())
+  MiniTest.expect.equality(first.prompts, {
+    {
+      { type = "text", text = "hidden catalog" },
+      { type = "text", text = "new notes" },
+      { type = "text", text = "ordinary task\nsecond line" },
+    },
+  })
+end
+
+T["chat"]["strips staged chips only once when the task itself starts with the same text"] = function()
+  local first = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  assert(chat:queue_context({ label = "notes", text = "notes body" }))
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, {
+    "> [context: notes] [context: notes] explain this literal marker",
+  })
+  assert(chat:submit())
+  MiniTest.expect.equality(first.prompts, {
+    {
+      { type = "text", text = "notes body" },
+      { type = "text", text = "[context: notes] explain this literal marker" },
+    },
+  })
+end
+
 T["chat"]["notifies and preserves the prompt and chip when the advertised command disappears before submission"] = function()
   local workspace = nvim.fn.tempname()
   write_skill_file(workspace, "grill-me", "Stress-test an idea")

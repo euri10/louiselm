@@ -71,4 +71,25 @@ T["queue cancellation retains staged material until accepted context is consumed
   MiniTest.expect.equality(other:content("independent"), "independent")
 end
 
+T["skill reconciliation requires an intact leading chip and preserves literal edits"] = function()
+  for _, case in ipairs({
+    { visible = "ordinary task", task = "ordinary task", pending = false },
+    { visible = "[context: skill: review", task = "[context: skill: review", pending = false },
+    { visible = "ordinary [context: skill: review]", task = "ordinary [context: skill: review]", pending = false },
+    { visible = "[context: skill: review]task", task = "task", pending = true },
+    { visible = "[context: skill: review]", task = "", pending = true },
+  }) do
+    local draft = Draft.new()
+    draft:select_skill({
+      name = "review",
+      description = "Review code",
+      explicit_only = false,
+      path = "/not-read/SKILL.md",
+      content = "body",
+    }, true)
+    MiniTest.expect.equality(draft:reconcile_skills(case.visible), case.task)
+    MiniTest.expect.equality(draft:staged_context().pending_skill, case.pending)
+  end
+end
+
 return T

@@ -618,9 +618,9 @@ local function queue_context(self, view, item)
   if self.disposed or self.views[view.session:inspect().id] ~= view then
     return false, "chat UI is disposed"
   end
-  local previous = view.draft.context_prefix
+  local text = view.draft:reconcile_skills(view.renderer:prompt_text())
   view.draft:add_context(item)
-  view.renderer:set_prefix(previous, view.draft.context_prefix)
+  view.renderer:set_prefix(view.draft.context_prefix, text)
   return true
 end
 
@@ -635,9 +635,9 @@ local function queue_skill(self, view, skill, native)
   if self.disposed or self.views[view.session:inspect().id] ~= view then
     return false, "chat UI is disposed"
   end
-  local previous = view.draft.context_prefix
+  local text = view.draft:reconcile_skills(view.renderer:prompt_text())
   local stage_error = view.draft:select_skill(skill, native)
-  view.renderer:set_prefix(previous, view.draft.context_prefix)
+  view.renderer:set_prefix(view.draft.context_prefix, text)
   view.workflow_phase = skill.phase
   return true, stage_error
 end
@@ -2463,11 +2463,16 @@ function Chat:submit(text)
   if view.replay_events ~= nil then
     return nil, "Session history is still loading"
   end
-  if text == nil then
-    text = view.renderer:prompt_text()
+  if text ~= nil and type(text) ~= "string" then
+    return nil, "prompt must be a non-empty string"
+  end
+  local visible_text = view.draft:reconcile_skills(view.renderer:prompt_text())
+  local from_buffer = text == nil
+  if from_buffer then
+    text = visible_text
   end
   local text_error
-  text, text_error = view.draft:prompt_text(text)
+  text, text_error = view.draft:prompt_text(text, from_buffer)
   if text == nil then
     return nil, text_error
   end

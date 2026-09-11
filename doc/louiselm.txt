@@ -57,6 +57,11 @@ Context and skills                                            *louiselm-context*
   for the next prompt. Queued context is sent only when you submit that
   prompt.
 
+  To remove a staged skill, erase its [context: skill: NAME] chip from the
+  prompt. Before submitting or staging another item, LouiseLM keeps only
+  skills with intact leading chips. Edited chip fragments remain ordinary
+  text; other queued context and the hidden skill catalog are retained.
+
 ==============================================================================
 Troubleshooting                                               *louiselm-troubleshooting*
 

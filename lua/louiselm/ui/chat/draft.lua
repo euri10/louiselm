@@ -9,7 +9,8 @@
 ---@field set_catalog fun(self: louiselm.ui.ChatDraft, catalog: string)
 ---@field cache_native_content fun(self: louiselm.ui.ChatDraft, content: string)
 ---@field cache_context_content fun(self: louiselm.ui.ChatDraft, index: integer, content: string)
----@field prompt_text fun(self: louiselm.ui.ChatDraft, text: unknown): string?, string?
+---@field prompt_text fun(self: louiselm.ui.ChatDraft, text: unknown, reconciled?: boolean): string?, string?
+---@field reconcile_skills fun(self: louiselm.ui.ChatDraft, text: string): string
 ---@field context_content fun(self: louiselm.ui.ChatDraft, embedded_context?: boolean): table[], louiselm.ui.ContextItem[]
 ---@field content fun(self: louiselm.ui.ChatDraft, text: string, command_name?: string, embedded_context?: boolean): string|table[], louiselm.ui.ContextItem[]
 ---@field clear_context fun(self: louiselm.ui.ChatDraft)
@@ -87,17 +88,85 @@ function Draft:cache_context_content(index, content)
   self.contexts[index].text = content
 end
 
+---@param label string
+---@return string
+local function chip(label)
+  return "[context: " .. label .. "]"
+end
+
+---@param self louiselm.ui.ChatDraft
+---@param label string
+local function remove_chip(self, label)
+  local first, last = self.context_prefix:find(chip(label) .. " ", 1, true)
+  if first ~= nil then
+    self.context_prefix = self.context_prefix:sub(1, first - 1) .. self.context_prefix:sub(last + 1)
+  end
+end
+
+---Reconcile skill selections with the visible draft before submission or staging.
+---Only intact leading chips retain a selected skill. Other contexts and the hidden
+---catalog remain staged. Unknown/edited chips remain literal user text; markers
+---quoted later in prose cannot retain a selection. Performs no buffer writes.
+---@param self louiselm.ui.ChatDraft
+---@param text string Current visible prompt without chevrons, never an explicit submit override.
+---@return string text User text with recognized leading context chips removed.
+function Draft:reconcile_skills(text)
+  if self.context_prefix ~= "" and text:sub(1, #self.context_prefix) == self.context_prefix then
+    return text:sub(#self.context_prefix + 1)
+  end
+  local known, present, literal = {}, {}, {}
+  for _, item in ipairs(self.contexts) do
+    known[chip(item.label)] = true
+  end
+  if self.pending_skill ~= nil then
+    known[chip("skill: " .. self.pending_skill.name)] = true
+  end
+  while text:sub(1, 10) == "[context: " do
+    local marker
+    for candidate in pairs(known) do
+      if text:sub(1, #candidate) == candidate and (marker == nil or #candidate > #marker) then
+        marker = candidate
+      end
+    end
+    marker = marker or text:match("^%[context: [^\n]-%]")
+    if marker == nil then
+      break
+    end
+    text = text:sub(#marker + 1)
+    local space = text:match("^ *")
+    text = text:sub(#space + 1)
+    if known[marker] then
+      present[marker] = true
+    else
+      literal[#literal + 1] = marker .. space
+    end
+  end
+  if self.pending_skill ~= nil and not present[chip("skill: " .. self.pending_skill.name)] then
+    remove_chip(self, "skill: " .. self.pending_skill.name)
+    self.pending_skill = nil
+  end
+  for index = #self.contexts, 1, -1 do
+    local item = self.contexts[index]
+    if item.skill_path ~= nil and not present[chip(item.label)] then
+      remove_chip(self, item.label)
+      table.remove(self.contexts, index)
+    end
+  end
+  return table.concat(literal) .. text
+end
+
 ---Remove the staged prefix from visible input and validate that something can be submitted.
 ---@param self louiselm.ui.ChatDraft
 ---@param text unknown Buffer text or an explicit Chat submit argument.
+---@param reconciled? boolean Buffer input whose leading chips have already been removed.
 ---@return string? text User-authored text without the prefix.
 ---@return string? error_message Invalid or empty input without a staged context or skill.
-function Draft:prompt_text(text)
+function Draft:prompt_text(text, reconciled)
   if type(text) ~= "string" then
     return nil, "prompt must be a non-empty string"
   end
   local prefix = self.context_prefix
-  if prefix ~= "" and text:sub(1, #prefix) == prefix then
+  if not reconciled and prefix ~= "" and text:sub(1, #prefix) == prefix then
     text = text:sub(#prefix + 1)
   end
   if text == "" and #self.contexts == 0 and self.pending_skill == nil then
