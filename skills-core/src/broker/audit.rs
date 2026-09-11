@@ -78,6 +78,13 @@ pub enum AuditDecision {
     },
     /// The Agent channel and every delegated grant became unusable.
     CapabilitiesRevoked,
+    /// Broker stopped approvals; supervisor enforcement is still pending.
+    CapabilitiesRevocationRequested,
+    /// A spent effect has no known actual outcome and must not be retried.
+    EffectOutcomeUnknown {
+        /// Session-wide effect sequence.
+        sequence: u64,
+    },
 }
 
 /// One normalized entry in the operator record.
@@ -145,7 +152,13 @@ impl AuditLog {
         let result = file
             .write_all(&line)
             .and_then(|()| file.sync_all())
-            .map_err(BrokerError::Storage);
+            .map_err(BrokerError::Storage)
+            .and_then(|()| {
+                // The first append creates the filename. File fsync alone does
+                // not establish durability of that directory entry (vib4).
+                let parent = self.path.parent().ok_or(BrokerError::InvalidGrant)?;
+                sync_directory(parent)
+            });
         drop(appending);
         result
     }

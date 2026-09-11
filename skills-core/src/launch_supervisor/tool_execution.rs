@@ -4,12 +4,13 @@
 #[path = "tool_execution_tests.rs"]
 mod tests;
 
-use super::{SupervisorCompletion, SupervisorError};
+use super::{SupervisorCompletion, SupervisorError, command::CommandPermit};
 use crate::{
-    launch_protocol::{MAX_TOOL_OUTPUT_BYTES, ToolExecutionRequest, ToolExecutionResult},
-    launch_transport::KernelProcess,
+    launch_protocol::{MAX_TOOL_OUTPUT_BYTES, ToolExecutionResult},
     registry::NetworkPolicy,
-    sandbox::{BubblewrapBackend, ConfinementPlan, SandboxedSession, default_system_roots},
+    sandbox::{
+        BubblewrapBackend, ConfinementPlan, PreparedSession, SandboxedSession, default_system_roots,
+    },
 };
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use std::{
@@ -86,18 +87,14 @@ impl ToolExecutor {
 
     pub(super) fn execute(
         &mut self,
-        request: ToolExecutionRequest,
-        agent: Arc<KernelProcess>,
+        permit: CommandPermit,
         complete: SupervisorCompletion<ToolExecutionResult>,
     ) -> Result<(), SupervisorError> {
+        let request = permit.request();
         request
             .validate()
             .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
-        if self.closed
-            || !agent
-                .valid()
-                .map_err(|_| SupervisorError::AgentIdentityRejected)?
-        {
+        if self.closed || !permit.valid()? {
             return Err(SupervisorError::ToolIsolationUnproven);
         }
         if !self.finished.load(Ordering::Acquire) {
@@ -110,8 +107,9 @@ impl ToolExecutor {
         let cancelled = Arc::clone(&self.cancelled);
         let backend = self.backend.clone();
         let mut plan = self.plan.clone();
-        plan.session_id = format!("tool-{}", request.sequence);
-        plan.arguments = vec!["-c".to_owned(), request.command];
+        plan.session_id = format!("tool-{}", permit.dispatch_sequence());
+        plan.arguments = vec!["-c".to_owned(), request.command.clone()];
+        let timeout = Duration::from_millis(u64::from(request.timeout_ms));
         self.worker = Some(
             thread::Builder::new()
                 .name("louiselm-tool".to_owned())
@@ -119,13 +117,10 @@ impl ToolExecutor {
                     let result = run(
                         &backend,
                         &plan,
-                        Duration::from_millis(u64::from(request.timeout_ms)),
+                        timeout,
                         &cancelled,
-                        || {
-                            agent
-                                .valid()
-                                .map_err(|_| SupervisorError::AgentIdentityRejected)
-                        },
+                        || permit.valid(),
+                        |prepared| start_command(prepared, &permit),
                     );
                     let cleanup = if matches!(&result, Err(SupervisorError::CleanupUnproven)) {
                         Err(SupervisorError::CleanupUnproven)
@@ -181,6 +176,7 @@ fn run(
     timeout: Duration,
     cancelled: &AtomicBool,
     alive: impl Fn() -> Result<bool, SupervisorError>,
+    start: impl FnOnce(PreparedSession) -> Result<SandboxedSession, SupervisorError>,
 ) -> Result<ToolExecutionResult, SupervisorError> {
     let deadline = Instant::now()
         .checked_add(timeout)
@@ -193,12 +189,34 @@ fn run(
             .map_err(|_| SupervisorError::CleanupUnproven)?;
         return Err(SupervisorError::AgentIdentityRejected);
     }
-    let mut session = prepared.start().map_err(super::system::map_sandbox)?;
+    let mut session = start(prepared)?;
     drop(session.take_stdin());
     let result = collect(&mut session, deadline, cancelled, &alive);
     session
         .dispose()
         .map_err(|_| SupervisorError::CleanupUnproven)?;
+    result
+}
+
+fn start_command(
+    prepared: PreparedSession,
+    permit: &CommandPermit,
+) -> Result<SandboxedSession, SupervisorError> {
+    let mut prepared = Some(prepared);
+    let result = permit.start(|| {
+        prepared
+            .take()
+            .ok_or(SupervisorError::SpawnFailed)?
+            .start()
+            .map_err(super::system::map_sandbox)
+    });
+    // A denied final check still owns a prepared tree. Prove its cleanup;
+    // merely dropping the unused closure cannot acknowledge cancellation.
+    if let Some(mut prepared) = prepared {
+        prepared
+            .dispose()
+            .map_err(|_| SupervisorError::CleanupUnproven)?;
+    }
     result
 }
 

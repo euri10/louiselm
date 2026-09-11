@@ -65,6 +65,7 @@ fn command(
         timeout,
         &AtomicBool::new(false),
         || Ok(true),
+        |prepared| prepared.start().map_err(super::super::system::map_sandbox),
     )
 }
 
@@ -162,7 +163,8 @@ fn cancelled_start_never_executes_repository_code() {
             &plan,
             Duration::from_secs(5),
             &AtomicBool::new(true),
-            || Ok(true)
+            || Ok(true),
+            |prepared| prepared.start().map_err(super::super::system::map_sandbox)
         ),
         Err(SupervisorError::AgentIdentityRejected)
     );

@@ -1,19 +1,82 @@
 # Explicit tool delegation
 
-`louiselm-qbr.5.1.1.4` adds the broker component in
-`skills-core/src/broker/delegation/`. Production launch and channel dispatch
-remain `louiselm-qbr.5.1.1.5`; this component alone does not enable Verified
-Sessions or establish an installed Agent integration.
+`louiselm-qbr.5.1.1.5.2` implements the Agent-command path described by
+`louiselm-cross-process-tool-commit-z288`: broker-owned approval and budget,
+supervisor-owned process identity and actual execution. Delegated helper
+creation remains `.5.3`; installed integration and user-visible Verified
+cutover remain `.5.4`. This component does not enable an installed vendor Agent.
 
-The cross-process contract confirmed in
-`louiselm-cross-process-tool-commit-z288` supersedes this component's local
-commit assumption: the broker issues single-use command authorizations, while
-the supervisor owns process handles and enforces actual start, running-command
-cancellation and grant expiry. Adaptation is tracked in
-`louiselm-qbr.5.1.1.5.2` and `.5.3`. The local APIs described below are not yet
-that production implementation.
+## Cross-process Agent commands
 
-## Authority and scope
+`SystemCapabilityGate` receives a bounded `ToolExecutionRequest` only from its
+pinned Agent, checking both connection and per-packet kernel credentials.
+The Session owner forwards the original request and supervisor-authored
+`CommandPrincipal` through the retained authenticated broker connection.
+The broker never receives a kernel handle and never constructs one from a PID.
+An ungranted child, passed descriptor, or first connector cannot become the Agent.
+
+The broker worker attaches an existing approved `DelegationPolicy` to its
+`BrokerSession` with `enable_commands`. Its trusted binding must match the
+consumed launch's Session, Run, revision and assigned identity. `serve_command`
+handles the bounded command conversation on that original connection; it must
+not run beside another reader of the same channel. No new human prompt or
+Agent permission setting is introduced. Unconfigured command policy denies
+commands. The installed broker's overall lifecycle composition is not supplied
+by this component.
+
+`CommandAuthority` validates exact command digest, timeout, principal, revision,
+expiry, request sequence and remaining budget. It spends one use and persists
+normalized intent before sending `CommandOperation::Authorize`. File and audit
+directory synchronization must both succeed. Failed or lost decisions never
+refund budget. A spent/revoked Session cannot reconstruct fresh authority from
+that audit history after a restart.
+
+The supervisor correlates the decision with the original Agent request. Its
+single-use `CommandPermit` owns that exact immutable request; the executor cannot
+substitute another command. The permit rechecks the kernel lifetime, revocation
+and expiry directly around the isolated process's startup gate, and the running
+executor continues checking until cleanup. The decision's remaining lifetime is
+anchored **before the supervisor forwarded the request**, not when the reply
+arrives, so transport or audit delay can only shorten it. Principal-local
+request sequences and Session-wide dispatch sequences are separate. A raw broker
+`ToolExecutionRequest` or unsolicited authorization cannot execute anything.
+
+`revoke_commands` stops broker approvals before sending revocation. The
+supervisor blocks queued starts, cancels and joins the running command tree,
+then reports enforcement. `command_revocation_complete` becomes true only after
+that authenticated success is durably audited. Cleanup failure is not success:
+the existing quarantine and identity-poisoning path applies. Local expiry stops
+running work too; an earlier command timeout still wins. Revoked command authority
+is not restored by the existing transport/lifecycle reconnect machinery.
+
+The Agent receives a typed `Result`: completed output, a known pre-start refusal,
+or `Unknown`. A disconnected channel also provides no proof that execution did
+not happen. There is no automatic retry. Known output is delivered without
+waiting for its audit acknowledgement; an audit failure cannot undo an effect.
+Late authenticated actual outcomes remain recordable after revocation, including
+resolution of a previously recorded unknown outcome. Replayed outcomes are denied.
+Audit contains only normalized attribution and decisions, never command bytes,
+output, prompts, environments or secrets.
+
+Evidence: `command_protocol`, `command_authority`, the retained-connection test in
+`tests/broker.rs`, `launch_supervisor::command::tests`, and
+`launch_supervisor::lifecycle::tool_dispatch::tests`. The last drives the actual
+capability gate, seqpacket broker adapter, policy and isolated executor using a
+pinned native test process. It covers lost authorization replies, running
+revocation/expiry and late actual outcomes. These are deterministic local
+composition tests, not a privileged installed-launch or vendor compatibility
+claim. Existing identity, descriptor-transfer, isolation and delegation coverage
+remains in place.
+
+## Helper component awaiting `.5.3`
+
+`louiselm-qbr.5.1.1.4` supplies the local delegation component in
+`skills-core/src/broker/delegation/`. The APIs below remain characterization
+coverage for helper policy until `.5.3` ports them to the cross-process boundary.
+Their in-process commit closure and start-only expiry are not the production
+Agent-command contract above.
+
+### Authority and scope
 
 The launch owner supplies an already approved policy, the immutable Session,
 Run and envelope binding, and the Agent's authenticated kernel process and
@@ -46,7 +109,7 @@ processes gain no authority by membership or ancestry. Agent-originated requests
 remain Agent actions under the Agent's scope and remaining budget, including
 requests influenced by tool output.
 
-## Asynchronous effects and revocation
+### Asynchronous effects and revocation
 
 `ToolEffect::execute` admits asynchronous preparation and owns exactly one
 completion. `PendingEffect::commit` checks identity, scope, subject, revision,
@@ -74,7 +137,7 @@ process, budget and outcome fields. Commands, output, environments, prompts and
 secrets are excluded. Commit intent records uncertainty until an outcome is
 recorded. Audit failure denies new effects and closes authority.
 
-## Evidence and limits
+### Evidence and limits
 
 `broker::delegation_tests` exercises real credential-carrying Unix packets and
 kernel lifetime pins, explicit approval, scope/expiry/revision/replay denial,

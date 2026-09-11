@@ -245,6 +245,9 @@ impl Drop for LaunchedSession {
 
 enum OwnerEvent {
     ToolFinished,
+    CommandDeadline {
+        request_id: String,
+    },
     ControllerDetached,
     BrokerRequest {
         connection_epoch: u64,
@@ -415,10 +418,7 @@ enum ParkResult {
     reason = "Owner flags track independent I/O, timer, and terminal obligations, not one exclusive state."
 )]
 struct SessionOwner {
-    tool_sequence: u64,
-    pending_tool: Option<(String, u64, u64)>,
-    tool_mailbox:
-        Arc<Mutex<Option<Result<crate::launch_protocol::ToolExecutionResult, SupervisorError>>>>,
+    commands: tool_dispatch::CommandDispatch,
     resources: SessionResources,
     signer: Arc<dyn LaunchSigner>,
     receipts: Vec<SignedReceipt>,
@@ -484,9 +484,7 @@ impl SessionOwner {
         let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         Self {
             resources,
-            tool_sequence: 0,
-            pending_tool: None,
-            tool_mailbox: Arc::new(Mutex::new(None)),
+            commands: tool_dispatch::CommandDispatch::default(),
             signer,
             receipts,
             binding,
@@ -548,6 +546,7 @@ impl SessionOwner {
             return Err(error);
         }
         self.arm_broker_receive();
+        self.arm_agent_receive();
         let _ = ready.send(Ok(()));
         loop {
             let event = self
@@ -555,6 +554,7 @@ impl SessionOwner {
                 .recv()
                 .map_err(|_| SupervisorError::WorkerUnavailable)?;
             match event {
+                OwnerEvent::CommandDeadline { request_id } => self.command_deadline(&request_id),
                 OwnerEvent::ControllerDetached => self.begin_controller_loss(),
                 OwnerEvent::BrokerRequest {
                     connection_epoch,
@@ -714,6 +714,7 @@ impl SessionOwner {
             }
         };
         match message {
+            ProtocolMessage::Command(request) => self.handle_command(request),
             ProtocolMessage::ToolExecution(request) => self.handle_tool(request),
             ProtocolMessage::Lifecycle(request) => self.handle_lifecycle(request),
             ProtocolMessage::Status(request) => self.handle_status(request),
@@ -2356,6 +2357,7 @@ impl SessionOwner {
         ) {
             return;
         }
+        self.commands.closed = true;
         let Some(connection_epoch) = self.connection_epoch.checked_add(1) else {
             self.finished = Some(Err(SupervisorError::BrokerUnavailable));
             return;

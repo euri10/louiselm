@@ -587,6 +587,13 @@ impl FakeBroker {
 }
 
 impl LaunchBroker for FakeBroker {
+    fn send_command(
+        &self,
+        _message: louiselm_skills::launch_protocol::CommandMessage,
+        _complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::BrokerUnavailable)
+    }
     fn consume_authorization(
         &self,
         _request: LaunchRequest,
@@ -1030,6 +1037,27 @@ impl ProcessMembership for FakeProcessMembership {
 }
 
 impl CapabilityGate for FakeCapabilityGate {
+    fn receive_command(
+        &mut self,
+        _complete: SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionRequest>,
+    ) -> Result<(), SupervisorError> {
+        Ok(())
+    }
+    fn authorize_command(
+        &self,
+        _request: &louiselm_skills::launch_protocol::ToolExecutionRequest,
+        _decision: &louiselm_skills::launch_protocol::CommandMessage,
+        _forwarded_at: Instant,
+    ) -> Result<louiselm_skills::launch_supervisor::command::CommandPermit, SupervisorError> {
+        Err(SupervisorError::AgentIdentityRejected)
+    }
+    fn send_command(
+        &self,
+        _message: louiselm_skills::launch_protocol::CommandMessage,
+        _complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::CapabilityUnavailable)
+    }
     fn channel(&self) -> Channel {
         self.channel.clone()
     }
@@ -1265,9 +1293,12 @@ fn run_fake_relay(
 }
 
 impl RunningAgent for FakeRunningAgent {
+    fn cancel_tool(&mut self) -> Result<(), SupervisorError> {
+        Ok(())
+    }
     fn execute_tool(
         &mut self,
-        _request: louiselm_skills::launch_protocol::ToolExecutionRequest,
+        _permit: louiselm_skills::launch_supervisor::command::CommandPermit,
         complete: SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionResult>,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "agent.tool");
@@ -2630,7 +2661,7 @@ fn missing_tool_isolation_disposes_restricted_startup_without_enabling_effects()
 }
 
 #[test]
-fn broker_tool_commands_bind_session_revision_and_nonreplayable_sequence() {
+fn raw_broker_commands_never_execute_without_an_authenticated_agent_request() {
     use louiselm_skills::launch_protocol::{TOOL_EXECUTION_SCHEMA, ToolExecutionRequest};
     let setup = setup(
         true,
@@ -2653,8 +2684,8 @@ fn broker_tool_commands_bind_session_revision_and_nonreplayable_sequence() {
         timeout_ms: 1000,
     };
     for (id, code) in [
-        ("wrong-session", ErrorCode::SubjectMismatch),
-        ("wrong-revision", ErrorCode::EnvelopeRevisionMismatch),
+        ("wrong-session", ErrorCode::InvalidRequest),
+        ("wrong-revision", ErrorCode::InvalidRequest),
     ] {
         let mut invalid = request.clone();
         invalid.request_id = id.to_owned();
@@ -2677,23 +2708,23 @@ fn broker_tool_commands_bind_session_revision_and_nonreplayable_sequence() {
         .broker
         .deliver_session_request(ProtocolMessage::ToolExecution(request.clone()));
     assert!(
-        matches!(setup.broker.wait_for_session_response("tool-1", 0).result, ResponseResult::ToolExecution { output } if output.stdout == "tool output")
+        matches!(setup.broker.wait_for_session_response("tool-1", 0).result, ResponseResult::Error {error} if error.code==ErrorCode::InvalidRequest)
     );
     setup.broker.wait_for_session_request();
     setup
         .broker
         .deliver_session_request(ProtocolMessage::ToolExecution(request));
     assert!(
-        matches!(setup.broker.wait_for_session_response("tool-1", 1).result, ResponseResult::Error { error } if error.code == ErrorCode::RequestIdConflict)
+        matches!(setup.broker.wait_for_session_response("tool-1", 1).result, ResponseResult::Error { error } if error.code == ErrorCode::InvalidRequest)
     );
-    assert_eq!(event_count(&setup.events, "agent.tool"), 1);
+    assert_eq!(event_count(&setup.events, "agent.tool"), 0);
     finish_session_relay(&setup, controller, finished, worker);
 }
 
 #[test]
-fn tool_completion_after_session_disposal_cannot_send_a_response() {
+fn unsolicited_broker_authorization_never_reaches_tool_mechanics() {
     use louiselm_skills::launch_protocol::{
-        TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
+        COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandPrincipal,
     };
     let setup = setup(
         true,
@@ -2702,45 +2733,35 @@ fn tool_completion_after_session_disposal_cannot_send_a_response() {
         PlatformBehavior::default(),
         SUPERVISOR_TIMEOUT,
     );
-    lock(&setup.platform.agent).hold_tool = true;
     let session = complete_launch(&setup);
     let (controller, finished, worker) = begin_session_relay(session);
     setup.broker.wait_for_session_request();
     setup
         .broker
-        .deliver_session_request(ProtocolMessage::ToolExecution(ToolExecutionRequest {
-            schema: TOOL_EXECUTION_SCHEMA.to_owned(),
+        .deliver_session_request(ProtocolMessage::Command(CommandMessage {
+            schema: COMMAND_SCHEMA.to_owned(),
             protocol_version: 1,
             request_id: "late-tool".to_owned(),
             session_id: setup.request.session_id.clone(),
             run_id: setup.request.run_id.clone(),
             envelope_revision: setup.request.envelope_revision,
-            sequence: 1,
-            command: "sleep 1".to_owned(),
-            timeout_ms: 1000,
+            operation: CommandOperation::Authorize {
+                principal: CommandPrincipal {
+                    channel_id: "agent-capability".to_owned(),
+                    pid: 42_425,
+                    uid: 200_003,
+                    gid: 300_003,
+                },
+                principal_sequence: 1,
+                dispatch_sequence: 1,
+                command_digest: Digest::of(b"sleep 1").to_string(),
+                timeout_ms: 1000,
+                valid_for_ms: 1000,
+            },
         }));
-    let (mut state, timeout) = setup
-        .platform
-        .agent_changed
-        .wait_timeout_while(lock(&setup.platform.agent), CALLBACK_TIMEOUT, |state| {
-            state.tool_completion.is_none()
-        })
-        .unwrap();
-    assert!(!timeout.timed_out());
-    let complete = state.tool_completion.take().unwrap();
-    drop(state);
+    setup.broker.wait_for_session_request();
+    assert_eq!(event_count(&setup.events, "agent.tool"), 0);
     finish_session_relay(&setup, controller, finished, worker);
-    thread::spawn(move || {
-        complete(Ok(ToolExecutionResult {
-            exit_code: 0,
-            stdout: "stale".to_owned(),
-            stderr: String::new(),
-            truncated: false,
-            timed_out: false,
-        }));
-    })
-    .join()
-    .unwrap();
     assert_eq!(setup.broker.session_response_count_for("late-tool"), 0);
 }
 

@@ -46,6 +46,7 @@ use crate::{
     sandbox::{Channel, ConfinementPlan},
 };
 
+pub mod command;
 mod lifecycle;
 mod tool_execution;
 mod tool_integration;
@@ -261,6 +262,17 @@ pub trait LaunchBroker: Send + Sync {
         complete: SupervisorCompletion<()>,
     ) -> Result<(), SupervisorError>;
 
+    /// Sends a command attribution or outcome on the retained authenticated channel.
+    /// Replies arrive through the single Session receive, never a competing reader.
+    ///
+    /// # Errors
+    /// Reports invalid records or unavailable transport; later failures use `complete`.
+    fn send_command(
+        &self,
+        message: crate::launch_protocol::CommandMessage,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Cancels outstanding broker I/O and closes the authenticated channel.
     fn close(&self);
 }
@@ -332,6 +344,37 @@ pub trait CapabilityGate: Send {
     /// Returns an unbound/closed gate or listener activation error.
     fn enable(&mut self) -> Result<(), SupervisorError>;
 
+    /// Receives one request after validating connected and per-packet Agent identity.
+    /// May be armed before the Agent connects; at most one receive is outstanding.
+    ///
+    /// # Errors
+    /// Refuses a closed/busy gate. Authentication or decoding failures use `complete`.
+    fn receive_command(
+        &mut self,
+        complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionRequest>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Rechecks the original packet binding and the exact broker decision locally.
+    ///
+    /// # Errors
+    /// Refuses replay, expiry, revocation, changed scope or a lost Agent lifetime.
+    fn authorize_command(
+        &self,
+        request: &crate::launch_protocol::ToolExecutionRequest,
+        decision: &crate::launch_protocol::CommandMessage,
+        forwarded_at: std::time::Instant,
+    ) -> Result<command::CommandPermit, SupervisorError>;
+
+    /// Sends a correlated result to the same authenticated Agent connection.
+    ///
+    /// # Errors
+    /// Refuses an invalid result or unavailable connection; late errors use `complete`.
+    fn send_command(
+        &self,
+        message: crate::launch_protocol::CommandMessage,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Immediately revokes live and future capability use without destroying
     /// the rendezvous needed by a later authorized Resume.
     ///
@@ -396,9 +439,15 @@ pub trait RunningAgent: Send {
     /// Refuses unsupported integration, concurrent execution, invalid requests or startup failure.
     fn execute_tool(
         &mut self,
-        request: crate::launch_protocol::ToolExecutionRequest,
+        permit: command::CommandPermit,
         complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionResult>,
     ) -> Result<(), SupervisorError>;
+
+    /// Cancels and joins the command tree before acknowledging policy revocation.
+    ///
+    /// # Errors
+    /// Returns `CleanupUnproven` unless the owned tool tree is proved terminated.
+    fn cancel_tool(&mut self) -> Result<(), SupervisorError>;
     /// Returns the cached identity established during restricted startup.
     ///
     /// # Errors

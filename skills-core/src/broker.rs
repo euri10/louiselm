@@ -16,6 +16,7 @@
 
 pub mod audit;
 pub mod authorization;
+pub mod commands;
 pub mod delegation;
 pub mod receipts;
 pub mod service;

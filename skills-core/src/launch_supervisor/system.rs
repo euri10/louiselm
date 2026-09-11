@@ -8,6 +8,13 @@ mod relay_tests;
 #[path = "tool_integration_tests.rs"]
 mod tool_integration_tests;
 
+#[path = "system_command.rs"]
+mod command_io;
+
+#[cfg(test)]
+#[path = "command_test_support.rs"]
+pub(super) mod command_test_support;
+
 use std::{
     fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
@@ -561,6 +568,22 @@ impl LaunchBroker for SeqpacketLaunchBroker {
             .map_err(map_transport)
     }
 
+    fn send_command(
+        &self,
+        message: crate::launch_protocol::CommandMessage,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        message
+            .validate()
+            .map_err(|_| SupervisorError::BrokerUnavailable)?;
+        self.current_channel()?
+            .send(
+                message.canonical_bytes(),
+                Box::new(move |result| complete(result.map_err(map_transport))),
+            )
+            .map_err(map_transport)
+    }
+
     fn close(&self) {
         let (connector, channel, reconnect, controller_loss_pending) = {
             let mut state = lock(&self.state);
@@ -944,17 +967,19 @@ fn apply_mechanic<T>(
 impl RunningAgent for SystemRunningAgent {
     fn execute_tool(
         &mut self,
-        request: crate::launch_protocol::ToolExecutionRequest,
+        permit: super::command::CommandPermit,
         complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionResult>,
     ) -> Result<(), SupervisorError> {
-        let agent = self
-            .authentication()?
-            .process
-            .ok_or(SupervisorError::AgentIdentityRejected)?;
         self.tools
             .as_mut()
             .ok_or(SupervisorError::ToolIsolationUnproven)?
-            .execute(request, agent, complete)
+            .execute(permit, complete)
+    }
+
+    fn cancel_tool(&mut self) -> Result<(), SupervisorError> {
+        self.tools
+            .as_mut()
+            .map_or(Ok(()), super::tool_execution::ToolExecutor::cancel)
     }
     fn authentication(&self) -> Result<AgentAuthentication, SupervisorError> {
         let process = lock(&self.session)
@@ -1149,6 +1174,7 @@ struct SystemCapabilityGate {
     channel: Channel,
     binding: Option<CapabilityBinding>,
     process: Option<Arc<KernelProcess>>,
+    commands: Option<Arc<super::command::CommandEnforcer>>,
     expected_session_id: String,
     expected_run_id: String,
     expected_envelope_revision: u64,
@@ -1161,12 +1187,14 @@ struct AcceptedCapability {
     closed: bool,
     generation: u64,
     channel: Option<SeqpacketChannel>,
+    receiving: bool,
+    pending: Option<SupervisorCompletion<crate::launch_protocol::ToolExecutionRequest>>,
 }
 
 fn accept_capability(
     result: Result<SeqpacketChannel, TransportError>,
-    accepted: &Mutex<AcceptedCapability>,
-    process: &KernelProcess,
+    accepted: &Arc<Mutex<AcceptedCapability>>,
+    process: &Arc<KernelProcess>,
     generation: u64,
 ) {
     let Ok(channel) = result else {
@@ -1176,11 +1204,22 @@ fn accept_capability(
         channel.close();
         return;
     }
-    let mut accepted = lock(accepted);
-    if accepted.closed || accepted.generation != generation {
+    let mut state = lock(accepted);
+    if state.closed || state.generation != generation {
         channel.close();
     } else {
-        accepted.channel = Some(channel);
+        state.channel = Some(channel.clone());
+        let pending = state.pending.take();
+        drop(state);
+        if let Some(complete) = pending {
+            command_io::receive(
+                &channel,
+                Arc::clone(process),
+                accepted,
+                generation,
+                complete,
+            );
+        }
     }
 }
 
@@ -1220,6 +1259,7 @@ impl SystemCapabilityGate {
             },
             binding: None,
             process: None,
+            commands: None,
             expected_session_id: request.session_id.clone(),
             expected_run_id: request.run_id.clone(),
             expected_envelope_revision: request.envelope_revision,
@@ -1289,6 +1329,10 @@ impl CapabilityGate for SystemCapabilityGate {
         {
             return Err(SupervisorError::CapabilityUnavailable);
         }
+        self.commands = Some(Arc::new(super::command::CommandEnforcer::new(
+            binding.clone(),
+            Arc::clone(&process),
+        )?));
         self.binding = Some(binding);
         self.process = Some(process);
         Ok(())
@@ -1370,15 +1414,23 @@ impl CapabilityGate for SystemCapabilityGate {
     }
 
     fn revoke(&mut self) -> Result<(), SupervisorError> {
+        let commands = self
+            .commands
+            .as_ref()
+            .map_or(Ok(()), |commands| commands.revoke());
         let channel = {
             let mut accepted = lock(&self.accepted);
             accepted.closed = true;
-            accepted.channel.take()
+            accepted.receiving = false;
+            (accepted.channel.take(), accepted.pending.take())
         };
-        if let Some(channel) = channel {
+        if let Some(complete) = channel.1 {
+            complete(Err(SupervisorError::CapabilityUnavailable));
+        }
+        if let Some(channel) = channel.0 {
             channel.close();
         }
-        match self.state.take() {
+        let result = match self.state.take() {
             Some(ListenerState::Enabled(listener)) => {
                 let result = self.set_owned_mode(0o000);
                 self.state = Some(ListenerState::Revoked(listener));
@@ -1393,10 +1445,74 @@ impl CapabilityGate for SystemCapabilityGate {
                 Ok(())
             }
             None => Err(SupervisorError::CapabilityUnavailable),
+        };
+        commands.and(result)
+    }
+
+    fn receive_command(
+        &mut self,
+        complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionRequest>,
+    ) -> Result<(), SupervisorError> {
+        self.receive_agent_command(complete)
+    }
+
+    fn authorize_command(
+        &self,
+        request: &crate::launch_protocol::ToolExecutionRequest,
+        decision: &crate::launch_protocol::CommandMessage,
+        forwarded_at: Instant,
+    ) -> Result<super::command::CommandPermit, SupervisorError> {
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or(SupervisorError::CapabilityUnavailable)?;
+        self.commands
+            .as_ref()
+            .ok_or(SupervisorError::CapabilityUnavailable)?
+            .admit(
+                request,
+                &crate::launch_protocol::CommandPrincipal {
+                    channel_id: binding.channel_id.clone(),
+                    pid: binding.agent_pid,
+                    uid: binding.assigned_uid,
+                    gid: binding.assigned_gid,
+                },
+                decision,
+                forwarded_at,
+            )
+    }
+
+    fn send_command(
+        &self,
+        message: crate::launch_protocol::CommandMessage,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        message
+            .validate()
+            .map_err(|_| SupervisorError::CapabilityUnavailable)?;
+        let accepted = lock(&self.accepted);
+        if accepted.closed {
+            return Err(SupervisorError::CapabilityUnavailable);
         }
+        let channel = accepted
+            .channel
+            .clone()
+            .ok_or(SupervisorError::CapabilityUnavailable)?;
+        drop(accepted);
+        channel
+            .send(
+                message.canonical_bytes(),
+                Box::new(move |result| {
+                    complete(result.map_err(|_| SupervisorError::CapabilityUnavailable));
+                }),
+            )
+            .map_err(|_| SupervisorError::CapabilityUnavailable)
     }
 
     fn close(&mut self) {
+        // Revocation error is handled by explicit lifecycle cleanup. Close never
+        // releases a lease; a poisoned enforcement mutex is independently closed.
+        let _ = self.commands.as_ref().map(|commands| commands.revoke());
         match self.state.take() {
             Some(ListenerState::Enabled(listener) | ListenerState::Revoked(listener)) => {
                 listener.close();
@@ -1407,9 +1523,13 @@ impl CapabilityGate for SystemCapabilityGate {
         let channel = {
             let mut accepted = lock(&self.accepted);
             accepted.closed = true;
-            accepted.channel.take()
+            accepted.receiving = false;
+            (accepted.channel.take(), accepted.pending.take())
         };
-        if let Some(channel) = channel {
+        if let Some(complete) = channel.1 {
+            complete(Err(SupervisorError::CapabilityUnavailable));
+        }
+        if let Some(channel) = channel.0 {
             channel.close();
         }
         self.remove_owned_path();
@@ -1881,6 +2001,7 @@ mod tests {
             },
             binding: None,
             process: None,
+            commands: None,
             expected_session_id: "session-1".to_owned(),
             expected_run_id: "run-1".to_owned(),
             expected_envelope_revision: 7,

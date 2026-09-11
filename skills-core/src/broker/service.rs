@@ -11,7 +11,14 @@
 //! error, and a durability failure answers with nothing at all, because an
 //! acknowledgement is the launch's proof that bytes reached the disk.
 
-use std::{path::Path, sync::mpsc, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
+
+#[path = "command_service.rs"]
+mod command_service;
 
 use crate::{
     broker::{AuditDecision, AuditEntry, AuditLog, AuthorizationStore, BrokerError, ReceiptStore},
@@ -44,6 +51,8 @@ pub struct BrokerSession {
     authorization: LaunchAuthorization,
     launch_head: ReceiptHead,
     channel: SeqpacketChannel,
+    audit: Arc<AuditLog>,
+    commands: Option<super::commands::CommandAuthority>,
 }
 
 impl BrokerSession {
@@ -108,7 +117,7 @@ pub struct BrokerService {
     listener: SeqpacketListener,
     authorizations: AuthorizationStore,
     receipts: ReceiptStore,
-    audit: AuditLog,
+    audit: Arc<AuditLog>,
     supervisor: CredentialPin,
 }
 
@@ -133,7 +142,7 @@ impl BrokerService {
             listener,
             authorizations,
             receipts,
-            audit,
+            audit: Arc::new(audit),
             supervisor,
         })
     }
@@ -220,6 +229,8 @@ impl BrokerService {
                 authorization,
                 launch_head,
                 channel,
+                audit: Arc::clone(&self.audit),
+                commands: None,
             }),
             Err(error) => {
                 channel.close();

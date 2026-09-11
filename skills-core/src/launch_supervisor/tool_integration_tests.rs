@@ -295,16 +295,58 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         );
     }
     write_registry(&registry_root.join("agents.json"), &vec![agent_json]);
-    let command = |sequence, command: &str| ToolExecutionRequest {
-        schema: TOOL_EXECUTION_SCHEMA.to_owned(),
-        protocol_version: 1,
-        request_id: format!("tool-{sequence}"),
-        session_id: "session".to_owned(),
-        run_id: "run".to_owned(),
-        envelope_revision: 1,
-        sequence,
-        command: command.to_owned(),
-        timeout_ms: 5_000,
+    let credentials = authentication.credentials;
+    let principal = crate::launch_protocol::CommandPrincipal {
+        channel_id: "agent-capability".to_owned(),
+        pid: credentials.pid,
+        uid: credentials.uid,
+        gid: credentials.gid,
+    };
+    let enforcement = crate::launch_supervisor::command::CommandEnforcer::new(
+        CapabilityBinding {
+            session_id: "session".to_owned(),
+            run_id: "run".to_owned(),
+            channel_id: principal.channel_id.clone(),
+            envelope_revision: 1,
+            identity_slot: 0,
+            assigned_uid: credentials.uid,
+            assigned_gid: credentials.gid,
+            agent_pid: credentials.pid,
+        },
+        Arc::clone(authentication.process.as_ref().unwrap()),
+    )
+    .unwrap();
+    let command = |sequence, command: &str| {
+        let request = ToolExecutionRequest {
+            schema: TOOL_EXECUTION_SCHEMA.to_owned(),
+            protocol_version: 1,
+            request_id: format!("tool-{sequence}"),
+            session_id: "session".to_owned(),
+            run_id: "run".to_owned(),
+            envelope_revision: 1,
+            sequence,
+            command: command.to_owned(),
+            timeout_ms: 5_000,
+        };
+        let decision = crate::launch_protocol::CommandMessage {
+            schema: crate::launch_protocol::COMMAND_SCHEMA.to_owned(),
+            protocol_version: 1,
+            request_id: request.request_id.clone(),
+            session_id: request.session_id.clone(),
+            run_id: request.run_id.clone(),
+            envelope_revision: 1,
+            operation: crate::launch_protocol::CommandOperation::Authorize {
+                principal: principal.clone(),
+                principal_sequence: sequence,
+                dispatch_sequence: sequence,
+                command_digest: Digest::of(command.as_bytes()).to_string(),
+                timeout_ms: 5000,
+                valid_for_ms: 30000,
+            },
+        };
+        enforcement
+            .admit(&request, &principal, &decision, Instant::now())
+            .unwrap()
     };
     let (tx, rx) = mpsc::channel();
     let hostile = format!(
@@ -353,11 +395,12 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         thread::sleep(Duration::from_millis(5));
     }
     assert!(workspace.join("resumed").exists());
+    let queued_after_disposal = command(3, "touch after-disposal");
     running.dispose().unwrap();
     assert!(rx.recv_timeout(Duration::from_secs(3)).unwrap().is_err());
     assert!(
         running
-            .execute_tool(command(3, "touch after-disposal"), Box::new(|_| {}))
+            .execute_tool(queued_after_disposal, Box::new(|_| {}))
             .is_err()
     );
     thread::sleep(Duration::from_millis(1_100));

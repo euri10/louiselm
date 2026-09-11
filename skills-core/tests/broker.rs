@@ -615,6 +615,117 @@ fn assert_post_launch_exchange(
     assert_eq!(received.peer_credentials, received.message_credentials);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One retained-connection scenario follows policy binding, authorization, uncertainty and enforced revocation."
+)]
+fn assert_command_exchange(
+    session: &mut louiselm_skills::broker::BrokerSession,
+    supervisor: &SeqpacketChannel,
+) {
+    use louiselm_skills::{
+        broker::delegation::{CommandScope, DelegationPolicy},
+        launch_protocol::{
+            COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandOutcome, CommandPrincipal,
+            TOOL_EXECUTION_SCHEMA, ToolExecutionRequest,
+        },
+        launch_supervisor::CapabilityBinding,
+    };
+    let authorization = session.authorization().clone();
+    let principal = CommandPrincipal {
+        channel_id: "agent-capability".to_owned(),
+        pid: 123,
+        uid: authorization.assigned_uid,
+        gid: authorization.assigned_gid,
+    };
+    let binding = CapabilityBinding {
+        session_id: authorization.session_id.clone(),
+        run_id: authorization.run_id.clone(),
+        channel_id: principal.channel_id.clone(),
+        envelope_revision: authorization.envelope_revision,
+        identity_slot: authorization.identity_slot,
+        assigned_uid: principal.uid,
+        assigned_gid: principal.gid,
+        agent_pid: principal.pid,
+    };
+    let policy = DelegationPolicy {
+        authorization_id: "approved-command".to_owned(),
+        scope: CommandScope {
+            command_digest: Digest::of(b"printf sensitive"),
+            timeout_ms: 1000,
+            uses: 1,
+        },
+        allow_delegation: false,
+        expires_at: std::time::Instant::now() + Duration::from_secs(30),
+    };
+    let mut wrong = binding.clone();
+    "another-run".clone_into(&mut wrong.run_id);
+    assert!(session.enable_commands(wrong, policy.clone()).is_err());
+    session
+        .enable_commands(binding.clone(), policy.clone())
+        .unwrap();
+    assert!(session.enable_commands(binding, policy).is_err());
+    let mut message = CommandMessage {
+        schema: COMMAND_SCHEMA.to_owned(),
+        protocol_version: 1,
+        request_id: "command-1".to_owned(),
+        session_id: authorization.session_id.clone(),
+        run_id: authorization.run_id.clone(),
+        envelope_revision: authorization.envelope_revision,
+        operation: CommandOperation::Request {
+            principal,
+            command: ToolExecutionRequest {
+                schema: TOOL_EXECUTION_SCHEMA.to_owned(),
+                protocol_version: 1,
+                request_id: "command-1".to_owned(),
+                session_id: authorization.session_id,
+                run_id: authorization.run_id,
+                envelope_revision: authorization.envelope_revision,
+                sequence: 1,
+                command: "printf sensitive".to_owned(),
+                timeout_ms: 1000,
+            },
+        },
+    };
+    settle(|complete| supervisor.send(message.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    assert!(matches!(
+        settle(|complete| supervisor.receive(complete)).packet,
+        LauncherPacket::Request(ProtocolMessage::Command(CommandMessage {
+            operation: CommandOperation::Authorize {
+                dispatch_sequence: 1,
+                ..
+            },
+            ..
+        }))
+    ));
+    session.revoke_commands("revoke-command").unwrap();
+    let revoke = settle(|complete| supervisor.receive(complete));
+    let LauncherPacket::Request(ProtocolMessage::Command(mut revoke)) = revoke.packet else {
+        panic!("expected revocation")
+    };
+    assert!(!session.command_revocation_complete());
+    message.operation = CommandOperation::Outcome {
+        dispatch_sequence: 1,
+        outcome: CommandOutcome::Unknown,
+    };
+    settle(|complete| supervisor.send(message.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    assert!(matches!(
+        settle(|complete| supervisor.receive(complete)).packet,
+        LauncherPacket::Request(ProtocolMessage::Command(CommandMessage {
+            operation: CommandOperation::OutcomeAcknowledged {
+                dispatch_sequence: 1
+            },
+            ..
+        }))
+    ));
+    revoke.operation = CommandOperation::Revoked { enforced: true };
+    settle(|complete| supervisor.send(revoke.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    assert!(session.command_revocation_complete());
+}
+
 #[test]
 fn the_production_rendezvous_carries_one_complete_launch_transaction() {
     let root = TempDir::new().expect("broker state directory");
@@ -637,7 +748,7 @@ fn the_production_rendezvous_carries_one_complete_launch_transaction() {
         let request = request.clone();
         thread::spawn(move || fake_supervisor(&socket, &request, 2_000))
     };
-    let session = service
+    let mut session = service
         .serve_launch(2_000, verify_fixture_signature)
         .expect("the broker completes the transaction");
     let (authorization, supervisor_channel) = supervisor.join().expect("supervisor thread");
@@ -678,6 +789,7 @@ fn the_production_rendezvous_carries_one_complete_launch_transaction() {
         &supervisor_channel,
         session.authorization(),
     );
+    assert_command_exchange(&mut session, &supervisor_channel);
 
     let (sender, disconnected) = mpsc::sync_channel(1);
     supervisor_channel

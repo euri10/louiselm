@@ -1,118 +1,426 @@
-//! Broker-only admission and completion of zero-authority tools.
+//! One Agent request -> broker decision -> local start -> durable outcome.
 
-use std::sync::Arc;
-
-use crate::launch_protocol::{
-    BrokerConnection, ChannelState, ErrorCode, PROTOCOL_VERSION, ProtocolError, ProtocolResponse,
-    RESPONSE_SCHEMA, ResponseResult, ToolExecutionRequest,
-};
-use crate::launch_receipt::SessionState;
+#[cfg(test)]
+#[path = "tool_dispatch_tests.rs"]
+mod tests;
 
 use super::{OwnerEvent, SessionOwner};
+use crate::launch_protocol::{
+    BrokerConnection, COMMAND_SCHEMA, ChannelState, CommandMessage, CommandOperation,
+    CommandOutcome, CommandPrincipal, ErrorCode, PROTOCOL_VERSION, ProtocolError,
+    ToolExecutionRequest, ToolExecutionResult,
+};
+use crate::{launch_receipt::SessionState, launch_supervisor::SupervisorError};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+struct PendingCommand {
+    request: ToolExecutionRequest,
+    forwarded_at: Instant,
+    dispatch: Option<u64>,
+    outcome: Option<CommandOutcome>,
+    abandoned: bool,
+}
+
+#[derive(Default)]
+pub(super) struct CommandDispatch {
+    pub(super) closed: bool,
+    sequence: u64,
+    pending: Option<PendingCommand>,
+    request: Arc<Mutex<Option<Result<ToolExecutionRequest, SupervisorError>>>>,
+    result: Arc<Mutex<Option<Result<ToolExecutionResult, SupervisorError>>>>,
+}
 
 impl SessionOwner {
     pub(super) fn handle_tool(&mut self, request: ToolExecutionRequest) {
-        let refusal = request
-            .validate()
-            .err()
-            .map(|error| error.code)
-            .or_else(|| {
-                if request.session_id != self.binding.session_id
-                    || request.run_id != self.binding.run_id
-                {
-                    Some(ErrorCode::SubjectMismatch)
-                } else if request.envelope_revision != self.binding.envelope_revision {
-                    Some(ErrorCode::EnvelopeRevisionMismatch)
-                } else if self.tool_sequence.checked_add(1) != Some(request.sequence) {
-                    Some(ErrorCode::RequestIdConflict)
-                } else if self.state != SessionState::Running
-                    || self.channel_state != ChannelState::Enabled
-                    || self.broker_connection != BrokerConnection::Connected
-                    || self.widening_blocked
-                {
-                    Some(ErrorCode::StateMismatch)
-                } else if self.pending_tool.is_some() || self.pending.is_some() {
-                    Some(ErrorCode::OperationPending)
-                } else {
-                    None
-                }
+        // A raw broker command has no original authenticated Agent request and
+        // no single-use authorization. It must never reach process mechanics.
+        self.send_error(
+            request.request_id,
+            ProtocolError::new(
+                ErrorCode::InvalidRequest,
+                Some(self.state),
+                Some(self.broker_head.sequence),
+            ),
+        );
+    }
+
+    pub(super) fn arm_agent_receive(&mut self) {
+        if self.commands.closed || self.commands.pending.is_some() {
+            return;
+        }
+        let mailbox = Arc::clone(&self.commands.request);
+        let wake = self.sender.clone();
+        let result = self
+            .resources
+            .capability
+            .as_mut()
+            .ok_or(SupervisorError::CapabilityUnavailable)
+            .and_then(|gate| {
+                gate.receive_command(Box::new(move |result| {
+                    *mailbox
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                    let _ = wake.try_send(OwnerEvent::ToolFinished);
+                }))
             });
-        if let Some(code) = refusal {
-            self.send_error(
-                request.request_id,
-                ProtocolError::new(code, Some(self.state), Some(self.broker_head.sequence)),
+        if result.is_err() {
+            self.commands.closed = true;
+        }
+    }
+
+    fn command_message(&self, id: &str, operation: CommandOperation) -> CommandMessage {
+        CommandMessage {
+            schema: COMMAND_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: id.to_owned(),
+            session_id: self.binding.session_id.clone(),
+            run_id: self.binding.run_id.clone(),
+            envelope_revision: self.binding.envelope_revision,
+            operation,
+        }
+    }
+
+    fn send_command_broker(&mut self, message: CommandMessage) {
+        let sender = self.sender.clone();
+        let connection_epoch = self.connection_epoch;
+        let result = self
+            .resources
+            .broker
+            .as_ref()
+            .ok_or(SupervisorError::BrokerUnavailable)
+            .and_then(|broker| {
+                broker.send_command(
+                    message,
+                    Box::new(move |result| {
+                        let _ = sender.send(OwnerEvent::ResponseSent {
+                            connection_epoch,
+                            finish: None,
+                            result,
+                        });
+                    }),
+                )
+            });
+        if let Err(error) = result {
+            self.lose_broker(error);
+        }
+    }
+
+    fn send_command_agent(&mut self, id: &str, outcome: CommandOutcome) {
+        let message = self.command_message(id, CommandOperation::Result { outcome });
+        let mailbox = Arc::clone(&self.commands.request);
+        let wake = self.sender.clone();
+        let result = self
+            .resources
+            .capability
+            .as_ref()
+            .ok_or(SupervisorError::CapabilityUnavailable)
+            .and_then(|gate| {
+                gate.send_command(
+                    message,
+                    Box::new(move |result| {
+                        if let Err(error) = result {
+                            *mailbox
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(Err(error));
+                            let _ = wake.try_send(OwnerEvent::ToolFinished);
+                        }
+                    }),
+                )
+            });
+        if result.is_err() {
+            self.commands.closed = true;
+        }
+    }
+
+    fn forward_command(&mut self, request: ToolExecutionRequest) {
+        let valid = request.validate().is_ok()
+            && request.session_id == self.binding.session_id
+            && request.run_id == self.binding.run_id
+            && request.envelope_revision == self.binding.envelope_revision
+            && self.commands.sequence.checked_add(1) == Some(request.sequence)
+            && self.state == SessionState::Running
+            && self.channel_state == ChannelState::Enabled
+            && self.broker_connection == BrokerConnection::Connected
+            && !self.widening_blocked
+            && self.pending.is_none()
+            && self.commands.pending.is_none()
+            && !self.commands.closed;
+        if !valid {
+            self.send_command_agent(
+                &request.request_id,
+                CommandOutcome::NotStarted {
+                    error: ErrorCode::InvalidRequest,
+                },
+            );
+            self.arm_agent_receive();
+            return;
+        }
+        let message = self.command_message(
+            &request.request_id,
+            CommandOperation::Request {
+                principal: CommandPrincipal {
+                    channel_id: self.binding.channel_id.clone(),
+                    pid: self.binding.agent_pid,
+                    uid: self.binding.assigned_uid,
+                    gid: self.binding.assigned_gid,
+                },
+                command: request.clone(),
+            },
+        );
+        let id = request.request_id.clone();
+        self.commands.pending = Some(PendingCommand {
+            request,
+            forwarded_at: Instant::now(),
+            dispatch: None,
+            outcome: None,
+            abandoned: false,
+        });
+        let sender = self.sender.clone();
+        if self
+            .timeout
+            .checked_add(Duration::from_secs(30))
+            .ok_or(SupervisorError::WorkerUnavailable)
+            .and_then(|delay| {
+                self.timer.schedule(
+                    delay,
+                    Box::new(move || {
+                        let _ = sender.send(OwnerEvent::CommandDeadline { request_id: id });
+                    }),
+                )
+            })
+            .is_err()
+        {
+            self.commands.pending = None;
+            self.commands.closed = true;
+            self.send_command_agent(
+                &message.request_id,
+                CommandOutcome::NotStarted {
+                    error: ErrorCode::BrokerUnavailable,
+                },
             );
             return;
         }
-        // Consume before calling mechanics. Failed, lost and completed executions
-        // never become replayable after a broker reconnect.
-        self.tool_sequence = request.sequence;
-        self.pending_tool = Some((
-            request.request_id.clone(),
-            self.connection_epoch,
-            self.process_epoch,
-        ));
-        let mailbox = Arc::clone(&self.tool_mailbox);
+        self.send_command_broker(message);
+    }
+
+    pub(super) fn handle_command(&mut self, message: CommandMessage) {
+        if message.validate().is_err()
+            || message.session_id != self.binding.session_id
+            || message.run_id != self.binding.run_id
+            || message.envelope_revision != self.binding.envelope_revision
+        {
+            self.send_error(
+                message.request_id,
+                ProtocolError::new(
+                    ErrorCode::SubjectMismatch,
+                    Some(self.state),
+                    Some(self.broker_head.sequence),
+                ),
+            );
+            return;
+        }
+        if matches!(message.operation, CommandOperation::Revoke) {
+            self.revoke_commands(message);
+            return;
+        }
+        let Some(pending) = self.commands.pending.as_ref() else {
+            return;
+        };
+        if pending.request.request_id != message.request_id {
+            return;
+        }
+        match &message.operation {
+            CommandOperation::Authorize {
+                dispatch_sequence, ..
+            } if pending.dispatch.is_none() => {
+                self.start_command(&message, *dispatch_sequence);
+            }
+            CommandOperation::Reject { error } if pending.dispatch.is_none() => {
+                let error = *error;
+                self.commands.pending = None;
+                self.send_command_agent(&message.request_id, CommandOutcome::NotStarted { error });
+                self.arm_agent_receive();
+            }
+            CommandOperation::OutcomeAcknowledged { dispatch_sequence }
+                if pending.dispatch == Some(*dispatch_sequence) && pending.outcome.is_some() =>
+            {
+                self.commands.pending = None;
+                self.arm_agent_receive();
+            }
+            _ => {}
+        }
+    }
+
+    fn start_command(&mut self, message: &CommandMessage, dispatch: u64) {
+        let Some(pending) = self.commands.pending.as_mut() else {
+            return;
+        };
+        pending.dispatch = Some(dispatch);
+        self.commands.sequence = pending.request.sequence;
+        let permit = self
+            .resources
+            .capability
+            .as_ref()
+            .ok_or(SupervisorError::CapabilityUnavailable)
+            .and_then(|gate| {
+                gate.authorize_command(&pending.request, message, pending.forwarded_at)
+            });
+        let ready = !pending.abandoned
+            && !self.commands.closed
+            && !self.widening_blocked
+            && self.state == SessionState::Running
+            && self.channel_state == ChannelState::Enabled
+            && self.pending.is_none();
+        let permit = match permit {
+            Ok(permit) if ready => permit,
+            _ => {
+                self.report_command(CommandOutcome::NotStarted {
+                    error: ErrorCode::StateMismatch,
+                });
+                return;
+            }
+        };
+        let mailbox = Arc::clone(&self.commands.result);
         let wake = self.sender.clone();
         let result = self
             .resources
             .process
             .as_mut()
-            .ok_or(crate::launch_supervisor::SupervisorError::ToolIsolationUnproven)
+            .ok_or(SupervisorError::ToolIsolationUnproven)
             .and_then(|process| {
                 process.execute_tool(
-                    request,
+                    permit,
                     Box::new(move |result| {
                         *mailbox
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
-                        // The mailbox owns completion. A full queue already guarantees a
-                        // wakeup; never block a worker that disposal must join.
+                        // Never block the executor that revocation/disposal must join.
                         let _ = wake.try_send(OwnerEvent::ToolFinished);
                     }),
                 )
             });
-        if let Err(error) = result {
-            *self
-                .tool_mailbox
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(error));
+        if result.is_err() {
+            self.report_command(CommandOutcome::NotStarted {
+                error: ErrorCode::LifecycleMechanicUnavailable,
+            });
         }
-        self.collect_tool_result();
+    }
+
+    fn report_command(&mut self, outcome: CommandOutcome) {
+        let Some(pending) = self.commands.pending.as_mut() else {
+            return;
+        };
+        let Some(dispatch_sequence) = pending.dispatch else {
+            return;
+        };
+        pending.outcome = Some(outcome.clone());
+        let id = pending.request.request_id.clone();
+        // Deliver known actual output even if its durable audit subsequently fails.
+        // Nothing here authorizes a retry or refunds the broker's spent budget.
+        self.send_command_agent(&id, outcome.clone());
+        let message = self.command_message(
+            &id,
+            CommandOperation::Outcome {
+                dispatch_sequence,
+                outcome,
+            },
+        );
+        self.send_command_broker(message);
     }
 
     pub(super) fn collect_tool_result(&mut self) {
-        let result = self
-            .tool_mailbox
+        let request = self
+            .commands
+            .request
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        let Some(result) = result else { return };
-        let Some((request_id, connection_epoch, process_epoch)) = self.pending_tool.take() else {
+        match request {
+            Some(Ok(request)) => self.forward_command(request),
+            Some(Err(_)) => {
+                self.commands.closed = true;
+            }
+            None => {}
+        }
+        let result = self
+            .commands
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(result) = result {
+            // Revocation and process/connection epochs do not erase actual results.
+            // Reconnect replay is out of scope; a failed send remains uncertain.
+            let cleanup_failed = matches!(result, Err(SupervisorError::CleanupUnproven));
+            let outcome = match result {
+                Ok(output) => CommandOutcome::Completed { output },
+                Err(SupervisorError::CleanupUnproven) => {
+                    self.cleanup_unproven = true;
+                    self.commands.closed = true;
+                    CommandOutcome::Unknown
+                }
+                Err(_) => CommandOutcome::Unknown,
+            };
+            self.report_command(outcome);
+            if cleanup_failed {
+                let pending = self.pending.take();
+                self.quarantine_mechanic(pending);
+            }
+        }
+    }
+
+    fn revoke_commands(&mut self, mut message: CommandMessage) {
+        self.commands.closed = true;
+        let revoked = self
+            .resources
+            .capability
+            .as_mut()
+            .ok_or(SupervisorError::CapabilityUnavailable)
+            .and_then(|gate| gate.revoke());
+        self.channel_state = ChannelState::Revoked;
+        let cancelled = self
+            .resources
+            .process
+            .as_mut()
+            .ok_or(SupervisorError::CleanupUnproven)
+            .and_then(|process| process.cancel_tool());
+        self.collect_tool_result();
+        let enforced = revoked.is_ok() && cancelled.is_ok();
+        message.operation = CommandOperation::Revoked { enforced };
+        self.send_command_broker(message);
+        if !enforced {
+            self.cleanup_unproven = true;
+            let pending = self.pending.take();
+            self.quarantine_mechanic(pending);
+        }
+    }
+
+    pub(super) fn command_deadline(&mut self, id: &str) {
+        let Some(pending) = self.commands.pending.as_mut() else {
             return;
         };
-        if connection_epoch != self.connection_epoch
-            || process_epoch != self.process_epoch
-            || self.quarantined
-            || self.finished.is_some()
-        {
+        if pending.request.request_id != id || pending.outcome.is_some() {
             return;
         }
-        match result {
-            Ok(output) => self.send_response(ProtocolResponse {
-                schema: RESPONSE_SCHEMA.to_owned(),
-                protocol_version: PROTOCOL_VERSION,
-                request_id,
-                result: ResponseResult::ToolExecution { output },
-            }),
-            Err(_) => self.send_error(
-                request_id,
-                ProtocolError::new(
-                    ErrorCode::LifecycleMechanicUnavailable,
-                    Some(self.state),
-                    Some(self.broker_head.sequence),
-                ),
-            ),
+        pending.abandoned = true;
+        self.commands.closed = true;
+        self.send_command_agent(id, CommandOutcome::Unknown);
+        // A running permit already has its earlier local deadline (<=30 s).
+        // Join it before considering the command settled. No automatic retry.
+        if self
+            .resources
+            .process
+            .as_mut()
+            .is_some_and(|process| process.cancel_tool().is_err())
+        {
+            self.cleanup_unproven = true;
+            let pending = self.pending.take();
+            self.quarantine_mechanic(pending);
         }
+        self.collect_tool_result();
     }
 }

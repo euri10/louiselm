@@ -7,7 +7,11 @@ use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
+mod command;
 mod tool;
+pub use command::{
+    COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandOutcome, CommandPrincipal,
+};
 pub use tool::{
     MAX_TOOL_OUTPUT_BYTES, TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
 };
@@ -974,6 +978,8 @@ impl LaunchAuthorization {
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Authenticated supervisor/broker command authorization exchange.
+    Command(CommandMessage),
     /// Broker-authorized zero-capability workspace command.
     ToolExecution(ToolExecutionRequest),
     /// Query that atomically consumes one pending launch authorization.
@@ -1002,6 +1008,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        COMMAND_SCHEMA => {
+            let request: CommandMessage = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::Command(request))
+        }
         TOOL_EXECUTION_SCHEMA => {
             let request: ToolExecutionRequest = decode_closed(bytes)?;
             request.validate()?;

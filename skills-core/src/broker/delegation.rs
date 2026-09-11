@@ -41,11 +41,11 @@ impl CommandScope {
             && self.uses <= parent.uses
     }
 
-    fn valid(&self) -> bool {
+    pub(super) fn valid(&self) -> bool {
         (1..=30_000).contains(&self.timeout_ms) && (1..=64).contains(&self.uses)
     }
 
-    fn permits(&self, request: &ToolExecutionRequest) -> bool {
+    pub(super) fn permits(&self, request: &ToolExecutionRequest) -> bool {
         self.command_digest == Digest::of(request.command.as_bytes())
             && request.timeout_ms <= self.timeout_ms
     }
