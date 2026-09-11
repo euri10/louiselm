@@ -5,6 +5,14 @@
 remain `louiselm-qbr.5.1.1.5`; this component alone does not enable Verified
 Sessions or establish an installed Agent integration.
 
+The cross-process contract confirmed in
+`louiselm-cross-process-tool-commit-z288` supersedes this component's local
+commit assumption: the broker issues single-use command authorizations, while
+the supervisor owns process handles and enforces actual start, running-command
+cancellation and grant expiry. Adaptation is tracked in
+`louiselm-qbr.5.1.1.5.2` and `.5.3`. The local APIs described below are not yet
+that production implementation.
+
 ## Authority and scope
 
 The launch owner supplies an already approved policy, the immutable Session,

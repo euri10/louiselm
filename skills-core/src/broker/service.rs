@@ -3,8 +3,9 @@
 //! One authenticated supervisor connection carries one launch transaction: the
 //! supervisor presents its exact launch request, the broker consumes the
 //! pending authorization, and the two sequence-0 and sequence-1 receipts are
-//! stored and acknowledged in order. Every packet is authenticated by kernel
-//! credentials at the transport, never by anything the peer says about itself.
+//! stored and acknowledged in order. Success hands the same connection to an
+//! explicit Session owner for continued control. Every packet is authenticated
+//! by kernel credentials, never by anything the peer says about itself.
 //!
 //! Failure is fail-closed at every step: a refusal answers with a stable typed
 //! error, and a durability failure answers with nothing at all, because an
@@ -32,19 +33,51 @@ use crate::{
 /// connects and then says nothing would hold this worker forever.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What one completed launch transaction established.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LaunchOutcome {
-    /// Session the transaction launched.
-    pub session_id: String,
-    /// Run that owns the Session.
-    pub run_id: String,
-    /// Authorization spent by the launch.
-    pub authorization_id: String,
-    /// Installed identity slot assigned to the Session.
-    pub identity_slot: u32,
-    /// Exact receipt head the broker durably stored.
-    pub broker_head: ReceiptHead,
+/// Owns the authenticated supervisor connection after a durably completed launch.
+///
+/// Keep this owner alive for the continuing broker worker. Closing or dropping
+/// it shuts down the connection, including any channel clones. That triggers the
+/// supervisor's existing broker-loss handling; it is not proof that revocation
+/// or process cleanup has completed. Listener lifetime is independent.
+#[must_use = "Dropping the Session owner closes its supervisor connection."]
+pub struct BrokerSession {
+    authorization: LaunchAuthorization,
+    launch_head: ReceiptHead,
+    channel: SeqpacketChannel,
+}
+
+impl BrokerSession {
+    /// Exact single-use authorization consumed for this launch.
+    #[must_use]
+    pub const fn authorization(&self) -> &LaunchAuthorization {
+        &self.authorization
+    }
+
+    /// Initial sequence-1 durable head, not a live status or later receipt head.
+    #[must_use]
+    pub const fn launch_head(&self) -> &ReceiptHead {
+        &self.launch_head
+    }
+
+    /// Original authenticated channel for the continuing broker worker.
+    ///
+    /// The worker owns asynchronous packet ordering and correlation. Access to
+    /// this transport does not itself authorize Agent or tool effects.
+    #[must_use]
+    pub const fn channel(&self) -> &SeqpacketChannel {
+        &self.channel
+    }
+
+    /// Closes the supervisor transport immediately; repeated calls are harmless.
+    pub fn close(&self) {
+        self.channel.close();
+    }
+}
+
+impl Drop for BrokerSession {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 /// Broker-owned state an operator may read about one Session.
@@ -163,7 +196,9 @@ impl BrokerService {
     /// Accepts one authenticated supervisor and runs its launch transaction.
     ///
     /// Returns once sequence 1 is durably acknowledged, which is the point at
-    /// which the supervisor may report launch success.
+    /// which the supervisor may report launch success. The returned owner keeps
+    /// the original authenticated connection alive for continued control. This
+    /// method blocks and belongs on the broker's I/O worker.
     ///
     /// # Errors
     /// Returns [`BrokerError::Transport`] for connection failures, the refusal
@@ -175,18 +210,27 @@ impl BrokerService {
         &self,
         now_ms: u64,
         mut verify_signature: F,
-    ) -> Result<LaunchOutcome, BrokerError>
+    ) -> Result<BrokerSession, BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         let channel = self.accept()?;
-        let result = self.transaction(&channel, now_ms, &mut verify_signature);
-        channel.close();
-        result
+        match self.transaction(&channel, now_ms, &mut verify_signature) {
+            Ok((authorization, launch_head)) => Ok(BrokerSession {
+                authorization,
+                launch_head,
+                channel,
+            }),
+            Err(error) => {
+                channel.close();
+                Err(error)
+            }
+        }
     }
 
     /// Closes the rendezvous listener. Bound paths are not unlinked here: the
-    /// installer owns the rendezvous path's lifetime.
+    /// installer owns the rendezvous path's lifetime. Returned Session owners
+    /// remain usable and must be closed separately.
     pub fn close(&self) {
         self.listener.close();
     }
@@ -196,7 +240,7 @@ impl BrokerService {
         channel: &SeqpacketChannel,
         now_ms: u64,
         verify_signature: &mut F,
-    ) -> Result<LaunchOutcome, BrokerError>
+    ) -> Result<(LaunchAuthorization, ReceiptHead), BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -259,13 +303,7 @@ impl BrokerService {
 
         self.acknowledge(channel, &authorization, 0, now_ms, verify_signature)?;
         let broker_head = self.acknowledge(channel, &authorization, 1, now_ms, verify_signature)?;
-        Ok(LaunchOutcome {
-            session_id: authorization.session_id,
-            run_id: authorization.run_id,
-            authorization_id: authorization.authorization_id,
-            identity_slot: authorization.identity_slot,
-            broker_head,
-        })
+        Ok((authorization, broker_head))
     }
 
     /// Stores one exact signed receipt and acknowledges it after it is durable.

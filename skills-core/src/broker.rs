@@ -41,7 +41,7 @@ use crate::{
 pub use audit::{AuditDecision, AuditEntry, AuditLog};
 pub use authorization::{AuthorizationStore, GrantRequest, PendingAuthorization};
 pub use receipts::{ReceiptStore, TrustedRelease};
-pub use service::{BrokerService, LaunchOutcome, SessionInspection};
+pub use service::{BrokerService, BrokerSession, SessionInspection};
 
 /// Longest durable broker record this build reads back.
 const MAX_RECORD_BYTES: u64 = 64 * 1024;

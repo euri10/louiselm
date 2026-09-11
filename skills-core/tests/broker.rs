@@ -28,8 +28,9 @@ use louiselm_skills::{
     canonical::Digest,
     launch::{LaunchRequest, PROTOCOL_VERSION, REQUEST_SCHEMA},
     launch_protocol::{
-        ErrorCode, LaunchAuthorization, ProtocolMessage, ReceiptAcknowledgement,
-        ReceiptDisposition, ResponseResult,
+        ErrorCode, LaunchAuthorization, ProtocolError, ProtocolMessage, ProtocolResponse,
+        RESPONSE_SCHEMA, ReceiptAcknowledgement, ReceiptDisposition, ResponseResult,
+        STATUS_REQUEST_SCHEMA, StatusRequest,
     },
     launch_receipt::{
         Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptCause,
@@ -495,26 +496,32 @@ where
         .expect("transport operation succeeds")
 }
 
+fn expect_disconnect(channel: &SeqpacketChannel) {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    channel
+        .receive(Box::new(move |result| {
+            let _delivered = sender.send(result);
+        }))
+        .expect("receive admitted on the peer");
+    assert!(matches!(
+        receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("peer observes shutdown"),
+        Err(TransportError::Disconnected)
+    ));
+}
+
 /// Drives the supervisor half of one launch over the production transport.
 ///
 /// This is the deterministic fake supervisor: it signs with the fixture key and
 /// never spawns a process, but it speaks the exact wire protocol the installed
 /// launcher speaks.
-fn fake_supervisor(socket: &Path, request: &LaunchRequest, now_ms: u64) -> LaunchAuthorization {
-    let connector = SeqpacketConnector::new().expect("connector");
-    let channel = settle(|complete| connector.connect(socket, local_pin(), complete));
-
-    settle(|complete| channel.send(request.canonical_bytes(), complete));
-    let packet = settle(|complete| channel.receive(complete));
-    let LauncherPacket::Response(response) = packet.packet else {
-        panic!("expected a correlated response, got {:?}", packet.packet);
-    };
-    let ResponseResult::LaunchAuthorization { authorization } = response.result else {
-        panic!("expected an authorization, got {:?}", response.result);
-    };
-    authorization
-        .validate_for(request, CONTROLLER_UID, now_ms)
-        .expect("the broker's authorization binds this exact launch");
+fn fake_supervisor(
+    socket: &Path,
+    request: &LaunchRequest,
+    now_ms: u64,
+) -> (LaunchAuthorization, SeqpacketChannel) {
+    let (authorization, channel) = supervisor_authorization(socket, request, now_ms);
 
     let launch = launch_receipt(&authorization);
     settle(|complete| channel.send(launch.canonical_bytes(), complete));
@@ -531,8 +538,30 @@ fn fake_supervisor(socket: &Path, request: &LaunchRequest, now_ms: u64) -> Launc
     assert_eq!(acknowledgement.sequence, 1);
     assert_eq!(acknowledgement.receipt_digest, start.digest().to_string());
 
-    channel.close();
+    (authorization, channel)
+}
+
+fn supervisor_authorization(
+    socket: &Path,
+    request: &LaunchRequest,
+    now_ms: u64,
+) -> (LaunchAuthorization, SeqpacketChannel) {
+    let connector = SeqpacketConnector::new().expect("connector");
+    let channel = settle(|complete| connector.connect(socket, local_pin(), complete));
+
+    settle(|complete| channel.send(request.canonical_bytes(), complete));
+    let packet = settle(|complete| channel.receive(complete));
+    let LauncherPacket::Response(response) = packet.packet else {
+        panic!("expected a correlated response, got {:?}", packet.packet);
+    };
+    let ResponseResult::LaunchAuthorization { authorization } = response.result else {
+        panic!("expected an authorization, got {:?}", response.result);
+    };
     authorization
+        .validate_for(request, CONTROLLER_UID, now_ms)
+        .expect("the broker's authorization binds this exact launch");
+
+    (authorization, channel)
 }
 
 fn expect_acknowledgement(channel: &SeqpacketChannel) -> ReceiptAcknowledgement {
@@ -543,6 +572,47 @@ fn expect_acknowledgement(channel: &SeqpacketChannel) -> ReceiptAcknowledgement 
         }
         other => panic!("expected a durable acknowledgement, got {other:?}"),
     }
+}
+
+fn assert_post_launch_exchange(
+    broker_channel: &SeqpacketChannel,
+    supervisor_channel: &SeqpacketChannel,
+    authorization: &LaunchAuthorization,
+) {
+    let status_request = StatusRequest {
+        schema: STATUS_REQUEST_SCHEMA.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "post-launch-status".to_owned(),
+        session_id: authorization.session_id.clone(),
+        run_id: authorization.run_id.clone(),
+    };
+    settle(|complete| broker_channel.send(status_request.canonical_bytes(), complete));
+    let received = settle(|complete| supervisor_channel.receive(complete));
+    assert_eq!(
+        received.packet,
+        LauncherPacket::Request(ProtocolMessage::Status(status_request.clone()))
+    );
+    // This fake supervisor has no live process to inspect. Its typed refusal
+    // still proves correlation and bidirectional use of the original channel.
+    let response = ProtocolResponse {
+        schema: RESPONSE_SCHEMA.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: status_request.request_id,
+        result: ResponseResult::Error {
+            error: ProtocolError::new(
+                ErrorCode::StateMismatch,
+                Some(SessionState::Running),
+                Some(1),
+            ),
+        },
+    };
+    settle(|complete| supervisor_channel.send(response.canonical_bytes(), complete));
+    let received = settle(|complete| broker_channel.receive(complete));
+    assert_eq!(
+        received.packet,
+        LauncherPacket::Response(Box::new(response))
+    );
+    assert_eq!(received.peer_credentials, received.message_credentials);
 }
 
 #[test]
@@ -567,22 +637,32 @@ fn the_production_rendezvous_carries_one_complete_launch_transaction() {
         let request = request.clone();
         thread::spawn(move || fake_supervisor(&socket, &request, 2_000))
     };
-    let outcome = service
+    let session = service
         .serve_launch(2_000, verify_fixture_signature)
         .expect("the broker completes the transaction");
-    let authorization = supervisor.join().expect("supervisor thread");
+    let (authorization, supervisor_channel) = supervisor.join().expect("supervisor thread");
 
-    assert_eq!(outcome.session_id, request.session_id);
-    assert_eq!(outcome.authorization_id, request.authorization_id);
-    assert_eq!(outcome.identity_slot, pending.identity.slot);
-    assert_eq!(outcome.broker_head.sequence, 1);
+    assert_eq!(session.authorization(), &authorization);
+    assert_eq!(session.authorization().session_id, request.session_id);
+    assert_eq!(
+        session.authorization().authorization_id,
+        request.authorization_id
+    );
+    assert_eq!(session.authorization().identity_slot, pending.identity.slot);
+    assert_eq!(session.launch_head().sequence, 1);
     assert_eq!(authorization.assigned_uid, pending.identity.uid);
 
     let stored = service
         .receipts()
         .stored_bytes(&request.session_id)
         .expect("stored chain");
-    assert_eq!(stored.len(), 2, "both launch receipts are durable");
+    let launch = launch_receipt(&authorization);
+    let start = start_receipt(&authorization, &launch);
+    assert_eq!(
+        stored,
+        vec![launch.canonical_bytes(), start.canonical_bytes()]
+    );
+    assert_eq!(session.launch_head().digest, start.digest().to_string());
 
     // The authorization is spent: a second supervisor cannot replay it.
     let replay = service
@@ -590,6 +670,89 @@ fn the_production_rendezvous_carries_one_complete_launch_transaction() {
         .consume_for_launcher(&request, 2_500);
     assert!(matches!(replay, Err(BrokerError::UnknownAuthorization)));
     service.close();
+    drop(service);
+
+    // Dropping the listener/store owner must not end this Session's channel.
+    assert_post_launch_exchange(
+        session.channel(),
+        &supervisor_channel,
+        session.authorization(),
+    );
+
+    let (sender, disconnected) = mpsc::sync_channel(1);
+    supervisor_channel
+        .receive(Box::new(move |result| {
+            let _delivered = sender.send(result);
+        }))
+        .expect("receive is pending before owner drop");
+    let channel_clone = session.channel().clone();
+    drop(session);
+    assert!(
+        channel_clone.is_closed(),
+        "a clone cannot outlive its Session authority"
+    );
+    assert!(matches!(
+        disconnected
+            .recv_timeout(Duration::from_secs(5))
+            .expect("pending receive completes"),
+        Err(TransportError::Disconnected)
+    ));
+}
+
+#[test]
+fn an_incomplete_launch_never_hands_off_a_live_session() {
+    for rejected_sequence in [0, 1] {
+        let root = TempDir::new().expect("broker state directory");
+        let socket = root.path().join("control.sock");
+        let request = request("session-1");
+        let authorizations = AuthorizationStore::open(&root.path().join("authorizations"), pool(4))
+            .expect("open store");
+        authorizations
+            .authorize(&grant(&request), 1_000)
+            .expect("authorize");
+        let receipts = ReceiptStore::open(&root.path().join("receipts"), trusted_release())
+            .expect("open receipt store");
+        let audit = AuditLog::open(&root.path().join("audit")).expect("open audit");
+        let service = BrokerService::bind(&socket, authorizations, receipts, audit, local_pin())
+            .expect("bind rendezvous");
+        let supervisor = {
+            let request = request.clone();
+            thread::spawn(move || {
+                let (authorization, channel) = supervisor_authorization(&socket, &request, 2_000);
+                let launch = launch_receipt(&authorization);
+                let wrong_receipt = if rejected_sequence == 0 {
+                    start_receipt(&authorization, &launch)
+                } else {
+                    settle(|complete| channel.send(launch.canonical_bytes(), complete));
+                    assert_eq!(expect_acknowledgement(&channel).sequence, 0);
+                    launch
+                };
+                settle(|complete| channel.send(wrong_receipt.canonical_bytes(), complete));
+                expect_disconnect(&channel);
+            })
+        };
+
+        assert!(matches!(
+            service.serve_launch(2_000, verify_fixture_signature),
+            Err(BrokerError::ReceiptUnauthorized)
+        ));
+        supervisor
+            .join()
+            .expect("supervisor observes closure without an ACK");
+        let inspection = service
+            .inspect(&request.session_id)
+            .expect("inspect")
+            .expect("consumed");
+        assert_eq!(inspection.state, SessionState::Starting);
+        assert_eq!(
+            inspection.broker_head.map(|head| head.sequence),
+            if rejected_sequence == 0 {
+                None
+            } else {
+                Some(0)
+            }
+        );
+    }
 }
 
 #[test]
@@ -652,10 +815,10 @@ fn the_operator_record_stays_normalized_after_a_launch() {
         let request = request.clone();
         thread::spawn(move || fake_supervisor(&socket, &request, 2_000))
     };
-    service
+    let session = service
         .serve_launch(2_000, verify_fixture_signature)
         .expect("the broker completes the transaction");
-    supervisor.join().expect("supervisor thread");
+    let (_, supervisor_channel) = supervisor.join().expect("supervisor thread");
 
     let inspection = service
         .inspect(&request.session_id)
@@ -696,6 +859,11 @@ fn the_operator_record_stays_normalized_after_a_launch() {
     assert!(!recorded.contains(SIGNED_RECEIPT_SCHEMA));
     assert!(!recorded.contains("signature"));
     assert!(!recorded.contains("evidence"));
+
+    session.close();
+    session.close();
+    assert!(session.channel().is_closed());
+    expect_disconnect(&supervisor_channel);
 }
 
 #[test]
@@ -724,7 +892,7 @@ fn a_refused_launch_is_recorded_as_a_stable_error() {
             let channel = settle(|complete| connector.connect(&socket, local_pin(), complete));
             settle(|complete| channel.send(request.canonical_bytes(), complete));
             let packet = settle(|complete| channel.receive(complete));
-            channel.close();
+            expect_disconnect(&channel);
             packet.packet
         })
     };

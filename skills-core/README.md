@@ -397,6 +397,26 @@ it must never preview A and launch B. Authorization and canonical live Session
 status remain broker-owned (`louiselm-qbr.5.1.2`). This component does not enable
 a user-visible Verified launch.
 
+## Broker Session ownership
+
+`BrokerService::serve_launch` returns an owned `BrokerSession` only after both
+exact launch receipts are durably acknowledged. It retains the consumed
+authorization, the initial sequence-1 receipt head, and the original
+credential-authenticated supervisor channel. The continuing broker worker owns
+packet ordering and correlation; `launch_head()` is a launch snapshot, not live
+Session status.
+
+Closing the rendezvous listener does not close returned Sessions. Explicitly
+closing or dropping a `BrokerSession` closes its channel, including clones.
+This initiates existing broker-loss handling; closing a socket is not proof of
+completed grant revocation or process cleanup.
+
+This connection component is `louiselm-qbr.5.1.1.5.1`. Cross-process command
+authorization, delegated-tool enforcement and complete measured launch acceptance
+remain `.5.2`–`.5.4`, under the confirmed
+`louiselm-cross-process-tool-commit-z288` contract. No installed or fully Verified
+launch is established by the component tests.
+
 ## Sandbox startup
 
 Sandbox startup uses the release's existing `louiselm-launch` executable as a
