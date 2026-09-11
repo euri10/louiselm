@@ -4,8 +4,9 @@
 only on the credential-authenticated Control broker connection. The broker owns
 the authorization decision; the Launch supervisor performs confinement. This
 component does not authorize arbitrary Agent-originated messages as broker policy.
-Real broker capability dispatch remains `louiselm-qbr.5.1.1.5`; explicit nonzero
-grants remain `.4`, and installed vendor integrations remain `louiselm-d6fv.9`.
+Real broker capability dispatch remains `louiselm-qbr.5.1.1.5`; the explicit
+[delegation component](tool-delegation.md) is `.4`, and installed vendor
+integrations remain `louiselm-d6fv.9`.
 
 ## Exact integration evidence
 

@@ -46,6 +46,38 @@ pub enum AuditDecision {
         /// Stable code naming why the chain refused it.
         error: ErrorCode,
     },
+    /// An exact tool process received a reserved portion of the Agent budget.
+    ToolGranted {
+        /// Broker-assigned grant sequence.
+        grant: u64,
+        /// Authenticated tool's host process ID.
+        pid: u32,
+        /// Envelope revision whose operator permission permitted delegation.
+        revision: u64,
+        /// Reserved invocation budget, never returned on abandonment.
+        uses: u32,
+    },
+    /// A capability request was denied; untrusted request fields are omitted.
+    CapabilityDenied,
+    /// Durable intent to commit, before the final lifetime/deadline recheck.
+    /// This alone never proves the external effect occurred.
+    EffectCommitIntent {
+        /// Tool grant, or `None` for an Agent-originated action.
+        grant: Option<u64>,
+        /// Principal-local request sequence.
+        sequence: u64,
+    },
+    /// The committed effect returned its actual result, even after revocation.
+    EffectFinished {
+        /// Tool grant, or `None` for an Agent-originated action.
+        grant: Option<u64>,
+        /// Principal-local request sequence.
+        sequence: u64,
+        /// Whether the adapter completed successfully, not whether a command exited zero.
+        succeeded: bool,
+    },
+    /// The Agent channel and every delegated grant became unusable.
+    CapabilitiesRevoked,
 }
 
 /// One normalized entry in the operator record.

@@ -3,8 +3,9 @@
 `louiselm-qbr.5.1.1.2` implements the process boundary agreed in `louiselm-9onz`.
 It is a launcher component, not installed Verified acceptance. The
 [tool boundary](tool-isolation.md) supports only an exact measured deterministic
-integration; other integrations still refuse Verified launch. Nonzero tool
-grants, real broker dispatch and installed integration remain separate work.
+integration; other integrations still refuse Verified launch. The
+[delegation component](tool-delegation.md) reuses this lifetime boundary;
+real broker dispatch and installed integration remain separate work.
 
 ## Creation proof
 

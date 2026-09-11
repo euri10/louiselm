@@ -16,8 +16,12 @@
 
 pub mod audit;
 pub mod authorization;
+pub mod delegation;
 pub mod receipts;
 pub mod service;
+
+#[cfg(test)]
+mod delegation_tests;
 
 use std::{
     fs::{self, File, OpenOptions},
