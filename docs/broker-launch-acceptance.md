@@ -22,14 +22,22 @@ be durable while the final audit or ACK fails: its recorded state is Running,
 but no acknowledged `BrokerSession` is returned. Never label a live Session from
 the stored state alone.
 
-| Boundary | Check |
+## Aggregate acceptance map
+
+Criteria below refer to the launch aggregate `louiselm-qbr.5.1.1` and its
+integration child `louiselm-qbr.5.1.1.5`. Test names are searchable in
+`skills-core/tests` and `skills-core/src/launch_supervisor`.
+
+| Criteria | Boundary and check |
 | --- | --- |
-| Dedicated installed identities and real signatures | `privileged_installed_broker_launch_and_effects`: root broker refusal, unprivileged broker denied private config/key access, signed launch, actual command, denial, explicit helper and terminal cleanup/identity reuse. |
-| Signer and durable storage | `privileged_installed_launch_failures_never_acknowledge_success`: both sequence-0 and sequence-1 failures, plus a cryptographically valid signature over different bytes. No launch success, effect or retained usable identity. |
-| Missing or contradictory proof | `start_receipt_requires_agent_authority_evidence`, `a_signed_start_cannot_change_the_installed_identity`, `known_unsupported_integration_refuses_before_authorization_or_spawn`, and measured integration checks. |
-| Approval and ordinary absence | `pending_approval_is_exact_durable_and_expiring`, `absent_command_approval_denies_effects_without_ending_the_session`, command/grant authority tests. |
-| Connector identity and initial inspection | `broker::launch_gates` tests reject foreign first connectors and inherited supervisor sockets before consumption; `durable_running_without_final_audit_never_claims_an_acknowledged_channel` distinguishes receipt evidence from a completed handshake. |
-| Isolation, revocation and uncertain outcomes | Existing measured Agent/helper gate plus command dispatch, grant dispatch and supervisor lifecycle suites retain wrong sender/child, queued/running revocation, local expiry, Agent exit, stale callbacks, failed cleanup/poison, lost replies and late actual outcomes. |
+| Launch 1–2; integration 1 | Persisted exact approval and atomic consumption: `pending_approval_is_exact_durable_and_expiring`, `one_authorization_is_consumed_once_and_stays_consumed_across_restart`, `concurrent_consumption_has_exactly_one_winner`, expiry/controller/request mismatch and identity-pool exhaustion tests in `tests/broker.rs`. `a_signed_start_cannot_change_the_installed_identity` rejects substituted installed identity. |
+| Launch 3–4; integration 1 | Authenticated exact receipt ownership: `broker::launch_gates` rejects foreign first connectors and inherited supervisor sockets before consumption. `both_launch_receipts_are_durably_stored_with_their_exact_bytes`, signature/predecessor/authorization rejection and restart-chain tests cover append validation. `privileged_installed_broker_launch_and_effects` proves dedicated unprivileged broker identity, denied private config/key access and real signatures. |
+| Launch 4–5; integration 2–3 | Ordered durability and failures: `launch_acks_starting_then_starts_and_acks_linked_running_before_success` and `capability_binding_waits_for_restricted_agent_startup`. `privileged_installed_launch_failures_never_acknowledge_success` injects both sequence-0 and sequence-1 signer/storage failures, plus a valid signature over different bytes. No launch success, effect or retained usable identity. |
+| Launch 5–6; integration 1–3 | Required authority proof: `start_receipt_requires_agent_authority_evidence`, `known_unsupported_integration_refuses_before_authorization_or_spawn`, `missing_tool_isolation_disposes_restricted_startup_without_enabling_effects`, `reaper_foreign_process_and_mismatched_agent_ids_never_bind_authority`, and cleanup-proof/poison tests. |
+| Launch 6; integration 4 | Original approval and ordinary absence: `absent_command_approval_denies_effects_without_ending_the_session` plus command/grant authority tests. The installed positive gate exercises the intended Agent, ungranted command denial, explicitly constrained helper and terminal cleanup/identity reuse. Agent-proxied requests remain Agent actions under its original approval, not prompt-injection immunity. |
+| Launch 6; integration 4 | Lifetime-pinned isolation and revocation: measured Agent/helper gates plus command dispatch, grant dispatch and supervisor lifecycle suites retain per-message sender/child checks, queued/running revocation, local expiry, Agent exit, stale callbacks, failed cleanup/poison, lost replies and late actual outcomes. |
+| Launch 7; integration 3–4 | Truthful bounded inspection/audit: `the_operator_record_stays_normalized_after_a_launch` and `a_refused_launch_is_recorded_as_a_stable_error`. `durable_running_without_final_audit_never_claims_an_acknowledged_channel` distinguishes signed durable state from completed channel handoff; neither establishes current Agent liveness or fully Verified posture. |
+| Integration 5 | This document, required CI tests and the separate installed-authority acceptance retain the production boundary. Later recovery stays in `louiselm-qbr.5.1.2`; desktop/vendor cutover and the fully Verified claim stay in `louiselm-d6fv.9`. |
 
 CI requires both installed composition tests alongside the existing measured
 Agent/helper gates. To repeat, build all binaries and the library test, transfer
@@ -72,3 +80,13 @@ transferred. No package installation, guest egress, token/hardware signing, host
 installation or vendor acceptance was attempted. The fixture uses a temporary
 software key and temporary installed authority paths; release-signature admission
 and the fixed sudo entrypoint remain the separate acceptance cited above.
+
+The aggregate audit reused those explicitly enabled VM results from `c44f3bb`:
+the Rust implementation, tests and CI definition remain unchanged. A fresh full
+suite passed 675 tests with three existing ignored tests (invocation
+`442bb406e1a049a39367a42fcb5ef27c`); formatting, Clippy, Rustdoc, all 13 browser
+tests and the instruction-size check passed again. This close-out changes only
+acceptance documentation and tracker evidence, so no new red-green test is
+warranted. Both aggregates retain the earlier children's weakest close verdict,
+`inert:louiselm-d6fv.9`; completed initial-launch integration does not establish
+desktop/vendor reachability or authorize a fully Verified claim.
