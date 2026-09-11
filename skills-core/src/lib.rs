@@ -48,6 +48,7 @@ pub mod store;
 pub mod supply_posture;
 pub mod trust;
 pub mod witness;
+pub mod workspace;
 
 pub use assessment::{Assessment, AssessmentKey, Assessor, CapabilityEnvelope, Verdict};
 pub use canonical::{CanonicalPath, Digest, PathError};

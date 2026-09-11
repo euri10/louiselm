@@ -22,6 +22,7 @@ use thiserror::Error;
 
 mod preflight;
 mod recovery;
+mod workspace;
 
 use crate::{
     admission::{self, AdmissionError, AdmissionMember, AdmissionRequest},
@@ -155,6 +156,9 @@ pub fn run() -> Result<i32, CliError> {
     }
     if command == "preflight" {
         return preflight::run(&arguments[1..]);
+    }
+    if command == "workspace" {
+        return workspace::run(&arguments[1..]);
     }
     let options = Options::parse(&arguments[1..])?;
 
@@ -1265,6 +1269,7 @@ Packaging and review:
   louiselm-skills list
   louiselm-skills policy [--digest]
   louiselm-skills preflight --help   (prospective artifact snapshot, never launch authority)
+  louiselm-skills workspace --help   (freeze source and materialize private Git)
 
 Trust roles:
   louiselm-skills recovery --help     (local-only paper/passkey recovery)

@@ -24,6 +24,9 @@ preflight --request FILE [--manifest FILE]
           [--store DIR] [--registry DIR] [--robot-json]
 preflight --direct [--robot-json]
 
+workspace prepare --repository DIR --output NEW_DIR [--include FILE ...] [--robot-json]
+workspace materialize --snapshot DIR --digest SHA256 --output NEW_DIR [--robot-json]
+
 trust bootstrap --primary PUBLIC_KEY --release PUBLIC_KEY [--require-hardware]
 trust show
 trust reset --confirm  # development stores only
@@ -49,10 +52,15 @@ quarantine all --reason TEXT
 quarantine show
 ```
 
-Except for `preflight` and local-only `recovery`, commands accept `--store DIR`,
+Except for `preflight`, `workspace` and local-only `recovery`, commands accept `--store DIR`,
 `--policy FILE --policy-digest D`, and `--robot-json`. Recovery requires an
 explicit store; `status` returns public JSON, while setup/change/reset require
 the trusted local foreground terminal and refuse robot mode.
+
+The [private source snapshot commands](../docs/workspace-snapshots.md) freeze
+HEAD plus explicitly selected working-copy files and materialize independent
+writable source and Git metadata. They provide local artifacts; launcher
+integration, confinement and verified promotion remain separate work.
 
 Exit status is part of the contract, so an unattended caller never has to parse
 prose:
