@@ -10,6 +10,7 @@ use crate::{
     launch::{LaunchError, LaunchRequest},
     posture::{DimensionInput, DimensionName, EvidenceKind, EvidenceRef, FailureCode},
     registry::{Registry, RegistryError},
+    session_manifest::SessionInputManifest,
 };
 
 /// Derives managed supply, native supply, runtime and Provider disclosure inputs.
@@ -41,12 +42,41 @@ pub fn derive(
     Ok([
         input(
             DimensionName::ManagedSupply,
-            managed(request, store, policy, registry, bound),
+            managed(
+                request,
+                store,
+                policy,
+                registry,
+                bound.map(AuthenticatedInputs::manifest),
+            ),
         ),
         input(DimensionName::NativeSupply, native(request, bound, proof)),
         input(DimensionName::Runtime, runtime(request, registry, bound)),
         input(DimensionName::ProviderDisclosure, disclosure(bound)),
     ])
+}
+
+// Proposed bytes only narrow these checks against independently read artifacts;
+// they cannot supply native controls, disclosure evidence or launch authority.
+pub(crate) fn artifacts(
+    request: &LaunchRequest,
+    manifest: &SessionInputManifest,
+    store: Option<&Store>,
+    policy: &Policy,
+    registry: &Registry,
+) -> [DimensionInput; 2] {
+    [
+        input(
+            DimensionName::ManagedSupply,
+            store.map_or(Err(FailureCode::EvidenceMissing), |store| {
+                managed(request, store, policy, registry, Some(manifest))
+            }),
+        ),
+        input(
+            DimensionName::Runtime,
+            measured_runtime(request, registry, Some(manifest)),
+        ),
+    ]
 }
 
 fn input(dimension: DimensionName, evidence: Result<EvidenceRef, FailureCode>) -> DimensionInput {
@@ -65,7 +95,7 @@ fn managed(
     store: &Store,
     policy: &Policy,
     registry: &Registry,
-    bound: Option<&AuthenticatedInputs>,
+    manifest: Option<&SessionInputManifest>,
 ) -> Result<EvidenceRef, FailureCode> {
     let views =
         instruction_view::materialize(store, policy, registry).map_err(|error| match error {
@@ -79,13 +109,11 @@ fn managed(
     if view.generation() != Some(request.skill_generation_id.as_str()) {
         return Err(FailureCode::RootTrustFailed);
     }
-    if let Some(bound) = bound {
-        let manifest = bound.manifest();
-        if manifest.skill_generation.view_digest != view.digest().to_string()
-            || manifest.policy_digest != policy.digest().to_string()
-        {
-            return Err(FailureCode::RootTrustFailed);
-        }
+    if let Some(manifest) = manifest
+        && (manifest.skill_generation.view_digest != view.digest().to_string()
+            || manifest.policy_digest != policy.digest().to_string())
+    {
+        return Err(FailureCode::RootTrustFailed);
     }
     reference(EvidenceKind::SkillGeneration, &request.skill_generation_id)
 }
@@ -95,6 +123,19 @@ fn runtime(
     registry: &Registry,
     bound: Option<&AuthenticatedInputs>,
 ) -> Result<EvidenceRef, FailureCode> {
+    if let Some(bound) = bound {
+        bound
+            .check_runtime_controls()
+            .map_err(|error| error.failure_code())?;
+    }
+    measured_runtime(request, registry, bound.map(AuthenticatedInputs::manifest))
+}
+
+fn measured_runtime(
+    request: &LaunchRequest,
+    registry: &Registry,
+    manifest: Option<&SessionInputManifest>,
+) -> Result<EvidenceRef, FailureCode> {
     let agent = registry
         .agent(&request.agent_id)
         .map_err(|error| runtime_failure(&error))?;
@@ -102,15 +143,10 @@ fn runtime(
         .runtime(&agent.runtime_id)
         .map_err(|error| runtime_failure(&error))?;
     let mut measurement = package.measure().map_err(|error| runtime_failure(&error))?;
-    if let Some(bound) = bound {
-        bound
-            .check_runtime_controls()
-            .map_err(|error| error.failure_code())?;
-    }
     measurement.adapters.sort_by(|a, b| a.path.cmp(&b.path));
     measurement.library_baseline.sort();
-    if let Some(bound) = bound
-        && (bound.manifest().runtime != measurement || bound.manifest().agent != agent)
+    if let Some(manifest) = manifest
+        && (manifest.runtime != measurement || manifest.agent != agent)
     {
         return Err(FailureCode::RuntimeDrift);
     }

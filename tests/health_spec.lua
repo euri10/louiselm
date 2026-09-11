@@ -298,4 +298,56 @@ T["check"]["reports missing setup as a warning"] = function()
   end)
 end
 
+T["check"]["direct launches and wrappers do not imply Verified posture"] = function()
+  assert(Louiselm.setup({ agents = { wrapped = { provider = "test-service", command = "some-wrapper" } } }))
+  with_health_stubs(function(calls)
+    Health.check()
+    MiniTest.expect.equality(
+      nvim.tbl_contains(
+        calls.info,
+        "Direct vendor launch: no LouiseLM Verified posture exists. A wrapper does not establish Verified posture."
+      ),
+      true
+    )
+    MiniTest.expect.equality(nvim.fn.exists(":LouiselmPreflight"), 2)
+  end)
+  Health.reset()
+  MiniTest.expect.equality(nvim.fn.exists(":LouiselmPreflight"), 0)
+end
+
+T["check"]["selected async preview reaches health and reset suppresses late results"] = function()
+  assert(Health.configure({}, require("louiselm.config").schema))
+  local payload = table.concat(nvim.fn.readfile("tests/fixtures/preflight_v1.json"), "\n")
+  local pending = {}
+  with_health_stubs(function(calls)
+    local finished = false
+    assert(Health.preview({ request = "/request", manifest = "/manifest" }, function(ok, err)
+      assert(ok, err)
+      finished = true
+    end))
+    pending[1].options.stdout(nil, payload)
+    pending[1].done({ code = 2, signal = 0 })
+    assert(nvim.wait(1000, function()
+      return finished
+    end))
+    Health.check()
+    MiniTest.expect.equality(nvim.tbl_contains(calls.info, "proposed envelope_revision: 2"), true)
+    MiniTest.expect.equality(nvim.tbl_contains(calls.error, "Verified posture: unverified"), true)
+    local late = false
+    assert(Health.preview({ request = "/new" }, function()
+      late = true
+    end))
+    pending[2].options.stdout(nil, payload)
+    pending[2].done({ code = 2, signal = 0 })
+    Health.reset()
+    nvim.wait(20, function()
+      return false
+    end)
+    MiniTest.expect.equality(late, false)
+  end, function(command, options, done)
+    pending[#pending + 1] = { options = options, done = done }
+    return { kill = function() end }
+  end)
+end
+
 return T

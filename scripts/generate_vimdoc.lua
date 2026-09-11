@@ -10,6 +10,9 @@ local tags_path = doc_directory .. "/tags"
 nvim.opt.rtp:prepend(root)
 require("louiselm.ui.chat.command").register()
 require("louiselm.capture.command").register()
+local health = require("louiselm.health")
+assert(health.configure({}, require("louiselm.config").schema))
+assert(health.register())
 
 local output = require("louiselm.docs.vimdoc").generate(
   require("louiselm.config").schema,

@@ -20,6 +20,7 @@ use std::{
 use serde::Serialize;
 use thiserror::Error;
 
+mod preflight;
 mod recovery;
 
 use crate::{
@@ -151,6 +152,9 @@ pub fn run() -> Result<i32, CliError> {
     // repeat unknown arguments, even when someone mistakenly supplies a phrase.
     if command == "recovery" {
         return recovery::run(&arguments[1..]);
+    }
+    if command == "preflight" {
+        return preflight::run(&arguments[1..]);
     }
     let options = Options::parse(&arguments[1..])?;
 
@@ -1260,6 +1264,7 @@ Packaging and review:
                                    [--assessment-model <m> --assessment-prompt <p>]
   louiselm-skills list
   louiselm-skills policy [--digest]
+  louiselm-skills preflight --help   (prospective artifact snapshot, never launch authority)
 
 Trust roles:
   louiselm-skills recovery --help     (local-only paper/passkey recovery)

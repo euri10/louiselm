@@ -1,0 +1,157 @@
+{
+  "schema": "louiselm.launch.preflight/1",
+  "notice": "Prospective artifact snapshot only; not authorization or live Session state. Launch must recheck and bind this exact request digest. Proposed identities do not prove enforcement.",
+  "request_digest": "sha256:0d50d296397317dd7ca6bf30fc9365975781c23147e03195d5fe9bd4eb6a32b8",
+  "manifest_state": "matched",
+  "proposed": [
+    {
+      "field": "agent",
+      "value": "fixture-agent"
+    },
+    {
+      "field": "generation",
+      "value": "sha256:e661f4c935e8a5a83349afb5e347695c2e972e967b50efcd618f93b0b7b4c24b"
+    },
+    {
+      "field": "instruction_view",
+      "value": "sha256:2bcb43cbc8f6b7ef66331532881143fcbae60a879db3a8fb853f645bb24c2b3c"
+    },
+    {
+      "field": "runtime",
+      "value": "sha256:e725370ca9cbcdd1960eb37194900e70ee7e16238cc07e8d4eec0c8c8f5f24f9"
+    },
+    {
+      "field": "input_manifest",
+      "value": "sha256:6281a5ca0b972c30b9f5ec6285a6bdac78c8f61fddf9c3bfbcb87bf8284a6044"
+    },
+    {
+      "field": "project_instructions",
+      "value": "sha256:011e659703cfa6a79002b61b25a626ed45ce28810e4c1021d5650c033773c110"
+    },
+    {
+      "field": "tool_schemas",
+      "value": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "field": "plugin_schemas",
+      "value": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "field": "policy",
+      "value": "sha256:823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812"
+    },
+    {
+      "field": "isolation_contract",
+      "value": "louiselm.isolation/1"
+    },
+    {
+      "field": "isolation_receipt",
+      "value": "isolation-1"
+    },
+    {
+      "field": "envelope",
+      "value": "envelope-1"
+    },
+    {
+      "field": "envelope_revision",
+      "value": "2"
+    },
+    {
+      "field": "network_scope",
+      "value": null
+    },
+    {
+      "field": "provider_disclosure",
+      "value": "sha256:28703df1fde73e0932390932368e3ea0b9adee3a94bc38a6a04999472119d971"
+    }
+  ],
+  "comparison": {
+    "state": "compared",
+    "previous_request_digest": "sha256:bbb58959d794ba6a51231d8eb325dc3aa94cf0cceccdace9d7053a92e6c552cd",
+    "changes": [
+      {
+        "field": "input_manifest",
+        "before": "sha256:14d85a4c036b36bbda3af028d2dd1eafae49c9c0a3384645dfe59a9ffb17a618",
+        "after": "sha256:6281a5ca0b972c30b9f5ec6285a6bdac78c8f61fddf9c3bfbcb87bf8284a6044"
+      },
+      {
+        "field": "envelope_revision",
+        "before": "1",
+        "after": "2"
+      }
+    ],
+    "unresolved": [
+      "network_scope"
+    ]
+  },
+  "posture": {
+    "schema": "louiselm.verified-posture/1",
+    "session_id": "session-1",
+    "run_id": "run-1",
+    "state": "unverified",
+    "provider_disclosure_notice": "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment.",
+    "embedded_instructions_notice": "Instructions embedded in the measured executable are part of runtime trust, not admitted Skill supply.",
+    "dimensions": {
+      "managed_supply": {
+        "state": "failed",
+        "requirement": "witnessed_generation",
+        "evidence": [],
+        "failure_code": "evidence_missing",
+        "next_action": {
+          "id": "collect_trusted_evidence",
+          "detail": "Collect trusted evidence for this dimension before launch."
+        }
+      },
+      "native_supply": {
+        "state": "failed",
+        "requirement": "native_sources_controlled",
+        "evidence": [],
+        "failure_code": "native_supply_uncertain",
+        "next_action": {
+          "id": "mask_or_measure_native_supply",
+          "detail": "Measure or mask every native Provider instruction source before launch."
+        }
+      },
+      "runtime": {
+        "state": "failed",
+        "requirement": "measured_runtime",
+        "evidence": [],
+        "failure_code": "evidence_missing",
+        "next_action": {
+          "id": "collect_trusted_evidence",
+          "detail": "Collect trusted evidence for this dimension before launch."
+        }
+      },
+      "isolation": {
+        "state": "failed",
+        "requirement": "isolation_contract",
+        "evidence": [],
+        "failure_code": "evidence_missing",
+        "next_action": {
+          "id": "collect_trusted_evidence",
+          "detail": "Collect trusted evidence for this dimension before launch."
+        }
+      },
+      "network": {
+        "state": "failed",
+        "requirement": "brokered_network",
+        "evidence": [],
+        "failure_code": "evidence_missing",
+        "next_action": {
+          "id": "collect_trusted_evidence",
+          "detail": "Collect trusted evidence for this dimension before launch."
+        }
+      },
+      "provider_disclosure": {
+        "state": "failed",
+        "requirement": "cloud_plaintext_disclosure",
+        "evidence": [],
+        "failure_code": "provider_disclosure_missing",
+        "next_action": {
+          "id": "record_provider_disclosure",
+          "detail": "Record the cloud Provider plaintext disclosure before launch."
+        }
+      }
+    }
+  }
+}

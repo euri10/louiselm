@@ -19,6 +19,11 @@ dossier <digest> [--against DIGEST] [--review-depth DEPTH]
 list
 policy [--digest]
 
+preflight --request FILE [--manifest FILE]
+          [--previous-request FILE --previous-manifest FILE]
+          [--store DIR] [--registry DIR] [--robot-json]
+preflight --direct [--robot-json]
+
 trust bootstrap --primary PUBLIC_KEY --release PUBLIC_KEY [--require-hardware]
 trust show
 trust reset --confirm  # development stores only
@@ -44,7 +49,7 @@ quarantine all --reason TEXT
 quarantine show
 ```
 
-Except for local-only `recovery`, commands accept `--store DIR`,
+Except for `preflight` and local-only `recovery`, commands accept `--store DIR`,
 `--policy FILE --policy-digest D`, and `--robot-json`. Recovery requires an
 explicit store; `status` returns public JSON, while setup/change/reset require
 the trusted local foreground terminal and refuse robot mode.
@@ -319,6 +324,78 @@ cloud-plaintext and embedded-executable disclosures, never input contents or
 configured Provider names. The isolation/network owners must supply their own
 evidence; all four supply dimensions passing does not establish a Verified
 launch. Installed status/launch consumption remains `louiselm-d6fv.9`.
+
+### Prospective artifact preflight
+
+`preflight --request request.json --manifest inputs.json --robot-json` reads
+exact canonical `louiselm.launch.request/2` and
+`louiselm.session.input-manifest/1` bytes. These are proposed inputs, not an
+approval or proof that a Session ran. Do not log the input files: they can
+contain runtime arguments and environment. The safe output contains only
+opaque identities, digests, closed codes and fixed notices.
+
+The versioned `louiselm.launch.preflight/1` record separates `proposed` identities
+from the existing six-dimension `posture`. It checks request/manifest digest,
+Agent, Generation and envelope bindings before using proposed bytes to constrain
+independent view materialization and runtime measurement. Missing or contradictory
+bindings cannot verify either artifact dimension. Artifact failures stay
+dimension-specific. It uses the embedded supply policy, existing supply store
+(`--store` or the normal store location), and `Registry::open_trusted`
+(`--registry` or `/var/lib/louiselm/registry` on Linux). Missing/untrusted readers
+provide no trusted evidence. Inspection may create the existing immutable view
+cache, but does not change permissions, start an Agent or record approval.
+
+Native discovery controls, isolation, network enforcement and bound Provider
+disclosure remain unproven in this prospective mode. A proposed isolation
+reference is not a verified mount. A proposed disclosure digest is not recorded
+disclosure evidence. Network scope is explicitly unresolved: these input records
+do not contain network rules bound to the requested envelope revision, and
+today's registry must not be used to reconstruct a prior revision. Unknown
+isolation-contract versions are also unresolved, not echoed as arbitrary text.
+Output therefore exits **2**, never launch-ready success; malformed commands or
+input files exit **1** with fixed diagnostics. Human output omits no robot
+identities or diff results. `preflight --direct` separately reports that a direct
+vendor command, including a wrapper, has no LouiseLM Verified posture.
+
+Add both `--previous-request prior.json --previous-manifest prior-inputs.json`
+to compare explicitly selected inputs. `comparison.state` distinguishes
+`not_requested`, `different_agent`, `inputs_unavailable` and `compared`.
+Comparison requires matching manifests for the same Agent, not the same Run;
+it does not assert shared workspace or previous execution. `changes` contains
+typed fields and exact before/after identities. `unresolved` lists unknown
+fields instead of treating them as unchanged. No automatic history lookup or
+new authority store is involved.
+
+After Neovim setup, `:LouiselmPreflight request.json inputs.json` reads the same
+robot record asynchronously and opens `:checkhealth louiselm`. Two additional
+files select the prior request/manifest. Health labels its retained result as a
+selected snapshot, never live status. A new selection clears the old result;
+setup/reset cancels pending work and clears it. For a repository-built executable
+or explicit store/registry, use the headless UI adapter:
+
+```lua
+local started, err = require("louiselm.health").preview({
+  command = "/absolute/path/to/louiselm/skills-core/target/debug/louiselm-skills",
+  request = "/private/request.json",
+  manifest = "/private/inputs.json",
+}, function()
+  vim.api.nvim_cmd({ cmd = "checkhealth", args = { "louiselm" } }, {})
+end)
+assert(started, err)
+```
+
+`require("louiselm.preflight").read` exposes a disposable async reader without
+health/UI ownership. It bounds stdout to 64 KiB, discards stderr, imposes a
+30-second process timeout, schedules completion onto the main loop and ignores
+completion after disposal. JSON decoding validates fixed presentation fields;
+it never creates authority from a received status.
+
+Refresh whenever inputs change. This command does not offer an approve/launch
+action. The future launcher consumer (`louiselm-d6fv.9`) must recheck artifacts
+and bind the exact displayed `request_digest`, or require a refreshed preview;
+it must never preview A and launch B. Authorization and canonical live Session
+status remain broker-owned (`louiselm-qbr.5.1.2`). This component does not enable
+a user-visible Verified launch.
 
 ## Sandbox startup
 

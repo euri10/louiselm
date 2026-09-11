@@ -1,10 +1,15 @@
 ---@class louiselm.health.Configuration
 ---@field config unknown Validated user configuration.
 ---@field schema louiselm.schema.Schema Schema used to validate the configuration.
+---@field preflight_handle? louiselm.PreflightRead Owned pending artifact read.
+---@field preflight_items? louiselm.PostureHealthItem[] Explicitly selected snapshot, never live state.
+---@field preflight_error? string Fixed read/validation diagnostic.
+---@field preflight_command? boolean Whether this lifecycle registered the preview command.
 
 local Agent = require("louiselm.agent")
 local Schema = require("louiselm.schema")
 local Skills = require("louiselm.skills")
+local Preflight = require("louiselm.preflight")
 
 local M = {}
 local configuration ---@type louiselm.health.Configuration?
@@ -278,6 +283,7 @@ function M.configure(config, schema)
   if type(schema) ~= "table" or schema.type ~= "table" or type(schema.fields) ~= "table" then
     return false, "health configuration requires a normalized schema"
   end
+  M.reset()
   configuration = { config = config, schema = schema }
   return true
 end
@@ -285,7 +291,91 @@ end
 ---Forget the configuration used by the healthcheck.
 ---@return boolean cleared Always true.
 function M.reset()
+  if configuration ~= nil then
+    if configuration.preflight_handle ~= nil then
+      configuration.preflight_handle.dispose()
+    end
+    if configuration.preflight_command then
+      nvim().api.nvim_del_user_command("LouiselmPreflight")
+    end
+  end
   configuration = nil
+  return true
+end
+
+---Select a prospective snapshot for health, replacing any pending read/result.
+---The health configuration owns cancellation; reset/reconfigure suppresses late
+---completion. This does not change any configured Agent's launch path.
+---@param options louiselm.PreflightOptions Explicit input selection, only read.
+---@param callback fun(ok: boolean, error_message: string?) Scheduled completion; suppressed on reset/replacement.
+---@return boolean started
+---@return string? error_message Fixed validation/spawn error; callback is not called.
+function M.preview(options, callback)
+  local owner = configuration
+  if owner == nil then
+    return false, "configure LouiseLM before selecting a preflight snapshot"
+  end
+  if type(callback) ~= "function" then
+    return false, "preflight requires a completion callback"
+  end
+  if owner.preflight_handle ~= nil then
+    owner.preflight_handle.dispose()
+  end
+  owner.preflight_handle, owner.preflight_items, owner.preflight_error = nil, nil, nil
+  local handle, read_error = Preflight.read(options, function(preview, err)
+    if configuration ~= owner then
+      return
+    end
+    owner.preflight_handle = nil
+    if preview ~= nil then
+      owner.preflight_items, owner.preflight_error = Preflight.health_items(preview)
+    else
+      owner.preflight_error = err
+    end
+    callback(owner.preflight_items ~= nil, owner.preflight_error)
+  end)
+  if handle == nil then
+    owner.preflight_error = read_error
+    return false, read_error
+  end
+  owner.preflight_handle = handle
+  return true
+end
+
+---Register explicit file selection and open health after the asynchronous read.
+---@return boolean registered False if setup has not registered a configuration.
+function M.register()
+  if configuration == nil then
+    return false
+  end
+  local editor = nvim()
+  editor.api.nvim_create_user_command(
+    "LouiselmPreflight",
+    function(args)
+      local files = args.fargs
+      if #files ~= 1 and #files ~= 2 and #files ~= 4 then
+        editor.notify(
+          "Usage: LouiselmPreflight request [manifest [prior-request prior-manifest]]",
+          editor.log.levels.ERROR
+        )
+        return
+      end
+      local started, err = M.preview({
+        request = files[1],
+        manifest = files[2],
+        previous_request = files[3],
+        previous_manifest = files[4],
+      }, function()
+        -- The reader schedules this callback, and reset/replacement suppresses it.
+        editor.api.nvim_cmd({ cmd = "checkhealth", args = { "louiselm" } }, {})
+      end)
+      if not started then
+        editor.notify(err, editor.log.levels.ERROR)
+      end
+    end,
+    { nargs = "+", complete = "file", force = true, desc = "Inspect prospective artifacts without launching an Agent" }
+  )
+  configuration.preflight_command = true
   return true
 end
 
@@ -307,6 +397,21 @@ function M.check()
     "turn recording requires sqlite3 >= 3.38 with JSON support on PATH (features verified at each write)",
     nvim().fn.executable("sqlite3") == 1
   )
+  health.info(
+    "Direct vendor launch: no LouiseLM Verified posture exists. A wrapper does not establish Verified posture."
+  )
+  if configuration.preflight_handle ~= nil then
+    health.info("Prospective artifact preflight is pending; no selected snapshot is available yet")
+  elseif configuration.preflight_error ~= nil then
+    health.error(configuration.preflight_error)
+  elseif configuration.preflight_items ~= nil then
+    health.info("Selected prospective snapshot, not live state; refresh with :LouiselmPreflight before relying on it")
+    for _, item in ipairs(configuration.preflight_items) do
+      health[item.level](item.message)
+    end
+  else
+    health.info("No prospective snapshot selected; use :LouiselmPreflight with explicit request and manifest files")
+  end
   return true
 end
 

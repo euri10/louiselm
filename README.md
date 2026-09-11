@@ -76,6 +76,13 @@ The quickstart does not modify your normal Neovim configuration. Move the same
 setup block into your regular configuration when ready, or see the
 [Agent table](#agents-and-adapters) for other paths.
 
+Direct Agent commands, including wrappers, have no LouiseLM Verified posture.
+For an explicit **prospective artifact snapshot**, use
+`:LouiselmPreflight request.json manifest.json` with `louiselm-skills` on PATH.
+It reads asynchronously and opens health; it does not authorize or start an Agent.
+See [artifact preflight](skills-core/README.md#prospective-artifact-preflight)
+for the input contract, prior comparison and evidence limits.
+
 Every Agent must declare its access/quota `provider`, independently of the Model
 manufacturer: a Model reached through GitHub Copilot has Provider `GitHub Copilot`.
 For an Agent whose advertised option values identify services by namespace,

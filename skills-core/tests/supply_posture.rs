@@ -19,6 +19,7 @@ use louiselm_skills::{
     dossier::ReviewDepth,
     instruction_view,
     posture::{DimensionInput, DimensionName, DimensionState, FailureCode, Posture},
+    preflight::{self, ComparisonState, IdentityField, ManifestState},
     registry::Registry,
     render, robot,
     signer::SshKeygenSigner,
@@ -31,6 +32,206 @@ use support::{Fixture, SshKey, write_file};
 struct Supply {
     discovery: DiscoveryFixture,
     registry: Registry,
+}
+
+#[test]
+fn prospective_preflight_checks_artifacts_without_promoting_proposed_controls() {
+    let supply = Supply::new();
+    let discovery = &supply.discovery;
+    let preview = preflight::inspect(
+        &discovery.request,
+        Some(&discovery.manifest),
+        Some(&discovery.fixture.store()),
+        &Policy::embedded(),
+        Some(&supply.registry),
+        None,
+    )
+    .unwrap();
+    assert_eq!(preview.manifest_state, ManifestState::Matched);
+    assert_eq!(
+        preview.posture.dimensions.managed_supply.state,
+        DimensionState::Verified
+    );
+    assert_eq!(
+        preview.posture.dimensions.runtime.state,
+        DimensionState::Verified
+    );
+    for dimension in [
+        &preview.posture.dimensions.native_supply,
+        &preview.posture.dimensions.isolation,
+        &preview.posture.dimensions.network,
+        &preview.posture.dimensions.provider_disclosure,
+    ] {
+        assert_eq!(dimension.state, DimensionState::Failed);
+    }
+    assert!(!preview.posture.is_fully_verified());
+    assert_eq!(preview.comparison.state, ComparisonState::NotRequested);
+    assert_eq!(
+        preview.request_digest,
+        discovery.request.digest().to_string()
+    );
+    for output in [
+        robot::payload(&preview).unwrap(),
+        preflight::render(&preview),
+    ] {
+        assert!(!output.contains("private-marker-never-display"));
+        assert!(!output.contains("provider-brand-never-display"));
+        assert!(!output.contains(discovery.fixture.path("").to_str().unwrap()));
+        assert!(output.contains(&discovery.request.session_input_manifest_id));
+    }
+}
+
+#[test]
+fn preflight_missing_or_contradictory_manifest_never_checks_different_inputs() {
+    let supply = Supply::new();
+    let discovery = &supply.discovery;
+    let mut changed = discovery.manifest.clone();
+    changed.envelope.revision += 1;
+    for (manifest, state) in [
+        (None, ManifestState::Missing),
+        (Some(&changed), ManifestState::Contradictory),
+    ] {
+        let preview = preflight::inspect(
+            &discovery.request,
+            manifest,
+            Some(&discovery.fixture.store()),
+            &Policy::embedded(),
+            Some(&supply.registry),
+            None,
+        )
+        .unwrap();
+        assert_eq!(preview.manifest_state, state);
+        for (_, dimension) in preview.posture.dimensions.ordered() {
+            assert_eq!(dimension.state, DimensionState::Failed);
+        }
+    }
+}
+
+#[test]
+fn preflight_artifact_drift_is_dimension_specific_and_prior_selection_is_explicit() {
+    let supply = Supply::new();
+    let discovery = &supply.discovery;
+    let prior = discovery.manifest.clone();
+    let prior_request = discovery.request.clone();
+    let mut current = prior.clone();
+    current.envelope.revision += 1;
+    let mut request = prior_request.clone();
+    request.envelope_revision = current.envelope.revision;
+    request.session_input_manifest_id = current.digest().to_string();
+    std::fs::write(discovery.runtime.executable_path(), "changed bytes").unwrap();
+    let preview = preflight::inspect(
+        &request,
+        Some(&current),
+        Some(&discovery.fixture.store()),
+        &Policy::embedded(),
+        Some(&supply.registry),
+        Some((&prior_request, &prior)),
+    )
+    .unwrap();
+    assert_eq!(
+        preview.posture.dimensions.managed_supply.state,
+        DimensionState::Verified
+    );
+    assert_eq!(
+        preview.posture.dimensions.runtime.failure_code,
+        Some(FailureCode::RuntimeDrift)
+    );
+    assert_eq!(preview.comparison.state, ComparisonState::Compared);
+    assert!(
+        preview
+            .comparison
+            .changes
+            .iter()
+            .any(|change| change.field == IdentityField::EnvelopeRevision)
+    );
+    assert!(
+        preview
+            .comparison
+            .unresolved
+            .contains(&IdentityField::NetworkScope)
+    );
+    assert!(
+        !preview
+            .comparison
+            .changes
+            .iter()
+            .any(|change| change.field == IdentityField::NetworkScope)
+    );
+}
+
+#[test]
+fn preflight_refuses_malformed_inputs_and_incomparable_priors() {
+    let supply = Supply::new();
+    let discovery = &supply.discovery;
+    let inspect =
+        |request: &louiselm_skills::launch::LaunchRequest,
+         manifest: &louiselm_skills::session_manifest::SessionInputManifest| {
+            preflight::inspect(
+                request,
+                Some(manifest),
+                None,
+                &Policy::embedded(),
+                None,
+                Some((&discovery.request, &discovery.manifest)),
+            )
+        };
+    let mut manifest = discovery.manifest.clone();
+    let mut request = discovery.request.clone();
+    manifest.agent.id = "another-agent".into();
+    request.agent_id = manifest.agent.id.clone();
+    request.session_input_manifest_id = manifest.digest().to_string();
+    let preview = inspect(&request, &manifest).unwrap();
+    assert_eq!(preview.comparison.state, ComparisonState::DifferentAgent);
+    assert!(preview.comparison.changes.is_empty());
+    request.agent_id = discovery.request.agent_id.clone();
+    let preview = inspect(&request, &manifest).unwrap();
+    assert_eq!(preview.manifest_state, ManifestState::Contradictory);
+    assert_eq!(preview.comparison.state, ComparisonState::InputsUnavailable);
+    manifest.schema = "untrusted-marker".into();
+    let error = inspect(&request, &manifest).unwrap_err().to_string();
+    assert!(!error.contains("untrusted-marker"));
+    request.schema = "untrusted-marker".into();
+    assert!(inspect(&request, &discovery.manifest).is_err());
+}
+
+#[test]
+fn absent_supply_store_does_not_hide_runtime_and_unknown_contracts_are_not_echoed() {
+    let supply = Supply::new();
+    let discovery = &supply.discovery;
+    let preview = preflight::inspect(
+        &discovery.request,
+        Some(&discovery.manifest),
+        None,
+        &Policy::embedded(),
+        Some(&supply.registry),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        preview.posture.dimensions.runtime.state,
+        DimensionState::Verified
+    );
+    assert_eq!(
+        preview.posture.dimensions.managed_supply.failure_code,
+        Some(FailureCode::EvidenceMissing)
+    );
+    let mut manifest = discovery.manifest.clone();
+    manifest.runtime.isolation_policy_version = "private-marker\nunknown-contract".into();
+    let mut request = discovery.request.clone();
+    request.session_input_manifest_id = manifest.digest().to_string();
+    let preview = preflight::inspect(
+        &request,
+        Some(&manifest),
+        None,
+        &Policy::embedded(),
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!robot::payload(&preview).unwrap().contains("private-marker"));
+    assert!(preview.proposed.iter().any(|identity| identity.field
+        == IdentityField::IsolationContract
+        && identity.value.is_none()));
 }
 
 impl Supply {

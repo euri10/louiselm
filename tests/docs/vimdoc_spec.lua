@@ -42,8 +42,12 @@ T["vimdoc"]["accepts command descriptions from stable and nightly Neovim fields"
 end
 
 T["vimdoc"]["matches the committed help and tags for registered commands"] = function()
+  local health = require("louiselm.health")
+  assert(health.configure({}, Config.schema))
+  assert(health.register())
   local commands = nvim.api.nvim_get_commands({ builtin = false })
   local expected = Vimdoc.generate(Config.schema, commands)
+  health.reset()
   local actual = table.concat(nvim.fn.readfile("doc/louiselm.txt"), "\n") .. "\n"
   local tags = table.concat(nvim.fn.readfile("doc/tags"), "\n")
 
@@ -52,6 +56,7 @@ T["vimdoc"]["matches the committed help and tags for registered commands"] = fun
   MiniTest.expect.equality(tags:find("louiselm-commands\tlouiselm.txt", 1, true) ~= nil, true)
   MiniTest.expect.equality(tags:find("louiselm-workflow\tlouiselm.txt", 1, true) ~= nil, true)
   MiniTest.expect.equality(tags:find(":LouiselmChat\tlouiselm.txt", 1, true) ~= nil, true)
+  MiniTest.expect.equality(tags:find(":LouiselmPreflight\tlouiselm.txt", 1, true) ~= nil, true)
 end
 
 return T

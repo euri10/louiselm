@@ -56,6 +56,7 @@ function M.setup(config)
   Command.surface_abandonment()
   Command.register()
   CaptureCommand.register()
+  Health.register()
   return true
 end
 

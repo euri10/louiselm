@@ -155,6 +155,8 @@ function M.generate(schema, commands)
   })
   emit_section(lines, "Troubleshooting", "louiselm-troubleshooting", {
     "Run :checkhealth louiselm to validate configuration and local tool availability. For Session-specific reports, :LouiselmSessionId copies the Agent-scoped ACP Session identifier.",
+    "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With louiselm-skills on PATH, :LouiselmPreflight request-file [manifest-file [prior-request-file prior-manifest-file]] asynchronously inspects canonical launch request/2 and Session input-manifest/1 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
+    "The selected prospective snapshot separates proposed identities from independently checked supply/runtime artifacts. Native loading, isolation, network enforcement and disclosure remain unproven; network scope is unresolved without revision-bound rules. The snapshot is not approval, launch authority or live Session status. Refresh after input changes; future launch integration must bind the exact displayed request digest. Setup/reset forgets the selection and cancels pending reads.",
   })
   emit_commands(lines, commands)
   lines[#lines + 1] = ""
