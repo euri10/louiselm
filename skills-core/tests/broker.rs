@@ -653,9 +653,9 @@ fn assert_command_exchange(
         scope: CommandScope {
             command_digest: Digest::of(b"printf sensitive"),
             timeout_ms: 1000,
-            uses: 1,
+            uses: 3,
         },
-        allow_delegation: false,
+        allow_delegation: true,
         expires_at: std::time::Instant::now() + Duration::from_secs(30),
     };
     let mut wrong = binding.clone();
@@ -699,6 +699,7 @@ fn assert_command_exchange(
             ..
         }))
     ));
+    assert_grant_exchange(session, supervisor, &message);
     session.revoke_commands("revoke-command").unwrap();
     let revoke = settle(|complete| supervisor.receive(complete));
     let LauncherPacket::Request(ProtocolMessage::Command(mut revoke)) = revoke.packet else {
@@ -724,6 +725,95 @@ fn assert_command_exchange(
     settle(|complete| supervisor.send(revoke.canonical_bytes(), complete));
     session.serve_command().unwrap();
     assert!(session.command_revocation_complete());
+}
+
+fn assert_grant_exchange(
+    session: &mut louiselm_skills::broker::BrokerSession,
+    supervisor: &SeqpacketChannel,
+    agent: &louiselm_skills::launch_protocol::CommandMessage,
+) {
+    use louiselm_skills::launch_protocol::{
+        CommandMessage, CommandOperation, CommandOutcome, GrantRequest,
+    };
+    let CommandOperation::Request { principal, command } = &agent.operation else {
+        panic!("Agent request")
+    };
+    let mut tool = principal.clone();
+    tool.pid += 1;
+    tool.channel_id = "tool-capability-1".into();
+    let mut message = agent.clone();
+    message.request_id = "grant-request".into();
+    message.operation = CommandOperation::DelegationRequest {
+        principal: principal.clone(),
+        tool: tool.clone(),
+        grant: GrantRequest {
+            sequence: 1,
+            command_digest: Digest::of(command.command.as_bytes()).to_string(),
+            timeout_ms: 1000,
+            uses: 1,
+            valid_for_ms: 5000,
+        },
+    };
+    settle(|complete| supervisor.send(message.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    assert!(matches!(
+        settle(|complete| supervisor.receive(complete)).packet,
+        LauncherPacket::Request(ProtocolMessage::Command(CommandMessage {
+            operation: CommandOperation::Granted { grant: 1, .. },
+            ..
+        }))
+    ));
+    message.request_id = "tool-command".into();
+    let mut command = command.clone();
+    command.request_id.clone_from(&message.request_id);
+    message.operation = CommandOperation::Request {
+        principal: tool,
+        command,
+    };
+    settle(|complete| supervisor.send(message.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    assert!(matches!(
+        settle(|complete| supervisor.receive(complete)).packet,
+        LauncherPacket::Request(ProtocolMessage::Command(CommandMessage {
+            operation: CommandOperation::Authorize {
+                dispatch_sequence: 2,
+                ..
+            },
+            ..
+        }))
+    ));
+    session.revoke_tool_grant("revoke-grant", 1).unwrap();
+    let LauncherPacket::Request(ProtocolMessage::Command(mut revoke)) =
+        settle(|complete| supervisor.receive(complete)).packet
+    else {
+        panic!("grant revocation")
+    };
+    assert_eq!(revoke.operation, CommandOperation::RevokeGrant { grant: 1 });
+    assert!(!session.tool_grant_revocation_complete(1));
+    revoke.operation = CommandOperation::GrantRevoked {
+        grant: 1,
+        enforced: true,
+    };
+    settle(|complete| supervisor.send(revoke.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    assert!(session.tool_grant_revocation_complete(1));
+    assert!(!session.command_revocation_complete());
+    message.operation = CommandOperation::Outcome {
+        dispatch_sequence: 2,
+        outcome: CommandOutcome::Unknown,
+    };
+    settle(|complete| supervisor.send(message.canonical_bytes(), complete));
+    session.serve_command().unwrap();
+    // The previous revocation ACK must not have produced an echo packet.
+    assert!(matches!(
+        settle(|complete| supervisor.receive(complete)).packet,
+        LauncherPacket::Request(ProtocolMessage::Command(CommandMessage {
+            operation: CommandOperation::OutcomeAcknowledged {
+                dispatch_sequence: 2
+            },
+            ..
+        }))
+    ));
 }
 
 #[test]

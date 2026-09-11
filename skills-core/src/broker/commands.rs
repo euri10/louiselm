@@ -1,4 +1,7 @@
-//! Broker-owned Agent command decisions. Kernel handles stay in the supervisor.
+//! Broker-owned Agent and delegated command decisions. Kernel pins stay in the supervisor.
+
+#[path = "command_grants.rs"]
+mod grants;
 
 use std::{
     collections::BTreeMap,
@@ -23,6 +26,7 @@ struct SpentCommand {
     request_id: String,
     principal_sequence: u64,
     outcome: OutcomeState,
+    grant: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +53,8 @@ pub struct CommandAuthority {
     spent: BTreeMap<u64, SpentCommand>,
     active: bool,
     revocation: Option<(String, bool)>,
+    grants: BTreeMap<u64, grants::Grant>,
+    grant_sequence: u64,
 }
 
 impl CommandAuthority {
@@ -84,6 +90,7 @@ impl CommandAuthority {
                 && matches!(
                     entry.decision,
                     AuditDecision::EffectCommitIntent { .. }
+                        | AuditDecision::ToolGranted { .. }
                         | AuditDecision::CapabilitiesRevocationRequested
                         | AuditDecision::CapabilitiesRevoked
                 )
@@ -101,6 +108,8 @@ impl CommandAuthority {
             spent: BTreeMap::new(),
             active: true,
             revocation: None,
+            grants: BTreeMap::new(),
+            grant_sequence: 0,
         })
     }
 
@@ -128,6 +137,18 @@ impl CommandAuthority {
             return self.deny(DelegationError::ScopeMismatch);
         }
         let operation = match &message.operation {
+            CommandOperation::DelegationRequest {
+                principal,
+                tool,
+                grant,
+            } => self.delegate(principal, tool, grant)?,
+            CommandOperation::GrantRevoked { grant, enforced } => {
+                self.record_grant_revocation(&message.request_id, *grant, *enforced)?;
+                CommandOperation::GrantRevoked {
+                    grant: *grant,
+                    enforced: true,
+                }
+            }
             CommandOperation::Request { principal, command } => {
                 self.authorize(principal, command)?
             }
@@ -193,17 +214,43 @@ impl CommandAuthority {
             self.active = false;
             return self.deny(DelegationError::Expired);
         }
-        if principal.channel_id != self.binding.channel_id
-            || principal.pid != self.binding.agent_pid
-            || principal.uid != self.binding.assigned_uid
-            || principal.gid != self.binding.assigned_gid
+        let grant = if self.is_agent(principal) {
+            None
+        } else if let Some((id, _)) = self
+            .grants
+            .iter()
+            .find(|(_, grant)| grant.principal == *principal)
         {
+            Some(*id)
+        } else {
             return self.deny(DelegationError::IdentityMismatch);
+        };
+        let (scope, expires_at, sequence, remaining) = if let Some(id) = grant {
+            let granted = &self.grants[&id];
+            if granted.revocation.is_some() {
+                return self.deny(DelegationError::Revoked);
+            }
+            (
+                &granted.scope,
+                granted.expires_at,
+                granted.sequence,
+                granted.remaining,
+            )
+        } else {
+            (
+                &self.policy.scope,
+                self.policy.expires_at,
+                self.principal_sequence,
+                self.remaining,
+            )
+        };
+        if Instant::now() >= expires_at {
+            return self.deny(DelegationError::Expired);
         }
-        if !self.policy.scope.permits(command) {
+        if !scope.permits(command) {
             return self.deny(DelegationError::ScopeMismatch);
         }
-        if self.principal_sequence.checked_add(1) != Some(command.sequence)
+        if sequence.checked_add(1) != Some(command.sequence)
             || self
                 .spent
                 .values()
@@ -211,15 +258,24 @@ impl CommandAuthority {
         {
             return self.deny(DelegationError::Replay);
         }
-        if self.remaining == 0 {
+        if remaining == 0 {
             return self.deny(DelegationError::BudgetExhausted);
         }
         let dispatch_sequence = self
             .dispatch_sequence
             .checked_add(1)
             .ok_or(DelegationError::Replay)?;
-        self.remaining -= 1;
-        self.principal_sequence = command.sequence;
+        if let Some(id) = grant {
+            let granted = self
+                .grants
+                .get_mut(&id)
+                .ok_or(DelegationError::OwnerUnavailable)?;
+            granted.remaining -= 1;
+            granted.sequence = command.sequence;
+        } else {
+            self.remaining -= 1;
+            self.principal_sequence = command.sequence;
+        }
         self.dispatch_sequence = dispatch_sequence;
         self.spent.insert(
             dispatch_sequence,
@@ -227,21 +283,19 @@ impl CommandAuthority {
                 request_id: command.request_id.clone(),
                 principal_sequence: command.sequence,
                 outcome: OutcomeState::Pending,
+                grant,
             },
         );
         self.record(AuditDecision::EffectCommitIntent {
-            grant: None,
+            grant,
             sequence: command.sequence,
         })?;
-        let remaining_ms = self
-            .policy
-            .expires_at
+        let remaining_ms = expires_at
             .saturating_duration_since(Instant::now())
             .as_millis();
         let valid_for_ms =
             u32::try_from(remaining_ms.min(30_000)).map_err(|_| DelegationError::Expired)?;
         if valid_for_ms == 0 {
-            self.active = false;
             return Err(DelegationError::Expired);
         }
         Ok(CommandOperation::Authorize {
@@ -270,7 +324,7 @@ impl CommandAuthority {
         }
         let decision = if finished {
             AuditDecision::EffectFinished {
-                grant: None,
+                grant: spent.grant,
                 sequence: spent.principal_sequence,
                 succeeded: matches!(outcome, CommandOutcome::Completed { .. }),
             }

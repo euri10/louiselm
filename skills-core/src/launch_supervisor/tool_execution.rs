@@ -34,6 +34,8 @@ pub(super) struct ToolExecutor {
     closed: bool,
     finished: Arc<AtomicBool>,
     cleanup_unproven: bool,
+    pub(super) measured_helper: Option<super::tool_helper::MeasuredHelper>,
+    helper: Option<super::tool_helper::HelperRuntime>,
 }
 
 impl ToolExecutor {
@@ -82,7 +84,45 @@ impl ToolExecutor {
             closed: false,
             finished: Arc::new(AtomicBool::new(true)),
             cleanup_unproven: false,
+            measured_helper: None,
+            helper: None,
         })
+    }
+
+    pub(super) fn launch_helper(
+        &mut self,
+        request: crate::launch_protocol::CommandMessage,
+        enforcer: Arc<super::command::CommandEnforcer>,
+        complete: SupervisorCompletion<super::HelperPrincipal>,
+    ) -> Result<(), SupervisorError> {
+        if self.closed || self.helper.is_some() {
+            return Err(SupervisorError::ToolIsolationUnproven);
+        }
+        request
+            .validate()
+            .map_err(|_| SupervisorError::AuthorizationRejected)?;
+        let measured = self
+            .measured_helper
+            .take()
+            .ok_or(SupervisorError::ToolIsolationUnproven)?;
+        self.helper = Some(super::tool_helper::HelperRuntime::launch(
+            self.backend.clone(),
+            self.plan.clone(),
+            measured,
+            request,
+            enforcer,
+            complete,
+        )?);
+        Ok(())
+    }
+
+    pub(super) fn cancel_helper(&mut self) -> Result<(), SupervisorError> {
+        let result = self
+            .helper
+            .as_mut()
+            .map_or(Ok(()), super::tool_helper::HelperRuntime::cancel);
+        self.cleanup_unproven |= result.is_err();
+        result
     }
 
     pub(super) fn execute(
@@ -146,7 +186,9 @@ impl ToolExecutor {
 
     pub(super) fn dispose(&mut self) -> Result<(), SupervisorError> {
         self.closed = true;
-        self.cancel()
+        let helper = self.cancel_helper();
+        let command = self.cancel();
+        helper.and(command)
     }
 
     fn join(&mut self) -> Result<(), SupervisorError> {

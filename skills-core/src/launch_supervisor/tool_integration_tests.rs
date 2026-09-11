@@ -31,7 +31,7 @@ fn write_registry(path: &Path, entries: &impl serde::Serialize) {
     );
 }
 
-fn manifest(executable: &Path) -> ReleaseManifest {
+pub(super) fn manifest(executable: &Path) -> ReleaseManifest {
     let mut manifest = ReleaseManifest {
         schema: MANIFEST_SCHEMA.to_owned(),
         release_id: String::new(),

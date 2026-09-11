@@ -4,10 +4,13 @@
 #[path = "tool_dispatch_tests.rs"]
 mod tests;
 
+#[path = "grant_dispatch.rs"]
+mod grants;
+
 use super::{OwnerEvent, SessionOwner};
 use crate::launch_protocol::{
     BrokerConnection, COMMAND_SCHEMA, ChannelState, CommandMessage, CommandOperation,
-    CommandOutcome, CommandPrincipal, ErrorCode, PROTOCOL_VERSION, ProtocolError,
+    CommandOutcome, CommandPrincipal, ErrorCode, PROTOCOL_VERSION, ProtocolError, ProtocolMessage,
     ToolExecutionRequest, ToolExecutionResult,
 };
 use crate::{launch_receipt::SessionState, launch_supervisor::SupervisorError};
@@ -22,6 +25,7 @@ struct PendingCommand {
     dispatch: Option<u64>,
     outcome: Option<CommandOutcome>,
     abandoned: bool,
+    grant: Option<u64>,
 }
 
 #[derive(Default)]
@@ -29,8 +33,10 @@ pub(super) struct CommandDispatch {
     pub(super) closed: bool,
     sequence: u64,
     pending: Option<PendingCommand>,
-    request: Arc<Mutex<Option<Result<ToolExecutionRequest, SupervisorError>>>>,
+    request: Arc<Mutex<Option<Result<ProtocolMessage, SupervisorError>>>>,
     result: Arc<Mutex<Option<Result<ToolExecutionResult, SupervisorError>>>>,
+    receiving: bool,
+    grants: grants::GrantDispatch,
 }
 
 impl SessionOwner {
@@ -48,7 +54,11 @@ impl SessionOwner {
     }
 
     pub(super) fn arm_agent_receive(&mut self) {
-        if self.commands.closed || self.commands.pending.is_some() {
+        if self.commands.closed
+            || self.commands.receiving
+            || self.commands.pending.is_some()
+            || self.commands.grants.pending.is_some()
+        {
             return;
         }
         let mailbox = Arc::clone(&self.commands.request);
@@ -68,6 +78,8 @@ impl SessionOwner {
             });
         if result.is_err() {
             self.commands.closed = true;
+        } else {
+            self.commands.receiving = true;
         }
     }
 
@@ -136,37 +148,53 @@ impl SessionOwner {
         }
     }
 
-    fn forward_command(&mut self, request: ToolExecutionRequest) {
+    fn forward_command(&mut self, request: ToolExecutionRequest, grant: Option<u64>) {
+        let sequence = if grant.is_some() {
+            self.commands.grants.sequence
+        } else {
+            self.commands.sequence
+        };
         let valid = request.validate().is_ok()
             && request.session_id == self.binding.session_id
             && request.run_id == self.binding.run_id
             && request.envelope_revision == self.binding.envelope_revision
-            && self.commands.sequence.checked_add(1) == Some(request.sequence)
+            && sequence.checked_add(1) == Some(request.sequence)
             && self.state == SessionState::Running
             && self.channel_state == ChannelState::Enabled
             && self.broker_connection == BrokerConnection::Connected
             && !self.widening_blocked
             && self.pending.is_none()
             && self.commands.pending.is_none()
+            && self.commands.grants.pending.is_none()
+            && (grant.is_none() || self.commands.grants.active)
             && !self.commands.closed;
         if !valid {
-            self.send_command_agent(
+            self.send_command_principal(
+                grant,
                 &request.request_id,
                 CommandOutcome::NotStarted {
                     error: ErrorCode::InvalidRequest,
                 },
             );
             self.arm_agent_receive();
+            self.arm_tool_receive();
             return;
         }
         let message = self.command_message(
             &request.request_id,
             CommandOperation::Request {
-                principal: CommandPrincipal {
-                    channel_id: self.binding.channel_id.clone(),
-                    pid: self.binding.agent_pid,
-                    uid: self.binding.assigned_uid,
-                    gid: self.binding.assigned_gid,
+                principal: if grant.is_some() {
+                    let Some(helper) = self.commands.grants.helper.as_ref() else {
+                        return;
+                    };
+                    helper.principal.clone()
+                } else {
+                    CommandPrincipal {
+                        channel_id: self.binding.channel_id.clone(),
+                        pid: self.binding.agent_pid,
+                        uid: self.binding.assigned_uid,
+                        gid: self.binding.assigned_gid,
+                    }
                 },
                 command: request.clone(),
             },
@@ -178,6 +206,7 @@ impl SessionOwner {
             dispatch: None,
             outcome: None,
             abandoned: false,
+            grant,
         });
         let sender = self.sender.clone();
         if self
@@ -196,7 +225,8 @@ impl SessionOwner {
         {
             self.commands.pending = None;
             self.commands.closed = true;
-            self.send_command_agent(
+            self.send_command_principal(
+                grant,
                 &message.request_id,
                 CommandOutcome::NotStarted {
                     error: ErrorCode::BrokerUnavailable,
@@ -227,6 +257,9 @@ impl SessionOwner {
             self.revoke_commands(message);
             return;
         }
+        if self.handle_grant_decision(&message) {
+            return;
+        }
         let Some(pending) = self.commands.pending.as_ref() else {
             return;
         };
@@ -241,15 +274,22 @@ impl SessionOwner {
             }
             CommandOperation::Reject { error } if pending.dispatch.is_none() => {
                 let error = *error;
+                let grant = pending.grant;
                 self.commands.pending = None;
-                self.send_command_agent(&message.request_id, CommandOutcome::NotStarted { error });
+                self.send_command_principal(
+                    grant,
+                    &message.request_id,
+                    CommandOutcome::NotStarted { error },
+                );
                 self.arm_agent_receive();
+                self.arm_tool_receive();
             }
             CommandOperation::OutcomeAcknowledged { dispatch_sequence }
                 if pending.dispatch == Some(*dispatch_sequence) && pending.outcome.is_some() =>
             {
                 self.commands.pending = None;
                 self.arm_agent_receive();
+                self.arm_tool_receive();
             }
             _ => {}
         }
@@ -260,14 +300,33 @@ impl SessionOwner {
             return;
         };
         pending.dispatch = Some(dispatch);
-        self.commands.sequence = pending.request.sequence;
+        if pending.grant.is_some() {
+            self.commands.grants.sequence = pending.request.sequence;
+        } else {
+            self.commands.sequence = pending.request.sequence;
+        }
         let permit = self
             .resources
             .capability
             .as_ref()
             .ok_or(SupervisorError::CapabilityUnavailable)
             .and_then(|gate| {
-                gate.authorize_command(&pending.request, message, pending.forwarded_at)
+                if pending.grant.is_some() {
+                    let helper = self
+                        .commands
+                        .grants
+                        .helper
+                        .as_ref()
+                        .ok_or(SupervisorError::CapabilityUnavailable)?;
+                    gate.command_enforcer()?.admit(
+                        &pending.request,
+                        &helper.principal,
+                        message,
+                        pending.forwarded_at,
+                    )
+                } else {
+                    gate.authorize_command(&pending.request, message, pending.forwarded_at)
+                }
             });
         let ready = !pending.abandoned
             && !self.commands.closed
@@ -275,6 +334,7 @@ impl SessionOwner {
             && self.state == SessionState::Running
             && self.channel_state == ChannelState::Enabled
             && self.pending.is_none();
+        let ready = ready && (pending.grant.is_none() || self.commands.grants.active);
         let permit = match permit {
             Ok(permit) if ready => permit,
             _ => {
@@ -319,9 +379,10 @@ impl SessionOwner {
         };
         pending.outcome = Some(outcome.clone());
         let id = pending.request.request_id.clone();
+        let grant = pending.grant;
         // Deliver known actual output even if its durable audit subsequently fails.
         // Nothing here authorizes a retry or refunds the broker's spent budget.
-        self.send_command_agent(&id, outcome.clone());
+        self.send_command_principal(grant, &id, outcome.clone());
         let message = self.command_message(
             &id,
             CommandOperation::Outcome {
@@ -339,13 +400,20 @@ impl SessionOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        if request.is_some() {
+            self.commands.receiving = false;
+        }
         match request {
-            Some(Ok(request)) => self.forward_command(request),
-            Some(Err(_)) => {
+            Some(Ok(ProtocolMessage::ToolExecution(request))) => {
+                self.forward_command(request, None);
+            }
+            Some(Ok(ProtocolMessage::Command(request))) => self.request_grant(&request),
+            Some(Ok(_) | Err(_)) => {
                 self.commands.closed = true;
             }
             None => {}
         }
+        self.collect_grant_events();
         let result = self
             .commands
             .result
@@ -388,8 +456,9 @@ impl SessionOwner {
             .as_mut()
             .ok_or(SupervisorError::CleanupUnproven)
             .and_then(|process| process.cancel_tool());
+        let helper = self.stop_helper();
         self.collect_tool_result();
-        let enforced = revoked.is_ok() && cancelled.is_ok();
+        let enforced = revoked.is_ok() && cancelled.is_ok() && helper.is_ok();
         message.operation = CommandOperation::Revoked { enforced };
         self.send_command_broker(message);
         if !enforced {
@@ -400,6 +469,9 @@ impl SessionOwner {
     }
 
     pub(super) fn command_deadline(&mut self, id: &str) {
+        if self.expire_pending_grant(id) {
+            return;
+        }
         let Some(pending) = self.commands.pending.as_mut() else {
             return;
         };
@@ -408,7 +480,8 @@ impl SessionOwner {
         }
         pending.abandoned = true;
         self.commands.closed = true;
-        self.send_command_agent(id, CommandOutcome::Unknown);
+        let grant = pending.grant;
+        self.send_command_principal(grant, id, CommandOutcome::Unknown);
         // A running permit already has its earlier local deadline (<=30 s).
         // Join it before considering the command settled. No automatic retry.
         if self

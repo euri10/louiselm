@@ -194,6 +194,107 @@ impl Drop for FixtureChild {
     }
 }
 
+fn tool_pin() -> (FixtureChild, Arc<KernelProcess>) {
+    use std::io::Read;
+    let mut child = FixtureChild(
+        std::process::Command::new("/bin/sh")
+            .args(["-c", "printf r; read -r ignored"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    child
+        .0
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut [0])
+        .unwrap();
+    let pid = child.0.id();
+    let process = Arc::new(
+        KernelProcess::from_exec_stop(
+            KernelCredentials {
+                pid,
+                uid: rustix::process::getuid().as_raw(),
+                gid: rustix::process::getgid().as_raw(),
+            },
+            rustix::process::pidfd_open(
+                rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap(),
+                rustix::process::PidfdFlags::empty(),
+            )
+            .unwrap(),
+            &std::fs::File::open("/bin/sh").unwrap(),
+        )
+        .unwrap(),
+    );
+    (child, process)
+}
+
+#[test]
+fn grant_revocation_is_scoped_and_a_queued_permit_cannot_outlive_either_principal() {
+    for scenario in ["revoked", "expired", "tool_exit", "agent_revoked"] {
+        let (owner, request, agent, agent_decision) = fixture();
+        let (mut child, process) = tool_pin();
+        let credentials = process.credentials();
+        let tool = CommandPrincipal {
+            channel_id: "tool-1".into(),
+            pid: credentials.pid,
+            uid: credentials.uid,
+            gid: credentials.gid,
+        };
+        let mut granted = agent_decision.clone();
+        granted.operation = CommandOperation::Granted {
+            tool: tool.clone(),
+            grant: 1,
+            valid_for_ms: if scenario == "expired" { 40 } else { 1000 },
+        };
+        owner
+            .register_grant(Arc::clone(&process), &granted, Instant::now())
+            .unwrap();
+        assert!(
+            owner
+                .register_grant(process, &granted, Instant::now())
+                .is_err(),
+            "cloning/reconnecting cannot reinstall a grant"
+        );
+        let mut decision = agent_decision.clone();
+        if let CommandOperation::Authorize {
+            principal,
+            dispatch_sequence,
+            ..
+        } = &mut decision.operation
+        {
+            *principal = tool.clone();
+            *dispatch_sequence = 1;
+        }
+        let permit = owner
+            .admit(&request, &tool, &decision, Instant::now())
+            .unwrap();
+        assert!(permit.valid().unwrap());
+        match scenario {
+            "revoked" => owner.revoke_grant(1).unwrap(),
+            "expired" => std::thread::sleep(Duration::from_millis(60)),
+            "tool_exit" => {
+                child.0.kill().unwrap();
+                child.0.wait().unwrap();
+            }
+            _ => owner.revoke().unwrap(),
+        }
+        assert!(!permit.valid().unwrap());
+        assert!(permit.start(|| Ok(())).is_err());
+        if scenario != "agent_revoked" {
+            let independent = owner
+                .admit(&request, &agent, &agent_decision, Instant::now())
+                .unwrap();
+            assert_eq!(
+                independent.start(|| Ok("Agent remains authorized")),
+                Ok("Agent remains authorized")
+            );
+        }
+    }
+}
+
 #[test]
 fn death_or_executable_replacement_denies_an_already_admitted_command() {
     use std::io::{Read, Write};

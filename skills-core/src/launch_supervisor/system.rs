@@ -15,6 +15,10 @@ mod command_io;
 #[path = "command_test_support.rs"]
 pub(super) mod command_test_support;
 
+#[cfg(test)]
+#[path = "grant_test_support.rs"]
+pub(super) mod grant_test_support;
+
 use std::{
     fs, io,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
@@ -807,12 +811,21 @@ impl LaunchPlatform for SystemLaunchPlatform {
             Err(error) => return Err(error),
         };
         let tools = if tool_isolation.is_some() {
-            Some(super::tool_execution::ToolExecutor::new(
+            let mut tools = super::tool_execution::ToolExecutor::new(
                 self.backend
                     .within_session(&plan.session_id)
                     .map_err(map_sandbox)?,
                 &plan,
-            )?)
+            )?;
+            tools.measured_helper = match super::tool_helper::MeasuredHelper::measure(
+                &release_root,
+                &self.config.release_id,
+            ) {
+                Ok(helper) => Some(helper),
+                Err(SupervisorError::ToolIsolationUnproven) => None,
+                Err(error) => return Err(error),
+            };
+            Some(tools)
         } else {
             None
         };
@@ -965,6 +978,23 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn launch_helper(
+        &mut self,
+        request: crate::launch_protocol::CommandMessage,
+        enforcer: Arc<super::command::CommandEnforcer>,
+        complete: SupervisorCompletion<super::HelperPrincipal>,
+    ) -> Result<(), SupervisorError> {
+        self.tools
+            .as_mut()
+            .ok_or(SupervisorError::ToolIsolationUnproven)?
+            .launch_helper(request, enforcer, complete)
+    }
+
+    fn cancel_helper(&mut self) -> Result<(), SupervisorError> {
+        self.tools
+            .as_mut()
+            .map_or(Ok(()), super::tool_execution::ToolExecutor::cancel_helper)
+    }
     fn execute_tool(
         &mut self,
         permit: super::command::CommandPermit,
@@ -1188,7 +1218,7 @@ struct AcceptedCapability {
     generation: u64,
     channel: Option<SeqpacketChannel>,
     receiving: bool,
-    pending: Option<SupervisorCompletion<crate::launch_protocol::ToolExecutionRequest>>,
+    pending: Option<SupervisorCompletion<ProtocolMessage>>,
 }
 
 fn accept_capability(
@@ -1451,7 +1481,7 @@ impl CapabilityGate for SystemCapabilityGate {
 
     fn receive_command(
         &mut self,
-        complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionRequest>,
+        complete: SupervisorCompletion<ProtocolMessage>,
     ) -> Result<(), SupervisorError> {
         self.receive_agent_command(complete)
     }
@@ -1480,6 +1510,12 @@ impl CapabilityGate for SystemCapabilityGate {
                 decision,
                 forwarded_at,
             )
+    }
+
+    fn command_enforcer(&self) -> Result<Arc<super::command::CommandEnforcer>, SupervisorError> {
+        self.commands
+            .clone()
+            .ok_or(SupervisorError::CapabilityUnavailable)
     }
 
     fn send_command(

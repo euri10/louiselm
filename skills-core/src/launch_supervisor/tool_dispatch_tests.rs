@@ -33,6 +33,9 @@ use std::sync::{
     mpsc,
 };
 
+#[path = "grant_dispatch_tests.rs"]
+mod grant_tests;
+
 type HeldCompletion = Arc<
     Mutex<
         Option<(
@@ -49,6 +52,17 @@ struct TestProcess {
     fail_cleanup: Arc<AtomicBool>,
 }
 impl RunningAgent for TestProcess {
+    fn launch_helper(
+        &mut self,
+        request: CommandMessage,
+        enforcer: Arc<crate::launch_supervisor::command::CommandEnforcer>,
+        complete: SupervisorCompletion<crate::launch_supervisor::HelperPrincipal>,
+    ) -> Result<(), SupervisorError> {
+        self.tools.launch_helper(request, enforcer, complete)
+    }
+    fn cancel_helper(&mut self) -> Result<(), SupervisorError> {
+        self.tools.cancel_helper()
+    }
     fn execute_tool(
         &mut self,
         permit: CommandPermit,
@@ -269,7 +283,9 @@ impl Harness {
             .owner
             .receiver
             .recv_timeout(Duration::from_secs(5))
-            .unwrap()
+            .unwrap_or_else(|error| panic!("command event {error:?}: closed={}, helper_pending={}, command_pending={}, Agent_valid={:?}",
+                self.owner.commands.closed, self.owner.commands.grants.pending.is_some(), self.owner.commands.pending.is_some(),
+                self.owner.resources.capability.as_ref().map(|gate| gate.command_enforcer().and_then(|owner| owner.agent_valid()))))
         {
             OwnerEvent::ToolFinished | OwnerEvent::RelayQuiesced => {}
             OwnerEvent::BrokerRequest {

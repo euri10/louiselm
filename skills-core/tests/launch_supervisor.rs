@@ -1037,9 +1037,15 @@ impl ProcessMembership for FakeProcessMembership {
 }
 
 impl CapabilityGate for FakeCapabilityGate {
+    fn command_enforcer(
+        &self,
+    ) -> Result<Arc<louiselm_skills::launch_supervisor::command::CommandEnforcer>, SupervisorError>
+    {
+        Err(SupervisorError::CapabilityUnavailable)
+    }
     fn receive_command(
         &mut self,
-        _complete: SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionRequest>,
+        _complete: SupervisorCompletion<ProtocolMessage>,
     ) -> Result<(), SupervisorError> {
         Ok(())
     }
@@ -1293,6 +1299,17 @@ fn run_fake_relay(
 }
 
 impl RunningAgent for FakeRunningAgent {
+    fn launch_helper(
+        &mut self,
+        _request: louiselm_skills::launch_protocol::CommandMessage,
+        _enforcer: Arc<louiselm_skills::launch_supervisor::command::CommandEnforcer>,
+        _complete: SupervisorCompletion<louiselm_skills::launch_supervisor::HelperPrincipal>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::ToolIsolationUnproven)
+    }
+    fn cancel_helper(&mut self) -> Result<(), SupervisorError> {
+        Ok(())
+    }
     fn cancel_tool(&mut self) -> Result<(), SupervisorError> {
         Ok(())
     }

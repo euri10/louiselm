@@ -57,6 +57,16 @@ pub enum AuditDecision {
         /// Reserved invocation budget, never returned on abandonment.
         uses: u32,
     },
+    /// Broker stopped one grant; supervisor cleanup remains pending.
+    ToolRevocationRequested {
+        /// Exact grant being cancelled.
+        grant: u64,
+    },
+    /// Supervisor proved the named grant's enforcement and termination.
+    ToolRevoked {
+        /// Exact grant whose cancellation completed.
+        grant: u64,
+    },
     /// A capability request was denied; untrusted request fields are omitted.
     CapabilityDenied,
     /// Durable intent to commit, before the final lifetime/deadline recheck.

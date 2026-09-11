@@ -2,9 +2,10 @@
 
 `louiselm-qbr.5.1.1.5.2` implements the Agent-command path described by
 `louiselm-cross-process-tool-commit-z288`: broker-owned approval and budget,
-supervisor-owned process identity and actual execution. Delegated helper
-creation remains `.5.3`; installed integration and user-visible Verified
-cutover remain `.5.4`. This component does not enable an installed vendor Agent.
+supervisor-owned process identity and actual execution. `.5.3` extends that
+path to one explicitly granted, measured isolated helper. Installed integration
+and user-visible Verified cutover remain `.5.4`. This component does not enable
+an installed vendor Agent.
 
 ## Cross-process Agent commands
 
@@ -68,11 +69,76 @@ composition tests, not a privileged installed-launch or vendor compatibility
 claim. Existing identity, descriptor-transfer, isolation and delegation coverage
 remains in place.
 
-## Helper component awaiting `.5.3`
+## Explicit isolated helper grants
+
+The authenticated Agent may send `CommandOperation::Delegate`, containing a
+bounded `GrantRequest` and initial `ToolExecutionRequest` for the deterministic
+helper. The supervisor never accepts Agent-authored attribution, executable,
+mount, network, identity or environment choices. Only this actual Agent channel
+can request delegation; a helper channel accepts command requests only.
+
+The fixed release component `louiselm-tool-test-helper` must match its manifest
+digest, size and executable designation. The supervisor mounts only that file,
+the existing tool workspace/home/system roots, and a new private capability
+socket. The Agent runtime, private home and capability socket are absent. The
+helper gets independent namespaces and a nested Session cgroup. Existing trusted
+startup tracing pins its actual executable and kernel lifetime, and the listener
+accepts only that process. Every received packet must also match its kernel sender.
+First connection, ancestry, same UID and passed descriptors confer no authority.
+
+The supervisor forwards the original Agent request with its own Agent and tool
+attribution over the retained broker connection. `CommandAuthority` checks the
+existing operator approval's `allow_delegation`, exact command digest, timeout,
+revision, lifetime and remaining aggregate budget. Reservation precedes durable
+audit and is never refunded. The broker returns `Granted` only after that audit;
+the supervisor independently checks correlation, both lifetimes and the deadline
+before installing the grant. Lost replies cannot reconstruct or replay authority.
+Unconfigured command policy and missing measured helper support fail closed.
+
+The measured helper forwards its initial work through its own socket, up to its
+reserved use count. Every invocation still takes the same broker single-use
+decision and supervisor `CommandPermit` as an Agent command. Tool-local sequences
+and the Session dispatch sequence remain distinct. The local permit retains both
+the Agent and helper lifetime checks, exact immutable command and grant deadline.
+This deterministic integration admits one helper lifetime per Session; replacement
+requires a fresh launch. It is not a general helper or vendor plugin API.
+
+`BrokerSession::revoke_tool_grant` closes just the named grant's approvals, then
+requests enforcement. The supervisor blocks queued starts, closes that helper
+channel, terminates its tree, and cancels a running command only when it belongs
+to the revoked grant. Other Agent authority remains usable. The broker marks
+`tool_grant_revocation_complete` only after confirmed enforcement is durably
+audited. Failed cleanup quarantines the Session and poisons its identity lease.
+
+Expiry enforces the same boundary locally, independently of broker notification.
+The helper worker observes its deadline and Agent lifetime; command permits
+observe both process lifetimes and the earlier command/grant deadline throughout
+execution. Whole-Agent revocation and disposal invalidate every grant. Late
+authenticated actual outcomes remain recordable; unknown outcomes never refund
+or replay a use. Commands and output stay out of normalized audit.
+
+The host suite covers policy, reservation, scope, replay, per-grant revocation,
+expiry and queued permits. The disposable-VM test
+`privileged_measured_helper_grant_execution_and_revocation` drives the measured
+Agent, actual capability and broker seqpacket channels, isolated helper and
+command executor. It covers transferred-descriptor denial, queued/running
+revocation, expiry, Agent exit, lost grant replies, sticky cleanup failure and
+late actual results; Agent authority remains usable after a tool-only revoke.
+CI requires it with `LOUISELM_REQUIRE_TOOL_GRANTS=1`; an ordinary
+host run explicitly skips its privileged portion. Use the [VM procedure](launcher-vm.md)
+with `cargo build --bins` and the built library test under `debug/deps`, then:
+
+```sh
+LOUISELM_REQUIRE_TOOL_GRANTS=1 <library-test-binary> \
+  launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation \
+  --exact --nocapture
+```
+
+## Retained local policy characterization
 
 `louiselm-qbr.5.1.1.4` supplies the local delegation component in
 `skills-core/src/broker/delegation/`. The APIs below remain characterization
-coverage for helper policy until `.5.3` ports them to the cross-process boundary.
+coverage for helper policy alongside the cross-process production path.
 Their in-process commit closure and start-only expiry are not the production
 Agent-command contract above.
 

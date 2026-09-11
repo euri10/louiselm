@@ -76,14 +76,22 @@ impl BrokerSession {
         let authority = self.commands.as_mut().ok_or(BrokerError::InvalidGrant)?;
         match authority.handle(&message) {
             Ok(reply) => {
-                if !matches!(message.operation, CommandOperation::Revoked { .. }) {
+                if !matches!(
+                    message.operation,
+                    CommandOperation::Revoked { .. } | CommandOperation::GrantRevoked { .. }
+                ) {
                     send(&self.channel, reply.canonical_bytes())?;
                 }
                 Ok(())
             }
             Err(DelegationError::Audit(error)) => Err(error),
             Err(DelegationError::OwnerUnavailable) => Err(BrokerError::InvalidGrant),
-            Err(_) if matches!(message.operation, CommandOperation::Request { .. }) => {
+            Err(_)
+                if matches!(
+                    message.operation,
+                    CommandOperation::Request { .. } | CommandOperation::DelegationRequest { .. }
+                ) =>
+            {
                 message.operation = CommandOperation::Reject {
                     error: ErrorCode::InvalidRequest,
                 };
@@ -123,5 +131,37 @@ impl BrokerSession {
         self.commands
             .as_ref()
             .is_some_and(CommandAuthority::revocation_complete)
+    }
+
+    /// Stops one grant's approvals, then requests confirmed supervisor cancellation.
+    ///
+    /// # Errors
+    /// Refuses missing/unknown authority, audit failure or lost transport. Errors close the connection.
+    pub fn revoke_tool_grant(&mut self, request_id: &str, grant: u64) -> Result<(), BrokerError> {
+        let result = self
+            .commands
+            .as_mut()
+            .ok_or(BrokerError::InvalidGrant)
+            .and_then(|owner| {
+                owner
+                    .revoke_grant(request_id, grant)
+                    .map_err(|error| match error {
+                        DelegationError::Audit(error) => error,
+                        _ => BrokerError::InvalidGrant,
+                    })
+            })
+            .and_then(|message| send(&self.channel, message.canonical_bytes()));
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+
+    /// True only after authenticated enforcement of this grant became durable.
+    #[must_use]
+    pub fn tool_grant_revocation_complete(&self, grant: u64) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(|owner| owner.grant_revocation_complete(grant))
     }
 }

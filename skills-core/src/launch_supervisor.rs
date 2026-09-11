@@ -49,7 +49,9 @@ use crate::{
 pub mod command;
 mod lifecycle;
 mod tool_execution;
+mod tool_helper;
 mod tool_integration;
+pub use tool_helper::HelperPrincipal;
 pub use tool_integration::ToolIsolationEvidence;
 mod relay;
 mod stdio;
@@ -351,7 +353,7 @@ pub trait CapabilityGate: Send {
     /// Refuses a closed/busy gate. Authentication or decoding failures use `complete`.
     fn receive_command(
         &mut self,
-        complete: SupervisorCompletion<crate::launch_protocol::ToolExecutionRequest>,
+        complete: SupervisorCompletion<ProtocolMessage>,
     ) -> Result<(), SupervisorError>;
 
     /// Rechecks the original packet binding and the exact broker decision locally.
@@ -364,6 +366,12 @@ pub trait CapabilityGate: Send {
         decision: &crate::launch_protocol::CommandMessage,
         forwarded_at: std::time::Instant,
     ) -> Result<command::CommandPermit, SupervisorError>;
+
+    /// Shared local enforcement owner, retained through every delegated lifetime.
+    ///
+    /// # Errors
+    /// Refuses an unbound or unavailable Agent authority owner.
+    fn command_enforcer(&self) -> Result<Arc<command::CommandEnforcer>, SupervisorError>;
 
     /// Sends a correlated result to the same authenticated Agent connection.
     ///
@@ -430,6 +438,25 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Starts the fixed measured isolated helper, without granting command authority.
+    /// The callback returns its independently authenticated process and channel.
+    /// The running Agent retains the helper tree and joins it on disposal.
+    ///
+    /// # Errors
+    /// Refuses missing measured integration, an existing helper or worker failure.
+    fn launch_helper(
+        &mut self,
+        request: crate::launch_protocol::CommandMessage,
+        enforcer: Arc<command::CommandEnforcer>,
+        complete: SupervisorCompletion<HelperPrincipal>,
+    ) -> Result<(), SupervisorError>;
+
+    /// Stops the owned helper tree without cancelling an unrelated Agent command.
+    ///
+    /// # Errors
+    /// Returns `CleanupUnproven` unless the helper tree has terminated.
+    fn cancel_helper(&mut self) -> Result<(), SupervisorError>;
+
     /// Executes one broker-authorized command asynchronously without Agent authority.
     ///
     /// Disposal cancels and joins execution before releasing the Session identity.

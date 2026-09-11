@@ -29,9 +29,44 @@ pub struct CommandPrincipal {
 }
 
 impl CommandPrincipal {
-    fn validate(&self) -> Result<(), ProtocolError> {
+    pub(super) fn validate(&self) -> Result<(), ProtocolError> {
         validate_identifier(&self.channel_id)?;
         if self.pid == 0 {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
+/// Agent-requested attenuation of an existing operator approval.
+/// No executable, process identity, mount, environment or network selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantRequest {
+    /// Agent-local delegation sequence, starting at one.
+    pub sequence: u64,
+    /// Exact bounded shell input digest.
+    pub command_digest: String,
+    /// Maximum command duration in milliseconds.
+    pub timeout_ms: u32,
+    /// Non-refundable reservation from the aggregate approved budget.
+    pub uses: u32,
+    /// Requested lifetime, anchored before forwarding to the broker.
+    pub valid_for_ms: u32,
+}
+
+impl GrantRequest {
+    /// Checks closed protocol bounds; the broker separately checks attenuation.
+    ///
+    /// # Errors
+    /// Refuses malformed digest, zero sequence or out-of-range bounds.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_digest(&self.command_digest)?;
+        if self.sequence == 0
+            || !(1..=30_000).contains(&self.timeout_ms)
+            || !(1..=64).contains(&self.uses)
+            || !(1..=30_000).contains(&self.valid_for_ms)
+        {
             return Err(invalid());
         }
         Ok(())
@@ -60,6 +95,43 @@ pub enum CommandOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandOperation {
+    /// Agent asks the supervisor to create the fixed measured isolated helper.
+    Delegate {
+        /// Attenuation request; never an operator approval.
+        grant: GrantRequest,
+        /// Initial bounded work for the fixed measured helper, not permission to execute.
+        command: ToolExecutionRequest,
+    },
+    /// Supervisor-authenticated Agent request and separately pinned isolated tool.
+    DelegationRequest {
+        /// Actual authenticated requesting Agent.
+        principal: CommandPrincipal,
+        /// Trusted launch evidence, conveyed only by the supervisor.
+        tool: CommandPrincipal,
+        /// Original bounded Agent request.
+        grant: GrantRequest,
+    },
+    /// Broker has durably reserved this grant's aggregate budget.
+    Granted {
+        /// Exact isolated tool lifetime and channel.
+        tool: CommandPrincipal,
+        /// Original Agent delegation sequence.
+        grant: u64,
+        /// Remaining lifetime, anchored before the original forwarding.
+        valid_for_ms: u32,
+    },
+    /// Broker has closed this grant; other principals retain their authority.
+    RevokeGrant {
+        /// Exact grant to enforce.
+        grant: u64,
+    },
+    /// Supervisor confirms the named grant's enforcement and tree termination.
+    GrantRevoked {
+        /// Exact grant that was stopped.
+        grant: u64,
+        /// False means cleanup is unproven and identity remains poisoned.
+        enforced: bool,
+    },
     /// Supervisor-to-Agent result. Unknown does not authorize a retry.
     Result {
         /// Actual, refused-before-start, or uncertain outcome.
@@ -139,6 +211,10 @@ impl CommandMessage {
     ///
     /// # Errors
     /// Rejects malformed schema, identifiers, bounds, digest or nested context.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One closed message validates every operation and its shared Session context before state changes."
+    )]
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, COMMAND_SCHEMA)?;
         validate_version(self.protocol_version)?;
@@ -146,6 +222,45 @@ impl CommandMessage {
             validate_identifier(id)?;
         }
         match &self.operation {
+            CommandOperation::Delegate { grant, command } => {
+                grant.validate()?;
+                command.validate()?;
+                if command.session_id != self.session_id
+                    || command.run_id != self.run_id
+                    || command.envelope_revision != self.envelope_revision
+                    || command.sequence != 1
+                {
+                    return Err(invalid());
+                }
+            }
+            CommandOperation::DelegationRequest {
+                principal,
+                tool,
+                grant,
+            } => {
+                principal.validate()?;
+                tool.validate()?;
+                grant.validate()?;
+                if principal.pid == tool.pid || principal.channel_id == tool.channel_id {
+                    return Err(invalid());
+                }
+            }
+            CommandOperation::Granted {
+                tool,
+                grant,
+                valid_for_ms,
+            } => {
+                tool.validate()?;
+                if *grant == 0 || !(1..=30_000).contains(valid_for_ms) {
+                    return Err(invalid());
+                }
+            }
+            CommandOperation::RevokeGrant { grant }
+            | CommandOperation::GrantRevoked { grant, .. } => {
+                if *grant == 0 {
+                    return Err(invalid());
+                }
+            }
             CommandOperation::Result {
                 outcome: CommandOutcome::Completed { output },
             } => output.validate()?,

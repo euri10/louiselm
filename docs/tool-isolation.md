@@ -21,10 +21,14 @@ The launcher constructs this evidence before startup and checks it against the
 kernel-pinned executable before enabling capabilities. A registration name or
 an integration's assertion cannot manufacture the evidence.
 
-The deterministic Agent is the executable itself, not a runtime wrapper. Its
-entire behavior is opaque stdio echo: it does not load workspace configuration,
-plugins or tools, and does not execute commands. The test broker submits tool
-commands independently. Support for these exact release bytes says nothing
+The deterministic Agent is the executable itself, not a runtime wrapper. It
+echoes ordinary stdin bytes. A record separator (`0x1e`) introduces a bounded
+newline-terminated JSON command or delegation request, which this native process
+sends through its own capability socket. Replies use the same framing. It does
+not load workspace configuration, plugins or tools, and does not execute commands.
+The separately measured `louiselm-tool-test-helper` forwards bounded initial work
+through its own isolated channel, subject to explicit [broker grants](tool-delegation.md).
+Support for these exact release bytes says nothing
 about another Agent, including an adapter that can execute repository plugins
 in its own process. System-library trust and host conformance remain the existing
 launcher prerequisites; this is not a new claim of continuous code attestation.

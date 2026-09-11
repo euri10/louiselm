@@ -4,19 +4,18 @@ use super::{
     AcceptedCapability, Arc, KernelProcess, LauncherPacket, ListenerState, Mutex, ProtocolMessage,
     SeqpacketChannel, SupervisorCompletion, SupervisorError, SystemCapabilityGate, lock,
 };
-use crate::launch_protocol::ToolExecutionRequest;
 
 impl SystemCapabilityGate {
     pub(super) fn receive_agent_command(
         &mut self,
-        complete: SupervisorCompletion<ToolExecutionRequest>,
+        complete: SupervisorCompletion<ProtocolMessage>,
     ) -> Result<(), SupervisorError> {
         let commands = Arc::clone(
             self.commands
                 .as_ref()
                 .ok_or(SupervisorError::CapabilityUnavailable)?,
         );
-        let complete: SupervisorCompletion<ToolExecutionRequest> = Box::new(move |result| {
+        let complete: SupervisorCompletion<ProtocolMessage> = Box::new(move |result| {
             if result.is_err() {
                 // Fail closed before publishing the callback: queued starts must
                 // not survive a rejected packet or lost Agent connection. Poison
@@ -54,7 +53,7 @@ pub(super) fn receive(
     process: Arc<KernelProcess>,
     accepted: &Arc<Mutex<AcceptedCapability>>,
     generation: u64,
-    complete: SupervisorCompletion<ToolExecutionRequest>,
+    complete: SupervisorCompletion<ProtocolMessage>,
 ) {
     let complete = Arc::new(Mutex::new(Some(complete)));
     let callback = Arc::clone(&complete);
@@ -78,12 +77,20 @@ pub(super) fn receive(
                 {
                     return Err(SupervisorError::AgentIdentityRejected);
                 }
-                let LauncherPacket::Request(ProtocolMessage::ToolExecution(request)) =
-                    packet.packet
-                else {
-                    return Err(SupervisorError::AuthorizationRejected);
-                };
-                Ok(request)
+                match packet.packet {
+                    LauncherPacket::Request(message @ ProtocolMessage::ToolExecution(_)) => {
+                        Ok(message)
+                    }
+                    LauncherPacket::Request(ProtocolMessage::Command(message))
+                        if matches!(
+                            message.operation,
+                            crate::launch_protocol::CommandOperation::Delegate { .. }
+                        ) =>
+                    {
+                        Ok(ProtocolMessage::Command(message))
+                    }
+                    _ => Err(SupervisorError::AuthorizationRejected),
+                }
             });
         let callback = lock(&callback).take();
         if let Some(callback) = callback {

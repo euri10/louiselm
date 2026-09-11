@@ -11,6 +11,7 @@ mod command;
 mod tool;
 pub use command::{
     COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandOutcome, CommandPrincipal,
+    GrantRequest,
 };
 pub use tool::{
     MAX_TOOL_OUTPUT_BYTES, TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
