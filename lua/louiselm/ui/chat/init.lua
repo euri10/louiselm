@@ -5,6 +5,7 @@ local Inspector = require("louiselm.ui.chat.inspector")
 local Limits = require("louiselm.ui.limits")
 local Status = require("louiselm.ui.chat.status")
 local ChatBuffer = require("louiselm.ui.chat.buffer")
+local Draft = require("louiselm.ui.chat.draft")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
@@ -33,13 +34,9 @@ local nvim = vim
 ---@field renderer louiselm.ui.ChatBuffer Buffer lifecycle and presentation coordinates.
 ---@field session louiselm.session.Session Attached session.
 ---@field source_buffer integer Buffer that was current when the chat view was attached.
----@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
----@field context_prefix string Visible context markers prefixed to the prompt.
----@field skill_catalog? string Hidden catalog pending for this new inject session.
----@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
+---@field draft louiselm.ui.ChatDraft Staged content and queued text, independent of buffer coordinates.
 ---@field workflow_phase? louiselm.routing.PhaseMetadata Last phase-tagged skill used by this view.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
----@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
 ---@field setup_shown boolean Whether the initial options overview was offered.
 ---@field options_revision? integer Invalidates pending option-history pickers.
 ---@field unread_turn boolean Whether a completed background response has not been focused.
@@ -51,14 +48,6 @@ local nvim = vim
 ---@field transcript louiselm.session.Transcript Full, untruncated record of this session's turns.
 ---@field unsubscribe fun() Session event listener removal function.
 ---@field last_forensics_path string? Path of the most recently collected Forensics record for this session.
-
----@class louiselm.ui.QueuedPrompt
----@field text string User-authored prompt text without visible context markers.
-
----@class louiselm.ui.StagedContext
----@field contexts integer Number of queued context items.
----@field pending_skill boolean Whether a native-mode skill selection is pending.
----@field queued_prompt boolean Whether a prompt is queued behind the active turn.
 
 ---@class louiselm.ui.ChatEventRelay
 ---@field events louiselm.session.Event[]? Events waiting for a cold-resumed view.
@@ -370,7 +359,7 @@ local ACTIVE_TURN_STATUS = {
 
 ---@param view louiselm.ui.ChatView
 local function clear_queued_prompt(view)
-  view.queued_prompt = nil
+  view.draft:queue(nil)
   view.renderer:clear_queue_indicator()
 end
 
@@ -617,22 +606,6 @@ local function restore_winbars(self)
   self.winbar_targets = {}
 end
 
----Render one context chip in the visible prompt prefix without touching queued content.
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
----@param label string
----@return boolean rendered
----@return string? error_message
-local function render_chip(self, view, label)
-  if self.disposed or self.views[view.session:inspect().id] ~= view then
-    return false, "chat UI is disposed"
-  end
-  local previous = view.context_prefix
-  view.context_prefix = previous .. "[context: " .. label .. "] "
-  view.renderer:set_prefix(previous, view.context_prefix)
-  return true
-end
-
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param item louiselm.ui.ContextItem
@@ -642,60 +615,31 @@ local function queue_context(self, view, item)
   if not is_context_item(item) then
     return false, "context item must contain a label and a text or uri string"
   end
-  local rendered, render_error = render_chip(self, view, item.label)
-  if not rendered then
-    return false, render_error
+  if self.disposed or self.views[view.session:inspect().id] ~= view then
+    return false, "chat UI is disposed"
   end
-  view.contexts[#view.contexts + 1] = { label = item.label, text = item.text, uri = item.uri }
+  local previous = view.draft.context_prefix
+  view.draft:add_context(item)
+  view.renderer:set_prefix(previous, view.draft.context_prefix)
   return true
 end
 
----Queue a native-mode skill selection, resolved against advertised commands only at submission.
+---Stage a picker selection and render its prefix through the buffer owner.
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param skill louiselm.skills.Skill
+---@param native boolean
 ---@return boolean queued
 ---@return string? error_message
-local function queue_native_skill(self, view, skill)
-  local rendered, render_error = render_chip(self, view, "skill: " .. skill.name)
-  if not rendered then
-    return false, render_error
+local function queue_skill(self, view, skill, native)
+  if self.disposed or self.views[view.session:inspect().id] ~= view then
+    return false, "chat UI is disposed"
   end
-  view.pending_skill = skill
+  local previous = view.draft.context_prefix
+  local stage_error = view.draft:select_skill(skill, native)
+  view.renderer:set_prefix(previous, view.draft.context_prefix)
   view.workflow_phase = skill.phase
-  return true
-end
-
----Queue one inject-mode skill body in context order, retaining a failed read for retry.
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
----@param skill louiselm.skills.Skill
----@return boolean queued
----@return string? error_message
-local function queue_injected_skill(self, view, skill)
-  local rendered, render_error = render_chip(self, view, "skill: " .. skill.name)
-  if not rendered then
-    return false, render_error
-  end
-  view.contexts[#view.contexts + 1] = {
-    label = "skill: " .. skill.name,
-    text = skill.content,
-    skill_path = skill.path,
-  }
-  view.workflow_phase = skill.phase
-  if skill.content == nil then
-    return true, "could not read selected skill: " .. skill.path
-  end
-  return true
-end
-
----@param item louiselm.ui.ContextItem
----@return table block
-local function context_content(item)
-  if item.uri ~= nil then
-    return { type = "resource_link", uri = item.uri, name = item.label }
-  end
-  return { type = "text", text = item.text }
+  return true, stage_error
 end
 
 ---@param view louiselm.ui.ChatView
@@ -747,41 +691,20 @@ end
 
 local open_session_options
 
----@param view louiselm.ui.ChatView
----@return table[] content
----@return louiselm.ui.ContextItem[] contexts
+---Resolve missing injected bodies at the existing filesystem boundary.
+---@param draft louiselm.ui.ChatDraft
 ---@return string? error_message
-local function build_context_content(view)
-  local content = {}
-  local contexts = {}
-  if view.skill_catalog ~= nil then
-    local catalog = { label = "skill-index", text = view.skill_catalog }
-    contexts[#contexts + 1] = catalog
-    if view.session:inspect().embedded_context then
-      content[#content + 1] = {
-        type = "resource",
-        resource = {
-          uri = "louiselm://skills/index",
-          mimeType = "text/plain",
-          text = view.skill_catalog,
-        },
-      }
-    else
-      content[#content + 1] = context_content(catalog)
-    end
-  end
-  for _, item in ipairs(view.contexts) do
+local function read_context_skills(draft)
+  for index, item in ipairs(draft.contexts) do
     if item.text == nil and item.skill_path ~= nil then
       local skill_content = Skills.read(item.skill_path)
       if skill_content == nil then
-        return {}, {}, "could not read selected skill: " .. item.skill_path
+        return "could not read selected skill: " .. item.skill_path
       end
-      item.text = skill_content
+      draft:cache_context_content(index, skill_content)
     end
-    contexts[#contexts + 1] = item
-    content[#content + 1] = context_content(item)
   end
-  return content, contexts, nil
+  return nil
 end
 
 ---Build prompt content from the current context queue and a pending native skill selection.
@@ -797,51 +720,39 @@ local function build_content(view, text)
   if text:sub(1, 1) == "/" then
     return text, nil, {}
   end
-  local final_text = text
-  if view.pending_skill ~= nil then
-    if view.pending_skill.content == nil then
-      local content = Skills.read(view.pending_skill.path)
+  local draft = view.draft
+  local command_name
+  if draft.pending_skill ~= nil then
+    if draft.pending_skill.content == nil then
+      local content = Skills.read(draft.pending_skill.path)
       if content == nil then
-        return nil, "could not read selected skill: " .. view.pending_skill.path, {}
+        return nil, "could not read selected skill: " .. draft.pending_skill.path, {}
       end
-      view.pending_skill.content = content
+      draft:cache_native_content(content)
     end
-    local command_name, resolve_error = Skills.resolve_command(view.pending_skill, view.session:inspect().commands)
+    local resolve_error
+    command_name, resolve_error = Skills.resolve_command(draft.pending_skill, view.session:inspect().commands)
     if command_name == nil then
       return nil, resolve_error, {}
     end
-    final_text = final_text == "" and ("/" .. command_name) or ("/" .. command_name .. " " .. final_text)
   end
-  local content, contexts, context_error = build_context_content(view)
+  local context_error = read_context_skills(draft)
   if context_error ~= nil then
     return nil, context_error, {}
   end
-  if #content == 0 then
-    return final_text, nil, {}
-  end
-  if final_text ~= "" then
-    content[#content + 1] = { type = "text", text = final_text }
-  end
+  local content, contexts = draft:content(text, command_name, view.session:inspect().embedded_context)
   return content, nil, contexts
 end
 
 ---@param view louiselm.ui.ChatView
 ---@param text string
 local function set_prompt_line(view, text)
-  view.renderer:replace_prompt(view.context_prefix .. text)
+  view.renderer:replace_prompt(view.draft.context_prefix .. text)
 end
 
 ---@param message string
 local function notify_prompt_error(message)
   nvim.notify("louiselm: " .. message, nvim.log.levels.ERROR)
-end
-
----@param view louiselm.ui.ChatView
-local function clear_prompt_context(view)
-  view.contexts = {}
-  view.context_prefix = ""
-  view.skill_catalog = nil
-  view.pending_skill = nil
 end
 
 ---@param self louiselm.ui.Chat
@@ -856,7 +767,7 @@ local function submit_prompt(self, view, text)
     return nil, resolve_error
   end
   local state = view.session:inspect()
-  local phase = view.pending_skill and view.pending_skill.phase
+  local phase = view.draft.pending_skill and view.draft.pending_skill.phase
   local request_id, prompt_error = view.session:prompt(content)
   if request_id == nil then
     local message = prompt_error or "prompt failed"
@@ -870,10 +781,10 @@ local function submit_prompt(self, view, text)
 
   clear_queued_prompt(view)
   local slash_prompt = text:sub(1, 1) == "/"
-  local next_prefix = slash_prompt and view.context_prefix or ""
+  local next_prefix = slash_prompt and view.draft.context_prefix or ""
   view.renderer:accept_prompt(text, contexts, next_prefix, true)
   if not slash_prompt then
-    clear_prompt_context(view)
+    view.draft:clear_context()
     if phase ~= nil then
       view.workflow_phase = phase
     end
@@ -891,25 +802,24 @@ local function record_handoff_prompt(view, text, source_session_id, contexts)
   view.renderer:accept_prompt(text, contexts, "", false)
 end
 
----@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 ---@param text string
-local function queue_prompt(self, view, text)
+local function queue_prompt(view, text)
   clear_queued_prompt(view)
   set_prompt_line(view, text)
-  view.queued_prompt = { text = text }
+  view.draft:queue(text)
   view.renderer:queue_indicator()
 end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 local function release_queued_prompt(self, view)
-  local queued = view.queued_prompt
+  local queued = view.draft.queued_prompt
   if queued == nil then
     return
   end
   clear_queued_prompt(view)
-  submit_prompt(self, view, queued.text)
+  submit_prompt(self, view, queued)
 end
 
 ---@param option louiselm.session.ConfigOption
@@ -1303,7 +1213,7 @@ local function handle_event(self, view, event, completed_state)
     if line ~= nil then
       view.renderer:usage(line)
     end
-    if self.workflow ~= nil and view.workflow_phase ~= nil and view.queued_prompt == nil then
+    if self.workflow ~= nil and view.workflow_phase ~= nil and view.draft.queued_prompt == nil then
       local outcome = type(event.data) == "table" and event.data.stopReason == "cancelled" and "cancelled"
         or "completed"
       local observed, observe_error = self.workflow:observe(view.workflow_phase, state, outcome)
@@ -1609,11 +1519,7 @@ local function attach_session(self, session, event_relay)
   local view = {
     session = session,
     source_buffer = source_buffer,
-    contexts = {},
-    context_prefix = "",
-    skill_catalog = nil,
-    pending_skill = nil,
-    queued_prompt = nil,
+    draft = Draft.new(),
     setup_shown = false,
     unread_turn = false,
     replay_active = replay_active,
@@ -1631,7 +1537,7 @@ local function attach_session(self, session, event_relay)
       clear_queued_prompt(view)
     end,
     prompt_prefix = function()
-      return view.context_prefix
+      return view.draft.context_prefix
     end,
     on_enter = function()
       if not self.disposed and self.views[state.id] == view then
@@ -1888,10 +1794,11 @@ local function handoff_content(handoff, text, target_view)
   if target_view == nil then
     return content, {}, nil
   end
-  local context_blocks, contexts, context_error = build_context_content(target_view)
+  local context_error = read_context_skills(target_view.draft)
   if context_error ~= nil then
     return nil, {}, context_error
   end
+  local context_blocks, contexts = target_view.draft:context_content(target_view.session:inspect().embedded_context)
   if #context_blocks == 0 then
     return content, {}, nil
   end
@@ -1933,7 +1840,7 @@ function Chat:submit_handoff(buffer)
     if handoff.source_session_id ~= nil then
       record_handoff_prompt(target_view, text, handoff.source_session_id, contexts)
     end
-    clear_prompt_context(target_view)
+    target_view.draft:clear_context()
   end
   close_handoff(self, buffer)
   if self.views[handoff.target_session_id] ~= nil then
@@ -2010,11 +1917,7 @@ function Chat:staged_context()
   end
   for _, view in pairs(self.views) do
     if view.session:inspect().status ~= "disposed" then
-      staged[view.session] = {
-        contexts = #view.contexts,
-        pending_skill = view.pending_skill ~= nil,
-        queued_prompt = view.queued_prompt ~= nil,
-      }
+      staged[view.session] = view.draft:staged_context()
     end
   end
   return staged
@@ -2431,7 +2334,7 @@ function Chat:close_session()
     return false, "no chat session is attached"
   end
   local status = view.session:inspect().status
-  local has_queued_prompt = view.queued_prompt ~= nil
+  local has_queued_prompt = view.draft.queued_prompt ~= nil
   if
     has_queued_prompt
     or status == "configuring"
@@ -2563,20 +2466,14 @@ function Chat:submit(text)
   if text == nil then
     text = view.renderer:prompt_text()
   end
-  if type(text) ~= "string" then
-    return nil, "prompt must be a non-empty string"
-  end
-  local context_items = view.contexts
-  local context_prefix = view.context_prefix
-  if context_prefix ~= "" and text:sub(1, #context_prefix) == context_prefix then
-    text = text:sub(#context_prefix + 1)
-  end
-  if text == "" and #context_items == 0 and view.pending_skill == nil then
-    return nil, "prompt must be a non-empty string"
+  local text_error
+  text, text_error = view.draft:prompt_text(text)
+  if text == nil then
+    return nil, text_error
   end
   local status = view.session:inspect().status
   if ACTIVE_TURN_STATUS[status] then
-    queue_prompt(self, view, text)
+    queue_prompt(view, text)
     return true
   end
 
@@ -2728,12 +2625,7 @@ function Chat:pick_skill()
         explicit_only = skill.explicit_only == true,
         phase = skill.phase,
       }
-      local queued, queue_error
-      if state.skills_policy == "native" then
-        queued, queue_error = queue_native_skill(self, view, selected)
-      else
-        queued, queue_error = queue_injected_skill(self, view, selected)
-      end
+      local queued, queue_error = queue_skill(self, view, selected, state.skills_policy == "native")
       if not queued or queue_error ~= nil then
         nvim.notify("louiselm: " .. (queue_error or "could not queue skill"), nvim.log.levels.ERROR)
       end
@@ -2788,7 +2680,7 @@ function Chat:new_session(agent_name, options)
     end
   end
   if session:inspect().skills_policy == "inject" and self.skill_catalog ~= nil then
-    self.views[session:inspect().id].skill_catalog = self.skill_catalog
+    self.views[session:inspect().id].draft:set_catalog(self.skill_catalog)
   end
   if self.instructions_context ~= nil then
     local queued, queue_error = self:queue_context(self.instructions_context)
@@ -2818,7 +2710,7 @@ function Chat:hand_off()
     return false, "no chat session is attached"
   end
   local source_state = source_view.session:inspect()
-  if (source_state.status ~= "ready" and source_state.status ~= "error") or source_view.queued_prompt ~= nil then
+  if (source_state.status ~= "ready" and source_state.status ~= "error") or source_view.draft.queued_prompt ~= nil then
     return false, "current session has an active turn; finish or cancel it before handing off"
   end
   if #self.agents < 2 then

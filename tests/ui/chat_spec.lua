@@ -2818,7 +2818,11 @@ T["chat"]["re-resolves a queued native command against the latest cache only whe
   assert(chat:pick_skill())
   restore()
 
-  assert(chat:submit("stress-test this"))
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, {
+    "> [context: skill: grill-me] stress-test this",
+    "and the next step",
+  })
+  assert(chat:submit())
   MiniTest.expect.equality(first.prompts, {})
 
   first.state.commands = { { name = "$grill-me", description = "x" } }
@@ -2828,7 +2832,7 @@ T["chat"]["re-resolves a queued native command against the latest cache only whe
     return #first.prompts == 1
   end, 1)
 
-  MiniTest.expect.equality(first.prompts, { "/$grill-me stress-test this" })
+  MiniTest.expect.equality(first.prompts, { "/$grill-me stress-test this\nand the next step" })
   chat:dispose()
   nvim.fn.delete(workspace, "rf")
 end
@@ -2924,7 +2928,8 @@ T["chat"]["retains a hidden catalog and visible contexts after a local prompt fa
   assert(chat:queue_context({ label = "file", text = "file body" }))
   created.prompt_error = "write failed"
 
-  local request_id, prompt_error = chat:submit("draft")
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, { "> [context: file] draft", "second line" })
+  local request_id, prompt_error = chat:submit()
 
   MiniTest.expect.equality({ request_id, prompt_error }, { nil, "write failed" })
   MiniTest.expect.equality(buffer_lines(chat:buffer())[6], "> [context: file] draft")
@@ -2933,7 +2938,7 @@ T["chat"]["retains a hidden catalog and visible contexts after a local prompt fa
   MiniTest.expect.equality(created.prompts[1], {
     { type = "text", text = "hidden catalog" },
     { type = "text", text = "file body" },
-    { type = "text", text = "draft" },
+    { type = "text", text = "draft\nsecond line" },
   })
   chat:dispose()
 end
@@ -6569,25 +6574,29 @@ T["chat"]["restores prompt input after switching sessions"] = function()
 end
 
 T["chat"]["reports Staged context by attached Session"] = function()
+  local workspace = nvim.fn.tempname()
+  write_skill_file(workspace, "review", "Review code")
   local first = fake_session("session-1", "one")
+  first.state.skills_policy = "native"
   local second = fake_session("session-2", "two")
-  local chat = assert(Chat.new(fake_api()))
+  second.state.status = "prompting"
+  local chat = assert(Chat.new(fake_api(), { skill_paths = { workspace } }))
   assert(chat:attach(first))
+  assert(chat:queue_context({ label = "one", text = "one" }))
+  assert(chat:queue_context({ label = "two", text = "two" }))
+  local restore = select_first()
+  assert(chat:pick_skill())
+  restore()
   assert(chat:attach(second))
-  chat.views[first.state.id].contexts = { { label = "one", text = "one" }, { label = "two", text = "two" } }
-  chat.views[first.state.id].pending_skill = {
-    name = "review",
-    description = "Review code",
-    path = "/tmp/review/SKILL.md",
-    explicit_only = false,
-  }
-  chat.views[second.state.id].queued_prompt = { text = "next" }
+  nvim.api.nvim_buf_set_lines(chat:buffer(), 5, -1, false, { "> next" })
+  assert(chat:submit())
 
   local staged = chat:staged_context()
 
   MiniTest.expect.equality(staged[first], { contexts = 2, pending_skill = true, queued_prompt = false })
   MiniTest.expect.equality(staged[second], { contexts = 0, pending_skill = false, queued_prompt = true })
   chat:dispose()
+  nvim.fn.delete(workspace, "rf")
 end
 
 T["chat"]["renames the current session and refreshes its header"] = function()
