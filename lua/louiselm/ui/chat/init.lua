@@ -4,6 +4,7 @@ local Decisions = require("louiselm.ui.chat.decisions")
 local Inspector = require("louiselm.ui.chat.inspector")
 local Limits = require("louiselm.ui.limits")
 local Status = require("louiselm.ui.chat.status")
+local ChatBuffer = require("louiselm.ui.chat.buffer")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
@@ -29,48 +30,21 @@ local nvim = vim
 ---@field start_insert_on_switch? boolean Whether switching to a chat starts Insert mode; defaults to true.
 
 ---@class louiselm.ui.ChatView
+---@field renderer louiselm.ui.ChatBuffer Buffer lifecycle and presentation coordinates.
 ---@field session louiselm.session.Session Attached session.
----@field buffer integer Scratch buffer for the session.
----@field window integer Window displaying the session.
 ---@field source_buffer integer Buffer that was current when the chat view was attached.
----@field prompt_line integer Zero-based prompt line.
----@field prompt_mark integer Extmark tracking the prompt boundary through buffer edits.
----@field prompt_namespace integer Extmark namespace for the prompt boundary.
----@field transcript_tail integer? Zero-based last rendered transcript line.
----@field response_line integer? Zero-based first streamed response line.
----@field response_tail integer? Zero-based last streamed response line.
----@field response_started boolean Whether the assistant has rendered response text for this turn.
----@field pending_terminal_completion? string Text from a terminal completion tool, flushed at turn end or immediately if it arrives after turn end.
----@field turn_prose string Assistant chunk text rendered during the current turn; suppresses a terminal-completion echo only when that exact text was already shown.
----@field turn_done_fired boolean Whether `turn_done` already ran for the current turn; a terminal completion arriving after this flushes immediately instead of waiting for a `turn_done` that already passed.
----@field last_block_kind ("prose"|"tool"|"reasoning")? Kind of the most recently rendered transcript block; separates adjacent prose, reasoning, and tool blocks with a blank line.
----@field trailing_blank boolean Whether the line at `transcript_tail` is already a blank separator, counted as part of `transcript_tail` itself; meaningful only while `last_block_kind == "prose"`, since a completed prose block is the only thing that always leaves one behind.
----@field tool_lines table<string, integer> Zero-based rendered tool lines by ID.
----@field tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
----@field tool_statuses table<string, string> Latest tool status by ID.
----@field tool_titles table<string, string> Tool titles by ID.
 ---@field contexts louiselm.ui.ContextItem[] Context items queued for the next prompt.
 ---@field context_prefix string Visible context markers prefixed to the prompt.
 ---@field skill_catalog? string Hidden catalog pending for this new inject session.
 ---@field pending_skill? louiselm.skills.Skill Native-mode skill selection, resolved against advertised commands only at actual submission.
 ---@field workflow_phase? louiselm.routing.PhaseMetadata Last phase-tagged skill used by this view.
----@field context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
----@field fold_counts table<integer, integer> Number of context folds installed in each window.
----@field tool_folds louiselm.ui.ToolFold[] Completed tool-call fold ranges in this live buffer.
----@field tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
----@field tool_fold_run louiselm.ui.ToolFoldRun? Contiguous rendered tool paragraph awaiting a boundary.
----@field thought_folds louiselm.ui.ThoughtFold[] Reasoning fold ranges in this live buffer.
----@field thought_run louiselm.ui.ThoughtFoldRun? Contiguous reasoning paragraph awaiting a boundary; first is its header line, last its final content line.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
 ---@field queued_prompt louiselm.ui.QueuedPrompt? Prompt committed for the next completed turn.
----@field queue_mark integer? Extmark showing queued prompt state.
----@field queue_namespace integer Extmark namespace for queued prompt state.
 ---@field setup_shown boolean Whether the initial options overview was offered.
 ---@field options_revision? integer Invalidates pending option-history pickers.
 ---@field unread_turn boolean Whether a completed background response has not been focused.
 ---@field replay_active boolean Whether session/load history is still arriving.
 ---@field replay_user_open boolean Whether consecutive replayed user chunks belong to the current historical turn.
----@field replay_prompt_mark integer? Range extmark for the current replayed user turn.
 ---@field replay_turn integer Number of historical user turns replayed into this view.
 ---@field restored_usage table<integer, louiselm.session.TurnUsage> Persisted presentation usage by historical turn.
 ---@field replay_events? { event: louiselm.session.Event, state: louiselm.session.State? }[] UI events waiting for asynchronous usage history.
@@ -106,9 +80,6 @@ local nvim = vim
 ---@field decisions louiselm.ui.Decisions Permission presentation and responder lifecycle.
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
----@field queue_namespace integer Extmark namespace for queued prompt indicators.
----@field prompt_namespace integer Extmark namespace for prompt boundaries.
----@field header_namespace integer Highlight namespace for session diagnostics.
 ---@field views table<string, louiselm.ui.ChatView> Views by local session id.
 ---@field view_order string[] Attached session ids in display order.
 ---@field tool_inspect_windows table<integer, boolean> Floating raw-payload windows owned by this chat.
@@ -355,13 +326,6 @@ local function copy_initial_contexts(value)
   )
 end
 
----@param buffer integer
----@param line integer
----@param value string
-local function set_line(buffer, line, value)
-  nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
-end
-
 ---@param value string
 ---@return string line
 local function single_line(value)
@@ -373,7 +337,6 @@ end
 -- a decision is presented instead of queueing behind it: a decision can open a nested
 -- picker of its own, and the way out of a stuck decision must never be queued behind it.
 local DECISION_OPEN_ERROR = "a louiselm permission decision is open; answer it first"
-local HEADER_LINE_COUNT = 4
 local DEFAULT_HIGHLIGHTS = {
   LouiselmAcpValue = "Identifier",
   LouiselmDerivedValue = "Number",
@@ -408,10 +371,7 @@ local ACTIVE_TURN_STATUS = {
 ---@param view louiselm.ui.ChatView
 local function clear_queued_prompt(view)
   view.queued_prompt = nil
-  if view.queue_mark ~= nil and nvim.api.nvim_buf_is_valid(view.buffer) then
-    nvim.api.nvim_buf_del_extmark(view.buffer, view.queue_namespace, view.queue_mark)
-  end
-  view.queue_mark = nil
+  view.renderer:clear_queue_indicator()
 end
 
 ---@param value number
@@ -528,7 +488,7 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param win integer
 local function render_winbar(self, view, win)
-  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
+  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.renderer.buffer then
     return
   end
   if self.winbars[win] == nil then
@@ -543,7 +503,7 @@ local function render_winbars(self)
     local buffer = nvim.api.nvim_win_get_buf(win)
     for _, id in ipairs(self.view_order) do
       local view = self.views[id]
-      if view ~= nil and view.buffer == buffer then
+      if view ~= nil and view.renderer.buffer == buffer then
         render_winbar(self, view, win)
         break
       end
@@ -657,24 +617,6 @@ local function restore_winbars(self)
   self.winbar_targets = {}
 end
 
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
-local function render_header(self, view)
-  local lines, highlights = Status.session_header(view.session:inspect())
-  nvim.api.nvim_buf_set_lines(view.buffer, 0, HEADER_LINE_COUNT, false, lines)
-  nvim.api.nvim_buf_clear_namespace(view.buffer, self.header_namespace, 0, HEADER_LINE_COUNT)
-  for _, highlight in ipairs(highlights) do
-    nvim.api.nvim_buf_add_highlight(
-      view.buffer,
-      self.header_namespace,
-      highlight.group,
-      highlight.line,
-      highlight.start_col,
-      highlight.end_col
-    )
-  end
-end
-
 ---Render one context chip in the visible prompt prefix without touching queued content.
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
@@ -685,16 +627,9 @@ local function render_chip(self, view, label)
   if self.disposed or self.views[view.session:inspect().id] ~= view then
     return false, "chat UI is disposed"
   end
-  local line = nvim.api.nvim_buf_get_lines(view.buffer, view.prompt_line, view.prompt_line + 1, false)[1] or "> "
-  local text = line:sub(1, 2) == "> " and line:sub(3) or line
-  if view.context_prefix ~= "" and text:sub(1, #view.context_prefix) == view.context_prefix then
-    text = text:sub(#view.context_prefix + 1)
-  end
-  view.context_prefix = view.context_prefix .. "[context: " .. label .. "] "
-  set_line(view.buffer, view.prompt_line, "> " .. view.context_prefix .. text)
-  if nvim.api.nvim_get_current_buf() == view.buffer then
-    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #view.context_prefix })
-  end
+  local previous = view.context_prefix
+  view.context_prefix = previous .. "[context: " .. label .. "] "
+  view.renderer:set_prefix(previous, view.context_prefix)
   return true
 end
 
@@ -754,26 +689,6 @@ local function queue_injected_skill(self, view, skill)
   return true
 end
 
----@class louiselm.ui.ContextFold
----@field first integer Zero-based first folded line.
----@field last integer Zero-based last folded line.
-
----@class louiselm.ui.ToolFoldRun
----@field first integer Zero-based first rendered tool line.
----@field last integer Zero-based last rendered tool line.
-
----@class louiselm.ui.ToolFold
----@field first integer Zero-based first folded line.
----@field last integer Zero-based last folded line.
-
----@class louiselm.ui.ThoughtFoldRun
----@field first integer Zero-based rendered reasoning header line.
----@field last integer Zero-based last rendered reasoning content line.
-
----@class louiselm.ui.ThoughtFold
----@field first integer Zero-based first folded line.
----@field last integer Zero-based last folded line.
-
 ---@param item louiselm.ui.ContextItem
 ---@return table block
 local function context_content(item)
@@ -781,123 +696,6 @@ local function context_content(item)
     return { type = "resource_link", uri = item.uri, name = item.label }
   end
   return { type = "text", text = item.text }
-end
-
----@param view louiselm.ui.ChatView
----@param win integer
----@param folds louiselm.ui.ContextFold[]
----@param counts table<integer, integer>
-local function apply_incremental_folds(view, win, folds, counts)
-  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
-    return
-  end
-  nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
-  nvim.api.nvim_set_option_value("foldenable", true, { win = win })
-  local applied = counts[win] or 0
-  nvim.api.nvim_win_call(win, function()
-    for index = applied + 1, #folds do
-      local fold = folds[index]
-      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
-    end
-  end)
-  counts[win] = #folds
-end
-
----@param view louiselm.ui.ChatView
-local function close_tool_fold_run(view)
-  local run = view.tool_fold_run
-  if run == nil then
-    return
-  end
-  local fold_first
-  local added = false
-  for line = run.first, run.last + 1 do
-    local id = view.tool_ids[line]
-    if id ~= nil and view.tool_statuses[id] == "completed" then
-      fold_first = fold_first or line
-    elseif fold_first ~= nil then
-      if line - fold_first > 1 then
-        view.tool_folds[#view.tool_folds + 1] = { first = fold_first, last = line - 1 }
-        added = true
-      end
-      fold_first = nil
-    end
-  end
-  if added then
-    apply_incremental_folds(view, view.window, view.tool_folds, view.tool_fold_counts)
-  end
-  view.tool_fold_run = nil
-end
-
----Reinstall every recorded reasoning fold that is not currently a real closed
----fold in `win`. Unlike the incremental context/tool fold appliers, this
----rescans the full `thought_folds` history on every call instead of trusting
----a "folds already installed" counter: something outside this module's
----control can silently drop a manual fold (observed for replayed reasoning
----paragraphs during `session/load`, louiselm-9wjm), and a counter that only
----ever advances has no way to notice or recover from that. Checking
----`foldclosed` first keeps repeated calls idempotent -- re-issuing `:fold` on
----a range that is already folded nests a second fold inside the first rather
----than being a no-op.
----@param view louiselm.ui.ChatView
----@param win integer
-local function apply_thought_folds(view, win)
-  if not nvim.api.nvim_win_is_valid(win) or nvim.api.nvim_win_get_buf(win) ~= view.buffer then
-    return
-  end
-  nvim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
-  nvim.api.nvim_set_option_value("foldenable", true, { win = win })
-  nvim.api.nvim_win_call(win, function()
-    for _, fold in ipairs(view.thought_folds) do
-      if nvim.fn.foldclosed(fold.first + 1) == -1 then
-        nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
-      end
-    end
-  end)
-end
-
----Close the current reasoning paragraph: fold the `[thinking]` header together
----with its content lines. Neovim cannot close a fold spanning a single line, so
----the header is folded along with the content rather than left outside it;
----Neovim's default foldtext then renders the fold's first line, `[thinking]`,
----as the closed summary. A paragraph with no content lines yet has nothing to
----fold.
----@param view louiselm.ui.ChatView
-local function close_thought_fold_run(view)
-  local run = view.thought_run
-  if run == nil then
-    return
-  end
-  if run.last > run.first then
-    view.thought_folds[#view.thought_folds + 1] = { first = run.first, last = run.last }
-    apply_thought_folds(view, view.window)
-  end
-  view.thought_run = nil
-end
-
----@param view louiselm.ui.ChatView
-local function toggle_chat_fold(view)
-  local line = nvim.api.nvim_win_get_cursor(view.window)[1] - 1
-  local run = view.thought_run
-  if run ~= nil and line == run.first and nvim.fn.foldlevel(line + 1) == 0 then
-    return
-  end
-  nvim.cmd("normal! za")
-end
-
----@param view louiselm.ui.ChatView
----@param line integer Zero-based rendered tool line.
-local function record_tool_line(view, line)
-  local run = view.tool_fold_run
-  if run ~= nil and line ~= run.last + 1 then
-    close_tool_fold_run(view)
-    run = nil
-  end
-  if run == nil then
-    view.tool_fold_run = { first = line, last = line }
-  else
-    run.last = line
-  end
 end
 
 ---@param view louiselm.ui.ChatView
@@ -938,181 +736,6 @@ local function open_tool_inspector(self, view, id)
   return true
 end
 
----@param view louiselm.ui.ChatView
----@param first_line integer Inclusive zero-based start.
----@param end_line integer Exclusive zero-based end.
----@param id? integer Existing range to extend.
----@return integer mark_id
-local function mark_submitted_prompt(view, first_line, end_line, id)
-  return nvim.api.nvim_buf_set_extmark(view.buffer, view.prompt_namespace, first_line, 0, {
-    id = id,
-    end_row = end_line,
-    end_col = 0,
-    right_gravity = false,
-    end_right_gravity = false,
-    invalidate = true,
-  })
-end
-
----@param view louiselm.ui.ChatView
----@param text string
----@param contexts louiselm.ui.ContextItem[]
----@return integer line_count
-local function replace_submitted_prompt(view, text, contexts)
-  local lines = {}
-  if #contexts > 0 then
-    local labels = {}
-    for index, item in ipairs(contexts) do
-      labels[index] = single_line(item.label)
-    end
-    lines[1] = "> [contexts: " .. table.concat(labels, " · ") .. "]"
-    for _, item in ipairs(contexts) do
-      lines[#lines + 1] = "[context: " .. single_line(item.label) .. "]"
-      if item.text ~= nil then
-        nvim.list_extend(lines, nvim.split(item.text, "\n", { plain = true }))
-      else
-        local block = context_content(item)
-        lines[#lines + 1] = "type: " .. block.type
-        lines[#lines + 1] = "name: " .. block.name
-        lines[#lines + 1] = "uri: " .. block.uri
-      end
-    end
-    view.context_folds[#view.context_folds + 1] = {
-      first = view.prompt_line,
-      last = view.prompt_line + #lines - 1,
-    }
-  end
-  local first_prompt_line = view.prompt_line + #lines
-  for _, line in ipairs(nvim.split(text, "\n", { plain = true })) do
-    lines[#lines + 1] = "> " .. line
-  end
-  nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
-  mark_submitted_prompt(view, first_prompt_line, view.prompt_line + #lines)
-  apply_incremental_folds(view, view.window, view.context_folds, view.fold_counts)
-  return #lines
-end
-
----@param view louiselm.ui.ChatView
----@param line integer
-local function mark_prompt(view, line)
-  view.prompt_line = line
-  view.prompt_mark = nvim.api.nvim_buf_set_extmark(view.buffer, view.prompt_namespace, line, 0, {
-    id = view.prompt_mark,
-    right_gravity = false,
-  })
-end
-
----@param view louiselm.ui.ChatView
----@return integer line
-local function current_prompt_line(view)
-  local position = nvim.api.nvim_buf_get_extmark_by_id(view.buffer, view.prompt_namespace, view.prompt_mark, {})
-  if #position == 2 then
-    view.prompt_line = position[1]
-  end
-  return view.prompt_line
-end
-
----@param view louiselm.ui.ChatView
-local function reconcile_prompt_boundary(view)
-  -- Undo restores the extmark but not these Lua-side indexes.
-  if view.prompt_line < nvim.api.nvim_buf_line_count(view.buffer) then
-    return
-  end
-  local prompt_line = current_prompt_line(view)
-  view.transcript_tail = prompt_line - 1
-  view.response_line = nil
-  view.response_tail = nil
-  view.response_started = false
-  view.last_block_kind = nil
-  view.trailing_blank = false
-  view.thought_run = nil
-  view.tool_fold_run = nil
-end
-
----@param view louiselm.ui.ChatView
----@return string text
-local function prompt_text(view)
-  local lines = nvim.api.nvim_buf_get_lines(view.buffer, current_prompt_line(view), -1, false)
-  for index, line in ipairs(lines) do
-    lines[index] = line:sub(1, 2) == "> " and line:sub(3) or line
-  end
-  return table.concat(lines, "\n")
-end
-
----@param view louiselm.ui.ChatView
----@param text string
----@return integer line_count
-local function replace_prompt(view, text)
-  local prompt_line = current_prompt_line(view)
-  local lines = nvim.split(text, "\n", { plain = true })
-  for index, line in ipairs(lines) do
-    lines[index] = "> " .. line
-  end
-  nvim.api.nvim_buf_set_lines(view.buffer, prompt_line, -1, false, lines)
-  mark_prompt(view, prompt_line)
-  return #lines
-end
-
----@param value unknown
----@return string? text Text carried by an ACP chunk.
-local function chunk_text(value)
-  if type(value) ~= "table" then
-    return nil
-  end
-  if type(value.text) == "string" then
-    return value.text
-  end
-  if type(value.content) == "table" and type(value.content.text) == "string" then
-    return value.content.text
-  end
-  return nil
-end
-
----@param value unknown
----@return string
-local function tool_id(value)
-  if type(value) == "table" then
-    if type(value.toolCallId) == "string" and value.toolCallId ~= "" then
-      return value.toolCallId
-    end
-    if type(value.tool_call_id) == "string" and value.tool_call_id ~= "" then
-      return value.tool_call_id
-    end
-  end
-  return "unknown"
-end
-
----@param value unknown
----@return boolean has_image Whether an ACP tool payload contains an image block.
-local function tool_has_image(value)
-  if type(value) ~= "table" then
-    return false
-  end
-  if value.type == "image" then
-    return true
-  end
-  for _, nested in pairs(value) do
-    if tool_has_image(nested) then
-      return true
-    end
-  end
-  return false
-end
-
----@param value unknown
----@param title string? Tool title from this update or its preceding start event.
----@return string? text
-local function terminal_completion_text(value, title)
-  if type(value) ~= "table" or title ~= "task_complete" then
-    return nil
-  end
-  local raw_output = value.rawOutput
-  if type(raw_output) ~= "table" or type(raw_output.content) ~= "string" or raw_output.content == "" then
-    return nil
-  end
-  return raw_output.content
-end
-
 ---@param value unknown
 ---@return string? text
 local function field(value, name)
@@ -1122,46 +745,7 @@ local function field(value, name)
   return nil
 end
 
-local insert_transcript
 local open_session_options
-
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
----@param lines string[]
----@return integer insertion_line
-insert_transcript = function(self, view, lines)
-  local replacement = {}
-  for _, line in ipairs(lines) do
-    for _, part in ipairs(nvim.split(line, "\n", { plain = true })) do
-      replacement[#replacement + 1] = part
-    end
-  end
-  local insertion_line = view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1
-  nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, replacement)
-  view.transcript_tail = insertion_line + #replacement - 1
-  mark_prompt(view, view.prompt_line + #replacement)
-  return insertion_line
-end
-
----Render a terminal-completion tool's retained text inline unless that exact
----text was already streamed during the current turn.
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
----@param text string
-local function flush_terminal_completion(self, view, text)
-  if view.turn_prose:find(text, 1, true) ~= nil then
-    return
-  end
-  local lines = {}
-  if view.last_block_kind == "tool" or view.last_block_kind == "reasoning" then
-    lines[#lines + 1] = ""
-  end
-  nvim.list_extend(lines, nvim.split(text, "\n", { plain = true }))
-  lines[#lines + 1] = ""
-  insert_transcript(self, view, lines)
-  view.last_block_kind = "prose"
-  view.trailing_blank = true
-end
 
 ---@param view louiselm.ui.ChatView
 ---@return table[] content
@@ -1244,7 +828,7 @@ end
 ---@param view louiselm.ui.ChatView
 ---@param text string
 local function set_prompt_line(view, text)
-  replace_prompt(view, view.context_prefix .. text)
+  view.renderer:replace_prompt(view.context_prefix .. text)
 end
 
 ---@param message string
@@ -1286,20 +870,8 @@ local function submit_prompt(self, view, text)
 
   clear_queued_prompt(view)
   local slash_prompt = text:sub(1, 1) == "/"
-  local prompt_line_count = replace_submitted_prompt(view, text, contexts)
-  local response_line = view.prompt_line + prompt_line_count
   local next_prefix = slash_prompt and view.context_prefix or ""
-  nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " .. next_prefix })
-  view.response_line = response_line
-  view.response_tail = view.response_line
-  view.response_started = false
-  view.pending_terminal_completion = nil
-  view.last_block_kind = nil
-  view.transcript_tail = view.response_tail
-  mark_prompt(view, response_line + 1)
-  if nvim.api.nvim_get_current_buf() == view.buffer then
-    nvim.api.nvim_win_set_cursor(0, { view.prompt_line + 1, 2 + #next_prefix })
-  end
+  view.renderer:accept_prompt(text, contexts, next_prefix, true)
   if not slash_prompt then
     clear_prompt_context(view)
     if phase ~= nil then
@@ -1316,16 +888,7 @@ end
 local function record_handoff_prompt(view, text, source_session_id, contexts)
   view.transcript:record_handoff(text, source_session_id)
   clear_queued_prompt(view)
-  local prompt_line_count = replace_submitted_prompt(view, text, contexts)
-  local response_line = view.prompt_line + prompt_line_count
-  nvim.api.nvim_buf_set_lines(view.buffer, response_line, response_line, false, { "", "> " })
-  view.response_line = response_line
-  view.response_tail = response_line
-  view.response_started = false
-  view.pending_terminal_completion = nil
-  view.last_block_kind = nil
-  view.transcript_tail = response_line
-  mark_prompt(view, response_line + 1)
+  view.renderer:accept_prompt(text, contexts, "", false)
 end
 
 ---@param self louiselm.ui.Chat
@@ -1335,10 +898,7 @@ local function queue_prompt(self, view, text)
   clear_queued_prompt(view)
   set_prompt_line(view, text)
   view.queued_prompt = { text = text }
-  view.queue_mark = nvim.api.nvim_buf_set_extmark(view.buffer, self.queue_namespace, view.prompt_line, -1, {
-    virt_text = { { "Queued for next turn", "Comment" } },
-    virt_text_pos = "eol",
-  })
+  view.renderer:queue_indicator()
 end
 
 ---@param self louiselm.ui.Chat
@@ -1454,15 +1014,15 @@ open_session_options = function(self, view, initial)
               return
             end
             if callback_error ~= nil then
-              insert_transcript(self, view, { "Error: " .. callback_error })
+              view.renderer:append({ "Error: " .. callback_error })
             else
-              render_header(self, view)
+              view.renderer:header(view.session:inspect())
             end
             open_session_options(self, view, false)
           end)
         end)
         if set_error ~= nil then
-          insert_transcript(self, view, { "Error: " .. set_error })
+          view.renderer:append({ "Error: " .. set_error })
         end
       end)
     end)
@@ -1498,33 +1058,13 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
----@param line string
-local function insert_usage(self, view, line)
-  local insertion_line = view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1
-  local before = insertion_line > 0
-      and nvim.api.nvim_buf_get_lines(view.buffer, insertion_line - 1, insertion_line, false)[1]
-    or nil
-  local after = nvim.api.nvim_buf_get_lines(view.buffer, insertion_line, insertion_line + 1, false)[1]
-  local lines = {}
-  if before ~= nil and before ~= "" then
-    lines[#lines + 1] = ""
-  end
-  lines[#lines + 1] = line
-  if after ~= nil and after ~= "" then
-    lines[#lines + 1] = ""
-  end
-  insert_transcript(self, view, lines)
-end
-
----@param self louiselm.ui.Chat
----@param view louiselm.ui.ChatView
 ---@param turn integer
 local function restore_turn_usage(self, view, turn)
   local usage = view.restored_usage[turn]
   view.restored_usage[turn] = nil
   local line = usage_line(usage)
   if line ~= nil then
-    insert_usage(self, view, line)
+    view.renderer:usage(line)
   end
 end
 
@@ -1538,7 +1078,7 @@ local function present_workflow_feedback(self, view, phase, state, callback)
     if rating ~= nil then
       local recorded, error_message = self.workflow:feedback(phase, state, rating, context)
       if not recorded then
-        insert_transcript(self, view, { "Error: " .. (error_message or "could not record workflow feedback") })
+        view.renderer:append({ "Error: " .. (error_message or "could not record workflow feedback") })
       end
     end
     callback()
@@ -1570,7 +1110,7 @@ end
 ---@return string? error_message
 local function apply_recommendation(self, view, candidate)
   if candidate.action == "continue" then
-    insert_transcript(self, view, { "[workflow] approved CONTINUE: " .. candidate.label })
+    view.renderer:append({ "[workflow] approved CONTINUE: " .. candidate.label })
     return true
   end
   if candidate.action == "model" then
@@ -1586,10 +1126,10 @@ local function apply_recommendation(self, view, candidate)
               return
             end
             if error_message ~= nil then
-              insert_transcript(self, view, { "Error: " .. error_message })
+              view.renderer:append({ "Error: " .. error_message })
             else
-              insert_transcript(self, view, { "[workflow] approved Model: " .. candidate.model })
-              render_header(self, view)
+              view.renderer:append({ "[workflow] approved Model: " .. candidate.model })
+              view.renderer:header(view.session:inspect())
             end
           end)
         end)
@@ -1639,18 +1179,18 @@ local function present_recommendations(self, view, phase, pending)
       if action == "Reject" then
         local rejected, rejection_error = self.workflow:reject(candidate)
         if not rejected then
-          insert_transcript(self, view, { "Error: " .. (rejection_error or "recommendation could not be rejected") })
+          view.renderer:append({ "Error: " .. (rejection_error or "recommendation could not be rejected") })
         end
         return
       end
       local approved, approval_error = self.workflow:approve(candidate)
       if approved == nil then
-        insert_transcript(self, view, { "Error: " .. (approval_error or "recommendation could not be approved") })
+        view.renderer:append({ "Error: " .. (approval_error or "recommendation could not be approved") })
         return
       end
       local applied, apply_error = apply_recommendation(self, view, approved)
       if not applied then
-        insert_transcript(self, view, { "Error: " .. (apply_error or "recommendation could not be applied") })
+        view.renderer:append({ "Error: " .. (apply_error or "recommendation could not be applied") })
       end
     end)
   end)
@@ -1661,7 +1201,7 @@ end
 ---@param event louiselm.session.Event
 ---@param completed_state? louiselm.session.State Immutable completion snapshot captured before queued UI work.
 local function handle_event(self, view, event, completed_state)
-  if self.disposed or self.views[event.session_id] ~= view or not nvim.api.nvim_buf_is_valid(view.buffer) then
+  if self.disposed or self.views[event.session_id] ~= view or not nvim.api.nvim_buf_is_valid(view.renderer.buffer) then
     if event.type == "permission_requested" and type(event.respond) == "function" then
       -- Scheduled before teardown, delivered after it: no view is left to host the choice,
       -- and no other consumer will answer. The result has nowhere left to be reported.
@@ -1670,7 +1210,7 @@ local function handle_event(self, view, event, completed_state)
     return
   end
 
-  reconcile_prompt_boundary(view)
+  view.renderer:reconcile()
 
   if
     event.type == "state_changed"
@@ -1678,7 +1218,7 @@ local function handle_event(self, view, event, completed_state)
     or event.type == "usage_updated"
     or event.type == "recording_changed"
   then
-    render_header(self, view)
+    view.renderer:header(view.session:inspect())
     render_winbars(self)
   end
   if event.type == "state_changed" then
@@ -1694,7 +1234,7 @@ local function handle_event(self, view, event, completed_state)
   if event.type == "state_changed" and event.data.status == "ready" then
     -- Load replay can end with a reasoning paragraph and no trailing answer, so
     -- the turn boundary only shows up here.
-    close_thought_fold_run(view)
+    view.renderer:close_reasoning()
     if view.replay_active then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_active = false
@@ -1706,238 +1246,34 @@ local function handle_event(self, view, event, completed_state)
   end
 
   if event.type == "user_chunk" then
-    close_thought_fold_run(view)
+    view.renderer:close_reasoning()
     local continuing_prompt = view.replay_active and view.replay_user_open
     if view.replay_active and not view.replay_user_open then
       restore_turn_usage(self, view, view.replay_turn)
       view.replay_turn = view.replay_turn + 1
       view.replay_user_open = true
     end
-    local text = chunk_text(event.data)
-    if text == nil then
-      return
-    end
-    local lines = nvim.split(text, "\n", { plain = true })
-    for index, line in ipairs(lines) do
-      lines[index] = "> " .. line
-    end
-    local prompt_line_count = #lines
-    lines[#lines + 1] = ""
-    local insertion_line = insert_transcript(self, view, lines)
-    local first_prompt_line = insertion_line
-    local prompt_mark
-    if continuing_prompt and view.replay_prompt_mark ~= nil then
-      local position = nvim.api.nvim_buf_get_extmark_by_id(
-        view.buffer,
-        view.prompt_namespace,
-        view.replay_prompt_mark,
-        { details = true }
-      )
-      local details = position[3]
-      if #position == 3 and type(details) == "table" and details.invalid ~= true then
-        first_prompt_line = position[1]
-        prompt_mark = view.replay_prompt_mark
-      end
-    end
-    local mark = mark_submitted_prompt(view, first_prompt_line, insertion_line + prompt_line_count, prompt_mark)
-    if view.replay_active then
-      view.replay_prompt_mark = mark
-    end
-    view.response_line = nil
-    view.response_tail = nil
-    view.response_started = false
-    view.turn_prose = ""
-    view.turn_done_fired = false
-    view.last_block_kind = nil
-  elseif event.type == "chunk" then
+    view.renderer:render(event, view.replay_active, continuing_prompt)
+  elseif
+    event.type == "chunk"
+    or event.type == "thought_chunk"
+    or event.type == "tool_call_started"
+    or event.type == "tool_call_finished"
+  then
     view.replay_user_open = false
-    local text = chunk_text(event.data)
-    if text == nil then
-      return
-    end
-    view.turn_prose = view.turn_prose .. text
-    close_tool_fold_run(view)
-    close_thought_fold_run(view)
-    if not view.response_started then
-      local lines = nvim.split(text, "\n", { plain = true })
-      local insertion_line = view.response_tail
-        or (view.transcript_tail == nil and view.prompt_line or view.transcript_tail + 1)
-      if view.response_tail ~= nil then
-        insertion_line = insertion_line + 1
-      end
-      local separator = 0
-      if view.last_block_kind == "tool" or view.last_block_kind == "reasoning" then
-        nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, { "" })
-        insertion_line = insertion_line + 1
-        separator = 1
-      end
-      local response_line_count = #lines
-      lines[#lines + 1] = ""
-      nvim.api.nvim_buf_set_lines(view.buffer, insertion_line, insertion_line, false, lines)
-      view.response_line = insertion_line
-      view.response_tail = insertion_line + response_line_count - 1
-      view.transcript_tail = view.response_tail + 1
-      mark_prompt(view, view.prompt_line + separator + #lines)
-      view.response_started = true
-      view.last_block_kind = "prose"
-      view.trailing_blank = true
-      return
-    end
-    local current = nvim.api.nvim_buf_get_lines(view.buffer, view.response_tail, view.response_tail + 1, false)[1] or ""
-    local lines = nvim.split(current .. text, "\n", { plain = true })
-    nvim.api.nvim_buf_set_lines(view.buffer, view.response_tail, view.response_tail + 1, false, lines)
-    local added = #lines - 1
-    view.response_tail = view.response_tail + added
-    view.transcript_tail = view.response_tail + 1
-    mark_prompt(view, view.prompt_line + added)
-  elseif event.type == "thought_chunk" then
-    view.replay_user_open = false
-    local text = chunk_text(event.data)
-    if text == nil or text == "" then
-      return
-    end
-    view.pending_terminal_completion = nil
-    close_tool_fold_run(view)
-    local run = view.thought_run
-    if run == nil then
-      -- A reasoning paragraph starts with a `[thinking]` header; its content lines
-      -- are folded beneath the header once the paragraph ends (the assistant's
-      -- answer, a tool call, or the turn boundary). Until then it streams like a
-      -- response: later chunks append to the paragraph's last content line.
-      local lines = { "[thinking]" }
-      if view.last_block_kind == "prose" and not view.trailing_blank then
-        table.insert(lines, 1, "")
-      end
-      insert_transcript(self, view, lines)
-      run = { first = view.transcript_tail, last = view.transcript_tail }
-      view.thought_run = run
-      -- Inserting below the submitted prompt invalidates its response bookkeeping,
-      -- exactly like a tool paragraph does.
-      view.response_line = nil
-      view.response_tail = nil
-      view.response_started = false
-      view.last_block_kind = "reasoning"
-    end
-    if run.last == run.first then
-      local lines = nvim.split(text, "\n", { plain = true })
-      nvim.api.nvim_buf_set_lines(view.buffer, run.first + 1, run.first + 1, false, lines)
-      run.last = run.first + #lines
-      view.transcript_tail = run.last
-      mark_prompt(view, view.prompt_line + #lines)
-    else
-      local current = nvim.api.nvim_buf_get_lines(view.buffer, run.last, run.last + 1, false)[1] or ""
-      local lines = nvim.split(current .. text, "\n", { plain = true })
-      nvim.api.nvim_buf_set_lines(view.buffer, run.last, run.last + 1, false, lines)
-      local added = #lines - 1
-      run.last = run.last + added
-      view.transcript_tail = run.last
-      mark_prompt(view, view.prompt_line + added)
-    end
-  elseif event.type == "tool_call_started" or event.type == "tool_call_finished" then
-    view.replay_user_open = false
-    close_thought_fold_run(view)
-    local status = field(event.data, "status")
-    local id = tool_id(event.data)
-    local title = field(event.data, "title")
-    if title ~= nil then
-      title = single_line(title)
-    end
-    if title ~= nil then
-      view.tool_titles[id] = title
-    else
-      title = view.tool_titles[id]
-    end
-    local completion_text
-    if event.type == "tool_call_started" then
-      view.tool_statuses[id] = status or "started"
-      local detail = id
-      if title ~= nil then
-        detail = detail .. ": " .. title
-      end
-      local line_text = "[tool] " .. detail .. " (started)"
-      local existing_line = view.tool_lines[id]
-      if existing_line ~= nil and existing_line < nvim.api.nvim_buf_line_count(view.buffer) then
-        set_line(view.buffer, existing_line, line_text)
-      else
-        local lines = { line_text }
-        if view.last_block_kind == "prose" and not view.trailing_blank then
-          table.insert(lines, 1, "")
-        end
-        insert_transcript(self, view, lines)
-        view.tool_lines[id] = view.transcript_tail
-        view.tool_ids[view.transcript_tail] = id
-        record_tool_line(view, view.transcript_tail)
-      end
-      view.last_block_kind = "tool"
-    else
-      local detail = id
-      if title ~= nil then
-        detail = detail .. ": " .. title
-      end
-      detail = detail .. " (" .. (status or "finished") .. ")"
-      if status == "completed" then
-        completion_text = terminal_completion_text(event.data, title)
-        if tool_has_image(event.data) then
-          detail = detail .. " · image result — use :LouiselmInspectTool"
-        end
-      end
-      local line = view.tool_lines[id]
-      local rendered_line
-      if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
-        set_line(view.buffer, line, "[tool] " .. detail)
-        rendered_line = line
-      else
-        local lines = { "[tool] " .. detail }
-        if view.last_block_kind == "prose" and not view.trailing_blank then
-          table.insert(lines, 1, "")
-        end
-        insert_transcript(self, view, lines)
-        local inserted_line = view.transcript_tail
-        if inserted_line ~= nil then
-          rendered_line = inserted_line
-          view.tool_ids[inserted_line] = id
-          record_tool_line(view, inserted_line)
-        end
-        view.last_block_kind = "tool"
-      end
-      view.tool_lines[id] = nil
-      view.tool_statuses[id] = status or "finished"
-      view.tool_titles[id] = nil
-      if rendered_line ~= nil then
-        view.tool_ids[rendered_line] = id
-      end
-    end
-    if completion_text ~= nil then
-      -- Copilot in Autopilot can emit the completed task_complete update after
-      -- turn_done already ran (louiselm-zufj): that flush point will not fire
-      -- again for this turn, so a late completion must flush immediately here.
-      if view.turn_done_fired then
-        flush_terminal_completion(self, view, completion_text)
-      else
-        view.pending_terminal_completion = completion_text
-      end
-    end
-    view.response_line = nil
-    view.response_tail = nil
-    view.response_started = false
+    view.renderer:render(event)
   elseif event.type == "prompt_rejected" then
-    insert_transcript(self, view, { "Prompt not sent: " .. event.data.message })
+    view.renderer:append({ "Prompt not sent: " .. event.data.message })
   elseif event.type == "recording_changed" then
     if event.data.error ~= nil then
       clear_queued_prompt(view)
-      insert_transcript(self, view, { "Recording error: " .. event.data.error.message })
+      view.renderer:append({ "Recording error: " .. event.data.error.message })
     end
   elseif event.type == "error" then
     view.replay_user_open = false
-    view.pending_terminal_completion = nil
-    close_thought_fold_run(view)
     clear_queued_prompt(view)
     local message = field(event.data, "message") or "unknown session error"
-    insert_transcript(self, view, { "Error: " .. message })
-    view.response_line = nil
-    view.response_tail = nil
-    view.response_started = false
-    view.last_block_kind = nil
+    view.renderer:error(message)
     local state = view.session:inspect()
     local run = view.session.owner_run
     self.attention:session_failed(state, run and run.id or nil)
@@ -1948,9 +1284,9 @@ local function handle_event(self, view, event, completed_state)
       self.attention:permission_required(state, data)
     end
     if type(data) == "table" and type(data.permission_error) == "string" then
-      insert_transcript(self, view, { "Warning: " .. data.permission_error })
+      view.renderer:append({ "Warning: " .. data.permission_error })
     elseif type(data) == "table" and data.remembered_decision ~= nil then
-      insert_transcript(self, view, { "Warning: remembered decision requires a compatible once-only option" })
+      view.renderer:append({ "Warning: remembered decision requires a compatible once-only option" })
     end
     self.decisions:request(view.session, data, event.respond)
   elseif event.type == "permission_cancelled" then
@@ -1960,26 +1296,19 @@ local function handle_event(self, view, event, completed_state)
     end
     self.decisions:cancel(view.session, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
-    close_tool_fold_run(view)
-    close_thought_fold_run(view)
-    local terminal_completion = view.pending_terminal_completion
-    view.pending_terminal_completion = nil
-    if terminal_completion ~= nil then
-      flush_terminal_completion(self, view, terminal_completion)
-    end
-    view.turn_done_fired = true
+    view.renderer:finish_turn()
     local state = completed_state or view.session:inspect()
-    self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.buffer)
+    self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.renderer.buffer)
     local line = usage_line(state.usage)
     if line ~= nil then
-      insert_usage(self, view, line)
+      view.renderer:usage(line)
     end
     if self.workflow ~= nil and view.workflow_phase ~= nil and view.queued_prompt == nil then
       local outcome = type(event.data) == "table" and event.data.stopReason == "cancelled" and "cancelled"
         or "completed"
       local observed, observe_error = self.workflow:observe(view.workflow_phase, state, outcome)
       if not observed then
-        insert_transcript(self, view, { "Error: " .. (observe_error or "could not record workflow evidence") })
+        view.renderer:append({ "Error: " .. (observe_error or "could not record workflow evidence") })
       end
       present_workflow_feedback(self, view, view.workflow_phase, state, function()
         if self.disposed or self.views[state.id] ~= view then
@@ -1989,16 +1318,13 @@ local function handle_event(self, view, event, completed_state)
         if pending ~= nil then
           present_recommendations(self, view, view.workflow_phase, pending)
         elseif recommend_error ~= nil and recommend_error ~= "phase already has an approved choice" then
-          insert_transcript(self, view, { "Error: " .. recommend_error })
+          view.renderer:append({ "Error: " .. recommend_error })
         end
       end)
     end
-    view.response_line = nil
-    view.response_tail = nil
-    view.response_started = false
-    view.last_block_kind = nil
+    view.renderer:reset_response()
     release_queued_prompt(self, view)
-    view.unread_turn = state.status == "ready" and nvim.api.nvim_get_current_buf() ~= view.buffer
+    view.unread_turn = state.status == "ready" and nvim.api.nvim_get_current_buf() ~= view.renderer.buffer
     render_winbars(self)
   end
 end
@@ -2168,9 +1494,6 @@ function M.new(api, options)
     workflow = options and options.workflow,
     attention = Attention.new(),
     usage = usage,
-    queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
-    prompt_namespace = nvim.api.nvim_create_namespace("louiselm.chat.prompt"),
-    header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
     views = {},
     view_order = {},
     tool_inspect_windows = {},
@@ -2198,12 +1521,15 @@ function M.new(api, options)
   chat.decisions = Decisions.new({
     is_live = function(session)
       local view = chat.views[session:inspect().id]
-      return not chat.disposed and view ~= nil and view.session == session and nvim.api.nvim_buf_is_valid(view.buffer)
+      return not chat.disposed
+        and view ~= nil
+        and view.session == session
+        and nvim.api.nvim_buf_is_valid(view.renderer.buffer)
     end,
     report_error = function(session, message)
       local view = chat.views[session:inspect().id]
       if view ~= nil and view.session == session then
-        insert_transcript(chat, view, { "Error: " .. message })
+        view.renderer:append({ "Error: " .. message })
       end
     end,
     resolved = function(session, request_id)
@@ -2233,121 +1559,6 @@ function M.new(api, options)
     end,
   })
   return chat, nil
-end
-
----Prefix of the submitted-context block header line; the block runs from this
----line to the first prompt range recorded after it.
-local CONTEXTS_HEADER_PREFIX = "> [contexts:"
-
----Collect the Normal-mode navigation targets in the transcript history above
----the live prompt, in document order. A `prompt` target is the first line of
----each range recorded at a trusted user-prompt render boundary. A `reply`
----target is the first prose line of a turn's response: thinking content is
----excluded via the recorded thought-fold runs (text alone cannot distinguish
----it from prose), and so are blank lines, `[…` marker lines, and
----`Error:`/`Warning:` lines. A tool-only turn contributes no reply target.
----@param view louiselm.ui.ChatView
----@param kind string "prompt" or "reply"
----@return integer[] targets Zero-based lines in document order.
-local function navigation_targets(view, kind)
-  local lines = nvim.api.nvim_buf_get_lines(view.buffer, 0, current_prompt_line(view), false)
-  local prompt_lines = {}
-  local prompt_starts = {}
-  for _, mark in ipairs(nvim.api.nvim_buf_get_extmarks(view.buffer, view.prompt_namespace, 0, -1, { details = true })) do
-    local details = mark[4]
-    if details.end_row ~= nil and details.invalid ~= true then
-      prompt_starts[mark[2]] = true
-      for line = mark[2], details.end_row - 1 do
-        prompt_lines[line] = true
-      end
-    end
-  end
-  local thinking_lines = {}
-  for _, fold in ipairs(view.thought_folds) do
-    for line = fold.first, fold.last do
-      thinking_lines[line] = true
-    end
-  end
-  local run = view.thought_run
-  if run ~= nil then
-    for line = run.first, run.last do
-      thinking_lines[line] = true
-    end
-  end
-  local targets = {}
-  local in_context_block = false
-  local after_prompt = false
-  local seen_reply = false
-  for index, line in ipairs(lines) do
-    local zero_based = index - 1
-    if line:sub(1, #CONTEXTS_HEADER_PREFIX) == CONTEXTS_HEADER_PREFIX then
-      in_context_block = true
-    elseif prompt_lines[zero_based] then
-      in_context_block = false
-      if prompt_starts[zero_based] and kind == "prompt" then
-        targets[#targets + 1] = zero_based
-      end
-      after_prompt = true
-      seen_reply = false
-    else
-      if
-        kind == "reply"
-        and after_prompt
-        and not seen_reply
-        and not in_context_block
-        and line ~= ""
-        and line:sub(1, 1) ~= "["
-        and not thinking_lines[zero_based]
-        and line:sub(1, 6) ~= "Error:"
-        and line:sub(1, 8) ~= "Warning:"
-      then
-        targets[#targets + 1] = zero_based
-        seen_reply = true
-      end
-    end
-  end
-  return targets
-end
-
----Move the cursor to the count-th target of `kind` in `direction` from the
----cursor. A motion with no further target is a silent no-op; landing is on
----the target's first non-blank column.
----@param view louiselm.ui.ChatView
----@param kind string "prompt" or "reply"
----@param direction integer 1 forward, -1 backward
----@param count integer
-local function navigate_transcript(view, kind, direction, count)
-  local targets = navigation_targets(view, kind)
-  local cursor_line = nvim.api.nvim_win_get_cursor(view.window)[1] - 1
-  local remaining = count
-  local selected
-  if direction > 0 then
-    for _, target in ipairs(targets) do
-      if target > cursor_line then
-        remaining = remaining - 1
-        if remaining == 0 then
-          selected = target
-          break
-        end
-      end
-    end
-  else
-    for index = #targets, 1, -1 do
-      local target = targets[index]
-      if target < cursor_line then
-        remaining = remaining - 1
-        if remaining == 0 then
-          selected = target
-          break
-        end
-      end
-    end
-  end
-  if selected == nil then
-    return
-  end
-  local line = nvim.api.nvim_buf_get_lines(view.buffer, selected, selected + 1, false)[1] or ""
-  nvim.api.nvim_win_set_cursor(view.window, { selected + 1, #(line:match("^%s*")) })
 end
 
 ---@param self louiselm.ui.Chat
@@ -2395,66 +1606,18 @@ local function attach_session(self, session, event_relay)
   end
 
   local source_buffer = nvim.api.nvim_get_current_buf()
-  local window = nvim.api.nvim_get_current_win()
-  local buffer = nvim.api.nvim_create_buf(false, true)
-  nvim.api.nvim_buf_set_name(buffer, "louiselm://" .. state.id)
-  nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buffer })
-  nvim.api.nvim_set_option_value("bufhidden", "hide", { buf = buffer })
-  nvim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
-  -- Not the literal "markdown": that filetype is what third-party
-  -- filetype-keyed integrations (image.nvim's markdown integration, at
-  -- least) key off of, and they cannot tell this live, ever-growing
-  -- transcript apart from a real markdown file a user is editing -- causing
-  -- e.g. a full buffer re-parse on every keystroke looking for images that
-  -- will never exist here. Highlighting is attached explicitly below,
-  -- decoupled from `filetype`, so this buffer opts back into only what it
-  -- actually wants.
-  nvim.api.nvim_set_option_value("filetype", "louiselm-session", { buf = buffer })
-  if self.markdown_highlighting then
-    nvim.treesitter.start(buffer, "markdown")
-  end
-  local header = Status.session_header(state)
-  local initial_lines = nvim.list_extend(header, { "", "> " })
-  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, initial_lines)
-
   local view = {
     session = session,
-    buffer = buffer,
-    window = window,
     source_buffer = source_buffer,
-    prompt_line = HEADER_LINE_COUNT + 1,
-    transcript_tail = nil,
-    response_line = nil,
-    response_tail = nil,
-    response_started = false,
-    turn_prose = "",
-    turn_done_fired = false,
-    last_block_kind = nil,
-    trailing_blank = false,
-    tool_lines = {},
-    tool_ids = {},
-    tool_statuses = {},
-    tool_titles = {},
     contexts = {},
     context_prefix = "",
     skill_catalog = nil,
     pending_skill = nil,
-    context_folds = {},
-    fold_counts = {},
-    tool_folds = {},
-    tool_fold_counts = {},
-    tool_fold_run = nil,
-    thought_folds = {},
-    thought_run = nil,
     queued_prompt = nil,
-    queue_mark = nil,
-    queue_namespace = self.queue_namespace,
-    prompt_namespace = self.prompt_namespace,
     setup_shown = false,
     unread_turn = false,
     replay_active = replay_active,
     replay_user_open = false,
-    replay_prompt_mark = nil,
     replay_turn = 0,
     restored_usage = restored_usage,
     replay_events = replay_active and {} or nil,
@@ -2462,36 +1625,24 @@ local function attach_session(self, session, event_relay)
     unsubscribe = function() end,
     last_forensics_path = nil,
   }
-  mark_prompt(view, view.prompt_line)
-  nvim.api.nvim_buf_attach(buffer, false, {
-    on_lines = function(_, _, _, first_line, last_line)
-      if view.queued_prompt ~= nil and first_line <= view.prompt_line and last_line > view.prompt_line then
-        clear_queued_prompt(view)
+  view.renderer = ChatBuffer.new(state, {
+    markdown_highlighting = self.markdown_highlighting,
+    on_prompt_edit = function()
+      clear_queued_prompt(view)
+    end,
+    prompt_prefix = function()
+      return view.context_prefix
+    end,
+    on_enter = function()
+      if not self.disposed and self.views[state.id] == view then
+        mark_view_seen(self, view)
       end
     end,
+    submit = function()
+      self:submit()
+    end,
   })
-  nvim.keymap.set("n", "za", function()
-    toggle_chat_fold(view)
-  end, { buffer = buffer, silent = true, desc = "Toggle chat fold" })
-  nvim.keymap.set("n", "]u", function()
-    navigate_transcript(view, "prompt", 1, nvim.v.count1)
-  end, { buffer = buffer, silent = true, desc = "Next submitted prompt" })
-  nvim.keymap.set("n", "[u", function()
-    navigate_transcript(view, "prompt", -1, nvim.v.count1)
-  end, { buffer = buffer, silent = true, desc = "Previous submitted prompt" })
-  nvim.keymap.set("n", "]r", function()
-    navigate_transcript(view, "reply", 1, nvim.v.count1)
-  end, { buffer = buffer, silent = true, desc = "Next assistant reply" })
-  nvim.keymap.set("n", "[r", function()
-    navigate_transcript(view, "reply", -1, nvim.v.count1)
-  end, { buffer = buffer, silent = true, desc = "Previous assistant reply" })
-  nvim.keymap.set("n", "<CR>", function()
-    local prompt_line = current_prompt_line(view)
-    nvim.api.nvim_win_set_cursor(view.window, { prompt_line + 1, 2 + #view.context_prefix })
-    if #nvim.api.nvim_list_uis() > 0 then
-      nvim.cmd.startinsert()
-    end
-  end, { buffer = buffer, silent = true, desc = "Jump to the louiselm prompt" })
+  local buffer = view.renderer.buffer
   if event_relay == nil then
     view.unsubscribe = session:on(function(event)
       observe_view_event(self, view, event)
@@ -2514,22 +1665,13 @@ local function attach_session(self, session, event_relay)
       observe_view_event(self, view, event)
     end
   end
-  nvim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
-    buffer = buffer,
-    callback = function()
-      if not self.disposed and self.views[state.id] == view then
-        mark_view_seen(self, view)
-      end
-    end,
-    desc = "Mark viewed LouiseLM Session Attention as seen",
-  })
-  render_header(self, view)
+  view.renderer:header(view.session:inspect())
   self:switch(state.id)
   if state.status == "ready" and not replay_active then
     refresh_limits(self, state.agent)
   end
   if restore_error ~= nil then
-    insert_transcript(self, view, { "Error: " .. restore_error })
+    view.renderer:append({ "Error: " .. restore_error })
   end
   if replay_active then
     session:usage_history(function(records, err)
@@ -2542,7 +1684,7 @@ local function attach_session(self, session, event_relay)
         return
       end
       if err ~= nil then
-        insert_transcript(self, view, { "Recording error: " .. err.message })
+        view.renderer:append({ "Recording error: " .. err.message })
       else
         local seen = {}
         for _, record in ipairs(records or {}) do
@@ -2559,9 +1701,6 @@ local function attach_session(self, session, event_relay)
       end
     end)
   end
-  nvim.keymap.set("i", "<CR>", function()
-    self:submit()
-  end, { buffer = buffer, silent = true, desc = "Submit louiselm prompt" })
   if state.status == "ready" and not replay_active and #state.config_options > 0 then
     nvim.schedule(function()
       open_session_options(self, view, true)
@@ -2586,7 +1725,7 @@ end
 function Chat:buffer(session_id)
   local id = session_id or self.current_id
   local view = id and self.views[id]
-  return view and view.buffer or nil
+  return view and view.renderer.buffer or nil
 end
 
 ---Placeholder marking an unfilled takeover task in a Handoff review buffer;
@@ -2829,11 +1968,10 @@ function Chat:inspect_tool()
     return false, "chat UI is disposed"
   end
   local view = self.current_id and self.views[self.current_id]
-  if view == nil or nvim.api.nvim_get_current_buf() ~= view.buffer then
+  if view == nil or nvim.api.nvim_get_current_buf() ~= view.renderer.buffer then
     return false, "no chat session is open"
   end
-  local cursor = nvim.api.nvim_win_get_cursor(0)
-  local id = view.tool_ids[cursor[1] - 1]
+  local id = view.renderer:tool_at_cursor()
   if id == nil then
     return false, "cursor is not on a tool-call line"
   end
@@ -3013,7 +2151,7 @@ function Chat:switch(session_id)
   if view == nil then
     return false, "session is not attached"
   end
-  if not nvim.api.nvim_buf_is_valid(view.buffer) then
+  if not nvim.api.nvim_buf_is_valid(view.renderer.buffer) then
     return false, "session buffer is invalid"
   end
   local window = nvim.api.nvim_get_current_win()
@@ -3023,7 +2161,7 @@ function Chat:switch(session_id)
     for _, candidate in ipairs(nvim.api.nvim_tabpage_list_wins(0)) do
       if nvim.api.nvim_win_get_config(candidate).relative == "" then
         window = candidate
-        if candidate == view.window then
+        if candidate == view.renderer.window then
           break
         end
       end
@@ -3034,16 +2172,7 @@ function Chat:switch(session_id)
   view.unread_turn = false
   local state = view.session:inspect()
   mark_view_seen(self, view)
-  view.window = window
-  nvim.api.nvim_set_current_win(window)
-  nvim.api.nvim_win_set_buf(window, view.buffer)
-  nvim.api.nvim_win_set_cursor(window, { view.prompt_line + 1, 2 })
-  if self.start_insert_on_switch and #nvim.api.nvim_list_uis() > 0 then
-    nvim.cmd.startinsert()
-    nvim.api.nvim_win_set_cursor(window, { view.prompt_line + 1, 2 })
-  end
-  apply_incremental_folds(view, view.window, view.context_folds, view.fold_counts)
-  apply_incremental_folds(view, view.window, view.tool_folds, view.tool_fold_counts)
+  view.renderer:show(window, self.start_insert_on_switch)
   render_winbars(self)
   return true
 end
@@ -3282,9 +2411,7 @@ local function close_view(self, view)
     end
   end
   -- Select the survivor before deleting the buffer in its host window.
-  if nvim.api.nvim_buf_is_valid(view.buffer) then
-    nvim.api.nvim_buf_delete(view.buffer, { force = true })
-  end
+  view.renderer:dispose()
   if close_error ~= nil then
     nvim.notify("louiselm: " .. close_error, nvim.log.levels.ERROR)
   end
@@ -3434,7 +2561,7 @@ function Chat:submit(text)
     return nil, "Session history is still loading"
   end
   if text == nil then
-    text = prompt_text(view)
+    text = view.renderer:prompt_text()
   end
   if type(text) ~= "string" then
     return nil, "prompt must be a non-empty string"
@@ -4171,9 +3298,7 @@ function Chat:dispose()
   for id, view in pairs(self.views) do
     clear_queued_prompt(view)
     view.unsubscribe()
-    if nvim.api.nvim_buf_is_valid(view.buffer) then
-      nvim.api.nvim_buf_delete(view.buffer, { force = true })
-    end
+    view.renderer:dispose()
     self.views[id] = nil
   end
   self.current_id = nil

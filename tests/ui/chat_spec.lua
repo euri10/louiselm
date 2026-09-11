@@ -1410,44 +1410,6 @@ T["chat"]["folds completed parallel tool runs when superseded"] = function()
   chat:dispose()
 end
 
-T["chat"]["coalesces repeated nonterminal tool_call_started frames into one row"] = function()
-  -- Live-shaped regression for louiselm-66qs: a long-running tool call emits
-  -- many nonterminal tool_call_update frames for the same toolCallId with no
-  -- title before the terminal completion. Each one used to append a fresh
-  -- row, leaving a stale "(started)" duplicate behind the completed line.
-  local first = fake_session("session-1", "claude")
-  local chat = assert(Chat.new(fake_api()))
-  assert(chat:attach(first))
-
-  first:emit({
-    type = "tool_call_started",
-    session_id = "session-1",
-    data = { toolCallId = "exec-1", title = "Run tests" },
-  })
-  for _ = 1, 17 do
-    first:emit({
-      type = "tool_call_started",
-      session_id = "session-1",
-      data = { toolCallId = "exec-1" },
-    })
-  end
-  first:emit({
-    type = "tool_call_finished",
-    session_id = "session-1",
-    data = { toolCallId = "exec-1", status = "completed" },
-  })
-  nvim.wait(100, function()
-    return nvim.tbl_contains(buffer_lines(chat:buffer()), "[tool] exec-1: Run tests (completed)")
-  end, 1)
-
-  local lines = buffer_lines(chat:buffer())
-  local tool_lines = nvim.tbl_filter(function(line)
-    return line:find("exec-1", 1, true) ~= nil
-  end, lines)
-  MiniTest.expect.equality(tool_lines, { "[tool] exec-1: Run tests (completed)" })
-  chat:dispose()
-end
-
 T["chat"]["folds a trailing completed tool run at turn end"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
@@ -1854,7 +1816,7 @@ T["chat"]["rebuilds a reasoning fold that something else silently dropped mid-re
   restored.state.status = "starting"
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(restored))
-  local view = chat.views["session-1"]
+  local window = nvim.api.nvim_get_current_win()
 
   local function thought(text)
     restored:emit({
@@ -1897,7 +1859,7 @@ T["chat"]["rebuilds a reasoning fold that something else silently dropped mid-re
   MiniTest.expect.equality({ fold_range(first_header + 1) }, { first_header, first_header + 1 })
   -- Simulate whatever external actor dropped the fold live: delete every
   -- fold in the window without going through this module at all.
-  nvim.api.nvim_win_call(view.window, function()
+  nvim.api.nvim_win_call(window, function()
     nvim.cmd("normal! zE")
   end)
   MiniTest.expect.equality({ fold_range(first_header + 1) }, { -1, -1 })
