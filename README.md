@@ -208,6 +208,7 @@ entry points are grouped by purpose:
 - Optional capture and Park: `:LouiselmCapture`, `:LouiselmCaptureInbox`,
   `:LouiselmPark`, `:LouiselmResumePark`.
 
+(agents-and-adapters)=
 ## Agents and adapters
 
 LouiseLM starts named stdio ACP commands; the UI is not tied to one Provider or
