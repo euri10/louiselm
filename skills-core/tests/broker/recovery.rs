@@ -75,19 +75,38 @@ fn status_reply(channel: &SeqpacketChannel, request: &RecoveryRequest) {
 
 #[test]
 fn controller_registration_binds_retention_and_survives_restart_without_renewal() {
-    registration(false);
+    registration(false, |_, _, _, _| {});
 }
 
 #[test]
 fn an_authenticated_supervisor_cannot_substitute_another_measured_integration() {
-    registration(true);
+    registration(true, |_, _, _, _| {});
+}
+
+pub(super) fn with_registered(
+    check: impl FnOnce(
+        &BrokerService,
+        &mut louiselm_skills::broker::BrokerSession,
+        &RecoveryRequest,
+        &SeqpacketChannel,
+    ),
+) {
+    registration(false, check);
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "One socket-level transaction follows controller authorization, Park, retention, replay, restart and expiry without resetting its evidence."
 )]
-fn registration(wrong_integration: bool) {
+fn registration(
+    wrong_integration: bool,
+    check: impl FnOnce(
+        &BrokerService,
+        &mut louiselm_skills::broker::BrokerSession,
+        &RecoveryRequest,
+        &SeqpacketChannel,
+    ),
+) {
     let root = TempDir::new().unwrap();
     let socket = root.path().join("broker.sock");
     let launch = request("session-1");
@@ -233,6 +252,7 @@ fn registration(wrong_integration: bool) {
         evidence
     );
     let channel = peer.join().unwrap();
+    check(&service, &mut session, &request, &channel);
     let mut conflict = request.clone();
     conflict.retention.expires_at_ms += 1;
     assert!(matches!(

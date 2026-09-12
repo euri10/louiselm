@@ -23,6 +23,12 @@ mod command_service;
 #[path = "lifecycle_service.rs"]
 mod lifecycle_service;
 
+#[path = "reconnect.rs"]
+mod reconnect;
+
+#[path = "controller_loss.rs"]
+mod controller_loss;
+
 use crate::{
     broker::{AuditDecision, AuditEntry, AuditLog, AuthorizationStore, BrokerError, ReceiptStore},
     launch::PROTOCOL_VERSION,

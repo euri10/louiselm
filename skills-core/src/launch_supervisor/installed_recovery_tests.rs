@@ -10,6 +10,26 @@ use crate::{
     launch_receipt::SessionState,
 };
 
+pub(super) fn assert_loss_settled(root: &Path) {
+    let bytes = fs::read(root.join("state/authorizations/controller-loss/session.json")).unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        record["acknowledgement"]["disposition"]["kind"],
+        "recoverable"
+    );
+    let outbox =
+        crate::broker::attention::Outbox::open(&root.join("state/authorizations/attention-outbox"))
+            .unwrap();
+    assert!(
+        outbox.next().unwrap().is_some(),
+        "capture-service outage cannot prevent local settlement"
+    );
+    assert_eq!(
+        fs::metadata(root.join("sessions/session")).unwrap().mode() & 0o777,
+        0o700
+    );
+}
+
 pub(super) fn controller_registers(
     broker: &InstalledBroker,
     session: &mut BrokerSession,

@@ -15,8 +15,8 @@ pub use command::{
     GrantRequest,
 };
 pub use recovery::{
-    RECOVERY_REQUEST_SCHEMA, RETENTION_EVIDENCE_SCHEMA, RecoveryRequest, RetentionEvidence,
-    RetentionRequest,
+    RECOVERY_REQUEST_SCHEMA, RECOVERY_RESTORE_SCHEMA, RETENTION_EVIDENCE_SCHEMA, RecoveryRequest,
+    RecoveryRestoreRequest, RetentionEvidence, RetentionRequest,
 };
 pub use tool::{
     MAX_TOOL_OUTPUT_BYTES, TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
@@ -984,6 +984,8 @@ impl LaunchAuthorization {
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Restore selected protected bytes into a distinct frozen target.
+    RecoveryRestore(Box<RecoveryRestoreRequest>),
     /// Retain recovery bytes at an exact durable Park checkpoint.
     Recovery(RecoveryRequest),
     /// Authenticated supervisor/broker command authorization exchange.
@@ -1016,6 +1018,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        RECOVERY_RESTORE_SCHEMA => {
+            let request: RecoveryRestoreRequest = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::RecoveryRestore(Box::new(request)))
+        }
         RECOVERY_REQUEST_SCHEMA => {
             let request: RecoveryRequest = decode_closed(bytes)?;
             request.validate()?;
@@ -1679,6 +1686,11 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Authenticated proof of the exact durable copy, not a successful ACP load.
+    RecoveryRestored {
+        /// Original exact operation; authority depends on the responding supervisor.
+        request: Box<RecoveryRestoreRequest>,
+    },
     /// Authenticated supervisor proof of durably retained recovery bytes.
     RecoveryRetention {
         /// Exact mechanical result; serialization alone grants no authority.
@@ -1772,6 +1784,13 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
+            ResponseResult::RecoveryRestored { request } => {
+                request.validate()?;
+                if request.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
             ResponseResult::RecoveryRetention { evidence } => {
                 evidence.validate()?;
                 if evidence.request.request_id != self.request_id {

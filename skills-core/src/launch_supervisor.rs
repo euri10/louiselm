@@ -448,6 +448,18 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Copies an exact retained point into this fresh frozen Session asynchronously.
+    /// Disposal joins the owned worker; this never loads ACP or Resumes the tree.
+    /// # Errors
+    /// Refuses worker admission; unsupported layout/storage failures use the callback.
+    fn restore_recovery(
+        &mut self,
+        _request: crate::launch_protocol::RecoveryRestoreRequest,
+        complete: recovery::RestoreCompletion,
+    ) -> Result<(), SupervisorError> {
+        complete(Err(recovery::RecoveryError::Unsupported));
+        Ok(())
+    }
     /// Retains a verified recovery point while the tree is frozen.
     ///
     /// Production performs I/O on an owned worker; disposal joins that worker

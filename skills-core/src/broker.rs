@@ -206,6 +206,14 @@ fn corrupt(reason: &'static str) -> BrokerError {
     BrokerError::Storage(io::Error::new(io::ErrorKind::InvalidData, reason))
 }
 
+fn now_ms() -> Result<u64, BrokerError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .ok_or(BrokerError::InvalidGrant)
+}
+
 /// Recovers a poisoned lock: the guarded sections own no invariant beyond
 /// ordering, and every durable record is written before they unlock.
 fn lock(mutex: &Mutex<()>) -> MutexGuard<'_, ()> {

@@ -5,8 +5,8 @@ use crate::{
     broker::lifecycle::LifecycleCaller,
     launch::PROTOCOL_VERSION,
     launch_protocol::{
-        CompletedRequest, LifecycleRequest, ProtocolMessage, ResponseResult, STATUS_REQUEST_SCHEMA,
-        StatusRequest, SupervisorStatus, evaluate_request,
+        CompletedRequest, LifecycleRequest, ResponseResult, STATUS_REQUEST_SCHEMA, StatusRequest,
+        SupervisorStatus, evaluate_request,
     },
     launch_receipt::SignedReceipt,
     launch_transport::{AuthenticatedPacket, LauncherPacket},
@@ -205,16 +205,7 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
-        match &packet.packet {
-            LauncherPacket::SignedReceipt(receipt) => {
-                self.lifecycle.check_receipt(receipt)?;
-                let ack = self
-                    .receipts
-                    .append(&session.authorization, &packet.bytes, verify)?;
-                send(&session.channel, ack.canonical_bytes())
-            }
-            LauncherPacket::Request(ProtocolMessage::Command(_)) => session.handle_command(packet),
-            _ => Err(BrokerError::InvalidGrant),
-        }
+        self.control_packet(session, packet, crate::broker::now_ms()?, verify)
+            .map(|_| ())
     }
 }

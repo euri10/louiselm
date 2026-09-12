@@ -71,6 +71,7 @@ impl RelayWorker {
                 controller: None,
                 attachment: controller,
                 detached: false,
+                loss_reported: false,
                 input: Some(input),
                 output,
                 error,
@@ -188,6 +189,7 @@ struct RelayLoop {
     controller: Option<RelayStdio>,
     attachment: mpsc::Receiver<RelayStdio>,
     detached: bool,
+    loss_reported: bool,
     input: Option<NonblockingFile>,
     output: NonblockingFile,
     error: NonblockingFile,
@@ -222,8 +224,11 @@ impl RelayLoop {
                     self.to_agent.eof = true;
                 }
                 progress |= self.to_agent.write(input)?;
-                if self.to_agent.done() {
-                    self.input = None;
+                if self.to_agent.done() && !self.loss_reported {
+                    // EOF is a lifecycle cause, not permission to end the Agent.
+                    // Keep stdin owned until freeze/settlement/disposal; closing
+                    // it here races EOF-exiting Agents ahead of the Park owner.
+                    self.loss_reported = true;
                     emit(stopped, events, RunningAgentEvent::ControllerEof);
                 }
             }

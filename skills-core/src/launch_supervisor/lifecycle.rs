@@ -5,6 +5,8 @@ mod tool_dispatch;
 
 #[path = "recovery_dispatch.rs"]
 mod recovery_dispatch;
+#[path = "restore_dispatch.rs"]
+mod restore_dispatch;
 
 use std::{
     collections::VecDeque,
@@ -247,6 +249,7 @@ impl Drop for LaunchedSession {
 }
 
 enum OwnerEvent {
+    RestoreFinished,
     RecoveryFinished,
     ToolFinished,
     CommandDeadline {
@@ -422,6 +425,7 @@ enum ParkResult {
     reason = "Owner flags track independent I/O, timer, and terminal obligations, not one exclusive state."
 )]
 struct SessionOwner {
+    restore: restore_dispatch::RestoreDispatch,
     recovery: recovery_dispatch::RecoveryDispatch,
     commands: tool_dispatch::CommandDispatch,
     resources: SessionResources,
@@ -489,6 +493,7 @@ impl SessionOwner {
         let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         Self {
             resources,
+            restore: restore_dispatch::RestoreDispatch::default(),
             recovery: recovery_dispatch::RecoveryDispatch::default(),
             commands: tool_dispatch::CommandDispatch::default(),
             signer,
@@ -644,11 +649,13 @@ impl SessionOwner {
                 } if process_epoch == self.process_epoch => self.handle_running_agent_event(event),
                 OwnerEvent::RunningAgent { .. }
                 | OwnerEvent::RecoveryFinished
+                | OwnerEvent::RestoreFinished
                 | OwnerEvent::RelayQuiesced
                 | OwnerEvent::ToolFinished => {}
             }
             self.collect_relay_quiescence();
             self.collect_recovery();
+            self.collect_restore();
             self.collect_tool_result();
             if let Some(result) = self.finished.take() {
                 return result;
@@ -722,6 +729,7 @@ impl SessionOwner {
             }
         };
         match message {
+            ProtocolMessage::RecoveryRestore(request) => self.handle_restore(*request),
             ProtocolMessage::Recovery(request) => self.handle_recovery(request),
             ProtocolMessage::Command(request) => self.handle_command(request),
             ProtocolMessage::ToolExecution(request) => self.handle_tool(request),

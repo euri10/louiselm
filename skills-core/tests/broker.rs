@@ -57,6 +57,12 @@ mod attention;
 #[path = "broker/recovery.rs"]
 mod recovery;
 
+#[path = "broker/reconnect.rs"]
+mod reconnect;
+
+#[path = "broker/controller_loss.rs"]
+mod controller_loss;
+
 /// Installed pool wide enough that slot assignment is not the subject.
 fn pool(slots: u32) -> IdentityPool {
     IdentityPool {

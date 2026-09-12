@@ -1,13 +1,54 @@
 # Broker lifecycle and Attention delivery
 
 `louiselm-qbr.5.1.2` owns the full recovery/status integration. This document
-describes its implemented authorization and projection boundaries. Restart
-reattachment, controller-loss settlement, the operator CLI and Agent self-status
+describes its implemented authorization, reattachment and projection boundaries.
+Operator reconstruction, the operator CLI and Agent self-status
 remain open work. The confirmed design in `louiselm-c0vs` requires broker-owned
 recovery evidence backed by trusted supervisor retention proof; a reference
 string alone must not authorize disposal. `louiselm-qbr.5.1.2.5` supplies the
 retention mechanics below. `louiselm-qbr.5.1.2.6` connects them to authenticated
 controller registration and broker recovery admission.
+
+## Broker restart
+
+`InstalledBroker::serve_reconnect` accepts an authenticated supervisor on the
+existing rendezvous. It loads the already-consumed launch, re-verifies every
+stored signature and binding, and re-establishes durability before returning
+the exact checkpoint. Equal prefixes reattach; a supervisor-ahead suffix is
+accepted only as continuous, valid signed bytes ending at the offered digest.
+Missing interior files, unknown entries, foreign bindings, conflicting heads,
+broker-ahead state and invalid signatures fail closed. No history is discarded,
+spliced or repaired. Known-Session refusals quarantine locally and enqueue
+normalized Attention; storage failure cannot produce an acknowledgement.
+
+The returned Session worker has no reconstructed command/grant authority or
+recovery admission. It can receive signed lifecycle outcomes and settle control
+state, but it does not reset spent budgets or automatically Resume a Park.
+The original short-lived launch authorization is not consumed again or renewed.
+
+## Controller loss
+
+The installed broker worker accepts the supervisor's authenticated loss request
+only at its exact, reverified durable Park head and original Session/Run/revision.
+The supervisor freezes and revokes first, retaining its unresolved loss latch
+until settlement succeeds. A Session already Parked uses that existing truthful
+head rather than emitting a Parked-to-Parked receipt.
+
+The broker discards the old command approval owner, persists one immutable loss
+decision, and durably enqueues normalized local Attention before acknowledging
+Disposal. A current broker-owned retained point records recoverable cold Park;
+missing, expired or quarantined recovery records abnormal loss instead. Unreadable
+or malformed durable state is uncertain and gets no settlement ACK. The old
+supervisor then disposes and seals its tree and records the terminal receipt
+before releasing the host identity.
+
+Identical requests return the original decision and Attention identity. Retry
+re-establishes durability; an expired recoverable decision cannot be renewed or
+replayed as usable recovery. A request conflict, store/outbox failure or uncertain
+transport leaves settlement unresolved. Capture-service delivery and its ACKs
+are not inputs to this decision and can retry independently after an outage.
+Cold Park is a retained point, not a Running Session: fresh operator-authorized
+reconstruction and its successful load/finalize remain separate obligations.
 
 ## Recovery registration and admission
 

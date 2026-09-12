@@ -169,13 +169,47 @@ fn opaque_roundtrip_drains_output_before_process_exit_and_closes_controller_io()
         events.recv_timeout(Duration::from_secs(2)).unwrap(),
         RunningAgentEvent::ControllerEof
     );
-    assert_eq!(
+    child.0.lock().unwrap().kill().unwrap();
+    assert!(matches!(
         events.recv_timeout(Duration::from_secs(2)).unwrap(),
-        RunningAgentEvent::ProcessExited(super::super::ProcessExitClassification::Success)
-    );
+        RunningAgentEvent::ProcessExited(_)
+    ));
     relay.stop().unwrap();
     assert_eq!(output_peer.read(&mut [0]).unwrap(), 0);
     assert_eq!(Arc::strong_count(&child.0), 1);
+}
+
+#[test]
+fn controller_eof_keeps_agent_input_alive_until_lifecycle_settlement() {
+    let child = ChildProbe::spawn();
+    let (stdio, input_peer, _output_peer) = controller();
+    let (attachment, receiver) = mpsc::sync_channel(1);
+    attachment.send(stdio).unwrap();
+    let (input, output, error) = child.pipes();
+    let (sent, events) = mpsc::channel();
+    let mut relay = RelayWorker::start(
+        receiver,
+        input,
+        output,
+        error,
+        child.wait_callback(),
+        Arc::new(move |event| sent.send(event).is_ok()),
+    )
+    .unwrap();
+    input_peer.shutdown(Shutdown::Write).unwrap();
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(2)).unwrap(),
+        RunningAgentEvent::ControllerEof
+    );
+    assert!(
+        matches!(
+            events.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "controller EOF must not make the Agent exit before owner freeze/settlement"
+    );
+    assert!(child.0.lock().unwrap().try_wait().unwrap().is_none());
+    relay.stop().unwrap();
 }
 
 #[test]

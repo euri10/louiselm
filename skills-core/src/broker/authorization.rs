@@ -134,6 +134,27 @@ struct ConsumedAuthorization {
     consumed_at_ms: u64,
 }
 
+impl PendingAuthorization {
+    pub(super) fn launch_authorization(&self) -> LaunchAuthorization {
+        LaunchAuthorization {
+            schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            authorization_id: self.authorization_id.clone(),
+            request_id: self.request_id.clone(),
+            request_digest: self.request_digest.clone(),
+            controller_uid: self.controller_uid,
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            envelope_revision: self.envelope_revision,
+            identity_slot: self.identity.slot,
+            assigned_uid: self.identity.uid,
+            assigned_gid: self.identity.gid,
+            expires_at_ms: self.expires_at_ms,
+            broker_loss_grace_ms: self.broker_loss_grace_ms,
+        }
+    }
+}
+
 /// The broker's durable single-use authorization store.
 ///
 /// Consumption is a compare-and-swap against the filesystem: the caller that
@@ -278,22 +299,7 @@ impl AuthorizationStore {
             },
         )?;
 
-        let authorization = LaunchAuthorization {
-            schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
-            protocol_version: PROTOCOL_VERSION,
-            authorization_id: pending.authorization_id,
-            request_id: pending.request_id,
-            request_digest: pending.request_digest,
-            controller_uid: pending.controller_uid,
-            session_id: pending.session_id,
-            run_id: pending.run_id,
-            envelope_revision: pending.envelope_revision,
-            identity_slot: pending.identity.slot,
-            assigned_uid: pending.identity.uid,
-            assigned_gid: pending.identity.gid,
-            expires_at_ms: pending.expires_at_ms,
-            broker_loss_grace_ms: pending.broker_loss_grace_ms,
-        };
+        let authorization = pending.launch_authorization();
         authorization
             .validate()
             .map_err(|_| BrokerError::InvalidGrant)?;

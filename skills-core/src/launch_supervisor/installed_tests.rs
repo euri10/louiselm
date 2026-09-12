@@ -406,11 +406,20 @@ fn marker(lines: &mpsc::Receiver<String>, prefix: &str) -> String {
 }
 
 #[test]
+fn privileged_installed_broker_launch_and_effects() {
+    installed_broker_effects(false);
+}
+
+#[test]
+fn privileged_installed_controller_loss_settlement() {
+    installed_broker_effects(true);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One end-to-end fixture owns the separate broker, signed launch, real request and terminal cleanup."
 )]
-fn privileged_installed_broker_launch_and_effects() {
+fn installed_broker_effects(controller_loss: bool) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_LAUNCH").is_none() {
         eprintln!("skipping: installed broker composition requires the disposable launcher VM");
         return;
@@ -541,13 +550,20 @@ fn privileged_installed_broker_launch_and_effects() {
         &sessions.join("session/workspace"),
         &command,
     );
-    rustix::process::kill_process(
-        rustix::process::Pid::from_raw(i32::try_from(agent_pid).unwrap()).unwrap(),
-        rustix::process::Signal::TERM,
-    )
-    .unwrap();
+    if controller_loss {
+        drop(input);
+    } else {
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(i32::try_from(agent_pid).unwrap()).unwrap(),
+            rustix::process::Signal::TERM,
+        )
+        .unwrap();
+    }
     marker(&lines, "BROKER_TERMINAL");
     assert!(broker_process.0.wait().unwrap().success());
+    if controller_loss {
+        recovery::assert_loss_settled(root.path());
+    }
     relay_rx
         .recv_timeout(Duration::from_secs(10))
         .unwrap()

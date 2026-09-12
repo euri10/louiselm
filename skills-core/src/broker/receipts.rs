@@ -182,15 +182,24 @@ impl ReceiptStore {
     /// [`BrokerError::InvalidGrant`] for an unusable Session identity.
     pub fn stored_bytes(&self, session_id: &str) -> Result<Vec<Vec<u8>>, BrokerError> {
         let session = self.session_directory(session_id)?;
+        let entries = match fs::read_dir(&session) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(BrokerError::Storage(error)),
+        };
+        let count = entries
+            .take(MAX_CHAIN_RECEIPTS + 1)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(BrokerError::Storage)?
+            .len();
+        if count > MAX_CHAIN_RECEIPTS {
+            return Err(corrupt("stored chain exceeds its bound"));
+        }
         let mut stored = Vec::new();
-        for sequence in 0.. {
-            let Some(bytes) = read_bounded(&receipt_path(&session, sequence))? else {
-                break;
-            };
+        for sequence in 0..u64::try_from(count).map_err(|_| BrokerError::InvalidGrant)? {
+            let bytes = read_bounded(&receipt_path(&session, sequence))?
+                .ok_or_else(|| corrupt("stored receipt chain has a gap or unexpected entry"))?;
             stored.push(bytes);
-            if stored.len() > MAX_CHAIN_RECEIPTS {
-                return Err(corrupt("stored chain exceeds its bound"));
-            }
         }
         Ok(stored)
     }
@@ -203,6 +212,35 @@ impl ReceiptStore {
             let receipt = SignedReceipt::parse_canonical(&bytes)
                 .map_err(|_| corrupt("stored receipt is not canonical"))?;
             chain.push(receipt);
+        }
+        Ok(chain)
+    }
+
+    /// Revalidates every stored binding and signature before broker reattachment.
+    pub(super) fn verified_chain<F>(
+        &self,
+        authorization: &LaunchAuthorization,
+        verify: &mut F,
+    ) -> Result<Vec<SignedReceipt>, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        authorization.validate()?;
+        let chain = self.chain(&authorization.session_id)?;
+        for receipt in &chain {
+            check_authorized(receipt, authorization)?;
+        }
+        self.verified_head(&chain, authorization, verify)?;
+        // Restart may follow a write that reached the page cache before fsync
+        // failed. A checkpoint reply must establish durability again.
+        let directory = self.session_directory(&authorization.session_id)?;
+        for receipt in &chain {
+            fs::File::open(receipt_path(&directory, receipt.payload.sequence))
+                .and_then(|file| file.sync_all())
+                .map_err(BrokerError::Storage)?;
+        }
+        if !chain.is_empty() {
+            sync_directory(&directory)?;
         }
         Ok(chain)
     }

@@ -64,6 +64,44 @@ fn launch() -> LaunchRequest {
 }
 
 #[test]
+fn restore_uses_only_sealed_retained_bytes_and_never_overwrites_conflicting_target() {
+    let source = fixture();
+    let evidence = capture(&source, &operation(), 100).unwrap();
+    fs::set_permissions(source.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    fs::create_dir(target.path().join("home")).unwrap();
+    fs::create_dir(target.path().join("workspace")).unwrap();
+    let mut replacement = launch();
+    replacement.session_id = "replacement".into();
+    replacement.request_id = "replacement".into();
+    replacement.authorization_id = "replacement".into();
+    let request = crate::launch_protocol::RecoveryRestoreRequest {
+        schema: crate::launch_protocol::RECOVERY_RESTORE_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "restore-1".into(),
+        source: evidence,
+        target: replacement,
+        head: crate::launch_receipt::ReceiptHead {
+            sequence: 2,
+            digest: Digest::of(b"park").to_string(),
+        },
+    };
+    restore(source.path(), target.path(), &request, 100).unwrap();
+    assert_eq!(
+        fs::read(target.path().join("workspace/recovery-counter.json")).unwrap(),
+        b"7"
+    );
+    restore(source.path(), target.path(), &request, 101).unwrap();
+    assert!(restore(source.path(), target.path(), &request, 200).is_err());
+    fs::write(target.path().join("workspace/recovery-counter.json"), b"8").unwrap();
+    assert!(restore(source.path(), target.path(), &request, 101).is_err());
+    assert_eq!(
+        fs::read(target.path().join("workspace/recovery-counter.json")).unwrap(),
+        b"8"
+    );
+}
+
+#[test]
 fn retained_checkpoint_survives_source_loss_without_home_secrets() {
     let fixture = tempfile::tempdir().unwrap();
     fs::create_dir(fixture.path().join("home")).unwrap();

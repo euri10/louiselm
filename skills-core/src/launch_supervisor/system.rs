@@ -1028,6 +1028,56 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn restore_recovery(
+        &mut self,
+        request: crate::launch_protocol::RecoveryRestoreRequest,
+        complete: super::recovery::RestoreCompletion,
+    ) -> Result<(), SupervisorError> {
+        use super::recovery::RecoveryError;
+        if self
+            .recovery_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            complete(Err(RecoveryError::NotParked));
+            return Ok(());
+        }
+        self.join_recovery()?;
+        let Some(storage) = self.recovery.clone() else {
+            complete(Err(RecoveryError::Unsupported));
+            return Ok(());
+        };
+        if !matches!(
+            lock(&self.session).mechanical_state(),
+            Ok(SandboxMechanicalState::Parked)
+        ) {
+            complete(Err(RecoveryError::NotParked));
+            return Ok(());
+        }
+        self.cancel_tool()?;
+        self.cancel_helper()?;
+        let session = self.session.clone();
+        self.recovery_worker = Some(
+            thread::Builder::new()
+                .name("louiselm-restore-recovery".into())
+                .spawn(move || {
+                    let result = (|| {
+                        let mut session = lock(&session);
+                        if !matches!(
+                            session.mechanical_state(),
+                            Ok(SandboxMechanicalState::Parked)
+                        ) {
+                            return Err(RecoveryError::NotParked);
+                        }
+                        storage.restore(&request, recovery_now_ms()?)?;
+                        Ok(request)
+                    })();
+                    complete(result);
+                })
+                .map_err(|_| SupervisorError::WorkerUnavailable)?,
+        );
+        Ok(())
+    }
     fn retain_recovery(
         &mut self,
         request: super::recovery::RetentionRequest,

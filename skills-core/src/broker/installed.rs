@@ -1,23 +1,16 @@
 //! Installed, unprivileged composition of launch policy, verification and transport.
 
-use std::{
-    fs,
-    os::unix::fs::MetadataExt,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
 use super::{
     AuditLog, AuthorizationStore, BrokerError, BrokerService, BrokerSession, GrantRequest,
-    PendingAuthorization, ReceiptStore, SessionInspection, TrustedRelease,
-    service::{receive, send},
+    PendingAuthorization, ReceiptStore, SessionInspection, TrustedRelease, now_ms,
 };
 use crate::{
     broker::lifecycle::LifecycleCaller,
     launch_protocol::LifecycleRequest,
-    launch_receipt::SessionState,
     launch_receipt::SignedReceipt,
-    launch_transport::{CredentialPin, LauncherPacket},
+    launch_transport::CredentialPin,
     launcher_install::{LauncherPaths, LauncherVerifier},
 };
 
@@ -33,6 +26,30 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Reattaches an existing supervisor without reconstructing command authority.
+    /// Run on the broker I/O worker; verifies the stored prefix and every appended
+    /// suffix using the installed signer. Reattachment never Resumes a Park.
+    /// # Errors
+    /// Refuses invalid binding, receipt divergence, signature or durability failure.
+    pub fn serve_reconnect(&self) -> Result<BrokerSession, BrokerError> {
+        let mut verification_failure = None;
+        let result = self
+            .service
+            .serve_reconnect(now_ms()?, |key, payload, signature| {
+                match self.verifier.verify(key, payload, signature) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        verification_failure = Some(error);
+                        false
+                    }
+                }
+            });
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
     /// Registers observed ACP metadata from the launch-authorized controller.
     /// Execute on the Session worker; transport completions remain asynchronous.
     /// The caller is the existing authenticated local controller boundary, not
@@ -240,44 +257,30 @@ impl InstalledBroker {
         }
     }
 
-    /// Processes one command or signed outcome on the retained supervisor channel.
-    /// Returns true only after a terminal receipt became durable. This initial
-    /// worker has no recovery/reconnect or controller-loss settlement authority.
+    /// Processes a command, signed outcome or durable controller-loss settlement.
+    /// Returns true only after a terminal receipt became durable. Local decision
+    /// and Attention enqueue precede settlement; remote delivery grants no authority.
     ///
     /// # Errors
     /// Closes the connection on protocol, verification, audit or transport failure;
     /// a closed channel never stands for confirmed process cleanup.
     pub fn step(&self, session: &mut BrokerSession) -> Result<bool, BrokerError> {
-        let result = (|| {
-            let packet = receive(session.channel())?;
-            if let LauncherPacket::SignedReceipt(ref receipt) = packet.packet {
-                self.service.lifecycle.check_receipt(receipt)?;
-                let mut verification_failure = None;
-                let stored = self.service.receipts().append(
-                    session.authorization(),
-                    &packet.bytes,
-                    |key, payload, signature| match self.verifier.verify(key, payload, signature) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            verification_failure = Some(error);
-                            false
-                        }
-                    },
-                );
-                if let Some(error) = verification_failure {
-                    return Err(BrokerError::Verification(error));
+        let mut verification_failure = None;
+        let result = self
+            .service
+            .step(session, now_ms()?, |key, payload, signature| {
+                match self.verifier.verify(key, payload, signature) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        verification_failure = Some(error);
+                        false
+                    }
                 }
-                let ack = stored?;
-                send(session.channel(), ack.canonical_bytes())?;
-                return Ok(receipt.payload.resulting_state == SessionState::Terminal);
-            }
-            session.handle_command(packet)?;
-            Ok(false)
-        })();
-        if result.is_err() {
-            session.close();
+            });
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
         }
-        result
     }
 
     /// Reads durable initial launch evidence, without claiming current liveness.
@@ -298,14 +301,6 @@ impl InstalledBroker {
     ) -> Result<SessionInspection, BrokerError> {
         self.service.inspect_active(session)
     }
-}
-
-fn now_ms() -> Result<u64, BrokerError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .ok_or(BrokerError::InvalidGrant)
 }
 
 fn private_directory(path: &Path, uid: u32, gid: u32) -> Result<(), BrokerError> {

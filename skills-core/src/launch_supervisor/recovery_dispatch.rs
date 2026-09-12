@@ -19,7 +19,7 @@ pub(super) struct RecoveryDispatch {
 }
 
 impl SessionOwner {
-    fn recovery_matches(&self, request: &RecoveryRequest) -> bool {
+    pub(super) fn recovery_matches(&self, request: &RecoveryRequest) -> bool {
         request.validate().is_ok()
             && self.state == SessionState::Parked
             && self.channel_state == ChannelState::Revoked

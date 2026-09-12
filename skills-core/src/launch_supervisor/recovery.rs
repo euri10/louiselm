@@ -14,6 +14,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[path = "recovery_restore.rs"]
+mod restoration;
+use restoration::restore;
+
 pub use crate::launch_protocol::{RetentionEvidence, RetentionRequest};
 
 use crate::{
@@ -63,6 +67,9 @@ pub enum RecoveryError {
 
 /// Exactly-once worker completion; callbacks must not block the owning worker.
 pub type RecoveryCompletion = Box<dyn FnOnce(Result<RetentionEvidence, RecoveryError>) + Send>;
+/// Exactly-once durable-copy completion; never proof of a successful ACP load.
+pub type RestoreCompletion =
+    Box<dyn FnOnce(Result<crate::launch_protocol::RecoveryRestoreRequest, RecoveryError>) + Send>;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,6 +88,22 @@ pub(super) struct SessionStorage {
 }
 
 impl SessionStorage {
+    pub(super) fn restore(
+        &self,
+        request: &crate::launch_protocol::RecoveryRestoreRequest,
+        now_ms: u64,
+    ) -> Result<(), RecoveryError> {
+        if request.target != self.launch || !valid_id(&request.source.launch.session_id) {
+            return Err(RecoveryError::Invalid);
+        }
+        let parent = self.directory.parent().ok_or(RecoveryError::Invalid)?;
+        restore(
+            &parent.join(&request.source.launch.session_id),
+            &self.directory,
+            request,
+            now_ms,
+        )
+    }
     pub(super) fn open(
         directory: &Path,
         launch: &LaunchRequest,
