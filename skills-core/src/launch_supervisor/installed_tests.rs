@@ -36,6 +36,9 @@ const ACCOUNT: &str = "louiselm-broker-gate";
 #[path = "installed_failure_tests.rs"]
 mod failures;
 
+#[path = "installed_recovery_tests.rs"]
+mod recovery;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -306,6 +309,7 @@ fn installed_broker_worker() {
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
     broker
         .authorize(&GrantRequest {
+            require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,
             expires_at_ms: now + 30_000,
@@ -346,6 +350,7 @@ fn installed_broker_worker() {
     let proof = inspection.start_evidence.unwrap();
     assert_eq!(proof.assigned_uid, AGENT_UID);
     println!("BROKER_RUNNING {}", proof.agent_pid);
+    recovery::controller_registers(&broker, &mut session, config.operator_uid);
     while !broker.step(&mut session).unwrap() {}
     assert_eq!(
         broker.inspect("session").unwrap().unwrap().state,
@@ -369,7 +374,7 @@ fn broker_process(root: &Path, fault: Option<&str>) -> (BrokerChild, mpsc::Recei
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LOUISELM_BROKER_FIXTURE", root)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     if let Some(fault) = fault {
@@ -503,6 +508,13 @@ fn privileged_installed_broker_launch_and_effects() {
         command: COMMAND.into(),
         timeout_ms: 5000,
     };
+    recovery::initialize_checkpoint(
+        &mut input,
+        &mut output,
+        &command,
+        &mut broker_process.0,
+        &lines,
+    );
     input.write_all(&[0x1e]).unwrap();
     input.write_all(&command.canonical_bytes()).unwrap();
     input.write_all(b"\n").unwrap();

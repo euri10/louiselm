@@ -21,6 +21,7 @@ struct State {
     grants: BTreeMap<u64, LocalGrant>,
 }
 
+#[derive(Clone)]
 struct LocalGrant {
     principal: CommandPrincipal,
     process: Arc<KernelProcess>,
@@ -52,6 +53,37 @@ pub struct CommandPermit {
 }
 
 impl CommandEnforcer {
+    /// Creates a fresh command generation for the same pinned Agent only after
+    /// durable operator Resume. Old permits/grants keep their revoked state;
+    /// the dispatch floor carries forward so consumed decisions cannot replay.
+    pub(crate) fn resume_agent(&self) -> Result<Self, SupervisorError> {
+        let previous = self
+            .state
+            .lock()
+            .map_err(|_| SupervisorError::AuthorizationRejected)?;
+        if previous.active
+            || !self
+                .agent
+                .valid()
+                .map_err(|_| SupervisorError::AgentIdentityRejected)?
+        {
+            return Err(SupervisorError::AuthorizationRejected);
+        }
+        let mut grants = previous.grants.clone();
+        for grant in grants.values_mut() {
+            grant.active = false;
+        }
+        Ok(Self {
+            binding: self.binding.clone(),
+            agent: Arc::clone(&self.agent),
+            state: Arc::new(Mutex::new(State {
+                active: true,
+                sequence: previous.sequence,
+                grants,
+            })),
+        })
+    }
+
     pub(crate) fn agent_valid(&self) -> Result<bool, SupervisorError> {
         Ok(self
             .state

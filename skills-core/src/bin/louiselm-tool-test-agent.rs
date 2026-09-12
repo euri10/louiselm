@@ -24,6 +24,14 @@ fn run() -> io::Result<()> {
     let mut byte = [0];
     let mut counter = 0_u64;
     while input.read(&mut byte)? != 0 {
+        // Explicit fixture reconnect after authorized Resume; never retry a
+        // possibly executed command automatically across a disconnected channel.
+        if byte[0] == 0x1f {
+            channel = None;
+            output.write_all(b"\x1f\n")?;
+            output.flush()?;
+            continue;
+        }
         if byte[0] == 0x1d {
             recovery::handle(&mut input, &mut output, &mut counter)?;
             continue;

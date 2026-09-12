@@ -157,7 +157,7 @@ impl BrokerService {
     /// This is blocking broker-worker I/O, not a liveness inference from stored receipts.
     /// # Errors
     /// Refuses malformed, foreign, stale-head or unavailable supervisor responses.
-    fn supervisor_status<F>(
+    pub(in crate::broker) fn supervisor_status<F>(
         &self,
         session: &mut BrokerSession,
         mut verify: F,

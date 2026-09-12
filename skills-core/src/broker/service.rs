@@ -52,6 +52,8 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// or process cleanup has completed. Listener lifetime is independent.
 #[must_use = "Dropping the Session owner closes its supervisor connection."]
 pub struct BrokerSession {
+    require_cold_recovery: bool,
+    pub(in crate::broker) recovery_admitted_until: Option<Instant>,
     authorization: LaunchAuthorization,
     launch_head: ReceiptHead,
     channel: SeqpacketChannel,
@@ -297,12 +299,16 @@ impl BrokerService {
         let now_ms =
             now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
         match self.transaction(&channel, now_ms, &mut verify_signature) {
-            Ok((authorization, launch_head, commands)) => Ok(BrokerSession {
-                authorization,
-                launch_head,
-                channel,
-                commands,
-            }),
+            Ok((authorization, launch_head, commands, require_cold_recovery)) => {
+                Ok(BrokerSession {
+                    require_cold_recovery,
+                    recovery_admitted_until: None,
+                    authorization,
+                    launch_head,
+                    channel,
+                    commands,
+                })
+            }
             Err(error) => {
                 channel.close();
                 Err(error)
@@ -331,6 +337,7 @@ impl BrokerService {
             LaunchAuthorization,
             ReceiptHead,
             Option<super::commands::CommandAuthority>,
+            bool,
         ),
         BrokerError,
     >
@@ -447,7 +454,12 @@ impl BrokerService {
             digest: ack.receipt_digest.clone(),
         };
         send(channel, ack.canonical_bytes())?;
-        Ok((authorization, broker_head, commands))
+        Ok((
+            authorization,
+            broker_head,
+            commands,
+            pending.require_cold_recovery,
+        ))
     }
 
     /// Stores exact signed bytes; the caller sends the ACK after policy setup.

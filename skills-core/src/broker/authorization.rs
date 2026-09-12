@@ -80,6 +80,8 @@ impl ApprovedCommands {
 /// A launch the operator's controller has authorized but not yet started.
 #[derive(Clone, Debug)]
 pub struct GrantRequest {
+    /// Trusted Run policy: no governed work until durable cold recovery is ready.
+    pub require_cold_recovery: bool,
     /// The exact canonical request the controller will hand the launcher.
     pub request: LaunchRequest,
     /// Unprivileged controller identity permitted to spend this authorization.
@@ -96,6 +98,8 @@ pub struct GrantRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingAuthorization {
+    /// Exact recovery requirement fixed by the trusted Run controller.
+    pub require_cold_recovery: bool,
     /// Single-use authorization identity, also its durable record name.
     pub authorization_id: String,
     /// Idempotency identity of the authorized request.
@@ -197,6 +201,7 @@ impl AuthorizationStore {
         }
         let identity = self.assign_identity(now_ms)?;
         let pending = PendingAuthorization {
+            require_cold_recovery: grant.require_cold_recovery,
             authorization_id: grant.request.authorization_id.clone(),
             request_id: grant.request.request_id.clone(),
             request_digest: grant.request.digest().to_string(),

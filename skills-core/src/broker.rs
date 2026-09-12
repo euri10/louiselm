@@ -22,6 +22,7 @@ pub mod delegation;
 pub mod installed;
 pub mod lifecycle;
 pub mod receipts;
+pub mod recovery;
 pub mod service;
 
 #[cfg(test)]

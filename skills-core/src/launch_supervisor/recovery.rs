@@ -14,6 +14,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use crate::launch_protocol::{RetentionEvidence, RetentionRequest};
+
 use crate::{
     Digest,
     launch::LaunchRequest,
@@ -21,7 +23,7 @@ use crate::{
 };
 
 const CONTRACT: &str = "louiselm.test-recovery/1";
-const EVIDENCE_SCHEMA: &str = "louiselm.launch.recovery-retention/1";
+const EVIDENCE_SCHEMA: &str = crate::launch_protocol::RETENTION_EVIDENCE_SCHEMA;
 const CHECKPOINT: &str = "home/recovery.json";
 const WORKSPACE: &str = "workspace/recovery-counter.json";
 const DIRECTORY: &str = "retained-recovery";
@@ -31,39 +33,6 @@ const MAX_BYTES: usize = 16 * 1024;
 std::thread_local! {
     pub(super) static FAIL_SEAL_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_PUBLICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// A broker-selected bounded retention operation; contains no filesystem paths.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RetentionRequest {
-    /// Correlates one immutable retention operation, never renewed on retry.
-    pub request_id: String,
-    /// ACP identity observed by the launch-authorized controller.
-    pub acp_session_id: String,
-    /// Exclusive absolute expiry from the existing Park policy, in milliseconds.
-    pub expires_at_ms: u64,
-}
-
-/// Metadata returned only after recovery bytes and their directory are durable.
-///
-/// Deserializing this value does not prove retention. A consumer must use an
-/// authenticated supervisor channel and validate its exact launch binding.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RetentionEvidence {
-    /// Closed retention-evidence schema.
-    pub schema: String,
-    /// Exact authorized launch; identifiers only, no process authority is stored.
-    pub launch: LaunchRequest,
-    /// Exact operation and original expiry.
-    pub request: RetentionRequest,
-    /// Verified layout contract, currently the deterministic test Agent only.
-    pub contract: String,
-    /// Digest of the measured Agent integration established during launch.
-    pub integration_digest: String,
-    /// Digest of the retained checkpoint and required workspace bytes together.
-    pub material_digest: String,
 }
 
 /// Expected retention failures, without exposing file contents or credentials.

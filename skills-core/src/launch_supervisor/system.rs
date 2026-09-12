@@ -1583,6 +1583,18 @@ impl CapabilityGate for SystemCapabilityGate {
         Ok(())
     }
 
+    fn enable_after_resume(&mut self) -> Result<(), SupervisorError> {
+        let commands = Arc::new(
+            self.commands
+                .as_ref()
+                .ok_or(SupervisorError::CapabilityUnavailable)?
+                .resume_agent()?,
+        );
+        self.enable()?;
+        self.commands = Some(commands);
+        Ok(())
+    }
+
     fn revoke(&mut self) -> Result<(), SupervisorError> {
         let commands = self
             .commands
@@ -2254,6 +2266,27 @@ mod tests {
                 .mode()
                 & 0o777,
             0o600,
+        );
+        let second = connect_channel(&path, pin.clone());
+        wait_for_accepted(&gate);
+        let revoked_commands = gate
+            .command_enforcer()
+            .expect("original command generation");
+        assert_eq!(
+            revoked_commands.agent_valid(),
+            Ok(false),
+            "transport reconnect cannot restore command authority"
+        );
+        gate.revoke().expect("transport revokes again");
+        assert_disconnected(second);
+        gate.enable_after_resume()
+            .expect("durable operator Resume enables a fresh generation");
+        assert_eq!(revoked_commands.agent_valid(), Ok(false));
+        assert_eq!(
+            gate.command_enforcer()
+                .expect("resumed commands")
+                .agent_valid(),
+            Ok(true)
         );
         let second = connect_channel(&path, pin.clone());
         wait_for_accepted(&gate);

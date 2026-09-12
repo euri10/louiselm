@@ -3,6 +3,9 @@
 #[path = "tool_dispatch.rs"]
 mod tool_dispatch;
 
+#[path = "recovery_dispatch.rs"]
+mod recovery_dispatch;
+
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, mpsc},
@@ -244,6 +247,7 @@ impl Drop for LaunchedSession {
 }
 
 enum OwnerEvent {
+    RecoveryFinished,
     ToolFinished,
     CommandDeadline {
         request_id: String,
@@ -418,6 +422,7 @@ enum ParkResult {
     reason = "Owner flags track independent I/O, timer, and terminal obligations, not one exclusive state."
 )]
 struct SessionOwner {
+    recovery: recovery_dispatch::RecoveryDispatch,
     commands: tool_dispatch::CommandDispatch,
     resources: SessionResources,
     signer: Arc<dyn LaunchSigner>,
@@ -484,6 +489,7 @@ impl SessionOwner {
         let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         Self {
             resources,
+            recovery: recovery_dispatch::RecoveryDispatch::default(),
             commands: tool_dispatch::CommandDispatch::default(),
             signer,
             receipts,
@@ -637,10 +643,12 @@ impl SessionOwner {
                     event,
                 } if process_epoch == self.process_epoch => self.handle_running_agent_event(event),
                 OwnerEvent::RunningAgent { .. }
+                | OwnerEvent::RecoveryFinished
                 | OwnerEvent::RelayQuiesced
                 | OwnerEvent::ToolFinished => {}
             }
             self.collect_relay_quiescence();
+            self.collect_recovery();
             self.collect_tool_result();
             if let Some(result) = self.finished.take() {
                 return result;
@@ -714,6 +722,7 @@ impl SessionOwner {
             }
         };
         match message {
+            ProtocolMessage::Recovery(request) => self.handle_recovery(request),
             ProtocolMessage::Command(request) => self.handle_command(request),
             ProtocolMessage::ToolExecution(request) => self.handle_tool(request),
             ProtocolMessage::Lifecycle(request) => self.handle_lifecycle(request),
@@ -1961,10 +1970,11 @@ impl SessionOwner {
                 .capability
                 .as_mut()
                 .ok_or(SupervisorError::CapabilityUnavailable)
-                .and_then(|capability| capability.enable());
+                .and_then(|capability| capability.enable_after_resume());
             if enabled.is_ok() {
                 self.channel_state = ChannelState::Enabled;
                 self.last_failure = None;
+                self.resume_command_reception();
             } else {
                 self.channel_state = ChannelState::Revoked;
                 self.last_failure = Some(ProtocolError::new(

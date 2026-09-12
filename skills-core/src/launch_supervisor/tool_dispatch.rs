@@ -40,6 +40,20 @@ pub(super) struct CommandDispatch {
 }
 
 impl SessionOwner {
+    pub(super) fn resume_command_reception(&mut self) {
+        // Callbacks from the revoked channel retain the old mailbox and cannot
+        // close or inject a command into this new receive generation.
+        self.commands.request = Arc::default();
+        if let Some(pending) = self.commands.pending.as_mut() {
+            pending.abandoned = true;
+        }
+        self.commands.grants.active = false;
+        self.commands.grants.pending = None;
+        self.commands.receiving = false;
+        self.commands.closed = false;
+        self.arm_agent_receive();
+    }
+
     pub(super) fn handle_tool(&mut self, request: ToolExecutionRequest) {
         // A raw broker command has no original authenticated Agent request and
         // no single-use authorization. It must never reach process mechanics.

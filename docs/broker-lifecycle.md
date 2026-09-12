@@ -6,8 +6,55 @@ reattachment, controller-loss settlement, the operator CLI and Agent self-status
 remain open work. The confirmed design in `louiselm-c0vs` requires broker-owned
 recovery evidence backed by trusted supervisor retention proof; a reference
 string alone must not authorize disposal. `louiselm-qbr.5.1.2.5` supplies the
-retention mechanics below. Authenticated controller registration/admission and
-broker protocol wiring remain open in `louiselm-qbr.5.1.2.6`.
+retention mechanics below. `louiselm-qbr.5.1.2.6` connects them to authenticated
+controller registration and broker recovery admission.
+
+## Recovery registration and admission
+
+`InstalledBroker::register_recovery` runs on the existing serialized broker
+Session worker. Its `LifecycleCaller::Operator` identity must come from the
+trusted local controller boundary and match the original launch controller.
+Agent/helper channels and coordinator scopes cannot submit recovery evidence.
+The closed `RecoveryRequest` binds the exact launch (including configured Agent,
+Session, Run and envelope revision), durable Park receipt head, ACP identity,
+operation ID and original absolute expiry. It contains no selected paths.
+
+The supervisor checks that the same tree is idle and Parked, then calls
+`RunningAgent::retain_recovery` asynchronously. Completion is returned through
+the serialized owner only while its connection, process, state and receipt head
+still match. Late callbacks cannot restore disposed state. The broker validates
+the returned launch, operation and measured integration against its original
+authorization and signed receipts, rechecks current supervisor state, and
+persists the evidence before acknowledging readiness.
+
+One immutable operation is allowed per Session. Identical retries revalidate the
+protected retained bytes and return the original evidence; conflicting requests
+cannot replace the point or extend expiry. A durable pending marker makes prior
+evidence unavailable during revalidation and after an uncertain or failed
+attempt. Torn records, foreign bindings, expiry and quarantine fail closed.
+Capture-service projections and acknowledgements never enter this decision.
+
+The trusted Run controller fixes `GrantRequest::require_cold_recovery` before
+launch. Ordinary grants set it to false and remain usable without recovery or
+`loadSession`. For required recovery, `InstalledBroker::admit_recovery` must
+succeed before controller work dispatch; the broker independently denies command
+and delegation requests until registration is durable and refuses new requests
+after the original expiry. The controller may initialize the ACP checkpoint
+without governed effects, explicitly Park for retention, register, and explicitly
+Resume. Registration itself never Parks or Resumes. Existing command approvals
+still apply; readiness is no new capability grant.
+
+`InstalledBroker::recovery_readiness` exposes normalized unavailable, expired,
+quarantined or ready state for the canonical status consumer. A ready record
+proves a retained recovery point, not lossless continuation or a guaranteed
+future load. Reconstructed broker Session owners start without in-memory command
+admission; durable status alone does not re-enable effects.
+
+Authorized Resume creates a new command-enforcement generation for the same
+kernel-pinned Agent. It preserves the consumed dispatch floor and revoked grant
+identities; pre-Park permits, helpers and late receive callbacks cannot acquire
+the new generation. The deterministic fixture explicitly reconnects its socket
+without automatically replaying a possibly executed command (`louiselm-fhh8`).
 
 ## Recovery retention mechanics
 
@@ -38,8 +85,8 @@ not delete Forensics or implement the broader retention janitor owned by
 `louiselm-d6fv.5.5`.
 
 The asynchronous mechanical API does not itself authorize registration,
-Disposal or Resume. `.6` must bind its response to the authenticated supervisor
-channel and current canonical lifecycle state. `.2` owns controller-loss
+Disposal or Resume. The broker registration path binds its response to the
+authenticated supervisor channel and current canonical lifecycle state. `.2` owns controller-loss
 settlement and operator-only reconstruction into a fresh authorized Session.
 The VM test restores a counter in a fresh measured fixture with a reused UID;
 it does not establish a vendor ACP recovery contract or desktop availability.
@@ -126,6 +173,19 @@ data. The ordinary production adapter's unset layout is explicitly refused.
 Host-identity fixture executables must be staged in a traversable root-owned
 test directory, not below a user's mode-0700 home; do not weaken home permissions
 to run this gate.
+
+`tests/broker/recovery.rs` drives controller registration across the real local
+transport, including controller/Agent/coordinator refusal, measured-integration
+substitution, unavailable ordinary/required admission, pending revalidation,
+original-evidence retry, conflicting expiry, restart, expiry and malformed records.
+`recovery_dispatch_tests.rs` holds the mechanical callback and proves late
+completion cannot revive terminal state. The installed broker VM gate now
+initializes the measured checkpoint, proves pre-admission command denial,
+registers and retries protected evidence, preserves Park until operator Resume,
+executes the approved command after explicit fixture reconnect, and proves cleanup.
+These tests support only the synthetic layout described above. The maintainer's
+ordinary Lua Session path does not yet construct these installed broker grants;
+native vendor support and desktop activation remain the Verified cutover work.
 
 Run both owning crates' complete gates from `docs/agent-testing.md`. These
 tests do not establish installed desktop/vendor cutover or a fully Verified

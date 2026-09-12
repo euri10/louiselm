@@ -54,6 +54,9 @@ mod lifecycle;
 #[path = "broker/attention.rs"]
 mod attention;
 
+#[path = "broker/recovery.rs"]
+mod recovery;
+
 /// Installed pool wide enough that slot assignment is not the subject.
 fn pool(slots: u32) -> IdentityPool {
     IdentityPool {
@@ -85,6 +88,7 @@ const CONTROLLER_UID: u32 = 1501;
 
 fn grant(request: &LaunchRequest) -> GrantRequest {
     GrantRequest {
+        require_cold_recovery: false,
         request: request.clone(),
         controller_uid: CONTROLLER_UID,
         expires_at_ms: 30_000,

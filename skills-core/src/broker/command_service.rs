@@ -44,6 +44,20 @@ impl BrokerSession {
         let LauncherPacket::Request(ProtocolMessage::Command(mut message)) = packet.packet else {
             return Err(BrokerError::InvalidGrant);
         };
+        if self.require_cold_recovery
+            && self
+                .recovery_admitted_until
+                .is_none_or(|expiry| std::time::Instant::now() >= expiry)
+            && matches!(
+                message.operation,
+                CommandOperation::Request { .. } | CommandOperation::DelegationRequest { .. }
+            )
+        {
+            message.operation = CommandOperation::Reject {
+                error: ErrorCode::InvalidRequest,
+            };
+            return send(&self.channel, message.canonical_bytes());
+        }
         let Some(authority) = self.commands.as_mut() else {
             if matches!(
                 message.operation,

@@ -33,6 +33,55 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Registers observed ACP metadata from the launch-authorized controller.
+    /// Execute on the Session worker; transport completions remain asynchronous.
+    /// The caller is the existing authenticated local controller boundary, not
+    /// a deserialized Agent/helper role. This never Parks or Resumes a Session.
+    /// # Errors
+    /// Refuses wrong controller/binding, stale state, failed retention or persistence.
+    pub fn register_recovery(
+        &self,
+        session: &mut BrokerSession,
+        caller: &LifecycleCaller,
+        request: &crate::launch_protocol::RecoveryRequest,
+    ) -> Result<crate::launch_protocol::RetentionEvidence, BrokerError> {
+        let mut verification_failure = None;
+        let result = self.service.register_recovery(
+            session,
+            caller,
+            request,
+            now_ms()?,
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    verification_failure = Some(error);
+                    false
+                }
+            },
+        );
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
+    /// Checks the persisted Run requirement before the controller dispatches work.
+    /// Does not grant capabilities or implicitly Resume a Parked Session.
+    /// # Errors
+    /// Refuses required recovery without current broker-owned evidence.
+    pub fn admit_recovery(&self, session_id: &str) -> Result<(), BrokerError> {
+        self.service.admit_recovery(session_id, now_ms()?)
+    }
+
+    /// Returns broker-owned recovery readiness for the canonical status consumer.
+    /// # Errors
+    /// Refuses unknown Sessions or unreadable/invalid durable evidence.
+    pub fn recovery_readiness(
+        &self,
+        session_id: &str,
+    ) -> Result<super::recovery::RecoveryReadiness, BrokerError> {
+        self.service.recovery_readiness(session_id, now_ms()?)
+    }
     /// Delivers one pending normalized Attention entry independently of Neovim.
     /// Run on the broker's delivery worker. Failure retains the durable entry
     /// and never changes Session authorization or launcher receipts.

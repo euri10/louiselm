@@ -118,6 +118,34 @@ fn final_start_is_single_use_and_revocation_blocks_an_already_queued_permit() {
 }
 
 #[test]
+fn authorized_resume_keeps_old_permits_revoked_and_preserves_replay_floor() {
+    let (owner, request, principal, mut decision) = fixture();
+    assert!(owner.resume_agent().is_err());
+    let queued = owner
+        .admit(&request, &principal, &decision, Instant::now())
+        .unwrap();
+    owner.revoke().unwrap();
+    let resumed = owner.resume_agent().unwrap();
+    assert!(queued.start(|| Ok(())).is_err());
+    assert!(
+        resumed
+            .admit(&request, &principal, &decision, Instant::now())
+            .is_err()
+    );
+    if let CommandOperation::Authorize {
+        dispatch_sequence, ..
+    } = &mut decision.operation
+    {
+        *dispatch_sequence += 1;
+    }
+    let fresh = resumed
+        .admit(&request, &principal, &decision, Instant::now())
+        .unwrap();
+    assert_eq!(fresh.start(|| Ok(42)), Ok(42));
+    assert_eq!(queued.valid(), Ok(false));
+}
+
+#[test]
 fn delayed_reply_cannot_move_expiry_and_owner_drop_revokes_queued_work() {
     let (owner, request, principal, decision) = fixture();
     assert!(
@@ -254,7 +282,7 @@ fn grant_revocation_is_scoped_and_a_queued_permit_cannot_outlive_either_principa
             .unwrap();
         assert!(
             owner
-                .register_grant(process, &granted, Instant::now())
+                .register_grant(Arc::clone(&process), &granted, Instant::now())
                 .is_err(),
             "cloning/reconnecting cannot reinstall a grant"
         );
@@ -283,6 +311,19 @@ fn grant_revocation_is_scoped_and_a_queued_permit_cannot_outlive_either_principa
         }
         assert!(!permit.valid().unwrap());
         assert!(permit.start(|| Ok(())).is_err());
+        if scenario == "agent_revoked" {
+            let resumed = owner.resume_agent().unwrap();
+            assert!(
+                resumed
+                    .admit(&request, &tool, &decision, Instant::now())
+                    .is_err()
+            );
+            assert!(
+                resumed
+                    .register_grant(process, &granted, Instant::now())
+                    .is_err()
+            );
+        }
         if scenario != "agent_revoked" {
             let independent = owner
                 .admit(&request, &agent, &agent_decision, Instant::now())

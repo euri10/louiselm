@@ -34,7 +34,7 @@ fn status(authorization: &LaunchAuthorization) -> SupervisorStatus {
     }
 }
 
-fn park(authorization: &LaunchAuthorization) -> LifecycleRequest {
+pub(super) fn park(authorization: &LaunchAuthorization) -> LifecycleRequest {
     LifecycleRequest {
         schema: LIFECYCLE_REQUEST_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
@@ -422,7 +422,7 @@ fn park_exchange(quarantine: bool) {
     );
 }
 
-fn drive_park_peer(
+pub(super) fn drive_park_peer(
     authorization: &LaunchAuthorization,
     channel: &SeqpacketChannel,
     quarantine: bool,

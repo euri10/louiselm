@@ -395,6 +395,15 @@ pub trait CapabilityGate: Send {
     /// Returns an error if reversible revocation cannot be proved, without retaining live capability reachability.
     fn revoke(&mut self) -> Result<(), SupervisorError>;
 
+    /// Enables a fresh command generation only after durable operator Resume.
+    /// Transport-only reattachment must continue using `enable`, so reconnect
+    /// cannot restore revoked command authority. Old permits/grants stay revoked.
+    /// # Errors
+    /// Refuses a dead/replaced Agent or an unavailable capability generation.
+    fn enable_after_resume(&mut self) -> Result<(), SupervisorError> {
+        self.enable()
+    }
+
     /// Revokes the listener and its owned rendezvous path. Idempotent.
     fn close(&mut self);
 }

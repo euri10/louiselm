@@ -36,6 +36,18 @@ use std::sync::{
 #[path = "grant_dispatch_tests.rs"]
 mod grant_tests;
 
+#[path = "recovery_dispatch_tests.rs"]
+mod recovery_tests;
+
+type HeldRecovery = Arc<
+    Mutex<
+        Option<(
+            crate::launch_protocol::RetentionRequest,
+            crate::launch_supervisor::recovery::RecoveryCompletion,
+        )>,
+    >,
+>;
+
 type HeldCompletion = Arc<
     Mutex<
         Option<(
@@ -46,12 +58,21 @@ type HeldCompletion = Arc<
 >;
 
 struct TestProcess {
+    recovery: HeldRecovery,
     tools: ToolExecutor,
     pin: Arc<KernelProcess>,
     held: Option<HeldCompletion>,
     fail_cleanup: Arc<AtomicBool>,
 }
 impl RunningAgent for TestProcess {
+    fn retain_recovery(
+        &mut self,
+        request: crate::launch_protocol::RetentionRequest,
+        complete: crate::launch_supervisor::recovery::RecoveryCompletion,
+    ) -> Result<(), SupervisorError> {
+        *self.recovery.lock().unwrap() = Some((request, complete));
+        Ok(())
+    }
     fn launch_helper(
         &mut self,
         request: CommandMessage,
@@ -178,6 +199,7 @@ impl crate::launch_supervisor::IdentityGuard for TestIdentity {
 }
 
 struct Harness {
+    recovery: HeldRecovery,
     owner: SessionOwner,
     agent: SeqpacketChannel,
     broker: SeqpacketChannel,
@@ -199,11 +221,13 @@ impl Harness {
         let fail_cleanup = Arc::new(AtomicBool::new(false));
         let identity_disposition = Arc::new(AtomicU8::new(0));
         let process = TestProcess {
+            recovery: Arc::default(),
             tools: parts.tools,
             pin: parts.process,
             held: delay_delivery.then(|| Arc::clone(&held)),
             fail_cleanup: Arc::clone(&fail_cleanup),
         };
+        let recovery = Arc::clone(&process.recovery);
         let audit = Arc::new(AuditLog::open(&root.path().join("audit")).unwrap());
         let authority = CommandAuthority::new(
             binding.clone(),
@@ -272,6 +296,7 @@ impl Harness {
         owner.arm_broker_receive();
         owner.arm_agent_receive();
         Self {
+            recovery,
             owner,
             agent: parts.agent,
             broker: parts.broker_channel,
@@ -293,7 +318,7 @@ impl Harness {
                 self.owner.commands.closed, self.owner.commands.grants.pending.is_some(), self.owner.commands.pending.is_some(),
                 self.owner.resources.capability.as_ref().map(|gate| gate.command_enforcer().and_then(|owner| owner.agent_valid()))))
         {
-            OwnerEvent::ToolFinished | OwnerEvent::RelayQuiesced => {}
+            OwnerEvent::ToolFinished | OwnerEvent::RelayQuiesced | OwnerEvent::RecoveryFinished => {}
             OwnerEvent::BrokerRequest {
                 connection_epoch,
                 result,
@@ -309,6 +334,7 @@ impl Harness {
             _ => panic!("unexpected lifecycle event in command-only fixture"),
         }
         self.owner.collect_tool_result();
+        self.owner.collect_recovery();
         self.owner.collect_relay_quiescence();
     }
     fn request(&mut self, command: &str) -> CommandMessage {
