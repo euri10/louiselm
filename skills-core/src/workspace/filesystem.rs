@@ -124,7 +124,7 @@ pub(crate) fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Wor
     Ok(())
 }
 
-pub(super) fn write_files(
+pub(crate) fn write_files(
     root: &Path,
     files: &SourceFiles,
     readonly: bool,
@@ -156,6 +156,7 @@ pub(crate) fn publish(
         .unwrap_or(Path::new("."));
     let staging = tempfile::Builder::new()
         .prefix(".workspace-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?;
     write(staging.path())?;
     sync_tree(staging.path())?;
@@ -189,6 +190,38 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "Tests abort on fixture failures.")]
 
     use super::*;
+
+    #[test]
+    fn publication_is_private_under_permissive_umask() {
+        const CHILD: &str = "LOUISELM_WORKSPACE_MODE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", "umask 022; exec \"$@\"", "workspace-mode-test"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "workspace::filesystem::tests::publication_is_private_under_permissive_umask",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("published");
+        publish(&output, |staging| {
+            assert_eq!(
+                fs::metadata(staging)?.mode() & 0o777,
+                0o700,
+                "the unpublished barrier must already be private"
+            );
+            write_file(&staging.join("record"), b"private", 0o400)
+        })
+        .unwrap();
+        assert_eq!(fs::metadata(output).unwrap().mode() & 0o777, 0o700);
+    }
 
     #[test]
     fn mutation_after_read_refuses_bytes_before_they_can_be_published() {

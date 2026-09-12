@@ -222,7 +222,7 @@ fn invalid_or_unbounded_plans_never_publish_even_with_the_matching_digest() {
     let (snapshot, bundle, _) = inputs(&temp);
     let baseline: Value =
         serde_json::from_slice(&fs::read(temp.path().join("plan.json")).unwrap()).unwrap();
-    for case in 0..13 {
+    for case in 0..14 {
         let mut document = baseline.clone();
         match case {
             0 => document["schema"] = "unsupported".into(),
@@ -240,7 +240,8 @@ fn invalid_or_unbounded_plans_never_publish_even_with_the_matching_digest() {
             }
             10 => document["private-command-marker"] = true.into(),
             11 => document["commands"] = vec![document["commands"][0].clone(); 33].into(),
-            _ => document["commands"][0]["argv"] = vec!["x"; 129].into(),
+            12 => document["commands"][0]["argv"] = vec!["x"; 129].into(),
+            _ => document["commands"][0]["argv"] = serde_json::json!(["-c", "sh"]),
         }
         let bytes = serde_json::to_vec(&document).unwrap();
         fs::write(temp.path().join("plan.json"), &bytes).unwrap();

@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 
 mod command;
 mod recovery;
+mod verification;
+pub use verification::{
+    VERIFICATION_SCHEMA, VerificationExecution, VerificationExport, VerificationOperation,
+    VerificationRequest, VerificationStep,
+};
 mod tool;
 pub use command::{
     COMMAND_SCHEMA, CommandMessage, CommandOperation, CommandOutcome, CommandPrincipal,
@@ -986,6 +991,8 @@ impl LaunchAuthorization {
 pub enum ProtocolMessage {
     /// Restore selected protected bytes into a distinct frozen target.
     RecoveryRestore(Box<RecoveryRestoreRequest>),
+    /// Exact broker-approved producer export or independent verification job.
+    Verification(VerificationRequest),
     /// Retain recovery bytes at an exact durable Park checkpoint.
     Recovery(RecoveryRequest),
     /// Authenticated supervisor/broker command authorization exchange.
@@ -1022,6 +1029,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
             let request: RecoveryRestoreRequest = decode_closed(bytes)?;
             request.validate()?;
             Ok(ProtocolMessage::RecoveryRestore(Box::new(request)))
+        }
+        VERIFICATION_SCHEMA => {
+            let request: VerificationRequest = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::Verification(request))
         }
         RECOVERY_REQUEST_SCHEMA => {
             let request: RecoveryRequest = decode_closed(bytes)?;
@@ -1691,6 +1703,16 @@ pub enum ResponseResult {
         /// Original exact operation; authority depends on the responding supervisor.
         request: Box<RecoveryRestoreRequest>,
     },
+    /// Actual frozen producer export and retained exact job.
+    VerificationExport {
+        /// Supervisor-authenticated export observation.
+        evidence: VerificationExport,
+    },
+    /// Actual bounded plan outcomes and descendant cleanup evidence.
+    VerificationExecution {
+        /// Supervisor-authenticated observations, never an Agent claim.
+        evidence: VerificationExecution,
+    },
     /// Authenticated supervisor proof of durably retained recovery bytes.
     RecoveryRetention {
         /// Exact mechanical result; serialization alone grants no authority.
@@ -1787,6 +1809,20 @@ impl ProtocolResponse {
             ResponseResult::RecoveryRestored { request } => {
                 request.validate()?;
                 if request.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
+            ResponseResult::VerificationExport { evidence } => {
+                evidence.validate()?;
+                if evidence.request.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
+            ResponseResult::VerificationExecution { evidence } => {
+                evidence.validate()?;
+                if evidence.request.request_id != self.request_id {
                     return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
                 }
                 Ok(())

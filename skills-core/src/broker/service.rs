@@ -150,6 +150,7 @@ pub struct BrokerService {
     supervisor: CredentialPin,
     pub(super) lifecycle: super::lifecycle::LifecycleStore,
     pub(super) attention: super::attention::Outbox,
+    pub(super) verification_inputs: std::path::PathBuf,
 }
 
 impl BrokerService {
@@ -181,6 +182,10 @@ impl BrokerService {
             supervisor,
             lifecycle,
             attention,
+            verification_inputs: socket_path
+                .parent()
+                .ok_or(BrokerError::InvalidGrant)?
+                .join("verification-inputs"),
         })
     }
 
@@ -589,13 +594,24 @@ fn response(request_id: &str, result: ResponseResult) -> Vec<u8> {
 
 /// Receives one authenticated packet, or fails the transaction.
 pub(super) fn receive(channel: &SeqpacketChannel) -> Result<AuthenticatedPacket, BrokerError> {
+    receive_for(channel, STEP_TIMEOUT)
+}
+
+/// Verification commands have their own approved, bounded job deadline.
+pub(super) fn receive_for(
+    channel: &SeqpacketChannel,
+    timeout: Duration,
+) -> Result<AuthenticatedPacket, BrokerError> {
     let (sender, receiver) = mpsc::sync_channel(1);
     channel
         .receive(Box::new(move |received| {
             let _delivered = sender.send(received);
         }))
         .map_err(BrokerError::Transport)?;
-    let packet: AuthenticatedPacket = settle(&receiver)?;
+    let packet: AuthenticatedPacket = receiver
+        .recv_timeout(timeout)
+        .map_err(|_| BrokerError::Transport(TransportError::Closed))?
+        .map_err(BrokerError::Transport)?;
     if packet.peer_credentials != channel.peer_credentials()
         || packet.message_credentials != packet.peer_credentials
     {

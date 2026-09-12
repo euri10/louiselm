@@ -7,6 +7,8 @@ mod tool_dispatch;
 mod recovery_dispatch;
 #[path = "restore_dispatch.rs"]
 mod restore_dispatch;
+#[path = "verification_dispatch.rs"]
+mod verification_dispatch;
 
 use std::{
     collections::VecDeque,
@@ -251,6 +253,7 @@ impl Drop for LaunchedSession {
 enum OwnerEvent {
     RestoreFinished,
     RecoveryFinished,
+    VerificationFinished,
     ToolFinished,
     CommandDeadline {
         request_id: String,
@@ -427,6 +430,7 @@ enum ParkResult {
 struct SessionOwner {
     restore: restore_dispatch::RestoreDispatch,
     recovery: recovery_dispatch::RecoveryDispatch,
+    verification: verification_dispatch::VerificationDispatch,
     commands: tool_dispatch::CommandDispatch,
     resources: SessionResources,
     signer: Arc<dyn LaunchSigner>,
@@ -495,6 +499,7 @@ impl SessionOwner {
             resources,
             restore: restore_dispatch::RestoreDispatch::default(),
             recovery: recovery_dispatch::RecoveryDispatch::default(),
+            verification: verification_dispatch::VerificationDispatch::default(),
             commands: tool_dispatch::CommandDispatch::default(),
             signer,
             receipts,
@@ -650,12 +655,14 @@ impl SessionOwner {
                 OwnerEvent::RunningAgent { .. }
                 | OwnerEvent::RecoveryFinished
                 | OwnerEvent::RestoreFinished
+                | OwnerEvent::VerificationFinished
                 | OwnerEvent::RelayQuiesced
                 | OwnerEvent::ToolFinished => {}
             }
             self.collect_relay_quiescence();
             self.collect_recovery();
             self.collect_restore();
+            self.collect_verification();
             self.collect_tool_result();
             if let Some(result) = self.finished.take() {
                 return result;
@@ -731,6 +738,7 @@ impl SessionOwner {
         match message {
             ProtocolMessage::RecoveryRestore(request) => self.handle_restore(*request),
             ProtocolMessage::Recovery(request) => self.handle_recovery(request),
+            ProtocolMessage::Verification(request) => self.handle_verification(request),
             ProtocolMessage::Command(request) => self.handle_command(request),
             ProtocolMessage::ToolExecution(request) => self.handle_tool(request),
             ProtocolMessage::Lifecycle(request) => self.handle_lifecycle(request),

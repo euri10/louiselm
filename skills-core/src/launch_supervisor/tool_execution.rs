@@ -39,6 +39,9 @@ pub(super) struct ToolExecutor {
 }
 
 impl ToolExecutor {
+    pub(super) fn verification_context(&self) -> (BubblewrapBackend, ConfinementPlan) {
+        (self.backend.clone(), self.plan.clone())
+    }
     pub(super) fn new(
         backend: BubblewrapBackend,
         agent: &ConfinementPlan,
@@ -212,7 +215,7 @@ impl Drop for ToolExecutor {
     }
 }
 
-fn run(
+pub(super) fn run(
     backend: &BubblewrapBackend,
     plan: &ConfinementPlan,
     timeout: Duration,

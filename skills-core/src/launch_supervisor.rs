@@ -52,6 +52,7 @@ pub mod recovery;
 mod tool_execution;
 mod tool_helper;
 mod tool_integration;
+mod verification;
 pub use tool_helper::HelperPrincipal;
 pub use tool_integration::ToolIsolationEvidence;
 mod relay;
@@ -458,6 +459,18 @@ pub trait RunningAgent: Send {
         complete: recovery::RestoreCompletion,
     ) -> Result<(), SupervisorError> {
         complete(Err(recovery::RecoveryError::Unsupported));
+        Ok(())
+    }
+    /// Performs an exact broker-approved export or verification job asynchronously.
+    /// The concrete owner must cancel and join this work before disposing its identity.
+    /// # Errors
+    /// Missing installed storage or confinement support refuses the operation.
+    fn verification(
+        &mut self,
+        _request: crate::launch_protocol::VerificationRequest,
+        complete: SupervisorCompletion<crate::launch_protocol::ResponseResult>,
+    ) -> Result<(), SupervisorError> {
+        complete(Err(SupervisorError::ToolIsolationUnproven));
         Ok(())
     }
     /// Retains a verified recovery point while the tree is frozen.

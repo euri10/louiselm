@@ -867,12 +867,35 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 .map_err(|_| SupervisorError::CleanupUnproven)?;
             return Err(SupervisorError::DurabilityUnavailable);
         };
+        let (verification_backend, verification_plan) = tools.verification_context();
+        let verification = match super::verification::Storage::new(
+            directory,
+            request,
+            crate::Digest::of(&tool_isolation.canonical_bytes()).to_string(),
+            self.config
+                .broker_socket_path
+                .parent()
+                .ok_or(SupervisorError::ResolutionFailed)?
+                .join("verification-inputs"),
+            self.config.broker_uid,
+            verification_backend,
+            verification_plan,
+        ) {
+            Ok(storage) => Arc::new(storage),
+            Err(error) => {
+                prepared
+                    .dispose()
+                    .map_err(|_| SupervisorError::CleanupUnproven)?;
+                return Err(error);
+            }
+        };
         Ok(Box::new(SystemPreparedAgent {
             prepared,
             backend_id: self.config.bwrap_digest.clone(),
             tool_isolation: Some(tool_isolation),
             tools: Some(tools),
             recovery,
+            verification,
         }))
     }
 }
@@ -905,6 +928,7 @@ struct SystemPreparedAgent {
     tool_isolation: Option<super::ToolIsolationEvidence>,
     tools: Option<super::tool_execution::ToolExecutor>,
     recovery: Arc<super::recovery::SessionStorage>,
+    verification: Arc<super::verification::Storage>,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -936,6 +960,7 @@ impl PreparedAgent for SystemPreparedAgent {
         running.tools = self.tools;
         running.tool_isolation = self.tool_isolation;
         running.recovery = Some(self.recovery);
+        running.verification_storage = Some(self.verification);
         Ok(Box::new(running))
     }
 
@@ -966,6 +991,8 @@ pub struct SystemRunningAgent {
     relay: Option<RelayWorker>,
     recovery: Option<Arc<super::recovery::SessionStorage>>,
     recovery_worker: Option<thread::JoinHandle<()>>,
+    verification_storage: Option<Arc<super::verification::Storage>>,
+    verification_worker: Option<super::verification::Worker>,
 }
 
 impl SystemRunningAgent {
@@ -982,6 +1009,8 @@ impl SystemRunningAgent {
             tool_isolation: None,
             recovery: None,
             recovery_worker: None,
+            verification_storage: None,
+            verification_worker: None,
         }
     }
 
@@ -989,6 +1018,12 @@ impl SystemRunningAgent {
         self.recovery_worker.take().map_or(Ok(()), |worker| {
             worker.join().map_err(|_| SupervisorError::CleanupUnproven)
         })
+    }
+
+    fn cancel_verification(&mut self) -> Result<(), SupervisorError> {
+        self.verification_worker
+            .as_mut()
+            .map_or(Ok(()), super::verification::Worker::cancel)
     }
 }
 
@@ -1078,6 +1113,36 @@ impl RunningAgent for SystemRunningAgent {
         );
         Ok(())
     }
+    fn verification(
+        &mut self,
+        request: crate::launch_protocol::VerificationRequest,
+        complete: SupervisorCompletion<ResponseResult>,
+    ) -> Result<(), SupervisorError> {
+        if self
+            .verification_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.finished())
+            || self
+                .recovery_worker
+                .as_ref()
+                .is_some_and(|worker| !worker.is_finished())
+        {
+            return Err(SupervisorError::WorkerUnavailable);
+        }
+        self.cancel_verification()?;
+        self.join_recovery()?;
+        let storage = self
+            .verification_storage
+            .clone()
+            .ok_or(SupervisorError::ToolIsolationUnproven)?;
+        self.verification_worker = Some(super::verification::Worker::spawn(
+            storage,
+            request,
+            Arc::clone(&self.session),
+            complete,
+        )?);
+        Ok(())
+    }
     fn retain_recovery(
         &mut self,
         request: super::recovery::RetentionRequest,
@@ -1164,6 +1229,7 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn cancel_tool(&mut self) -> Result<(), SupervisorError> {
+        self.cancel_verification()?;
         self.tools
             .as_mut()
             .map_or(Ok(()), super::tool_execution::ToolExecutor::cancel)
@@ -1234,6 +1300,8 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn park(&mut self) -> Result<(), MechanicFailure> {
+        self.cancel_verification()
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         apply_mechanic(
             &self.session,
             Some(SandboxMechanicalState::Parked),
@@ -1242,6 +1310,8 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn resume(&mut self) -> Result<(), MechanicFailure> {
+        self.cancel_verification()
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         self.join_recovery()
             .map_err(|_| MechanicFailure::Ambiguous)?;
         apply_mechanic(
@@ -1252,6 +1322,8 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn interrupt(&mut self) -> Result<(), MechanicFailure> {
+        self.cancel_verification()
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         self.join_recovery()
             .map_err(|_| MechanicFailure::Ambiguous)?;
         self.tools
@@ -1263,6 +1335,7 @@ impl RunningAgent for SystemRunningAgent {
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
         let recovery = self.join_recovery();
+        let verification = self.cancel_verification();
         let relay = self.relay.as_mut().map_or(Ok(()), RelayWorker::stop);
         let tools = self
             .tools
@@ -1272,14 +1345,15 @@ impl RunningAgent for SystemRunningAgent {
             .dispose()
             .map(|_| ())
             .map_err(map_sandbox);
-        let sealed = if process.is_ok() && tools.is_ok() {
+        let sealed = if process.is_ok() && tools.is_ok() && verification.is_ok() {
             self.recovery
                 .as_ref()
                 .map_or(Ok(()), |storage| storage.seal())
         } else {
             Err(super::recovery::RecoveryError::NotParked)
         };
-        if recovery.is_err()
+        if verification.is_err()
+            || recovery.is_err()
             || relay.is_err()
             || tools.is_err()
             || process.is_err()
@@ -1302,6 +1376,7 @@ fn recovery_now_ms() -> Result<u64, super::recovery::RecoveryError> {
 
 impl Drop for SystemRunningAgent {
     fn drop(&mut self) {
+        let _ = self.cancel_verification();
         // No retention worker may outlive this owner. A panic cannot release a
         // host identity: the outer lifecycle owner requires successful dispose.
         let _ = self.join_recovery();

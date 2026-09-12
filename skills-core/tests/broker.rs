@@ -63,6 +63,9 @@ mod reconnect;
 #[path = "broker/controller_loss.rs"]
 mod controller_loss;
 
+#[path = "broker/verification.rs"]
+mod verification;
+
 /// Installed pool wide enough that slot assignment is not the subject.
 fn pool(slots: u32) -> IdentityPool {
     IdentityPool {

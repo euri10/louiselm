@@ -150,8 +150,8 @@ inject mutation, replacement, addition and deletion between scans.
 `workspace verification prepare` binds an exact snapshot, exported bundle and
 operator-selected plan into a fresh private job. `inspect` remeasures that job.
 Neither command executes the plan, creates a Session, authorizes promotion, or
-establishes Verified posture. Confined execution and evidence-gated promotion
-remain `louiselm-d6fv.5.4.2` and `louiselm-d6fv.5.4.3`.
+establishes Verified posture. The broker-driven execution API is described below;
+evidence-gated promotion remains `louiselm-d6fv.5.4.3`.
 
 The closed plan document contains only a schema and ordered commands:
 
@@ -164,7 +164,7 @@ trailing newline. Every command is required; each has an argument array, a
 relative working directory (`.` or a directory represented in the source
 inventory), and a positive millisecond timeout. Plans are at most 64 KiB, with
 1–32 commands, at most 128 arguments per command, at most 4096 bytes per argument,
-and a total timeout budget of one hour. NUL arguments, empty executables, unsafe
+and a total timeout budget of one hour. NUL arguments, empty or option-like executables, unsafe
 paths and unknown fields are refused. No environment overrides or implicit
 shell interpretation are provided. The plan file may contain sensitive arguments:
 keep it private. Preparing it is not permission to run it.
@@ -206,3 +206,69 @@ Digests establish byte identity, not trusted origin or approval.
 The public blocking APIs are `workspace::verification::prepare` and `inspect`;
 keep them outside editor/event-loop callbacks. The actual-CLI regression suite
 is `skills-core/tests/workspace_cli/verification.rs`.
+
+## Execute an exact job through the Control broker
+
+`InstalledBroker::stage_verification`, `export_verification`, `run_verification`
+and `verification_status` compose with the existing launch and lifecycle APIs.
+They are blocking broker-worker entrypoints, not editor callbacks or a new daemon.
+The controller supplies its authenticated `LifecycleCaller::Operator` identity;
+an Agent-provided role or self-reported result never authorizes verification.
+This supports operator-selected automatic policy without requiring a human
+prompt for each command. Ordinary Agent/helper command approvals are unchanged.
+
+The trusted controller first stages exact baseline-snapshot and plan bytes in
+private broker storage, then explicitly Parks the producing Session. Its existing
+Launch supervisor captures its own frozen workspace, exports the bundle and
+prepares the job under root-owned storage. The export binds the actual producer
+launch, Park receipt, Generation, runtime/isolation receipt chain and job digests.
+An older CLI-prepared job has byte identity only: it cannot be retroactively
+assigned a producing Session. Use this observed export to establish provenance.
+General initial-workspace launch/retention integration remains `louiselm-d6fv.5.5`.
+
+After selecting that exact job and export digest, the controller launches a
+distinct configured verifier Agent in the same Run and Generation, with a
+different host identity, no ordinary command grants and no cold-recovery
+requirement. Verification requires its original Running sequence-1 receipt.
+Neither another Session's head nor an already-used verifier is accepted. The
+broker durably spends one exact job intent before sending it over the original
+authenticated supervisor connection. The supervisor remeasures the protected
+job and creates a separate writable copy and tool home; the verifier Agent's own
+namespace cannot write that copy or the retained job.
+
+The supervisor runs the ordered required commands through the existing confined
+tool backend. Exact argv/cwd values are shell-quoted as literals at that boundary;
+shell interpretation requires an explicitly approved `sh -c` command. Environment
+is fixed to the tool PATH and private HOME; network, Agent runtime/home, capability
+sockets and operator files are not granted. Candidate hooks/build scripts/proc
+macros can run only inside this confinement, never through the host preparation
+or export APIs. Missing installed isolation support refuses execution.
+
+Each actual command exit/timeout is durably recorded before the next command;
+execution stops on the first failure or unknown outcome. Cancellation, lost
+verifier lifetime and expiry prevent success. Cleanup failures stay sticky and
+prevent identity release. The broker retains normalized command observations,
+then requires the verifier's signed terminal Disposal receipt before publishing
+a complete record. Neither stdout/stderr nor raw commands, environment, source
+payloads or host paths enter this evidence. The original job is never mounted
+writable and is remeasured again before the supervisor publishes its result.
+
+`VerificationStatus` distinguishes NotRequested, Unknown, Quarantined and
+Completed. Completed means observations and whole-Session cleanup are recorded,
+not that commands passed: inspect `record.execution.commands_passed()`. Absent or
+uncertain outcomes remain Unknown across restart, and spent launches are never
+automatically replayed. Quarantine of either producer or verifier invalidates
+applicability on subsequent reads. Evidence binds exact job/plan/bundle identities;
+it grants no promotion, installed approval or Verified cutover.
+
+A correlated supervisor refusal still permits an explicit Disposal on that
+authenticated connection; the broker obtains cleanup before closing it while
+leaving missing command observations Unknown. If the transport itself is lost,
+the existing supervisor broker-loss policy freezes/reconciles the Session;
+disconnection alone is not cleanup evidence or permission to reuse its identity.
+
+The required privileged CI/disposable-VM consumer is
+`launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification`.
+It uses actual configured measured fixture Agents, the dedicated unprivileged
+broker, installed signing authority and real confined commands. Ordinary host
+test runs skip this privileged fixture; a skipped run is not confinement evidence.

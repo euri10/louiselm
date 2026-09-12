@@ -24,6 +24,7 @@ pub mod lifecycle;
 pub mod receipts;
 pub mod recovery;
 pub mod service;
+pub mod verification;
 
 #[cfg(test)]
 mod delegation_tests;
@@ -61,6 +62,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Approved verification inputs could not be validated or durably copied.
+    #[error("verification workspace is unavailable")]
+    Workspace(#[from] crate::workspace::WorkspaceError),
     /// Projection delivery failed; canonical authorization/receipt state is unchanged.
     #[error("Attention projection is unavailable")]
     Attention(#[source] io::Error),

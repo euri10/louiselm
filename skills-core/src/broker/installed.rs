@@ -2,6 +2,9 @@
 
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
+#[path = "verification/installed.rs"]
+mod verification;
+
 use super::{
     AuditLog, AuthorizationStore, BrokerError, BrokerService, BrokerSession, GrantRequest,
     PendingAuthorization, ReceiptStore, SessionInspection, TrustedRelease, now_ms,

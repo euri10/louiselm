@@ -39,6 +39,9 @@ mod failures;
 #[path = "installed_recovery_tests.rs"]
 mod recovery;
 
+#[path = "installed_verification_tests.rs"]
+mod verification;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -164,11 +167,15 @@ fn registry_record(path: &Path, entries: &serde_json::Value) {
     );
 }
 
+fn install_fixture(root: &Path) -> (LauncherPaths, LauncherConfig, PathBuf) {
+    install_fixture_with_slots(root, 1)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One fixture installs measured binaries, root authority and a dedicated broker without modifying host or system installation."
 )]
-fn install_fixture(root: &Path) -> (LauncherPaths, LauncherConfig, PathBuf) {
+fn install_fixture_with_slots(root: &Path, slots: u32) -> (LauncherPaths, LauncherConfig, PathBuf) {
     fs::set_permissions(root, fs::Permissions::from_mode(0o711)).unwrap();
     let binaries = std::env::current_exe()
         .unwrap()
@@ -251,7 +258,7 @@ fn install_fixture(root: &Path) -> (LauncherPaths, LauncherConfig, PathBuf) {
             pool: IdentityPool {
                 uid_start: AGENT_UID,
                 gid_start: AGENT_UID,
-                slots: 1,
+                slots,
             },
         },
         3,

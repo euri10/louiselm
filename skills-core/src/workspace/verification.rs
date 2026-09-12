@@ -14,6 +14,13 @@ use super::{
 };
 use crate::{Digest, ManifestEntry};
 
+#[cfg(test)]
+#[path = "verification_tests.rs"]
+mod tests;
+
+mod inputs;
+pub(crate) use inputs::{export_job, stage_inputs};
+
 const SCHEMA: &str = "louiselm.workspace.verification-job/1";
 const MAX_PLAN_BYTES: usize = 64 * 1024;
 
@@ -26,10 +33,10 @@ struct Plan {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Command {
-    argv: Vec<String>,
-    cwd: String,
-    timeout_ms: u64,
+pub(crate) struct Command {
+    pub(crate) argv: Vec<String>,
+    pub(crate) cwd: String,
+    pub(crate) timeout_ms: u64,
 }
 
 impl Plan {
@@ -48,6 +55,7 @@ impl Plan {
             if command.argv.is_empty()
                 || command.argv.len() > 128
                 || command.argv[0].is_empty()
+                || command.argv[0].starts_with('-')
                 || command
                     .argv
                     .iter()
@@ -88,12 +96,13 @@ struct Job {
 }
 
 /// Payload-free identities shared by human and robot inspection.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobPreview {
     /// Versioned preview contract.
-    pub schema: &'static str,
+    pub schema: String,
     /// Always prepared; this command never executes a plan or grants authority.
-    pub state: &'static str,
+    pub state: String,
     /// Digest of the canonical job binding all inputs below.
     pub job_digest: String,
     /// Exact source snapshot record digest.
@@ -113,8 +122,8 @@ pub struct JobPreview {
 impl Job {
     fn preview(&self, plan: &Plan) -> Result<JobPreview, WorkspaceError> {
         Ok(JobPreview {
-            schema: "louiselm.workspace.verification-preview/1",
-            state: "prepared",
+            schema: "louiselm.workspace.verification-preview/1".into(),
+            state: "prepared".into(),
             job_digest: Digest::of(&serde_json::to_vec(self)?).to_string(),
             snapshot_digest: self.snapshot_digest.clone(),
             bundle_digest: self.bundle_digest.clone(),
@@ -197,6 +206,16 @@ pub fn prepare(
 /// Refuses wrong/noncanonical records, extra/missing/changed source files or
 /// executable bits, Git metadata, changed/invalid plans and filesystem failures.
 pub fn inspect(job: &Path, expected: &Digest) -> Result<JobPreview, WorkspaceError> {
+    Ok(load(job, expected)?.preview)
+}
+
+pub(crate) struct LoadedJob {
+    pub(crate) preview: JobPreview,
+    pub(crate) commands: Vec<Command>,
+    pub(crate) files: super::SourceFiles,
+}
+
+pub(crate) fn load(job: &Path, expected: &Digest) -> Result<LoadedJob, WorkspaceError> {
     let root = filesystem::open_directory(job)?;
     let record = read(&root, "job.json", MAX_RECORD_BYTES)?;
     if Digest::of(&record) != *expected {
@@ -243,12 +262,17 @@ pub fn inspect(job: &Path, expected: &Digest) -> Result<JobPreview, WorkspaceErr
         Err(rustix::io::Errno::NOENT) => (),
         Err(error) => return Err(std::io::Error::from(error).into()),
     }
-    if entries(&tree::capture(&source)?) != job.files {
+    let files = tree::capture(&source)?;
+    if entries(&files) != job.files {
         return Err(WorkspaceError::Invalid(
             "verification source differs from its inventory",
         ));
     }
-    job.preview(&plan)
+    Ok(LoadedJob {
+        preview: job.preview(&plan)?,
+        commands: plan.commands,
+        files,
+    })
 }
 
 fn read(root: &fs::File, path: &str, limit: usize) -> Result<Vec<u8>, WorkspaceError> {
