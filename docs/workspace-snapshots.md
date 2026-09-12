@@ -150,8 +150,8 @@ inject mutation, replacement, addition and deletion between scans.
 `workspace verification prepare` binds an exact snapshot, exported bundle and
 operator-selected plan into a fresh private job. `inspect` remeasures that job.
 Neither command executes the plan, creates a Session, authorizes promotion, or
-establishes Verified posture. The broker-driven execution API is described below;
-evidence-gated promotion remains `louiselm-d6fv.5.4.3`.
+establishes Verified posture. The broker-driven execution and explicit
+existing-checkout promotion APIs are described below.
 
 The closed plan document contains only a schema and ordered commands:
 
@@ -272,3 +272,71 @@ The required privileged CI/disposable-VM consumer is
 It uses actual configured measured fixture Agents, the dedicated unprivileged
 broker, installed signing authority and real confined commands. Ordinary host
 test runs skip this privileged fixture; a skipped run is not confinement evidence.
+
+## Promote into the operator checkout
+
+Promotion has two explicit phases: preview the exact changes, then commit that
+preview. The operator controller connects its trusted applicator directly to the
+dedicated broker. `InstalledBroker::serve_promotion` runs on the original producing
+Session's broker worker; `workspace::promotion::PromotionClient::prepare` runs as
+the non-root operator. These are blocking APIs, not editor callbacks or a new
+daemon. The controller supplies the installed broker UID from trusted configuration.
+Both endpoints check kernel peer credentials. Agent/helper roles cannot approve a
+promotion, and deserializing a request or verification record grants no authority.
+
+`PromotionRequest` binds the canonical verification-record digest, verifier
+Session, complete job/snapshot/base/bundle/result/plan identities, destination
+device/inode/owner, unique request ID and an absolute expiry of at most five
+minutes. Identify the selected checkout with `DestinationIdentity::inspect`;
+preparation reopens and checks that exact object. Broker admission requires all
+verification commands to have passed, proven verifier disposal, a distinct
+producer, current unquarantined evidence and reverified installed receipt chains.
+The producer must still be at its exported Park receipt. A later producer
+lifecycle head requires a fresh export/verification selection.
+
+The launcher accepts only a retained export ID and exact digests on its existing
+authenticated broker connection. It publishes validated snapshot/job bytes below
+its fixed Session directory, root-owned and read-only to the installed broker
+group. It never receives an operator checkout pathname. The broker remeasures the
+transfer and sends bounded normalized inventories and raw bytes to the operator;
+the operator independently validates their sizes, hashes and executable intent.
+Transfer artifacts follow Session storage retention; general retention and expiry
+remain `louiselm-d6fv.5.5`.
+
+`prepare` pins and locks the operator-owned destination and returns an additions,
+modifications and deletions preview without changing checkout bytes. `commit`
+consumes that handle. The source tree must exactly match the approved baseline,
+apart from root `.git`: dirty changes, untracked additions, symlinks, special files
+and mode changes refuse rather than being merged. Git metadata is preserved;
+neither endpoint invokes Git, hooks, filters or candidate programs. A newly
+combined source result needs fresh confined verification.
+
+The caller must stop editor/build writers for the entire preview/commit operation.
+The advisory lock serializes cooperating promotion clients; it cannot freeze
+arbitrary same-UID processes. Descriptor-relative operations and repeated source
+checks reject observed races, but are not a substitute for writer exclusion.
+Checkouts must be operator-owned and not group/world writable. The local journal
+parent must be private (`0700`), operator-owned and outside the checkout.
+
+Each file effect has a durable broker permit before the write and an acknowledged
+observation after file/directory synchronization and readback. Permit creation is
+serialized with quarantine: revocation denies subsequent effects, while an
+already admitted effect may complete. Only the operator process mutates checkout
+bytes. A changed destination, refusal, expiry or I/O failure can therefore leave
+an explicitly partial result; completed writes are never described as rolled back.
+
+The operator journal retains numbered `intent` and `done` observations plus
+`complete.json` only after complete readback/synchronization. Broker
+`promotion_status` reports `NotRequested`, `Unknown` with granted/completed counts,
+or `Completed`. A missing acknowledgement remains uncertain across restart.
+Reusing the exact request returns only its recorded historical status; changed
+request bytes refuse, and neither endpoint automatically repeats writes. Inspect
+both journals after an interruption and preserve the partial checkout before
+preparing a newly verified result. A later quarantine does not rewrite history
+or claim to undo an already completed promotion.
+
+The existing privileged CI fixture above covers actual operator-owned promotion,
+preview without effects, changed selections and destination refusal, replay,
+quarantine, failed/timed-out verification and preservation of a host-hook sentinel.
+This does not activate the user-visible installed Verified cutover, which remains
+`louiselm-d6fv.9`.

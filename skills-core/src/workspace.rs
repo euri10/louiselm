@@ -19,6 +19,7 @@ use crate::{CanonicalPath, Digest, Manifest, ManifestEntry};
 pub mod bundle;
 pub(crate) mod filesystem;
 mod git;
+pub mod promotion;
 mod tree;
 pub mod verification;
 

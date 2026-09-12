@@ -1698,6 +1698,13 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Exact protected bytes published read-only for the dedicated broker.
+    VerificationTransfer {
+        /// Original authenticated operation.
+        request: Box<VerificationRequest>,
+        /// Supervisor-selected private transfer path; never a caller-selected write target.
+        directory: String,
+    },
     /// Authenticated proof of the exact durable copy, not a successful ACP load.
     RecoveryRestored {
         /// Original exact operation; authority depends on the responding supervisor.
@@ -1806,6 +1813,18 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
+            ResponseResult::VerificationTransfer { request, directory } => {
+                request.validate()?;
+                if request.request_id != self.request_id
+                    || !matches!(request.operation, VerificationOperation::Transfer { .. })
+                    || directory.len() > 4096
+                    || !directory.starts_with('/')
+                    || directory.contains('\0')
+                {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
             ResponseResult::RecoveryRestored { request } => {
                 request.validate()?;
                 if request.request_id != self.request_id {

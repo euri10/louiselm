@@ -14,6 +14,9 @@ const VERIFY_WORKER: &str =
     "launch_supervisor::system::installed_tests::verification::installed_verification_worker";
 const LITERAL_ARGUMENT: &str = "literal'$(touch INJECTED)";
 
+#[path = "installed_promotion_tests.rs"]
+mod promotion;
+
 fn clock_ms() -> u64 {
     u64::try_from(
         SystemTime::now()
@@ -272,6 +275,11 @@ fn run_job(
             .is_err(),
         "spent launch cannot be replayed"
     );
+    if index == 0 {
+        promotion::broker_round(broker, producer, root.parent().unwrap());
+    } else if index < 3 {
+        promotion::broker_denial(broker, producer, root.parent().unwrap(), index);
+    }
     println!("VERIFIER_DONE_{index}");
 }
 
@@ -426,6 +434,7 @@ fn privileged_installed_exact_job_verification() {
     // Broker identity reconciliation is separate work: each consumed launch keeps its slot reserved.
     let (paths, config, registry) = install_fixture_with_slots(root.path(), 6);
     prepare_inputs(root.path());
+    promotion::prepare(root.path(), config.operator_uid);
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
@@ -501,6 +510,13 @@ fn privileged_installed_exact_job_verification() {
                 rustix::process::Signal::TERM,
             )
             .unwrap();
+        }
+        if index == 0 {
+            marker(&lines, "PROMOTION_READY");
+            promotion::operator_round(root.path(), config.operator_uid);
+        } else if index < 3 {
+            marker(&lines, &format!("PROMOTION_DENIAL_{index}"));
+            promotion::operator_denial(root.path(), config.operator_uid, index);
         }
         marker(&lines, &format!("VERIFIER_DONE_{index}"));
         eprintln!("verification fixture case {index}: durable outcome checked");

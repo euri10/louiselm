@@ -16,6 +16,15 @@ pub const VERIFICATION_SCHEMA: &str = "louiselm.launch.verification/1";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VerificationOperation {
+    /// Make one retained export readable by the dedicated broker, without a destination path.
+    Transfer {
+        /// Original producer export operation.
+        export_request_id: String,
+        /// Exact authenticated producer observation.
+        export_digest: String,
+        /// Exact verified job; no host checkout path is accepted.
+        job_digest: String,
+    },
     /// Export the actual frozen producer workspace against staged approved inputs.
     Export {
         /// Broker-owned staging directory identifier.
@@ -70,6 +79,15 @@ impl VerificationRequest {
             return Err(invalid());
         }
         match &self.operation {
+            VerificationOperation::Transfer {
+                export_request_id,
+                export_digest,
+                job_digest,
+            } => {
+                validate_identifier(export_request_id)?;
+                validate_digest(export_digest)?;
+                validate_digest(job_digest)?;
+            }
             VerificationOperation::Export {
                 input_id,
                 input_digest,

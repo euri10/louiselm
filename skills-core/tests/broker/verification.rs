@@ -7,7 +7,7 @@ use louiselm_skills::{
     launch_receipt::ReceiptHead,
 };
 
-fn reopen(root: &Path, socket: &str) -> BrokerService {
+pub(super) fn reopen(root: &Path, socket: &str) -> BrokerService {
     BrokerService::bind(
         &root.join(socket),
         AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap(),

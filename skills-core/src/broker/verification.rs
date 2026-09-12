@@ -177,7 +177,9 @@ impl BrokerService {
             return Err(BrokerError::RequestMismatch);
         }
         let state = match request.operation {
-            VerificationOperation::Export { .. } => SessionState::Parked,
+            VerificationOperation::Export { .. } | VerificationOperation::Transfer { .. } => {
+                SessionState::Parked
+            }
             VerificationOperation::Run { .. } => SessionState::Running,
         };
         if !self
@@ -195,7 +197,7 @@ impl BrokerService {
         Ok(launch)
     }
 
-    fn verification_current<F>(
+    pub(super) fn verification_current<F>(
         &self,
         session: &mut BrokerSession,
         request: &VerificationRequest,
@@ -207,7 +209,9 @@ impl BrokerService {
         self.verification_binding(request)?;
         let status = self.supervisor_status(session, verify)?;
         let state = match request.operation {
-            VerificationOperation::Export { .. } => SessionState::Parked,
+            VerificationOperation::Export { .. } | VerificationOperation::Transfer { .. } => {
+                SessionState::Parked
+            }
             VerificationOperation::Run { .. } => SessionState::Running,
         };
         if status.state != state
@@ -222,7 +226,7 @@ impl BrokerService {
         Ok(())
     }
 
-    fn verification_response<F>(
+    pub(super) fn verification_response<F>(
         &self,
         session: &mut BrokerSession,
         request: &VerificationRequest,
@@ -271,7 +275,7 @@ impl BrokerService {
     }
 }
 
-fn deadline(request: &VerificationRequest, now_ms: u64) -> Result<Instant, BrokerError> {
+pub(super) fn deadline(request: &VerificationRequest, now_ms: u64) -> Result<Instant, BrokerError> {
     let budget = request
         .expires_at_ms
         .checked_sub(now_ms)

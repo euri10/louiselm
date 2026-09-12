@@ -134,3 +134,41 @@ fn every_required_step_and_cleanup_are_necessary_and_responses_are_correlated() 
     response.request_id = "another".into();
     assert!(response.validate().is_err());
 }
+
+#[test]
+fn transfer_selects_only_retained_ids_and_never_accepts_a_host_destination() {
+    let mut transfer = request();
+    transfer.operation = VerificationOperation::Transfer {
+        export_request_id: "export".into(),
+        export_digest: Digest::of(b"export").to_string(),
+        job_digest: Digest::of(b"job").to_string(),
+    };
+    assert!(
+        matches!(launch_protocol::decode_message(&transfer.canonical_bytes()).unwrap(), ProtocolMessage::Verification(value) if value == transfer)
+    );
+    let mut wire = serde_json::to_value(&transfer).unwrap();
+    wire["operation"]["destination"] = "/operator/checkout".into();
+    assert!(launch_protocol::decode_message(&serde_json::to_vec(&wire).unwrap()).is_err());
+    for invalid in ["../export", "/export", "", "export/file"] {
+        let mut rejected = transfer.clone();
+        if let VerificationOperation::Transfer {
+            export_request_id, ..
+        } = &mut rejected.operation
+        {
+            *export_request_id = invalid.into();
+        }
+        assert!(rejected.validate().is_err());
+    }
+    let mut response = ProtocolResponse {
+        schema: RESPONSE_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: transfer.request_id.clone(),
+        result: ResponseResult::VerificationTransfer {
+            request: Box::new(transfer),
+            directory: "/fixed/transfer".into(),
+        },
+    };
+    assert!(response.validate().is_ok());
+    response.request_id = "foreign".into();
+    assert!(response.validate().is_err());
+}

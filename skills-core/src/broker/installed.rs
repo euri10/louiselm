@@ -2,6 +2,8 @@
 
 use std::{fs, os::unix::fs::MetadataExt, path::Path};
 
+#[path = "promotion/installed.rs"]
+mod promotion;
 #[path = "verification/installed.rs"]
 mod verification;
 

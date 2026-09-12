@@ -1,6 +1,7 @@
 //! Protected actual producer exports and cancellable verifier work owned by one supervisor.
 
 mod execution;
+mod transfer;
 
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,7 @@ pub(super) struct Storage {
     integration_digest: String,
     input_root: PathBuf,
     broker_uid: u32,
+    broker_gid: u32,
     backend: BubblewrapBackend,
     plan: ConfinementPlan,
 }
@@ -43,7 +45,7 @@ impl Storage {
         launch: &LaunchRequest,
         integration_digest: String,
         input_root: PathBuf,
-        broker_uid: u32,
+        broker_identity: (u32, u32),
         backend: BubblewrapBackend,
         plan: ConfinementPlan,
     ) -> Result<Self, SupervisorError> {
@@ -53,7 +55,8 @@ impl Storage {
             launch: launch.clone(),
             integration_digest,
             input_root,
-            broker_uid,
+            broker_uid: broker_identity.0,
+            broker_gid: broker_identity.1,
             backend,
             plan,
         })
@@ -140,6 +143,19 @@ impl Worker {
             .name("louiselm-verification".into())
             .spawn(move || {
                 let result = match request.operation {
+                    VerificationOperation::Transfer { .. } => (|| {
+                        if flag.load(Ordering::Acquire) || Instant::now() >= deadline {
+                            return Err(SupervisorError::AuthorizationRejected);
+                        }
+                        let directory = storage.transfer(&request)?;
+                        if flag.load(Ordering::Acquire) || Instant::now() >= deadline {
+                            return Err(SupervisorError::AuthorizationRejected);
+                        }
+                        Ok(ResponseResult::VerificationTransfer {
+                            request: Box::new(request.clone()),
+                            directory,
+                        })
+                    })(),
                     VerificationOperation::Export { .. } => {
                         (|| {
                             // Keep the actual producer frozen throughout export, including its durable observation.

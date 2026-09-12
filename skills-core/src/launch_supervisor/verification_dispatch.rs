@@ -22,7 +22,7 @@ pub(super) struct VerificationDispatch {
 impl SessionOwner {
     fn verification_matches(&self, request: &VerificationRequest) -> bool {
         let correct_state = match request.operation {
-            VerificationOperation::Export { .. } => {
+            VerificationOperation::Export { .. } | VerificationOperation::Transfer { .. } => {
                 self.state == SessionState::Parked && self.channel_state == ChannelState::Revoked
             }
             VerificationOperation::Run { .. } => {
@@ -108,6 +108,13 @@ impl SessionOwner {
         }
         let current = self.verification_matches(&request);
         let result = match result {
+            Ok(ResponseResult::VerificationTransfer {
+                request: transferred,
+                directory,
+            }) if current && *transferred == request => ResponseResult::VerificationTransfer {
+                request: transferred,
+                directory,
+            },
             Ok(ResponseResult::VerificationExport { evidence })
                 if current && evidence.request == request && evidence.validate().is_ok() =>
             {

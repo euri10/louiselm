@@ -63,6 +63,8 @@ mod reconnect;
 #[path = "broker/controller_loss.rs"]
 mod controller_loss;
 
+#[path = "broker/promotion.rs"]
+mod promotion;
 #[path = "broker/verification.rs"]
 mod verification;
 

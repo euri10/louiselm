@@ -877,7 +877,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 .parent()
                 .ok_or(SupervisorError::ResolutionFailed)?
                 .join("verification-inputs"),
-            self.config.broker_uid,
+            (self.config.broker_uid, self.config.broker_gid),
             verification_backend,
             verification_plan,
         ) {

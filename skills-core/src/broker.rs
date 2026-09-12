@@ -21,6 +21,7 @@ pub mod commands;
 pub mod delegation;
 pub mod installed;
 pub mod lifecycle;
+pub mod promotion;
 pub mod receipts;
 pub mod recovery;
 pub mod service;

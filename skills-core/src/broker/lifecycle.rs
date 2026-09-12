@@ -102,6 +102,10 @@ pub struct LifecycleStore {
 }
 
 impl LifecycleStore {
+    /// Serializes promotion admission with quarantine and lifecycle authorization.
+    pub(super) fn promotion_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        lock(&self.preparing)
+    }
     /// Opens the broker-owned lifecycle request directory.
     ///
     /// # Errors
