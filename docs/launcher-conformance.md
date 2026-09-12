@@ -81,6 +81,96 @@ scopes separate, and never clears unresolved cleanup merely because a fresh
 fixture was disposed successfully. Protected persistence and applicable-host
 validation are separate installed-authority work.
 
+## Installed certification: Debian 13 x86_64
+
+The fixed `louiselm-launch certify` maintenance command runs the shared probe
+implementation under the installed launcher authority. It is explicit: ordinary
+Session launch never starts it. After installing the corresponding release and
+refreshing its launcher authority, the maintainer can invoke:
+
+```sh
+sudo -n /usr/local/lib/louiselm/current/bin/louiselm-launch certify
+```
+
+The sudo fragment permits exactly `run` and `certify`, both at the same measured
+path/digest. It grants neither internal worker verbs nor extra arguments.
+Certification checks the installed operator and running release before starting
+a fixed worker in a new, empty network namespace. The worker receives its
+authorizing parent's identity over an owned pipe and pins its lifetime with a
+pidfd. Owner loss or deadline expiry prevents a passing completion. The outer
+operation has a three-minute deadline; uncertain cleanup remains uncertain.
+
+The worker leases three available identities from the existing pool, avoiding
+occupied or poisoned slots. All files, target processes, socket services and
+network endpoints are test-owned. It changes only its own network namespace;
+there are no desktop-service requests, real credentials, host-wide settings,
+caller-selected commands or new privileged daemon. The complete 46-check
+inventory and production Bubblewrap/lifecycle mechanics are required. The guest
+gate now imports the same probe implementation; service doubles exchange a fixed
+harmless sentinel, not real D-Bus/Docker protocol messages.
+
+### Measured boundary
+
+The supported profile is `debian13-x86_64-glibc/1`. Unknown architectures, OS
+profiles, loader layouts, required libraries or unreadable required inputs
+refuse certification; there is no force/skip option. The exact profile lives in
+[`measurement.rs`](../skills-core/src/conformance/installed/measurement.rs):
+
+- Hashed machine identity, actual boot UUID, release identity, launcher
+  configuration and enforced isolation-contract bytes.
+- Root-protected launcher/probe, Bubblewrap, glibc loader, `getent`, `ssh-keygen`,
+  `strace`, `ip`, `bash`, `sleep` and `unshare` executable bytes.
+- The fixed allowed glibc dependency set resolved by the measured loader,
+  restricted to `/usr/lib/x86_64-linux-gnu`. The loader configuration/cache and
+  bounded configuration-directory inventory are bound too. Nonempty preloads
+  are refused. Identity NSS supports `files` and the explicitly measured
+  `libnss_systemd` backend; other backends refuse this initial profile.
+- Running kernel notes, release/version, command line, taint, loaded module
+  names, LSM/cgroup-controller state and the enumerated isolation-relevant
+  sysctls. Optional inputs bind presence separately from their bytes.
+
+Inputs are measured before and after the probes. A changed input prevents a
+passing certificate, including when all individual probes succeeded. These are
+snapshot measurements, **not** full running-kernel/module-memory attestation,
+continuous drift detection or a guarantee against root/kernel compromise.
+Arbitrary Agent libraries and project build dependencies remain outside this
+host-containment profile and retain their separate supply/runtime checks.
+
+### Durable outcomes and inspection
+
+Completed attempts emit exact canonical `louiselm.conformance.certificate/1`
+bytes. Exit zero means the new observation report passed; an unavailable,
+failed, cancelled or incomplete attempt exits nonzero. A report is not itself
+permission for Verified launch. Failures and pending attempts must be inspected
+independently, even when an older matching certificate exists.
+
+Root-private state lives at `launcher/conformance` under the release prefix:
+`state.json` indexes exact host inputs and retains failure history;
+`certificate-*.json` and `observations-*.json` retain exact evidence;
+`attempt.json` identifies the owned scratch directory, worker and leased slots.
+The directory is `0700`; files are `0600`. Files and directory entries are synced
+before acknowledgement. Each probe group checkpoints failures before continuing.
+Each record and the currentness index are bounded; evidence is not auto-pruned.
+
+`CertificateStore::inspect` reads the protected state and matching certificate
+without mutation. Missing/corrupt existing state or evidence is an error, never
+empty failure history. Reboot, changed inputs, release changes and incomplete
+attempts cannot clear a known failure. Only a new complete covering pass clears
+ordinary boundary failures; a fresh fixture's successful cleanup cannot clear
+an older unresolved cleanup failure. Abrupt interruption leaves a pending
+marker, and unproven process cleanup poisons the affected identity leases.
+Do not delete these markers or retry uncertain resources: inspect the retained
+attempt and establish original-resource cleanup before an explicit repair.
+
+The privileged installed-certification test runs in a disposable network
+namespace and exercises real probes, exact retained reports, stale/reboot
+refusal, cancellation and lease release. Unsupported CI hosts explicitly test
+refusal instead of claiming that this Debian-specific path passed. The existing
+guest hostile matrix remains required. Maintainer acceptance of the actual
+installed command is still required; admission, report-bound launch receipts,
+monitoring and user-visible Verified cutover remain `d6fv.12.3`, `.12.4` and
+`d6fv.9`, respectively.
+
 The suite found `louiselm-d6fv.4.8.1.1`: Bubblewrap did not close an undeclared
 socket descriptor; the confined workload successfully wrote through it. The
 fresh single-threaded bootstrap now rejects undeclared descriptors after the

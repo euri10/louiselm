@@ -42,6 +42,9 @@ mod recovery;
 #[path = "installed_verification_tests.rs"]
 mod verification;
 
+#[path = "installed_certification_tests.rs"]
+mod certification;
+
 struct BrokerAccount;
 
 impl BrokerAccount {

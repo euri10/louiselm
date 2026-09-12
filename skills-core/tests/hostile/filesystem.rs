@@ -47,10 +47,7 @@ pub fn run(fixture: &Fixture) {
             Attack::Write(path),
         ));
     }
-    probes.push(Probe::new(
-        "ambient-environment",
-        Attack::Environment("LOUISELM_AMBIENT_SENTINEL".into()),
-    ));
+    probes.push(Probe::new("ambient-environment", Attack::Environment));
     let mut outside = fixture.outside(60000);
     let allowed = outside.request(&probes);
     outside.dispose();

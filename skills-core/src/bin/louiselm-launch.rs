@@ -16,7 +16,7 @@ use louiselm_skills::{
         InstalledLaunchSigner, LaunchSigner, LaunchSupervisor, RelayStdio, SYSTEM_REGISTRY_ROOT,
         SYSTEM_SESSIONS_ROOT, SystemLaunchPlatform, connect_control_broker, read_launch_frame,
     },
-    launcher_install::{LauncherPaths, runtime_config_with_deadline},
+    launcher_install::{LauncherConfig, LauncherPaths, runtime_config_with_deadline},
     registry::Registry,
     release,
     sandbox::bootstrap,
@@ -27,8 +27,8 @@ const BROKER_TIMEOUT: Duration = Duration::from_secs(5);
 fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
     let verb = arguments.next();
-    // `run` is the sole privileged operator verb. Bootstrap uses only inherited
-    // capabilities and never enters the launcher authority path below.
+    // Internal bootstrap/probe verbs use inherited authority only. Sudoers
+    // grants exactly run/certify, never these internal worker verbs.
     if verb.as_deref() == Some(OsStr::new(bootstrap::ARGUMENT)) {
         if bootstrap::run(&arguments.collect::<Vec<_>>()).is_ok() {
             return ExitCode::SUCCESS;
@@ -36,11 +36,22 @@ fn main() -> ExitCode {
         eprintln!("louiselm-launch: sandbox bootstrap failed");
         return ExitCode::FAILURE;
     }
-    if verb.as_deref() != Some(OsStr::new("run")) || arguments.next().is_some() {
-        eprintln!("louiselm-launch: expected exactly 'run'");
+    if arguments.next().is_some() {
+        eprintln!("louiselm-launch: unexpected arguments");
         return ExitCode::FAILURE;
     }
-    match run() {
+    let result = match verb.as_deref() {
+        Some(value) if value == OsStr::new("run") => run(),
+        Some(value) if value == OsStr::new("certify") => certification(false),
+        Some(value) if value == OsStr::new("__conformance-worker") => certification(true),
+        Some(value) if value == OsStr::new("__conformance-probe") => {
+            louiselm_skills::conformance::installed::serve_probe()
+                .map(|()| 0)
+                .map_err(|_| "probe failed")
+        }
+        _ => Err("expected exactly 'run' or 'certify'"),
+    };
+    match result {
         Ok(code) => u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from),
         Err(message) => {
             eprintln!("louiselm-launch: {message}");
@@ -49,7 +60,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<i32, &'static str> {
+fn authority(operator_required: bool) -> Result<(LauncherPaths, LauncherConfig), &'static str> {
     if !rustix::process::geteuid().is_root() {
         return Err("root launcher authority required");
     }
@@ -73,11 +84,44 @@ fn run() -> Result<i32, &'static str> {
     if running.release_id.as_deref() != Some(config.release_id.as_str()) {
         return Err("running launcher release does not match installed authority");
     }
-    let sudo_uid =
-        canonical_sudo_uid().ok_or("launcher invocation is not the installed operator")?;
-    if sudo_uid != config.operator_uid {
-        return Err("launcher invocation is not the installed operator");
+    if operator_required {
+        let sudo_uid =
+            canonical_sudo_uid().ok_or("launcher invocation is not the installed operator")?;
+        if sudo_uid != config.operator_uid {
+            return Err("launcher invocation is not the installed operator");
+        }
     }
+    Ok((paths, config))
+}
+
+fn certification(worker: bool) -> Result<i32, &'static str> {
+    use louiselm_skills::conformance::{ReportResult, installed};
+    use std::io::{Read, Write};
+    let (paths, config) = authority(!worker)?;
+    let deadline = std::time::Instant::now() + Duration::from_mins(3);
+    let certificate = if worker {
+        let mut input = String::new();
+        io::stdin().take(32).read_to_string(&mut input).map_err(|_| "certifier owner unavailable")?;
+        let parent: u32 = input.parse().map_err(|_| "certifier owner invalid")?;
+        if input != parent.to_string() { return Err("certifier owner invalid"); }
+        installed::certify(&paths, deadline, parent)
+    } else {
+        installed::certify_isolated(&paths, &config, deadline)
+    }.map_err(|_| "certification unavailable; inspect protected conformance state and required host profile")?;
+    let bytes = certificate
+        .canonical_bytes()
+        .map_err(|_| "invalid certification evidence")?;
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|_| "certification output unavailable")?;
+    Ok(i32::from(
+        certificate.observations.result() != Ok(ReportResult::Passed),
+    ))
+}
+
+fn run() -> Result<i32, &'static str> {
+    let (paths, config) = authority(true)?;
 
     let input = io::stdin()
         .as_fd()

@@ -448,6 +448,10 @@ jobs:
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture' bash "$library_test"
+          # Debian 13 exercises the full installed certifier. Other runner
+          # profiles must explicitly refuse it, never issue a guest-derived pass.
+          sudo env LOUISELM_REQUIRE_CERTIFICATION=1 \
+            timeout 200 unshare --net -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture' bash "$library_test"
 
       - name: Test privileged launch supervisor composition
         run: |

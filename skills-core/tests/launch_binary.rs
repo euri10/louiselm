@@ -10,15 +10,16 @@
 use std::process::{Command, Stdio};
 
 #[test]
-fn privileged_entrypoint_accepts_only_the_fixed_run_verb() {
-    // `run` remains the sole privileged operator verb. The internal bootstrap
-    // has no launcher authority and instead requires inherited capabilities.
+fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
+    // Only exact run/certify are operator verbs; no caller-selected commands.
     let binary = env!("CARGO_BIN_EXE_louiselm-launch");
     for arguments in [
         vec![],
         vec!["status"],
         vec!["run", "--broker", "/tmp/socket"],
         vec!["run", "__sandbox_bootstrap"],
+        vec!["certify", "--probe", "private-command"],
+        vec!["__conformance-worker", "private-command"],
     ] {
         let output = Command::new(binary)
             .args(&arguments)
@@ -28,7 +29,28 @@ fn privileged_entrypoint_accepts_only_the_fixed_run_verb() {
         assert!(output.stdout.is_empty(), "stdout is reserved for ACP bytes");
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
-            "louiselm-launch: expected exactly 'run'\n"
+            if arguments.len() > 1 {
+                "louiselm-launch: unexpected arguments\n"
+            } else {
+                "louiselm-launch: expected exactly 'run' or 'certify'\n"
+            }
+        );
+    }
+}
+
+#[test]
+fn development_certifier_cannot_acquire_installed_authority() {
+    for verb in ["certify", "__conformance-worker"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-launch"))
+            .arg(verb)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            output.stderr == b"louiselm-launch: root launcher authority required\n"
+                || output.stderr == b"louiselm-launch: running launcher release is untrusted\n"
         );
     }
 }

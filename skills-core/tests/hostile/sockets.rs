@@ -103,9 +103,9 @@ impl Service {
                         stream
                             .set_write_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
-                        let mut bytes = [0; b"local-network-sentinel\n".len()];
+                        let mut bytes = [0; b"sentinel\n".len()];
                         stream.read_exact(&mut bytes).unwrap();
-                        assert_eq!(&bytes, b"local-network-sentinel\n");
+                        assert_eq!(&bytes, b"sentinel\n");
                         count.fetch_add(1, Ordering::Release);
                         stream.write_all(b"executed\n").unwrap();
                     }
@@ -159,15 +159,9 @@ pub fn run(fixture: &Fixture) {
     // Docker protocols. The production assertion is socket denial BEFORE any
     // such service can execute for the attacker.
     for (name, request) in [
-        ("pathname-unix", "execute-fixed-sentinel\n"),
-        (
-            "dbus-systemd",
-            "org.freedesktop.systemd1.Manager.StartTransientUnit:sentinel\n",
-        ),
-        (
-            "docker",
-            "POST /containers/create HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
-        ),
+        ("pathname-unix", "sentinel\n"),
+        ("dbus-systemd", "sentinel\n"),
+        ("docker", "sentinel\n"),
     ] {
         let endpoint = Endpoint::Path(fixture.path(&format!("{name}.sock")));
         services.push(Service::unix(
@@ -176,19 +170,16 @@ pub fn run(fixture: &Fixture) {
             markers.join(name),
             fixture.operator,
         ));
-        probes.push(Probe::new(name, Attack::Unix(endpoint, request.into())));
+        probes.push(Probe::new(name, Attack::Unix(endpoint)));
     }
     let endpoint = Endpoint::Abstract(format!("louiselm-hostile-{}", std::process::id()));
     services.push(Service::unix(
         &endpoint,
-        "execute-fixed-sentinel\n",
+        "sentinel\n",
         markers.join("abstract"),
         fixture.operator,
     ));
-    probes.push(Probe::new(
-        "abstract-unix",
-        Attack::Unix(endpoint, "execute-fixed-sentinel\n".into()),
-    ));
+    probes.push(Probe::new("abstract-unix", Attack::Unix(endpoint)));
     // The gate creates these private local addresses in a throwaway NET
     // namespace. No dependence on the guest NIC or external network reachability.
     let ipv4: IpAddr = "198.18.0.1".parse().unwrap();
@@ -236,7 +227,7 @@ fn cross_session_channels(fixture: &Fixture, markers: &std::path::Path) {
     let mut first_plan = fixture.plan("channel-first", 60000);
     let mut second_plan = fixture.plan("channel-second", 60001);
     let mut services = Vec::new();
-    let request = "execute-fixed-sentinel\n";
+    let request = "sentinel\n";
     let mut attacks = Vec::new();
     for (name, plan) in [("first", &mut first_plan), ("second", &mut second_plan)] {
         let host_path = fixture.path(&format!("channel-{name}.sock"));
@@ -255,11 +246,11 @@ fn cross_session_channels(fixture: &Fixture, markers: &std::path::Path) {
         attacks.push((
             Probe::new(
                 &format!("own-channel-{name}"),
-                Attack::Unix(Endpoint::Path(guest_path), request.into()),
+                Attack::Unix(Endpoint::Path(guest_path)),
             ),
             Probe::new(
                 &format!("foreign-channel-{name}"),
-                Attack::Unix(Endpoint::Path(host_path), request.into()),
+                Attack::Unix(Endpoint::Path(host_path)),
             ),
         ));
     }

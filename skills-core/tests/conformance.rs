@@ -11,6 +11,32 @@ use louiselm_skills::conformance::{
     REQUIRED_CHECKS, Report, ReportResult, Scope, pair,
 };
 
+#[test]
+fn installed_certificate_rejects_guest_scope_and_changed_host_inputs() {
+    use louiselm_skills::conformance::installed::{Certificate, HostSnapshot};
+    let digest = louiselm_skills::Digest::of(b"fixture").to_string();
+    let host = HostSnapshot {
+        profile: "debian13-x86_64-glibc/1".into(),
+        machine_digest: digest.clone(),
+        boot_id: "00000000-0000-0000-0000-000000000001".into(),
+        release_digest: digest.clone(),
+        inputs: ["launcher", "backend", "policy", "kernel", "loader"]
+            .into_iter()
+            .map(|name| (name.into(), digest.clone()))
+            .collect(),
+    };
+    let mut observations = passing();
+    assert!(Certificate::new(host.clone(), observations.clone()).is_err());
+    observations.scope = Scope::InstalledHost;
+    let certificate = Certificate::new(host.clone(), observations).unwrap();
+    let bytes = certificate.canonical_bytes().unwrap();
+    assert_eq!(Certificate::parse_canonical(&bytes).unwrap(), certificate);
+    assert!(certificate.is_current(&host));
+    let mut rebooted = host;
+    rebooted.boot_id = "00000000-0000-0000-0000-000000000002".into();
+    assert!(!certificate.is_current(&rebooted));
+}
+
 fn passing() -> Report {
     Report {
         schema: REPORT_SCHEMA.into(),

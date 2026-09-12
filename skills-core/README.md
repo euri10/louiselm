@@ -668,8 +668,8 @@ done
 ```
 
 Validate the exact sudo boundary independently. The operator is pinned by
-numeric UID, the component by SHA-256, and the argument vector by the single
-literal `run` argument:
+numeric UID, the component by SHA-256, and the argument vector by the fixed
+literal `run` or `certify` argument:
 
 ```sh
 operator_uid=$(id -u "$operator")
@@ -678,7 +678,7 @@ sudo /usr/sbin/visudo -cf /etc/sudoers.d/louiselm-launch
 sudo grep -Fx "Defaults!$launcher fdexec=digest_only" \
   /etc/sudoers.d/louiselm-launch
 sudo grep -Fx \
-  "#$operator_uid ALL=(root:root) NOPASSWD: NOSETENV: sha256:$launcher_sha256 $launcher run" \
+  "#$operator_uid ALL=(root:root) NOPASSWD: NOSETENV: sha256:$launcher_sha256 $launcher run, sha256:$launcher_sha256 $launcher certify" \
   /etc/sudoers.d/louiselm-launch
 ```
 
@@ -748,8 +748,10 @@ I/O errors or controller payloads in the new cause.
 against a deterministic fake Control broker. A live ceremony additionally
 requires the real broker from louiselm-qbr.5.1.1 at the installed rendezvous.
 Once it is installed, submit one canonical request line as the operator, then
-continue ACP on the same stdin. This is the only privileged invocation the
-sudo rule may admit; there is no release-ID argument:
+continue ACP on the same stdin. This is the Session-launch invocation; the
+separate fixed `certify` maintenance invocation is documented in
+[host certification](../docs/launcher-conformance.md#installed-certification-debian-13-x86_64).
+Neither accepts a release-ID argument:
 
 ```sh
 sudo -u "$operator" sudo -n \
@@ -757,7 +759,7 @@ sudo -u "$operator" sudo -n \
   < /tmp/launch-request.json
 ```
 
-Confirm that `run extra`, a copied launcher at a different path, the exact path
+Confirm that `run extra`, `certify extra`, internal worker verbs, a copied launcher at a different path, the exact path
 after changing one byte, and a rule containing a different valid SHA-256 are all
 rejected by `sudo -n`. Roll the VM back after these destructive checks; do not
 repair an immutable release in place.
