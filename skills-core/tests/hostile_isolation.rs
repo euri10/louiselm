@@ -20,21 +20,11 @@ mod sockets;
 use probe::{Observation, Outcome};
 
 fn check_pair(names: &[&str], outside: &[Observation], inside: &[Observation]) -> bool {
-    !names.is_empty()
-        && outside.len() == names.len()
-        && inside.len() == names.len()
-        && names.iter().all(|name| {
-            let observations =
-                |rows: &[Observation]| rows.iter().filter(|row| row.name == *name).count();
-            observations(outside) == 1
-                && observations(inside) == 1
-                && outside
-                    .iter()
-                    .any(|row| row.name == *name && matches!(row.outcome, Outcome::Allowed))
-                && inside
-                    .iter()
-                    .any(|row| row.name == *name && matches!(row.outcome, Outcome::Denied(_)))
+    louiselm_skills::conformance::pair(names, outside, inside).is_ok_and(|checks| {
+        checks.iter().all(|check| {
+            check.control == Outcome::Allowed && matches!(check.confined, Outcome::Denied(_))
         })
+    })
 }
 
 #[test]
@@ -51,37 +41,42 @@ fn hostile_host_identity_matrix() {
     filesystem::run(&fixture);
     processes::run(&fixture);
     sockets::run(&fixture);
+    fixture.finish();
 }
 
 #[test]
 fn missing_duplicate_failed_and_contradictory_probes_never_pass() {
     assert!(!check_pair(&[], &[], &[]));
     let allowed = Observation {
-        name: "sentinel".into(),
+        name: "operator-home".into(),
         outcome: Outcome::Allowed,
     };
     let denied = Observation {
-        name: "sentinel".into(),
+        name: "operator-home".into(),
         outcome: Outcome::Denied("ENOENT".into()),
     };
     let error = Observation {
-        name: "sentinel".into(),
+        name: "operator-home".into(),
         outcome: Outcome::Error("timeout".into()),
     };
     let yes = std::slice::from_ref(&allowed);
     let no = std::slice::from_ref(&denied);
-    assert!(check_pair(&["sentinel"], yes, no));
-    assert!(!check_pair(&["sentinel"], &[], no));
-    assert!(!check_pair(&["sentinel"], yes, &[]));
-    assert!(!check_pair(&["sentinel"], no, no));
-    assert!(!check_pair(&["sentinel"], yes, yes));
-    assert!(!check_pair(&["sentinel"], yes, &[error]));
-    assert!(!check_pair(&["sentinel"], yes, &[denied.clone(), denied]));
+    assert!(check_pair(&["operator-home"], yes, no));
+    assert!(!check_pair(&["operator-home"], &[], no));
+    assert!(!check_pair(&["operator-home"], yes, &[]));
+    assert!(!check_pair(&["operator-home"], no, no));
+    assert!(!check_pair(&["operator-home"], yes, yes));
+    assert!(!check_pair(&["operator-home"], yes, &[error]));
     assert!(!check_pair(
-        &["sentinel"],
+        &["operator-home"],
+        yes,
+        &[denied.clone(), denied]
+    ));
+    assert!(!check_pair(
+        &["operator-home"],
         &[allowed.clone(), allowed],
         &[Observation {
-            name: "sentinel".into(),
+            name: "operator-home".into(),
             outcome: Outcome::Denied("ENOENT".into())
         }]
     ));

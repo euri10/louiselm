@@ -1,7 +1,7 @@
 //! Real endpoints with harmless service-execution doubles, not desktop daemons.
 
 use super::{
-    fixture::{Fixture, check, mode},
+    fixture::{Fixture, mode},
     probe::{Attack, Endpoint, Outcome, Probe},
 };
 use louiselm_skills::sandbox::Channel;
@@ -211,7 +211,7 @@ pub fn run(fixture: &Fixture) {
         "every positive exchange reached its live service"
     );
     let denied = inside.request(&probes);
-    check(&probes, &allowed, &denied);
+    fixture.check(&probes, &allowed, &denied);
     assert!(
         services.iter().all(|service| service.count() == 1),
         "no confined service-mediated execution"
@@ -277,12 +277,12 @@ fn cross_session_channels(fixture: &Fixture, markers: &std::path::Path) {
             matches!(allowed[0].outcome, Outcome::Allowed),
             "declared owner channel works"
         );
-        check(
+        fixture.check(
             std::slice::from_ref(own),
             &allowed,
             &foreign.request(std::slice::from_ref(own)),
         );
-        check(
+        fixture.check(
             std::slice::from_ref(host),
             &control.request(std::slice::from_ref(host)),
             &foreign.request(std::slice::from_ref(host)),

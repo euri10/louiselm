@@ -2,6 +2,7 @@
 
 use super::probe::{Observation, Probe};
 use louiselm_skills::{
+    conformance::{Check, Cleanup, Outcome, REPORT_SCHEMA, Report, ReportResult, Scope},
     registry::NetworkPolicy,
     sandbox::{
         Backend, BubblewrapBackend, Channel, ConfinementPlan, IdentityPlan, SandboxedSession,
@@ -9,6 +10,7 @@ use louiselm_skills::{
     },
 };
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     env, fs,
     io::{BufRead, BufReader, Read, Write},
@@ -25,6 +27,7 @@ use std::{
 
 pub struct Fixture {
     directory: tempfile::TempDir,
+    checks: RefCell<Vec<Check>>,
     pub backend: BubblewrapBackend,
     pub operator: u32,
 }
@@ -104,6 +107,7 @@ impl Fixture {
         mode(&sessions, 0o711);
         Self {
             directory,
+            checks: RefCell::new(Vec::new()),
             backend,
             operator,
         }
@@ -149,6 +153,48 @@ impl Fixture {
                 .spawn(plan)
                 .expect("required HostIdentity launch succeeds"),
         )
+    }
+
+    pub fn check(&self, probes: &[Probe], outside: &[Observation], inside: &[Observation]) {
+        for (context, rows) in [("outside", outside), ("inside", inside)] {
+            for row in rows {
+                println!("{context}: {} {:?}", row.name, row.outcome);
+            }
+        }
+        let names: Vec<_> = probes.iter().map(|probe| probe.name.as_str()).collect();
+        let checks = louiselm_skills::conformance::pair(&names, outside, inside).unwrap();
+        assert!(
+            checks.iter().all(|check| check.control == Outcome::Allowed
+                && matches!(check.confined, Outcome::Denied(_))),
+            "every named attack requires a positive control and an actual denial"
+        );
+        self.checks.borrow_mut().extend(checks);
+    }
+
+    pub fn record(&self, name: &str, detail: &str) {
+        self.checks.borrow_mut().push(Check {
+            name: name.into(),
+            control: Outcome::Allowed,
+            confined: Outcome::Denied(detail.into()),
+        });
+    }
+
+    pub fn finish(self) {
+        // All process/service owners have explicitly completed before this call.
+        // Include private fixture removal in the success boundary too.
+        self.directory.close().expect("owned fixture files removed");
+        let report = Report {
+            schema: REPORT_SCHEMA.into(),
+            scope: Scope::DisposableGuest,
+            checks: self.checks.into_inner(),
+            completed: true,
+            cleanup: Cleanup::Confirmed,
+        };
+        assert_eq!(report.result().unwrap(), ReportResult::Passed);
+        println!(
+            "HOSTILE_REPORT:{}",
+            String::from_utf8(report.canonical_bytes().unwrap()).unwrap()
+        );
     }
 }
 
@@ -277,17 +323,4 @@ impl Drop for Agent {
             }
         }
     }
-}
-
-pub fn check(probes: &[Probe], outside: &[Observation], inside: &[Observation]) {
-    for (context, rows) in [("outside", outside), ("inside", inside)] {
-        for row in rows {
-            println!("{context}: {} {:?}", row.name, row.outcome);
-        }
-    }
-    let names: Vec<_> = probes.iter().map(|probe| probe.name.as_str()).collect();
-    assert!(
-        super::check_pair(&names, outside, inside),
-        "every named attack requires exactly one positive control and one actual denial"
-    );
 }

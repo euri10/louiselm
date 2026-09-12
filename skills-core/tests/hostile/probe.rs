@@ -1,5 +1,6 @@
 //! The same deterministic attack implementation runs outside and inside containment.
 
+pub use louiselm_skills::conformance::{Observation, Outcome};
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
@@ -56,19 +57,6 @@ impl Probe {
             attack,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Outcome {
-    Allowed,
-    Denied(String),
-    Error(String),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Observation {
-    pub name: String,
-    pub outcome: Outcome,
 }
 
 fn observe_io(result: io::Result<()>, denied: &[i32]) -> Outcome {

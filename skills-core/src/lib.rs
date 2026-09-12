@@ -12,6 +12,7 @@ pub mod cache;
 pub mod canonical;
 pub mod capture;
 pub mod cli;
+pub mod conformance;
 pub mod diff;
 pub mod discovery;
 pub mod discovery_source;

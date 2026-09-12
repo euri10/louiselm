@@ -1,7 +1,7 @@
 //! Simultaneous owned targets; never inspect or signal desktop processes.
 
 use super::{
-    fixture::{Fixture, check, mode},
+    fixture::{Fixture, mode},
     probe::{Attack, Probe},
 };
 use std::{
@@ -51,7 +51,7 @@ pub fn run(fixture: &Fixture) {
     fs::write(&second_file, b"second-session-private").unwrap();
     probes.push(Probe::new("second-session-file", Attack::Read(second_file)));
     let mut control = fixture.outside(0);
-    check(&probes, &control.request(&probes), &first.request(&probes));
+    fixture.check(&probes, &control.request(&probes), &first.request(&probes));
     let first_file = first_plan.home.join("private-sentinel");
     fs::write(&first_file, b"first-session-private").unwrap();
     let reverse = [
@@ -63,7 +63,7 @@ pub fn run(fixture: &Fixture) {
         Probe::new("ptrace-first-session", Attack::Ptrace(first.pid())),
         Probe::new("signal-first-session", Attack::Signal(first.pid())),
     ];
-    check(
+    fixture.check(
         &reverse,
         &control.request(&reverse),
         &second.request(&reverse),
@@ -153,4 +153,8 @@ fn lifecycle(fixture: &Fixture) {
         "INT-ignoring descendants cannot survive Disposal"
     );
     println!("lifecycle: fork/Park/Resume/Interrupt/Disposal passed");
+    fixture.record(
+        "lifecycle",
+        "live descendants stopped during Park, resumed, interrupted; zero survivors after Disposal",
+    );
 }

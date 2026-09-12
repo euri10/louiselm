@@ -63,6 +63,24 @@ before the shell executes that trap. The recipe additionally consumes the
 existing `ln30` registry suite and three-scenario production relay/loss test;
 neither is reimplemented here.
 
+The matrix consumes the shared
+[`conformance` report contract](../skills-core/src/conformance.rs). Successful
+completion prints one canonical `HOSTILE_REPORT:` JSON record, after explicit
+process cleanup and removal of owned fixture files. Its fixed inventory covers
+all 45 attacks plus lifecycle; omitting an entire probe group cannot silently
+pass. Missing controls, unexpected errors or interruption yield incomplete
+evidence; observed forbidden access or unconfirmed cleanup yields failure.
+Duplicate, unexpected and malformed observations are rejected. A failed run
+may stop before printing a report, so absence is never success.
+
+The report is explicitly scoped to `disposable_guest`. It has no installed-host
+identity, boot measurement, authentication or admission authority. The separate
+registry, startup and relay gates remain mandatory. The pure failure-history
+reducer retains known failures across incomplete runs, keeps guest and installed
+scopes separate, and never clears unresolved cleanup merely because a fresh
+fixture was disposed successfully. Protected persistence and applicable-host
+validation are separate installed-authority work.
+
 The suite found `louiselm-d6fv.4.8.1.1`: Bubblewrap did not close an undeclared
 socket descriptor; the confined workload successfully wrote through it. The
 fresh single-threaded bootstrap now rejects undeclared descriptors after the
@@ -88,6 +106,7 @@ native-source packaging and masking remains `louiselm-d6fv.3`.
 This gate does **not** issue a runtime attestation or enable Verified posture.
 `IsolationEvidence::check` separately rejects incomplete/contradictory dimension
 records, but backend mechanism booleans are not a persisted conformance report.
-`louiselm-ucj1` records the unresolved binding of host conformance to production
-Verified admission, blocking the `louiselm-d6fv.9` cutover. Installed authority
-still needs `louiselm-d6fv.4.9` and the genuine release ceremony `louiselm-lm70`.
+`louiselm-ucj1` records the approved host-conformance policy; its implementation
+is tracked by `louiselm-d6fv.12`, blocking the `louiselm-d6fv.9` cutover. Installed
+authority still needs `louiselm-d6fv.4.9` and the genuine release ceremony
+`louiselm-lm70`.

@@ -1,7 +1,7 @@
 //! Filesystem, native configuration and inherited-authority sentinels.
 
 use super::{
-    fixture::{Fixture, check, mode},
+    fixture::{Fixture, mode},
     probe::{Attack, Probe},
 };
 use std::{
@@ -60,7 +60,7 @@ pub fn run(fixture: &Fixture) {
         .collect();
     prepared.dispose().unwrap();
     let mut inside = fixture.inside(&plan);
-    check(&probes, &allowed, &inside.request(&probes));
+    fixture.check(&probes, &allowed, &inside.request(&probes));
     for (name, expected) in ["provider-config.json", "mcp.json", "adapter.js"]
         .iter()
         .zip(runtime_after_control)
@@ -118,6 +118,10 @@ fn inherited_descriptors(fixture: &Fixture) {
             "same plan launches without ambient FD"
         );
         clean.dispose();
+        fixture.record(
+            &format!("inherited-{name}-fd"),
+            "bootstrap EINVAL; clean launch passed",
+        );
         println!(
             "inherited-{name}-fd: outside Allowed; bootstrap refused before exec; clean launch passed"
         );
