@@ -990,7 +990,7 @@ pub struct SystemRunningAgent {
     session: Arc<Mutex<SandboxedSession>>,
     relay: Option<RelayWorker>,
     recovery: Option<Arc<super::recovery::SessionStorage>>,
-    recovery_worker: Option<thread::JoinHandle<()>>,
+    recovery_worker: Option<super::recovery_worker::Worker>,
     verification_storage: Option<Arc<super::verification::Storage>>,
     verification_worker: Option<super::verification::Worker>,
 }
@@ -1015,9 +1015,9 @@ impl SystemRunningAgent {
     }
 
     fn join_recovery(&mut self) -> Result<(), SupervisorError> {
-        self.recovery_worker.take().map_or(Ok(()), |worker| {
-            worker.join().map_err(|_| SupervisorError::CleanupUnproven)
-        })
+        self.recovery_worker
+            .take()
+            .map_or(Ok(()), super::recovery_worker::Worker::join)
     }
 
     fn cancel_verification(&mut self) -> Result<(), SupervisorError> {
@@ -1092,25 +1092,21 @@ impl RunningAgent for SystemRunningAgent {
         self.cancel_tool()?;
         self.cancel_helper()?;
         let session = self.session.clone();
-        self.recovery_worker = Some(
-            thread::Builder::new()
-                .name("louiselm-restore-recovery".into())
-                .spawn(move || {
-                    let result = (|| {
-                        let mut session = lock(&session);
-                        if !matches!(
-                            session.mechanical_state(),
-                            Ok(SandboxMechanicalState::Parked)
-                        ) {
-                            return Err(RecoveryError::NotParked);
-                        }
-                        storage.restore(&request, recovery_now_ms()?)?;
-                        Ok(request)
-                    })();
-                    complete(result);
-                })
-                .map_err(|_| SupervisorError::WorkerUnavailable)?,
-        );
+        self.recovery_worker = Some(super::recovery_worker::Worker::spawn(
+            "louiselm-restore-recovery",
+            move || {
+                let mut session = lock(&session);
+                if !matches!(
+                    session.mechanical_state(),
+                    Ok(SandboxMechanicalState::Parked)
+                ) {
+                    return Err(RecoveryError::NotParked);
+                }
+                storage.restore(&request, recovery_now_ms()?)?;
+                Ok(request)
+            },
+            complete,
+        )?);
         Ok(())
     }
     fn verification(
@@ -1172,29 +1168,25 @@ impl RunningAgent for SystemRunningAgent {
         self.cancel_tool()?;
         self.cancel_helper()?;
         let session = self.session.clone();
-        self.recovery_worker = Some(
-            thread::Builder::new()
-                .name("louiselm-retain-recovery".into())
-                .spawn(move || {
-                    let result = (|| {
-                        let mut session = lock(&session);
-                        if !matches!(
-                            session.mechanical_state(),
-                            Ok(SandboxMechanicalState::Parked)
-                        ) {
-                            return Err(RecoveryError::NotParked);
-                        }
-                        let now = recovery_now_ms()?;
-                        let evidence = storage.retain(&request, now)?;
-                        if recovery_now_ms()? >= request.expires_at_ms {
-                            return Err(RecoveryError::Expired);
-                        }
-                        Ok(evidence)
-                    })();
-                    complete(result);
-                })
-                .map_err(|_| SupervisorError::WorkerUnavailable)?,
-        );
+        self.recovery_worker = Some(super::recovery_worker::Worker::spawn(
+            "louiselm-retain-recovery",
+            move || {
+                let mut session = lock(&session);
+                if !matches!(
+                    session.mechanical_state(),
+                    Ok(SandboxMechanicalState::Parked)
+                ) {
+                    return Err(RecoveryError::NotParked);
+                }
+                let now = recovery_now_ms()?;
+                let evidence = storage.retain(&request, now)?;
+                if recovery_now_ms()? >= request.expires_at_ms {
+                    return Err(RecoveryError::Expired);
+                }
+                Ok(evidence)
+            },
+            complete,
+        )?);
         Ok(())
     }
 

@@ -49,6 +49,7 @@ use crate::{
 pub mod command;
 mod lifecycle;
 pub mod recovery;
+mod recovery_worker;
 mod tool_execution;
 mod tool_helper;
 mod tool_integration;
