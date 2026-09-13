@@ -15,6 +15,13 @@ use uuid::Uuid;
 
 use crate::permissions::set_private_permissions;
 
+#[path = "notifications.rs"]
+mod notifications;
+pub use notifications::{
+    NotificationFailure, NotificationHealth, NotificationStatus, NotificationTargetStatus,
+};
+use notifications::{NotificationRegistration, NotificationState};
+
 /// One-time pairing material intended for a QR payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PairingOffer {
@@ -72,23 +79,33 @@ struct PendingOffer {
     expires_at_ms: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct DeviceRecord {
     #[serde(flatten)]
     status: DeviceStatus,
     credential_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notification: Option<NotificationRegistration>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct RegistryState {
     schema_version: u8,
     pending: Vec<PendingOffer>,
     devices: Vec<DeviceRecord>,
+    #[serde(default)]
+    notifications: NotificationState,
 }
 
 /// Pairing-registry failure.
 #[derive(Debug, Error)]
 pub enum PairingError {
+    /// Refreshing the latest Attention generation failed before submission.
+    #[error(transparent)]
+    Attention(#[from] crate::AttentionError),
+    /// The device bearer does not identify an active pairing.
+    #[error("device credential is invalid")]
+    Unauthorized,
     /// Pairing input is malformed or a token is invalid/expired.
     #[error("pairing rejected: {0}")]
     Rejected(String),
@@ -244,6 +261,7 @@ impl PairingRegistry {
                     last_delivery_at_ms: None,
                 },
                 credential_sha256: hash(&credential),
+                notification: None,
             });
             Ok(DeviceCredential {
                 device_id,
@@ -369,6 +387,7 @@ impl PairingRegistry {
                 "pairing registry version is unsupported".to_owned(),
             ));
         }
+        notifications::validate_state(&state)?;
         Ok(state)
     }
 

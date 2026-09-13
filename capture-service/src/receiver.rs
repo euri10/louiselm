@@ -110,15 +110,19 @@ impl Receiver {
         let router = Router::new()
             .route("/v1/health", get(health))
             .route("/v1/pair", post(pair))
-            .route("/v1/captures/{id}", put(upload))
-            // JSON extractors stay small; streamed audio applies its own 20 MiB limit.
-            .layer(DefaultBodyLimit::max(8 * 1024));
+            .route("/v1/captures/{id}", put(upload));
         let router = if self.state.attention.is_some() {
-            router.route("/v1/attention", get(attention))
+            router
+                .route("/v1/attention", get(attention))
+                .route("/v1/attention/token", put(register_token))
         } else {
             router
         };
-        router.with_state(self.state.clone())
+        // Apply to every route, including optional registration. Streamed audio
+        // consumes Body directly and applies its own 20 MiB limit.
+        router
+            .layer(DefaultBodyLimit::max(8 * 1024))
+            .with_state(self.state.clone())
     }
 }
 
@@ -139,7 +143,7 @@ async fn attention(
     State(state): State<ReceiverState>,
     headers: HeaderMap,
 ) -> Result<Json<crate::AttentionSnapshot>, ApiError> {
-    authenticate(&state, &headers)?;
+    authenticate(&state, &headers).await?;
     let store = state
         .attention
         .ok_or_else(|| ApiError::internal("Attention inbox is unavailable"))?;
@@ -148,6 +152,40 @@ async fn attention(
         .map_err(|_| ApiError::internal("Attention snapshot is unavailable"))?
         .map_err(|_| ApiError::internal("Attention snapshot is unavailable"))?;
     Ok(Json(snapshot))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotificationTokenRequest {
+    token: String,
+}
+
+async fn register_token(
+    State(state): State<ReceiverState>,
+    headers: HeaderMap,
+    request: Result<Json<NotificationTokenRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let credential = required_header(&headers, header::AUTHORIZATION.as_str())?
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| ApiError::unauthorized("invalid authorization scheme"))?
+        .to_owned();
+    let Json(request) =
+        request.map_err(|_| ApiError::bad_request("invalid notification registration"))?;
+    tokio::task::spawn_blocking(move || {
+        state
+            .pairing
+            .register_notification_token(&credential, &request.token)
+    })
+    .await
+    .map_err(|_| ApiError::internal("notification registration is unavailable"))?
+    .map_err(|error| match error {
+        crate::PairingError::Unauthorized => ApiError::unauthorized("device credential is invalid"),
+        crate::PairingError::Rejected(_) => {
+            ApiError::bad_request("invalid notification registration")
+        }
+        _ => ApiError::internal("notification registration is unavailable"),
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -160,13 +198,17 @@ async fn pair(
     State(state): State<ReceiverState>,
     Json(request): Json<PairRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let paired = state
-        .pairing
-        .consume(&request.token, &request.device_name, now_ms())
-        .map_err(|error| match error {
-            crate::PairingError::Rejected(message) => ApiError::unauthorized(message),
-            _ => ApiError::internal("pairing registry failed"),
-        })?;
+    let paired = tokio::task::spawn_blocking(move || {
+        state
+            .pairing
+            .consume(&request.token, &request.device_name, now_ms())
+    })
+    .await
+    .map_err(|_| ApiError::internal("pairing registry failed"))?
+    .map_err(|error| match error {
+        crate::PairingError::Rejected(message) => ApiError::unauthorized(message),
+        _ => ApiError::internal("pairing registry failed"),
+    })?;
     Ok(Json(paired))
 }
 
@@ -176,7 +218,7 @@ async fn upload(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let device_id = authenticate(&state, &headers)?;
+    let device_id = authenticate(&state, &headers).await?;
     let source = match required_header(&headers, "x-louiselm-source")? {
         "android" => CaptureSource::Android,
         "neovim" => CaptureSource::Neovim,
@@ -250,15 +292,17 @@ async fn upload(
     }
 }
 
-fn authenticate(state: &ReceiverState, headers: &HeaderMap) -> Result<String, ApiError> {
+async fn authenticate(state: &ReceiverState, headers: &HeaderMap) -> Result<String, ApiError> {
     let authorization = required_header(headers, header::AUTHORIZATION.as_str())?;
     let credential = authorization
         .strip_prefix("Bearer ")
-        .ok_or_else(|| ApiError::unauthorized("invalid authorization scheme"))?;
-    state
-        .pairing
-        .authenticate_device(credential)
-        .map_err(|error| ApiError::internal(error.to_string()))?
+        .ok_or_else(|| ApiError::unauthorized("invalid authorization scheme"))?
+        .to_owned();
+    let pairing = state.pairing.clone();
+    tokio::task::spawn_blocking(move || pairing.authenticate_device(&credential))
+        .await
+        .map_err(|_| ApiError::internal("pairing registry is unavailable"))?
+        .map_err(|_| ApiError::internal("pairing registry is unavailable"))?
         .ok_or_else(|| ApiError::unauthorized("device credential is invalid"))
 }
 

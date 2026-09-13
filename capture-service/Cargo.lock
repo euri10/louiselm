@@ -872,10 +872,13 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 name = "louiselm-capture"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "axum-server",
+ "base64",
  "fs2",
  "http-body-util",
+ "httpdate",
  "pem",
  "qrcode",
  "rcgen",
@@ -1206,6 +1209,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

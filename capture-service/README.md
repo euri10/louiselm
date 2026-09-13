@@ -11,6 +11,7 @@ configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL
 serve
 pair
 revoke-device DEVICE_UUID
+retry-notifications
 ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]
 list
 status
@@ -137,6 +138,84 @@ and fixed-kind counts. `status` includes the same summary and reports a sanitize
 storage error if Attention state cannot be read. The local `attention.sock` accepts
 only operator-capability mutations and no Agent-authored text. Paired devices can
 `GET /v1/attention` with their pairing credential; that route is read-only.
+
+## Optional Android push
+
+`serve` submits eligible Attention generations independently to every active
+paired device with a registered FCM token. The inbox remains available without
+push configuration. Enable the sender by setting `GOOGLE_APPLICATION_CREDENTIALS`
+in the service's `capture.env` to an external Google **service-account JSON key
+file**, then restart the service. On Unix, the key file must be owner-only
+(`0600`); its parent directory should also be private. The sender uses that
+file's `project_id` and requires `cloudmessaging.messages.create` on the target
+project. Key provisioning and Android receiving code are separate work.
+
+The adapter supports Google's standard `googleapis.com` service-account
+format, with the fixed OAuth endpoint `https://oauth2.googleapis.com/token`.
+It does not run ADC discovery, metadata-server requests, external-account
+commands, or URLs supplied in credentials. OAuth access tokens remain in memory
+and expire within an hour. The RSA signing, base64, and HTTP-date parsers reuse
+packages already present in the lockfile; there is no Firebase Admin SDK.
+
+An authenticated phone registers or rotates its own token with:
+
+```http
+PUT /v1/attention/token
+Authorization: Bearer <paired-device-credential>
+Content-Type: application/json
+
+{"token":"<FCM-registration-token>"}
+```
+
+Success returns `204` with no body. The object accepts only `token`, containing
+1–4096 visible ASCII bytes; JSON requests are limited to 8 KiB. There is no
+caller-selected device ID. One token cannot be registered to multiple paired
+devices. Registration, rotation, and revocation share the pairing transaction.
+Tokens and submission state are private fields in `pairing/pairing.json`, and
+`revoke-device` removes them with the device credential. Revocation waits for an
+already-started bounded submission; after it returns, no future submission can
+use that pairing. HTTP pairing/authentication runs off the async executor while
+waiting for this lock.
+
+The FCM message contains only the required routing token, fixed text
+(`LouiseLM` / `Attention is waiting in LouiseLM.`), a decimal-string `generation`,
+and fixed Android priority/collapse/tag fields. Both collapse key and notification
+tag are `louiselm-attention`. No Attention kind, Session/Run/issue identity, path,
+prompt, transcript, or caller-authored display text is serialized to Google.
+The authenticated private inbox remains the source of work details.
+
+Delivery passes run once per second and refresh eligibility/generation before
+each device's attempt. A confirmed generation is not submitted
+again, including after restart or token rotation. Unchanged unresolved state
+does not produce reminders. Pending retries use the latest eligible snapshot;
+an empty or wholly ineligible inbox causes no submission. Transient failures
+use durable exponential backoff starting at 60 seconds, capped at 64 minutes,
+and honor a longer numeric or HTTP-date `Retry-After`. Invalid tokens disable
+only their registration; a different token re-enables that device. Repeating
+the same invalid token does not reset its state.
+
+`status.notifications` is a versioned record containing sender health, a fixed
+next action, and each registered device's enabled flag, confirmed generation,
+attempt count, and retry deadline. It never contains tokens or raw provider
+errors. Authentication/configuration failures persist across restart and stop
+automatic attempts. Correct the key or permissions, restart `serve`, then run
+`retry-notifications` to clear the stop. No configured key means health is
+`unconfigured`, and no Google request occurs.
+
+The sender persists a retry deadline **before** each request and the confirmed
+generation after acceptance. A crash or connection failure between Google's
+acceptance and the local confirmation can leave the result uncertain, so this
+is not an exactly-once delivery guarantee. Such retries use the collapse key;
+Android must additionally deduplicate generations. Each HTTP request has a
+10-second total timeout and does not follow redirects. The worker owns pending
+requests and joins its bounded pass when the serving endpoints stop.
+
+The implementation follows Google's [HTTP v1 authentication flow](https://firebase.google.com/docs/cloud-messaging/send/v1-api),
+[service-account assertions](https://developers.google.com/identity/protocols/oauth2/service-account),
+and [FCM retry/error contract](https://firebase.google.com/docs/cloud-messaging/error-codes).
+Automated checks use disposable signing keys and a fake HTTP transport; they do
+not contact Google. Physical Android wake-up and Tailscale acceptance belong to
+`louiselm-qbr.9.9` after the Android receiver in `louiselm-qbr.9.7` is implemented.
 
 ## Operator lifecycle
 

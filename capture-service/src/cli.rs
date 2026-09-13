@@ -6,7 +6,10 @@ use std::{
     io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -17,6 +20,9 @@ use qrcode::{
 };
 use serde::Serialize;
 use thiserror::Error;
+
+#[path = "notification_worker.rs"]
+mod notification_worker;
 
 use crate::time::now_ms;
 use crate::{
@@ -34,6 +40,9 @@ const PAIRING_TTL_MS: u64 = 10 * 60 * 1_000;
 /// CLI failure with actionable local context and no credentials.
 #[derive(Debug, Error)]
 pub enum CliError {
+    /// The owned notification worker failed; no provider payload is displayed.
+    #[error("notification worker is unavailable; inspect local storage and restart serve")]
+    NotificationWorker,
     /// Required argument or environment configuration is invalid.
     #[error("invalid command: {0}")]
     Invalid(String),
@@ -114,6 +123,11 @@ pub async fn run() -> Result<(), CliError> {
         "configure-network" => configure_network(&paths, options),
         "pair" => pair(&paths, options),
         "revoke-device" => revoke_device(&paths, options),
+        "retry-notifications" => {
+            no_arguments(options, "retry-notifications")?;
+            PairingRegistry::open(paths.pairing())?.retry_notifications()?;
+            Ok(())
+        }
         "serve" => serve(store, attention, &paths, options).await,
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
@@ -367,6 +381,7 @@ fn status(store: &Store, attention: &AttentionStore, paths: &Paths) -> Result<()
     let captures = store.list()?;
     let pairing = PairingRegistry::open(paths.pairing())?;
     let pairing_status = pairing.status()?;
+    let notifications = pairing.notification_status()?;
     let network = NetworkProfile::load_or_default(&paths.network())?;
     let phone_reachable = network.phone_reachable();
     let paired_device_count = pairing_status.devices.len();
@@ -421,6 +436,7 @@ fn status(store: &Store, attention: &AttentionStore, paths: &Paths) -> Result<()
                 "phone_reachable": phone_reachable,
             },
             "attention": attention,
+            "notifications": notifications,
         }))?
     );
     Ok(())
@@ -552,7 +568,7 @@ async fn serve(
     let receiver = Receiver::with_attention(
         store.clone(),
         attention.clone(),
-        pairing,
+        pairing.clone(),
         paths.uploads(),
         identity.public_key_sha256(),
     )?;
@@ -565,7 +581,7 @@ async fn serve(
     let attention_socket = AttentionSocket::bind(
         paths.attention_socket(),
         paths.operator_capability(),
-        attention,
+        attention.clone(),
     )
     .await?;
     if let Some(workspace) =
@@ -610,12 +626,29 @@ async fn serve(
     .await?;
     let network_server =
         axum_server::bind_rustls(bind, tls).serve(receiver.router().into_make_service());
-    tokio::select! {
-        result = run_socket.serve() => result?,
-        result = attention_socket.serve() => result?,
-        result = network_server => result?,
+    let stop_notifications = Arc::new(AtomicBool::new(false));
+    let credentials = env::var_os("GOOGLE_APPLICATION_CREDENTIALS")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let mut notifications = tokio::spawn(notification_worker::run(
+        attention,
+        pairing,
+        credentials,
+        stop_notifications.clone(),
+    ));
+    let (result, worker_finished) = tokio::select! {
+        result = run_socket.serve() => (result.map_err(CliError::from), false),
+        result = attention_socket.serve() => (result.map_err(CliError::from), false),
+        result = network_server => (result.map_err(CliError::from), false),
+        result = &mut notifications => (result.unwrap_or(Err(CliError::NotificationWorker)), true),
+    };
+    stop_notifications.store(true, Ordering::Release);
+    if !worker_finished {
+        notifications
+            .await
+            .map_err(|_| CliError::NotificationWorker)??;
     }
-    Ok(())
+    result
 }
 
 fn openai_provider() -> Result<OpenAiTranscriber, CliError> {
@@ -757,6 +790,6 @@ fn configured_root(
 
 fn print_help() {
     println!(
-        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  attention list|status\n  run admit --id UUID --generated-work-max N --park-ttl-ms N\n  run attach --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false\n  run generate --command create|q -- BR_ARGS\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
+        "louiselm-capture commands:\n  configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL\n  serve\n  attention list|status\n  retry-notifications\n  run admit --id UUID --generated-work-max N --park-ttl-ms N\n  run attach --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true|false\n  run generate --command create|q -- BR_ARGS\n  run list\n  run park --id UUID --session-id ID --agent NAME --acp-session-id ID --cwd PATH --load-session true --claims ISSUE_IDS\n  pair [--svg PATH]\n  revoke-device DEVICE_UUID\n  ingest-local --file PATH --recorded-at-ms N --duration-ms N --mime TYPE [--id UUID]\n  list\n  status\n  retry CAPTURE_UUID\n  transcribe-once"
     );
 }

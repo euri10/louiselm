@@ -3,6 +3,7 @@
 mod attention;
 mod attention_socket;
 pub mod cli;
+mod fcm;
 mod generation;
 mod identity;
 mod model;
@@ -35,7 +36,8 @@ pub use model::{
 pub use network::{NetworkProfile, NetworkProfileError, NetworkProfileKind};
 pub use openai::OpenAiTranscriber;
 pub use pairing::{
-    DeviceCredential, DeviceStatus, PairingError, PairingOffer, PairingRegistry, PairingStatus,
+    DeviceCredential, DeviceStatus, NotificationFailure, NotificationHealth, NotificationStatus,
+    NotificationTargetStatus, PairingError, PairingOffer, PairingRegistry, PairingStatus,
 };
 pub use receiver::Receiver;
 pub use run_socket::{RunSocket, RunSocketError, RunSocketMessage};
