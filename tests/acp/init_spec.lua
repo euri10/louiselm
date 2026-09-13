@@ -56,7 +56,7 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
         session = { configOptions = { boolean = {} } },
         terminal = false,
       },
-      clientInfo = { name = "louiselm.nvim", version = "0.1.0" },
+      clientInfo = { name = "louiselm.nvim", version = nvim.fn.readfile("VERSION")[1] },
       protocolVersion = 1,
     },
     jsonrpc = "2.0",

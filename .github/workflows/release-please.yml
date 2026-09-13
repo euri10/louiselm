@@ -1,0 +1,92 @@
+name: Plugin releases
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful main-push CI run to retry (never publishes an unchecked SHA)
+        required: true
+        type: string
+
+concurrency:
+  group: plugin-releases
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    # Activation is a maintainer operation after reviewing docs/releases.md.
+    if: >-
+      vars.PLUGIN_RELEASES_ENABLED == 'true' &&
+      github.repository == 'euri10/louiselm' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+    steps:
+      # workflow_run is privileged: run reviewed main code, never PR code or
+      # artifacts from the triggering workflow. Source identity is fetched by SHA.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the dedicated PR credential
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: test -n "$RELEASE_TOKEN"
+
+      - name: Check commit classification before making proposals
+        run: python3 scripts/check-release-commits.py
+
+      - name: Recover an already prepared draft before retrying Release Please
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+        run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
+
+      - name: Prepare unpublished release drafts
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: main
+          skip-github-pull-request: true
+
+      - name: Publish only the checked approved commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
+        run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
+
+      - name: Wait for outstanding plugin drafts before proposing another version
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -eu
+          ready=$(gh api --paginate --slurp "repos/$REPOSITORY/releases?per_page=100" \
+            --jq '[.[][] | select(.draft and (.tag_name | startswith("plugin-v")))] | length == 0')
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Propose the next plugin release
+        if: steps.pending.outputs.ready == 'true'
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: main
+          skip-github-release: true

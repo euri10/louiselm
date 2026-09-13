@@ -24,7 +24,14 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
   -c "lua MiniTest.run()" -c "qa!"
 ./scripts/generate-api-appendix --check
 ./scripts/generate-luacats --check
+./scripts/generate-plugin-version --check
 ```
+
+Plugin release automation also runs `python3 scripts/check-release-commits.py`,
+`python3 scripts/test-plugin-release.py`, and the pinned Release Please API
+fixtures in `scripts/test-release-please.cjs` (temporary tool setup is in the
+`plugin-release-contract` CI job). See [releases](releases.md) for activation
+and hosted bot-PR acceptance; local fixtures cannot certify GitHub event delivery.
 
 `capture-service/` and `skills-core/` are Rust crates, not Lua, and each carries
 its own gates. Run them from the crate directory you touched:

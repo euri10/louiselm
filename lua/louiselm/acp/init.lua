@@ -1,5 +1,6 @@
 local Protocol = require("louiselm.acp.protocol")
 local Transport = require("louiselm.acp.transport")
+local Version = require("louiselm.version")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -199,7 +200,7 @@ function Client:initialize(params, callback)
         session = { configOptions = { boolean = {} } },
         terminal = false,
       },
-      clientInfo = { name = "louiselm.nvim", version = "0.1.0" },
+      clientInfo = { name = "louiselm.nvim", version = Version.version },
     }
   end
   return self:request("initialize", params, function(result, rpc_error)

@@ -71,6 +71,30 @@ env:
   RUST_VERSION: 1.97.1
 
 jobs:
+  plugin-release-contract:
+    name: Plugin release contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check version, commit policy and publication refusals
+        run: |
+          ./scripts/generate-plugin-version --check
+          python3 scripts/check-release-commits.py
+          python3 scripts/test-plugin-release.py
+      - name: Test the exact release tool against disposable API history
+        run: |
+          set -eu
+          release_tool_dir="$(mktemp -d)"
+          git clone --quiet https://github.com/googleapis/release-please-action.git "$release_tool_dir"
+          git -C "$release_tool_dir" checkout --quiet 5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
+          npm ci --prefix "$release_tool_dir" --omit=dev --ignore-scripts --no-audit --no-fund
+          NODE_PATH="$release_tool_dir/node_modules" node --test scripts/test-release-please.cjs
+
   agent-instructions:
     name: Agent instruction budget
     runs-on: ubuntu-latest

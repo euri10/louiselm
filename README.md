@@ -47,7 +47,10 @@ for storage, recovery, and the asynchronous headless API contract.
 Shared state defaults to `~/.local/state/louiselm/` (`$XDG_STATE_HOME/louiselm/`
 when set), independently of the Neovim profile.
 
-The public source download is not available yet. If you have a checkout,
+The public source download is not available yet. Private repository access and
+exact plugin pins are described in the
+[release guide](https://github.com/euri10/louiselm/blob/main/docs/releases.md).
+Core chat requires no capture, trusted-tool or Android companion. If you have a checkout,
 replace the path below and save this as `quickstart.lua`:
 
 ```lua
