@@ -45,6 +45,26 @@ struct RegisteredRecovery {
 }
 
 impl BrokerService {
+    pub(super) fn registered_recovery(
+        &self,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<RetentionEvidence, BrokerError> {
+        if !matches!(
+            self.recovery_readiness(session_id, now_ms)?,
+            RecoveryReadiness::Ready { .. }
+        ) {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let path = self
+            .authorizations()
+            .root
+            .join("recovery")
+            .join(record_name(session_id)?);
+        let record: RegisteredRecovery = read_record(&path)?.ok_or(BrokerError::InvalidGrant)?;
+        self.validate_recovery_evidence(&record.request, &record.evidence)?;
+        Ok(record.evidence)
+    }
     /// Registers recovery on the existing serialized Session worker.
     /// Caller identity comes from the trusted controller boundary, never a wire role.
     /// The supervisor validates storage asynchronously; this broker worker waits

@@ -2,8 +2,8 @@
 
 `louiselm-qbr.5.1.2` owns the full recovery/status integration. This document
 describes its implemented authorization, reattachment and projection boundaries.
-Operator reconstruction, the operator CLI and Agent self-status
-remain open work. The confirmed design in `louiselm-c0vs` requires broker-owned
+Operator reconstruction is implemented for the measured synthetic recovery layout;
+the operator CLI and Agent self-status remain open work. The confirmed design in `louiselm-c0vs` requires broker-owned
 recovery evidence backed by trusted supervisor retention proof; a reference
 string alone must not authorize disposal. `louiselm-qbr.5.1.2.5` supplies the
 retention mechanics below. `louiselm-qbr.5.1.2.6` connects them to authenticated
@@ -51,6 +51,64 @@ Cold Park is a retained point, not a Running Session: fresh operator-authorized
 reconstruction and its successful load/finalize remain separate obligations.
 
 ## Recovery registration and admission
+
+### Cold reconstruction
+
+The authenticated operator calls `InstalledBroker::authorize_cold_resume` with
+the disposed source Session and a distinct target launch. The broker verifies
+the source receipt chain, recoverable controller-loss settlement and retained
+point. It preserves the configured Agent, Run, envelope/revision, Generation,
+input manifest, recovery requirement, broker-loss policy and original deadlines.
+It durably allocates the source once before issuing fresh target authorization.
+Concurrent attempts cannot allocate two targets; an identical retry retains
+the exact target and allowance. Interrupted authorization consumption cannot
+recreate a pending authorization. A crash can require operator intervention,
+but never restores spent authority.
+
+Finite command allowance subtracts direct admitted intents (including uncertain
+outcomes) and complete delegated reservations. Delegated executions are not
+subtracted again. Uncapped approvals remain uncapped; zero or expired allowance
+is withheld. Unavailable bounded accounting withholds that permission and
+returns `withheld_command: accounting_unavailable`; independent ACP work may
+continue, while governed command steps remain denied. This does not excuse
+invalid overall authorization, recovery evidence, runtime or load failures.
+The current command schema holds one approved command scope per Session.
+
+The target starts with no broker command owner. On its serialized worker the
+controller explicitly Parks it, calls `restore_cold_resume`, then explicitly
+Resumes it to perform the exact retained ACP load. Restoration uses the existing
+supervisor channel and owned asynchronous storage worker; the broker/controller
+never copy protected storage. Exact restore intent and completion records bind
+the target's Park head. Before acknowledging restore, the broker registers the
+replacement's own retained checkpoint through the same supervisor, with the
+original expiry. Its next controller loss must not depend on reusing the consumed
+source allocation. Source and target integration digests differ because
+they include their Session identity; verified launch receipts instead bind
+the unchanged measured runtime, and the target supervisor independently checks
+its supported recovery layout.
+
+Only the trusted controller's successful load observation passed to
+`finish_cold_resume` enables remaining commands after durable finalization.
+Failed/cancelled load durably records failure and clears command approvals; a
+later success cannot revive them. The controller retains the authenticated
+channel to request Disposal or acknowledge the exited process's terminal receipt
+through `step`, then drops the owner. Connection closure alone is not cleanup proof.
+Successful replay does not construct another command owner. Broker restart
+continues to reattach without restoring live grants or command authority.
+After a pre-finalization restart, the controller must revalidate restore and
+retention at the original Parked target head before loading and finalizing it;
+a changed head refuses that retry instead of recreating admission.
+`admit_recovery` checks the replacement's own checkpoint until its original
+deadline, but admission alone never recreates capabilities. A loaded record is
+historical evidence, not proof of current process liveness or lossless recovery.
+
+This consumer supports only `louiselm.test-recovery/1`. The installed VM gate
+`privileged_installed_cold_resume` checks sealed-source restoration, fresh
+authorization, finite/uncapped enforcement, retry and failed synthetic load.
+CI runs it explicitly because ordinary Cargo runs skip privileged fixtures.
+Vendor ACP support and desktop activation remain in `louiselm-d6fv.9`.
+
+### Registering a retained point
 
 `InstalledBroker::register_recovery` runs on the existing serialized broker
 Session worker. Its `LifecycleCaller::Operator` identity must come from the

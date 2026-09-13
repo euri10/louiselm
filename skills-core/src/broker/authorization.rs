@@ -171,6 +171,53 @@ pub struct AuthorizationStore {
 }
 
 impl AuthorizationStore {
+    pub(super) fn has_session(&self, session_id: &str) -> Result<bool, BrokerError> {
+        Ok(self
+            .occupants(0)?
+            .iter()
+            .any(|held| held.session_id == session_id))
+    }
+    pub(super) fn authorize_cold_target(
+        &self,
+        grant: &GrantRequest,
+        now_ms: u64,
+    ) -> Result<PendingAuthorization, BrokerError> {
+        let name = record_name(&grant.request.authorization_id)?;
+        let pending_path = self.pending_path(&name);
+        let consumed_path = self.consumed_path(&name);
+        let prior = if let Some(pending) = read_record::<PendingAuthorization>(&pending_path)? {
+            Some((pending, pending_path))
+        } else {
+            read_record::<ConsumedAuthorization>(&consumed_path)?
+                .map(|record| (record.authorization, consumed_path))
+        };
+        if let Some((prior, path)) = prior {
+            if prior.request_digest != grant.request.digest().to_string()
+                || prior.controller_uid != grant.controller_uid
+                || prior.commands != grant.commands
+                || prior.expires_at_ms != grant.expires_at_ms
+                || prior.require_cold_recovery != grant.require_cold_recovery
+                || prior.broker_loss_grace_ms != grant.broker_loss_grace_ms
+            {
+                return Err(BrokerError::RequestMismatch);
+            }
+            fs::File::open(&path)
+                .and_then(|f| f.sync_all())
+                .map_err(BrokerError::Storage)?;
+            sync_directory(path.parent().ok_or(BrokerError::InvalidGrant)?)?;
+            return Ok(prior);
+        }
+        // This marker is never removed: the consumption crash window must not
+        // recreate a pending authorization even if no consumed record survived.
+        write_new_record(
+            &self
+                .root
+                .join("cold-resume")
+                .join(format!("authorized-{name}")),
+            &grant.request,
+        )?;
+        self.authorize(grant, now_ms)
+    }
     /// Opens or creates the durable store under `root`.
     ///
     /// # Errors

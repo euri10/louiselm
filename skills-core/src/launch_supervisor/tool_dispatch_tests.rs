@@ -48,6 +48,15 @@ type HeldRecovery = Arc<
     >,
 >;
 
+type HeldRestore = Arc<
+    Mutex<
+        Option<(
+            crate::launch_protocol::RecoveryRestoreRequest,
+            crate::launch_supervisor::recovery::RestoreCompletion,
+        )>,
+    >,
+>;
+
 type HeldCompletion = Arc<
     Mutex<
         Option<(
@@ -58,6 +67,7 @@ type HeldCompletion = Arc<
 >;
 
 struct TestProcess {
+    restore: HeldRestore,
     recovery: HeldRecovery,
     tools: ToolExecutor,
     pin: Arc<KernelProcess>,
@@ -65,6 +75,14 @@ struct TestProcess {
     fail_cleanup: Arc<AtomicBool>,
 }
 impl RunningAgent for TestProcess {
+    fn restore_recovery(
+        &mut self,
+        request: crate::launch_protocol::RecoveryRestoreRequest,
+        complete: crate::launch_supervisor::recovery::RestoreCompletion,
+    ) -> Result<(), SupervisorError> {
+        *self.restore.lock().unwrap() = Some((request, complete));
+        Ok(())
+    }
     fn retain_recovery(
         &mut self,
         request: crate::launch_protocol::RetentionRequest,
@@ -199,6 +217,7 @@ impl crate::launch_supervisor::IdentityGuard for TestIdentity {
 }
 
 struct Harness {
+    restore: HeldRestore,
     recovery: HeldRecovery,
     owner: SessionOwner,
     agent: SeqpacketChannel,
@@ -221,6 +240,7 @@ impl Harness {
         let fail_cleanup = Arc::new(AtomicBool::new(false));
         let identity_disposition = Arc::new(AtomicU8::new(0));
         let process = TestProcess {
+            restore: Arc::default(),
             recovery: Arc::default(),
             tools: parts.tools,
             pin: parts.process,
@@ -228,6 +248,7 @@ impl Harness {
             fail_cleanup: Arc::clone(&fail_cleanup),
         };
         let recovery = Arc::clone(&process.recovery);
+        let restore = Arc::clone(&process.restore);
         let audit = Arc::new(AuditLog::open(&root.path().join("audit")).unwrap());
         let authority = CommandAuthority::new(
             binding.clone(),
@@ -296,6 +317,7 @@ impl Harness {
         owner.arm_broker_receive();
         owner.arm_agent_receive();
         Self {
+            restore,
             recovery,
             owner,
             agent: parts.agent,
@@ -318,7 +340,7 @@ impl Harness {
                 self.owner.commands.closed, self.owner.commands.grants.pending.is_some(), self.owner.commands.pending.is_some(),
                 self.owner.resources.capability.as_ref().map(|gate| gate.command_enforcer().and_then(|owner| owner.agent_valid()))))
         {
-            OwnerEvent::ToolFinished | OwnerEvent::RelayQuiesced | OwnerEvent::RecoveryFinished => {}
+            OwnerEvent::ToolFinished | OwnerEvent::RelayQuiesced | OwnerEvent::RecoveryFinished | OwnerEvent::RestoreFinished => {}
             OwnerEvent::BrokerRequest {
                 connection_epoch,
                 result,
@@ -335,6 +357,7 @@ impl Harness {
         }
         self.owner.collect_tool_result();
         self.owner.collect_recovery();
+        self.owner.collect_restore();
         self.owner.collect_relay_quiescence();
     }
     fn request(&mut self, command: &str) -> CommandMessage {

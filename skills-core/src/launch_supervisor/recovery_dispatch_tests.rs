@@ -127,3 +127,66 @@ fn asynchronous_retention_completes_only_at_its_original_park_checkpoint() {
         );
     }
 }
+
+#[test]
+fn cold_restore_completion_cannot_revive_disposal_or_a_replaced_connection() {
+    for late in ["none", "terminal", "connection", "process"] {
+        let (mut harness, target) = parked();
+        let mut source = target.launch.clone();
+        source.session_id = "source".into();
+        source.authorization_id = "source-authorization".into();
+        source.request_id = "source-request".into();
+        let request = crate::launch_protocol::RecoveryRestoreRequest {
+            schema: crate::launch_protocol::RECOVERY_RESTORE_SCHEMA.into(),
+            protocol_version: 1,
+            request_id: "restore".into(),
+            target: target.launch,
+            head: target.head,
+            source: RetentionEvidence {
+                schema: RETENTION_EVIDENCE_SCHEMA.into(),
+                launch: source,
+                request: target.retention,
+                contract: "louiselm.test-recovery/1".into(),
+                integration_digest: Digest::of(b"integration").to_string(),
+                material_digest: Digest::of(b"material").to_string(),
+            },
+        };
+        settle(|complete| harness.broker.send(request.canonical_bytes(), complete));
+        while harness.restore.lock().unwrap().is_none() {
+            harness.tick();
+        }
+        let (observed, complete) = harness.restore.lock().unwrap().take().unwrap();
+        assert_eq!(observed, request);
+        match late {
+            "terminal" => harness.owner.state = SessionState::Terminal,
+            "connection" => harness.owner.connection_epoch += 1,
+            "process" => harness.owner.process_epoch += 1,
+            _ => {}
+        }
+        let head = harness.owner.broker_head.clone();
+        std::thread::spawn(move || complete(Ok(observed)))
+            .join()
+            .unwrap();
+        harness.tick();
+        if matches!(late, "none" | "terminal") {
+            let reply = settle(|complete| harness.broker.receive(complete));
+            let LauncherPacket::Response(reply) = reply.packet else {
+                panic!("restore response")
+            };
+            assert_eq!(
+                matches!(reply.result, ResponseResult::RecoveryRestored { .. }),
+                late == "none"
+            );
+        }
+        assert_eq!(harness.owner.broker_head, head);
+        assert_eq!(harness.owner.channel_state, ChannelState::Revoked);
+        assert_eq!(
+            harness.owner.state,
+            if late == "terminal" {
+                SessionState::Terminal
+            } else {
+                SessionState::Parked
+            }
+        );
+    }
+}

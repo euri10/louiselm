@@ -39,6 +39,9 @@ mod failures;
 #[path = "installed_recovery_tests.rs"]
 mod recovery;
 
+#[path = "installed_cold_resume_tests.rs"]
+mod cold_resume;
+
 #[path = "installed_verification_tests.rs"]
 mod verification;
 
@@ -322,7 +325,12 @@ fn installed_broker_worker() {
             require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,
-            expires_at_ms: now + 30_000,
+            expires_at_ms: now
+                + if root.join("cold-resume").exists() {
+                    120_000
+                } else {
+                    30_000
+                },
             broker_loss_grace_ms: 500,
             commands: Some(ApprovedCommands {
                 command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
@@ -371,6 +379,9 @@ fn installed_broker_worker() {
         crate::launch_receipt::SessionState::Terminal
     );
     println!("BROKER_TERMINAL");
+    if root.join("cold-resume").exists() {
+        cold_resume::broker_reconstruct(&broker, config.operator_uid, &root);
+    }
 }
 
 fn broker_process(root: &Path, fault: Option<&str>) -> (BrokerChild, mpsc::Receiver<String>) {
@@ -421,21 +432,33 @@ fn marker(lines: &mpsc::Receiver<String>, prefix: &str) -> String {
 
 #[test]
 fn privileged_installed_broker_launch_and_effects() {
-    installed_broker_effects(false, None);
-    installed_broker_effects(false, Some(false));
-    installed_broker_effects(false, Some(true));
+    installed_broker_effects(false, None, None);
+    installed_broker_effects(false, Some(false), None);
+    installed_broker_effects(false, Some(true), None);
 }
 
 #[test]
 fn privileged_installed_controller_loss_settlement() {
-    installed_broker_effects(true, None);
+    installed_broker_effects(true, None, None);
+}
+
+#[test]
+fn privileged_installed_cold_resume() {
+    installed_broker_effects(true, None, Some(cold_resume::ColdCase::Loaded));
+    installed_broker_effects(true, Some(true), Some(cold_resume::ColdCase::Loaded));
+    installed_broker_effects(true, None, Some(cold_resume::ColdCase::FailedLoad));
+    installed_broker_effects(true, None, Some(cold_resume::ColdCase::UnavailableBalance));
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "One end-to-end fixture owns the separate broker, signed launch, real request and terminal cleanup."
 )]
-fn installed_broker_effects(controller_loss: bool, count_test: Option<bool>) {
+fn installed_broker_effects(
+    controller_loss: bool,
+    count_test: Option<bool>,
+    cold: Option<cold_resume::ColdCase>,
+) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_LAUNCH").is_none() {
         eprintln!("skipping: installed broker composition requires the disposable launcher VM");
         return;
@@ -452,7 +475,14 @@ fn installed_broker_effects(controller_loss: bool, count_test: Option<bool>) {
         .prefix("louiselm-broker-")
         .tempdir_in("/var/lib")
         .unwrap();
-    let (paths, config, registry_root) = install_fixture(root.path());
+    let (paths, config, registry_root) =
+        install_fixture_with_slots(root.path(), if cold.is_some() { 2 } else { 1 });
+    if cold.is_some() {
+        fs::write(root.path().join("cold-resume"), b"").unwrap();
+    }
+    if cold == Some(cold_resume::ColdCase::UnavailableBalance) {
+        fs::write(root.path().join("missing-balance"), b"").unwrap();
+    }
     if count_test == Some(true) {
         fs::write(root.path().join("uncapped-commands"), b"").unwrap();
     }
@@ -583,7 +613,6 @@ fn installed_broker_effects(controller_loss: bool, count_test: Option<bool>) {
         .unwrap();
     }
     marker(&lines, "BROKER_TERMINAL");
-    assert!(broker_process.0.wait().unwrap().success());
     if controller_loss {
         recovery::assert_loss_settled(root.path());
     }
@@ -591,6 +620,19 @@ fn installed_broker_effects(controller_loss: bool, count_test: Option<bool>) {
         .recv_timeout(Duration::from_secs(10))
         .unwrap()
         .unwrap();
+    if let Some(case) = cold {
+        cold_resume::controller_reconstruct(
+            &paths,
+            &config,
+            &registry_root,
+            &sessions,
+            &mut broker_process.0,
+            &lines,
+            case,
+            count_test == Some(true),
+        );
+    }
+    assert!(broker_process.0.wait().unwrap().success());
     crate::launcher_install::acquire_identity(&paths, 0)
         .unwrap()
         .release()

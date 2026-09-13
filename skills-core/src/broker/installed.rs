@@ -26,8 +26,8 @@ use crate::{
 /// private broker state and its rendezvous directory belong to the broker.
 /// All methods perform blocking I/O on the explicitly owned broker worker.
 pub struct InstalledBroker {
-    service: BrokerService,
-    verifier: LauncherVerifier,
+    pub(in crate::broker) service: BrokerService,
+    pub(in crate::broker) verifier: LauncherVerifier,
 }
 
 impl InstalledBroker {

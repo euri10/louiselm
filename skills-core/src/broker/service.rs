@@ -63,7 +63,7 @@ pub struct BrokerSession {
     authorization: LaunchAuthorization,
     launch_head: ReceiptHead,
     channel: SeqpacketChannel,
-    commands: Option<super::commands::CommandAuthority>,
+    pub(in crate::broker) commands: Option<super::commands::CommandAuthority>,
 }
 
 impl BrokerSession {
@@ -154,6 +154,9 @@ pub struct BrokerService {
 }
 
 impl BrokerService {
+    pub(in crate::broker) fn command_audit(&self) -> Arc<AuditLog> {
+        Arc::clone(&self.audit)
+    }
     /// Binds the fixed rendezvous and prepares the launch transaction.
     ///
     /// The path is never replaced: a rendezvous that already exists belongs to
@@ -423,9 +426,11 @@ impl BrokerService {
             .consumed_for_session(&authorization.session_id)?
             .filter(|pending| pending.authorization_id == authorization.authorization_id)
             .ok_or(BrokerError::InvalidGrant)?;
+        let cold_target = self.cold_target(&authorization.session_id)?.is_some();
         let approved = pending
             .commands
             .as_ref()
+            .filter(|_| !cold_target)
             .map(|commands| {
                 let policy_at_ms = now_ms
                     .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));

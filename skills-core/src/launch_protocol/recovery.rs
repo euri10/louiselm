@@ -44,22 +44,7 @@ impl RecoveryRestoreRequest {
         validate_identifier(&self.request_id)?;
         validate_digest(&self.head.digest)?;
         self.source.validate()?;
-        self.target.validate().map_err(|_| invalid())?;
-        let source = &self.source.launch;
-        let target = &self.target;
-        if source.session_id == target.session_id
-            || source.authorization_id == target.authorization_id
-            || source.request_id == target.request_id
-            || source.run_id != target.run_id
-            || source.agent_id != target.agent_id
-            || source.envelope_id != target.envelope_id
-            || source.envelope_revision != target.envelope_revision
-            || source.skill_generation_id != target.skill_generation_id
-            || source.session_input_manifest_id != target.session_input_manifest_id
-        {
-            return Err(invalid());
-        }
-        Ok(())
+        validate_reconstruction(&self.source.launch, &self.target)
     }
 
     /// Deterministic bytes used for immutable operation binding.
@@ -73,6 +58,28 @@ impl RecoveryRestoreRequest {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("restore request is serializable")
     }
+}
+
+/// Shared shape and attenuation boundary before allocation or mechanical restore.
+pub(crate) fn validate_reconstruction(
+    source: &LaunchRequest,
+    target: &LaunchRequest,
+) -> Result<(), ProtocolError> {
+    source.validate().map_err(|_| invalid())?;
+    target.validate().map_err(|_| invalid())?;
+    if source.session_id == target.session_id
+        || source.authorization_id == target.authorization_id
+        || source.request_id == target.request_id
+        || source.run_id != target.run_id
+        || source.agent_id != target.agent_id
+        || source.envelope_id != target.envelope_id
+        || source.envelope_revision != target.envelope_revision
+        || source.skill_generation_id != target.skill_generation_id
+        || source.session_input_manifest_id != target.session_input_manifest_id
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 /// A bounded retention operation, with no caller-selected filesystem paths.

@@ -75,12 +75,12 @@ fn status_reply(channel: &SeqpacketChannel, request: &RecoveryRequest) {
 
 #[test]
 fn controller_registration_binds_retention_and_survives_restart_without_renewal() {
-    registration(false, |_, _, _, _| {});
+    registration(false, Some(3), |_, _, _, _, _| {});
 }
 
 #[test]
 fn an_authenticated_supervisor_cannot_substitute_another_measured_integration() {
-    registration(true, |_, _, _, _| {});
+    registration(true, Some(3), |_, _, _, _, _| {});
 }
 
 pub(super) fn with_registered(
@@ -91,20 +91,24 @@ pub(super) fn with_registered(
         &SeqpacketChannel,
     ),
 ) {
-    registration(false, check);
+    registration(false, Some(3), |service, session, request, channel, _| {
+        check(service, session, request, channel);
+    });
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "One socket-level transaction follows controller authorization, Park, retention, replay, restart and expiry without resetting its evidence."
 )]
-fn registration(
+pub(super) fn registration(
     wrong_integration: bool,
+    uses: Option<u32>,
     check: impl FnOnce(
         &BrokerService,
         &mut louiselm_skills::broker::BrokerSession,
         &RecoveryRequest,
         &SeqpacketChannel,
+        &Path,
     ),
 ) {
     let root = TempDir::new().unwrap();
@@ -114,6 +118,7 @@ fn registration(
         AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
     let mut approval = grant(&launch);
     approval.require_cold_recovery = true;
+    approval.commands.as_mut().unwrap().uses = uses;
     authorizations.authorize(&approval, 1000).unwrap();
     let service = BrokerService::bind(
         &socket,
@@ -252,7 +257,7 @@ fn registration(
         evidence
     );
     let channel = peer.join().unwrap();
-    check(&service, &mut session, &request, &channel);
+    check(&service, &mut session, &request, &channel, root.path());
     let mut conflict = request.clone();
     conflict.retention.expires_at_ms += 1;
     assert!(matches!(

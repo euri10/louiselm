@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 mod command;
 mod recovery;
+pub(crate) use recovery::validate_reconstruction;
 mod verification;
 pub use verification::{
     VERIFICATION_SCHEMA, VerificationExecution, VerificationExport, VerificationOperation,

@@ -17,6 +17,7 @@
 pub mod attention;
 pub mod audit;
 pub mod authorization;
+pub mod cold_resume;
 pub mod commands;
 pub mod delegation;
 pub mod installed;

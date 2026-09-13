@@ -469,6 +469,8 @@ jobs:
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 240 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::privileged_installed_cold_resume --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture' bash "$library_test"

@@ -26,6 +26,34 @@ struct LossDecision {
 }
 
 impl BrokerService {
+    pub(in crate::broker) fn recoverable_loss(
+        &self,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<(), BrokerError> {
+        let path = self
+            .authorizations
+            .root
+            .join("controller-loss")
+            .join(record_name(session_id)?);
+        let decision: LossDecision = read_record(&path)?.ok_or(BrokerError::InvalidGrant)?;
+        validate_decision(&decision)?;
+        if decision.request.session_id != session_id {
+            return Err(BrokerError::RequestMismatch);
+        }
+        let ControllerLossDisposition::Recoverable {
+            acp_recovery_reference,
+            ..
+        } = &decision.acknowledgement.disposition
+        else {
+            return Err(BrokerError::InvalidGrant);
+        };
+        if !matches!(self.recovery_readiness(session_id, now_ms)?, RecoveryReadiness::Ready { operation_id, .. } if operation_id == *acp_recovery_reference)
+        {
+            return Err(BrokerError::Expired);
+        }
+        Ok(())
+    }
     /// Processes one authenticated command, receipt or controller-loss settlement.
     /// Runs on the serialized broker worker; true means a terminal receipt is
     /// durable, not that a future reconstruction is active. Projection delivery
