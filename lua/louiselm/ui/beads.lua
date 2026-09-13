@@ -16,6 +16,20 @@ local M = {}
 ---@field priority integer
 ---@field labels string[]
 ---@field description string
+---@field assignee string Empty when unassigned.
+---@field dependencies louiselm.ui.BeadsDependency[]
+---@field dependents louiselm.ui.BeadsDependency[]
+---@field comments louiselm.ui.BeadsComment[]
+
+---@class louiselm.ui.BeadsDependency
+---@field id string
+---@field title string
+---@field dependency_type string
+
+---@class louiselm.ui.BeadsComment
+---@field author string
+---@field created_at string
+---@field text string
 
 ---@class louiselm.ui.BeadsModule
 ---@field inspect fun(buffer: integer, options?: louiselm.ui.BeadsInspectorOptions): boolean, string? Inspect the Beads issue under the cursor or prompt for one. Returns an error before the asynchronous lookup starts.
@@ -67,6 +81,30 @@ local function issue_id_at_cursor(line, column, prefix)
   return count == 1 and found or nil
 end
 
+---Validate only the consumed string fields in an optional list of records.
+---@param value unknown
+---@param fields string[]
+---@return boolean valid
+local function valid_records(value, fields)
+  if value == nil then
+    return true
+  end
+  if type(value) ~= "table" or not nvim.islist(value) then
+    return false
+  end
+  for _, record in ipairs(value) do
+    if type(record) ~= "table" then
+      return false
+    end
+    for _, field in ipairs(fields) do
+      if type(record[field]) ~= "string" then
+        return false
+      end
+    end
+  end
+  return true
+end
+
 ---@param value unknown
 ---@param prefix? string When given, `issue.id` must match this workspace's ID shape. Omit for a foreign workspace whose prefix is unknown; callers must verify `issue.id` themselves in that case.
 ---@return louiselm.ui.BeadsIssue? issue
@@ -86,6 +124,10 @@ local function decode_issue(value, prefix)
     or issue.priority % 1 ~= 0
     or (issue.labels ~= nil and type(issue.labels) ~= "table")
     or (issue.description ~= nil and type(issue.description) ~= "string")
+    or (issue.assignee ~= nil and type(issue.assignee) ~= "string")
+    or not valid_records(issue.dependencies, { "id", "title", "dependency_type" })
+    or not valid_records(issue.dependents, { "id", "title", "dependency_type" })
+    or not valid_records(issue.comments, { "author", "created_at", "text" })
   then
     return nil
   end
@@ -103,6 +145,10 @@ local function decode_issue(value, prefix)
     priority = issue.priority,
     labels = labels,
     description = issue.description or "",
+    assignee = issue.assignee or "",
+    dependencies = issue.dependencies or {},
+    dependents = issue.dependents or {},
+    comments = issue.comments or {},
   }
 end
 
@@ -114,12 +160,30 @@ local function issue_lines(issue)
     "",
     "ID: " .. issue.id,
     "Status: " .. issue.status,
+    "Assignee: " .. (issue.assignee ~= "" and issue.assignee or "unassigned"),
     "Priority: " .. issue.priority,
     "Labels: " .. (#issue.labels > 0 and table.concat(issue.labels, ", ") or "none"),
     "",
   }
-  nvim.list_extend(lines, nvim.split(issue.description, "\n", { plain = true }))
-  return lines
+  lines[#lines + 1] = issue.description
+  for _, section in ipairs({
+    { title = "Dependencies", entries = issue.dependencies },
+    { title = "Dependents", entries = issue.dependents },
+  }) do
+    if #section.entries > 0 then
+      nvim.list_extend(lines, { "", "## " .. section.title, "" })
+      for _, dependency in ipairs(section.entries) do
+        lines[#lines + 1] = "- " .. dependency.id .. " [" .. dependency.dependency_type .. "]: " .. dependency.title
+      end
+    end
+  end
+  if #issue.comments > 0 then
+    nvim.list_extend(lines, { "", "## Comments" })
+    for _, comment in ipairs(issue.comments) do
+      nvim.list_extend(lines, { "", "### " .. comment.author .. " — " .. comment.created_at, "", comment.text })
+    end
+  end
+  return nvim.split(table.concat(lines, "\n"), "\n", { plain = true })
 end
 
 ---@param issue louiselm.ui.BeadsIssue

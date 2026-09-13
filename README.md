@@ -142,8 +142,10 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   commit/issue/Session Provenance, export the full transcript to Markdown, copy
   the Agent-scoped Session ID, and inspect supported account limits. Known
   Agent transcript layouts are supported; raw ACP logs remain adapter-owned.
-  The Beads inspector wraps descriptions and grows to fit, up to the available
-  editor height; longer issues scroll inside the float.
+  The Beads inspector shows the assignee (or unassigned), dependencies,
+  dependents, and comments with their author and timestamp. It wraps text and
+  grows to fit, up to the available editor height; longer issues scroll inside
+  the float.
 - **Keep diagnostic evidence.** Private Forensics records preserve a bounded
   snapshot of Session configuration, capabilities, and Git state for later
   inspection. [Evidence export](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/evidence-export.md) creates a bounded,

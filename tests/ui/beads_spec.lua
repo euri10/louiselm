@@ -129,6 +129,7 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
     "",
     "ID: louiselm-kpod",
     "Status: open",
+    "Assignee: unassigned",
     "Priority: 2",
     "Labels: ui",
     "",
@@ -143,6 +144,156 @@ T["beads"]["opens the Beads issue under the cursor after the process callback is
     end
   end
   MiniTest.expect.equality(close_mapping ~= nil, true)
+end
+
+T["beads"]["renders ownership, related issues and multiline comments from the fetched payload"] = function()
+  local buffer = source_buffer({ "louiselm-atrv" }, 0)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+  -- Field shapes observed in br show --json for atrv and da3h, 2026-09-13.
+  -- Synthetic contents; preserve multiline comment bodies and both edge kinds.
+  local payload = nvim.json.encode({
+    {
+      id = "louiselm-atrv",
+      title = "Issue details",
+      status = "in_progress",
+      priority = 2,
+      assignee = "codex/test-session",
+      description = "Read the evidence.",
+      dependencies = { { id = "louiselm-parent", title = "Parent", dependency_type = "parent-child" } },
+      dependents = { { id = "louiselm-child", title = "Child", dependency_type = "blocks" } },
+      comments = {
+        {
+          author = "codex/test-session",
+          created_at = "2026-09-13T12:00:00Z",
+          text = "Evidence:\n\n```sh\nbr show atrv\n```",
+        },
+        { author = "operator", created_at = "2026-09-13T12:01:00Z", text = "Confirmed." },
+      },
+    },
+  })
+  local timer = assert(nvim.uv.new_timer())
+  timer:start(0, 0, function()
+    timer:stop()
+    timer:close()
+    calls[2].on_exit({ code = 0, signal = 0, stdout = payload, stderr = "" })
+  end)
+  assert(nvim.wait(1000, function()
+    return #scheduled == 2
+  end))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  scheduled[2]()
+  MiniTest.expect.equality(#calls, 2)
+  local popup = assert(find_buffer("louiselm://beads/louiselm-atrv"))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
+    "# Issue details",
+    "",
+    "ID: louiselm-atrv",
+    "Status: in_progress",
+    "Assignee: codex/test-session",
+    "Priority: 2",
+    "Labels: none",
+    "",
+    "Read the evidence.",
+    "",
+    "## Dependencies",
+    "",
+    "- louiselm-parent [parent-child]: Parent",
+    "",
+    "## Dependents",
+    "",
+    "- louiselm-child [blocks]: Child",
+    "",
+    "## Comments",
+    "",
+    "### codex/test-session — 2026-09-13T12:00:00Z",
+    "",
+    "Evidence:",
+    "",
+    "```sh",
+    "br show atrv",
+    "```",
+    "",
+    "### operator — 2026-09-13T12:01:00Z",
+    "",
+    "Confirmed.",
+  })
+end
+
+T["beads"]["renders explicitly empty details as unassigned without empty sections"] = function()
+  local buffer = source_buffer({ "louiselm-atrv" }, 0)
+  local calls = fake_system()
+  local scheduled = {}
+  rawset(nvim, "schedule", function(callback)
+    scheduled[#scheduled + 1] = callback
+  end)
+  assert(Beads.inspect(buffer))
+  complete_where(calls, scheduled, "louiselm")
+  calls[2].on_exit({
+    code = 0,
+    signal = 0,
+    stdout = '[{"id":"louiselm-atrv","title":"Unassigned","status":"open","priority":2,"assignee":"","comments":[],"dependencies":[],"dependents":[]}]',
+    stderr = "",
+  })
+  scheduled[2]()
+  local popup = assert(find_buffer("louiselm://beads/louiselm-atrv"))
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(popup, 0, -1, false), {
+    "# Unassigned",
+    "",
+    "ID: louiselm-atrv",
+    "Status: open",
+    "Assignee: unassigned",
+    "Priority: 2",
+    "Labels: none",
+    "",
+    "",
+  })
+end
+
+for _, fields in ipairs({
+  { assignee = 42 },
+  { comments = "invalid" },
+  { comments = { unexpected = "object" } },
+  { comments = { false } },
+  { comments = { { author = false, created_at = "today", text = "body" } } },
+  { comments = { { author = "operator", text = "body" } } },
+  { comments = { { author = "operator", created_at = "today", text = {} } } },
+  { dependencies = false },
+  { dependencies = { unexpected = "object" } },
+  { dependencies = { "invalid" } },
+  { dependencies = { { id = false, title = "Parent", dependency_type = "blocks" } } },
+  { dependencies = { { id = "louiselm-parent", title = {}, dependency_type = "blocks" } } },
+  { dependents = { { id = "louiselm-child", title = "Child" } } },
+}) do
+  T["beads"]["rejects malformed issue details: " .. nvim.json.encode(fields)] = function()
+    local buffer = source_buffer({ "louiselm-atrv" }, 0)
+    local calls = fake_system()
+    local scheduled = {}
+    local error_message
+    rawset(nvim, "schedule", function(callback)
+      scheduled[#scheduled + 1] = callback
+    end)
+    assert(Beads.inspect(buffer, {
+      on_error = function(message)
+        error_message = message
+      end,
+    }))
+    complete_where(calls, scheduled, "louiselm")
+    local issue = { id = "louiselm-atrv", title = "Issue", status = "open", priority = 2 }
+    for key, value in pairs(fields) do
+      issue[key] = value
+    end
+    calls[2].on_exit({ code = 0, signal = 0, stdout = nvim.json.encode({ issue }), stderr = "" })
+    scheduled[2]()
+    MiniTest.expect.equality(error_message, "br returned malformed issue data")
+    MiniTest.expect.equality(find_buffer("louiselm://beads/louiselm-atrv"), nil)
+    MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), buffer)
+  end
 end
 
 for _, layout in ipairs({
@@ -199,15 +350,15 @@ for _, layout in ipairs({
     assert(config.row + config.height + 2 <= layout.rows)
     assert(config.col + config.width + 2 <= layout.columns)
     nvim.cmd.redraw()
-    MiniTest.expect.equality(nvim.fn.screenpos(window, 8, #description).row > 0, layout.fits)
+    MiniTest.expect.equality(nvim.fn.screenpos(window, 9, #description).row > 0, layout.fits)
     if layout.repetitions == 1 then
-      MiniTest.expect.equality(nvim.api.nvim_win_get_height(window), 8)
+      MiniTest.expect.equality(nvim.api.nvim_win_get_height(window), 9)
     elseif layout.fits then
-      assert(nvim.api.nvim_win_get_height(window) > 8)
+      assert(nvim.api.nvim_win_get_height(window) > 9)
     else
       nvim.cmd("normal! G$")
       nvim.cmd.redraw()
-      assert(nvim.fn.screenpos(window, 8, #description).row > 0)
+      assert(nvim.fn.screenpos(window, 9, #description).row > 0)
     end
   end
 end
@@ -269,6 +420,7 @@ T["beads"]["opens an issue whose JSON omits the labels key entirely"] = function
     "",
     "ID: louiselm-kpod",
     "Status: open",
+    "Assignee: unassigned",
     "Priority: 2",
     "Labels: none",
     "",
@@ -303,6 +455,7 @@ T["beads"]["opens an issue whose JSON omits the description key entirely (louise
     "",
     "ID: louiselm-qced",
     "Status: closed",
+    "Assignee: unassigned",
     "Priority: 4",
     "Labels: none",
     "",
