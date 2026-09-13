@@ -29,7 +29,9 @@ fn run() -> Result<(), ()> {
     };
     let channel =
         channel::Channel::connect(Path::new("/tmp/louiselm-tool.sock")).map_err(|_| ())?;
-    for sequence in 1..=u64::from(grant.uses) {
+    // This deterministic helper repeats finite grants and performs one initial
+    // command for an uncapped grant; workload size is not an authorization quota.
+    for sequence in 1..=u64::from(grant.uses.unwrap_or(1)) {
         command.sequence = sequence;
         let probe_child = command.request_id == "probe-child";
         command.request_id = format!("tool-{}-{sequence}", grant.sequence);

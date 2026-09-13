@@ -8,7 +8,7 @@ use std::{
 
 use super::{
     BoundProcess, CommandScope, DelegationError, DelegationPolicy, EffectCompletion, ToolEffect,
-    ToolGrantRequest,
+    ToolGrantRequest, uses_within,
 };
 use crate::{
     broker::{AuditDecision, AuditEntry, AuditLog, is_record_identifier},
@@ -21,7 +21,7 @@ struct Grant {
     target: BoundProcess,
     scope: CommandScope,
     expires_at: Instant,
-    remaining: u32,
+    remaining: Option<u32>,
     sequence: u64,
 }
 
@@ -30,7 +30,7 @@ struct State {
     policy: DelegationPolicy,
     agent: BoundProcess,
     grants: BTreeMap<u64, Grant>,
-    remaining: u32,
+    remaining: Option<u32>,
     agent_sequence: u64,
     grant_sequence: u64,
     active: bool,
@@ -168,7 +168,9 @@ impl ToolDelegation {
             target.channel.close();
             return state.deny(error);
         }
-        state.remaining -= request.scope.uses;
+        if let (Some(remaining), Some(uses)) = (&mut state.remaining, request.scope.uses) {
+            *remaining -= uses;
+        }
         state.grant_sequence = grant;
         state.grants.insert(
             grant,
@@ -371,10 +373,10 @@ fn prepare(
         if sequence.checked_add(1) != Some(request.sequence) {
             return Err(DelegationError::Replay);
         }
-        if *remaining == 0 {
+        if *remaining == Some(0) {
             return Err(DelegationError::BudgetExhausted);
         }
-        *remaining -= 1;
+        *remaining = remaining.map(|uses| uses - 1);
         *sequence = request.sequence;
         Ok(PendingEffect {
             state: Arc::clone(state),
@@ -430,7 +432,7 @@ impl State {
         if Instant::now() >= request.expires_at {
             return Err(DelegationError::Expired);
         }
-        if request.scope.uses > self.remaining {
+        if !uses_within(request.scope.uses, self.remaining) {
             return Err(DelegationError::BudgetExhausted);
         }
         let credentials = target.process.credentials();

@@ -107,10 +107,82 @@ fn grant(request: &LaunchRequest) -> GrantRequest {
         commands: Some(louiselm_skills::broker::ApprovedCommands {
             command_digest: Digest::of(b"printf sensitive").to_string(),
             timeout_ms: 1000,
-            uses: 3,
+            uses: Some(3),
             allow_delegation: true,
             expires_at_ms: 60_000,
         }),
+    }
+}
+
+#[test]
+fn command_count_is_opt_in_and_durable_for_ordinary_and_unattended_runs() {
+    for require_cold_recovery in [false, true] {
+        let root = TempDir::new().unwrap();
+        let request = request("optional-count");
+        let mut approval = grant(&request);
+        approval.require_cold_recovery = require_cold_recovery;
+        let mut commands = serde_json::to_value(approval.commands.as_ref().unwrap()).unwrap();
+        commands.as_object_mut().unwrap().remove("uses");
+        approval.commands = Some(serde_json::from_value(commands.clone()).unwrap());
+        let store = AuthorizationStore::open(root.path(), pool(1)).unwrap();
+        let pending = store.authorize(&approval, 1000).unwrap();
+        let encoded = serde_json::to_value(&pending).unwrap();
+        assert!(encoded["commands"].get("uses").is_none());
+        drop(store);
+        let reopened = AuthorizationStore::open(root.path(), pool(1)).unwrap();
+        reopened.consume(&request, CONTROLLER_UID, 2000).unwrap();
+        assert_eq!(
+            reopened
+                .consumed_for_session(&request.session_id)
+                .unwrap()
+                .unwrap(),
+            pending
+        );
+    }
+}
+
+#[test]
+fn finite_command_counts_round_trip_and_invalid_counts_never_become_uncapped() {
+    for value in [
+        serde_json::json!(1),
+        serde_json::json!(64),
+        serde_json::json!(0),
+        serde_json::json!(65),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!("unlimited"),
+    ] {
+        let root = TempDir::new().unwrap();
+        let request = request("count-validation");
+        let mut approval = grant(&request);
+        let mut commands = serde_json::to_value(approval.commands.as_ref().unwrap()).unwrap();
+        commands["uses"] = value.clone();
+        let decoded = serde_json::from_value(commands);
+        let valid = matches!(value.as_u64(), Some(1 | 64));
+        match decoded {
+            Ok(commands) => {
+                approval.commands = Some(commands);
+                let store = AuthorizationStore::open(root.path(), pool(1)).unwrap();
+                let result = store.authorize(&approval, 1000);
+                assert_eq!(result.is_ok(), valid, "{value}");
+                if let Ok(pending) = result {
+                    assert_eq!(
+                        serde_json::to_value(pending).unwrap()["commands"]["uses"],
+                        value
+                    );
+                    store.consume(&request, CONTROLLER_UID, 2000).unwrap();
+                    assert_eq!(
+                        store
+                            .consumed_for_session(&request.session_id)
+                            .unwrap()
+                            .unwrap()
+                            .commands,
+                        approval.commands
+                    );
+                }
+            }
+            Err(_) => assert!(!valid),
+        }
     }
 }
 
@@ -893,7 +965,7 @@ fn assert_grant_exchange(
             sequence: 1,
             command_digest: Digest::of(command.command.as_bytes()).to_string(),
             timeout_ms: 1000,
-            uses: 1,
+            uses: Some(1),
             valid_for_ms: 5000,
         },
     };

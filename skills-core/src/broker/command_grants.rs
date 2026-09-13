@@ -3,14 +3,17 @@
 use super::{
     AuditDecision, CommandAuthority, CommandOperation, CommandPrincipal, DelegationError, Instant,
 };
-use crate::{broker::delegation::CommandScope, launch_protocol::GrantRequest};
+use crate::{
+    broker::delegation::{CommandScope, uses_within},
+    launch_protocol::GrantRequest,
+};
 use std::time::Duration;
 
 pub(super) struct Grant {
     pub(super) principal: CommandPrincipal,
     pub(super) scope: CommandScope,
     pub(super) expires_at: Instant,
-    pub(super) remaining: u32,
+    pub(super) remaining: Option<u32>,
     pub(super) sequence: u64,
     pub(super) revocation: Option<(String, bool)>,
 }
@@ -67,12 +70,14 @@ impl CommandAuthority {
         {
             return self.deny(DelegationError::IdentityMismatch);
         }
-        if scope.uses > self.remaining {
+        if !uses_within(scope.uses, self.remaining) {
             return self.deny(DelegationError::BudgetExhausted);
         }
         // Reserve before durability. Neither audit failure nor a lost reply can
         // make this authority available again; restart refuses this lifetime.
-        self.remaining -= scope.uses;
+        if let (Some(remaining), Some(uses)) = (&mut self.remaining, scope.uses) {
+            *remaining -= uses;
+        }
         self.grant_sequence = request.sequence;
         self.grants.insert(
             request.sequence,

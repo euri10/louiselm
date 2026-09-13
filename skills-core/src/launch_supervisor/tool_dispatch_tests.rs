@@ -236,7 +236,7 @@ impl Harness {
                 scope: CommandScope {
                     command_digest: Digest::of(command.as_bytes()),
                     timeout_ms: 5000,
-                    uses: 1,
+                    uses: Some(1),
                 },
                 allow_delegation: false,
                 expires_at: Instant::now() + Duration::from_secs(30),

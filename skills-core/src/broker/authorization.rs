@@ -37,8 +37,9 @@ pub struct ApprovedCommands {
     pub command_digest: String,
     /// Maximum execution duration, bounded by the command protocol.
     pub timeout_ms: u32,
-    /// Non-refundable aggregate invocation budget.
-    pub uses: u32,
+    /// Optional non-refundable invocation limit (1..=64); omission is uncapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<u32>,
     /// Whether the existing operator approval explicitly permits delegation.
     pub allow_delegation: bool,
     /// Exclusive absolute expiry; reconstruction never renews this authority.

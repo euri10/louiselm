@@ -54,8 +54,9 @@ pub enum AuditDecision {
         pid: u32,
         /// Envelope revision whose operator permission permitted delegation.
         revision: u64,
-        /// Reserved invocation budget, never returned on abandonment.
-        uses: u32,
+        /// Optional reserved count, never refunded; omission records uncapped authority.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uses: Option<u32>,
     },
     /// Broker stopped one grant; supervisor cleanup remains pending.
     ToolRevocationRequested {

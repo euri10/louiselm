@@ -19,15 +19,16 @@ use crate::{
 
 pub use state::{CommittedEffect, DelegatedTool, PendingEffect, ToolDelegation};
 
-/// One exact command with a bounded timeout and total invocation budget.
+/// One exact command with a bounded timeout and optional invocation limit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandScope {
     /// Digest of exact shell input; neither that input nor its output is audited.
     pub command_digest: Digest,
     /// Maximum timeout in milliseconds, at most the existing protocol's 30 seconds.
     pub timeout_ms: u32,
-    /// Total effects, including failed or abandoned admitted requests (1..=64).
-    pub uses: u32,
+    /// Optional total effects (1..=64), including failed or abandoned admissions.
+    /// `None` means no count quota, without widening any other authority.
+    pub uses: Option<u32>,
 }
 
 impl CommandScope {
@@ -38,17 +39,22 @@ impl CommandScope {
             && parent.valid()
             && self.command_digest == parent.command_digest
             && self.timeout_ms <= parent.timeout_ms
-            && self.uses <= parent.uses
+            && uses_within(self.uses, parent.uses)
     }
 
     pub(super) fn valid(&self) -> bool {
-        (1..=30_000).contains(&self.timeout_ms) && (1..=64).contains(&self.uses)
+        (1..=30_000).contains(&self.timeout_ms)
+            && self.uses.is_none_or(|uses| (1..=64).contains(&uses))
     }
 
     pub(super) fn permits(&self, request: &ToolExecutionRequest) -> bool {
         self.command_digest == Digest::of(request.command.as_bytes())
             && request.timeout_ms <= self.timeout_ms
     }
+}
+
+pub(super) fn uses_within(requested: Option<u32>, available: Option<u32>) -> bool {
+    available.is_none_or(|limit| requested.is_some_and(|uses| uses <= limit))
 }
 
 /// Trusted operator authorization after intersection with the active Run policy.

@@ -20,6 +20,14 @@ use std::{
 };
 
 fn authority(root: &std::path::Path, allow_delegation: bool) -> CommandAuthority {
+    authority_with_limit(root, allow_delegation, Some(3))
+}
+
+fn authority_with_limit(
+    root: &std::path::Path,
+    allow_delegation: bool,
+    uses: Option<u32>,
+) -> CommandAuthority {
     CommandAuthority::new(
         CapabilityBinding {
             session_id: "session".into(),
@@ -36,7 +44,7 @@ fn authority(root: &std::path::Path, allow_delegation: bool) -> CommandAuthority
             scope: CommandScope {
                 command_digest: Digest::of(b"printf delegated"),
                 timeout_ms: 1000,
-                uses: 3,
+                uses,
             },
             allow_delegation,
             expires_at: Instant::now() + Duration::from_secs(30),
@@ -59,6 +67,51 @@ fn grant() -> CommandMessage {
 }
 
 #[test]
+fn uncapped_grants_require_uncapped_parents_and_explicit_delegation() {
+    for parent in [Some(3), None] {
+        for child in [Some(2), None] {
+            for allow in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let mut owner = authority_with_limit(root.path(), allow, parent);
+                let mut wire = serde_json::to_value(grant()).unwrap();
+                if let Some(uses) = child {
+                    wire["operation"]["grant"]["uses"] = uses.into();
+                } else {
+                    wire["operation"]["grant"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("uses");
+                }
+                let request: CommandMessage = serde_json::from_value(wire).unwrap();
+                request.validate().unwrap();
+                let granted = owner.handle(&request);
+                if !allow || (parent.is_some() && child.is_none()) {
+                    assert!(granted.is_err());
+                    continue;
+                }
+                granted.unwrap();
+                for sequence in 1..=65 {
+                    let result = owner.handle(&command(true, sequence));
+                    assert_eq!(
+                        result.is_ok(),
+                        child.is_none_or(|uses| sequence <= u64::from(uses))
+                    );
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                assert!(owner.handle(&command(false, 1)).is_ok());
+                let audit = AuditLog::open(root.path()).unwrap().entries().unwrap();
+                assert!(audit.iter().any(|entry| matches!(entry.decision,
+                    louiselm_skills::broker::AuditDecision::ToolGranted { uses, .. } if uses == child)));
+                owner.revoke_grant("revoke-count-test", 1).unwrap();
+                assert!(owner.handle(&command(true, 66)).is_err());
+            }
+        }
+    }
+}
+
+#[test]
 fn grants_reject_unbounded_fields_and_peer_selected_execution_authority() {
     use louiselm_skills::launch_protocol::decode_message;
     let wire = serde_json::to_value(grant()).unwrap();
@@ -66,6 +119,9 @@ fn grants_reject_unbounded_fields_and_peer_selected_execution_authority() {
         ("sequence", serde_json::json!(0)),
         ("uses", serde_json::json!(0)),
         ("uses", serde_json::json!(65)),
+        ("uses", serde_json::json!(-1)),
+        ("uses", serde_json::json!(1.5)),
+        ("uses", serde_json::json!("unlimited")),
         ("timeout_ms", serde_json::json!(30_001)),
         ("valid_for_ms", serde_json::json!(0)),
         ("valid_for_ms", serde_json::json!(30_001)),
@@ -214,7 +270,7 @@ fn authority_from_audit(
             scope: CommandScope {
                 command_digest: Digest::of(b"printf delegated"),
                 timeout_ms: 1000,
-                uses: 3,
+                uses: Some(3),
             },
             allow_delegation: true,
             expires_at: Instant::now() + Duration::from_secs(30),
@@ -249,7 +305,7 @@ fn helper_cannot_redelegate_widen_rebind_or_use_stale_subjects() {
                 "parent" => *principal = tool.clone(),
                 "digest" => grant.command_digest = Digest::of(b"other").to_string(),
                 "timeout" => grant.timeout_ms += 1,
-                "uses" => grant.uses = 4,
+                "uses" => grant.uses = Some(4),
                 "expiry" => grant.valid_for_ms = 30_000,
                 "revision" => request.envelope_revision += 1,
                 "sequence" => grant.sequence += 1,
@@ -307,21 +363,26 @@ fn grant_revocation_preserves_agent_authority_and_late_actual_outcomes() {
 
 #[test]
 fn expiry_and_audit_failure_never_reopen_reserved_authority() {
-    let root = tempfile::tempdir().unwrap();
-    let mut owner = authority(root.path(), true);
-    let mut request = grant();
-    if let CommandOperation::DelegationRequest { grant, .. } = &mut request.operation {
-        grant.valid_for_ms = 40;
+    for uses in [Some(3), None] {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = authority_with_limit(root.path(), true, uses);
+        let mut request = grant();
+        if let CommandOperation::DelegationRequest { grant, .. } = &mut request.operation {
+            grant.valid_for_ms = 40;
+            if uses.is_none() {
+                grant.uses = None;
+            }
+        }
+        owner.handle(&request).unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(owner.handle(&command(true, 1)).is_err());
+        assert!(owner.handle(&command(false, 1)).is_ok());
+        assert_eq!(owner.handle(&command(false, 2)).is_ok(), uses.is_none());
+        let broken = tempfile::tempdir().unwrap();
+        let mut owner = authority_with_limit(broken.path(), true, uses);
+        std::fs::create_dir(broken.path().join("decisions.jsonl")).unwrap();
+        assert!(owner.handle(&grant()).is_err());
+        std::fs::remove_dir(broken.path().join("decisions.jsonl")).unwrap();
+        assert!(owner.handle(&command(false, 1)).is_err());
     }
-    owner.handle(&request).unwrap();
-    std::thread::sleep(Duration::from_millis(60));
-    assert!(owner.handle(&command(true, 1)).is_err());
-    assert!(owner.handle(&command(false, 1)).is_ok());
-    assert!(owner.handle(&command(false, 2)).is_err());
-    let broken = tempfile::tempdir().unwrap();
-    let mut owner = authority(broken.path(), true);
-    std::fs::create_dir(broken.path().join("decisions.jsonl")).unwrap();
-    assert!(owner.handle(&grant()).is_err());
-    std::fs::remove_dir(broken.path().join("decisions.jsonl")).unwrap();
-    assert!(owner.handle(&command(false, 1)).is_err());
 }

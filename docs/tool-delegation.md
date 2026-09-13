@@ -17,12 +17,29 @@ The broker never receives a kernel handle and never constructs one from a PID.
 An ungranted child, passed descriptor, or first connector cannot become the Agent.
 
 The broker persists `ApprovedCommands` with the original single-use launch
-authorization: exact command digest, timeout, aggregate budget, explicit
+authorization: exact command digest, timeout, optional aggregate count, explicit
 delegation permission and absolute expiry. The signed Start receipt binds the
 supervisor-proven Agent PID, assigned UID/GID and tool-isolation evidence digest.
 Only these records construct the command authority, before the sequence-1 ACK.
 There is no post-launch API to replace the identity or policy. Absent approval
 denies command requests without ending the Session.
+
+Command invocation limits are opt-in for ordinary coding and unattended Runs.
+In an approved command record or delegated `GrantRequest`, omitted (or JSON
+`null`) `uses` means no count quota; an explicit integer from 1 through 64 is a
+finite limit. Serialization omits uncapped `uses`. Zero, out-of-range integers,
+fractions, strings and unknown fields are rejected, never converted to uncapped
+authority. The durable pending/consumed authorization and `ToolGranted` audit
+record preserve the selected mode. No command record still means no command
+authority. This policy introduces no Neovim configuration key or default quota,
+and does not change Run generated-work budgets or Agent/auto-approval settings.
+
+An uncapped parent can grant a finite or uncapped child only with existing
+delegation permission. A finite parent can grant only a finite reservation
+within its remaining allowance. Reservations and admitted uncertain effects
+are non-refundable; delegated executions spend the child's reserved allowance,
+not the parent's allowance a second time. Cold Resume consumes this distinction
+under `louiselm-qbr.5.1.2.2.3`; this change does not reconstruct old authority.
 
 `InstalledBroker` checks its dedicated installed UID/GID, private state and
 rendezvous directories, and root-owned public authority. It verifies signatures
@@ -32,7 +49,7 @@ that channel. This adds no human prompt or Agent permission setting. Later
 recovery, reconnect and controller-loss settlement remain `louiselm-qbr.5.1.2`.
 
 `CommandAuthority` validates exact command digest, timeout, principal, revision,
-expiry, request sequence and remaining budget. It spends one use and persists
+expiry, request sequence and any remaining count. It spends one finite use and persists
 normalized intent before sending `CommandOperation::Authorize`. File and audit
 directory synchronization must both succeed. Failed or lost decisions never
 refund budget. A spent/revoked Session cannot reconstruct fresh authority from
@@ -101,8 +118,9 @@ the supervisor independently checks correlation, both lifetimes and the deadline
 before installing the grant. Lost replies cannot reconstruct or replay authority.
 Unconfigured command policy and missing measured helper support fail closed.
 
-The measured helper forwards its initial work through its own socket, up to its
-reserved use count. Every invocation still takes the same broker single-use
+The deterministic measured helper forwards its initial work through its own
+socket, repeating it for a finite reservation or once for an uncapped grant.
+That fixture workload size is not a policy quota. Every invocation takes the same broker single-use
 decision and supervisor `CommandPermit` as an Agent command. Tool-local sequences
 and the Session dispatch sequence remain distinct. The local permit retains both
 the Agent and helper lifetime checks, exact immutable command and grant deadline.
@@ -158,13 +176,13 @@ does not imply permission. Automatic delegation within existing approval needs
 no additional prompt; this introduces no mandatory approval UI or Agent setting.
 
 The bounded effect is the existing `ToolExecutionRequest`: an exact shell-input
-digest, maximum timeout and invocation budget. This is exact command matching,
+digest, maximum timeout and optional invocation limit. This is exact command matching,
 not an interpretation or safety assessment of shell syntax. Workspace content
 can affect a command's behavior; existing confinement and the trusted operator
 policy still bound those effects. There is no new executable, mount, identity,
 environment, network or credential API.
 
-Each grant reserves part of the Agent's total budget. Failed, abandoned and
+Each finite grant reserves part of any finite Agent allowance. Failed, abandoned and
 completed admissions spend their reservations; dropping or cloning handles does
 not refund or multiply authority. Each principal's execution sequence and the
 Agent's grant sequence start at one and reject repeated/skipped values. The

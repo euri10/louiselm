@@ -86,7 +86,7 @@ fn installed_verification_worker() {
             Some(ApprovedCommands {
                 command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
                 timeout_ms: 5000,
-                uses: 1,
+                uses: Some(1),
                 allow_delegation: false,
                 expires_at_ms: clock_ms() + 60000,
             }),

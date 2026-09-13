@@ -327,7 +327,11 @@ fn installed_broker_worker() {
             commands: Some(ApprovedCommands {
                 command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
                 timeout_ms: 5000,
-                uses: 3,
+                uses: if root.join("uncapped-commands").exists() {
+                    None
+                } else {
+                    Some(3)
+                },
                 allow_delegation: true,
                 expires_at_ms: now + 60_000,
             }),
@@ -417,19 +421,21 @@ fn marker(lines: &mpsc::Receiver<String>, prefix: &str) -> String {
 
 #[test]
 fn privileged_installed_broker_launch_and_effects() {
-    installed_broker_effects(false);
+    installed_broker_effects(false, None);
+    installed_broker_effects(false, Some(false));
+    installed_broker_effects(false, Some(true));
 }
 
 #[test]
 fn privileged_installed_controller_loss_settlement() {
-    installed_broker_effects(true);
+    installed_broker_effects(true, None);
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "One end-to-end fixture owns the separate broker, signed launch, real request and terminal cleanup."
 )]
-fn installed_broker_effects(controller_loss: bool) {
+fn installed_broker_effects(controller_loss: bool, count_test: Option<bool>) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_LAUNCH").is_none() {
         eprintln!("skipping: installed broker composition requires the disposable launcher VM");
         return;
@@ -447,6 +453,9 @@ fn installed_broker_effects(controller_loss: bool) {
         .tempdir_in("/var/lib")
         .unwrap();
     let (paths, config, registry_root) = install_fixture(root.path());
+    if count_test == Some(true) {
+        fs::write(root.path().join("uncapped-commands"), b"").unwrap();
+    }
     assert!(matches!(
         InstalledBroker::bind(&paths, &root.path().join("state")),
         Err(crate::broker::BrokerError::Installation)
@@ -554,12 +563,16 @@ fn installed_broker_effects(controller_loss: bool) {
         fs::read(sessions.join("session/workspace/effect")).unwrap(),
         b"authorized"
     );
-    assert_denial_and_helper(
-        &mut input,
-        &mut output,
-        &sessions.join("session/workspace"),
-        &command,
-    );
+    if let Some(uncapped) = count_test {
+        assert_command_count(&mut input, &mut output, &command, uncapped);
+    } else {
+        assert_denial_and_helper(
+            &mut input,
+            &mut output,
+            &sessions.join("session/workspace"),
+            &command,
+        );
+    }
     if controller_loss {
         drop(input);
     } else {
@@ -582,6 +595,32 @@ fn installed_broker_effects(controller_loss: bool) {
         .unwrap()
         .release()
         .unwrap();
+}
+
+fn assert_command_count(
+    input: &mut impl Write,
+    output: &mut impl BufRead,
+    command: &ToolExecutionRequest,
+    uncapped: bool,
+) {
+    // One completed Agent command already spent a use. Each next request follows
+    // its actual result; no independently running helper competes for dispatch.
+    for sequence in 2..=4 {
+        let mut next = command.clone();
+        next.request_id = format!("count-{sequence}");
+        next.sequence = sequence;
+        let reply = exchange(input, output, &next.canonical_bytes());
+        assert_eq!(
+            matches!(
+                reply.operation,
+                CommandOperation::Result {
+                    outcome: CommandOutcome::Completed { .. }
+                }
+            ),
+            uncapped || sequence <= 3,
+            "{reply:?}"
+        );
+    }
 }
 
 fn exchange(input: &mut impl Write, output: &mut impl BufRead, bytes: &[u8]) -> CommandMessage {
@@ -628,7 +667,7 @@ fn assert_denial_and_helper(
                 sequence: 1,
                 command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
                 timeout_ms: 5000,
-                uses: 1,
+                uses: Some(1),
                 valid_for_ms: 5000,
             },
             command: initial,

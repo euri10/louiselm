@@ -47,7 +47,7 @@ pub struct CommandAuthority {
     binding: CapabilityBinding,
     policy: DelegationPolicy,
     audit: Arc<AuditLog>,
-    remaining: u32,
+    remaining: Option<u32>,
     principal_sequence: u64,
     dispatch_sequence: u64,
     spent: BTreeMap<u64, SpentCommand>,
@@ -258,7 +258,7 @@ impl CommandAuthority {
         {
             return self.deny(DelegationError::Replay);
         }
-        if remaining == 0 {
+        if remaining == Some(0) {
             return self.deny(DelegationError::BudgetExhausted);
         }
         let dispatch_sequence = self
@@ -270,10 +270,10 @@ impl CommandAuthority {
                 .grants
                 .get_mut(&id)
                 .ok_or(DelegationError::OwnerUnavailable)?;
-            granted.remaining -= 1;
+            granted.remaining = granted.remaining.map(|uses| uses - 1);
             granted.sequence = command.sequence;
         } else {
-            self.remaining -= 1;
+            self.remaining = self.remaining.map(|uses| uses - 1);
             self.principal_sequence = command.sequence;
         }
         self.dispatch_sequence = dispatch_sequence;

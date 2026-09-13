@@ -49,8 +49,10 @@ pub struct GrantRequest {
     pub command_digest: String,
     /// Maximum command duration in milliseconds.
     pub timeout_ms: u32,
-    /// Non-refundable reservation from the aggregate approved budget.
-    pub uses: u32,
+    /// Optional non-refundable reservation (1..=64); omission requests no count quota.
+    /// Only an uncapped parent may authorize an uncapped grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<u32>,
     /// Requested lifetime, anchored before forwarding to the broker.
     pub valid_for_ms: u32,
 }
@@ -64,7 +66,7 @@ impl GrantRequest {
         validate_digest(&self.command_digest)?;
         if self.sequence == 0
             || !(1..=30_000).contains(&self.timeout_ms)
-            || !(1..=64).contains(&self.uses)
+            || self.uses.is_some_and(|uses| !(1..=64).contains(&uses))
             || !(1..=30_000).contains(&self.valid_for_ms)
         {
             return Err(invalid());

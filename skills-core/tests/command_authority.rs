@@ -52,7 +52,7 @@ fn message() -> CommandMessage {
     }
 }
 
-fn authority(root: &std::path::Path, uses: u32) -> CommandAuthority {
+fn authority(root: &std::path::Path, uses: impl Into<Option<u32>>) -> CommandAuthority {
     CommandAuthority::new(
         CapabilityBinding {
             session_id: "session-1".to_owned(),
@@ -69,7 +69,7 @@ fn authority(root: &std::path::Path, uses: u32) -> CommandAuthority {
             scope: CommandScope {
                 command_digest: Digest::of(b"printf private"),
                 timeout_ms: 1000,
-                uses,
+                uses: uses.into(),
             },
             allow_delegation: false,
             expires_at: Instant::now() + Duration::from_secs(30),
@@ -77,6 +77,30 @@ fn authority(root: &std::path::Path, uses: u32) -> CommandAuthority {
         Arc::new(AuditLog::open(root).unwrap()),
     )
     .unwrap()
+}
+
+#[test]
+fn uncapped_commands_keep_exact_scope_replay_and_revocation_checks() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = authority(root.path(), None);
+    for sequence in 1..=65 {
+        let mut request = message();
+        request.request_id = format!("command-{sequence}");
+        if let CommandOperation::Request { command, .. } = &mut request.operation {
+            command.request_id.clone_from(&request.request_id);
+            command.sequence = sequence;
+        }
+        assert!(owner.handle(&request).is_ok());
+        assert!(matches!(
+            owner.handle(&request),
+            Err(louiselm_skills::broker::delegation::DelegationError::Replay)
+        ));
+    }
+    owner.revoke("revoke-uncapped").unwrap();
+    assert!(matches!(
+        owner.handle(&message()),
+        Err(louiselm_skills::broker::delegation::DelegationError::Revoked)
+    ));
 }
 
 #[test]
@@ -114,34 +138,36 @@ fn each_authorization_spends_one_budget_and_unknown_never_refunds_it() {
 
 #[test]
 fn only_exact_attributed_agent_subject_revision_and_command_are_allowed() {
-    for field in [
-        "pid", "uid", "channel", "session", "run", "revision", "command", "timeout",
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let mut owner = authority(root.path(), 2);
-        let mut request = message();
-        if let CommandOperation::Request { principal, command } = &mut request.operation {
-            match field {
-                "pid" => principal.pid += 1,
-                "uid" => principal.uid += 1,
-                "channel" => principal.channel_id = "tool".to_owned(),
-                "session" => {
-                    request.session_id = "other".to_owned();
-                    command.session_id.clone_from(&request.session_id);
+    for uses in [Some(2), None] {
+        for field in [
+            "pid", "uid", "channel", "session", "run", "revision", "command", "timeout",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owner = authority(root.path(), uses);
+            let mut request = message();
+            if let CommandOperation::Request { principal, command } = &mut request.operation {
+                match field {
+                    "pid" => principal.pid += 1,
+                    "uid" => principal.uid += 1,
+                    "channel" => principal.channel_id = "tool".to_owned(),
+                    "session" => {
+                        request.session_id = "other".to_owned();
+                        command.session_id.clone_from(&request.session_id);
+                    }
+                    "run" => {
+                        request.run_id = "other".to_owned();
+                        command.run_id.clone_from(&request.run_id);
+                    }
+                    "revision" => {
+                        request.envelope_revision = 2;
+                        command.envelope_revision = 2;
+                    }
+                    "command" => command.command = "other".to_owned(),
+                    _ => command.timeout_ms += 1,
                 }
-                "run" => {
-                    request.run_id = "other".to_owned();
-                    command.run_id.clone_from(&request.run_id);
-                }
-                "revision" => {
-                    request.envelope_revision = 2;
-                    command.envelope_revision = 2;
-                }
-                "command" => command.command = "other".to_owned(),
-                _ => command.timeout_ms += 1,
             }
+            assert!(owner.handle(&request).is_err(), "{field}");
         }
-        assert!(owner.handle(&request).is_err(), "{field}");
     }
 }
 

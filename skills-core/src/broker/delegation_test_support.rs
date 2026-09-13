@@ -189,6 +189,10 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub fn new(allow_delegation: bool) -> Self {
+        Self::with_limit(allow_delegation, Some(4))
+    }
+
+    pub fn with_limit(allow_delegation: bool, uses: Option<u32>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let agent = Peer::new(&root.path().join("agent.sock"));
         let tool = Peer::new(&root.path().join("tool.sock"));
@@ -197,7 +201,7 @@ impl Fixture {
         let scope = CommandScope {
             command_digest: Digest::of(request().command.as_bytes()),
             timeout_ms: 1000,
-            uses: 4,
+            uses,
         };
         let expires_at = Instant::now() + Duration::from_secs(30);
         let owner = ToolDelegation::new(
@@ -226,7 +230,10 @@ impl Fixture {
             run_id: "run-1".to_owned(),
             envelope_revision: 0,
             sequence: 1,
-            scope: CommandScope { uses: 2, ..scope },
+            scope: CommandScope {
+                uses: Some(2),
+                ..scope
+            },
             expires_at,
         };
         Self {

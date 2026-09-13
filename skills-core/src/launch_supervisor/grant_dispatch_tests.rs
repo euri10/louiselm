@@ -109,7 +109,7 @@ fn delegation(command: &str, lifetime: u32) -> CommandMessage {
                 sequence: 1,
                 command_digest: Digest::of(command.command.as_bytes()).to_string(),
                 timeout_ms: 5000,
-                uses: 1,
+                uses: Some(1),
                 valid_for_ms: lifetime,
             },
             command,
@@ -143,7 +143,7 @@ fn measured_harness(
             scope: CommandScope {
                 command_digest: Digest::of(command.as_bytes()),
                 timeout_ms: 5000,
-                uses: 3,
+                uses: Some(3),
             },
             allow_delegation: true,
             expires_at: Instant::now() + Duration::from_secs(30),

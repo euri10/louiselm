@@ -431,7 +431,12 @@ record. `serve_launch` derives Agent attribution from the verified Start receipt
 and binds that approval before acknowledging sequence 1. Receipt schema `/4`
 requires the actual Agent PID/assigned identity and tool-isolation evidence
 digest; a signed foreign identity is refused. An absent command approval grants
-no effects. Approval expiry includes time spent awaiting the supervisor and
+no effects. Within an explicit command approval, omitted (or `null`) `uses`
+means no invocation quota; `uses: 1` through `uses: 64` opts into a finite,
+non-refundable limit. Finite parents cannot delegate uncapped authority.
+This applies to ordinary and unattended Runs without changing exact command
+scope, generated-work budgets, expiry or operator-selected permission policy.
+Approval expiry includes time spent awaiting the supervisor and
 completing startup.
 
 `inspect` separates the durable receipt state/head and signed prerequisites from

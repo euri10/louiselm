@@ -29,10 +29,10 @@ fn delegated_scope_cannot_expand_command_timeout_or_budget() {
     let approved = CommandScope {
         command_digest: Digest::of(b"printf permitted"),
         timeout_ms: 1000,
-        uses: 2,
+        uses: Some(2),
     };
     let mut requested = approved.clone();
-    requested.uses = 1;
+    requested.uses = Some(1);
     requested.timeout_ms = 500;
     assert!(requested.is_within(&approved));
     requested.command_digest = Digest::of(b"printf other");
@@ -41,8 +41,48 @@ fn delegated_scope_cannot_expand_command_timeout_or_budget() {
     requested.timeout_ms += 1;
     assert!(!requested.is_within(&approved));
     requested = approved.clone();
-    requested.uses += 1;
+    requested.uses = Some(3);
     assert!(!requested.is_within(&approved));
+}
+
+#[test]
+fn local_uncapped_grants_preserve_finite_attenuation_and_admission_checks() {
+    for parent in [Some(4), None] {
+        let mut fixture = Fixture::with_limit(true, parent);
+        fixture.grant.scope.uses = None;
+        let delegated = fixture.delegate();
+        if parent.is_some() {
+            assert!(matches!(delegated, Err(DelegationError::ScopeMismatch)));
+            continue;
+        }
+        let tool = delegated.unwrap();
+        for sequence in 1..=65 {
+            let mut packet = fixture.tool.packet();
+            if let LauncherPacket::Request(ProtocolMessage::ToolExecution(request)) =
+                &mut packet.packet
+            {
+                request.sequence = sequence;
+                request.request_id = format!("uncapped-{sequence}");
+            }
+            // Abandon preparation: an admission is never refunded, but uncapped
+            // authority must still admit the next exactly sequenced request.
+            tool.execute(&packet, &QueuedEffect::default(), completion().0)
+                .unwrap();
+            assert!(matches!(
+                tool.execute(&packet, &QueuedEffect::default(), completion().0),
+                Err(DelegationError::Replay)
+            ));
+        }
+        fixture.owner.revoke().unwrap();
+        assert!(
+            tool.execute(
+                &fixture.tool.packet(),
+                &QueuedEffect::default(),
+                completion().0
+            )
+            .is_err()
+        );
+    }
 }
 
 #[test]
@@ -143,7 +183,7 @@ fn aggregate_budget_is_reserved_and_cannot_be_amplified_by_multiple_grants() {
     let _first = fixture.delegate().unwrap();
     let second = Peer::new(&fixture.root.path().join("second.sock"));
     fixture.grant.sequence = 2;
-    fixture.grant.scope.uses = 3;
+    fixture.grant.scope.uses = Some(3);
     assert!(matches!(
         fixture
             .owner
@@ -307,22 +347,25 @@ fn completed_effect_is_reported_after_revocation_before_completion_delivery() {
 
 #[test]
 fn expired_grant_cannot_commit_already_admitted_effect() {
-    let mut fixture = Fixture::new(true);
-    fixture.grant.expires_at = Instant::now() + Duration::from_secs(1);
-    let tool = fixture.delegate().unwrap();
-    let queue = QueuedEffect::default();
-    let (done, result) = completion();
-    tool.execute(&fixture.tool.packet(), &queue, done).unwrap();
-    std::thread::sleep(
-        fixture
-            .grant
-            .expires_at
-            .saturating_duration_since(Instant::now()),
-    );
-    let effects = Arc::new(AtomicUsize::new(0));
-    queue.finish(Arc::clone(&effects));
-    assert!(matches!(outcome(&result), Err(DelegationError::Expired)));
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    for uses in [Some(4), None] {
+        let mut fixture = Fixture::with_limit(true, uses);
+        fixture.grant.scope.uses = uses;
+        fixture.grant.expires_at = Instant::now() + Duration::from_secs(1);
+        let tool = fixture.delegate().unwrap();
+        let queue = QueuedEffect::default();
+        let (done, result) = completion();
+        tool.execute(&fixture.tool.packet(), &queue, done).unwrap();
+        std::thread::sleep(
+            fixture
+                .grant
+                .expires_at
+                .saturating_duration_since(Instant::now()),
+        );
+        let effects = Arc::new(AtomicUsize::new(0));
+        queue.finish(Arc::clone(&effects));
+        assert!(matches!(outcome(&result), Err(DelegationError::Expired)));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[test]
