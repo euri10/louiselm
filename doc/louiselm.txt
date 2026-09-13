@@ -133,6 +133,10 @@ Commands                                                      *louiselm-commands
     Collect private Forensics for the current Session
     Arguments: none
 
+:LouiselmForensicsExport                                      *:LouiselmForensicsExport*
+    Export selected redacted Forensics evidence to a new file
+    Arguments: one or more
+
 :LouiselmForensicsView                                        *:LouiselmForensicsView*
     View a Forensics record
     Arguments: optional

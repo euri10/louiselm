@@ -239,6 +239,41 @@ T["command"]["views current Forensics evidence availability without a chat"] = f
   MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
 end
 
+T["command"]["exports selected Forensics evidence without a chat and cancels on re-registration"] = function()
+  local root = nvim.fn.tempname()
+  local store = assert(ForensicsStore.new(root))
+  local record_path = assert(store:write({
+    id = "export-command",
+    schema_version = 1,
+    observed_at = 100,
+    subject = { agent = "private-agent", acp_session_id = "private-session" },
+    observations = { cwd = "/private/project" },
+    evidence_sources = {},
+  }))
+  MiniTest.finally(function()
+    nvim.fn.delete(root, "rf")
+  end)
+  local output = nvim.fs.joinpath(root, "evidence.json")
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensicsExport", args = { record_path, output, "observation:cwd" } }, {})
+  assert(nvim.wait(5000, function()
+    return nvim.fn.filereadable(output) == 1
+  end))
+  local artifact = nvim.json.decode(table.concat(nvim.fn.readfile(output), "\n"))
+  MiniTest.expect.equality(artifact.items[1].value, "[redacted]")
+  Command.register()
+  local cancelled = nvim.fs.joinpath(root, "cancelled.json")
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensicsExport", args = { record_path, cancelled, "observation:cwd" } }, {})
+  Command.register()
+  local drained = false
+  nvim.schedule(function()
+    drained = true
+  end)
+  assert(nvim.wait(1000, function()
+    return drained
+  end))
+  MiniTest.expect.equality(nvim.fn.filereadable(cancelled), 0)
+end
+
 T["command"]["opens the Tutor without a configured Agent"] = function()
   nvim.api.nvim_cmd({ cmd = "LouiselmTutor", args = {} }, {})
 

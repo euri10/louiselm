@@ -146,7 +146,8 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   editor height; longer issues scroll inside the float.
 - **Keep diagnostic evidence.** Private Forensics records preserve a bounded
   snapshot of Session configuration, capabilities, and Git state for later
-  inspection.
+  inspection. [Evidence export](docs/evidence-export.md) creates a bounded,
+  redacted artifact from selected observations or JSONL ranges for sharing.
 - **Use Agent Skills.** Discover and pick local skills, delegate to an Agent's
   native skill support, inject a bounded catalog, or turn skill automation off
   per Agent.

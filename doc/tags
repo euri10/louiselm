@@ -9,6 +9,7 @@
 :LouiselmChat	louiselm.txt	/*:LouiselmChat*
 :LouiselmDiagnostics	louiselm.txt	/*:LouiselmDiagnostics*
 :LouiselmForensics	louiselm.txt	/*:LouiselmForensics*
+:LouiselmForensicsExport	louiselm.txt	/*:LouiselmForensicsExport*
 :LouiselmForensicsView	louiselm.txt	/*:LouiselmForensicsView*
 :LouiselmHandOff	louiselm.txt	/*:LouiselmHandOff*
 :LouiselmInline	louiselm.txt	/*:LouiselmInline*

@@ -3,6 +3,7 @@ local nvim = vim
 local Agent = require("louiselm.agent")
 local Beads = require("louiselm.ui.beads")
 local ForensicsStore = require("louiselm.forensics.store")
+local EvidenceExport = require("louiselm.forensics.export")
 local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
@@ -320,6 +321,8 @@ function M.register()
   end
   local chat
   local inline
+  local export_cancel ---@type fun()?
+  local disposed = false
 
   ---@param message string?
   local function report_error(message)
@@ -654,6 +657,41 @@ function M.register()
     nvim.api.nvim_set_current_buf(buffer)
   end, { nargs = "?", desc = "View a Forensics record", complete = "file", force = true })
 
+  nvim.api.nvim_create_user_command("LouiselmForensicsExport", function(arguments)
+    if #arguments.fargs < 3 then
+      report_error("use :LouiselmForensicsExport RECORD OUTPUT observation:FIELD or source:INDEX:FIRST:LAST ...")
+      return
+    end
+    if export_cancel then
+      report_error("an Evidence export is already running")
+      return
+    end
+    local selections = {}
+    for index = 3, #arguments.fargs do
+      selections[#selections + 1] = arguments.fargs[index]
+    end
+    local cancel, export_error = EvidenceExport.write(
+      arguments.fargs[1],
+      arguments.fargs[2],
+      selections,
+      function(path, err)
+        export_cancel = nil
+        if disposed then
+          return
+        end
+        if path then
+          nvim.notify(
+            "louiselm: Evidence export written to " .. path .. "; inspect item states for omitted evidence",
+            nvim.log.levels.INFO
+          )
+        end
+        report_error(err)
+      end
+    )
+    export_cancel = cancel
+    report_error(export_error)
+  end, { nargs = "+", desc = "Export selected redacted Forensics evidence to a new file", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmToMarkdown", function(arguments)
     if chat == nil then
       report_error("no chat session is open")
@@ -801,6 +839,10 @@ function M.register()
     end)
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
+    disposed = true
+    if export_cancel then
+      export_cancel()
+    end
     staleness_generation = staleness_generation + 1
     if chat ~= nil then
       chat:dispose()
