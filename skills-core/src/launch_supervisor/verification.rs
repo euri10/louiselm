@@ -107,6 +107,7 @@ impl Storage {
 
 pub(super) struct Worker {
     cancelled: Arc<AtomicBool>,
+    completed: Arc<AtomicBool>,
     start_gate: Arc<Mutex<()>>,
     cleanup_failed: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<(), SupervisorError>>>,
@@ -134,6 +135,8 @@ impl Worker {
             .checked_add(Duration::from_millis(budget))
             .ok_or(SupervisorError::AuthorizationRejected)?;
         let cancelled = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
+        let completion_flag = Arc::clone(&completed);
         let start_gate = Arc::new(Mutex::new(()));
         let cleanup_failed = Arc::new(AtomicBool::new(false));
         let cleanup_flag = Arc::clone(&cleanup_failed);
@@ -182,24 +185,12 @@ impl Worker {
                         .execute(&request, &session, &flag, &gate, &cleanup_flag, deadline)
                         .map(|evidence| ResponseResult::VerificationExecution { evidence }),
                 };
-                let cleanup = match &result {
-                    Err(SupervisorError::CleanupUnproven) => Err(SupervisorError::CleanupUnproven),
-                    Ok(ResponseResult::VerificationExecution { evidence })
-                        if !evidence.cleanup_proven =>
-                    {
-                        Err(SupervisorError::CleanupUnproven)
-                    }
-                    _ => Ok(()),
-                };
-                if cleanup.is_err() {
-                    cleanup_flag.store(true, Ordering::Release);
-                }
-                complete(result);
-                cleanup
+                finish(result, &cleanup_flag, &completion_flag, complete)
             })
             .map_err(|_| SupervisorError::WorkerUnavailable)?;
         Ok(Self {
             cancelled,
+            completed,
             start_gate,
             cleanup_failed,
             thread: Some(thread),
@@ -207,7 +198,8 @@ impl Worker {
     }
 
     pub(super) fn finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+        self.completed.load(Ordering::Acquire)
+            || self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     pub(super) fn cancel(&mut self) -> Result<(), SupervisorError> {
@@ -239,6 +231,29 @@ impl Drop for Worker {
         // Explicit disposal propagates failures; Drop never releases a host identity.
         let _ = self.cancel();
     }
+}
+
+fn finish(
+    result: Result<ResponseResult, SupervisorError>,
+    cleanup_failed: &AtomicBool,
+    completed: &AtomicBool,
+    complete: SupervisorCompletion<ResponseResult>,
+) -> Result<(), SupervisorError> {
+    let cleanup = match &result {
+        Err(SupervisorError::CleanupUnproven) => Err(SupervisorError::CleanupUnproven),
+        Ok(ResponseResult::VerificationExecution { evidence }) if !evidence.cleanup_proven => {
+            Err(SupervisorError::CleanupUnproven)
+        }
+        _ => Ok(()),
+    };
+    if cleanup.is_err() {
+        cleanup_failed.store(true, Ordering::Release);
+    }
+    // Consumers may request another job as soon as the callback delivers.
+    // Publish the outcome first; cancel() still joins and refuses failed cleanup.
+    completed.store(true, Ordering::Release);
+    complete(result);
+    cleanup
 }
 
 fn digest(value: &str) -> Result<Digest, SupervisorError> {
