@@ -3,6 +3,13 @@
 Required by [AGENTS.md](../AGENTS.md) for executable changes, gates and CI monitoring.
 Read once before applicable work. Language policies remain in force.
 
+Public site Markdown link changes require both `npm run site:test` and the full
+`npm run site:build`. MyST exports relatively linked Markdown even outside the
+public TOC. Link non-curated guides through repository URLs; adding a public
+page requires deliberate TOC and byte-checked artifact allowlist updates.
+The artifact fixtures alone do not exercise this link traversal
+(louiselm-o7v6, louiselm-ejbu, louiselm-s29b).
+
 ## 4. Required Tooling
 
 StyLua owns formatting, `lua-language-server` owns static analysis/LuaCATS, and
