@@ -315,6 +315,65 @@ end
 
 T["multi_window_overview"] = MiniTest.new_set()
 
+T["multi_window_overview"]["completed Codex multi-file diffs populate and refresh the overview"] = function()
+  -- Captured ordering/shape: proxy/sessions/01a0a0b7-147e-75e1-a37e-f3bf254b9764/log.jsonl:484-485
+  -- under ~/.local/state/acp-llm-adapter/: two diffs, then a status-only completion.
+  -- Paths and text are replaced; no rawInput was present in the captured call.
+  local chat = assert(Chat.new(fake_api()))
+  local session = fake_session("codex-edits", "codex", "/workspace")
+  assert(chat:attach(session))
+  assert(chat:session_overview())
+  local buf = nvim.api.nvim_get_current_buf()
+  local function text()
+    return table.concat(nvim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+  end
+  MiniTest.expect.equality(text():find("(no files modified yet)", 1, true) ~= nil, true)
+  local started = {
+    toolCallId = "edit-1",
+    kind = "edit",
+    status = "in_progress",
+    content = {
+      { type = "diff", path = "/workspace/existing.lua", oldText = "same\nold\n", newText = "same\nnew\nextra\n" },
+      { type = "diff", path = "/workspace/new.lua", oldText = nvim.NIL, newText = "created\n" },
+    },
+  }
+  session:emit({ type = "tool_call_started", session_id = "codex-edits", data = started })
+  SessionOverview.refresh()
+  MiniTest.expect.equality(text():find("(no files modified yet)", 1, true) ~= nil, true)
+  session:emit({
+    type = "tool_call_finished",
+    session_id = "codex-edits",
+    data = { toolCallId = "edit-1", status = "completed" },
+  })
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return text():find("2 modified (+3 -1)", 1, true) ~= nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(text():find("existing.lua", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text():find("new.lua", 1, true) ~= nil, true)
+  assert(SessionOverview.close())
+  assert(chat:session_overview())
+  buf = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(text():find("2 modified (+3 -1)", 1, true) ~= nil, true)
+  -- Failed calls, malformed blocks and unchanged text must not create file entries.
+  for index, block in ipairs({
+    { type = "diff", path = "/workspace/failed.lua", oldText = "old\n", newText = "new\n" },
+    { type = "diff", path = "/workspace/bad.lua", oldText = 42, newText = "new\n" },
+    { type = "diff", path = "/workspace/same.lua", oldText = "same\n", newText = "same\n" },
+  }) do
+    session:emit({
+      type = "tool_call_finished",
+      session_id = "codex-edits",
+      data = { toolCallId = "ignored-" .. index, status = index == 1 and "failed" or "completed", content = { block } },
+    })
+  end
+  SessionOverview.refresh()
+  MiniTest.expect.equality(text():find("2 modified (+3 -1)", 1, true) ~= nil, true)
+  chat:dispose()
+end
+
 T["multi_window_overview"]["opens 5 vertical windows for 5 sessions"] = function()
   local chat = assert(Chat.new(fake_api()))
 

@@ -409,9 +409,36 @@ function M.collect_session_summary(session_or_view, cwd)
   local transcript = session_or_view.transcript
   if transcript ~= nil and type(transcript.snapshot) == "function" then
     for _, entry in ipairs(transcript:snapshot()) do
-      if entry.kind == "tool_call" and type(entry.raw) == "table" then
-        local edit = M.extract_file_edit(entry.raw, working_dir)
-        record_edit(edit)
+      local raw = entry.raw
+      if entry.kind == "tool_call" and type(raw) == "table" then
+        local has_diff = false
+        if type(raw.content) == "table" then
+          for _, block in ipairs(raw.content) do
+            if type(block) == "table" and block.type == "diff" then
+              has_diff = true
+              if
+                raw.status == "completed"
+                and type(block.path) == "string"
+                and block.path ~= ""
+                and type(block.newText) == "string"
+                and (type(block.oldText) == "string" or block.oldText == nil or block.oldText == nvim.NIL)
+              then
+                -- ACP carries the before/after text, even after the file has been written.
+                -- One tool call can edit several files; do not collapse it to its first path.
+                local original = type(block.oldText) == "string" and block.oldText or ""
+                local diff = nvim.diff(original, block.newText, { result_type = "unified", ctxlen = 3 })
+                local edit = M.extract_file_edit({ path = block.path, diff = diff }, working_dir)
+                if edit ~= nil then
+                  edit.is_new = block.oldText == nil or block.oldText == nvim.NIL
+                  record_edit(edit)
+                end
+              end
+            end
+          end
+        end
+        if not has_diff then
+          record_edit(M.extract_file_edit(raw, working_dir))
+        end
       end
     end
   end
