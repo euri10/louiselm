@@ -2086,6 +2086,44 @@ T["new"]["tracks AIR session failure revisions and clears the warning on progres
   restore_processes(original_system)
 end
 
+T["new"]["treats a Codex systemError thread status as a fatal turn failure"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local events = {}
+  session:on(function(event)
+    events[#events + 1] = event
+  end)
+
+  local completed
+  local request_id = assert(submit(session, "hello", function(result, err)
+    completed = { result = result, error = err }
+  end))
+
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "session_info_update",
+      _meta = { codex = { threadStatus = { type = "systemError" } } },
+    },
+  })
+
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(completed.result, nil)
+  MiniTest.expect.equality(type(completed.error), "string")
+
+  -- Codex still resolves the prompt with a normal-looking stopReason; that
+  -- bogus success must not resurrect a turn that already failed.
+  respond(process, request_id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().status, "error")
+  for _, event in ipairs(events) do
+    MiniTest.expect.equality(event.type ~= "turn_done", true)
+  end
+
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["does not emit live user message echoes as replay events"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))

@@ -280,6 +280,21 @@ function M.available_commands(value)
   return commands, diagnostics
 end
 
+---Whether Codex's ACP thread-status extension reports a fatal error for the current turn.
+---Codex's own `session/prompt` response still claims `stopReason = "end_turn"` when this fires
+---(observed for a revoked auth token), with no error text anywhere in the ACP stream, so this
+---flag is the only signal available that the turn actually failed.
+---@param value unknown ACP session update `_meta` value.
+---@return boolean
+function M.codex_system_error(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  local codex = value.codex
+  local thread_status = type(codex) == "table" and codex.threadStatus or nil
+  return type(thread_status) == "table" and thread_status.type == "systemError"
+end
+
 ---Validate the supported JetBrains AIR session-failure metadata fields.
 ---Unknown extension fields are deliberately ignored.
 ---@param value unknown ACP session update `_meta` value.

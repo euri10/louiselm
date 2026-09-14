@@ -479,6 +479,14 @@ local function handle_notification(self, message)
     self.state.commands = commands
     emit(self, "commands_changed", { commands = nvim.deepcopy(commands), diagnostics = diagnostics })
   elseif update_type == "session_info_update" then
+    if Validation.codex_system_error(update._meta) then
+      -- The agent still resolves this turn's session/prompt with a normal
+      -- end_turn stopReason; failing now (instead of waiting for that response)
+      -- pre-empts handle_prompt_result's early "disposed"/"error" guard so the
+      -- bogus success never overwrites this failure.
+      fail(self, "Codex agent reported a system error for this turn")
+      return
+    end
     local failure = Validation.session_failure(update._meta)
     if failure == nil then
       return
