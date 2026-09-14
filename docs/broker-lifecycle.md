@@ -13,6 +13,20 @@ string alone must not authorize disposal. `louiselm-qbr.5.1.2.5` supplies the
 retention mechanics below. `louiselm-qbr.5.1.2.6` connects them to authenticated
 controller registration and broker recovery admission.
 
+## Serving one rendezvous
+
+`BrokerService::serve_connection` accepts one supervisor and routes it by the
+connection's first packet: a launch request starts a new launch, a reconnect
+offer reattaches. A running broker cannot know which is arriving, and the two
+entry points below each demanded a specific opening packet, so neither could
+serve a live rendezvous alone. Any other opening packet is refused without a
+response, because nothing correlates one to an unrecognised packet.
+
+`serve_launch` and `serve_reconnect` remain as the single-purpose entry points
+the tests drive; all three share the same post-accept transactions.
+
+No process calls any of them in production yet: see `louiselm-96pv`.
+
 ## Broker restart
 
 `InstalledBroker::serve_reconnect` accepts an authenticated supervisor on the

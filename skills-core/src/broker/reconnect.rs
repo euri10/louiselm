@@ -34,19 +34,39 @@ impl BrokerService {
             else {
                 return Err(BrokerError::InvalidGrant);
             };
-            let result = self.reconnect_transaction(&channel, &request, &mut verify);
-            if result.is_err()
-                && self
-                    .authorizations
-                    .consumed_for_session(&request.session_id)?
-                    .is_some()
-            {
-                self.reconnect_failure(&request, now_ms)?;
-            }
-            result
+            self.reconnect_on(&channel, &request, now_ms, &mut verify)
         })();
         if result.is_err() {
             channel.close();
+        }
+        result
+    }
+
+    /// Reattaches on a connection whose reconnect offer was already read.
+    ///
+    /// Split out so a running broker can accept once and route by first packet;
+    /// the refusal path is identical either way.
+    ///
+    /// # Errors
+    /// Returns the reattachment failures described on [`Self::serve_reconnect`].
+    pub(in crate::broker) fn reconnect_on<F>(
+        &self,
+        channel: &SeqpacketChannel,
+        request: &BrokerReconnect,
+        now_ms: u64,
+        verify: &mut F,
+    ) -> Result<BrokerSession, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let result = self.reconnect_transaction(channel, request, verify);
+        if result.is_err()
+            && self
+                .authorizations
+                .consumed_for_session(&request.session_id)?
+                .is_some()
+        {
+            self.reconnect_failure(request, now_ms)?;
         }
         result
     }

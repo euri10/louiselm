@@ -310,9 +310,20 @@ impl BrokerService {
     {
         let clock = Instant::now();
         let channel = self.accept()?;
-        let now_ms =
-            now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
-        match self.transaction(&channel, now_ms, &mut verify_signature) {
+        let result = (|| {
+            let packet = receive(&channel)?;
+            let LauncherPacket::Request(ProtocolMessage::LaunchAuthorization(request)) =
+                packet.packet
+            else {
+                // Nothing correlates a response to a packet that is not a launch
+                // request, so the transaction ends without one.
+                return Err(BrokerError::InvalidGrant);
+            };
+            let now_ms = now_ms
+                .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+            self.launch_on(&channel, &request, now_ms, &mut verify_signature)
+        })();
+        match result {
             Ok((authorization, launch_head, commands, require_cold_recovery)) => {
                 Ok(BrokerSession {
                     require_cold_recovery,
@@ -330,6 +341,55 @@ impl BrokerService {
         }
     }
 
+    /// Accepts one supervisor and routes it by the connection's first packet.
+    ///
+    /// A running broker cannot know in advance whether the peer dialling its
+    /// rendezvous is starting a new launch or reattaching after a restart, so
+    /// the first packet decides. Anything else is refused without a response,
+    /// because nothing correlates one to an unrecognised packet.
+    ///
+    /// # Errors
+    /// Returns the same failures as [`Self::serve_launch`] and
+    /// [`Self::serve_reconnect`], according to which the peer asked for.
+    pub fn serve_connection<F>(
+        &self,
+        now_ms: u64,
+        mut verify: F,
+    ) -> Result<BrokerSession, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let clock = Instant::now();
+        let channel = self.accept()?;
+        let result = (|| {
+            let packet = receive(&channel)?;
+            let now_ms = now_ms
+                .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+            match packet.packet {
+                LauncherPacket::Request(ProtocolMessage::LaunchAuthorization(request)) => {
+                    let (authorization, launch_head, commands, require_cold_recovery) =
+                        self.launch_on(&channel, &request, now_ms, &mut verify)?;
+                    Ok(BrokerSession {
+                        require_cold_recovery,
+                        recovery_admitted_until: None,
+                        authorization,
+                        launch_head,
+                        channel: channel.clone(),
+                        commands,
+                    })
+                }
+                LauncherPacket::Request(ProtocolMessage::BrokerReconnect(request)) => {
+                    self.reconnect_on(&channel, &request, now_ms, &mut verify)
+                }
+                _ => Err(BrokerError::InvalidGrant),
+            }
+        })();
+        if result.is_err() {
+            channel.close();
+        }
+        result
+    }
+
     /// Closes the rendezvous listener. Bound paths are not unlinked here: the
     /// installer owns the rendezvous path's lifetime. Returned Session owners
     /// remain usable and must be closed separately.
@@ -341,9 +401,10 @@ impl BrokerService {
         clippy::too_many_lines,
         reason = "One ordered transaction consumes approval, stores both receipts and binds policy before the final ACK."
     )]
-    fn transaction<F>(
+    fn launch_on<F>(
         &self,
         channel: &SeqpacketChannel,
+        request: &crate::launch::LaunchRequest,
         now_ms: u64,
         verify_signature: &mut F,
     ) -> Result<
@@ -359,19 +420,11 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         let clock = Instant::now();
-        let packet = receive(channel)?;
-        let LauncherPacket::Request(ProtocolMessage::LaunchAuthorization(request)) = packet.packet
-        else {
-            // Nothing correlates a response to a packet that is not a launch
-            // request, so the transaction ends without one.
-            return Err(BrokerError::InvalidGrant);
-        };
-
         let consumed_at_ms =
             now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
         let authorization = match self
             .authorizations
-            .consume_for_launcher(&request, consumed_at_ms)
+            .consume_for_launcher(request, consumed_at_ms)
         {
             Ok(authorization) => authorization,
             Err(BrokerError::IdentityExhausted(exhaustion)) => {

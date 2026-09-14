@@ -292,3 +292,66 @@ fn status_is_answerable_after_a_broker_restart_reattaches_the_exact_prefix() {
     );
     peer.join().unwrap();
 }
+
+#[test]
+fn one_rendezvous_routes_launches_reattachments_and_refuses_anything_else() {
+    use louiselm_skills::launch_protocol::{STATUS_REQUEST_SCHEMA, StatusRequest};
+
+    // A peer opening with a launch request is served as a new launch.
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("broker.sock");
+    let request = request("session-1");
+    let service = super::lifecycle::bound_service(root.path(), &socket, &request);
+    let supervisor = thread::spawn(move || fake_supervisor(&socket, &request, 2000));
+    let launched = service
+        .serve_connection(2000, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(launched.authorization().session_id, "session-1");
+    let (authorization, channel) = supervisor.join().unwrap();
+    assert_eq!(launched.authorization(), &authorization);
+    drop(channel);
+    service.close();
+
+    // A peer opening with a reconnect offer is reattached on the same rendezvous.
+    let restarted_root = TempDir::new().unwrap();
+    let (restarted, authorization, chain) = fixture(restarted_root.path());
+    let offer = checkpoint(&chain[1]);
+    let peer_root = restarted_root.path().to_owned();
+    let reattaching = thread::spawn(move || peer(&peer_root, &checkpoint(&chain[1])));
+    let session = restarted
+        .serve_connection(90_000, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(session.authorization(), &authorization);
+    let reattached = reattaching.join().unwrap();
+    let reply = settle(|complete| reattached.receive(complete));
+    assert!(matches!(reply.packet, LauncherPacket::Response(response)
+        if matches!(&response.result, ResponseResult::BrokerReconnect { reconnect } if reconnect == &offer)));
+
+    // Any other opening packet is refused, with no response to correlate.
+    let stray_root = TempDir::new().unwrap();
+    let (stray, stray_authorization, _) = fixture(stray_root.path());
+    let stray_path = stray_root.path().to_owned();
+    let opener = thread::spawn(move || {
+        let connector = SeqpacketConnector::new().unwrap();
+        let channel = settle(|complete| {
+            connector.connect(&stray_path.join("broker.sock"), local_pin(), complete)
+        });
+        settle(|complete| {
+            channel.send(
+                StatusRequest {
+                    schema: STATUS_REQUEST_SCHEMA.into(),
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: "status-1".into(),
+                    session_id: stray_authorization.session_id.clone(),
+                    run_id: stray_authorization.run_id.clone(),
+                }
+                .canonical_bytes(),
+                complete,
+            )
+        });
+        channel
+    });
+    let refused = stray.serve_connection(90_000, verify_fixture_signature);
+    assert!(matches!(refused, Err(BrokerError::InvalidGrant)));
+    expect_disconnect(&opener.join().unwrap());
+}

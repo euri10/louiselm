@@ -262,6 +262,34 @@ impl InstalledBroker {
         }
     }
 
+    /// Accepts one supervisor and routes it by the connection's first packet.
+    ///
+    /// A running broker serves new launches and post-restart reattachments on
+    /// one rendezvous and cannot know which is arriving, so the first packet
+    /// decides. This is the entry point a long-running broker loops on.
+    ///
+    /// # Errors
+    /// Returns the same failures as [`Self::serve_launch`] and
+    /// [`Self::serve_reconnect`], according to which the peer asked for.
+    pub fn serve_connection(&self) -> Result<BrokerSession, BrokerError> {
+        let mut verification_failure = None;
+        let result = self
+            .service
+            .serve_connection(now_ms()?, |key, payload, signature| {
+                match self.verifier.verify(key, payload, signature) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        verification_failure = Some(error);
+                        false
+                    }
+                }
+            });
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
     /// Processes a command, signed outcome or durable controller-loss settlement.
     /// Returns true only after a terminal receipt became durable. Local decision
     /// and Attention enqueue precede settlement; remote delivery grants no authority.

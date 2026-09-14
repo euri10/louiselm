@@ -585,7 +585,7 @@ fn allowed_actions_follow_caller_scope_session_state_and_quarantine() {
     );
 }
 
-fn bound_service(root: &Path, socket: &Path, request: &LaunchRequest) -> BrokerService {
+pub(super) fn bound_service(root: &Path, socket: &Path, request: &LaunchRequest) -> BrokerService {
     let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
     authorizations.authorize(&grant(request), 1000).unwrap();
     BrokerService::bind(
