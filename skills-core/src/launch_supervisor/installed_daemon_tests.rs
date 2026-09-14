@@ -10,6 +10,9 @@ use std::os::unix::process::ExitStatusExt;
 const STATE: &str = "/var/lib/louiselm/broker";
 const SEED: &str = "launch_supervisor::system::installed_tests::daemon::seed_authorizations";
 
+#[path = "installed_daemon_attention_tests.rs"]
+mod attention;
+
 fn completed<T: Send + 'static>(queue: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -> T {
     let (tx, rx) = mpsc::channel();
     queue(Box::new(move |value| tx.send(value).unwrap()));
@@ -54,6 +57,7 @@ fn seed_authorizations() {
             })
             .unwrap();
     }
+    attention::enqueue("before-start");
 }
 
 fn mounts(root: &Path) {
@@ -262,6 +266,9 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     );
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);
+    // Missing endpoint configuration must not prevent startup. Provision it
+    // after startup, without restarting the daemon or connecting a Session.
+    attention::configure();
     eprintln!("daemon: ready");
     let silent = connect(&config);
     let session = launch(&paths, &config, root.path(), "session").unwrap();
@@ -284,12 +291,57 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
             .exists()
     );
     assert!(daemon.0.try_wait().unwrap().is_none());
+    // The receiver was absent throughout both launches: delivery cannot block
+    // either the accept loop or an existing Session's worker.
+    let listener = attention::listen();
+    let (first, request) = attention::receive(&listener);
+    assert_eq!(
+        request["projection"]["change"]["subject_id"],
+        "before-start"
+    );
+    attention::reply(first, &request, false);
+    let (retry, repeated) = attention::receive(&listener);
+    assert_eq!(
+        request, repeated,
+        "bad ACK must retry the exact oldest entry"
+    );
+    attention::reply(retry, &repeated, true);
+    attention::wait_ack(1);
+    let sequence = attention::enqueue("while-running");
+    // Disposal above also produces real lifecycle Attention. Preserve its
+    // ordering rather than assuming our second fixture is the second entry.
+    let (mut interrupted, pending) = (2..=sequence)
+        .find_map(|expected| {
+            let (stream, entry) = attention::receive(&listener);
+            assert_eq!(entry["projection"]["sequence"], expected);
+            if expected == sequence {
+                Some((stream, entry))
+            } else {
+                attention::reply(stream, &entry, true);
+                attention::wait_ack(expected);
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        pending["projection"]["change"]["subject_id"],
+        "while-running"
+    );
     terminate(&mut daemon);
+    attention::assert_stopped(&mut interrupted);
+    attention::assert_pending(sequence);
     assert!(
         completed(|done| silent.receive(done).unwrap()).is_err(),
         "shutdown closes stalled handshake"
     );
     let mut restarted = process(&manager, BROKER_UID, false);
+    let (retry, repeated) = attention::receive(&listener);
+    assert_eq!(
+        pending, repeated,
+        "stop must not acknowledge undelivered work"
+    );
+    attention::reply(retry, &repeated, true);
+    attention::wait_ack(sequence);
     // The retained supervisor reattaches to the same manager-owned socket and
     // then completes the ordinary controller-loss/terminal receipt path.
     session.dispose().unwrap();

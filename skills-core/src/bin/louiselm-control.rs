@@ -16,6 +16,9 @@ use louiselm_skills::{
     release,
 };
 
+#[path = "control/attention.rs"]
+mod attention;
+
 fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
     if arguments.next().as_deref() != Some(OsStr::new("serve")) || arguments.next().is_some() {
@@ -80,6 +83,7 @@ fn activated_descriptor() -> Result<OwnedFd, TransportError> {
 
 fn serve(broker: InstalledBroker) -> Result<(), BrokerError> {
     let broker = Arc::new(broker);
+    let _attention_worker = attention::start(Arc::clone(&broker))?;
     let mut workers: Vec<JoinHandle<Result<(), BrokerError>>> = Vec::new();
     // SIGTERM deliberately keeps its native terminating action. Kernel process
     // teardown closes listener and Session descriptors, even during blocked I/O.

@@ -15,7 +15,8 @@ use std::{
 /// Explicit local endpoint provisioned for the dedicated broker identity.
 /// The capability file is a broker-owned private copy of the Attention-only
 /// producer capability. It is never placed inside a Session or sent to an Agent.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttentionEndpoint {
     /// Configured capture-service Attention socket, accessible to the broker UID.
     pub socket: PathBuf,

@@ -44,8 +44,9 @@ storage I/O. There is no drain, worker join or synthetic acknowledgement on stop
 Only the existing durable-before-ACK receipt path can acknowledge an outcome;
 the supervisor observes Broker loss and reattaches through the same retained
 manager listener after restart. Installation of the socket/service units remains
-`louiselm-96pv.5`; this command does not provision them, deliver queued Attention,
-provide client verbs or authorize new work.
+`louiselm-96pv.5`; this command does not provision them, provide client verbs or
+authorize new work. Its independent Attention worker delivers queued projections
+without waiting for a Session connection.
 
 `SeqpacketListener::adopt` accepts an owned, listening Unix `SOCK_SEQPACKET`
 descriptor. `inherited_descriptor` validates that `LISTEN_PID` names this
@@ -80,7 +81,10 @@ hold the accepted socket. This is a credential-boundary test. The separate
 gate executes the actual installed binary in a disposable VM's private mount
 namespace. It covers simultaneous launches beside a silent peer, storage
 failure without an ACK, SIGTERM, retained-supervisor restart, and startup
-identity/directory/marker refusals. It requires `LOUISELM_REQUIRE_CONTROL_DAEMON=1`
+identity/directory/marker refusals. Attention coverage includes absent endpoint
+configuration, receiver outage during launches, pre-start and running enqueue,
+wrong-ACK retry, and interrupted delivery retried after restart without a new
+Session connection. It requires `LOUISELM_REQUIRE_CONTROL_DAEMON=1`
 and `unshare --mount --propagation private`; ordinary Cargo skips it. Production
 provisioning remains `louiselm-96pv.5`.
 
@@ -480,6 +484,43 @@ with a 30-second read deadline and bounded frames. The oldest entry stays
 pending until its exact sequence/digest acknowledgement is durable. Delivery
 failure or compromised projection output cannot authorize a lifecycle action,
 rewrite launcher receipts or change capability policy.
+
+`louiselm-control serve` owns one delivery loop for the process lifetime. It
+drains successful deliveries in order, polls an empty outbox every second, and
+retries failures with exponential delays of 1, 2, 4, 8, 16, then at most 30
+seconds. Each transport attempt retains its existing deadline. Session accept
+and operation workers never wait for delivery. SIGTERM terminates delivery I/O
+with the process; an interrupted attempt receives no synthetic ACK and remains
+eligible for exact retry after restart. The receiver's durable sequence cursor
+makes a retry safe when it applied an entry before the broker stopped.
+
+Before each attempt the worker reads `/etc/louiselm-broker-attention.json`:
+
+```json
+{
+  "socket": "/absolute/path/to/attention.sock",
+  "capability_file": "/var/lib/louiselm/broker/attention-capability",
+  "receiver_uid": 1000
+}
+```
+
+This closed record permits only these three required fields. It must be a
+root-owned regular file, not a symlink, not group/world writable, and at most
+4096 bytes. Both paths must be absolute. The receiver UID is checked against
+the connected peer before the private capability is sent. No secret belongs
+in this configuration file. Missing or invalid configuration leaves the worker
+retrying and Sessions usable; provisioning or replacing the record takes effect
+on a later attempt without a daemon restart. Diagnostics report the outage once
+and recovery after an actual delivery, without endpoint contents, capabilities
+or peer responses. If placing the capability under the broker state directory,
+initialize its identity marker on empty state first, then provision the capability.
+
+Provisioning the broker-scoped producer credential and cross-identity receiver
+socket access remains `louiselm-0hwoq`. The current capture-service CLI creates
+an owner-only socket and uses its operator capability for projection requests;
+it does not yet provide the dedicated Attention-only credential described above.
+Do not copy the broader operator capability as a substitute. The daemon VM gate
+uses a private synthetic receiver and credential, not installed desktop delivery.
 
 The initial outbox retains at most 4096 entries and refuses further enqueue at
 that bound. History is not silently truncated and sequences never reset on
