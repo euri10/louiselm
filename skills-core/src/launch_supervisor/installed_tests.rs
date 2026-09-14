@@ -443,10 +443,22 @@ fn privileged_installed_controller_loss_settlement() {
 }
 
 #[test]
-fn privileged_installed_cold_resume() {
+fn privileged_installed_cold_resume_finite() {
     installed_broker_effects(true, None, Some(cold_resume::ColdCase::Loaded));
+}
+
+#[test]
+fn privileged_installed_cold_resume_uncapped() {
     installed_broker_effects(true, Some(true), Some(cold_resume::ColdCase::Loaded));
+}
+
+#[test]
+fn privileged_installed_cold_resume_failed_load() {
     installed_broker_effects(true, None, Some(cold_resume::ColdCase::FailedLoad));
+}
+
+#[test]
+fn privileged_installed_cold_resume_unavailable_balance() {
     installed_broker_effects(true, None, Some(cold_resume::ColdCase::UnavailableBalance));
 }
 

@@ -102,10 +102,13 @@ a changed head refuses that retry instead of recreating admission.
 deadline, but admission alone never recreates capabilities. A loaded record is
 historical evidence, not proof of current process liveness or lossless recovery.
 
-This consumer supports only `louiselm.test-recovery/1`. The installed VM gate
-`privileged_installed_cold_resume` checks sealed-source restoration, fresh
-authorization, finite/uncapped enforcement, retry and failed synthetic load.
-CI runs it explicitly because ordinary Cargo runs skip privileged fixtures.
+This consumer supports only `louiselm.test-recovery/1`. The installed VM tests
+`privileged_installed_cold_resume_{finite,uncapped,failed_load,unavailable_balance}`
+check sealed-source restoration, fresh authorization, finite/uncapped enforcement,
+retry, failed synthetic load and unavailable accounting. CI invokes each exact
+test sequentially with its own 240-second deadline and elapsed timing. Keep them
+serial because the fixtures share a dedicated test account. Ordinary Cargo runs
+skip these privileged fixtures.
 Vendor ACP support and desktop activation remain in `louiselm-d6fv.9`.
 
 ### Registering a retained point
