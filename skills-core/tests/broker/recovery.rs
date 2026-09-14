@@ -1,7 +1,7 @@
 //! Recovery admission consumes broker evidence, never advertised ACP support.
 
 use super::*;
-use louiselm_skills::broker::recovery::RecoveryReadiness;
+use louiselm_skills::launch_protocol::{RecoveryReadiness, RecoveryUnavailableReason};
 use louiselm_skills::{
     broker::lifecycle::LifecycleCaller,
     launch_protocol::{
@@ -36,7 +36,9 @@ fn ordinary_work_remains_usable_without_recovery_but_required_work_is_refused() 
     .unwrap();
     assert_eq!(
         service.recovery_readiness("session-1", 2000).unwrap(),
-        RecoveryReadiness::Unavailable
+        RecoveryReadiness::Unavailable {
+            reason: RecoveryUnavailableReason::EvidenceMissing
+        }
     );
     assert!(service.admit_recovery("session-1", 2000).is_ok());
     assert!(service.admit_recovery("required", 2000).is_err());
@@ -238,7 +240,9 @@ pub(super) fn registration(
         assert!(registered.is_err());
         assert_eq!(
             service.recovery_readiness("session-1", 2000).unwrap(),
-            RecoveryReadiness::Unavailable
+            RecoveryReadiness::Unavailable {
+                reason: RecoveryUnavailableReason::PendingDurability
+            }
         );
         peer.join().unwrap();
         return;
@@ -273,7 +277,7 @@ pub(super) fn registration(
     assert!(service.admit_recovery("session-1", 3000).is_ok());
     assert_eq!(
         service.recovery_readiness("session-1", 60000).unwrap(),
-        RecoveryReadiness::Expired
+        RecoveryReadiness::Expired {}
     );
     assert!(service.admit_recovery("session-1", 60000).is_err());
     drop(channel);

@@ -101,7 +101,7 @@ impl InstalledBroker {
     pub fn recovery_readiness(
         &self,
         session_id: &str,
-    ) -> Result<super::recovery::RecoveryReadiness, BrokerError> {
+    ) -> Result<crate::launch_protocol::RecoveryReadiness, BrokerError> {
         self.service.recovery_readiness(session_id, now_ms()?)
     }
     /// Delivers one pending normalized Attention entry independently of Neovim.

@@ -3,14 +3,12 @@ use super::{BrokerError, BrokerService, BrokerSession, receive, response, send};
 use crate::{
     broker::{
         attention::{AttentionCondition, AttentionReason, AttentionSubject, ProjectionChange},
-        read_record, record_name,
-        recovery::RecoveryReadiness,
-        sync_directory, write_new_record,
+        read_record, record_name, sync_directory, write_new_record,
     },
     launch::PROTOCOL_VERSION,
     launch_protocol::{
         CONTROLLER_LOSS_ACK_SCHEMA, ControllerLossAcknowledgement, ControllerLossDisposition,
-        ControllerLossSettlement, ProtocolMessage, ResponseResult,
+        ControllerLossSettlement, ProtocolMessage, RecoveryReadiness, ResponseResult,
     },
     launch_receipt::{ReceiptHead, SessionState},
     launch_transport::{AuthenticatedPacket, LauncherPacket},

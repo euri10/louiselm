@@ -61,6 +61,9 @@ mod attention;
 #[path = "broker/recovery.rs"]
 mod recovery;
 
+#[path = "broker/recovery_status.rs"]
+mod recovery_status;
+
 #[path = "broker/reconnect.rs"]
 mod reconnect;
 

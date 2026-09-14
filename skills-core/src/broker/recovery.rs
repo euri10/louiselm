@@ -12,30 +12,12 @@ use super::{
 };
 use crate::{
     launch_protocol::{
-        BrokerConnection, ChannelState, RecoveryRequest, ResponseResult, RetentionEvidence,
+        BrokerConnection, ChannelState, RecoveryReadiness, RecoveryRequest,
+        RecoveryUnavailableReason, ResponseResult, RetentionEvidence,
     },
     launch_receipt::{ReceiptOutcome, SessionState},
     launch_transport::LauncherPacket,
 };
-
-/// Bounded broker status; a retained point may be lossy and a later load may fail.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RecoveryReadiness {
-    /// No supervisor-backed durable recovery point was registered.
-    Unavailable,
-    /// Original retention expiry passed; retries never renew it.
-    Expired,
-    /// Broker quarantine forbids using this evidence for admission.
-    Quarantined,
-    /// Exact durable evidence is current for this authorized Session.
-    Ready {
-        /// Immutable retention operation identity.
-        operation_id: String,
-        /// Original exclusive expiry.
-        expires_at_ms: u64,
-    },
-}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -265,7 +247,7 @@ impl BrokerService {
             .consumed_for_session(session_id)?
             .ok_or(BrokerError::UnknownAuthorization)?;
         if self.lifecycle.is_quarantined(session_id)? {
-            return Ok(RecoveryReadiness::Quarantined);
+            return Ok(RecoveryReadiness::Quarantined {});
         }
         let pending_path = self
             .authorizations()
@@ -273,7 +255,11 @@ impl BrokerService {
             .join("recovery")
             .join(format!("pending-{}", record_name(session_id)?));
         match read_record::<bool>(&pending_path)? {
-            Some(true) => return Ok(RecoveryReadiness::Unavailable),
+            Some(true) => {
+                return Ok(RecoveryReadiness::Unavailable {
+                    reason: RecoveryUnavailableReason::PendingDurability,
+                });
+            }
             Some(false) => return Err(BrokerError::InvalidGrant),
             None => {}
         }
@@ -283,14 +269,16 @@ impl BrokerService {
             .join("recovery")
             .join(record_name(session_id)?);
         let Some(record) = read_record::<RegisteredRecovery>(&path)? else {
-            return Ok(RecoveryReadiness::Unavailable);
+            return Ok(RecoveryReadiness::Unavailable {
+                reason: RecoveryUnavailableReason::EvidenceMissing,
+            });
         };
         if record.request.launch.session_id != session_id {
             return Err(BrokerError::RequestMismatch);
         }
         self.validate_recovery_evidence(&record.request, &record.evidence)?;
         if now_ms >= record.request.retention.expires_at_ms {
-            return Ok(RecoveryReadiness::Expired);
+            return Ok(RecoveryReadiness::Expired {});
         }
         Ok(RecoveryReadiness::Ready {
             operation_id: record.request.retention.request_id,

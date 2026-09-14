@@ -25,8 +25,9 @@ pub use command::{
     GrantRequest,
 };
 pub use recovery::{
-    RECOVERY_REQUEST_SCHEMA, RECOVERY_RESTORE_SCHEMA, RETENTION_EVIDENCE_SCHEMA, RecoveryRequest,
-    RecoveryRestoreRequest, RetentionEvidence, RetentionRequest,
+    RECOVERY_REQUEST_SCHEMA, RECOVERY_RESTORE_SCHEMA, RETENTION_EVIDENCE_SCHEMA, RecoveryReadiness,
+    RecoveryRequest, RecoveryRestoreRequest, RecoveryUnavailableReason, RetentionEvidence,
+    RetentionRequest,
 };
 pub use tool::{
     MAX_TOOL_OUTPUT_BYTES, TOOL_EXECUTION_SCHEMA, ToolExecutionRequest, ToolExecutionResult,
@@ -82,7 +83,7 @@ pub const CONTROLLER_LOSS_ACK_SCHEMA: &str = "louiselm.launch.controller-loss-ac
 pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/3";
 
 /// Schema for broker-composed canonical Session status.
-pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/4";
+pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/5";
 
 /// Schema for a response to a request.
 pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/2";
@@ -1222,6 +1223,8 @@ pub struct SessionStatus {
     pub state: SessionState,
     /// Non-authoritative projection of all six broker-owned posture dimensions.
     pub posture: Box<PostureStatus>,
+    /// Broker-owned retained-point readiness; not lossless continuation or admission.
+    pub recovery: RecoveryReadiness,
     /// Supervisor/broker connection state.
     pub broker_connection: BrokerConnection,
     /// Applied capability-envelope revision.
@@ -1245,13 +1248,15 @@ pub struct SessionStatus {
 }
 
 impl SessionStatus {
-    /// Composes broker-owned posture/actions with mechanical supervisor facts.
+    /// Composes broker-owned posture, recovery and actions with supervisor facts.
     ///
     /// # Errors
-    /// Rejects invalid supervisor state, duplicate actions, or actions inconsistent with the resulting Session status.
+    /// Rejects invalid supervisor, posture or recovery fields, duplicate actions,
+    /// or actions inconsistent with the resulting Session status.
     pub fn compose(
         supervisor: SupervisorStatus,
         posture: PostureStatus,
+        recovery: RecoveryReadiness,
         mut allowed_actions: Vec<LifecycleAction>,
     ) -> Result<Self, ProtocolError> {
         supervisor.validate()?;
@@ -1270,6 +1275,7 @@ impl SessionStatus {
             run_id: supervisor.run_id,
             state: supervisor.state,
             posture: Box::new(posture),
+            recovery,
             broker_connection: supervisor.broker_connection,
             envelope_revision: supervisor.envelope_revision,
             channel_state: supervisor.channel_state,
@@ -1302,7 +1308,7 @@ impl SessionStatus {
     /// Validates subject, head, errors, and allowed-action mechanics.
     ///
     /// # Errors
-    /// Rejects inconsistent posture details, Pending outside startup, invalid
+    /// Rejects inconsistent posture or recovery details, Pending outside startup, invalid
     /// status fields, pending work with allowed actions, or invalid actions.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, SESSION_STATUS_SCHEMA)?;
@@ -1310,6 +1316,7 @@ impl SessionStatus {
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
         self.posture.validate()?;
+        self.recovery.validate()?;
         if self.posture.state == PostureSummary::Pending && self.state != SessionState::Starting {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
         }

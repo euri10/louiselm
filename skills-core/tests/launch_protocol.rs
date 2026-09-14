@@ -33,6 +33,15 @@ use louiselm_skills::{
 #[path = "launch_protocol/posture.rs"]
 mod posture;
 
+#[path = "launch_protocol/recovery_status.rs"]
+mod recovery_status;
+
+fn unavailable_recovery() -> launch_protocol::RecoveryReadiness {
+    launch_protocol::RecoveryReadiness::Unavailable {
+        reason: launch_protocol::RecoveryUnavailableReason::EvidenceMissing,
+    }
+}
+
 fn digest(value: &[u8]) -> String {
     Digest::of(value).to_string()
 }
@@ -800,6 +809,7 @@ fn terminal_audit_can_follow_a_mechanic_without_a_process_exit_classification() 
             let composed = SessionStatus::compose(
                 status.clone(),
                 status_posture(PostureSummary::Unverified),
+                unavailable_recovery(),
                 Vec::new(),
             )
             .unwrap();
@@ -830,6 +840,7 @@ fn process_exit_classification_is_terminal_only_and_composes_without_raw_status(
     let status = SessionStatus::compose(
         exited,
         status_posture(PostureSummary::Unverified),
+        unavailable_recovery(),
         Vec::new(),
     )
     .expect("the broker preserves the sanitized classification");
@@ -1253,6 +1264,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
     let status = SessionStatus::compose(
         pending_supervisor,
         status_posture(PostureSummary::FullyVerified),
+        unavailable_recovery(),
         Vec::new(),
     )
     .expect("broker status is consistent");
@@ -1266,7 +1278,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
                 &serde_json::to_string(&status.posture).unwrap(),
                 "\"fully_verified\""
             ),
-        r#"{"schema":"louiselm.launch.session-status/4","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
+        r#"{"schema":"louiselm.launch.session-status/5","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","recovery":{"state":"unavailable","reason":"evidence_missing"},"broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
     );
 
     let response = ProtocolResponse {
@@ -1307,6 +1319,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
     let ready = SessionStatus::compose(
         supervisor(SessionState::Running),
         status_posture(PostureSummary::FullyVerified),
+        unavailable_recovery(),
         vec![LifecycleAction::Disposal, LifecycleAction::Park],
     )
     .expect("broker status sorts the currently actionable subset");
@@ -1693,6 +1706,7 @@ fn identity_exhaustion_is_bounded_sorted_operator_evidence_and_redacted_from_sel
     let self_status = SessionStatus::compose(
         self_supervisor,
         status_posture(PostureSummary::FullyVerified),
+        unavailable_recovery(),
         vec![LifecycleAction::Park, LifecycleAction::Disposal],
     )
     .expect("redacted failure remains valid canonical self status");

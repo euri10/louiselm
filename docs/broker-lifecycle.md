@@ -267,9 +267,9 @@ it does not establish a vendor ACP recovery contract or desktop availability.
 ## Canonical status composition
 
 `BrokerService::session_status` reads authenticated mechanical state through the
-existing supervisor channel, then adds the two broker-owned fields the supervisor
-must not author: the detailed Verified posture and the lifecycle actions this
-caller may currently request.
+existing supervisor channel, then adds the broker-owned fields the supervisor
+must not author: detailed Verified posture, retained recovery readiness and the
+lifecycle actions this caller may currently request.
 
 `LifecycleCaller::allowed_actions` derives that action set from one predicate
 shared with `LifecycleCaller::permits`, so status cannot advertise a mutation the
@@ -282,7 +282,7 @@ still in flight withdraws all of them, because the status schema rejects a
 pending operation advertised alongside an executable action.
 
 `SessionStatus.posture` is the broker-derived, display-only `PostureStatus` in
-`louiselm.launch.session-status/4`. Status callers supply no posture verdict.
+`louiselm.launch.session-status/5`. Status callers supply no posture verdict.
 Each response includes all six dimensions in canonical order, with state,
 requirement, bounded evidence references, a typed failure and fixed next action,
 and freshness. The aggregate must agree with the dimensions; `Pending` is valid
@@ -327,6 +327,17 @@ and network integration are `louiselm-d6fv.6.11` and `.6.13`;
 conformance, waiver and quarantine owners retain their existing policies. This
 partial status path does not establish the installed Verified cutover in
 `louiselm-d6fv.9`.
+
+`SessionStatus.recovery` comes from the broker's durable `recovery_readiness`
+record, identically for operators and the scoped Agent. It reports `ready` with
+the immutable operation ID and original expiry, `expired`, `quarantined`, or
+`unavailable` with `evidence_missing` or `pending_durability`. Missing evidence
+includes unsupported Agent layouts and unavailable `loadSession`; advertised
+support alone creates no evidence. Pending registration or revalidation cannot
+reuse an earlier ready record. Malformed or foreign evidence fails the status
+read instead of becoming readiness. Reads grant nothing, renew no expiry, and
+do not change ordinary versus required-cold-recovery admission. The record has
+no storage paths, ACP identity, raw evidence or capture-service projection.
 
 `BrokerService::serve_agent_status` answers one read-only request from the Agent
 capability channel. It enforces self-scope against the Session's own

@@ -192,6 +192,10 @@ fn quarantine_invalidates_current_runtime_without_rewriting_admission() {
     let after = service
         .session_status(&mut session, &operator, 4000, verify_fixture_signature)
         .unwrap();
+    assert_eq!(
+        after.recovery,
+        louiselm_skills::launch_protocol::RecoveryReadiness::Quarantined {}
+    );
     peer.join().unwrap();
     for (old, current) in before
         .posture

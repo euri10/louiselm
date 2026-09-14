@@ -226,8 +226,9 @@ impl BrokerService {
     /// Composes canonical Session status for one authenticated caller.
     ///
     /// Mechanical facts come from the supervisor over the retained channel;
-    /// posture is derived from the Session's retained launch proof, and the
-    /// advertised actions are broker-owned. The action set is
+    /// posture is derived from the Session's retained launch proof, recovery
+    /// readiness from durable broker evidence, and advertised actions from policy.
+    /// The action set is
     /// narrowed to what `caller` could actually request, and a serialized
     /// operation still in flight withdraws all of them, so status never offers
     /// a mutation the next request would refuse.
@@ -238,7 +239,7 @@ impl BrokerService {
     ///
     /// # Errors
     /// Refuses malformed, foreign, stale-head or unavailable supervisor responses,
-    /// unreadable quarantine state, or a composition the status schema rejects.
+    /// unreadable quarantine/recovery state, or a composition the status schema rejects.
     pub fn session_status<F>(
         &self,
         session: &mut BrokerSession,
@@ -249,6 +250,7 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        let clock = std::time::Instant::now();
         let result = (|| {
             let status = self.supervisor_status(session, &mut verify)?;
             let quarantined = self
@@ -264,7 +266,12 @@ impl BrokerService {
             let posture = session
                 .posture_evidence
                 .status(&status, quarantined, now_ms)?;
-            Ok(SessionStatus::compose(status, posture, actions)?)
+            // The mechanical query may outlive the retained point's deadline.
+            let observed_at_ms = now_ms
+                .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+            let recovery =
+                self.recovery_readiness(&session.authorization.session_id, observed_at_ms)?;
+            Ok(SessionStatus::compose(status, posture, recovery, actions)?)
         })();
         if result.is_err() {
             session.close();

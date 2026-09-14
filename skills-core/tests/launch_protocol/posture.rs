@@ -47,10 +47,17 @@ fn detailed_status_requires_exactly_six_closed_dimensions() {
     let status = SessionStatus::compose(
         supervisor(SessionState::Running),
         status_posture(PostureSummary::Unverified),
+        unavailable_recovery(),
         vec![],
     )
     .unwrap();
     let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["recovery"],
+        serde_json::json!({
+            "state": "unavailable", "reason": "evidence_missing"
+        })
+    );
     assert_eq!(
         json["posture"]
             .as_object()
@@ -106,8 +113,16 @@ fn pending_only_describes_startup_and_waived_never_means_verified() {
     let mut starting = supervisor(SessionState::Starting);
     starting.launcher_head.as_mut().unwrap().sequence = 0;
     starting.broker_head.as_mut().unwrap().sequence = 0;
-    SessionStatus::compose(starting, pending.clone(), vec![]).unwrap();
-    assert!(SessionStatus::compose(supervisor(SessionState::Running), pending, vec![]).is_err());
+    SessionStatus::compose(starting, pending.clone(), unavailable_recovery(), vec![]).unwrap();
+    assert!(
+        SessionStatus::compose(
+            supervisor(SessionState::Running),
+            pending,
+            unavailable_recovery(),
+            vec![]
+        )
+        .is_err()
+    );
     let mut waived = status_posture(PostureSummary::Waived);
     waived.validate().unwrap();
     assert_eq!(waived.state, PostureSummary::Waived);

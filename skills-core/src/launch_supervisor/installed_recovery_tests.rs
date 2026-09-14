@@ -2,10 +2,10 @@
 
 use super::*;
 use crate::{
-    broker::{BrokerSession, lifecycle::LifecycleCaller, recovery::RecoveryReadiness},
+    broker::{BrokerSession, lifecycle::LifecycleCaller},
     launch_protocol::{
         LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest, RECOVERY_REQUEST_SCHEMA,
-        RecoveryRequest, RetentionRequest,
+        RecoveryReadiness, RecoveryRequest, RetentionRequest,
     },
     launch_receipt::SessionState,
 };

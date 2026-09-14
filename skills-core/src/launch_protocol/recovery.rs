@@ -15,6 +15,59 @@ pub const RETENTION_EVIDENCE_SCHEMA: &str = "louiselm.launch.recovery-retention/
 /// Version of a broker-authorized copy into a distinct frozen Session.
 pub const RECOVERY_RESTORE_SCHEMA: &str = "louiselm.launch.recovery-restore/1";
 
+/// Why the broker cannot currently offer a retained recovery point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryUnavailableReason {
+    /// No supported, supervisor-backed point has been registered.
+    EvidenceMissing,
+    /// Registration or revalidation has not durably completed.
+    PendingDurability,
+}
+
+/// Display-only broker readiness; parsing this value grants no recovery authority.
+/// A retained point may be lossy and a later load may fail.
+// Empty struct variants preserve serde's unknown-field rejection for every state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecoveryReadiness {
+    /// No usable supervisor-backed durable recovery point is available.
+    Unavailable {
+        /// Bounded reason, without raw storage or Agent metadata.
+        reason: RecoveryUnavailableReason,
+    },
+    /// Original retention expiry passed; retries never renew it.
+    Expired {},
+    /// Broker quarantine forbids using this evidence for admission.
+    Quarantined {},
+    /// Exact durable evidence is current for this authorized Session.
+    Ready {
+        /// Immutable retention operation identity.
+        operation_id: String,
+        /// Original exclusive expiry.
+        expires_at_ms: u64,
+    },
+}
+
+impl RecoveryReadiness {
+    /// Validates the bounded presentation shape, not the underlying evidence.
+    /// # Errors
+    /// Refuses malformed operation identifiers or a zero expiry.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if let Self::Ready {
+            operation_id,
+            expires_at_ms,
+        } = self
+        {
+            validate_identifier(operation_id)?;
+            if *expires_at_ms == 0 {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Exact protected recovery point and fresh target selected by the operator.
 /// Contains no caller-selected filesystem paths or transferred capabilities.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
