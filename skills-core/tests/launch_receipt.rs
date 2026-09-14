@@ -10,12 +10,13 @@ use std::sync::{Arc, Mutex};
 
 use louiselm_skills::{
     canonical::Digest,
+    conformance::admission::Condition,
     launch_protocol::MAX_BROKER_LOSS_GRACE_MS,
     launch_receipt::{
-        Authorization, ChainAnchor, Completion, LaunchEvidence, ProcessExitClassification,
-        RECEIPT_SCHEMA, ReceiptAppender, ReceiptAuthority, ReceiptCause, ReceiptError,
-        ReceiptOutcome, ReceiptPayload, ReceiptSigner, SIGNED_RECEIPT_SCHEMA, SessionState,
-        SignedReceipt, StartEvidence,
+        Authorization, ChainAnchor, Completion, ConformanceEvidence, LaunchEvidence,
+        ProcessExitClassification, RECEIPT_SCHEMA, ReceiptAppender, ReceiptAuthority, ReceiptCause,
+        ReceiptError, ReceiptOutcome, ReceiptPayload, ReceiptSigner, SIGNED_RECEIPT_SCHEMA,
+        SessionState, SignedReceipt, StartEvidence,
     },
 };
 
@@ -49,6 +50,7 @@ fn launch_authorization(request_id: &str) -> Authorization {
 
 fn launch_evidence() -> LaunchEvidence {
     LaunchEvidence {
+        conformance: ConformanceEvidence::Unevaluated,
         launch_request_digest: digest("launch-request"),
         runtime_measurement_digest: digest("runtime"),
         skill_generation_id: digest("generation"),
@@ -206,7 +208,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(payload_bytes.clone()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/4\",",
+                "{{\"schema\":\"louiselm.launch.receipt/5\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-0\",\"envelope_revision\":3,",
                 "\"sequence\":0,\"previous_receipt_digest\":null,",
@@ -214,6 +216,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"outcome\":{{\"action\":\"launch\",\"authorization\":{{",
                 "\"authorization_id\":\"authorization-1\",\"request_id\":\"request-0\",",
                 "\"request_digest\":\"{}\"}},\"evidence\":{{",
+                "\"conformance\":{{\"status\":\"unevaluated\"}},",
                 "\"launch_request_digest\":\"{}\",",
                 "\"runtime_measurement_digest\":\"{}\",",
                 "\"skill_generation_id\":\"{}\",",
@@ -239,7 +242,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
     assert_eq!(
         String::from_utf8(envelope_bytes.clone()).unwrap(),
         format!(
-            "{{\"schema\":\"louiselm.launch.signed-receipt/4\",\"payload\":{},\"signature\":\"{}\"}}",
+            "{{\"schema\":\"louiselm.launch.signed-receipt/5\",\"payload\":{},\"signature\":\"{}\"}}",
             String::from_utf8(payload_bytes.clone()).unwrap(),
             receipt.signature,
         ),
@@ -258,7 +261,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
         String::from_utf8(start.payload.canonical_bytes()).unwrap(),
         format!(
             concat!(
-                "{{\"schema\":\"louiselm.launch.receipt/4\",",
+                "{{\"schema\":\"louiselm.launch.receipt/5\",",
                 "\"session_id\":\"session-1\",\"run_id\":\"run-1\",",
                 "\"request_id\":\"request-start\",\"envelope_revision\":3,",
                 "\"sequence\":1,\"previous_receipt_digest\":\"{}\",",
@@ -316,7 +319,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
 
 #[test]
 fn launch_evidence_binds_the_exact_broker_loss_grace() {
-    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/4");
+    assert_eq!(RECEIPT_SCHEMA, "louiselm.launch.receipt/5");
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
 
     let maximum = chain().remove(0).payload;
@@ -929,4 +932,97 @@ fn signing_and_persistence_ports_can_complete_after_the_call_returns() {
     );
     appender.complete();
     assert!(*append_observed.lock().unwrap());
+}
+
+fn launch_payload(evidence: LaunchEvidence) -> ReceiptPayload {
+    payload(
+        0,
+        None,
+        1,
+        "request-1",
+        ReceiptOutcome::Launch {
+            authorization: launch_authorization("request-1"),
+            evidence: Box::new(evidence),
+        },
+        SessionState::Starting,
+    )
+}
+
+#[test]
+fn a_certified_launch_round_trips_the_exact_report_digest() {
+    let mut evidence = launch_evidence();
+    evidence.conformance = ConformanceEvidence::Certified {
+        report_digest: digest("observations"),
+    };
+    let payload = launch_payload(evidence.clone());
+    payload.validate().unwrap();
+
+    let parsed = ReceiptPayload::parse_canonical(&payload.canonical_bytes()).unwrap();
+
+    match parsed.outcome {
+        ReceiptOutcome::Launch {
+            evidence: parsed, ..
+        } => assert_eq!(*parsed, evidence, "a receipt must read back what it wrote"),
+        other => panic!("expected a launch outcome, observed {other:?}"),
+    }
+}
+
+#[test]
+fn a_waived_launch_records_the_condition_and_the_bypassed_evidence() {
+    let mut evidence = launch_evidence();
+    evidence.conformance = ConformanceEvidence::Waived {
+        condition: Condition::Stale,
+        report_digest: Some(digest("bypassed")),
+    };
+    let payload = launch_payload(evidence.clone());
+    payload.validate().unwrap();
+
+    let parsed = ReceiptPayload::parse_canonical(&payload.canonical_bytes()).unwrap();
+
+    match parsed.outcome {
+        ReceiptOutcome::Launch {
+            evidence: parsed, ..
+        } => assert_eq!(
+            *parsed, evidence,
+            "an auditor must reach the waived condition"
+        ),
+        other => panic!("expected a launch outcome, observed {other:?}"),
+    }
+}
+
+#[test]
+fn a_malformed_certified_report_digest_is_refused() {
+    let mut evidence = launch_evidence();
+    evidence.conformance = ConformanceEvidence::Certified {
+        report_digest: "not-a-digest".to_owned(),
+    };
+
+    assert!(
+        matches!(
+            launch_payload(evidence).validate(),
+            Err(ReceiptError::InvalidDigest {
+                field: "conformance_report_digest"
+            })
+        ),
+        "an unusable report digest cannot ride into a signed receipt"
+    );
+}
+
+#[test]
+fn a_waiver_cannot_launder_a_malformed_digest_into_the_chain() {
+    let mut evidence = launch_evidence();
+    evidence.conformance = ConformanceEvidence::Waived {
+        condition: Condition::Missing,
+        report_digest: Some("not-a-digest".to_owned()),
+    };
+
+    assert!(
+        matches!(
+            launch_payload(evidence).validate(),
+            Err(ReceiptError::InvalidDigest {
+                field: "conformance_report_digest"
+            })
+        ),
+        "a waiver records what was bypassed, it does not excuse unusable bytes"
+    );
 }

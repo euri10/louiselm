@@ -8,7 +8,7 @@ use crate::{
         RECOVERY_REQUEST_SCHEMA, RETENTION_EVIDENCE_SCHEMA, RecoveryRequest, ResponseResult,
         RetentionEvidence, RetentionRequest,
     },
-    launch_receipt::{Authorization, LaunchEvidence, ReceiptHead},
+    launch_receipt::{Authorization, ConformanceEvidence, LaunchEvidence, ReceiptHead},
 };
 
 fn parked() -> (Harness, RecoveryRequest) {
@@ -37,6 +37,9 @@ fn parked() -> (Harness, RecoveryRequest) {
             request_digest: launch.digest().to_string(),
         },
         evidence: Box::new(LaunchEvidence {
+            conformance: ConformanceEvidence::Certified {
+                report_digest: crate::Digest::of(b"observations").to_string(),
+            },
             launch_request_digest: launch.digest().to_string(),
             runtime_measurement_digest: Digest::of(b"runtime").to_string(),
             skill_generation_id: launch.skill_generation_id.clone(),

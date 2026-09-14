@@ -15,8 +15,8 @@ use louiselm_skills::{
     },
     launch::{LaunchRequest, PROTOCOL_VERSION, REQUEST_SCHEMA},
     launch_receipt::{
-        Authorization, ChainAnchor, LaunchEvidence, RECEIPT_SCHEMA, ReceiptOutcome, ReceiptPayload,
-        SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
+        Authorization, ChainAnchor, ConformanceEvidence, LaunchEvidence, RECEIPT_SCHEMA,
+        ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
     },
     registry::{AgentRegistration, MeasuredFile, Provider, RuntimePackage},
     session_manifest::{MeasuredInput, SessionInputManifest, SessionInputs},
@@ -276,6 +276,7 @@ fn signed_record(
                 request_digest: request.digest().to_string(),
             },
             evidence: Box::new(LaunchEvidence {
+                conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: request.digest().to_string(),
                 runtime_measurement_digest: digest(&serde_json::to_vec(&manifest.runtime).unwrap()),
                 skill_generation_id: request.skill_generation_id.clone(),

@@ -1,11 +1,17 @@
 //! Pure conformance admission policy.
 //!
 //! Deciding is separate from reading protected storage: the caller supplies an
-//! authenticated [`CertificateStatus`] and freshly measured [`HostSnapshot`],
-//! and this module answers only whether that evidence admits a Verified launch.
+//! authenticated `CertificateStatus` and freshly measured `HostSnapshot`, and
+//! this module answers only whether that evidence admits a Verified launch.
 //! Current passing evidence is eligibility, never a substitute for the other
 //! Verified dimensions.
+//!
+//! The decision vocabulary is platform-independent so receipts can record it;
+//! only the evaluation reads installed-host evidence.
 
+use serde::{Deserialize, Serialize};
+
+#[cfg(target_os = "linux")]
 use super::installed::{CertificateStatus, HostSnapshot};
 
 /// Whether an operator is present to authorize an explicit waiver.
@@ -18,7 +24,8 @@ pub enum Attendance {
 }
 
 /// The exact condition that stops current evidence from admitting a launch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Condition {
     /// No retained certificate matches the freshly measured host inputs.
     Missing,
@@ -86,6 +93,7 @@ pub enum Admission {
 /// A waiver applies only when its own Session presents it, an operator is
 /// present, and it names this exact condition; it degrades that one condition
 /// and leaves isolation unverified for presentation to report.
+#[cfg(target_os = "linux")]
 #[must_use]
 pub fn evaluate(
     status: &CertificateStatus,
@@ -132,6 +140,6 @@ pub fn evaluate(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "admission_tests.rs"]
 mod tests;

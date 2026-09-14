@@ -11,13 +11,16 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{canonical::Digest, isolation::CONTRACT_VERSION, launch::MAX_BROKER_LOSS_GRACE_MS};
+use crate::{
+    canonical::Digest, conformance::admission::Condition, isolation::CONTRACT_VERSION,
+    launch::MAX_BROKER_LOSS_GRACE_MS,
+};
 
 /// SSHSIG namespace and schema for the bytes a Launch supervisor signs.
-pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/4";
+pub const RECEIPT_SCHEMA: &str = "louiselm.launch.receipt/5";
 
 /// Schema for the payload plus its launcher signature.
-pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/4";
+pub const SIGNED_RECEIPT_SCHEMA: &str = "louiselm.launch.signed-receipt/5";
 
 /// Largest canonical payload or signed envelope accepted at the trust boundary.
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
@@ -99,10 +102,43 @@ pub enum ReceiptAuthority {
     },
 }
 
+/// Host conformance evidence this launch was actually admitted under.
+///
+/// Only admitting decisions reach a receipt: a refusal produces no launch.
+/// A waived launch records the waiver and the evidence it rode past, so an
+/// auditor can tell a certified Session from a waived one without inferring it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConformanceEvidence {
+    /// Current passing host evidence admitted this launch.
+    Certified {
+        /// Digest of the exact observation report admission relied on.
+        report_digest: String,
+    },
+    /// An operator waived one condition; isolation stays unverified.
+    Waived {
+        /// The exact condition approved for this Session.
+        condition: Condition,
+        /// Digest of the evidence the waiver rode past, where any exists.
+        report_digest: Option<String>,
+    },
+    /// Admission consulted no host evidence, so this launch claims nothing.
+    ///
+    /// The pre-cutover state: the gate of `louiselm-d6fv.9` is not in force, and
+    /// a receipt that said anything else would assert a property never checked.
+    /// Presentation must report the conformance dimension unverified for these
+    /// Sessions, which is what makes the state visible rather than comfortable.
+    Unevaluated,
+}
+
 /// Exact launch inputs and measured evidence established by sequence zero.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchEvidence {
+    /// Host conformance evidence admission relied on. Nested under its own
+    /// name: `deny_unknown_fields` and `flatten` cannot be combined, because
+    /// flattening deserializes through a map the deny rejects.
+    pub conformance: ConformanceEvidence,
     /// Digest of the closed [`crate::launch::LaunchRequest`].
     pub launch_request_digest: String,
     /// Digest of the runtime measurement used for this launch.
@@ -754,6 +790,22 @@ fn validate_authorization(
 }
 
 fn validate_launch_evidence(evidence: &LaunchEvidence) -> Result<(), ReceiptError> {
+    match &evidence.conformance {
+        ConformanceEvidence::Certified { report_digest } => {
+            validate_digest("conformance_report_digest", report_digest)?;
+        }
+        ConformanceEvidence::Waived {
+            report_digest: Some(report_digest),
+            ..
+        } => validate_digest("conformance_report_digest", report_digest)?,
+        // A waiver over absent evidence and an unevaluated launch both carry no
+        // digest: there is nothing to bind, and inventing one would be a claim.
+        ConformanceEvidence::Waived {
+            report_digest: None,
+            ..
+        }
+        | ConformanceEvidence::Unevaluated => (),
+    }
     for (field, value) in [
         ("launch_request_digest", &evidence.launch_request_digest),
         (

@@ -33,8 +33,9 @@ use louiselm_skills::{
         STATUS_REQUEST_SCHEMA, StatusRequest,
     },
     launch_receipt::{
-        Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptCause,
-        ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
+        Authorization, ConformanceEvidence, LaunchEvidence, RECEIPT_SCHEMA, ReceiptAuthority,
+        ReceiptCause, ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState,
+        SignedReceipt,
     },
     launch_transport::{
         CredentialPin, LauncherPacket, SeqpacketChannel, SeqpacketConnector, TransportCompletion,
@@ -511,6 +512,7 @@ fn launch_receipt(authorization: &LaunchAuthorization) -> SignedReceipt {
                 request_digest: authorization.request_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: authorization.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
                 skill_generation_id: Digest::of(b"generation").to_string(),

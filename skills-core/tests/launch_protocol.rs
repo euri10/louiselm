@@ -24,9 +24,9 @@ use louiselm_skills::{
         StatusRequest, SupervisorStatus,
     },
     launch_receipt::{
-        Authorization, LaunchEvidence, ProcessExitClassification, RECEIPT_SCHEMA, ReceiptAuthority,
-        ReceiptHead, ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState,
-        SignedReceipt,
+        Authorization, ConformanceEvidence, LaunchEvidence, ProcessExitClassification,
+        RECEIPT_SCHEMA, ReceiptAuthority, ReceiptHead, ReceiptOutcome, ReceiptPayload,
+        SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
     },
 };
 
@@ -1561,6 +1561,7 @@ fn responses_enforce_request_correlation_and_the_encoded_size_limit() {
                 request_digest: launch_request_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest,
                 runtime_measurement_digest: digest(b"runtime"),
                 skill_generation_id: digest(b"generation"),

@@ -26,8 +26,8 @@ use louiselm_skills::{
         StatusRequest,
     },
     launch_receipt::{
-        Authorization, LaunchEvidence, RECEIPT_SCHEMA, ReceiptError, ReceiptOutcome,
-        ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
+        Authorization, ConformanceEvidence, LaunchEvidence, RECEIPT_SCHEMA, ReceiptError,
+        ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
     },
     launch_transport::{
         AuthenticatedPacket, CredentialPin, KernelCredentials, LauncherPacket, MAX_PACKET_BYTES,
@@ -114,6 +114,7 @@ fn signed_receipt() -> SignedReceipt {
                 request_digest: launch_digest.clone(),
             },
             evidence: Box::new(LaunchEvidence {
+                conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: launch_digest,
                 runtime_measurement_digest: digest("runtime"),
                 skill_generation_id: digest("generation"),

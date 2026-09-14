@@ -51,8 +51,8 @@ use louiselm_skills::{
         STATUS_REQUEST_SCHEMA, StatusRequest, SupervisorStatus,
     },
     launch_receipt::{
-        ChainAnchor, ProcessExitClassification, ReceiptAuthority, ReceiptCause, ReceiptHead,
-        ReceiptOutcome, SessionState, SignedReceipt, verify_chain,
+        ChainAnchor, ConformanceEvidence, ProcessExitClassification, ReceiptAuthority,
+        ReceiptCause, ReceiptHead, ReceiptOutcome, SessionState, SignedReceipt, verify_chain,
     },
     launch_supervisor::{
         AgentAuthentication, CapabilityBinding, CapabilityGate, IdentityGuard, LaunchBroker,
@@ -2939,6 +2939,14 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
     assert_eq!(
         authorization.request_digest,
         setup.request.digest().to_string()
+    );
+    // The louiselm-d6fv.9 gate is not in force, so a real launch must claim no
+    // host conformance. Upgrading this without wiring admission would assert a
+    // property nothing checked; presentation reports it unverified meanwhile.
+    assert_eq!(
+        evidence.conformance,
+        ConformanceEvidence::Unevaluated,
+        "a pre-cutover launch records no conformance claim"
     );
     assert_eq!(
         evidence.launch_request_digest,

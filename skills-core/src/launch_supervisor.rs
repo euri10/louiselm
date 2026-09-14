@@ -36,9 +36,9 @@ use crate::{
         ReceiptAcknowledgement, ReceiptDisposition,
     },
     launch_receipt::{
-        Authorization, LaunchEvidence, ProcessExitClassification, RECEIPT_SCHEMA, ReceiptAuthority,
-        ReceiptCause, ReceiptHead, ReceiptOutcome, ReceiptPayload, SIGNED_RECEIPT_SCHEMA,
-        SessionState, SignedReceipt,
+        Authorization, ConformanceEvidence, LaunchEvidence, ProcessExitClassification,
+        RECEIPT_SCHEMA, ReceiptAuthority, ReceiptCause, ReceiptHead, ReceiptOutcome,
+        ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
     },
     launch_transport::{KernelCredentials, KernelProcess},
     launcher_install::Identity,
@@ -1161,6 +1161,10 @@ fn launch_evidence(
         return Err(SupervisorError::ReceiptInvalid);
     }
     let evidence = LaunchEvidence {
+        // The admission gate is not in force before the louiselm-d6fv.9 cutover,
+        // so this launch consulted no host evidence and claims none. Any other
+        // value here would assert a property nothing checked.
+        conformance: ConformanceEvidence::Unevaluated,
         launch_request_digest: request.digest().to_string(),
         runtime_measurement_digest: Digest::of(&runtime_bytes).to_string(),
         skill_generation_id: request.skill_generation_id.clone(),

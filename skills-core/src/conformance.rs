@@ -11,7 +11,6 @@ use thiserror::Error;
 
 use crate::Digest;
 
-#[cfg(target_os = "linux")]
 pub mod admission;
 #[cfg(target_os = "linux")]
 pub mod installed;
