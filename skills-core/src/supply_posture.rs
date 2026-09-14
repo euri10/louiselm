@@ -3,6 +3,9 @@
 //! Status is a checked snapshot, not a lifetime lease or permission to launch.
 //! The installed launcher still owns enforcement and the isolation/network inputs.
 
+mod retained;
+pub use retained::SupplyEvidence;
+
 use crate::{
     Digest, Policy, Store,
     discovery::{AuthenticatedInputs, DiscoveryProof},

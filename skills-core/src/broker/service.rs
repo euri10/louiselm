@@ -58,7 +58,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// or process cleanup has completed. Listener lifetime is independent.
 #[must_use = "Dropping the Session owner closes its supervisor connection."]
 pub struct BrokerSession {
-    pub(in crate::broker) posture_evidence: super::posture::RuntimePostureEvidence,
+    pub(in crate::broker) posture_evidence: super::posture::LaunchPostureEvidence,
     require_cold_recovery: bool,
     pub(in crate::broker) recovery_admitted_until: Option<Instant>,
     authorization: LaunchAuthorization,

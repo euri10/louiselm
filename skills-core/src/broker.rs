@@ -66,6 +66,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// A supply producer returned an observation outside its permitted ordering.
+    #[error("broker supply posture: {0}")]
+    SupplyPosture(&'static str),
     /// Retained trusted evidence could not form a consistent posture.
     #[error("broker posture evidence is invalid")]
     Posture(#[from] crate::posture::PostureError),

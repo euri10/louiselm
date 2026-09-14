@@ -321,7 +321,35 @@ release and signing key. The existing receipt store retains original admission
 history. The broker loads a private runtime-evidence record at launch or
 authenticated reattachment, using the original successful launch-proof audit
 time. A missing audit observation has no fabricated success timestamp and
-leaves runtime unverified. Other producers remain explicitly missing.
+leaves runtime unverified. Isolation and network still need their own producers.
+
+Supply producers construct non-deserializable `SupplyEvidence` from the exact
+authenticated Session inputs and matching `DiscoveryProof`, using the existing
+supply validators and protected store, policy and registry. This blocking work
+belongs on the producer worker. It verifies the managed Generation/view and
+policy, the admitted Agent/runtime registration, native controls and the fixed
+Provider disclosure independently; it supplies no new runtime verdict.
+`InstalledBroker::retain_supply_posture` accepts these bounded facts only for
+the worker's authorized request and exact sequence-zero receipt. Foreign,
+future, duplicate-time and out-of-order results cannot replace retained facts.
+Missing inputs or proof leave the relevant dimensions unverified.
+
+Only references, typed outcomes and observation times enter retained posture;
+raw manifests, Provider configuration and instruction contents do not. A later
+failed check keeps that dimension's last successful reference/time while
+reporting its current failure. Supply and disclosure describe frozen admission
+inputs; ordinary updates for future Sessions do not reselect this Session's
+Generation or rewrite its signed receipt. Native controls additionally require
+the original live confinement and connected broker. Quarantine or a clock before
+the observation invalidates the retained proof. These facts have no invented
+periodic timeout, and status reads never rematerialize or remeasure them.
+
+Supply facts currently belong to the connected broker Session owner. After
+restart they remain explicitly missing until the trusted producer supplies
+evidence for the exact original admission again; current preflight selection
+cannot stand in for it. This component does not create a vendor observation
+source: installed source wiring and actual adapter discovery controls remain
+part of `louiselm-d6fv.9`. In their absence, status stays truthfully partial.
 
 Runtime freshness has a `launch` basis: it describes the checked launch proof
 for the original supervised Agent lifetime, not a new executable measurement or
@@ -347,8 +375,8 @@ unreadable or corrupt proof refuses reattachment. Conformance deadlines,
 waivers and quarantine continue to belong to their source-specific producers;
 missing producers remain explicitly unverified, with no synthetic expiry.
 
-The maintainer-confirmed design is `louiselm-rn38`. Further supply/disclosure
-and network integration are `louiselm-d6fv.6.11` and `.6.13`;
+The maintainer-confirmed design is `louiselm-rn38`. Supply/disclosure producer
+integration is `louiselm-d6fv.6.11`; network integration remains `.6.13`;
 conformance, waiver and quarantine owners retain their existing policies. This
 partial status path does not establish the installed Verified cutover in
 `louiselm-d6fv.9`.

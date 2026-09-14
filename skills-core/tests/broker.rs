@@ -46,6 +46,14 @@ use louiselm_skills::{
 use rustix::process::{getgid, getuid};
 use tempfile::TempDir;
 
+#[path = "support/discovery.rs"]
+mod discovery_support;
+#[path = "broker/supply_posture.rs"]
+mod supply_posture;
+#[path = "support/supply.rs"]
+mod supply_support;
+mod support;
+
 #[path = "broker/launch_gates.rs"]
 mod launch_gates;
 

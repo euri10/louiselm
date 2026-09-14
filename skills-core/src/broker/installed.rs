@@ -31,6 +31,21 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Retains exact launch-bound supply facts produced on the trusted I/O worker.
+    /// This updates status evidence only; it does not grant Session authority.
+    /// Missing vendor discovery integrations must supply no native proof.
+    ///
+    /// # Errors
+    /// Refuses foreign launch evidence, stale/future observations or unreadable state.
+    pub fn retain_supply_posture(
+        &self,
+        session: &mut BrokerSession,
+        evidence: crate::supply_posture::SupplyEvidence,
+    ) -> Result<(), BrokerError> {
+        self.service
+            .retain_supply_posture(session, evidence, now_ms()?)
+    }
+
     /// Reattaches an existing supervisor without reconstructing command authority.
     /// Run on the broker I/O worker; verifies the stored prefix and every appended
     /// suffix using the installed signer. Reattachment never Resumes a Park.

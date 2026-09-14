@@ -1,4 +1,4 @@
-//! Runtime posture from the broker's authenticated, durable launch history.
+//! Posture from authenticated launch history and retained supply producers.
 
 use super::{BrokerError, BrokerService};
 use crate::{
@@ -10,21 +10,60 @@ use crate::{
     posture::{DimensionInput, DimensionName, EvidenceKind, EvidenceRef, FailureCode, Posture},
 };
 
+#[path = "supply_posture.rs"]
+mod supply;
+
 /// Private validated facts, never constructed from a status response.
 /// Original signed admission bytes remain in `ReceiptStore` and are not rewritten.
-pub(super) struct RuntimePostureEvidence {
+pub(super) struct LaunchPostureEvidence {
     measurement: EvidenceRef,
     release: EvidenceRef,
     checked_at_ms: Option<u64>,
+    launch_receipt_id: String,
+    supply: Option<supply::RetainedSupply>,
 }
 
 impl BrokerService {
+    /// Retains producer facts for the admitted Session without changing authority.
+    ///
+    /// Call on the owning broker worker after producer I/O completes.
+    /// # Errors
+    /// Refuses foreign launch evidence and stale or future observations.
+    pub fn retain_supply_posture(
+        &self,
+        session: &mut super::BrokerSession,
+        evidence: crate::supply_posture::SupplyEvidence,
+        now_ms: u64,
+    ) -> Result<(), BrokerError> {
+        self.inspect_active(session)?;
+        if evidence.request_digest != session.authorization().request_digest
+            || evidence
+                .receipt_id
+                .as_ref()
+                .is_some_and(|id| *id != session.posture_evidence.launch_receipt_id)
+        {
+            return Err(BrokerError::ReceiptUnauthorized);
+        }
+        let retained = &mut session.posture_evidence;
+        if evidence.checked_at_ms > now_ms
+            || retained
+                .supply
+                .as_ref()
+                .is_some_and(|old| evidence.checked_at_ms <= old.checked_at_ms)
+        {
+            return Err(BrokerError::SupplyPosture("stale_or_future_observation"));
+        }
+        let previous = retained.supply.take();
+        retained.supply = Some(supply::RetainedSupply::new(evidence, previous));
+        Ok(())
+    }
+
     /// Restores facts only at authenticated launch/reattachment, never during a read.
     pub(super) fn retain_launch_posture<F>(
         &self,
         authorization: &LaunchAuthorization,
         verify: &mut F,
-    ) -> Result<RuntimePostureEvidence, BrokerError>
+    ) -> Result<LaunchPostureEvidence, BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -41,7 +80,9 @@ impl BrokerService {
             return Err(BrokerError::ReceiptUnauthorized);
         }
         let checked_at_ms = self.start_receipt_stored_at(authorization)?;
-        Ok(RuntimePostureEvidence {
+        Ok(LaunchPostureEvidence {
+            launch_receipt_id: launch.digest().to_string(),
+            supply: None,
             measurement: EvidenceRef::new(
                 EvidenceKind::RuntimeMeasurement,
                 &evidence.runtime_measurement_digest,
@@ -52,7 +93,7 @@ impl BrokerService {
     }
 }
 
-impl RuntimePostureEvidence {
+impl LaunchPostureEvidence {
     /// Pure projection of retained proof and already-read mechanical facts.
     pub(super) fn status(
         &self,
@@ -67,6 +108,14 @@ impl RuntimePostureEvidence {
         let mut freshness = [missing; 6];
         let mut inputs = Vec::with_capacity(6);
         for (index, dimension) in DimensionName::ALL.into_iter().enumerate() {
+            if let Some(supply) = &self.supply
+                && let Some((input, validity)) =
+                    supply.dimension(dimension, supervisor, quarantined, now_ms)
+            {
+                inputs.push(input);
+                freshness[index] = validity;
+                continue;
+            }
             if dimension != DimensionName::Runtime || self.checked_at_ms.is_none() {
                 inputs.push(DimensionInput::failed(
                     dimension,
