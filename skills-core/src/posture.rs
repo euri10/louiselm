@@ -98,6 +98,7 @@ impl DimensionName {
         if matches!(
             code,
             FailureCode::EvidenceMissing
+                | FailureCode::EvidenceInvalidated
                 | FailureCode::AuditPersistenceUnavailable
                 | FailureCode::UnknownFailure
         ) {
@@ -250,6 +251,8 @@ pub enum FailureCode {
     ProviderDisclosureMissing,
     /// Required trusted evidence is absent.
     EvidenceMissing,
+    /// Retained proof no longer establishes the current dimension.
+    EvidenceInvalidated,
     /// A failure has no recognized typed diagnosis.
     UnknownFailure,
 }
@@ -269,6 +272,7 @@ impl FailureCode {
             Self::AuditPersistenceUnavailable => "audit_persistence_unavailable",
             Self::ProviderDisclosureMissing => "provider_disclosure_missing",
             Self::EvidenceMissing => "evidence_missing",
+            Self::EvidenceInvalidated => "evidence_invalidated",
             Self::UnknownFailure => "unknown_failure",
         }
     }
@@ -663,6 +667,10 @@ pub(crate) fn next_action(failure: Option<FailureCode>) -> NextAction {
         Some(FailureCode::EvidenceMissing) => (
             "collect_trusted_evidence",
             "Collect trusted evidence for this dimension before launch.",
+        ),
+        Some(FailureCode::EvidenceInvalidated) => (
+            "restore_trusted_evidence",
+            "Resolve the source invalidation through its trusted owner; reading status cannot renew evidence or authorize Resume.",
         ),
         Some(FailureCode::UnknownFailure) => (
             "inspect_unknown_failure",

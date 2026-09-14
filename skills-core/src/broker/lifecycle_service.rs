@@ -9,7 +9,7 @@ use crate::{
         ResponseResult, STATUS_REQUEST_SCHEMA, SessionStatus, StatusRequest, SupervisorStatus,
         evaluate_request,
     },
-    launch_receipt::SignedReceipt,
+    launch_receipt::{SessionState, SignedReceipt},
     launch_transport::{AuthenticatedPacket, LauncherPacket},
 };
 
@@ -307,6 +307,14 @@ impl BrokerService {
                     || status.run_id != request.run_id
                     || status.envelope_revision != session.authorization.envelope_revision
                     || status.broker_head != self.receipts.head(&request.session_id)?
+                {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                // A newer mechanical observation may precede its receipt, but
+                // terminal signed history can never become a live Session again.
+                // Reconnection and a matching head do not authorize replacement.
+                if self.receipts.state(&request.session_id)? == Some(SessionState::Terminal)
+                    && status.state != SessionState::Terminal
                 {
                     return Err(BrokerError::InvalidGrant);
                 }

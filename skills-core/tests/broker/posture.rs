@@ -3,6 +3,9 @@
 use super::*;
 use louiselm_skills::broker::lifecycle::LifecycleCaller;
 
+#[path = "posture_lifetime.rs"]
+mod lifetime;
+
 #[test]
 fn launch_posture_is_not_limited_by_the_operator_audit_view() {
     let root = TempDir::new().unwrap();
@@ -200,6 +203,10 @@ fn quarantine_invalidates_current_runtime_without_rewriting_admission() {
             assert_eq!(old.state, DimensionState::Verified);
             assert_eq!(current.state, DimensionState::Failed);
             assert_eq!(current.freshness.basis, FreshnessBasis::Invalidated);
+            assert_eq!(
+                serde_json::to_value(current.failure_code).unwrap(),
+                "evidence_invalidated"
+            );
             assert_eq!(
                 old.freshness.last_verified_at_ms,
                 current.freshness.last_verified_at_ms

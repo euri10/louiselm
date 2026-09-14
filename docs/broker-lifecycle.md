@@ -302,13 +302,28 @@ Runtime freshness has a `launch` basis: it describes the checked launch proof
 for the original supervised Agent lifetime, not a new executable measurement or
 continuous conformance assertion. Current terminal/disconnected/quarantined
 state, or a clock preceding the recorded check, cannot keep that proof verified;
-the original check time and evidence remain inspectable as `invalidated`.
+the original check time and evidence remain inspectable as `invalidated`, with
+the typed reason `evidence_invalidated` rather than `evidence_missing`.
+The canonical status boundary rejects a live-state claim against a terminal
+durable receipt even when its head digest matches. Mechanical progress may
+precede a new receipt; terminal history can never be undone by a status reply.
 Reading status and restarting the broker do not refresh the proof time. The
 status path still reads authenticated mechanical state but runs no evidence
 probes, writes no posture decisions, resets no budget and grants no capability.
 
-The maintainer-confirmed design is `louiselm-rn38`. Further supply/disclosure,
-source validity and network integration are `louiselm-d6fv.6.11` through `.6.13`;
+Launch permission expiry limits initial consumption, not the lifetime of an
+already measured runtime. Broker-loss grace remains the supervisor's signed
+interval: status consumes its connection state and ordered receipts without
+starting a timer. Reattachment before grace expiry may restore the same
+launch-backed runtime proof; after signed Park it preserves Park until an
+authorized Resume. Neither path restores command grants or recovery admission.
+Restart revalidates the exact signed chain and original audit timestamp;
+unreadable or corrupt proof refuses reattachment. Conformance deadlines,
+waivers and quarantine continue to belong to their source-specific producers;
+missing producers remain explicitly unverified, with no synthetic expiry.
+
+The maintainer-confirmed design is `louiselm-rn38`. Further supply/disclosure
+and network integration are `louiselm-d6fv.6.11` and `.6.13`;
 conformance, waiver and quarantine owners retain their existing policies. This
 partial status path does not establish the installed Verified cutover in
 `louiselm-d6fv.9`.

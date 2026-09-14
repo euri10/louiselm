@@ -88,7 +88,7 @@ impl RuntimePostureEvidence {
             inputs.push(if current {
                 DimensionInput::verified(dimension, evidence)
             } else {
-                DimensionInput::failed(dimension, FailureCode::EvidenceMissing, evidence)
+                DimensionInput::failed(dimension, FailureCode::EvidenceInvalidated, evidence)
             });
             freshness[index] = EvidenceFreshness {
                 basis: if current {
