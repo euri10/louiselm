@@ -26,11 +26,17 @@ response, because nothing correlates one to an unrecognised packet.
 the tests drive; all three share the same post-accept transactions.
 
 `louiselm-control serve` runs the installed broker under its dedicated non-root
-UID/GID, with no supplementary groups, using `/var/lib/louiselm/broker` as its
+UID/GID, with no additional group authority, using `/var/lib/louiselm/broker` as its
 machine-lifetime state. It accepts exactly that verb and no caller-selected
 paths. The executable must belong to the configured trusted release. Startup
 checks the installed authority, private directories and durable identity marker
-before opening the broker stores.
+before opening the broker stores. The supplementary list may repeat the primary
+GID, as systemd initializes it; any other GID is refused.
+
+One Control broker serves exactly one operator identity, enforced by
+`InstalledBroker::authorize` and `LifecycleCaller::Operator`. Multiple operators
+would require separate broker instances, identities, sockets and state; a
+partitioned multi-operator broker is not supported.
 
 The daemon separates `accept_connection` from `serve_accepted`: each accepted
 supervisor gets its own handshake and continuing `step` worker. A silent or
@@ -43,10 +49,10 @@ all Session descriptors promptly, including workers blocked in handshake or
 storage I/O. There is no drain, worker join or synthetic acknowledgement on stop.
 Only the existing durable-before-ACK receipt path can acknowledge an outcome;
 the supervisor observes Broker loss and reattaches through the same retained
-manager listener after restart. Installation of the socket/service units remains
-`louiselm-96pv.5`; this command does not provision them, provide client verbs or
-authorize new work. Its independent Attention worker delivers queued projections
-without waiting for a Session connection.
+manager listener after restart. The system units below provision the listener;
+this command does not provide client verbs or authorize new work. Its independent
+Attention worker delivers queued projections without waiting for a Session
+connection.
 
 `SeqpacketListener::adopt` accepts an owned, listening Unix `SOCK_SEQPACKET`
 descriptor. `inherited_descriptor` validates that `LISTEN_PID` names this
@@ -85,8 +91,57 @@ identity/directory/marker refusals. Attention coverage includes absent endpoint
 configuration, receiver outage during launches, pre-start and running enqueue,
 wrong-ACK retry, and interrupted delivery retried after restart without a new
 Session connection. It requires `LOUISELM_REQUIRE_CONTROL_DAEMON=1`
-and `unshare --mount --propagation private`; ordinary Cargo skips it. Production
-provisioning remains `louiselm-96pv.5`.
+and `unshare --mount --propagation private`; ordinary Cargo skips it.
+
+## System service installation
+
+`skills-core/contrib/systemd/louiselm-broker.socket` and
+`louiselm-broker.service` are **system** units. They require a trusted installed
+release containing `louiselm-control` and an existing, dedicated non-login
+`louiselm-broker` account/group whose UID/GID match the installed launcher
+configuration. It must not be the operator, capture-service, or a Session
+identity, and must have no additional groups. Do not use a dynamic account:
+broker state binds the machine-lifetime UID/GID. For an installation using a
+different account name, override `User=`/`Group=` in both units and
+`SocketUser=`/`SocketGroup=` in the socket unit to that same installed identity.
+
+From the repository root, after installing that release and identity:
+
+```sh
+sudo install -m 0644 skills-core/contrib/systemd/louiselm-broker.socket \
+  /etc/systemd/system/louiselm-broker.socket
+sudo install -m 0644 skills-core/contrib/systemd/louiselm-broker.service \
+  /etc/systemd/system/louiselm-broker.service
+sudo systemd-analyze verify /etc/systemd/system/louiselm-broker.socket \
+  /etc/systemd/system/louiselm-broker.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now louiselm-broker.socket louiselm-broker.service
+```
+
+The socket owns `RuntimeDirectory=louiselm` at mode 0700 and creates
+`/run/louiselm/control.sock` at mode 0600, both broker-owned. Its
+`ExecStartPre=/usr/bin/true` starts the execution context that provisions the
+runtime directory before binding. `PassCredentials=true` applies before any
+packet can queue. The service owns `StateDirectory=louiselm/broker` at mode
+0700; systemd leaves the intermediate `/var/lib/louiselm` root-owned, satisfying
+the installed broker's ancestor checks.
+
+Both units are enabled: the service runs even without new connections, so
+Attention delivery and reconciliation continue. A crash restarts it after
+250ms. Stopping or restarting only the service preserves the socket inode and
+runtime directory; stopping the socket releases its runtime directory. Durable
+state survives either stop. Do not put `RuntimeDirectory` on the service or
+delete the broker state during unit upgrades. Startup still rechecks identity,
+directory permissions, release authority and the durable identity marker.
+
+`sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 python3 scripts/test-broker-systemd.py`
+is a disposable-VM-only gate, also run in privileged CI. It exercises these
+unit files with real PID 1, substituting temporary paths, an unprivileged test
+identity and a socket probe for the daemon. It verifies enablement, ownership,
+credential-bearing queued packets, idle crash restart, socket preservation and
+durable state. The separate installed-daemon gate above covers the measured
+binary, launch/reconnect, additional-group refusal and durable receipts; neither
+gate claims acceptance in the maintainer's live editor.
 
 ## Durable broker identity
 
@@ -106,8 +161,8 @@ markers; that command is pending `louiselm-96pv.6`, not available yet.
 
 This marker detects accidental identity reassignment; it is not tamper-proof
 against the state owner or root and does not replace signed receipt validation.
-The accepted machine-lifetime path is `/var/lib/louiselm/broker`; provisioning
-and installed startup remain `louiselm-96pv.5` work.
+The accepted machine-lifetime path is `/var/lib/louiselm/broker`, provisioned by
+the system service above.
 
 ## Broker restart
 

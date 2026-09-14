@@ -103,6 +103,10 @@ fn mounts(root: &Path) {
 }
 
 fn process(manager: &OwnedFd, uid: u32, seed: bool) -> BrokerChild {
+    process_with_groups(manager, uid, seed, &uid.to_string())
+}
+
+fn process_with_groups(manager: &OwnedFd, uid: u32, seed: bool, groups: &str) -> BrokerChild {
     let mut command = Command::new("/usr/bin/setpriv");
     command
         .args([
@@ -110,7 +114,10 @@ fn process(manager: &OwnedFd, uid: u32, seed: bool) -> BrokerChild {
             &uid.to_string(),
             "--regid",
             &uid.to_string(),
-            "--clear-groups",
+            // systemd 257 initializes the supplementary list with the primary
+            // GID even for an account with no additional group memberships.
+            "--groups",
+            groups,
         ])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -263,6 +270,14 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     assert!(
         !process(&manager, 0, false).0.wait().unwrap().success(),
         "root is not the installed broker"
+    );
+    assert!(
+        !process_with_groups(&manager, BROKER_UID, false, "0")
+            .0
+            .wait()
+            .unwrap()
+            .success(),
+        "an additional group must never enter the broker"
     );
     let mut daemon = process(&manager, BROKER_UID, false);
     ready(&config);

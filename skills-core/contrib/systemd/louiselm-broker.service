@@ -1,0 +1,18 @@
+[Unit]
+Description=LouiseLM Control broker
+Requires=louiselm-broker.socket
+After=louiselm-broker.socket
+
+[Service]
+Type=exec
+User=louiselm-broker
+Group=louiselm-broker
+StateDirectory=louiselm/broker
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/local/lib/louiselm/current/bin/louiselm-control serve
+Restart=on-failure
+RestartSec=250ms
+
+[Install]
+WantedBy=multi-user.target

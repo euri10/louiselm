@@ -1,0 +1,18 @@
+[Unit]
+Description=LouiseLM Control broker rendezvous
+
+[Socket]
+ListenSequentialPacket=/run/louiselm/control.sock
+SocketUser=louiselm-broker
+SocketGroup=louiselm-broker
+SocketMode=0600
+PassCredentials=true
+User=louiselm-broker
+Group=louiselm-broker
+RuntimeDirectory=louiselm
+RuntimeDirectoryMode=0700
+# RuntimeDirectory is prepared when an execution context is started.
+ExecStartPre=/usr/bin/true
+
+[Install]
+WantedBy=sockets.target

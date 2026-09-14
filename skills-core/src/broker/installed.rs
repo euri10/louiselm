@@ -21,9 +21,9 @@ use crate::{
 
 /// One dedicated broker process's installed launch service.
 ///
-/// Construction requires the installed non-root UID/GID with no supplementary
-/// groups. Public configuration and verification keys stay root-owned; only
-/// private broker state and its rendezvous directory belong to the broker.
+/// Construction requires the installed non-root UID/GID with no additional
+/// group authority. Public configuration and verification keys stay root-owned;
+/// only private broker state and its rendezvous directory belong to the broker.
 /// All methods perform blocking I/O on the explicitly owned broker worker.
 pub struct InstalledBroker {
     pub(in crate::broker) service: BrokerService,
@@ -234,9 +234,12 @@ impl InstalledBroker {
             || gid != config.broker_gid
             || rustix::process::getuid().as_raw() != uid
             || rustix::process::getgid().as_raw() != gid
-            || !rustix::process::getgroups()
+            // systemd repeats the primary GID in this list. It adds no
+            // authority; every distinct supplementary group is forbidden.
+            || rustix::process::getgroups()
                 .map_err(|_| BrokerError::Installation)?
-                .is_empty()
+                .iter()
+                .any(|group| group.as_raw() != gid)
         {
             return Err(BrokerError::Installation);
         }

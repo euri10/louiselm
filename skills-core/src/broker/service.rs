@@ -441,9 +441,10 @@ impl BrokerService {
             .map_err(BrokerError::Transport)
     }
 
-    /// Closes the rendezvous listener. Bound paths are not unlinked here: the
-    /// installer owns the rendezvous path's lifetime. Returned Session owners
-    /// remain usable and must be closed separately.
+    /// Closes the rendezvous listener without unlinking its bound path.
+    /// Provisioners must satisfy the installed broker's `private_directory`
+    /// invariant, rechecked on every start. Returned Session owners remain
+    /// usable and must be closed separately.
     pub fn close(&self) {
         self.listener.close();
     }
