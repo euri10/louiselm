@@ -109,6 +109,7 @@ local nvim = vim
 ---@field resume_session fun(self: louiselm.ui.Chat, all_workspaces?: boolean): boolean, string? Discover and load a prior ACP session.
 ---@field resume_park fun(self: louiselm.ui.Chat): boolean, string? Discover and load a durable cold-Parked Run.
 ---@field park fun(self: louiselm.ui.Chat): boolean, string? Cold-Park the current Session through a Run.
+---@field session_overview fun(self: louiselm.ui.Chat): boolean, string? Open side-by-side vertical windows showing modified files and edition line numbers for each session.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
 local M = {}
@@ -2570,6 +2571,18 @@ function Chat:resume_park()
   end)
 end
 
+---Open side-by-side vertical windows showing modified files and edition line numbers for each session.
+---@param self louiselm.ui.Chat
+---@return boolean opened
+---@return string? error_message
+function Chat:session_overview()
+  if self.disposed then
+    return false, "chat UI is disposed"
+  end
+  local SessionOverview = require("louiselm.ui.session_overview")
+  return SessionOverview.open(self)
+end
+
 ---Remove chat buffers and event listeners without disposing the sessions.
 ---@param self louiselm.ui.Chat
 ---@return boolean disposed
@@ -2578,6 +2591,8 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  local SessionOverview = require("louiselm.ui.session_overview")
+  SessionOverview.close()
   if self.winbar_resize_autocmd ~= nil then
     nvim.api.nvim_del_autocmd(self.winbar_resize_autocmd)
     self.winbar_resize_autocmd = nil

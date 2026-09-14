@@ -31,6 +31,7 @@
 :LouiselmSessionId	louiselm.txt	/*:LouiselmSessionId*
 :LouiselmSessionNew	louiselm.txt	/*:LouiselmSessionNew*
 :LouiselmSessionOptions	louiselm.txt	/*:LouiselmSessionOptions*
+:LouiselmSessionOverview	louiselm.txt	/*:LouiselmSessionOverview*
 :LouiselmSessionRename	louiselm.txt	/*:LouiselmSessionRename*
 :LouiselmSessionSwitch	louiselm.txt	/*:LouiselmSessionSwitch*
 :LouiselmToMarkdown	louiselm.txt	/*:LouiselmToMarkdown*

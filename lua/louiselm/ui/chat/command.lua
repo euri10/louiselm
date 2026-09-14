@@ -565,6 +565,19 @@ function M.register()
     { desc = "Switch between louiselm sessions", force = true }
   )
 
+  nvim.api.nvim_create_user_command("LouiselmSessionOverview", function()
+    local current = ensure_chat()
+    if current == nil then
+      report_error("could not open chat")
+      return
+    end
+    local _, overview_error = current:session_overview()
+    report_error(overview_error)
+  end, {
+    desc = "Open side-by-side vertical windows showing modified files and edition lines for each session",
+    force = true,
+  })
+
   nvim.api.nvim_create_user_command(
     "LouiselmHandOff",
     chat_command("hand_off"),

@@ -276,6 +276,11 @@ Commands                                                   *louiselm-commands*
     Inspect session options; configure while idle
     Arguments: none
 
+:LouiselmSessionOverview                            *:LouiselmSessionOverview*
+    Open side-by-side vertical windows showing modified files and edition
+    lines for each session
+    Arguments: none
+
 :LouiselmSessionRename                                *:LouiselmSessionRename*
     Rename the current louiselm session
     Arguments: none
