@@ -30,6 +30,29 @@ pub enum Condition {
     ContainmentFailure,
 }
 
+/// An operator's explicit approval of one condition for one Session.
+///
+/// A waiver degrades only the condition it names and cannot outlive its
+/// Session; it is never a statement that the evidence exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waiver {
+    /// Session the operator approved, which alone may present this waiver.
+    pub session_id: String,
+    /// The exact condition approved, never a blanket approval.
+    pub condition: Condition,
+}
+
+/// What the caller is asking admission to allow.
+#[derive(Clone, Copy, Debug)]
+pub struct Request<'a> {
+    /// Session this launch would start.
+    pub session_id: &'a str,
+    /// Whether an operator is present to authorize a waiver.
+    pub attendance: Attendance,
+    /// An operator waiver already authorized for this Session, if any.
+    pub waiver: Option<&'a Waiver>,
+}
+
 /// Admission decision for one launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Admission {
@@ -37,6 +60,13 @@ pub enum Admission {
     Admitted {
         /// Digest of the exact observation report admission relied on.
         report_digest: String,
+    },
+    /// An operator waived this exact condition; isolation stays unverified.
+    Waived {
+        /// The condition the operator approved for this Session.
+        condition: Condition,
+        /// Digest of the evidence the waiver rode past, where any exists.
+        report_digest: Option<String>,
     },
     /// Refusable by default, but an operator may waive this exact condition.
     Waivable(Condition),
@@ -52,32 +82,51 @@ pub enum Admission {
 /// in that same history, because cleanup proving containment is not
 /// best-effort. An unfinished attempt is incomplete rather than a pass, so it
 /// cannot fall back to an older certificate.
+///
+/// A waiver applies only when its own Session presents it, an operator is
+/// present, and it names this exact condition; it degrades that one condition
+/// and leaves isolation unverified for presentation to report.
 #[must_use]
 pub fn evaluate(
     status: &CertificateStatus,
     measured: &HostSnapshot,
-    attendance: Attendance,
+    request: &Request<'_>,
 ) -> Admission {
     if !status.history.failures.is_empty() {
         return Admission::Refused(Condition::ContainmentFailure);
     }
+    let retained = status
+        .certificate
+        .as_ref()
+        .and_then(|certificate| certificate.observations.digest().ok())
+        .map(|digest| digest.to_string());
     let condition = if status.pending {
         Condition::Incomplete
     } else {
         match &status.certificate {
             None => Condition::Missing,
-            Some(certificate) => match certificate.observations.digest() {
-                Ok(digest) if certificate.is_current(measured) => {
+            Some(certificate) => match &retained {
+                Some(digest) if certificate.is_current(measured) => {
                     return Admission::Admitted {
-                        report_digest: digest.to_string(),
+                        report_digest: digest.clone(),
                     };
                 }
                 // Unreadable retained evidence is stale, never an empty history.
-                Ok(_) | Err(_) => Condition::Stale,
+                Some(_) | None => Condition::Stale,
             },
         }
     };
-    match attendance {
+    if request.attendance == Attendance::Interactive
+        && request.waiver.is_some_and(|waiver| {
+            waiver.session_id == request.session_id && waiver.condition == condition
+        })
+    {
+        return Admission::Waived {
+            condition,
+            report_digest: retained,
+        };
+    }
+    match request.attendance {
         Attendance::Interactive => Admission::Waivable(condition),
         Attendance::Unattended => Admission::Refused(condition),
     }
