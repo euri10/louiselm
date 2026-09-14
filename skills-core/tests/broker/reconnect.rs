@@ -3,6 +3,13 @@ use super::*;
 use louiselm_skills::launch_protocol::{BROKER_RECONNECT_SCHEMA, BrokerReconnect};
 
 pub(super) fn fixture(root: &Path) -> (BrokerService, LaunchAuthorization, Vec<SignedReceipt>) {
+    fixture_on(root, None)
+}
+
+fn fixture_on(
+    root: &Path,
+    listener: Option<louiselm_skills::launch_transport::SeqpacketListener>,
+) -> (BrokerService, LaunchAuthorization, Vec<SignedReceipt>) {
     let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
     let request = request("reconnect-session");
     authorizations.authorize(&grant(&request), 1000).unwrap();
@@ -19,7 +26,12 @@ pub(super) fn fixture(root: &Path) -> (BrokerService, LaunchAuthorization, Vec<S
             )
             .unwrap();
     }
-    let service = BrokerService::bind(
+    let listener = listener.unwrap_or_else(|| {
+        louiselm_skills::launch_transport::SeqpacketListener::bind(&root.join("broker.sock"))
+            .unwrap()
+    });
+    let service = BrokerService::over(
+        listener,
         &root.join("broker.sock"),
         authorizations,
         receipts,
@@ -28,6 +40,39 @@ pub(super) fn fixture(root: &Path) -> (BrokerService, LaunchAuthorization, Vec<S
     )
     .unwrap();
     (service, authorization, vec![launch, start])
+}
+
+#[test]
+fn inherited_rendezvous_serves_an_authenticated_reconnection() {
+    use louiselm_skills::launch_transport::SeqpacketListener;
+    use rustix::net::{
+        AddressFamily, SocketAddrUnix, SocketFlags, SocketType, bind, listen, socket_with,
+    };
+    let root = TempDir::new().unwrap();
+    let fd = socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    bind(
+        &fd,
+        &SocketAddrUnix::new(root.path().join("broker.sock")).unwrap(),
+    )
+    .unwrap();
+    listen(&fd, 8).unwrap();
+    let (service, authorization, chain) =
+        fixture_on(root.path(), Some(SeqpacketListener::adopt(fd).unwrap()));
+    let offer = checkpoint(&chain[1]);
+    let channel = peer(root.path(), &offer);
+    let session = service
+        .serve_connection(90_000, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(session.authorization(), &authorization);
+    let reply = settle(|complete| channel.receive(complete));
+    assert!(matches!(reply.packet, LauncherPacket::Response(response)
+        if matches!(&response.result, ResponseResult::BrokerReconnect { reconnect } if reconnect == &offer)));
 }
 
 pub(super) fn checkpoint(receipt: &SignedReceipt) -> BrokerReconnect {

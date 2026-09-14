@@ -172,11 +172,37 @@ impl BrokerService {
         audit: AuditLog,
         supervisor: CredentialPin,
     ) -> Result<Self, BrokerError> {
+        let listener = SeqpacketListener::bind(socket_path).map_err(BrokerError::Transport)?;
+        Self::over(
+            listener,
+            socket_path,
+            authorizations,
+            receipts,
+            audit,
+            supervisor,
+        )
+    }
+
+    /// Serves an already-listening rendezvous this process did not bind.
+    ///
+    /// `socket_path` still names where that rendezvous lives, because sibling
+    /// state is resolved relative to it; it is not opened or replaced here.
+    ///
+    /// # Errors
+    /// Returns [`BrokerError::Storage`] for unavailable durable state and
+    /// [`BrokerError::InvalidGrant`] when `socket_path` has no parent.
+    pub fn over(
+        listener: SeqpacketListener,
+        socket_path: &Path,
+        authorizations: AuthorizationStore,
+        receipts: ReceiptStore,
+        audit: AuditLog,
+        supervisor: CredentialPin,
+    ) -> Result<Self, BrokerError> {
         let lifecycle =
             super::lifecycle::LifecycleStore::open(&authorizations.root.join("lifecycle"))?;
         let attention =
             super::attention::Outbox::open(&authorizations.root.join("attention-outbox"))?;
-        let listener = SeqpacketListener::bind(socket_path).map_err(BrokerError::Transport)?;
         Ok(Self {
             listener,
             authorizations,

@@ -13,7 +13,10 @@ use std::{
     fmt,
     io::IoSliceMut,
     mem::MaybeUninit,
-    os::fd::OwnedFd,
+    os::{
+        fd::{OwnedFd, RawFd},
+        unix::{ffi::OsStrExt, net::UnixStream},
+    },
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
@@ -26,18 +29,21 @@ use std::{
 
 use rustix::{
     cmsg_space,
+    event::{PollFd, PollFlags, poll},
     fs::{OFlags, fcntl_getfl, fcntl_setfl},
-    io::{Errno, fcntl_dupfd_cloexec},
+    io::{Errno, FdFlags, fcntl_dupfd_cloexec, fcntl_getfd, fcntl_setfd},
     net::{
         AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags,
         SendFlags, Shutdown, SocketAddrUnix, SocketFlags, SocketType, UCred, accept_with, bind,
-        connect, listen, recvmsg, send, shutdown, socket_with,
+        connect, getsockname, listen, recvmsg, send, shutdown, socket_with,
         sockopt::{
             set_socket_passcred, set_socket_recv_buffer_size, set_socket_send_buffer_size,
-            socket_passcred, socket_peercred, socket_recv_buffer_size, socket_send_buffer_size,
+            socket_acceptconn, socket_domain, socket_passcred, socket_peercred,
+            socket_recv_buffer_size, socket_send_buffer_size, socket_type,
         },
     },
 };
+
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -194,6 +200,10 @@ pub enum TransportError {
     /// The listener backlog is full; a later connection attempt may succeed.
     #[error("launcher socket listener is busy")]
     ConnectBusy,
+    /// The service manager's descriptor handover was absent, ambiguous, or not
+    /// a listening `SOCK_SEQPACKET` socket.
+    #[error("inherited rendezvous descriptor is unusable")]
+    InheritedDescriptor,
     /// A fixed background worker could not be started.
     #[error("launcher transport worker unavailable")]
     WorkerUnavailable,
@@ -718,7 +728,8 @@ struct AcceptCommand {
 }
 
 struct ListenerCore {
-    control: OwnedFd,
+    path: Option<PathBuf>,
+    cancellation: Mutex<Option<UnixStream>>,
     closed: AtomicBool,
     completion_gate: Mutex<()>,
     commands: Mutex<Option<SyncSender<AcceptCommand>>>,
@@ -734,7 +745,9 @@ impl ListenerCore {
         let newly_closed = !self.closed.swap(true, Ordering::AcqRel);
         if newly_closed {
             lock(&self.commands).take();
-            let _ = shutdown(&self.control, Shutdown::Both);
+            // Closing our wake endpoint cancels accept without shutting down
+            // the listening socket retained by the service manager.
+            lock(&self.cancellation).take();
         }
         newly_closed
     }
@@ -810,6 +823,37 @@ impl SeqpacketListener {
         Ok(BoundSeqpacketListener { fd })
     }
 
+    /// Adopts a listening `SOCK_SEQPACKET` socket created by the service manager.
+    ///
+    /// The caller never binds the rendezvous, so the path's mode and ownership
+    /// are the service manager's to establish. What this does not delegate is
+    /// `SO_PASSCRED`: every peer-credential check in this transport depends on
+    /// it, so it is applied and read back here rather than trusted to unit
+    /// configuration that nothing validates.
+    ///
+    /// # Errors
+    /// Returns [`TransportError::InheritedDescriptor`] unless `fd` is a socket
+    /// of type `SOCK_SEQPACKET` that is already listening, and
+    /// [`TransportError::SocketConfigurationFailed`] when required options
+    /// cannot be established.
+    pub fn adopt(fd: OwnedFd) -> Result<Self, TransportError> {
+        if socket_domain(&fd).map_err(|_| TransportError::InheritedDescriptor)?
+            != AddressFamily::UNIX
+            || socket_type(&fd).map_err(|_| TransportError::InheritedDescriptor)?
+                != SocketType::SEQPACKET
+        {
+            return Err(TransportError::InheritedDescriptor);
+        }
+        // A bound-but-idle socket would accept nothing; refuse it here rather
+        // than starting and never serving anyone.
+        if !socket_acceptconn(&fd).map_err(|_| TransportError::InheritedDescriptor)? {
+            return Err(TransportError::InheritedDescriptor);
+        }
+        configure_passcred(&fd)?;
+        configure_packet_buffers(&fd)?;
+        Self::from_listening(fd)
+    }
+
     /// Binds and immediately enables a listener without replacing an existing path.
     ///
     /// # Errors
@@ -819,10 +863,24 @@ impl SeqpacketListener {
     }
 
     fn from_listening(fd: OwnedFd) -> Result<Self, TransportError> {
-        let accept_fd = duplicate(&fd)?;
+        let address =
+            SocketAddrUnix::try_from(getsockname(&fd).map_err(|_| TransportError::InvalidAddress)?)
+                .map_err(|_| TransportError::InvalidAddress)?;
+        let path = address
+            .path_bytes()
+            .map(|bytes| PathBuf::from(std::ffi::OsStr::from_bytes(bytes)));
+        let descriptor_flags =
+            fcntl_getfd(&fd).map_err(|_| TransportError::SocketConfigurationFailed)?;
+        fcntl_setfd(&fd, descriptor_flags | FdFlags::CLOEXEC)
+            .map_err(|_| TransportError::SocketConfigurationFailed)?;
+        let flags = fcntl_getfl(&fd).map_err(|_| TransportError::SocketConfigurationFailed)?;
+        fcntl_setfl(&fd, flags | OFlags::NONBLOCK)
+            .map_err(|_| TransportError::SocketConfigurationFailed)?;
+        let (cancel, cancelled) = UnixStream::pair().map_err(|_| TransportError::SocketFailed)?;
         let (commands, receiver) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
         let core = Arc::new(ListenerCore {
-            control: fd,
+            path,
+            cancellation: Mutex::new(Some(cancel)),
             closed: AtomicBool::new(false),
             completion_gate: Mutex::new(()),
             commands: Mutex::new(Some(commands)),
@@ -830,12 +888,18 @@ impl SeqpacketListener {
         let worker_core = Arc::clone(&core);
         let worker = thread::Builder::new()
             .name("louiselm-launch-accept".to_owned())
-            .spawn(move || accept_loop(accept_fd, receiver, worker_core))
+            .spawn(move || accept_loop(fd, cancelled, receiver, worker_core))
             .map_err(|_| TransportError::WorkerUnavailable)?;
         drop(worker);
         Ok(Self {
             inner: Arc::new(ListenerInner { core }),
         })
+    }
+
+    /// Kernel-reported filesystem rendezvous, absent for an abstract socket.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.inner.core.path.as_deref()
     }
 
     /// Queues one authenticated accept operation.
@@ -883,14 +947,19 @@ impl SeqpacketListener {
     clippy::needless_pass_by_value,
     reason = "The worker owns its descriptor, receiver and shared core until the loop exits."
 )]
-fn accept_loop(fd: OwnedFd, commands: Receiver<AcceptCommand>, core: Arc<ListenerCore>) {
+fn accept_loop(
+    fd: OwnedFd,
+    cancelled: UnixStream,
+    commands: Receiver<AcceptCommand>,
+    core: Arc<ListenerCore>,
+) {
     while let Ok(command) = commands.recv() {
         if core.closed.load(Ordering::Acquire) {
             complete(command.completion, Err(TransportError::Closed));
             drain_accepts(&commands);
             return;
         }
-        let result = accept_one(&fd, command.pin);
+        let result = accept_one(&fd, &cancelled, command.pin);
         if core.finish(command.completion, result) {
             drain_accepts(&commands);
             return;
@@ -904,10 +973,26 @@ fn drain_accepts(commands: &Receiver<AcceptCommand>) {
     }
 }
 
-fn accept_one(fd: &OwnedFd, pin: CredentialPin) -> Result<SeqpacketChannel, TransportError> {
+fn accept_one(
+    fd: &OwnedFd,
+    cancelled: &UnixStream,
+    pin: CredentialPin,
+) -> Result<SeqpacketChannel, TransportError> {
     let accepted = loop {
+        let mut ready = [
+            PollFd::new(fd, PollFlags::IN),
+            PollFd::new(cancelled, PollFlags::IN),
+        ];
+        match poll(&mut ready, None) {
+            Err(Errno::INTR) => continue,
+            Err(_) => return Err(TransportError::AcceptFailed),
+            Ok(_) => {}
+        }
+        if !ready[1].revents().is_empty() {
+            return Err(TransportError::Closed);
+        }
         match accept_with(fd, SocketFlags::CLOEXEC) {
-            Err(Errno::INTR) => {}
+            Err(Errno::INTR | Errno::AGAIN) => {}
             Err(_) => return Err(TransportError::AcceptFailed),
             Ok(accepted) => break accepted,
         }
@@ -1086,3 +1171,42 @@ fn connect_one(path: &Path, pin: CredentialPin) -> Result<SeqpacketChannel, Tran
     }
     SeqpacketChannel::from_connected(fd, pin, actual)
 }
+
+/// Resolves the single rendezvous descriptor a service manager handed over.
+///
+/// Pure so the handover contract is checkable without mutating process-wide
+/// environment state. `listen_pid` and `listen_fds` are the raw `LISTEN_PID`
+/// and `LISTEN_FDS` values; `self_pid` is this process's own PID.
+///
+/// Exactly one descriptor is accepted. A handover addressed to another process,
+/// or carrying more than the one rendezvous, is refused rather than guessed at:
+/// picking the first of several would mean serving an unknown socket.
+///
+/// # Errors
+/// Returns [`TransportError::InheritedDescriptor`] for an absent, malformed,
+/// misaddressed, empty, or ambiguous handover.
+pub fn inherited_descriptor(
+    listen_pid: Option<&str>,
+    listen_fds: Option<&str>,
+    self_pid: u32,
+) -> Result<RawFd, TransportError> {
+    let exact = |value: Option<&str>| -> Result<u32, TransportError> {
+        let raw = value.ok_or(TransportError::InheritedDescriptor)?;
+        let parsed: u32 = raw
+            .parse()
+            .map_err(|_| TransportError::InheritedDescriptor)?;
+        // Reject anything whose text is not exactly its canonical number, so
+        // padding and leading zeroes cannot smuggle a different value through.
+        if parsed.to_string() != raw {
+            return Err(TransportError::InheritedDescriptor);
+        }
+        Ok(parsed)
+    };
+    if exact(listen_pid)? != self_pid || exact(listen_fds)? != 1 {
+        return Err(TransportError::InheritedDescriptor);
+    }
+    Ok(SD_LISTEN_FDS_START)
+}
+
+/// First descriptor number a service manager assigns to a passed socket.
+const SD_LISTEN_FDS_START: RawFd = 3;

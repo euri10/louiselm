@@ -15,7 +15,7 @@ use crate::{
     broker::lifecycle::LifecycleCaller,
     launch_protocol::LifecycleRequest,
     launch_receipt::SignedReceipt,
-    launch_transport::CredentialPin,
+    launch_transport::{CredentialPin, SeqpacketListener},
     launcher_install::{LauncherPaths, LauncherVerifier},
 };
 
@@ -186,6 +186,29 @@ impl InstalledBroker {
     /// Refuses wrong identity, writable authority, insecure directories, changed
     /// release/tool bytes, occupied rendezvous or unavailable durable storage.
     pub fn bind(paths: &LauncherPaths, state: &Path) -> Result<Self, BrokerError> {
+        Self::open(paths, state, None)
+    }
+
+    /// Opens installed authority over a service-manager-owned listener.
+    /// The listener must name the configured rendezvous. Identity and directory
+    /// checks are identical to [`Self::bind`]; this never binds or replaces a path.
+    ///
+    /// # Errors
+    /// Refuses wrong identity, untrusted installation, mismatched rendezvous or
+    /// unavailable durable state.
+    pub fn over(
+        paths: &LauncherPaths,
+        state: &Path,
+        listener: SeqpacketListener,
+    ) -> Result<Self, BrokerError> {
+        Self::open(paths, state, Some(listener))
+    }
+
+    fn open(
+        paths: &LauncherPaths,
+        state: &Path,
+        listener: Option<SeqpacketListener>,
+    ) -> Result<Self, BrokerError> {
         let verifier =
             LauncherVerifier::open(paths, state).map_err(BrokerError::InstallationAuthority)?;
         let config = verifier.config();
@@ -211,7 +234,20 @@ impl InstalledBroker {
             uid,
             gid,
         )?;
-        let service = BrokerService::bind(
+        if listener
+            .as_ref()
+            .is_some_and(|listener| listener.path() != Some(config.broker_socket_path.as_path()))
+        {
+            return Err(BrokerError::Installation);
+        }
+        super::state_identity::check(state, uid, gid)?;
+        let listener = match listener {
+            Some(listener) => listener,
+            None => SeqpacketListener::bind(&config.broker_socket_path)
+                .map_err(BrokerError::Transport)?,
+        };
+        let service = BrokerService::over(
+            listener,
             &config.broker_socket_path,
             AuthorizationStore::open(&state.join("authorizations"), config.pool.clone())?,
             ReceiptStore::open(

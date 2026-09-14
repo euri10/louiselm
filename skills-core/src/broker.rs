@@ -26,6 +26,7 @@ pub mod promotion;
 pub mod receipts;
 pub mod recovery;
 pub mod service;
+mod state_identity;
 pub mod verification;
 
 #[cfg(test)]
@@ -76,6 +77,21 @@ pub enum BrokerError {
     /// Public installation or dedicated broker identity is not trustworthy.
     #[error("installed broker authority is invalid")]
     Installation,
+    /// Durable state records a different broker UID or GID.
+    #[error(
+        "broker state identity changed; preserve state and explicitly run louiselm-control adopt-state"
+    )]
+    StateIdentityMismatch,
+    /// Existing durable state has no identity continuity record.
+    #[error(
+        "broker state identity is missing; preserve state for explicit louiselm-control adopt-state"
+    )]
+    StateIdentityMissing,
+    /// The continuity record is malformed or is not a private regular file.
+    #[error(
+        "broker state identity is invalid; preserve state and restore or inspect the identity record"
+    )]
+    StateIdentityInvalid,
     /// Installed public authority could not be validated; the cause stays internal.
     #[error("installed broker public authority is unavailable")]
     InstallationAuthority(#[source] crate::launcher_install::LauncherError),

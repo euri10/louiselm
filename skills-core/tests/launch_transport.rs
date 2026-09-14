@@ -800,3 +800,128 @@ fn inherited_sender_helper() {
         bytes.len(),
     );
 }
+
+fn listening_seqpacket(path: &Path) -> OwnedFd {
+    let address = SocketAddrUnix::new(path).expect("rendezvous address");
+    let fd = socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .expect("seqpacket socket");
+    bind(&fd, &address).expect("bind succeeds");
+    listen(&fd, 8).expect("listen succeeds");
+    fd
+}
+
+#[test]
+fn an_adopted_listener_serves_connections_and_carries_peer_credentials() {
+    let directory = TempDir::new().expect("temporary rendezvous directory");
+    let path = path_in(&directory);
+    // Stand in for the service manager: the socket is already listening, and
+    // this process never binds it.
+    let listener = SeqpacketListener::adopt(listening_seqpacket(&path))
+        .expect("inherited listener is adopted");
+    let connector = SeqpacketConnector::new().expect("connector");
+    let accepting = accepted(&listener, process_pin());
+    let client = wait(connected(&connector, &path, process_pin())).expect("client connects");
+    let server = wait(accepting).expect("server accepts");
+
+    // Credentials prove SO_PASSCRED was applied by adopt, not by unit config.
+    send_packet(&client, status_bytes("adopted-1")).expect("client sends");
+    let packet = receive_packet(&server).expect("server receives");
+    assert_eq!(packet.peer_credentials, current_credentials());
+    assert_eq!(packet.message_credentials, current_credentials());
+}
+
+#[test]
+fn adoption_refuses_anything_but_a_listening_seqpacket_socket() {
+    let directory = TempDir::new().expect("temporary rendezvous directory");
+
+    // Bound but never listening.
+    let address =
+        SocketAddrUnix::new(directory.path().join("idle.sock")).expect("rendezvous address");
+    let idle = socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .expect("seqpacket socket");
+    bind(&idle, &address).expect("bind succeeds");
+    assert!(matches!(
+        SeqpacketListener::adopt(idle),
+        Err(TransportError::InheritedDescriptor)
+    ));
+
+    // A listening socket of the wrong type.
+    let stream_address =
+        SocketAddrUnix::new(directory.path().join("stream.sock")).expect("rendezvous address");
+    let stream = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .expect("stream socket");
+    bind(&stream, &stream_address).expect("bind succeeds");
+    listen(&stream, 8).expect("listen succeeds");
+    assert!(matches!(
+        SeqpacketListener::adopt(stream),
+        Err(TransportError::InheritedDescriptor)
+    ));
+
+    // Not a socket at all.
+    let file = std::fs::File::create(directory.path().join("regular")).expect("regular file");
+    assert!(matches!(
+        SeqpacketListener::adopt(OwnedFd::from(file)),
+        Err(TransportError::InheritedDescriptor)
+    ));
+}
+
+#[test]
+fn closing_an_adopted_listener_preserves_the_manager_socket() {
+    let directory = TempDir::new().unwrap();
+    let path = path_in(&directory);
+    let manager = listening_seqpacket(&path);
+    let listener = SeqpacketListener::adopt(manager.try_clone().unwrap()).unwrap();
+    let pending = accepted(&listener, process_pin());
+    listener.close();
+    assert!(matches!(wait(pending), Err(TransportError::Closed)));
+    let restarted = SeqpacketListener::adopt(manager.try_clone().unwrap())
+        .expect("broker close must not shut down the manager socket");
+    let accepting = accepted(&restarted, process_pin());
+    let connector = SeqpacketConnector::new().unwrap();
+    let client = wait(connected(&connector, &path, process_pin())).unwrap();
+    let server = wait(accepting).unwrap();
+    send_packet(&client, status_bytes("restarted-1")).unwrap();
+    assert!(receive_packet(&server).is_ok());
+}
+
+#[test]
+fn the_service_manager_handover_names_exactly_one_descriptor_for_this_process() {
+    // Parsed as a pure function so the contract is testable without mutating
+    // process-wide environment state from a parallel test run.
+    assert_eq!(
+        louiselm_skills::launch_transport::inherited_descriptor(Some("42"), Some("1"), 42),
+        Ok(3),
+    );
+    for (pid, fds) in [
+        (Some("41"), Some("1")),   // handover meant for another process
+        (Some("42"), Some("0")),   // no descriptors passed
+        (Some("42"), Some("2")),   // more than the one rendezvous
+        (Some("42"), None),        // no count at all
+        (None, Some("1")),         // no target process
+        (Some("42"), Some("")),    // empty
+        (Some("42"), Some("-1")),  // negative
+        (Some("42"), Some("1x")),  // trailing garbage
+        (Some(""), Some("1")),     // empty target
+        (Some("42"), Some(" 1 ")), // padded
+    ] {
+        assert!(
+            louiselm_skills::launch_transport::inherited_descriptor(pid, fds, 42).is_err(),
+            "accepted LISTEN_PID={pid:?} LISTEN_FDS={fds:?}",
+        );
+    }
+}

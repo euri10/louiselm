@@ -27,6 +27,43 @@ the tests drive; all three share the same post-accept transactions.
 
 No process calls any of them in production yet: see `louiselm-96pv`.
 
+`SeqpacketListener::adopt` accepts an owned, listening Unix `SOCK_SEQPACKET`
+descriptor. `inherited_descriptor` validates that `LISTEN_PID` names this
+process and `LISTEN_FDS` names exactly one descriptor. The daemon must acquire
+ownership of that descriptor at its process-entry boundary; parsing alone does
+not acquire it. Adoption applies and verifies credential/buffer settings and
+sets close-on-exec. Listener cancellation wakes the accept worker without
+shutting down the socket shared with the service manager, so the manager's
+descriptor remains usable across broker close and restart.
+
+`BrokerService::over` composes the existing stores over that listener.
+`InstalledBroker::over` additionally checks its kernel-reported path against
+the installed rendezvous and uses the same identity and private-directory
+checks as `bind`. Service-manager credential and provisioning integration still
+belongs to `louiselm-96pv.3` and `louiselm-96pv.5`; transport tests alone do not
+establish that a root-created listener satisfies the supervisor's broker pin.
+
+## Durable broker identity
+
+Both installed constructors check `identity.json` before opening authorization,
+receipt, lifecycle, audit or outbox stores. The closed
+`louiselm.broker-identity/1` record binds the broker UID and GID, independently of
+the current release. First startup requires an empty state directory and
+publishes the mode-0600 marker without replacement, syncing bytes and the
+directory before proceeding. A matching restart preserves the marker bytes.
+
+Changed identity, existing state without a marker, malformed or oversized
+records, links and non-private marker files fail closed. No broker store is
+read or repaired after these refusals. An interrupted initial publication may
+leave an unmarked nonempty directory, which also refuses automatic adoption.
+The diagnostic names explicit state adoption for identity changes or missing
+markers; that command is pending `louiselm-96pv.6`, not available yet.
+
+This marker detects accidental identity reassignment; it is not tamper-proof
+against the state owner or root and does not replace signed receipt validation.
+The accepted machine-lifetime path is `/var/lib/louiselm/broker`; provisioning
+and installed startup remain `louiselm-96pv.5` work.
+
 ## Broker restart
 
 `InstalledBroker::serve_reconnect` accepts an authenticated supervisor on the
