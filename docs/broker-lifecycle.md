@@ -553,8 +553,8 @@ Before each attempt the worker reads `/etc/louiselm-broker-attention.json`:
 
 ```json
 {
-  "socket": "/absolute/path/to/attention.sock",
-  "capability_file": "/var/lib/louiselm/broker/attention-capability",
+  "socket": "/run/louiselm-attention/project.sock",
+  "capability_file": "/var/lib/louiselm-attention/producer-capability",
   "receiver_uid": 1000
 }
 ```
@@ -570,12 +570,56 @@ and recovery after an actual delivery, without endpoint contents, capabilities
 or peer responses. If placing the capability under the broker state directory,
 initialize its identity marker on empty state first, then provision the capability.
 
-Provisioning the broker-scoped producer credential and cross-identity receiver
-socket access remains `louiselm-0hwoq`. The current capture-service CLI creates
-an owner-only socket and uses its operator capability for projection requests;
-it does not yet provide the dedicated Attention-only credential described above.
-Do not copy the broader operator capability as a substitute. The daemon VM gate
-uses a private synthetic receiver and credential, not installed desktop delivery.
+Capture-service exposes projections only on a separate endpoint. It reads
+`/etc/louiselm-capture-broker.json` at startup: a closed, root-owned regular record
+that is not group/world-writable, containing `socket`, `broker_uid` and
+`capability_sha256`. The
+installed socket path is fixed to `/run/louiselm-attention/project.sock`. Missing
+policy disables that endpoint; malformed or insecure policy refuses startup.
+There is no producer token in the receiver's state or configuration.
+
+The root provisioner derives both identities from the installed launcher's
+`public-config.json`: the dedicated broker UID/GID and the operator UID/GID
+running capture-service. After updating capture-service and its user unit, run
+from the repository root:
+
+```sh
+sudo python3 scripts/install-broker-attention.py
+systemctl --user daemon-reload
+systemctl --user restart louiselm-capture.service
+```
+
+Provisioning creates a 256-bit credential at the broker-owned mode-0400 path
+above, outside broker state so its first-start identity marker remains intact.
+Only its SHA-256 enters the receiver policy. The sender policy contains the
+receiver's kernel UID and credential path. Repeated provisioning verifies
+existing bytes/ownership without rotation; mismatched or partially written
+files refuse automatic repair. Preserve those files and inspect the installed
+identities before explicitly replacing configuration.
+
+The provisioner also installs a tmpfiles rule recreating the mode-0711,
+capture-owned `/run/louiselm-attention` on boot. The user unit grants write
+access to this directory through `ProtectSystem=strict`. The projection socket
+is mode 0666 to permit cross-user connection without shared groups or ACL tools;
+capture-service checks the peer's kernel UID before reading or sending data,
+then checks the distinct producer credential before accepting `project`.
+Unknown UIDs are disconnected without a snapshot. Frames are limited to 64 KiB,
+connections to 32 concurrent clients, and requests to a two-second deadline.
+
+The existing operator `attention.sock` remains mode 0600, supports its ordinary
+mutations and observer snapshots, and rejects `project` even with the operator
+token. The producer token cannot authorize those ordinary mutations or Run
+operations. The dedicated endpoint has no snapshot or ordinary mutation verbs.
+Neither endpoint grants lifecycle, signing or capability-policy authority.
+
+`scripts/test-broker-attention.py` runs under a private mount namespace in a
+disposable VM with `LOUISELM_REQUIRE_BROKER_ATTENTION=1` and
+`LOUISELM_TEST_CAPTURE` pointing to the built capture executable. CI runs it
+with root solely inside that isolated fixture. It exercises the actual CLI and
+provisioner across distinct UIDs, unset policy, credential and identity denial,
+idempotent provisioning and delivery, receiver restart and permission drift.
+The daemon VM gate still uses a synthetic receiver for its independent lifecycle
+checks; these gates do not claim installed desktop or phone acceptance.
 
 The initial outbox retains at most 4096 entries and refuses further enqueue at
 that bound. History is not silently truncated and sequences never reset on

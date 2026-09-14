@@ -2,6 +2,7 @@
 
 mod attention;
 mod attention_socket;
+mod broker_attention;
 pub mod cli;
 mod fcm;
 mod generation;
@@ -25,6 +26,7 @@ pub use attention::{
     ProjectionChange, ProjectionResult,
 };
 pub use attention_socket::{AttentionSocket, AttentionSocketError, AttentionSocketMessage};
+pub use broker_attention::{BrokerAttentionConfig, BrokerAttentionSocket};
 pub use generation::{
     BeadsGenerator, CommandOutput, GenerateRequest, GeneratedIssue, GenerationError,
     mutation_external_ref,

@@ -338,6 +338,14 @@ jobs:
       - name: Test
         run: cargo test --all-features --locked
 
+      - name: Test installed broker Attention across identities
+        run: |
+          cargo build --all-features --locked
+          sudo env LOUISELM_REQUIRE_BROKER_ATTENTION=1 \
+            "LOUISELM_TEST_CAPTURE=$PWD/target/debug/louiselm-capture" \
+            timeout 120 unshare --mount --propagation private -- \
+            python3 ../scripts/test-broker-attention.py
+
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings

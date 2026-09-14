@@ -139,6 +139,26 @@ storage error if Attention state cannot be read. The local `attention.sock` acce
 only operator-capability mutations and no Agent-authored text. Paired devices can
 `GET /v1/attention` with their pairing credential; that route is read-only.
 
+Broker projections use the separate `/run/louiselm-attention/project.sock`
+endpoint, authenticated by kernel UID and a dedicated producer credential.
+It exposes only `project`; the operator socket rejects that verb. From the
+repository root, after installing the launcher identities and updated
+capture-service user unit:
+
+```sh
+sudo python3 scripts/install-broker-attention.py
+systemctl --user daemon-reload
+systemctl --user restart louiselm-capture.service
+```
+
+The command derives the capture identity from the installed operator, creates
+the private broker credential and root-owned policies, and provisions a boot
+runtime directory through systemd-tmpfiles. It preserves existing credentials
+and refuses unexpected ownership or configuration. Without
+`/etc/louiselm-capture-broker.json`, the projection endpoint stays disabled and
+ordinary Attention/Run/observer behavior remains available. Full provisioning
+and authentication details are in `docs/broker-lifecycle.md`.
+
 ## Optional Android push
 
 `serve` submits eligible Attention generations independently to every active

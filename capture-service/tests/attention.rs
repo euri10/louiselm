@@ -65,23 +65,31 @@ fn broker_projection_order_survives_clear_and_receiver_restart() {
 
 #[tokio::test]
 async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fixture() {
+    use louiselm_capture::{BrokerAttentionConfig, BrokerAttentionSocket};
     use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let temporary = tempfile::tempdir().unwrap();
     let store = AttentionStore::new(temporary.path().join("attention")).unwrap();
     let socket_path = temporary.path().join("attention.sock");
     let capability_path = temporary.path().join("capability");
-    let socket = AttentionSocket::bind(&socket_path, &capability_path, store.clone())
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    fs::write(&capability_path, "projection-test-capability").unwrap();
+    let config = BrokerAttentionConfig {
+        socket: socket_path.clone(),
+        broker_uid: fs::metadata(temporary.path()).unwrap().uid(),
+        capability_sha256: format!("{:x}", Sha256::digest("projection-test-capability")),
+    };
+    let socket = BrokerAttentionSocket::bind(config, store.clone())
         .await
         .unwrap();
     let server = tokio::spawn(socket.serve());
-    let stream = UnixStream::connect(&socket_path).await.unwrap();
-    let mut lines = BufReader::new(stream).lines();
-    lines.next_line().await.unwrap().unwrap();
     let projection: serde_json::Value = serde_json::from_str(include_str!(
         "../../tests/fixtures/broker_attention_projection.json"
     ))
     .unwrap();
     for valid in [false, true] {
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let mut lines = BufReader::new(stream).lines();
         let capability = if valid {
             fs::read_to_string(&capability_path).unwrap()
         } else {

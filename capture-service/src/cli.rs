@@ -27,11 +27,12 @@ mod notification_worker;
 use crate::time::now_ms;
 use crate::{
     AttentionError, AttentionSocket, AttentionSocketError, AttentionStore, BeadsCleanup,
-    BeadsGenerator, CaptureDraft, CaptureRecord, CaptureSource, CaptureState, GenerateRequest,
-    GeneratedWorkReservation, GenerationError, IdentityError, NetworkProfile, NetworkProfileError,
-    NetworkProfileKind, OpenAiTranscriber, PairingError, PairingRegistry, Receiver, ReserveResult,
-    RunAdmission, RunDraft, RunSession, RunSocket, RunSocketError, RunStore, RunStoreError, Store,
-    StoreError, TlsIdentity, Transcript, TranscriptionWorker,
+    BeadsGenerator, BrokerAttentionConfig, BrokerAttentionSocket, CaptureDraft, CaptureRecord,
+    CaptureSource, CaptureState, GenerateRequest, GeneratedWorkReservation, GenerationError,
+    IdentityError, NetworkProfile, NetworkProfileError, NetworkProfileKind, OpenAiTranscriber,
+    PairingError, PairingRegistry, Receiver, ReserveResult, RunAdmission, RunDraft, RunSession,
+    RunSocket, RunSocketError, RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript,
+    TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -584,6 +585,13 @@ async fn serve(
         attention.clone(),
     )
     .await?;
+    let broker_policy = tokio::task::spawn_blocking(BrokerAttentionConfig::load_installed)
+        .await
+        .map_err(std::io::Error::other)??;
+    let broker_socket = match broker_policy {
+        Some(config) => Some(BrokerAttentionSocket::bind(config, attention.clone()).await?),
+        None => None,
+    };
     if let Some(workspace) =
         env::var_os("LOUISELM_BEADS_WORKSPACE").filter(|value| !value.is_empty())
     {
@@ -639,6 +647,12 @@ async fn serve(
     let (result, worker_finished) = tokio::select! {
         result = run_socket.serve() => (result.map_err(CliError::from), false),
         result = attention_socket.serve() => (result.map_err(CliError::from), false),
+        result = async move {
+            match broker_socket {
+                Some(socket) => socket.serve().await,
+                None => std::future::pending().await,
+            }
+        } => (result.map_err(CliError::from), false),
         result = network_server => (result.map_err(CliError::from), false),
         result = &mut notifications => (result.unwrap_or(Err(CliError::NotificationWorker)), true),
     };

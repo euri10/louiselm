@@ -5,7 +5,7 @@ use crate::operator_socket::{
 };
 use crate::{
     AttentionDraft, AttentionError, AttentionKey, AttentionSnapshot, AttentionStore,
-    BrokerProjection, ProjectionResult,
+    ProjectionResult,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -76,11 +76,6 @@ pub enum AttentionSocketMessage {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ClientMessage {
     Snapshot,
-    Project {
-        request_id: String,
-        projection: BrokerProjection,
-        capability: String,
-    },
     Upsert {
         request_id: String,
         attention: AttentionDraft,
@@ -228,12 +223,7 @@ async fn handle_mutation(
     request: ClientMessage,
 ) -> Result<(), AttentionSocketError> {
     let (request_id, capability) = match &request {
-        ClientMessage::Project {
-            request_id,
-            capability,
-            ..
-        }
-        | ClientMessage::Upsert {
+        ClientMessage::Upsert {
             request_id,
             capability,
             ..
@@ -273,20 +263,6 @@ async fn handle_mutation(
         )
         .await;
     }
-    if let ClientMessage::Project { projection, .. } = request {
-        let store = store.clone();
-        let result = tokio::task::spawn_blocking(move || store.project(&projection))
-            .await
-            .map_err(|_| io::Error::other("broker projection worker failed"))?;
-        let message = match result {
-            Ok(result) => AttentionSocketMessage::ProjectionResult { request_id, result },
-            Err(_) => AttentionSocketMessage::MutationError {
-                request_id,
-                message: "broker projection was refused".into(),
-            },
-        };
-        return write_message(writer, &message).await;
-    }
     let result = match request {
         ClientMessage::Upsert { attention, .. } => store.upsert(attention),
         ClientMessage::SetEligible { key, eligible, .. } => store.set_eligible(&key, eligible),
@@ -296,7 +272,6 @@ async fn handle_mutation(
             session_id, kind, ..
         } => store.clear_session_kind(&session_id, kind),
         ClientMessage::Snapshot => unreachable!("snapshot handled separately"),
-        ClientMessage::Project { .. } => unreachable!("projection handled separately"),
     };
     let message = match result {
         Ok(snapshot) => AttentionSocketMessage::MutationResult {

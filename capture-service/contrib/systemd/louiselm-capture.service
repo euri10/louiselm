@@ -14,6 +14,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/share/louiselm %h/.local/state/louiselm %h/code/louiselm/.beads
+ReadWritePaths=-/run/louiselm-attention
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
