@@ -73,6 +73,7 @@ local nvim = vim
 ---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget>> Click targets by window and minwid.
 ---@field winbar_resize_autocmd? integer Resize observer removed on disposal.
 ---@field current_id string? Currently displayed session id.
+---@field overview? louiselm.ui.OverviewState Current-Session sidebar owned by this chat.
 ---@field handoffs louiselm.ui.Handoffs Review buffers and takeover validation.
 ---@field recovery louiselm.workflow.Recovery Park admission and pending resume resources.
 ---@field disposed boolean Whether the chat UI has been disposed.
@@ -109,7 +110,7 @@ local nvim = vim
 ---@field resume_session fun(self: louiselm.ui.Chat, all_workspaces?: boolean): boolean, string? Discover and load a prior ACP session.
 ---@field resume_park fun(self: louiselm.ui.Chat): boolean, string? Discover and load a durable cold-Parked Run.
 ---@field park fun(self: louiselm.ui.Chat): boolean, string? Cold-Park the current Session through a Run.
----@field session_overview fun(self: louiselm.ui.Chat): boolean, string? Open side-by-side vertical windows showing modified files and edition line numbers for each session.
+---@field session_overview fun(self: louiselm.ui.Chat): boolean, string? Open a left sidebar with the invoking Session's modified files and edition lines.
 ---@field dispose fun(self: louiselm.ui.Chat): boolean Dispose buffers and listeners.
 
 local M = {}
@@ -1997,6 +1998,9 @@ end
 ---@param view louiselm.ui.ChatView
 local function close_view(self, view)
   local id = view.session:inspect().id
+  if self.overview ~= nil and self.overview.session_id == id then
+    require("louiselm.ui.session_overview").close(self)
+  end
   local state = view.session:inspect()
   if state.acp_session_id ~= nil then
     self.attention:session_disposed(state.acp_session_id)
@@ -2571,7 +2575,7 @@ function Chat:resume_park()
   end)
 end
 
----Open side-by-side vertical windows showing modified files and edition line numbers for each session.
+---Open a left sidebar with the invoking Session's modified files and edition lines.
 ---@param self louiselm.ui.Chat
 ---@return boolean opened
 ---@return string? error_message
@@ -2592,7 +2596,7 @@ function Chat:dispose()
   end
   self.disposed = true
   local SessionOverview = require("louiselm.ui.session_overview")
-  SessionOverview.close()
+  SessionOverview.close(self)
   if self.winbar_resize_autocmd ~= nil then
     nvim.api.nvim_del_autocmd(self.winbar_resize_autocmd)
     self.winbar_resize_autocmd = nil

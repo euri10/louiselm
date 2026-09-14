@@ -7,6 +7,8 @@ local T = MiniTest.new_set()
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+local chats = {}
+
 local function fake_session(id, agent, working_dir)
   local listeners = {}
   local session = {
@@ -108,6 +110,12 @@ local function fake_api()
       return true
     end,
   }
+end
+
+local function new_chat()
+  local instance = assert(Chat.new(fake_api(), { start_insert_on_switch = false }))
+  chats[#chats + 1] = instance
+  return instance
 end
 
 T["diff_parser"] = MiniTest.new_set()
@@ -313,13 +321,22 @@ T["rendering"]["renders buffer lines and line jump targets"] = function()
   MiniTest.expect.equality(has_target_42, true)
 end
 
-T["multi_window_overview"] = MiniTest.new_set()
+T["sidebar"] = MiniTest.new_set({
+  hooks = {
+    post_case = function()
+      for _, chat in ipairs(chats) do
+        chat:dispose()
+      end
+      chats = {}
+    end,
+  },
+})
 
-T["multi_window_overview"]["completed Codex multi-file diffs populate and refresh the overview"] = function()
+T["sidebar"]["completed Codex multi-file diffs populate and refresh the overview"] = function()
   -- Captured ordering/shape: proxy/sessions/01a0a0b7-147e-75e1-a37e-f3bf254b9764/log.jsonl:484-485
   -- under ~/.local/state/acp-llm-adapter/: two diffs, then a status-only completion.
   -- Paths and text are replaced; no rawInput was present in the captured call.
-  local chat = assert(Chat.new(fake_api()))
+  local chat = new_chat()
   local session = fake_session("codex-edits", "codex", "/workspace")
   assert(chat:attach(session))
   assert(chat:session_overview())
@@ -338,7 +355,7 @@ T["multi_window_overview"]["completed Codex multi-file diffs populate and refres
     },
   }
   session:emit({ type = "tool_call_started", session_id = "codex-edits", data = started })
-  SessionOverview.refresh()
+  SessionOverview.refresh(chat)
   MiniTest.expect.equality(text():find("(no files modified yet)", 1, true) ~= nil, true)
   session:emit({
     type = "tool_call_finished",
@@ -353,7 +370,7 @@ T["multi_window_overview"]["completed Codex multi-file diffs populate and refres
   )
   MiniTest.expect.equality(text():find("existing.lua", 1, true) ~= nil, true)
   MiniTest.expect.equality(text():find("new.lua", 1, true) ~= nil, true)
-  assert(SessionOverview.close())
+  assert(SessionOverview.close(chat))
   assert(chat:session_overview())
   buf = nvim.api.nvim_get_current_buf()
   MiniTest.expect.equality(text():find("2 modified (+3 -1)", 1, true) ~= nil, true)
@@ -369,13 +386,13 @@ T["multi_window_overview"]["completed Codex multi-file diffs populate and refres
       data = { toolCallId = "ignored-" .. index, status = index == 1 and "failed" or "completed", content = { block } },
     })
   end
-  SessionOverview.refresh()
+  SessionOverview.refresh(chat)
   MiniTest.expect.equality(text():find("2 modified (+3 -1)", 1, true) ~= nil, true)
   chat:dispose()
 end
 
-T["multi_window_overview"]["opens 5 vertical windows for 5 sessions"] = function()
-  local chat = assert(Chat.new(fake_api()))
+T["sidebar"]["opens one left sidebar for the invoking Session and reuses it"] = function()
+  local chat = new_chat()
 
   -- Create 5 sessions with distinct edits
   local sessions = {}
@@ -393,38 +410,59 @@ T["multi_window_overview"]["opens 5 vertical windows for 5 sessions"] = function
     sessions[i] = s
   end
 
+  local tabpage = nvim.api.nvim_get_current_tabpage()
+  local chat_win = nvim.api.nvim_get_current_win()
+  local chat_buf = nvim.api.nvim_get_current_buf()
+  local tab_count = #nvim.api.nvim_list_tabpages()
+  local window_count = #nvim.api.nvim_tabpage_list_wins(tabpage)
   local opened, open_error = SessionOverview.open(chat)
   MiniTest.expect.equality(open_error, nil)
   MiniTest.expect.equality(opened, true)
-  MiniTest.expect.equality(SessionOverview.is_open(), true)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
 
-  local tabpage = nvim.api.nvim_get_current_tabpage()
+  MiniTest.expect.equality(nvim.api.nvim_get_current_tabpage(), tabpage)
+  MiniTest.expect.equality(#nvim.api.nvim_list_tabpages(), tab_count)
   local wins = nvim.api.nvim_tabpage_list_wins(tabpage)
-  MiniTest.expect.equality(#wins, 5)
+  MiniTest.expect.equality(#wins, window_count + 1)
+  local sidebar_win = nvim.api.nvim_get_current_win()
+  local sidebar_buf = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(nvim.api.nvim_win_get_position(sidebar_win)[2], 0)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(chat_win), chat_buf)
 
-  for i, win in ipairs(wins) do
-    local buf = nvim.api.nvim_win_get_buf(win)
-    local lines = nvim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local text = table.concat(lines, "\n")
-    MiniTest.expect.equality(text:find("SESSION: session%-" .. i) ~= nil, true)
-    MiniTest.expect.equality(text:find("task_" .. i .. "%.txt") ~= nil, true)
+  local function text()
+    return table.concat(nvim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false), "\n")
   end
+  MiniTest.expect.equality(text():find("SESSION: session-5", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text():find("task_5.txt", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text():find("task_1.txt", 1, true), nil)
+  assert(chat:session_overview())
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), sidebar_win)
+  MiniTest.expect.equality(#nvim.api.nvim_tabpage_list_wins(tabpage), window_count + 1)
+
+  nvim.api.nvim_set_current_win(chat_win)
+  assert(chat:switch("session-1"))
+  assert(chat:session_overview())
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), sidebar_win)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), sidebar_buf)
+  MiniTest.expect.equality(text():find("task_1.txt", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text():find("task_5.txt", 1, true), nil)
 
   -- Close overview
-  assert(SessionOverview.close())
-  MiniTest.expect.equality(SessionOverview.is_open(), false)
+  assert(SessionOverview.close(chat))
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
   chat:dispose()
 end
 
-T["multi_window_overview"]["chat:session_overview opens and refreshes live on events"] = function()
-  local chat = assert(Chat.new(fake_api()))
+T["sidebar"]["chat:session_overview opens and refreshes live on events"] = function()
+  local chat = new_chat()
   local s1 = fake_session("s1", "claude")
   local s2 = fake_session("s2", "codex")
   assert(chat:attach(s1))
   assert(chat:attach(s2))
+  assert(chat:switch("s1"))
 
   assert(chat:session_overview())
-  MiniTest.expect.equality(SessionOverview.is_open(), true)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
 
   local wins = nvim.api.nvim_tabpage_list_wins(0)
   MiniTest.expect.equality(#wins, 2)
@@ -457,10 +495,10 @@ T["multi_window_overview"]["chat:session_overview opens and refreshes live on ev
   MiniTest.expect.equality(text1:find("L10%-25") ~= nil, true)
 
   chat:dispose()
-  MiniTest.expect.equality(SessionOverview.is_open(), false)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
 end
 
-T["multi_window_overview"]["jump keymap navigates to target file and line"] = function()
+T["sidebar"]["jump keymap navigates to target file and line"] = function()
   local tmp_file = nvim.fn.tempname() .. ".lua"
   local content = {}
   for i = 1, 50 do
@@ -468,7 +506,7 @@ T["multi_window_overview"]["jump keymap navigates to target file and line"] = fu
   end
   nvim.fn.writefile(content, tmp_file)
 
-  local chat = assert(Chat.new(fake_api()))
+  local chat = new_chat()
   local s1 = fake_session("s1", "claude")
   s1.edits = {
     {
@@ -480,6 +518,8 @@ T["multi_window_overview"]["jump keymap navigates to target file and line"] = fu
     },
   }
   assert(chat:attach(s1))
+  local chat_win = nvim.api.nvim_get_current_win()
+  local chat_buf = nvim.api.nvim_get_current_buf()
   assert(chat:session_overview())
 
   local buf = nvim.api.nvim_get_current_buf()
@@ -512,8 +552,10 @@ T["multi_window_overview"]["jump keymap navigates to target file and line"] = fu
   MiniTest.expect.equality(current_path, expected_path)
   local cursor = nvim.api.nvim_win_get_cursor(0)
   MiniTest.expect.equality(cursor[1], 35)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(chat_win), chat_buf)
 
-  SessionOverview.close()
+  SessionOverview.close(chat)
   chat:dispose()
   if nvim.api.nvim_buf_is_valid(current_buf) then
     nvim.api.nvim_buf_delete(current_buf, { force = true })
@@ -521,12 +563,12 @@ T["multi_window_overview"]["jump keymap navigates to target file and line"] = fu
   nvim.fn.delete(tmp_file)
 end
 
-T["multi_window_overview"]["q keymap closes overview"] = function()
-  local chat = assert(Chat.new(fake_api()))
+T["sidebar"]["q keymap closes overview"] = function()
+  local chat = new_chat()
   local s1 = fake_session("s1", "claude")
   assert(chat:attach(s1))
   assert(chat:session_overview())
-  MiniTest.expect.equality(SessionOverview.is_open(), true)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
 
   local buf = nvim.api.nvim_get_current_buf()
   local close_map = nil
@@ -539,8 +581,145 @@ T["multi_window_overview"]["q keymap closes overview"] = function()
   assert(type(close_map) == "function")
   close_map()
 
-  MiniTest.expect.equality(SessionOverview.is_open(), false)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
   chat:dispose()
+end
+
+T["sidebar"]["uses the focused chat buffer even when another Session was last switched"] = function()
+  local chat = new_chat()
+  assert(chat:attach(fake_session("focused", "codex")))
+  local first_window = nvim.api.nvim_get_current_win()
+  nvim.cmd("vsplit")
+  local second_window = nvim.api.nvim_get_current_win()
+  assert(chat:attach(fake_session("last-switched", "codex")))
+  nvim.api.nvim_set_current_win(first_window)
+  assert(chat:session_overview())
+  local sidebar_buf = nvim.api.nvim_get_current_buf()
+  local function text()
+    return table.concat(nvim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false), "\n")
+  end
+  MiniTest.expect.equality(text():find("SESSION: focused", 1, true) ~= nil, true)
+  assert(chat:session_overview())
+  assert(SessionOverview.refresh(chat))
+  MiniTest.expect.equality(text():find("SESSION: focused", 1, true) ~= nil, true)
+  SessionOverview.close(chat)
+  nvim.api.nvim_win_close(second_window, true)
+end
+
+T["sidebar"]["manual window close releases observers and queued events cannot revive it"] = function()
+  local chat = new_chat()
+  local session = fake_session("cleanup", "codex")
+  assert(chat:attach(session))
+  assert(chat:session_overview())
+  local window = nvim.api.nvim_get_current_win()
+  local buffer = nvim.api.nvim_get_current_buf()
+  local group = chat.overview.augroup
+  session:emit({ type = "state_changed", session_id = "cleanup", data = {} })
+  nvim.api.nvim_win_close(window, true)
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return chat.overview == nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  MiniTest.expect.equality(nvim.fn.exists("#LouiselmOverview" .. buffer), 0)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
+  assert(chat:session_overview())
+  MiniTest.expect.equality(chat.overview.augroup ~= group, true)
+  session:emit({ type = "state_changed", session_id = "cleanup", data = {} })
+  chat:dispose()
+  nvim.wait(20)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
+end
+
+T["sidebar"]["fast events refresh only after scheduling and keep other Sessions out"] = function()
+  local chat = new_chat()
+  local session = fake_session("fast", "codex")
+  assert(chat:attach(session))
+  assert(chat:attach(fake_session("background", "codex")))
+  assert(chat:switch("fast"))
+  assert(chat:session_overview())
+  local buffer = nvim.api.nvim_get_current_buf()
+  local function text()
+    return table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+  end
+  local timer = assert(nvim.uv.new_timer())
+  local event_error
+  timer:start(0, 0, function()
+    timer:close()
+    session.state.status = "prompting"
+    local ok, err = pcall(session.emit, session, { type = "state_changed", session_id = "fast", data = {} })
+    if not ok then
+      event_error = err
+    end
+  end)
+  MiniTest.expect.equality(
+    nvim.wait(200, function()
+      return event_error ~= nil or text():find("STATUS:  prompting", 1, true) ~= nil
+    end),
+    true
+  )
+  MiniTest.expect.equality(event_error, nil)
+  MiniTest.expect.equality(text():find("SESSION: background", 1, true), nil)
+end
+
+T["sidebar"]["disposing one chat leaves another chat sidebar open"] = function()
+  local first = new_chat()
+  assert(first:attach(fake_session("owner-a", "codex")))
+  local host = nvim.api.nvim_get_current_win()
+  assert(first:session_overview())
+  nvim.api.nvim_set_current_win(host)
+  local second = new_chat()
+  assert(second:attach(fake_session("owner-b", "codex")))
+  assert(second:session_overview())
+  first:dispose()
+  MiniTest.expect.equality(SessionOverview.is_open(second), true)
+end
+
+T["sidebar"]["missing and disposed subjects never fall back to another Session"] = function()
+  local chat = new_chat()
+  MiniTest.expect.equality({ chat:session_overview() }, { false, "no chat session is attached" })
+  local subject = fake_session("retired", "codex")
+  assert(chat:attach(subject))
+  assert(chat:attach(fake_session("survivor", "codex")))
+  assert(chat:switch("retired"))
+  assert(chat:session_overview())
+  subject:dispose()
+  MiniTest.expect.equality(SessionOverview.refresh(chat), false)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
+  MiniTest.expect.equality({ chat:session_overview() }, { false, "session is disposed" })
+  chat:dispose()
+  MiniTest.expect.equality({ chat:session_overview() }, { false, "chat UI is disposed" })
+end
+
+T["sidebar"]["diff preview preserves the sidebar and chat"] = function()
+  local chat = new_chat()
+  local session = fake_session("preview", "codex")
+  session.edits = { { rawInput = { path = "/tmp/overview-preview.lua", diff = "@@ -1 +1 @@\n-old\n+new" } } }
+  assert(chat:attach(session))
+  local host = nvim.api.nvim_get_current_win()
+  local chat_buf = nvim.api.nvim_get_current_buf()
+  assert(chat:session_overview())
+  local buffer = nvim.api.nvim_get_current_buf()
+  for row, line in ipairs(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+    if line:find("▾", 1, true) ~= nil then
+      nvim.api.nvim_win_set_cursor(0, { row, 0 })
+      break
+    end
+  end
+  for _, map in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
+    if map.lhs == "d" then
+      map.callback()
+      break
+    end
+  end
+  MiniTest.expect.equality(nvim.api.nvim_win_get_config(0).relative, "editor")
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(host), chat_buf)
+  local preview_buffer = nvim.api.nvim_get_current_buf()
+  chat:dispose()
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(preview_buffer), false)
 end
 
 T["extract_file_edit"]["extracts line range for text replacement"] = function()

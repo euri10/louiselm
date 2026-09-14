@@ -137,6 +137,14 @@ Default shortcuts:
 - `<leader>lsn` creates a Session.
 - `<leader>lsw` switches Sessions.
 - `<leader>lsx` closes a Session.
+- `<leader>sO` opens Session Overview in a left sidebar.
+
+The overview shows the invoking Session's modified files, change totals, and
+edition lines beside the conversation. It refreshes as the Session works.
+Press Enter on a file or edition to open that location, `d` to preview its diff,
+`s` to return to the chat, `r` to refresh, and `q` or Escape to close the sidebar.
+To inspect a different Session, invoke `<leader>sO` from that Session's chat.
+The same view is available through `:LouiselmSessionOverview`.
 
 ## 7. Continue learning
 

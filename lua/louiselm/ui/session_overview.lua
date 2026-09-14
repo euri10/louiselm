@@ -1,5 +1,4 @@
----Multi-session overview displaying side-by-side vertical windows for concurrent sessions,
----showing each session's modified files, line numbers of editions, diff stats, and conflict alerts.
+---Current-Session sidebar showing modified files, edition lines, diff stats, and conflict alerts.
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -44,22 +43,15 @@ local M = {}
 ---@field line integer Line number to jump to
 ---@field diff? string Unified diff for preview
 
----@class louiselm.ui.SessionOverviewOptions
----@field cwd? string Working directory for relative paths
----@field chat? louiselm.ui.Chat Associated chat controller
-
 ---@class louiselm.ui.OverviewState
----@field tabpage integer Tabpage handle containing the vertical windows
----@field windows integer[] Window handles for each session
----@field buffers integer[] Buffer handles for each session
----@field session_ids string[] Session IDs corresponding to each window
----@field line_targets table<integer, table<integer, louiselm.ui.LineTarget>> Buffer-specific line jump targets
----@field previous_tabpage? integer Tabpage focused prior to opening overview
----@field unsubscribes fun()[] Event listener cleanup callbacks
----@field chat? louiselm.ui.Chat Associated chat controller
-
----@type louiselm.ui.OverviewState?
-local active_overview = nil
+---@field window integer Sidebar window.
+---@field buffer integer Sidebar buffer.
+---@field session_id string Subject Session, retained while the sidebar has focus.
+---@field return_window integer Window from which the sidebar was opened.
+---@field line_targets table<integer, louiselm.ui.LineTarget>
+---@field unsubscribes fun()[]
+---@field augroup integer Window/buffer cleanup observers.
+---@field preview_buffer? integer Diff preview closed with the sidebar.
 
 ---Parse unified diff hunks into line ranges and edit counts.
 ---@param diff_text string Unified diff text
@@ -517,13 +509,12 @@ function M.render_session_buffer(summary)
     end
   end
 
-  add_line("========================================")
   add_line(string.format("SESSION: %s (%s)", summary.name, summary.agent))
   add_line(string.format("STATUS:  %s", summary.status))
   add_line(
     string.format("FILES:   %d modified (+%d -%d)", summary.total_files, summary.total_added, summary.total_deleted)
   )
-  add_line("========================================")
+  add_line("CWD:     " .. summary.working_dir)
   add_line("")
 
   if #summary.files == 0 then
@@ -560,293 +551,302 @@ function M.render_session_buffer(summary)
     end
   end
 
-  add_line("----------------------------------------")
-  add_line("[<CR>] Jump to line   [d] Diff preview")
-  add_line("[s] Switch chat        [r] Refresh")
-  add_line("[q] Close overview")
+  add_line("[<CR>] Open file  [d] Diff")
+  add_line("[s] Chat  [r] Refresh  [q] Close")
 
   return lines, targets
 end
 
----Check whether the overview tabpage is currently open.
+---Check whether this chat's sidebar is visible.
+---@param chat louiselm.ui.Chat
 ---@return boolean
-function M.is_open()
-  if active_overview == nil then
-    return false
-  end
-  return nvim.api.nvim_tabpage_is_valid(active_overview.tabpage)
+function M.is_open(chat)
+  local current = chat.overview
+  return current ~= nil
+    and nvim.api.nvim_win_is_valid(current.window)
+    and nvim.api.nvim_buf_is_valid(current.buffer)
+    and nvim.api.nvim_win_get_buf(current.window) == current.buffer
 end
 
----Close the overview tabpage and release listeners.
+---Close this chat's sidebar and release its observers; false if already closed.
+---@param chat louiselm.ui.Chat
 ---@return boolean closed
-function M.close()
-  local current = active_overview
-  active_overview = nil
+function M.close(chat)
+  local current = chat.overview
   if current == nil then
     return false
   end
-
-  for _, unsub in ipairs(current.unsubscribes) do
-    pcall(unsub)
+  chat.overview = nil
+  nvim.api.nvim_del_augroup_by_id(current.augroup)
+  for _, unsubscribe in ipairs(current.unsubscribes) do
+    unsubscribe()
   end
-
-  if nvim.api.nvim_tabpage_is_valid(current.tabpage) then
-    pcall(function()
-      if #nvim.api.nvim_list_tabpages() > 1 then
-        nvim.api.nvim_set_current_tabpage(current.tabpage)
-        nvim.cmd("tabclose")
-      else
-        for _, win in ipairs(current.windows) do
-          if nvim.api.nvim_win_is_valid(win) and #nvim.api.nvim_tabpage_list_wins(current.tabpage) > 1 then
-            pcall(nvim.api.nvim_win_close, win, true)
-          end
-        end
-        for _, buf in ipairs(current.buffers) do
-          if nvim.api.nvim_buf_is_valid(buf) then
-            pcall(nvim.api.nvim_buf_delete, buf, { force = true })
-          end
-        end
-      end
-    end)
+  if current.preview_buffer ~= nil then
+    DiffBuffer.close(current.preview_buffer)
   end
-
-  if current.previous_tabpage ~= nil and nvim.api.nvim_tabpage_is_valid(current.previous_tabpage) then
-    pcall(nvim.api.nvim_set_current_tabpage, current.previous_tabpage)
+  local focused = nvim.api.nvim_get_current_win() == current.window
+  if
+    nvim.api.nvim_win_is_valid(current.window)
+    and nvim.api.nvim_win_get_buf(current.window) == current.buffer
+    and #nvim.api.nvim_tabpage_list_wins(nvim.api.nvim_win_get_tabpage(current.window)) > 1
+  then
+    nvim.api.nvim_win_close(current.window, true)
   end
-
+  if nvim.api.nvim_buf_is_valid(current.buffer) then
+    nvim.api.nvim_buf_delete(current.buffer, { force = true })
+  end
+  if focused and nvim.api.nvim_win_is_valid(current.return_window) then
+    nvim.api.nvim_set_current_win(current.return_window)
+  end
   return true
 end
 
----Refresh the overview buffers in-place.
----@return boolean refreshed
-function M.refresh()
-  if not M.is_open() or active_overview == nil then
+---Refresh the subject Session in place; close if its view was removed or disposed.
+---@param chat louiselm.ui.Chat
+---@return boolean refreshed False when no live subject/sidebar remains.
+function M.refresh(chat)
+  local current = chat.overview
+  if current == nil then
+    return false
+  end
+  local view = chat.views[current.session_id]
+  if chat.disposed or not M.is_open(chat) or view == nil or view.session:inspect().status == "disposed" then
+    M.close(chat)
     return false
   end
 
-  local chat = active_overview.chat
   local summaries = {}
-  local views_or_sessions = {}
-
-  if chat ~= nil and chat.views ~= nil then
-    for _, session_id in ipairs(chat.view_order or {}) do
-      local view = chat.views[session_id]
-      if view ~= nil then
-        views_or_sessions[#views_or_sessions + 1] = view
-        summaries[#summaries + 1] = M.collect_session_summary(view)
+  local subject
+  for _, id in ipairs(chat.view_order) do
+    local candidate = chat.views[id]
+    if candidate ~= nil then
+      local summary = M.collect_session_summary(candidate)
+      summaries[#summaries + 1] = summary
+      if id == current.session_id then
+        subject = summary
       end
     end
   end
-
+  if subject == nil then
+    M.close(chat)
+    return false
+  end
   M.detect_conflicts(summaries)
-
-  for index, summary in ipairs(summaries) do
-    local buf = active_overview.buffers[index]
-    local win = active_overview.windows[index]
-    if buf ~= nil and nvim.api.nvim_buf_is_valid(buf) then
-      local lines, targets = M.render_session_buffer(summary)
-      active_overview.line_targets[buf] = targets
-      nvim.api.nvim_set_option_value("modifiable", true, { buf = buf })
-      nvim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-      nvim.api.nvim_set_option_value("modifiable", false, { buf = buf })
-
-      if win ~= nil and nvim.api.nvim_win_is_valid(win) then
-        local bar = string.format(" %s · %s [%s] ", summary.name, summary.agent, summary.status)
-        pcall(nvim.api.nvim_set_option_value, "winbar", bar, { win = win })
-      end
-    end
-  end
-
+  local lines, targets = M.render_session_buffer(subject)
+  current.line_targets = targets
+  nvim.api.nvim_set_option_value("modifiable", true, { buf = current.buffer })
+  nvim.api.nvim_buf_set_lines(current.buffer, 0, -1, false, lines)
+  nvim.api.nvim_set_option_value("modifiable", false, { buf = current.buffer })
   return true
 end
 
----Open the multi-session overview tabpage with vertical windows for each session.
----@param source? louiselm.ui.Chat|louiselm.session.Session[]|table Chat or list of sessions
----@param options? louiselm.ui.SessionOverviewOptions
----@return boolean opened
----@return string? error_message
-function M.open(source, options)
-  options = options or {}
-  local chat = options.chat
+---@param current louiselm.ui.OverviewState
+---@return louiselm.ui.LineTarget?
+local function cursor_target(current)
+  return current.line_targets[nvim.api.nvim_win_get_cursor(current.window)[1]]
+end
 
-  -- Check if source is a Chat instance
-  if source ~= nil and type(source) == "table" and source.views ~= nil then
-    chat = source
+---@param current louiselm.ui.OverviewState
+local function jump_to_file(current)
+  local target = cursor_target(current)
+  if target == nil then
+    return
   end
-
-  local views_or_sessions = {}
-  local summaries = {}
-
-  if chat ~= nil and chat.views ~= nil then
-    for _, session_id in ipairs(chat.view_order or {}) do
-      local view = chat.views[session_id]
-      if view ~= nil then
-        views_or_sessions[#views_or_sessions + 1] = view
-        summaries[#summaries + 1] = M.collect_session_summary(view, options.cwd)
-      end
-    end
-  elseif type(source) == "table" and #source > 0 then
-    for _, item in ipairs(source) do
-      views_or_sessions[#views_or_sessions + 1] = item
-      summaries[#summaries + 1] = M.collect_session_summary(item, options.cwd)
+  local destination
+  for _, window in ipairs(nvim.api.nvim_tabpage_list_wins(0)) do
+    local buffer = nvim.api.nvim_win_get_buf(window)
+    if nvim.bo[buffer].buftype == "" and nvim.api.nvim_win_get_config(window).relative == "" then
+      destination = window
+      break
     end
   end
-
-  if #summaries == 0 then
-    return false, "no active sessions to display in overview"
-  end
-
-  if M.is_open() then
-    M.refresh()
-    if active_overview ~= nil and nvim.api.nvim_tabpage_is_valid(active_overview.tabpage) then
-      nvim.api.nvim_set_current_tabpage(active_overview.tabpage)
-    end
-    return true
-  end
-
-  M.detect_conflicts(summaries)
-
-  local previous_tabpage = nvim.api.nvim_get_current_tabpage()
-  nvim.cmd("tabnew")
-  local tabpage = nvim.api.nvim_get_current_tabpage()
-
-  local windows = {}
-  local buffers = {}
-  local session_ids = {}
-  local line_targets = {}
-  local unsubscribes = {}
-
-  for index, summary in ipairs(summaries) do
-    local win
-    if index == 1 then
-      win = nvim.api.nvim_get_current_win()
+  local ok, err = pcall(function()
+    if destination ~= nil then
+      nvim.api.nvim_set_current_win(destination)
+      nvim.api.nvim_cmd({ cmd = "edit", args = { target.path } }, {})
     else
-      nvim.cmd("rightbelow vsplit")
-      win = nvim.api.nvim_get_current_win()
+      nvim.api.nvim_cmd({ cmd = "vsplit", args = { target.path }, mods = { split = "botright" } }, {})
     end
+    local line = math.min(math.max(1, target.line), nvim.api.nvim_buf_line_count(0))
+    nvim.api.nvim_win_set_cursor(0, { line, 0 })
+  end)
+  if not ok then
+    nvim.notify("louiselm: could not open overview file: " .. tostring(err), nvim.log.levels.ERROR)
+  end
+end
 
-    local buf = nvim.api.nvim_create_buf(false, true)
-    nvim.api.nvim_win_set_buf(win, buf)
+---Open or reuse a left sidebar for the invoking Session, without replacing chat windows.
+---@param chat louiselm.ui.Chat Owner and source of attached Sessions.
+---@return boolean opened
+---@return string? error_message Missing/disposed chat or Session.
+function M.open(chat)
+  if chat.disposed then
+    return false, "chat UI is disposed"
+  end
+  local window = nvim.api.nvim_get_current_win()
+  local buffer = nvim.api.nvim_get_current_buf()
+  local current = chat.overview
+  local session_id = current ~= nil and window == current.window and current.session_id or chat.current_id
+  -- Window focus can change without Chat:switch() when several chats are visible.
+  for id, view in pairs(chat.views) do
+    if view.renderer.buffer == buffer then
+      session_id = id
+      break
+    end
+  end
+  local view = session_id and chat.views[session_id]
+  if session_id == nil or view == nil then
+    return false, "no chat session is attached"
+  end
+  if view.session:inspect().status == "disposed" then
+    return false, "session is disposed"
+  end
 
-    nvim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
-    nvim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
-    nvim.api.nvim_set_option_value("swapfile", false, { buf = buf })
-
-    local lines, targets = M.render_session_buffer(summary)
-    line_targets[buf] = targets
-
-    nvim.api.nvim_set_option_value("modifiable", true, { buf = buf })
-    nvim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    nvim.api.nvim_set_option_value("modifiable", false, { buf = buf })
-    nvim.api.nvim_set_option_value("filetype", "louiselm_overview", { buf = buf })
-
-    nvim.wo[win].wrap = false
-    nvim.wo[win].cursorline = true
-    nvim.wo[win].number = false
-    nvim.wo[win].relativenumber = false
-    nvim.wo[win].signcolumn = "no"
-
-    local bar = string.format(" %s · %s [%s] ", summary.name, summary.agent, summary.status)
-    pcall(nvim.api.nvim_set_option_value, "winbar", bar, { win = win })
-
-    windows[#windows + 1] = win
-    buffers[#buffers + 1] = buf
-    session_ids[#session_ids + 1] = summary.session_id
-
-    -- Register interactive buffer keymaps
-    local captured_buf = buf
-    local captured_session_id = summary.session_id
-
-    nvim.keymap.set("n", "<CR>", function()
-      local cursor = nvim.api.nvim_win_get_cursor(0)
-      local target = line_targets[captured_buf] and line_targets[captured_buf][cursor[1]]
-      if target ~= nil and target.path ~= nil then
-        if previous_tabpage ~= nil and nvim.api.nvim_tabpage_is_valid(previous_tabpage) then
-          nvim.api.nvim_set_current_tabpage(previous_tabpage)
-        else
-          nvim.cmd("tabnew")
-        end
-        nvim.cmd("edit " .. nvim.fn.fnameescape(target.path))
-        local total_lines = nvim.api.nvim_buf_line_count(0)
-        local safe_line = math.min(math.max(1, target.line), total_lines)
-        nvim.api.nvim_win_set_cursor(0, { safe_line, 0 })
-      end
-    end, { buffer = captured_buf, silent = true, nowait = true, desc = "Jump to file and edition line" })
-
-    nvim.keymap.set("n", "d", function()
-      local cursor = nvim.api.nvim_win_get_cursor(0)
-      local target = line_targets[captured_buf] and line_targets[captured_buf][cursor[1]]
-      if target ~= nil and target.diff ~= nil and target.diff ~= "" then
-        local preview = Apply.preview({ path = target.path, diff = target.diff })
-        if preview ~= nil then
-          DiffBuffer.open(preview, { focus = true })
-        else
-          local original = Apply.read(target.path) or ""
-          DiffBuffer.open({
-            path = target.path,
-            original = original,
-            proposed = original,
-            diff = target.diff,
-          }, { focus = true })
-        end
-      end
-    end, { buffer = captured_buf, silent = true, nowait = true, desc = "Preview diff for file" })
-
-    nvim.keymap.set("n", "s", function()
-      if chat ~= nil and type(chat.switch) == "function" then
-        M.close()
-        chat:switch(captured_session_id)
-      end
-    end, { buffer = captured_buf, silent = true, nowait = true, desc = "Switch to this session in chat" })
-
-    nvim.keymap.set("n", "r", function()
-      M.refresh()
-    end, { buffer = captured_buf, silent = true, nowait = true, desc = "Refresh multi-session overview" })
-
-    nvim.keymap.set("n", "q", function()
-      M.close()
-    end, { buffer = captured_buf, silent = true, nowait = true, desc = "Close multi-session overview" })
-
-    nvim.keymap.set("n", "<Esc>", function()
-      M.close()
-    end, { buffer = captured_buf, silent = true, nowait = true, desc = "Close multi-session overview" })
-
-    -- Listen to session events for live updates
-    local session_obj = (views_or_sessions[index].session or views_or_sessions[index])
-    if session_obj ~= nil and type(session_obj.on) == "function" then
-      local unsub = session_obj:on(function(event)
-        if
-          event.type == "tool_call_finished"
-          or event.type == "permission_requested"
-          or event.type == "turn_done"
-          or event.type == "state_changed"
-        then
-          nvim.schedule(function()
-            M.refresh()
-          end)
+  nvim.cmd.stopinsert()
+  if
+    current ~= nil
+    and (not M.is_open(chat) or nvim.api.nvim_win_get_tabpage(current.window) ~= nvim.api.nvim_get_current_tabpage())
+  then
+    M.close(chat)
+    current = nil
+  end
+  if current == nil then
+    local sidebar_buffer = nvim.api.nvim_create_buf(false, true)
+    local opened, sidebar_window =
+      pcall(nvim.api.nvim_open_win, sidebar_buffer, true, { split = "left", win = -1, width = 44 })
+    if not opened then
+      nvim.api.nvim_buf_delete(sidebar_buffer, { force = true })
+      return false, "could not open Session overview: " .. tostring(sidebar_window)
+    end
+    nvim.bo[sidebar_buffer].bufhidden = "wipe"
+    nvim.bo[sidebar_buffer].filetype = "louiselm_overview"
+    nvim.wo[sidebar_window].wrap = true
+    nvim.wo[sidebar_window].linebreak = true
+    nvim.wo[sidebar_window].cursorline = true
+    nvim.wo[sidebar_window].number = false
+    nvim.wo[sidebar_window].relativenumber = false
+    nvim.wo[sidebar_window].signcolumn = "no"
+    nvim.wo[sidebar_window].foldcolumn = "0"
+    nvim.wo[sidebar_window].winfixwidth = true
+    nvim.wo[sidebar_window].winbar = " Session Overview "
+    current = {
+      window = sidebar_window,
+      buffer = sidebar_buffer,
+      session_id = session_id,
+      return_window = window,
+      line_targets = {},
+      unsubscribes = {},
+      augroup = nvim.api.nvim_create_augroup("LouiselmOverview" .. sidebar_buffer, { clear = true }),
+    }
+    chat.overview = current
+    local sidebar = current
+    local function cleanup()
+      nvim.schedule(function()
+        if chat.overview == sidebar and not M.is_open(chat) then
+          M.close(chat)
         end
       end)
-      unsubscribes[#unsubscribes + 1] = unsub
     end
+    nvim.api.nvim_create_autocmd("WinClosed", {
+      group = sidebar.augroup,
+      pattern = tostring(sidebar.window),
+      callback = cleanup,
+    })
+    nvim.api.nvim_create_autocmd({ "BufWipeout", "BufWinLeave" }, {
+      group = sidebar.augroup,
+      buffer = sidebar.buffer,
+      callback = cleanup,
+    })
+    local function map(lhs, callback, desc)
+      nvim.keymap.set("n", lhs, callback, { buffer = sidebar.buffer, silent = true, nowait = true, desc = desc })
+    end
+    map("<CR>", function()
+      jump_to_file(sidebar)
+    end, "Open file at edition line")
+    map("d", function()
+      local target = cursor_target(sidebar)
+      if target ~= nil and target.diff ~= nil and target.diff ~= "" then
+        local preview = Apply.preview({ path = target.path, diff = target.diff })
+        if preview == nil then
+          local original = Apply.read(target.path) or ""
+          preview = { path = target.path, original = original, proposed = original, diff = target.diff }
+        end
+        if sidebar.preview_buffer ~= nil then
+          DiffBuffer.close(sidebar.preview_buffer)
+        end
+        local preview_buffer, err = DiffBuffer.open(preview, { focus = false })
+        if preview_buffer == nil then
+          nvim.notify("louiselm: " .. tostring(err), nvim.log.levels.ERROR)
+          return
+        end
+        sidebar.preview_buffer = preview_buffer
+        local width = math.max(1, math.min(100, nvim.o.columns - 4))
+        local height = math.max(1, math.min(30, nvim.o.lines - 4))
+        nvim.api.nvim_open_win(preview_buffer, true, {
+          relative = "editor",
+          row = math.floor((nvim.o.lines - height) / 2),
+          col = math.floor((nvim.o.columns - width) / 2),
+          width = width,
+          height = height,
+          style = "minimal",
+          border = "rounded",
+          title = " Session diff ",
+        })
+      end
+    end, "Preview file diff")
+    map("s", function()
+      local subject = chat.views[sidebar.session_id]
+      if subject ~= nil then
+        local host = subject.renderer.window
+        if host ~= nil and nvim.api.nvim_win_is_valid(host) and host ~= sidebar.window then
+          nvim.api.nvim_set_current_win(host)
+        else
+          M.close(chat)
+        end
+        local _, err = chat:switch(sidebar.session_id)
+        if err ~= nil then
+          nvim.notify("louiselm: " .. err, nvim.log.levels.ERROR)
+        end
+      end
+    end, "Focus Session chat")
+    map("r", function()
+      M.refresh(chat)
+    end, "Refresh Session overview")
+    map("q", function()
+      M.close(chat)
+    end, "Close Session overview")
+    map("<Esc>", function()
+      M.close(chat)
+    end, "Close Session overview")
   end
 
-  -- Equalize widths across all vertical splits
-  nvim.cmd("wincmd =")
-  if #windows > 0 and nvim.api.nvim_win_is_valid(windows[1]) then
-    nvim.api.nvim_set_current_win(windows[1])
+  current.session_id = session_id
+  if window ~= current.window then
+    current.return_window = window
   end
-
-  active_overview = {
-    tabpage = tabpage,
-    windows = windows,
-    buffers = buffers,
-    session_ids = session_ids,
-    line_targets = line_targets,
-    previous_tabpage = previous_tabpage,
-    unsubscribes = unsubscribes,
-    chat = chat,
-  }
-
+  for _, unsubscribe in ipairs(current.unsubscribes) do
+    unsubscribe()
+  end
+  current.unsubscribes = {}
+  local sidebar = current
+  for _, candidate in pairs(chat.views) do
+    current.unsubscribes[#current.unsubscribes + 1] = candidate.session:on(function(event)
+      if
+        event.type == "tool_call_finished"
+        or event.type == "permission_requested"
+        or event.type == "turn_done"
+        or event.type == "state_changed"
+      then
+        nvim.schedule(function()
+          if chat.overview == sidebar then
+            M.refresh(chat)
+          end
+        end)
+      end
+    end)
+  end
+  M.refresh(chat)
+  nvim.api.nvim_set_current_win(current.window)
   return true
 end
 

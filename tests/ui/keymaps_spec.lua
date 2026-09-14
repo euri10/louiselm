@@ -58,6 +58,7 @@ T["keymaps"]["installs defaults"] = function()
   MiniTest.expect.equality(mapping("n", " le").rhs, "<Cmd>LouiselmInline<CR>")
   MiniTest.expect.equality(mapping("n", " lT").rhs, "<Cmd>LouiselmInspectTool<CR>")
   MiniTest.expect.equality(mapping("n", " lB").rhs, "<Cmd>LouiselmInspectBead<CR>")
+  MiniTest.expect.equality(mapping("n", " sO").rhs, "<Cmd>LouiselmSessionOverview<CR>")
 end
 
 T["keymaps"]["can be disabled"] = function()

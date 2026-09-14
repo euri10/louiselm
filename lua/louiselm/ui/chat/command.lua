@@ -574,7 +574,7 @@ function M.register()
     local _, overview_error = current:session_overview()
     report_error(overview_error)
   end, {
-    desc = "Open side-by-side vertical windows showing modified files and edition lines for each session",
+    desc = "Open a left sidebar showing the current Session's modified files and edition lines",
     force = true,
   })
 
