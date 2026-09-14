@@ -1012,6 +1012,7 @@ fn accept_one(
 struct ConnectCommand {
     path: PathBuf,
     pin: CredentialPin,
+    manager: Option<CredentialPin>,
     completion: TransportCompletion<SeqpacketChannel>,
 }
 
@@ -1095,6 +1096,35 @@ impl SeqpacketConnector {
         pin: CredentialPin,
         completion: TransportCompletion<SeqpacketChannel>,
     ) -> Result<(), TransportError> {
+        self.queue_connection(path, pin, None, completion)
+    }
+
+    /// Connects to a service whose listener may have been created by a manager.
+    ///
+    /// The kernel peer must match either `service` or `manager`. Every received
+    /// packet must match `service` alone: listener ownership grants no sending
+    /// authority. Call only with trusted installation-derived identities.
+    /// Direct service-owned listeners remain usable across the same reconnect path.
+    ///
+    /// # Errors
+    /// Same admission and asynchronous failures as [`Self::connect`].
+    pub fn connect_via_manager(
+        &self,
+        path: &Path,
+        service: CredentialPin,
+        manager: CredentialPin,
+        completion: TransportCompletion<SeqpacketChannel>,
+    ) -> Result<(), TransportError> {
+        self.queue_connection(path, service, Some(manager), completion)
+    }
+
+    fn queue_connection(
+        &self,
+        path: &Path,
+        pin: CredentialPin,
+        manager: Option<CredentialPin>,
+        completion: TransportCompletion<SeqpacketChannel>,
+    ) -> Result<(), TransportError> {
         let commands = lock(&self.inner.core.commands);
         if self.inner.core.closed.load(Ordering::Acquire) {
             return Err(TransportError::Closed);
@@ -1106,6 +1136,7 @@ impl SeqpacketConnector {
             .try_send(ConnectCommand {
                 path: path.to_owned(),
                 pin,
+                manager,
                 completion,
             })
             .map_err(|error| match error {
@@ -1128,7 +1159,7 @@ fn connect_loop(commands: Receiver<ConnectCommand>, core: Arc<ConnectorCore>) {
             }
             return;
         }
-        let result = connect_one(&command.path, command.pin);
+        let result = connect_one(&command.path, command.pin, command.manager.as_ref());
         if core.finish(command.completion, result) {
             for command in commands.try_iter() {
                 complete(command.completion, Err(TransportError::Closed));
@@ -1138,7 +1169,11 @@ fn connect_loop(commands: Receiver<ConnectCommand>, core: Arc<ConnectorCore>) {
     }
 }
 
-fn connect_one(path: &Path, pin: CredentialPin) -> Result<SeqpacketChannel, TransportError> {
+fn connect_one(
+    path: &Path,
+    pin: CredentialPin,
+    manager: Option<&CredentialPin>,
+) -> Result<SeqpacketChannel, TransportError> {
     let address = SocketAddrUnix::new(path).map_err(|_| TransportError::InvalidAddress)?;
     let fd = socket_with(
         AddressFamily::UNIX,
@@ -1163,7 +1198,12 @@ fn connect_one(path: &Path, pin: CredentialPin) -> Result<SeqpacketChannel, Tran
     flags.remove(OFlags::NONBLOCK);
     fcntl_setfl(&fd, flags).map_err(|_| TransportError::SocketConfigurationFailed)?;
     let actual = peer_credentials(&fd)?;
-    if !pin.matches(actual)? {
+    if !pin.matches(actual)?
+        && !manager
+            .map(|manager| manager.matches(actual))
+            .transpose()?
+            .unwrap_or(false)
+    {
         return Err(TransportError::PeerCredentialsMismatch {
             expected: pin,
             actual,

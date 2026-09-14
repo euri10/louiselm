@@ -48,6 +48,9 @@ mod verification;
 #[path = "installed_certification_tests.rs"]
 mod certification;
 
+#[path = "installed_socket_tests.rs"]
+mod socket_activation;
+
 struct BrokerAccount;
 
 impl BrokerAccount {

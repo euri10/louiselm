@@ -39,9 +39,25 @@ descriptor remains usable across broker close and restart.
 `BrokerService::over` composes the existing stores over that listener.
 `InstalledBroker::over` additionally checks its kernel-reported path against
 the installed rendezvous and uses the same identity and private-directory
-checks as `bind`. Service-manager credential and provisioning integration still
-belongs to `louiselm-96pv.3` and `louiselm-96pv.5`; transport tests alone do not
-establish that a root-created listener satisfies the supervisor's broker pin.
+checks as `bind`.
+
+`connect_control_broker` and its reconnect path use
+`SeqpacketConnector::connect_via_manager`: the listener's `SO_PEERCRED` may
+name the installed broker or the root system service manager, while every
+packet's `SCM_CREDENTIALS` must name the installed broker UID/GID alone.
+An inherited listener retains its creator's peer credentials even when another
+identity accepts it; socket ownership is not message authority. Ordinary
+`SeqpacketConnector::connect` still requires one pin for both observations.
+
+The socket unit must enable `PassCredentials=true` before connections can queue
+packets during broker downtime. Adoption also asserts and verifies `SO_PASSCRED`;
+setting it after a packet was queued cannot recover missing credentials.
+The VM gate in `installed_socket_tests.rs` uses a root-created listener with
+separate non-root worker processes and exercises the production connection and
+reconnect paths. It rejects both root and unrelated-UID senders even when they
+hold the accepted socket. This is a credential-boundary test, not a lifecycle
+authorization or running-daemon claim. Daemon/provisioning integration remains
+`louiselm-96pv.3` and `louiselm-96pv.5`.
 
 ## Durable broker identity
 

@@ -84,7 +84,9 @@ fn map_transport(_: TransportError) -> SupervisorError {
     SupervisorError::BrokerUnavailable
 }
 
-/// Connects only to the install-pinned broker rendezvous and kernel identity.
+/// Connects to the install-pinned broker, directly or through its root service manager.
+/// Listener credentials may name root; every packet must name the installed
+/// non-root broker identity. Root listener ownership is not message authority.
 ///
 /// # Errors
 /// Returns `BrokerUnavailable` for transport/credential failures or `BrokerTimeout` when the bounded connection attempt expires.
@@ -99,9 +101,10 @@ pub fn connect_control_broker(
     };
     let (sender, receiver) = mpsc::sync_channel(1);
     connector
-        .connect(
+        .connect_via_manager(
             &config.broker_socket_path,
             broker_pin.clone(),
+            CredentialPin::Identity { uid: 0, gid: 0 },
             Box::new(move |result| {
                 let _ = sender.try_send(result);
             }),
@@ -415,9 +418,10 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                 .connector
                 .as_ref()
                 .expect("an open broker retains its connector");
-            let queued = connector.connect(
+            let queued = connector.connect_via_manager(
                 &socket_path,
                 broker_pin,
+                CredentialPin::Identity { uid: 0, gid: 0 },
                 Box::new(move |connected| {
                     let Ok(candidate) = connected else {
                         Self::finish_reconnect(

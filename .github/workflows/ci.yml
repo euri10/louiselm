@@ -468,6 +468,8 @@ jobs:
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart --exact --nocapture' bash "$library_test"
           # Each full fixture gets its own deadline; keep the shared test account serial.
           TIMEFORMAT='Cold resume scenario elapsed: %3R seconds'
           for scenario in finite uncapped failed_load unavailable_balance; do

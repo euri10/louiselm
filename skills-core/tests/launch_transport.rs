@@ -554,6 +554,55 @@ fn peer_and_per_message_credentials_are_independent_kernel_observations() {
 }
 
 #[test]
+fn service_listener_identity_does_not_authorize_its_packets() {
+    let directory = TempDir::new().unwrap();
+    let path = path_in(&directory);
+    let manager = listening_seqpacket(&path);
+    let connector = SeqpacketConnector::new().unwrap();
+    // The service has not started yet; its distinct pin cannot match this
+    // manager. Connecting is allowed, but a manager-authored reply is refused.
+    let service = CredentialPin::Process(KernelCredentials {
+        pid: current_credentials().pid + 1,
+        ..current_credentials()
+    });
+    let (done, result) = mpsc::channel();
+    connector
+        .connect_via_manager(
+            &path,
+            service.clone(),
+            process_pin(),
+            Box::new(move |value| done.send(value).unwrap()),
+        )
+        .unwrap();
+    let client = wait(result).unwrap();
+    let peer = rustix::net::accept(&manager).unwrap();
+    raw_send(&peer, &status_bytes("manager-forgery"));
+    assert!(
+        matches!(receive_packet(&client), Err(TransportError::MessageCredentialsMismatch { expected, .. }) if expected == service)
+    );
+    assert!(client.is_closed());
+
+    // Naming a service never authorizes an unrelated listener owner.
+    let wrong = CredentialPin::Identity {
+        uid: u32::from(current_credentials().uid == 0),
+        gid: current_credentials().gid,
+    };
+    let (done, result) = mpsc::channel();
+    connector
+        .connect_via_manager(
+            &path,
+            wrong.clone(),
+            wrong,
+            Box::new(move |value| done.send(value).unwrap()),
+        )
+        .unwrap();
+    assert!(matches!(
+        wait(result),
+        Err(TransportError::PeerCredentialsMismatch { .. })
+    ));
+}
+
+#[test]
 fn disconnect_closes_one_channel_and_listener_accepts_a_reconnection() {
     let directory = TempDir::new().expect("temporary rendezvous directory");
     let path = path_in(&directory);
