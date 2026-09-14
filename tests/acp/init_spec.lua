@@ -49,6 +49,7 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
         _meta = {
+          ["github.com/copilot"] = { events = { "assistant.turn_start", "session.idle" } },
           jetbrains = {
             air = { version = 1, capabilities = { "sessionFailure" } },
           },

@@ -20,6 +20,7 @@
 
 ---@class louiselm.session.StateChangedData
 ---@field status louiselm.session.Status Current lifecycle state.
+---@field previous_status? louiselm.session.Status Previous state when the lifecycle changed, absent for refreshes.
 ---@field activity? string Current generic tool activity.
 
 ---@class louiselm.session.StateChangedEvent: louiselm.session.EventBase

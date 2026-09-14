@@ -286,6 +286,16 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Prompt completion and Agent idleness are separate. With Copilot's native lifecycle event extension, an autonomous continuation keeps the Session running (Model responding) after the client prompt completes. Input stays queued and exit protection stays active until session.idle. This does not wait for the optional task_complete tool or change prompt callbacks: each client prompt still completes once. Other Agents retain the ordinary ACP prompt lifecycle when they do not emit this extension.",
+        context
+      )
+      append_prose(
+        lines,
+        "Copilot CLI 1.0.83 ignores ACP cancellation during autonomous continuations. A Stopping label means a cancellation request was sent, not acknowledged. Disposal remains the explicit way to terminate an unresponsive Session.",
+        context
+      )
+      append_prose(
+        lines,
         "A Handoff creates a new Session with a configured Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
         context
       )

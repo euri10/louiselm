@@ -10,6 +10,14 @@ local function snapshot(id, agent)
   return { id = id, name = id, agent = agent, status = "ready", current_turn = 0, config_options = {} }
 end
 
+T["autonomous processing is active even after the prompt completed"] = function()
+  local state = snapshot("session-1", "copilot")
+  state.status = "running"
+  local bar = Status.session_winbar(state)
+  MiniTest.expect.equality(bar:find("LouiselmStatusActive", 1, true) ~= nil, true)
+  MiniTest.expect.equality(nvim.api.nvim_eval_statusline(bar, { maxwidth = 200 }).str, "Model responding · copilot")
+end
+
 T["compact options count hidden controls and restore after resize"] = function()
   local state = snapshot("session-1", "codex")
   state.name = "Review"

@@ -252,6 +252,7 @@ end
 local ACTIVE_TURN_STATUS = {
   preparing = true,
   prompting = true,
+  running = true,
   waiting_permission = true,
   cancelling = true,
 }
@@ -1025,6 +1026,10 @@ local function handle_event(self, view, event, completed_state)
 
   view.renderer:reconcile()
 
+  if event.type == "state_changed" and event.data.status == "running" then
+    view.unread_turn = false
+  end
+
   if
     event.type == "state_changed"
     or event.type == "config_options_changed"
@@ -1035,7 +1040,10 @@ local function handle_event(self, view, event, completed_state)
     render_winbars(self)
   end
   if event.type == "state_changed" then
-    if event.data.status == "prompting" and view.session:inspect().acp_session_id ~= nil then
+    if
+      (event.data.status == "prompting" or event.data.status == "running")
+      and view.session:inspect().acp_session_id ~= nil
+    then
       self.attention:prompt_started(view.session:inspect().acp_session_id)
     elseif event.data.status == "disposed" then
       local state = view.session:inspect()
@@ -1045,6 +1053,12 @@ local function handle_event(self, view, event, completed_state)
     end
   end
   if event.type == "state_changed" and event.data.status == "ready" then
+    if event.data.previous_status == "running" then
+      local seen = nvim.api.nvim_get_current_buf() == view.renderer.buffer
+      view.unread_turn = not seen
+      self.attention:turn_done(view.session:inspect(), seen)
+      render_winbars(self)
+    end
     -- Load replay can end with a reasoning paragraph and no trailing answer, so
     -- the turn boundary only shows up here.
     view.renderer:close_reasoning()
@@ -2047,6 +2061,7 @@ function Chat:close_session()
     or status == "configuring"
     or status == "preparing"
     or status == "prompting"
+    or status == "running"
     or status == "waiting_permission"
     or status == "cancelling"
   then

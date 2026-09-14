@@ -55,6 +55,33 @@ local function non_empty_string(value)
   return type(value) == "string" and value ~= ""
 end
 
+---Normalize Copilot's opt-in root-agent lifecycle events, ignoring other Sessions/subagents.
+---@param value unknown Native sessionEvent parameters.
+---@param session_id string Current ACP Session identity.
+---@return boolean? running Nil for unrelated/unknown events; false is authoritative idle.
+---@return string? error_message Malformed consumed envelope fields.
+function M.copilot_activity(value, session_id)
+  if type(value) ~= "table" or not non_empty_string(value.sessionId) then
+    return nil, "malformed Copilot activity Session identity"
+  end
+  if value.sessionId ~= session_id then
+    return nil
+  end
+  if not non_empty_string(value.type) then
+    return nil, "malformed Copilot activity event type"
+  end
+  if value.type ~= "assistant.turn_start" and value.type ~= "session.idle" then
+    return nil
+  end
+  if value.agentId ~= nil and value.agentId ~= nvim.NIL then
+    if not non_empty_string(value.agentId) then
+      return nil, "malformed Copilot activity Agent identity"
+    end
+    return nil
+  end
+  return value.type == "assistant.turn_start"
+end
+
 ---@param value unknown
 ---@return string? normalized
 ---@return boolean valid

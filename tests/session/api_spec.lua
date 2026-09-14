@@ -1977,6 +1977,205 @@ T["new"]["emits typed streamed events and completes a prompt"] = function()
   restore_processes(original_system)
 end
 
+T["new"]["tracks autonomous processing independently of completed ACP prompts"] = function()
+  -- Captured from unchanged Copilot 1.0.83, disposable session
+  -- 0d202688-b085-4eab-905e-439c55486f37, loopback-provider probe:
+  -- /tmp/louiselm-copilot-events.u7L7cI/probe.mjs. Durable structural timeline:
+  -- louiselm-7mqy9. First end_turn precedes continuation start and final idle.
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local callbacks, completions = 0, 0
+  session:on(function(event)
+    if event.type == "turn_done" then
+      completions = completions + 1
+    end
+  end)
+  local function activity(kind, agent_id)
+    notification(process, "github.com/copilot/sessionEvent", {
+      sessionId = "agent-acp",
+      type = kind,
+      timestamp = "2026-09-14T16:30:00.000Z",
+      data = {},
+      agentId = agent_id,
+    })
+  end
+  local request_id = assert(submit(session, "synthetic task", function()
+    callbacks = callbacks + 1
+  end))
+  activity("assistant.turn_start")
+  activity("assistant.turn_end")
+  activity("assistant.idle")
+  respond(process, request_id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().status, "running")
+  MiniTest.expect.equality({ callbacks, completions }, { 1, 1 })
+  MiniTest.expect.equality(Session.exit_verdict()[1].turn_active, true)
+  MiniTest.expect.equality(session:prompt("overlap"), nil)
+  local _, config_error = session:set_config_option("mode", "agent")
+  MiniTest.expect.equality(config_error, "session is not idle")
+  activity("assistant.turn_start")
+  activity("session.idle", "subagent")
+  activity("session.task_complete")
+  MiniTest.expect.equality(session:inspect().status, "running")
+  activity("session.idle")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().current_turn, 1)
+  MiniTest.expect.equality({ callbacks, completions }, { 1, 1 })
+  MiniTest.expect.equality(Session.exit_verdict()[1].turn_active, false)
+
+  -- A later agent-initiated run needs no new client prompt or task_complete.
+  -- Idle without task_complete was captured in limit probe session
+  -- 64dd2a77-8469-44a0-8746-f28e56cc09da (same evidence location).
+  activity("assistant.turn_start")
+  MiniTest.expect.equality(session:inspect().status, "running")
+  activity("session.idle")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality({ callbacks, completions }, { 1, 1 })
+  api:dispose()
+  activity("assistant.turn_start")
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  restore_processes(original_system)
+end
+
+T["new"]["idle does not complete a pending prompt or release a permission request"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local function activity(kind)
+    notification(process, "github.com/copilot/sessionEvent", { sessionId = "agent-acp", type = kind, data = {} })
+  end
+  local permissions = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+  local id = assert(submit(session, "hello"))
+  activity("assistant.turn_start")
+  activity("session.idle")
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  respond(process, id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  activity("assistant.turn_start")
+  permission_request(process, "agent-acp", 91, { "once", "reject" })
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+  MiniTest.expect.equality(session:inspect().status, "running")
+  permission_request(process, "agent-acp", 92, { "once", "reject" })
+  activity("session.idle")
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  assert(permissions[2].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+  MiniTest.expect.equality(session:inspect().status, "ready")
+
+  activity("assistant.turn_start")
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
+  MiniTest.expect.equality(assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2))).method, "session/cancel")
+  -- Tests the client's acknowledgement path, not the upstream cancellation fix.
+  activity("session.idle")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["validates native activity attribution and ignores replay and unrelated events"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  local session = assert(api:load_session("agent", "agent-acp", { cwd = "/tmp/project" }))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  notification(process, "github.com/copilot/sessionEvent", { sessionId = "agent-acp", type = "assistant.turn_start" })
+  respond(process, 2, {})
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  for _, params in ipairs({
+    { sessionId = "other", type = "assistant.turn_start" },
+    { sessionId = "agent-acp", type = "assistant.turn_start", agentId = "child" },
+    { sessionId = "agent-acp", type = "future.event", data = { optional = true } },
+  }) do
+    notification(process, "github.com/copilot/sessionEvent", params)
+    MiniTest.expect.equality(session:inspect().status, "ready")
+  end
+  notification(
+    process,
+    "github.com/copilot/sessionEvent",
+    { sessionId = "agent-acp", type = "assistant.turn_start", agentId = false }
+  )
+  MiniTest.expect.equality(session:inspect().status, "error")
+  notification(process, "github.com/copilot/sessionEvent", { sessionId = "agent-acp", type = "assistant.turn_start" })
+  MiniTest.expect.equality(session:inspect().status, "error")
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["rejects malformed consumed activity fields without requiring optional payloads"] = function()
+  local validation = require("louiselm.session.validation")
+  for _, value in ipairs({ false, {}, { sessionId = false }, { sessionId = "agent-acp", type = 3 } }) do
+    local running, err = validation.copilot_activity(value, "agent-acp")
+    MiniTest.expect.equality(running, nil)
+    MiniTest.expect.equality(type(err), "string")
+  end
+  MiniTest.expect.equality(validation.copilot_activity({ sessionId = "other", type = false }, "agent-acp"), nil)
+  MiniTest.expect.equality(
+    validation.copilot_activity({ sessionId = "agent-acp", type = "session.idle", agentId = nvim.NIL }, "agent-acp"),
+    false
+  )
+  MiniTest.expect.equality(
+    validation.copilot_activity(
+      { sessionId = "agent-acp", type = "assistant.turn_start", dataOmitted = "oversized" },
+      "agent-acp"
+    ),
+    true
+  )
+end
+
+T["new"]["does not dispatch a prepared prompt over newly started autonomous work"] = function()
+  -- Synthetic admission race; not claimed as captured peer ordering.
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "preparing" then
+      notification(
+        process,
+        "github.com/copilot/sessionEvent",
+        { sessionId = "agent-acp", type = "assistant.turn_start" }
+      )
+    end
+  end)
+  local failure
+  assert(submit(session, "overlapping", function(_, err)
+    failure = err
+  end))
+  MiniTest.expect.equality(session:inspect().status, "running")
+  MiniTest.expect.equality(type(failure), "string")
+  for _, line in ipairs(process.writes) do
+    MiniTest.expect.equality(assert(Protocol.decode(line:sub(1, -2))).method ~= "session/prompt", true)
+  end
+  api:dispose()
+  restore_processes(original_system)
+end
+
+T["new"]["configuration responses cannot clear independently reported activity"] = function()
+  -- Synthetic overlap: the extension can report activity while a config RPC is pending.
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local options = { { id = "enabled", name = "Enabled", type = "boolean", currentValue = false } }
+  notification(
+    process,
+    "session/update",
+    { sessionId = "agent-acp", update = { sessionUpdate = "config_option_update", configOptions = options } }
+  )
+  local id = assert(session:set_config_option("enabled", true))
+  notification(process, "github.com/copilot/sessionEvent", { sessionId = "agent-acp", type = "assistant.turn_start" })
+  options[1].currentValue = true
+  respond(process, id, { configOptions = options })
+  MiniTest.expect.equality(session:inspect().status, "running")
+  notification(process, "github.com/copilot/sessionEvent", { sessionId = "agent-acp", type = "session.idle" })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  api:dispose()
+  restore_processes(original_system)
+end
+
 T["new"]["tracks AIR session failure revisions and clears the warning on progress"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))

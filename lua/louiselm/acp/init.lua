@@ -193,6 +193,8 @@ function Client:initialize(params, callback)
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
         _meta = {
+          -- Lifecycle only: do not subscribe to prompt/tool payloads.
+          ["github.com/copilot"] = { events = { "assistant.turn_start", "session.idle" } },
           jetbrains = {
             air = { version = 1, capabilities = { "sessionFailure" } },
           },
