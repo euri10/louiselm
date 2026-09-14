@@ -224,6 +224,39 @@ fn cold_resume_uncapped_and_unavailable_accounting_keep_exact_scope() {
                 assert_eq!(allocation.commands.unwrap().uses, None);
                 assert_eq!(allocation.withheld_command, None);
             }
+            // CI run 34875641969 reached allocation, then failed the replacement
+            // handshake while deriving posture from the same unreadable audit.
+            let socket = root.join("broker.sock");
+            let peer = thread::spawn(move || {
+                let (authorization, channel) =
+                    fake_supervisor(&socket, &request("replacement"), 5000);
+                lifecycle::answer_one_status_query(&channel, &lifecycle::status(&authorization));
+            });
+            let mut replacement = service
+                .serve_launch(5000, verify_fixture_signature)
+                .unwrap();
+            let status = service
+                .session_status(&mut replacement, &caller, 6000, verify_fixture_signature)
+                .unwrap();
+            peer.join().unwrap();
+            let runtime = status
+                .posture
+                .dimensions
+                .iter()
+                .find(|dimension| {
+                    dimension.dimension == louiselm_skills::posture::DimensionName::Runtime
+                })
+                .unwrap();
+            assert_eq!(
+                runtime.state,
+                louiselm_skills::posture::DimensionState::Failed
+            );
+            assert_eq!(
+                runtime.failure_code,
+                Some(louiselm_skills::posture::FailureCode::EvidenceMissing)
+            );
+            assert_eq!(runtime.freshness.last_verified_at_ms, None);
+            assert!(service.audit().is_err(), "corruption remains visible");
         });
     }
 }

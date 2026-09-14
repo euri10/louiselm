@@ -79,7 +79,14 @@ impl BrokerService {
         if !matches!(start.payload.outcome, ReceiptOutcome::Start { .. }) {
             return Err(BrokerError::ReceiptUnauthorized);
         }
-        let checked_at_ms = self.start_receipt_stored_at(authorization)?;
+        let checked_at_ms = match self.start_receipt_stored_at(authorization) {
+            Ok(observation) => observation,
+            // Unreadable historical audit means missing posture evidence. Cold
+            // Resume may still continue without commands; authority checks and
+            // current receipt/audit durability remain mandatory at their owners.
+            Err(BrokerError::Storage(_)) => None,
+            Err(error) => return Err(error),
+        };
         Ok(LaunchPostureEvidence {
             launch_receipt_id: launch.digest().to_string(),
             supply: None,
