@@ -7,13 +7,16 @@ use louiselm_skills::{
         lifecycle::{LifecycleCaller, LifecycleStore},
     },
     launch_protocol::{
-        BrokerConnection, ChannelState, LIFECYCLE_REQUEST_SCHEMA, LifecycleAction,
-        LifecycleRequest, PendingAction, PendingOperation, PendingPhase, PostureSummary,
-        STATUS_REQUEST_SCHEMA, SUPERVISOR_STATUS_SCHEMA, SessionStatus, StatusRequest,
+        BrokerConnection, COMMAND_SCHEMA, ChannelState, CommandMessage, CommandOperation,
+        LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest, PendingAction,
+        PendingOperation, PendingPhase, PostureSummary, SUPERVISOR_STATUS_SCHEMA, SessionStatus,
         SupervisorStatus,
     },
     launch_receipt::ReceiptHead,
 };
+
+#[path = "agent_status_lifecycle.rs"]
+mod status_continuity;
 
 pub(super) fn status(authorization: &LaunchAuthorization) -> SupervisorStatus {
     let start = start_receipt(authorization, &launch_receipt(authorization));
@@ -447,25 +450,17 @@ pub(super) fn drive_park_peer(
         settle(|complete| channel.send(message.canonical_bytes(), complete));
         current.channel_state = ChannelState::Revoked;
     }
-    let packet = settle(|complete| channel.receive(complete));
-    let LauncherPacket::Request(ProtocolMessage::Status(query)) = packet.packet else {
-        panic!("status query")
-    };
-    let response = ProtocolResponse {
-        schema: RESPONSE_SCHEMA.into(),
-        protocol_version: PROTOCOL_VERSION,
-        request_id: query.request_id,
-        result: ResponseResult::SupervisorStatus {
-            status: current.clone(),
-        },
-    };
-    settle(|complete| channel.send(response.canonical_bytes(), complete));
+    drive_lifecycle_peer(channel, &current)
+}
+
+fn drive_lifecycle_peer(channel: &SeqpacketChannel, current: &SupervisorStatus) -> SignedReceipt {
+    answer_one_status_query(channel, current);
     let packet = settle(|complete| channel.receive(complete));
     let LauncherPacket::Request(ProtocolMessage::Lifecycle(mutation)) = packet.packet else {
         panic!("lifecycle request")
     };
     let disposition =
-        louiselm_skills::launch_protocol::evaluate_request(&current, None, &mutation).unwrap();
+        louiselm_skills::launch_protocol::evaluate_request(current, None, &mutation).unwrap();
     let receipt = signed(
         disposition
             .execute_intent()
@@ -615,22 +610,24 @@ pub(super) fn answer_one_status_query(channel: &SeqpacketChannel, current: &Supe
 }
 
 fn agent_status_query(authorization: &LaunchAuthorization, session_id: &str) -> Vec<u8> {
-    StatusRequest {
-        schema: STATUS_REQUEST_SCHEMA.into(),
+    CommandMessage {
+        schema: COMMAND_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
         request_id: "agent-status-1".into(),
         session_id: session_id.to_owned(),
         run_id: authorization.run_id.clone(),
+        envelope_revision: authorization.envelope_revision,
+        operation: CommandOperation::StatusRequest {},
     }
     .canonical_bytes()
 }
 
-fn expect_response(channel: &SeqpacketChannel) -> ProtocolResponse {
+fn expect_response(channel: &SeqpacketChannel) -> CommandMessage {
     let packet = settle(|complete| channel.receive(complete));
-    let LauncherPacket::Response(response) = packet.packet else {
+    let LauncherPacket::Request(ProtocolMessage::Command(response)) = packet.packet else {
         panic!("broker answers the capability channel with a response")
     };
-    *response
+    response
 }
 
 fn operator() -> LifecycleCaller {
@@ -745,7 +742,7 @@ fn an_agent_reads_only_its_own_session_and_never_learns_of_another() {
 
     let (own, foreign) = peer.join().unwrap();
     assert_eq!(own.request_id, "agent-status-1");
-    let ResponseResult::SessionStatus { status } = own.result else {
+    let CommandOperation::StatusResult { status } = own.operation else {
         panic!("an Agent reading its own Session gets canonical Session status")
     };
     assert_eq!(status.session_id, "session-1");
@@ -754,20 +751,27 @@ fn an_agent_reads_only_its_own_session_and_never_learns_of_another() {
     assert!(status.allowed_actions.is_empty());
     assert_eq!(
         SessionStatus::parse_canonical(&status.canonical_bytes()).unwrap(),
-        status,
+        *status,
     );
 
     // The refusal discloses nothing about the Session that was asked for,
     // including whether it exists at all.
     assert_eq!(foreign.request_id, "agent-status-1");
     let refusal_json = String::from_utf8(foreign.canonical_bytes()).unwrap();
-    let ResponseResult::Error { error } = foreign.result else {
+    let CommandOperation::StatusRefused { error } = foreign.operation else {
         panic!("a foreign subject is refused, never answered")
     };
-    assert_eq!(error.code, ErrorCode::SubjectMismatch);
+    assert_eq!(error, ErrorCode::SubjectMismatch);
     assert!(!refusal_json.contains("other-session"));
     let own_json = String::from_utf8(status.canonical_bytes()).unwrap();
-    for forbidden in ["assigned_uid", "assigned_gid", "pid", "slot", "occupied"] {
+    for forbidden in [
+        "assigned_uid",
+        "assigned_gid",
+        "pid",
+        "slot",
+        "occupied",
+        "path",
+    ] {
         assert!(
             !refusal_json.contains(forbidden),
             "refusal leaked {forbidden}"
@@ -797,13 +801,33 @@ fn an_agent_and_its_operator_read_one_session_differing_only_by_scope() {
     let mut session = service
         .serve_launch(2000, verify_fixture_signature)
         .unwrap();
-    let agent = service
-        .serve_agent_status(&mut session, 2000, verify_fixture_signature)
+    // Both observations follow the actual launch-proof time, including any
+    // elapsed handshake time. Reading at the launch's initial clock can instead
+    // ask one caller about evidence that still lies in its future.
+    let observed_at_ms = service
+        .audit()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.at_ms)
+        .max()
         .unwrap();
+    assert!(
+        !service
+            .step(&mut session, observed_at_ms, verify_fixture_signature)
+            .unwrap()
+    );
     let operator = service
-        .session_status(&mut session, &operator(), 2000, verify_fixture_signature)
+        .session_status(
+            &mut session,
+            &operator(),
+            observed_at_ms,
+            verify_fixture_signature,
+        )
         .unwrap();
-    peer.join().unwrap();
+    let reply = peer.join().unwrap();
+    let CommandOperation::StatusResult { status: agent } = reply.operation else {
+        panic!("normal worker dispatch answers Agent status")
+    };
 
     assert!(agent.allowed_actions.is_empty());
     assert_eq!(
@@ -820,8 +844,105 @@ fn an_agent_and_its_operator_read_one_session_differing_only_by_scope() {
             allowed_actions: agent.allowed_actions.clone(),
             ..operator
         },
-        agent,
+        *agent,
     );
+}
+
+#[test]
+fn agent_status_refusals_do_not_disclose_subjects_or_close_the_worker() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let service = bound_service(root.path(), &socket, &request);
+    // The first foreign subject exists in this broker, the second never did.
+    AuthorizationStore::open(&root.path().join("authorizations"), pool(4))
+        .unwrap()
+        .authorize(&grant(&super::request("sibling")), 1000)
+        .unwrap();
+    let peer = thread::spawn(move || {
+        let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
+        let mut replies = Vec::new();
+        for subject in ["sibling", "absent"] {
+            settle(|complete| channel.send(agent_status_query(&authorization, subject), complete));
+            replies.push(expect_response(&channel));
+        }
+        // Foreign Run and stale revision also leave the worker usable.
+        for field in ["run_id", "envelope_revision"] {
+            let mut query: serde_json::Value =
+                serde_json::from_slice(&agent_status_query(&authorization, "session-1")).unwrap();
+            query[field] = if field == "run_id" {
+                serde_json::json!("foreign-run")
+            } else {
+                serde_json::json!(0)
+            };
+            settle(|complete| channel.send(serde_json::to_vec(&query).unwrap(), complete));
+            replies.push(expect_response(&channel));
+        }
+        settle(|complete| channel.send(agent_status_query(&authorization, "session-1"), complete));
+        answer_one_status_query(&channel, &status(&authorization));
+        replies.push(expect_response(&channel));
+        replies
+    });
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let audit = service.audit().unwrap();
+    let head = service.receipts().head("session-1").unwrap();
+    for _ in 0..5 {
+        assert!(
+            !service
+                .step(&mut session, 2000, verify_fixture_signature)
+                .unwrap()
+        );
+    }
+    let replies = peer.join().unwrap();
+    assert_eq!(replies[0].canonical_bytes(), replies[1].canonical_bytes());
+    assert_eq!(replies[0].canonical_bytes(), replies[2].canonical_bytes());
+    assert!(matches!(
+        replies[0].operation,
+        CommandOperation::StatusRefused {
+            error: ErrorCode::SubjectMismatch
+        }
+    ));
+    assert!(matches!(
+        replies[3].operation,
+        CommandOperation::StatusRefused {
+            error: ErrorCode::InvalidRequest
+        }
+    ));
+    assert!(matches!(
+        replies[4].operation,
+        CommandOperation::StatusResult { .. }
+    ));
+    assert_eq!(service.audit().unwrap(), audit);
+    assert_eq!(service.receipts().head("session-1").unwrap(), head);
+}
+
+#[test]
+fn nested_agent_status_is_retryable_without_competing_for_the_supervisor_reply() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let service = bound_service(root.path(), &socket, &request);
+    let peer = thread::spawn(move || {
+        let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
+        settle(|complete| channel.send(agent_status_query(&authorization, "session-1"), complete));
+        answer_one_status_query(&channel, &status(&authorization));
+        expect_response(&channel)
+    });
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let status = service
+        .session_status(&mut session, &operator(), 2000, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(status.state, SessionState::Running);
+    assert!(matches!(
+        peer.join().unwrap().operation,
+        CommandOperation::StatusRefused {
+            error: ErrorCode::OperationPending
+        }
+    ));
 }
 
 #[test]

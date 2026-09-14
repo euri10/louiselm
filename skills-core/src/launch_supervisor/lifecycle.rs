@@ -251,6 +251,9 @@ impl Drop for LaunchedSession {
 }
 
 enum OwnerEvent {
+    AgentStatusDeadline {
+        request_id: String,
+    },
     RestoreFinished,
     RecoveryFinished,
     VerificationFinished,
@@ -570,6 +573,9 @@ impl SessionOwner {
                 .recv()
                 .map_err(|_| SupervisorError::WorkerUnavailable)?;
             match event {
+                OwnerEvent::AgentStatusDeadline { request_id } => {
+                    self.expire_agent_status(&request_id);
+                }
                 OwnerEvent::CommandDeadline { request_id } => self.command_deadline(&request_id),
                 OwnerEvent::ControllerDetached => self.begin_controller_loss(),
                 OwnerEvent::BrokerRequest {

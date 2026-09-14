@@ -97,6 +97,18 @@ pub enum CommandOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandOperation {
+    /// Authenticated Agent asks for its own read-only canonical Session status.
+    StatusRequest {},
+    /// Broker-derived self status; never carries lifecycle authority.
+    StatusResult {
+        /// Canonical, redacted status for this exact message subject.
+        status: Box<super::SessionStatus>,
+    },
+    /// Read-only refusal without subject existence or operator evidence.
+    StatusRefused {
+        /// Stable refusal; no mechanical state or receipt position is disclosed.
+        error: ErrorCode,
+    },
     /// Agent asks the supervisor to create the fixed measured isolated helper.
     Delegate {
         /// Attenuation request; never an operator approval.
@@ -224,6 +236,16 @@ impl CommandMessage {
             validate_identifier(id)?;
         }
         match &self.operation {
+            CommandOperation::StatusResult { status } => {
+                status.validate()?;
+                if status.session_id != self.session_id
+                    || status.run_id != self.run_id
+                    || status.envelope_revision != self.envelope_revision
+                    || !status.allowed_actions.is_empty()
+                {
+                    return Err(invalid());
+                }
+            }
             CommandOperation::Delegate { grant, command } => {
                 grant.validate()?;
                 command.validate()?;
@@ -312,6 +334,8 @@ impl CommandMessage {
                 return Err(invalid());
             }
             CommandOperation::Result { .. }
+            | CommandOperation::StatusRequest {}
+            | CommandOperation::StatusRefused { .. }
             | CommandOperation::Reject { .. }
             | CommandOperation::OutcomeAcknowledged { .. }
             | CommandOperation::Revoke

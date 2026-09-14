@@ -353,6 +353,9 @@ impl Harness {
                 .owner
                 .handle_response_sent(connection_epoch, finish, result),
             OwnerEvent::CommandDeadline { request_id } => self.owner.command_deadline(&request_id),
+            OwnerEvent::AgentStatusDeadline { request_id } => {
+                self.owner.expire_agent_status(&request_id);
+            }
             _ => panic!("unexpected lifecycle event in command-only fixture"),
         }
         self.owner.collect_tool_result();
@@ -426,6 +429,226 @@ fn receive(channel: &SeqpacketChannel) -> CommandMessage {
         panic!("expected command record")
     };
     message
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One real socket scenario preserves status before command admission, its canonical reply, and another read after the only command budget is spent."
+)]
+fn agent_status_crosses_the_authenticated_capability_relay() {
+    let mut harness = Harness::new("true", false);
+    let query = serde_json::json!({
+        "schema": COMMAND_SCHEMA,
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": "self-status",
+        "session_id": "session-1",
+        "run_id": "run-1",
+        "envelope_revision": 1,
+        "operation": {"kind": "status_request"}
+    });
+    let mut unknown = query.clone();
+    unknown["operation"]["authority"] = serde_json::json!("operator");
+    assert!(
+        crate::launch_protocol::decode_message(&serde_json::to_vec(&unknown).unwrap()).is_err()
+    );
+    settle(|complete| {
+        harness
+            .agent
+            .send(serde_json::to_vec(&query).unwrap(), complete)
+    });
+    harness.tick();
+    assert!(
+        !harness.owner.commands.closed,
+        "read-only status must keep the Agent channel open"
+    );
+    let mut forwarded = receive(&harness.broker);
+    let mut expected_query = query.clone();
+    expected_query["request_id"] = serde_json::json!(forwarded.request_id);
+    assert_eq!(serde_json::to_value(&forwarded).unwrap(), expected_query);
+    assert!(harness.audit.entries().unwrap().is_empty());
+    let posture = crate::posture::Posture::evaluate(
+        "session-1",
+        "run-1",
+        crate::posture::DimensionName::ALL
+            .into_iter()
+            .map(|dimension| {
+                crate::posture::DimensionInput::failed(
+                    dimension,
+                    crate::posture::FailureCode::EvidenceMissing,
+                    vec![],
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
+    let status = crate::launch_protocol::SessionStatus::compose(
+        harness.owner.status(),
+        crate::launch_protocol::PostureStatus::from_posture(
+            &posture,
+            [crate::launch_protocol::EvidenceFreshness {
+                basis: crate::launch_protocol::FreshnessBasis::Missing,
+                last_verified_at_ms: None,
+            }; 6],
+        ),
+        crate::launch_protocol::RecoveryReadiness::Expired {},
+        vec![],
+    )
+    .unwrap();
+    forwarded.operation = CommandOperation::StatusResult {
+        status: Box::new(status),
+    };
+    let mut forged = forwarded.clone();
+    if let CommandOperation::StatusResult { status } = &mut forged.operation {
+        status
+            .allowed_actions
+            .push(crate::launch_protocol::LifecycleAction::Park);
+    }
+    assert!(
+        forged.validate().is_err(),
+        "Agent replies cannot carry lifecycle authority"
+    );
+    let mut foreign = forwarded.clone();
+    foreign.session_id = "other-session".into();
+    assert!(
+        foreign.validate().is_err(),
+        "nested status must match its envelope"
+    );
+    settle(|complete| harness.broker.send(forwarded.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_some() {
+        harness.tick();
+    }
+    let mut expected_reply = forwarded.clone();
+    expected_reply.request_id = "self-status".into();
+    assert_eq!(
+        receive(&harness.agent).canonical_bytes(),
+        expected_reply.canonical_bytes()
+    );
+    assert!(harness.audit.entries().unwrap().is_empty());
+    // A status read leaves the one permitted command usable; after consumption
+    // another read must not revive the spent policy or effect sequence.
+    let command = harness.request("true");
+    harness.authorize(&command);
+    harness.finish();
+    receive(&harness.agent);
+    let audit = harness.audit.entries().unwrap();
+    let sequence = harness.owner.commands.sequence;
+    settle(|complete| {
+        harness
+            .agent
+            .send(serde_json::to_vec(&query).unwrap(), complete)
+    });
+    while harness.owner.commands.status.is_none() {
+        harness.tick();
+    }
+    let next = receive(&harness.broker);
+    assert_ne!(next.request_id, forwarded.request_id);
+    harness.owner.expire_agent_status(&forwarded.request_id);
+    assert!(
+        harness.owner.commands.status.is_some(),
+        "old deadline cannot end a newer read"
+    );
+    forwarded.request_id = next.request_id;
+    settle(|complete| harness.broker.send(forwarded.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_some() {
+        harness.tick();
+    }
+    assert_eq!(
+        receive(&harness.agent).canonical_bytes(),
+        expected_reply.canonical_bytes()
+    );
+    assert_eq!(harness.audit.entries().unwrap(), audit);
+    assert_eq!(harness.owner.commands.sequence, sequence);
+    assert!(harness.authority.handle(&command).is_err());
+}
+
+#[test]
+fn status_relay_refuses_foreign_subjects_and_ignores_replies_after_revocation() {
+    let mut harness = Harness::new("true", false);
+    let query = harness
+        .owner
+        .command_message("self-status", CommandOperation::StatusRequest {});
+    for foreign in ["sibling", "absent"] {
+        let mut request = query.clone();
+        request.session_id = foreign.to_owned();
+        settle(|complete| harness.agent.send(request.canonical_bytes(), complete));
+        harness.tick();
+        let reply = receive(&harness.agent);
+        assert!(matches!(
+            reply.operation,
+            CommandOperation::StatusRefused {
+                error: ErrorCode::SubjectMismatch
+            }
+        ));
+        assert!(
+            !String::from_utf8(reply.canonical_bytes())
+                .unwrap()
+                .contains(foreign)
+        );
+        assert!(harness.owner.commands.status.is_none());
+    }
+    settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_none() {
+        harness.tick();
+    }
+    let mut reply = receive(&harness.broker);
+    reply.operation = CommandOperation::StatusRefused {
+        error: ErrorCode::OperationPending,
+    };
+    let mut uncorrelated = reply.clone();
+    uncorrelated.request_id = "wrong-request".into();
+    settle(|complete| {
+        harness
+            .broker
+            .send(uncorrelated.canonical_bytes(), complete)
+    });
+    harness.tick();
+    assert!(harness.owner.commands.status.is_some());
+    harness.owner.commands.closed = true;
+    harness.owner.channel_state = ChannelState::Revoked;
+    settle(|complete| harness.broker.send(reply.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_some() {
+        harness.tick();
+    }
+    assert!(harness.owner.commands.closed);
+    assert!(!harness.owner.commands.receiving);
+}
+
+#[test]
+fn status_deadline_allows_a_retry_without_restoring_command_authority() {
+    let mut harness = Harness::new("true", false);
+    let query = harness
+        .owner
+        .command_message("self-status", CommandOperation::StatusRequest {});
+    settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_none() {
+        harness.tick();
+    }
+    let old = receive(&harness.broker);
+    harness.timer.expire();
+    while harness.owner.commands.status.is_some() {
+        harness.tick();
+    }
+    assert!(matches!(
+        receive(&harness.agent).operation,
+        CommandOperation::StatusRefused {
+            error: ErrorCode::BrokerUnavailable
+        }
+    ));
+    assert!(!harness.owner.commands.closed);
+    settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_none() {
+        harness.tick();
+    }
+    let next = receive(&harness.broker);
+    assert_ne!(old.request_id, next.request_id);
+    let mut late = old;
+    late.operation = CommandOperation::StatusRefused {
+        error: ErrorCode::OperationPending,
+    };
+    assert!(harness.owner.handle_status_reply(&late));
+    assert!(harness.owner.commands.status.is_some());
+    assert!(harness.audit.entries().unwrap().is_empty());
 }
 
 #[test]

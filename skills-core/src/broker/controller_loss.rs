@@ -7,8 +7,9 @@ use crate::{
     },
     launch::PROTOCOL_VERSION,
     launch_protocol::{
-        CONTROLLER_LOSS_ACK_SCHEMA, ControllerLossAcknowledgement, ControllerLossDisposition,
-        ControllerLossSettlement, ProtocolMessage, RecoveryReadiness, ResponseResult,
+        CONTROLLER_LOSS_ACK_SCHEMA, CommandOperation, ControllerLossAcknowledgement,
+        ControllerLossDisposition, ControllerLossSettlement, ProtocolMessage, RecoveryReadiness,
+        ResponseResult,
     },
     launch_receipt::{ReceiptHead, SessionState},
     launch_transport::{AuthenticatedPacket, LauncherPacket},
@@ -52,10 +53,12 @@ impl BrokerService {
         }
         Ok(())
     }
-    /// Processes one authenticated command, receipt or controller-loss settlement.
+    /// Processes one authenticated command, self-status read, receipt or loss settlement.
     /// Runs on the serialized broker worker; true means a terminal receipt is
     /// durable, not that a future reconstruction is active. Projection delivery
     /// is independent; only durable local enqueue permits a loss acknowledgement.
+    /// An idle receive waits for a packet or channel closure; deadlines still
+    /// bound the responses to operations started while processing that packet.
     /// # Errors
     /// Closes transport on invalid binding, signature, storage or uncertain I/O.
     pub fn step<F>(
@@ -70,6 +73,19 @@ impl BrokerService {
         let clock = std::time::Instant::now();
         let result = (|| {
             let packet = receive(session.channel())?;
+            if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
+                && matches!(query.operation, CommandOperation::StatusRequest {})
+            {
+                return match self.answer_agent_status(
+                    session,
+                    query,
+                    elapsed_ms(now_ms, clock),
+                    &mut verify,
+                ) {
+                    Ok(_) | Err(BrokerError::Policy(_)) => Ok(false),
+                    Err(error) => Err(error),
+                };
+            }
             self.control_packet(session, packet, elapsed_ms(now_ms, clock), &mut verify)
         })();
         if result.is_err() {
@@ -110,14 +126,16 @@ impl BrokerService {
                 )?;
                 Ok(false)
             }
-            LauncherPacket::Request(ProtocolMessage::Command(_)) => {
-                session.handle_command(packet)?;
-                Ok(false)
-            }
             // A status read arriving mid-operation cannot be served here without
             // arming a receive against the one already waiting. Refuse, retryably.
-            LauncherPacket::Request(ProtocolMessage::Status(query)) => {
+            LauncherPacket::Request(ProtocolMessage::Command(query))
+                if matches!(query.operation, CommandOperation::StatusRequest {}) =>
+            {
                 super::lifecycle_service::refuse_nested_status(session, query)?;
+                Ok(false)
+            }
+            LauncherPacket::Request(ProtocolMessage::Command(_)) => {
+                session.handle_command(packet)?;
                 Ok(false)
             }
             _ => Err(BrokerError::InvalidGrant),

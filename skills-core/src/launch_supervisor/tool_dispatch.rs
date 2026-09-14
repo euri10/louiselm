@@ -7,6 +7,9 @@ mod tests;
 #[path = "grant_dispatch.rs"]
 mod grants;
 
+#[path = "status_dispatch.rs"]
+mod status;
+
 use super::{OwnerEvent, SessionOwner};
 use crate::launch_protocol::{
     BrokerConnection, COMMAND_SCHEMA, ChannelState, CommandMessage, CommandOperation,
@@ -33,6 +36,8 @@ pub(super) struct CommandDispatch {
     pub(super) closed: bool,
     sequence: u64,
     pending: Option<PendingCommand>,
+    status: Option<status::PendingStatus>,
+    status_sequence: u64,
     request: Arc<Mutex<Option<Result<ProtocolMessage, SupervisorError>>>>,
     result: Arc<Mutex<Option<Result<ToolExecutionResult, SupervisorError>>>>,
     receiving: bool,
@@ -44,6 +49,7 @@ impl SessionOwner {
         // Callbacks from the revoked channel retain the old mailbox and cannot
         // close or inject a command into this new receive generation.
         self.commands.request = Arc::default();
+        self.commands.status = None;
         if let Some(pending) = self.commands.pending.as_mut() {
             pending.abandoned = true;
         }
@@ -71,6 +77,7 @@ impl SessionOwner {
         if self.commands.closed
             || self.commands.receiving
             || self.commands.pending.is_some()
+            || self.commands.status.is_some()
             || self.commands.grants.pending.is_some()
         {
             return;
@@ -136,6 +143,10 @@ impl SessionOwner {
 
     fn send_command_agent(&mut self, id: &str, outcome: CommandOutcome) {
         let message = self.command_message(id, CommandOperation::Result { outcome });
+        self.send_agent_reply(message);
+    }
+
+    fn send_agent_reply(&mut self, message: CommandMessage) {
         let mailbox = Arc::clone(&self.commands.request);
         let wake = self.sender.clone();
         let result = self
@@ -252,6 +263,9 @@ impl SessionOwner {
     }
 
     pub(super) fn handle_command(&mut self, message: CommandMessage) {
+        if self.handle_status_reply(&message) {
+            return;
+        }
         if message.validate().is_err()
             || message.session_id != self.binding.session_id
             || message.run_id != self.binding.run_id
@@ -421,7 +435,13 @@ impl SessionOwner {
             Some(Ok(ProtocolMessage::ToolExecution(request))) => {
                 self.forward_command(request, None);
             }
-            Some(Ok(ProtocolMessage::Command(request))) => self.request_grant(&request),
+            Some(Ok(ProtocolMessage::Command(request))) => {
+                if matches!(request.operation, CommandOperation::StatusRequest {}) {
+                    self.forward_agent_status(request);
+                } else {
+                    self.request_grant(&request);
+                }
+            }
             Some(Ok(_) | Err(_)) => {
                 self.commands.closed = true;
             }

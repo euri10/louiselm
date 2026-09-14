@@ -339,13 +339,27 @@ read instead of becoming readiness. Reads grant nothing, renew no expiry, and
 do not change ordinary versus required-cold-recovery admission. The record has
 no storage paths, ACP identity, raw evidence or capture-service projection.
 
-`BrokerService::serve_agent_status` answers one read-only request from the Agent
-capability channel. It enforces self-scope against the Session's own
-authorization and refuses any other subject with `SubjectMismatch` — identically
+The authenticated Agent capability channel accepts `louiselm.launch.command/1`
+with `operation.kind = "status_request"` and the usual request ID, Session, Run
+and envelope revision. The supervisor relays it on the retained broker channel;
+`BrokerService::step` dispatches the read when its worker is idle.
+`BrokerService::serve_agent_status` is the dedicated single-read entry point.
+Both enforce self-scope against the Session's own
+authorization and refuse any other subject with `SubjectMismatch` — identically
 whether that Session is a live sibling or was never authorized, so a refusal
 cannot be used to probe for other Sessions. The answer is the same composition
 the operator reads, differing only in the caller-scoped action set, which for an
-Agent is always empty.
+Agent is always empty. The reply operation is `status_result` with the canonical
+`SessionStatus` in `status`, or `status_refused` with a stable `error` code. A
+refusal carries only the caller's own subject binding, never the requested
+foreign identifier, mechanical state or operator evidence. No command approval
+or recovery admission is required to read status on an enabled Agent channel.
+
+The supervisor keeps one pending read and uses its own correlation sequence,
+restoring the Agent's request ID on reply. A 60-second relay deadline bounds a
+missing reply; status reads neither advance effect sequences nor spend or renew
+command authority. Late replies and deadlines cannot complete a newer read,
+including after Resume. Tools and delegated helpers cannot request self status.
 
 A status request arriving while the worker already holds another operation is
 refused as retryable `OperationPending` by `refuse_nested_status` rather than

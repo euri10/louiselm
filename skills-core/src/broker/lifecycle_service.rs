@@ -1,13 +1,13 @@
 //! Lifecycle requests on the broker's retained, authenticated supervisor channel.
 
-use super::{BrokerError, BrokerService, BrokerSession, receive, response, send};
+use super::{BrokerError, BrokerService, BrokerSession, receive, send};
 use crate::{
     broker::lifecycle::LifecycleCaller,
     launch::PROTOCOL_VERSION,
     launch_protocol::{
-        CompletedRequest, ErrorCode, LifecycleRequest, ProtocolError, ProtocolMessage,
-        ResponseResult, STATUS_REQUEST_SCHEMA, SessionStatus, StatusRequest, SupervisorStatus,
-        evaluate_request,
+        CommandMessage, CommandOperation, CompletedRequest, ErrorCode, LifecycleRequest,
+        ProtocolError, ProtocolMessage, ResponseResult, STATUS_REQUEST_SCHEMA, SessionStatus,
+        StatusRequest, SupervisorStatus, evaluate_request,
     },
     launch_receipt::{SessionState, SignedReceipt},
     launch_transport::{AuthenticatedPacket, LauncherPacket},
@@ -179,48 +179,68 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        let clock = std::time::Instant::now();
         let result = (|| {
             let packet = receive(&session.channel)?;
-            let LauncherPacket::Request(ProtocolMessage::Status(query)) = &packet.packet else {
+            let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet else {
                 return Err(BrokerError::InvalidGrant);
             };
-            query.validate()?;
-            let request_id = query.request_id.clone();
-            if query.session_id != session.authorization.session_id
-                || query.run_id != session.authorization.run_id
-            {
-                // Identical refusal for a live sibling and for a Session that was
-                // never authorized; the Agent learns only that it was not this one.
-                let error = ProtocolError::new(ErrorCode::SubjectMismatch, None, None);
-                send(
-                    &session.channel,
-                    response(
-                        &request_id,
-                        ResponseResult::Error {
-                            error: error.clone(),
-                        },
-                    ),
-                )?;
-                return Err(error.into());
-            }
-            let status =
-                self.session_status(session, &LifecycleCaller::Agent, now_ms, &mut verify)?;
-            send(
-                &session.channel,
-                response(
-                    &request_id,
-                    ResponseResult::SessionStatus {
-                        status: status.clone(),
-                    },
-                ),
-            )?;
-            Ok(status)
+            let observed_at_ms = now_ms
+                .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+            self.answer_agent_status(session, query, observed_at_ms, &mut verify)
         })();
         // A refused subject is a typed answer, not a lost channel.
         if result.is_err() && !matches!(result, Err(BrokerError::Policy(_))) {
             session.close();
         }
         result
+    }
+
+    pub(in crate::broker) fn answer_agent_status<F>(
+        &self,
+        session: &mut BrokerSession,
+        query: &CommandMessage,
+        now_ms: u64,
+        verify: &mut F,
+    ) -> Result<SessionStatus, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        query.validate()?;
+        if !matches!(query.operation, CommandOperation::StatusRequest {}) {
+            return Err(BrokerError::InvalidGrant);
+        }
+        if query.session_id != session.authorization.session_id
+            || query.run_id != session.authorization.run_id
+        {
+            // Identical refusal for a live sibling and for a Session that was
+            // never authorized; the Agent learns only that it was not this one.
+            let error = ProtocolError::new(ErrorCode::SubjectMismatch, None, None);
+            send_agent_status_reply(
+                session,
+                query,
+                CommandOperation::StatusRefused { error: error.code },
+            )?;
+            return Err(error.into());
+        }
+        if query.envelope_revision != session.authorization.envelope_revision {
+            let error = ProtocolError::new(ErrorCode::InvalidRequest, None, None);
+            send_agent_status_reply(
+                session,
+                query,
+                CommandOperation::StatusRefused { error: error.code },
+            )?;
+            return Err(error.into());
+        }
+        let status = self.session_status(session, &LifecycleCaller::Agent, now_ms, verify)?;
+        send_agent_status_reply(
+            session,
+            query,
+            CommandOperation::StatusResult {
+                status: Box::new(status.clone()),
+            },
+        )?;
+        Ok(status)
     }
 
     /// Composes canonical Session status for one authenticated caller.
@@ -355,15 +375,28 @@ impl BrokerService {
 /// Returns transport failure while sending the refusal.
 pub(in crate::broker) fn refuse_nested_status(
     session: &BrokerSession,
-    query: &StatusRequest,
+    query: &CommandMessage,
 ) -> Result<(), BrokerError> {
-    send(
-        session.channel(),
-        response(
-            &query.request_id,
-            ResponseResult::Error {
-                error: ProtocolError::new(ErrorCode::OperationPending, None, None),
-            },
-        ),
+    send_agent_status_reply(
+        session,
+        query,
+        CommandOperation::StatusRefused {
+            error: ErrorCode::OperationPending,
+        },
     )
+}
+
+fn send_agent_status_reply(
+    session: &BrokerSession,
+    query: &CommandMessage,
+    operation: CommandOperation,
+) -> Result<(), BrokerError> {
+    let reply = CommandMessage {
+        session_id: session.authorization.session_id.clone(),
+        run_id: session.authorization.run_id.clone(),
+        envelope_revision: session.authorization.envelope_revision,
+        operation,
+        ..query.clone()
+    };
+    send(session.channel(), reply.canonical_bytes())
 }
