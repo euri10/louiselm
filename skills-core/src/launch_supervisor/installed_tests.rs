@@ -51,6 +51,9 @@ mod certification;
 #[path = "installed_socket_tests.rs"]
 mod socket_activation;
 
+#[path = "installed_daemon_tests.rs"]
+mod daemon;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -180,11 +183,19 @@ fn install_fixture(root: &Path) -> (LauncherPaths, LauncherConfig, PathBuf) {
     install_fixture_with_slots(root, 1)
 }
 
+fn install_fixture_with_slots(root: &Path, slots: u32) -> (LauncherPaths, LauncherConfig, PathBuf) {
+    install_fixture_at(root, slots, paths(root))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One fixture installs measured binaries, root authority and a dedicated broker without modifying host or system installation."
 )]
-fn install_fixture_with_slots(root: &Path, slots: u32) -> (LauncherPaths, LauncherConfig, PathBuf) {
+fn install_fixture_at(
+    root: &Path,
+    slots: u32,
+    fixture_paths: LauncherPaths,
+) -> (LauncherPaths, LauncherConfig, PathBuf) {
     fs::set_permissions(root, fs::Permissions::from_mode(0o711)).unwrap();
     let binaries = std::env::current_exe()
         .unwrap()
@@ -193,14 +204,18 @@ fn install_fixture_with_slots(root: &Path, slots: u32) -> (LauncherPaths, Launch
         .parent()
         .unwrap()
         .to_path_buf();
-    let fixture_paths = paths(root);
     let runtime = root.join("runtime");
     fs::create_dir(&runtime).unwrap();
     let agent = runtime.join("agent");
     fs::copy(binaries.join("louiselm-tool-test-agent"), &agent).unwrap();
     fs::set_permissions(&agent, fs::Permissions::from_mode(0o555)).unwrap();
     let mut manifest = super::tool_integration_tests::manifest(&agent);
-    for name in ["louiselm-launch", "louiselm-tool-test-helper"] {
+    manifest.policy.digest = crate::policy::Policy::embedded().digest().to_string();
+    for name in [
+        "louiselm-launch",
+        "louiselm-tool-test-helper",
+        "louiselm-control",
+    ] {
         let executable = binaries.join(name);
         manifest.components.push(Component {
             name: name.into(),
@@ -275,9 +290,11 @@ fn install_fixture_with_slots(root: &Path, slots: u32) -> (LauncherPaths, Launch
     .unwrap();
     assert!(installed.failures.is_empty(), "{:?}", installed.failures);
     let config = crate::launcher_install::runtime_config(&fixture_paths).unwrap();
-    for name in ["state", "rendezvous"] {
-        let directory = root.join(name);
-        fs::create_dir(&directory).unwrap();
+    for directory in [
+        root.join("state"),
+        fixture_paths.broker_socket.parent().unwrap().to_owned(),
+    ] {
+        fs::create_dir_all(&directory).unwrap();
         chown(&directory, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     }

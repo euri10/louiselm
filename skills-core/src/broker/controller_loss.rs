@@ -1,5 +1,5 @@
 //! Durable controller-loss decisions precede authenticated disposal settlement.
-use super::{BrokerError, BrokerService, BrokerSession, receive, response, send};
+use super::{BrokerError, BrokerService, BrokerSession, response, send};
 use crate::{
     broker::{
         attention::{AttentionCondition, AttentionReason, AttentionSubject, ProjectionChange},
@@ -72,7 +72,7 @@ impl BrokerService {
     {
         let clock = std::time::Instant::now();
         let result = (|| {
-            let packet = receive(session.channel())?;
+            let packet = super::receive_next(session.channel())?;
             if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
                 && matches!(query.operation, CommandOperation::StatusRequest {})
             {

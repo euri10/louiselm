@@ -25,7 +25,27 @@ response, because nothing correlates one to an unrecognised packet.
 `serve_launch` and `serve_reconnect` remain as the single-purpose entry points
 the tests drive; all three share the same post-accept transactions.
 
-No process calls any of them in production yet: see `louiselm-96pv`.
+`louiselm-control serve` runs the installed broker under its dedicated non-root
+UID/GID, with no supplementary groups, using `/var/lib/louiselm/broker` as its
+machine-lifetime state. It accepts exactly that verb and no caller-selected
+paths. The executable must belong to the configured trusted release. Startup
+checks the installed authority, private directories and durable identity marker
+before opening the broker stores.
+
+The daemon separates `accept_connection` from `serve_accepted`: each accepted
+supervisor gets its own handshake and continuing `step` worker. A silent or
+invalid peer cannot hold up another Session's launch. Handshake and operation
+response deadlines remain bounded; waiting for the next unsolicited packet on
+an idle Session has no deadline. Peer closure still wakes that worker.
+
+SIGTERM uses Linux's native process termination action. Process teardown closes
+all Session descriptors promptly, including workers blocked in handshake or
+storage I/O. There is no drain, worker join or synthetic acknowledgement on stop.
+Only the existing durable-before-ACK receipt path can acknowledge an outcome;
+the supervisor observes Broker loss and reattaches through the same retained
+manager listener after restart. Installation of the socket/service units remains
+`louiselm-96pv.5`; this command does not provision them, deliver queued Attention,
+provide client verbs or authorize new work.
 
 `SeqpacketListener::adopt` accepts an owned, listening Unix `SOCK_SEQPACKET`
 descriptor. `inherited_descriptor` validates that `LISTEN_PID` names this
@@ -55,9 +75,14 @@ setting it after a packet was queued cannot recover missing credentials.
 The VM gate in `installed_socket_tests.rs` uses a root-created listener with
 separate non-root worker processes and exercises the production connection and
 reconnect paths. It rejects both root and unrelated-UID senders even when they
-hold the accepted socket. This is a credential-boundary test, not a lifecycle
-authorization or running-daemon claim. Daemon/provisioning integration remains
-`louiselm-96pv.3` and `louiselm-96pv.5`.
+hold the accepted socket. This is a credential-boundary test. The separate
+`installed_daemon_tests::privileged_activated_daemon_serves_launches_and_restart`
+gate executes the actual installed binary in a disposable VM's private mount
+namespace. It covers simultaneous launches beside a silent peer, storage
+failure without an ACK, SIGTERM, retained-supervisor restart, and startup
+identity/directory/marker refusals. It requires `LOUISELM_REQUIRE_CONTROL_DAEMON=1`
+and `unshare --mount --propagation private`; ordinary Cargo skips it. Production
+provisioning remains `louiselm-96pv.5`.
 
 ## Durable broker identity
 

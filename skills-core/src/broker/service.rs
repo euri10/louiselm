@@ -44,7 +44,7 @@ use crate::{
     },
 };
 
-/// Longest a broker worker waits for one transport step to complete.
+/// Longest a broker worker waits for a handshake or operation response.
 ///
 /// The transport itself has no deadline. Without one here a supervisor that
 /// connects and then says nothing would hold this worker forever.
@@ -366,8 +366,32 @@ impl BrokerService {
     /// # Errors
     /// Returns the same failures as [`Self::serve_launch`] and
     /// [`Self::serve_reconnect`], according to which the peer asked for.
-    pub fn serve_connection<F>(
+    pub fn serve_connection<F>(&self, now_ms: u64, verify: F) -> Result<BrokerSession, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let clock = Instant::now();
+        let channel = self.accept()?;
+        let now_ms =
+            now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+        self.serve_accepted(channel, now_ms, verify)
+    }
+
+    /// Runs the launch or reconnect handshake on an already accepted channel.
+    ///
+    /// The daemon accepts independently, then gives this blocking transaction
+    /// its own worker. The channel must match this service's supervisor pin;
+    /// every packet remains authenticated and failures close only this channel.
+    ///
+    /// # Errors
+    /// Returns peer, protocol, authorization, verification or durability failure.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "The worker transfers its accepted channel; only the returned Session retains ownership after success."
+    )]
+    pub fn serve_accepted<F>(
         &self,
+        channel: SeqpacketChannel,
         now_ms: u64,
         mut verify: F,
     ) -> Result<BrokerSession, BrokerError>
@@ -375,8 +399,14 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         let clock = Instant::now();
-        let channel = self.accept()?;
         let result = (|| {
+            if !self
+                .supervisor
+                .matches(channel.peer_credentials())
+                .map_err(BrokerError::Transport)?
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
             let packet = receive(&channel)?;
             let now_ms = now_ms
                 .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
@@ -394,6 +424,21 @@ impl BrokerService {
             channel.close();
         }
         result
+    }
+
+    /// Waits for one authenticated connection without waiting for its first packet.
+    ///
+    /// An idle rendezvous has no deadline. Closing the listener interrupts this
+    /// wait; connection handshakes retain their own bounded packet deadlines.
+    /// Run on the daemon accept worker, then dispatch [`Self::serve_accepted`].
+    ///
+    /// # Errors
+    /// Returns listener closure, peer authentication or transport setup failure.
+    pub fn accept_connection(&self) -> Result<SeqpacketChannel, BrokerError> {
+        self.accept_pending()?
+            .recv()
+            .map_err(|_| BrokerError::Transport(TransportError::Closed))?
+            .map_err(BrokerError::Transport)
     }
 
     /// Closes the rendezvous listener. Bound paths are not unlinked here: the
@@ -645,6 +690,12 @@ impl BrokerService {
     }
 
     fn accept(&self) -> Result<SeqpacketChannel, BrokerError> {
+        settle(&self.accept_pending()?)
+    }
+
+    fn accept_pending(
+        &self,
+    ) -> Result<mpsc::Receiver<Result<SeqpacketChannel, TransportError>>, BrokerError> {
         let (sender, receiver) = mpsc::sync_channel(1);
         self.listener
             .accept(
@@ -654,7 +705,7 @@ impl BrokerService {
                 }),
             )
             .map_err(BrokerError::Transport)?;
-        settle(&receiver)
+        Ok(receiver)
     }
 }
 
@@ -679,16 +730,31 @@ pub(super) fn receive_for(
     channel: &SeqpacketChannel,
     timeout: Duration,
 ) -> Result<AuthenticatedPacket, BrokerError> {
+    receive_with_timeout(channel, Some(timeout))
+}
+
+/// An idle Session has no pending operation to time out. Peer/owner closure
+/// still cancels the transport receive and wakes this worker immediately.
+pub(super) fn receive_next(channel: &SeqpacketChannel) -> Result<AuthenticatedPacket, BrokerError> {
+    receive_with_timeout(channel, None)
+}
+
+fn receive_with_timeout(
+    channel: &SeqpacketChannel,
+    timeout: Option<Duration>,
+) -> Result<AuthenticatedPacket, BrokerError> {
     let (sender, receiver) = mpsc::sync_channel(1);
     channel
         .receive(Box::new(move |received| {
             let _delivered = sender.send(received);
         }))
         .map_err(BrokerError::Transport)?;
-    let packet: AuthenticatedPacket = receiver
-        .recv_timeout(timeout)
-        .map_err(|_| BrokerError::Transport(TransportError::Closed))?
-        .map_err(BrokerError::Transport)?;
+    let packet: AuthenticatedPacket = match timeout {
+        Some(timeout) => receiver.recv_timeout(timeout).map_err(|_| ()),
+        None => receiver.recv().map_err(|_| ()),
+    }
+    .map_err(|()| BrokerError::Transport(TransportError::Closed))?
+    .map_err(BrokerError::Transport)?;
     if packet.peer_credentials != channel.peer_credentials()
         || packet.message_credentials != packet.peer_credentials
     {

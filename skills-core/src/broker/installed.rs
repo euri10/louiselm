@@ -15,7 +15,7 @@ use crate::{
     broker::lifecycle::LifecycleCaller,
     launch_protocol::LifecycleRequest,
     launch_receipt::SignedReceipt,
-    launch_transport::{CredentialPin, SeqpacketListener},
+    launch_transport::{CredentialPin, SeqpacketChannel, SeqpacketListener},
     launcher_install::{LauncherPaths, LauncherVerifier},
 };
 
@@ -326,9 +326,42 @@ impl InstalledBroker {
         }
     }
 
+    /// Waits for one authenticated supervisor without starting its handshake.
+    /// The daemon gives each accepted connection its own worker.
+    /// # Errors
+    /// Returns listener, peer authentication or transport setup failure.
+    pub fn accept_connection(&self) -> Result<SeqpacketChannel, BrokerError> {
+        self.service.accept_connection()
+    }
+
+    /// Runs an accepted connection's launch/reconnect using installed verification.
+    /// Blocks only this connection's worker; failures close its channel.
+    /// # Errors
+    /// Returns authentication, policy, signature, durability or transport failure.
+    pub fn serve_accepted(&self, channel: SeqpacketChannel) -> Result<BrokerSession, BrokerError> {
+        let mut verification_failure = None;
+        let result = self
+            .service
+            .serve_accepted(channel, now_ms()?, |key, payload, signature| {
+                match self.verifier.verify(key, payload, signature) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        verification_failure = Some(error);
+                        false
+                    }
+                }
+            });
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
     /// Processes a command, signed outcome or durable controller-loss settlement.
     /// Returns true only after a terminal receipt became durable. Local decision
     /// and Attention enqueue precede settlement; remote delivery grants no authority.
+    /// Waiting for the next packet is idle time, without an operation deadline;
+    /// closing the Session channel interrupts that wait.
     ///
     /// # Errors
     /// Closes the connection on protocol, verification, audit or transport failure;

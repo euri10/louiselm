@@ -67,6 +67,9 @@ mod recovery_status;
 #[path = "broker/reconnect.rs"]
 mod reconnect;
 
+#[path = "broker/serving.rs"]
+mod serving;
+
 #[path = "broker/controller_loss.rs"]
 mod controller_loss;
 

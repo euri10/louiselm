@@ -129,7 +129,7 @@ impl CredentialPin {
         Ok(())
     }
 
-    fn matches(&self, credentials: KernelCredentials) -> Result<bool, TransportError> {
+    pub(crate) fn matches(&self, credentials: KernelCredentials) -> Result<bool, TransportError> {
         Ok(match self {
             Self::Identity { uid, gid } => credentials.uid == *uid && credentials.gid == *gid,
             Self::Process(expected) => credentials == *expected,
