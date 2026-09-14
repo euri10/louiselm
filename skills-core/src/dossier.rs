@@ -7,7 +7,7 @@
 //! this tool or by an Agent — is accepted as authority; a recorded digest is
 //! a claim to be checked, never a conclusion.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
@@ -83,7 +83,8 @@ pub enum AssessmentState {
 }
 
 /// What a reviewer or Agent should do next, as a typed instruction.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NextAction {
     /// Stable action identifier.
     pub id: String,

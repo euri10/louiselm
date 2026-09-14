@@ -22,6 +22,7 @@ pub mod commands;
 pub mod delegation;
 pub mod installed;
 pub mod lifecycle;
+mod posture;
 pub mod promotion;
 pub mod receipts;
 pub mod recovery;
@@ -65,6 +66,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Retained trusted evidence could not form a consistent posture.
+    #[error("broker posture evidence is invalid")]
+    Posture(#[from] crate::posture::PostureError),
     /// Approved verification inputs could not be validated or durably copied.
     #[error("verification workspace is unavailable")]
     Workspace(#[from] crate::workspace::WorkspaceError),

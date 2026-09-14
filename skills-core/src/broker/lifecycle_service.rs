@@ -5,9 +5,9 @@ use crate::{
     broker::lifecycle::LifecycleCaller,
     launch::PROTOCOL_VERSION,
     launch_protocol::{
-        CompletedRequest, ErrorCode, LifecycleRequest, PostureSummary, ProtocolError,
-        ProtocolMessage, ResponseResult, STATUS_REQUEST_SCHEMA, SessionStatus, StatusRequest,
-        SupervisorStatus, evaluate_request,
+        CompletedRequest, ErrorCode, LifecycleRequest, ProtocolError, ProtocolMessage,
+        ResponseResult, STATUS_REQUEST_SCHEMA, SessionStatus, StatusRequest, SupervisorStatus,
+        evaluate_request,
     },
     launch_receipt::SignedReceipt,
     launch_transport::{AuthenticatedPacket, LauncherPacket},
@@ -173,7 +173,6 @@ impl BrokerService {
     pub fn serve_agent_status<F>(
         &self,
         session: &mut BrokerSession,
-        posture: PostureSummary,
         now_ms: u64,
         mut verify: F,
     ) -> Result<SessionStatus, BrokerError>
@@ -204,13 +203,8 @@ impl BrokerService {
                 )?;
                 return Err(error.into());
             }
-            let status = self.session_status(
-                session,
-                &LifecycleCaller::Agent,
-                posture,
-                now_ms,
-                &mut verify,
-            )?;
+            let status =
+                self.session_status(session, &LifecycleCaller::Agent, now_ms, &mut verify)?;
             send(
                 &session.channel,
                 response(
@@ -232,13 +226,15 @@ impl BrokerService {
     /// Composes canonical Session status for one authenticated caller.
     ///
     /// Mechanical facts come from the supervisor over the retained channel;
-    /// `posture` and the advertised actions are broker-owned. The action set is
+    /// posture is derived from the Session's retained launch proof, and the
+    /// advertised actions are broker-owned. The action set is
     /// narrowed to what `caller` could actually request, and a serialized
     /// operation still in flight withdraws all of them, so status never offers
     /// a mutation the next request would refuse.
     ///
     /// Run on the Session's broker worker, never concurrently with another
-    /// receive. This reads state and authorizes nothing.
+    /// receive. This reads mechanical state, runs no posture evidence probes,
+    /// preserves the original proof-validation time and authorizes nothing.
     ///
     /// # Errors
     /// Refuses malformed, foreign, stale-head or unavailable supervisor responses,
@@ -247,7 +243,6 @@ impl BrokerService {
         &self,
         session: &mut BrokerSession,
         caller: &LifecycleCaller,
-        posture: PostureSummary,
         now_ms: u64,
         mut verify: F,
     ) -> Result<SessionStatus, BrokerError>
@@ -266,6 +261,9 @@ impl BrokerService {
             } else {
                 caller.allowed_actions(&session.authorization, status.state, quarantined, now_ms)
             };
+            let posture = session
+                .posture_evidence
+                .status(&status, quarantined, now_ms)?;
             Ok(SessionStatus::compose(status, posture, actions)?)
         })();
         if result.is_err() {

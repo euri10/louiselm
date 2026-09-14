@@ -284,10 +284,7 @@ fn stored_signature_is_reverified_before_replying_with_a_checkpoint() {
 
 #[test]
 fn status_is_answerable_after_a_broker_restart_reattaches_the_exact_prefix() {
-    use louiselm_skills::{
-        broker::lifecycle::LifecycleCaller,
-        launch_protocol::{LifecycleAction, PostureSummary},
-    };
+    use louiselm_skills::{broker::lifecycle::LifecycleCaller, launch_protocol::LifecycleAction};
 
     let root = TempDir::new().unwrap();
     let (service, authorization, chain) = fixture(root.path());
@@ -316,12 +313,23 @@ fn status_is_answerable_after_a_broker_restart_reattaches_the_exact_prefix() {
             &LifecycleCaller::Operator {
                 uid: CONTROLLER_UID,
             },
-            PostureSummary::Pending,
             90_000,
             verify_fixture_signature,
         )
         .unwrap();
     assert_eq!(status.session_id, offer.session_id);
+    // This fixture has signed receipts but no successful launch-audit record.
+    // Reattachment must not invent a proof validation time or verified posture.
+    assert!(
+        status
+            .posture
+            .dimensions
+            .iter()
+            .all(
+                |dimension| dimension.state == louiselm_skills::posture::DimensionState::Failed
+                    && dimension.freshness.last_verified_at_ms.is_none()
+            )
+    );
     assert_eq!(status.state, SessionState::Running);
     assert_eq!(
         status.broker_head,

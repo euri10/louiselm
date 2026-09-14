@@ -339,6 +339,15 @@ configured Provider names. The isolation/network owners must supply their own
 evidence; all four supply dimensions passing does not establish a Verified
 launch. Installed status/launch consumption remains `louiselm-d6fv.9`.
 
+The broker's canonical `louiselm.launch.session-status/4` now includes a
+display-only six-dimension `PostureStatus`, derived from retained trusted facts.
+Callers cannot supply its verdict. The initial runtime producer consumes the
+authenticated launch/start chain and preserves its original proof-validation
+time; other dimensions remain explicitly unverified until their evidence
+producers are connected. Status reads run no evidence probes and grant no
+authority. See [canonical status composition](../docs/broker-lifecycle.md#canonical-status-composition)
+for the launch-based freshness meaning and remaining integration scope.
+
 ### Prospective artifact preflight
 
 `preflight --request request.json --manifest inputs.json --robot-json` reads

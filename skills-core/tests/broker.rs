@@ -51,6 +51,9 @@ mod launch_gates;
 #[path = "broker/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "broker/posture.rs"]
+mod posture;
+
 #[path = "broker/attention.rs"]
 mod attention;
 

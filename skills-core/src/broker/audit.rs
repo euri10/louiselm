@@ -174,6 +174,32 @@ impl AuditLog {
         result
     }
 
+    /// Finds a decision without allocating the bounded operator view.
+    /// Authority and proof lookups must still work after that view's entry limit.
+    /// Reads one entry at a time and stops at the first matching observation.
+    pub(in crate::broker) fn find(
+        &self,
+        mut predicate: impl FnMut(&AuditEntry) -> bool,
+    ) -> Result<Option<AuditEntry>, BrokerError> {
+        let file = match std::fs::File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(BrokerError::Storage(error)),
+        };
+        for line in BufReader::new(file).lines() {
+            let line = line.map_err(BrokerError::Storage)?;
+            if line.is_empty() {
+                continue;
+            }
+            let entry: AuditEntry =
+                serde_json::from_str(&line).map_err(|_| corrupt("audit entry is malformed"))?;
+            if predicate(&entry) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+
     /// Reads the operator record in the order the broker decided.
     ///
     /// # Errors

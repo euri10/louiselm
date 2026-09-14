@@ -1,9 +1,9 @@
 //! Normalized, fail-closed Verified posture.
 //!
-//! Evidence enters through typed constructors in this trusted crate. None of
-//! the evidence or posture types implement `Deserialize`: Agent claims and
-//! arbitrary JSON may be displayed by an adapter after validation, but they
-//! cannot become authority for a launch decision.
+//! Evidence enters through typed constructors in this trusted crate.
+//! `DimensionInput`, `EvidenceRef` and `Posture` do not implement `Deserialize`.
+//! Scalar vocabulary can appear in validated display records, but Agent claims
+//! and arbitrary JSON cannot become authority for a launch decision.
 
 use std::collections::BTreeMap;
 
@@ -24,7 +24,7 @@ pub const EMBEDDED_INSTRUCTIONS_NOTICE: &str = "Instructions embedded in the mea
 const MAX_IDENTIFIER_BYTES: usize = 256;
 
 /// One independently evaluated posture dimension.
-#[derive(Clone, Copy, Debug, Ord, PartialEq, Eq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Ord, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DimensionName {
     /// Admitted LouiseLM-managed skill supply.
@@ -65,7 +65,7 @@ impl DimensionName {
         }
     }
 
-    const fn requirement(self) -> Requirement {
+    pub(crate) const fn requirement(self) -> Requirement {
         match self {
             Self::ManagedSupply => Requirement::WitnessedGeneration,
             Self::NativeSupply => Requirement::NativeSourcesControlled,
@@ -76,7 +76,7 @@ impl DimensionName {
         }
     }
 
-    const fn accepts_evidence(self, kind: EvidenceKind) -> bool {
+    pub(crate) const fn accepts_evidence(self, kind: EvidenceKind) -> bool {
         match self {
             Self::ManagedSupply => matches!(kind, EvidenceKind::SkillGeneration),
             Self::NativeSupply | Self::ProviderDisclosure => {
@@ -94,7 +94,7 @@ impl DimensionName {
         }
     }
 
-    const fn accepts_failure(self, code: FailureCode) -> bool {
+    pub(crate) const fn accepts_failure(self, code: FailureCode) -> bool {
         if matches!(
             code,
             FailureCode::EvidenceMissing
@@ -127,7 +127,7 @@ impl DimensionName {
 }
 
 /// What policy requires from one dimension.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Requirement {
     /// Managed supply must come from a witnessed Skill Generation.
@@ -160,7 +160,7 @@ impl Requirement {
 }
 
 /// Trusted component that produced an opaque evidence identifier.
-#[derive(Clone, Copy, Debug, Ord, PartialEq, Eq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Ord, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     /// A hardware-authorized, witnessed Skill Generation.
@@ -275,7 +275,7 @@ impl FailureCode {
 }
 
 /// Result of evaluating one dimension.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DimensionState {
     /// Trusted evidence satisfies the requirement.
@@ -621,7 +621,7 @@ fn aggregate_state(dimensions: &PostureDimensions) -> PostureState {
     }
 }
 
-fn next_action(failure: Option<FailureCode>) -> NextAction {
+pub(crate) fn next_action(failure: Option<FailureCode>) -> NextAction {
     let (id, detail) = match failure {
         None => ("none", "No action is required."),
         Some(FailureCode::RootTrustFailed) => (
@@ -675,7 +675,7 @@ fn next_action(failure: Option<FailureCode>) -> NextAction {
     }
 }
 
-fn validate_identifier(field: &'static str, value: &str) -> Result<(), PostureError> {
+pub(crate) fn validate_identifier(field: &'static str, value: &str) -> Result<(), PostureError> {
     if value.is_empty() {
         return Err(PostureError::Identifier {
             field,

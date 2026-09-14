@@ -58,6 +58,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// or process cleanup has completed. Listener lifetime is independent.
 #[must_use = "Dropping the Session owner closes its supervisor connection."]
 pub struct BrokerSession {
+    pub(in crate::broker) posture_evidence: super::posture::RuntimePostureEvidence,
     require_cold_recovery: bool,
     pub(in crate::broker) recovery_admitted_until: Option<Instant>,
     authorization: LaunchAuthorization,
@@ -349,22 +350,10 @@ impl BrokerService {
                 .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
             self.launch_on(&channel, &request, now_ms, &mut verify_signature)
         })();
-        match result {
-            Ok((authorization, launch_head, commands, require_cold_recovery)) => {
-                Ok(BrokerSession {
-                    require_cold_recovery,
-                    recovery_admitted_until: None,
-                    authorization,
-                    launch_head,
-                    channel,
-                    commands,
-                })
-            }
-            Err(error) => {
-                channel.close();
-                Err(error)
-            }
+        if result.is_err() {
+            channel.close();
         }
+        result
     }
 
     /// Accepts one supervisor and routes it by the connection's first packet.
@@ -393,16 +382,7 @@ impl BrokerService {
                 .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
             match packet.packet {
                 LauncherPacket::Request(ProtocolMessage::LaunchAuthorization(request)) => {
-                    let (authorization, launch_head, commands, require_cold_recovery) =
-                        self.launch_on(&channel, &request, now_ms, &mut verify)?;
-                    Ok(BrokerSession {
-                        require_cold_recovery,
-                        recovery_admitted_until: None,
-                        authorization,
-                        launch_head,
-                        channel: channel.clone(),
-                        commands,
-                    })
+                    self.launch_on(&channel, &request, now_ms, &mut verify)
                 }
                 LauncherPacket::Request(ProtocolMessage::BrokerReconnect(request)) => {
                     self.reconnect_on(&channel, &request, now_ms, &mut verify)
@@ -433,15 +413,7 @@ impl BrokerService {
         request: &crate::launch::LaunchRequest,
         now_ms: u64,
         verify_signature: &mut F,
-    ) -> Result<
-        (
-            LaunchAuthorization,
-            ReceiptHead,
-            Option<super::commands::CommandAuthority>,
-            bool,
-        ),
-        BrokerError,
-    >
+    ) -> Result<BrokerSession, BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -548,13 +520,17 @@ impl BrokerService {
             sequence: ack.sequence,
             digest: ack.receipt_digest.clone(),
         };
+        let posture_evidence = self.retain_launch_posture(&authorization, verify_signature)?;
         send(channel, ack.canonical_bytes())?;
-        Ok((
+        Ok(BrokerSession {
+            posture_evidence,
+            require_cold_recovery: pending.require_cold_recovery,
+            recovery_admitted_until: None,
             authorization,
-            broker_head,
+            launch_head: broker_head,
+            channel: channel.clone(),
             commands,
-            pending.require_cold_recovery,
-        ))
+        })
     }
 
     /// Stores exact signed bytes; the caller sends the ACK after policy setup.
@@ -611,6 +587,23 @@ impl BrokerService {
             },
         )?;
         Ok((acknowledgement, evidence))
+    }
+
+    /// Original proof observation, not a new check or an operator-view read.
+    pub(in crate::broker) fn start_receipt_stored_at(
+        &self,
+        authorization: &LaunchAuthorization,
+    ) -> Result<Option<u64>, BrokerError> {
+        Ok(self
+            .audit
+            .find(|entry| {
+                entry.session_id == authorization.session_id
+                    && entry.run_id == authorization.run_id
+                    && entry.authorization_id == authorization.authorization_id
+                    && entry.identity_slot == authorization.identity_slot
+                    && entry.decision == (AuditDecision::ReceiptStored { sequence: 1 })
+            })?
+            .map(|entry| entry.at_ms))
     }
 
     /// Records one decision the broker already made about an authorization.

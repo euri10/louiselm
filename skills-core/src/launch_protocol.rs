@@ -8,6 +8,10 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 
 mod command;
+mod posture;
+pub use posture::{
+    DimensionStatus, EvidenceFreshness, FreshnessBasis, PostureStatus, StatusEvidence,
+};
 mod recovery;
 pub(crate) use recovery::validate_reconstruction;
 mod verification;
@@ -78,7 +82,7 @@ pub const CONTROLLER_LOSS_ACK_SCHEMA: &str = "louiselm.launch.controller-loss-ac
 pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/3";
 
 /// Schema for broker-composed canonical Session status.
-pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/3";
+pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/4";
 
 /// Schema for a response to a request.
 pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/2";
@@ -1216,8 +1220,8 @@ pub struct SessionStatus {
     pub run_id: String,
     /// Current mechanical state.
     pub state: SessionState,
-    /// Non-authoritative summary of broker-owned posture evidence.
-    pub posture: PostureSummary,
+    /// Non-authoritative projection of all six broker-owned posture dimensions.
+    pub posture: Box<PostureStatus>,
     /// Supervisor/broker connection state.
     pub broker_connection: BrokerConnection,
     /// Applied capability-envelope revision.
@@ -1247,7 +1251,7 @@ impl SessionStatus {
     /// Rejects invalid supervisor state, duplicate actions, or actions inconsistent with the resulting Session status.
     pub fn compose(
         supervisor: SupervisorStatus,
-        posture: PostureSummary,
+        posture: PostureStatus,
         mut allowed_actions: Vec<LifecycleAction>,
     ) -> Result<Self, ProtocolError> {
         supervisor.validate()?;
@@ -1265,7 +1269,7 @@ impl SessionStatus {
             session_id: supervisor.session_id,
             run_id: supervisor.run_id,
             state: supervisor.state,
-            posture,
+            posture: Box::new(posture),
             broker_connection: supervisor.broker_connection,
             envelope_revision: supervisor.envelope_revision,
             channel_state: supervisor.channel_state,
@@ -1298,12 +1302,17 @@ impl SessionStatus {
     /// Validates subject, head, errors, and allowed-action mechanics.
     ///
     /// # Errors
-    /// Rejects invalid status fields, pending work with allowed actions, or unsorted/duplicate/mechanically invalid actions.
+    /// Rejects inconsistent posture details, Pending outside startup, invalid
+    /// status fields, pending work with allowed actions, or invalid actions.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, SESSION_STATUS_SCHEMA)?;
         validate_version(self.protocol_version)?;
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
+        self.posture.validate()?;
+        if self.posture.state == PostureSummary::Pending && self.state != SessionState::Starting {
+            return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+        }
         validate_status_shape(StatusShape {
             state: self.state,
             broker_connection: self.broker_connection,

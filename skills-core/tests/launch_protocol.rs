@@ -30,8 +30,62 @@ use louiselm_skills::{
     },
 };
 
+#[path = "launch_protocol/posture.rs"]
+mod posture;
+
 fn digest(value: &[u8]) -> String {
     Digest::of(value).to_string()
+}
+
+// Synthetic display fixtures exercise protocol shape, not real launch authority.
+fn status_posture(state: PostureSummary) -> launch_protocol::PostureStatus {
+    use louiselm_skills::{
+        launch_protocol::{EvidenceFreshness, FreshnessBasis, PostureStatus},
+        posture::{DimensionInput, DimensionName, EvidenceKind, EvidenceRef, FailureCode, Posture},
+    };
+    let verified = matches!(
+        state,
+        PostureSummary::FullyVerified | PostureSummary::Waived
+    );
+    let kinds = [
+        EvidenceKind::SkillGeneration,
+        EvidenceKind::SessionInputManifest,
+        EvidenceKind::RuntimeMeasurement,
+        EvidenceKind::IsolationReceipt,
+        EvidenceKind::CapabilityEnvelope,
+        EvidenceKind::SessionInputManifest,
+    ];
+    let inputs = DimensionName::ALL
+        .into_iter()
+        .zip(kinds)
+        .map(|(dimension, kind)| {
+            if state == PostureSummary::Waived && dimension == DimensionName::ManagedSupply {
+                DimensionInput::waived(
+                    dimension,
+                    FailureCode::WitnessMissing,
+                    vec![EvidenceRef::new(kind, &digest(b"status-proof")).unwrap()],
+                    EvidenceRef::new(EvidenceKind::WaiverReceipt, &digest(b"waiver")).unwrap(),
+                )
+            } else if verified {
+                DimensionInput::verified(
+                    dimension,
+                    vec![EvidenceRef::new(kind, &digest(b"status-proof")).unwrap()],
+                )
+            } else {
+                DimensionInput::failed(dimension, FailureCode::EvidenceMissing, vec![])
+            }
+        })
+        .collect();
+    let posture = Posture::evaluate("session-1", "run-1", inputs).unwrap();
+    let freshness = EvidenceFreshness {
+        basis: if verified {
+            FreshnessBasis::Launch
+        } else {
+            FreshnessBasis::Missing
+        },
+        last_verified_at_ms: verified.then_some(1000),
+    };
+    PostureStatus::from_posture(&posture, [freshness; 6])
 }
 
 fn launch_request() -> LaunchRequest {
@@ -743,9 +797,12 @@ fn terminal_audit_can_follow_a_mechanic_without_a_process_exit_classification() 
             status
                 .validate()
                 .expect("cleanup can precede the earlier mechanic's audit");
-            let composed =
-                SessionStatus::compose(status.clone(), PostureSummary::Unverified, Vec::new())
-                    .unwrap();
+            let composed = SessionStatus::compose(
+                status.clone(),
+                status_posture(PostureSummary::Unverified),
+                Vec::new(),
+            )
+            .unwrap();
             assert!(composed.allowed_actions.is_empty());
             assert_eq!(composed.process_exit, None);
             status.pending_operation.as_mut().unwrap().phase = PendingPhase::Applying;
@@ -770,8 +827,12 @@ fn process_exit_classification_is_terminal_only_and_composes_without_raw_status(
     exited
         .validate()
         .expect("a terminal supervisor status may classify a confirmed process exit");
-    let status = SessionStatus::compose(exited, PostureSummary::Unverified, Vec::new())
-        .expect("the broker preserves the sanitized classification");
+    let status = SessionStatus::compose(
+        exited,
+        status_posture(PostureSummary::Unverified),
+        Vec::new(),
+    )
+    .expect("the broker preserves the sanitized classification");
     assert_eq!(
         status.process_exit,
         Some(ProcessExitClassification::Signaled)
@@ -1191,14 +1252,21 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
     };
     let status = SessionStatus::compose(
         pending_supervisor,
-        PostureSummary::FullyVerified,
+        status_posture(PostureSummary::FullyVerified),
         Vec::new(),
     )
     .expect("broker status is consistent");
     assert_eq!(status.schema, SESSION_STATUS_SCHEMA);
     assert_eq!(
-        String::from_utf8(status.canonical_bytes()).expect("status JSON is UTF-8"),
-        r#"{"schema":"louiselm.launch.session-status/3","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
+        // Pin the surrounding canonical envelope independently of the nested
+        // posture record, whose shape and validation have focused tests below.
+        String::from_utf8(status.canonical_bytes())
+            .expect("status JSON is UTF-8")
+            .replace(
+                &serde_json::to_string(&status.posture).unwrap(),
+                "\"fully_verified\""
+            ),
+        r#"{"schema":"louiselm.launch.session-status/4","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
     );
 
     let response = ProtocolResponse {
@@ -1238,7 +1306,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
 
     let ready = SessionStatus::compose(
         supervisor(SessionState::Running),
-        PostureSummary::FullyVerified,
+        status_posture(PostureSummary::FullyVerified),
         vec![LifecycleAction::Disposal, LifecycleAction::Park],
     )
     .expect("broker status sorts the currently actionable subset");
@@ -1623,7 +1691,7 @@ fn identity_exhaustion_is_bounded_sorted_operator_evidence_and_redacted_from_sel
     self_supervisor.last_failure = Some(exhaustion.redacted_error());
     let self_status = SessionStatus::compose(
         self_supervisor,
-        PostureSummary::FullyVerified,
+        status_posture(PostureSummary::FullyVerified),
         vec![LifecycleAction::Park, LifecycleAction::Disposal],
     )
     .expect("redacted failure remains valid canonical self status");

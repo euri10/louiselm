@@ -663,13 +663,7 @@ fn session_status_composes_supervisor_mechanics_with_broker_posture_and_caller_s
         .unwrap();
     let read = |session: &mut BrokerSession, caller: &LifecycleCaller| {
         service
-            .session_status(
-                session,
-                caller,
-                PostureSummary::Unverified,
-                2000,
-                verify_fixture_signature,
-            )
+            .session_status(session, caller, 2000, verify_fixture_signature)
             .unwrap()
     };
 
@@ -677,7 +671,7 @@ fn session_status_composes_supervisor_mechanics_with_broker_posture_and_caller_s
     let status = read(&mut session, &operator());
     assert_eq!(status.session_id, "session-1");
     assert_eq!(status.state, SessionState::Running);
-    assert_eq!(status.posture, PostureSummary::Unverified);
+    assert_eq!(status.posture.state, PostureSummary::Unverified);
     assert_eq!(
         status.allowed_actions,
         vec![
@@ -738,21 +732,11 @@ fn an_agent_reads_only_its_own_session_and_never_learns_of_another() {
     let head_before = service.receipts().head("session-1").unwrap();
 
     service
-        .serve_agent_status(
-            &mut session,
-            PostureSummary::Pending,
-            2000,
-            verify_fixture_signature,
-        )
+        .serve_agent_status(&mut session, 2000, verify_fixture_signature)
         .unwrap();
     assert!(
         service
-            .serve_agent_status(
-                &mut session,
-                PostureSummary::Pending,
-                2000,
-                verify_fixture_signature,
-            )
+            .serve_agent_status(&mut session, 2000, verify_fixture_signature,)
             .is_err()
     );
     // Reading status grants nothing: no durable authority moved either way.
@@ -814,21 +798,10 @@ fn an_agent_and_its_operator_read_one_session_differing_only_by_scope() {
         .serve_launch(2000, verify_fixture_signature)
         .unwrap();
     let agent = service
-        .serve_agent_status(
-            &mut session,
-            PostureSummary::Pending,
-            2000,
-            verify_fixture_signature,
-        )
+        .serve_agent_status(&mut session, 2000, verify_fixture_signature)
         .unwrap();
     let operator = service
-        .session_status(
-            &mut session,
-            &operator(),
-            PostureSummary::Pending,
-            2000,
-            verify_fixture_signature,
-        )
+        .session_status(&mut session, &operator(), 2000, verify_fixture_signature)
         .unwrap();
     peer.join().unwrap();
 
@@ -892,13 +865,7 @@ fn status_after_a_park_reports_the_state_the_transition_actually_left_behind() {
     assert_eq!(receipt.payload.resulting_state, SessionState::Parked);
 
     let parked = service
-        .session_status(
-            &mut session,
-            &operator(),
-            PostureSummary::Pending,
-            2000,
-            verify_fixture_signature,
-        )
+        .session_status(&mut session, &operator(), 2000, verify_fixture_signature)
         .unwrap();
     assert_eq!(parked.state, SessionState::Parked);
     // Resume becomes offerable only now, and only to the operator.
@@ -923,13 +890,7 @@ fn status_after_a_park_reports_the_state_the_transition_actually_left_behind() {
         expires_at_ms: 3_000,
     };
     let coordinator = service
-        .session_status(
-            &mut session,
-            &scope,
-            PostureSummary::Pending,
-            2000,
-            verify_fixture_signature,
-        )
+        .session_status(&mut session, &scope, 2000, verify_fixture_signature)
         .unwrap();
     assert_eq!(
         coordinator.allowed_actions,

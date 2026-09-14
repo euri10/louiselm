@@ -268,7 +268,7 @@ it does not establish a vendor ACP recovery contract or desktop availability.
 
 `BrokerService::session_status` reads authenticated mechanical state through the
 existing supervisor channel, then adds the two broker-owned fields the supervisor
-must not author: the Verified posture summary and the lifecycle actions this
+must not author: the detailed Verified posture and the lifecycle actions this
 caller may currently request.
 
 `LifecycleCaller::allowed_actions` derives that action set from one predicate
@@ -281,11 +281,37 @@ withdraws Resume and leaves every unrelated action intact. A serialized operatio
 still in flight withdraws all of them, because the status schema rejects a
 pending operation advertised alongside an executable action.
 
-The posture summary is currently a parameter, not broker-owned state: no
-component persists a `Posture` for a live Session, and `LaunchEvidence` carries
-none. `louiselm-rn38` owns that decision; until it resolves, every surface
-reports `PostureSummary::Pending`. Composition authorizes nothing, resets no
-budget and grants no capability.
+`SessionStatus.posture` is the broker-derived, display-only `PostureStatus` in
+`louiselm.launch.session-status/4`. Status callers supply no posture verdict.
+Each response includes all six dimensions in canonical order, with state,
+requirement, bounded evidence references, a typed failure and fixed next action,
+and freshness. The aggregate must agree with the dimensions; `Pending` is valid
+only during actual initialization. A missing producer is `unverified` with
+`evidence_missing` in its failed dimension. A waived dimension never counts as
+fully verified. Parsing this record cannot construct trusted `Posture` inputs.
+
+The first producer uses the exact authenticated launch/start receipt chain,
+bound to the authorized Session, Run, request, revision, installed identity,
+release and signing key. The existing receipt store retains original admission
+history. The broker loads a private runtime-evidence record at launch or
+authenticated reattachment, using the original successful launch-proof audit
+time. A missing audit observation has no fabricated success timestamp and
+leaves runtime unverified. Other producers remain explicitly missing.
+
+Runtime freshness has a `launch` basis: it describes the checked launch proof
+for the original supervised Agent lifetime, not a new executable measurement or
+continuous conformance assertion. Current terminal/disconnected/quarantined
+state, or a clock preceding the recorded check, cannot keep that proof verified;
+the original check time and evidence remain inspectable as `invalidated`.
+Reading status and restarting the broker do not refresh the proof time. The
+status path still reads authenticated mechanical state but runs no evidence
+probes, writes no posture decisions, resets no budget and grants no capability.
+
+The maintainer-confirmed design is `louiselm-rn38`. Further supply/disclosure,
+source validity and network integration are `louiselm-d6fv.6.11` through `.6.13`;
+conformance, waiver and quarantine owners retain their existing policies. This
+partial status path does not establish the installed Verified cutover in
+`louiselm-d6fv.9`.
 
 `BrokerService::serve_agent_status` answers one read-only request from the Agent
 capability channel. It enforces self-scope against the Session's own

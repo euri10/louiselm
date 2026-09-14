@@ -85,16 +85,19 @@ impl CommandAuthority {
         }
         // A restart cannot restore spent budget from an old launch. Recovery is
         // a later lifecycle contract; require a fresh authorized lifetime here.
-        if audit.entries()?.iter().any(|entry| {
-            entry.session_id == binding.session_id
-                && matches!(
-                    entry.decision,
-                    AuditDecision::EffectCommitIntent { .. }
-                        | AuditDecision::ToolGranted { .. }
-                        | AuditDecision::CapabilitiesRevocationRequested
-                        | AuditDecision::CapabilitiesRevoked
-                )
-        }) {
+        if audit
+            .find(|entry| {
+                entry.session_id == binding.session_id
+                    && matches!(
+                        entry.decision,
+                        AuditDecision::EffectCommitIntent { .. }
+                            | AuditDecision::ToolGranted { .. }
+                            | AuditDecision::CapabilitiesRevocationRequested
+                            | AuditDecision::CapabilitiesRevoked
+                    )
+            })?
+            .is_some()
+        {
             return Err(DelegationError::Revoked);
         }
         let remaining = policy.scope.uses;
