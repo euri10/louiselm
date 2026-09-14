@@ -7,9 +7,9 @@ use crate::{
     Digest,
     launch_protocol::{
         CompletedRequest, ErrorCode, LaunchAuthorization, LifecycleAction, LifecycleRequest,
-        ProtocolError, RequestDisposition, SupervisorStatus, evaluate_request,
+        ProtocolError, RequestDisposition, SupervisorStatus, evaluate_request, transition,
     },
-    launch_receipt::{ReceiptAuthority, ReceiptOutcome, SignedReceipt},
+    launch_receipt::{ReceiptAuthority, ReceiptOutcome, SessionState, SignedReceipt},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -54,6 +54,29 @@ impl LifecycleCaller {
         request: &LifecycleRequest,
         now_ms: u64,
     ) -> bool {
+        self.allows(
+            &request.session_id,
+            &request.run_id,
+            request.envelope_revision,
+            request.action,
+            launch,
+            now_ms,
+        )
+    }
+
+    /// The one scope rule shared by request authorization and status rendering.
+    ///
+    /// Status must never advertise an action the same caller would then be
+    /// refused, so both paths ask this predicate rather than restating policy.
+    fn allows(
+        &self,
+        target_session: &str,
+        target_run: &str,
+        target_revision: u64,
+        action: LifecycleAction,
+        launch: &LaunchAuthorization,
+        now_ms: u64,
+    ) -> bool {
         match self {
             Self::Operator { uid } => *uid == launch.controller_uid,
             Self::Coordinator {
@@ -64,15 +87,58 @@ impl LifecycleCaller {
                 expires_at_ms,
             } => {
                 is_record_identifier(session_id)
-                    && session_id != &request.session_id
-                    && run_id == &request.run_id
-                    && *envelope_revision == request.envelope_revision
+                    && session_id != target_session
+                    && run_id == target_run
+                    && *envelope_revision == target_revision
                     && now_ms < *expires_at_ms
-                    && request.action != LifecycleAction::Resume
-                    && descendants.contains(&request.session_id)
+                    && action != LifecycleAction::Resume
+                    && descendants.iter().any(|entry| entry == target_session)
             }
             Self::Agent => false,
         }
+    }
+
+    /// Lifecycle actions this caller may request against `launch` right now.
+    ///
+    /// The result is the mechanically valid transitions out of `state`, narrowed
+    /// by this caller's scope and by a durable quarantine marker, which withdraws
+    /// Resume while leaving every unrelated action intact. Ascending and
+    /// duplicate-free, so
+    /// [`SessionStatus::compose`](crate::launch_protocol::SessionStatus::compose)
+    /// accepts it directly.
+    ///
+    /// This answers what policy permits, not whether the mechanic will succeed:
+    /// the supervisor still owns process mechanics and can refuse.
+    #[must_use]
+    pub fn allowed_actions(
+        &self,
+        launch: &LaunchAuthorization,
+        state: SessionState,
+        quarantined: bool,
+        now_ms: u64,
+    ) -> Vec<LifecycleAction> {
+        let mut actions: Vec<LifecycleAction> = [
+            LifecycleAction::Park,
+            LifecycleAction::Resume,
+            LifecycleAction::Interrupt,
+            LifecycleAction::Disposal,
+        ]
+        .into_iter()
+        .filter(|action| transition(state, *action).is_ok())
+        .filter(|action| !(quarantined && *action == LifecycleAction::Resume))
+        .filter(|action| {
+            self.allows(
+                &launch.session_id,
+                &launch.run_id,
+                launch.envelope_revision,
+                *action,
+                launch,
+                now_ms,
+            )
+        })
+        .collect();
+        actions.sort_unstable();
+        actions
     }
 
     fn identity(&self) -> String {

@@ -2,8 +2,12 @@
 
 `louiselm-qbr.5.1.2` owns the full recovery/status integration. This document
 describes its implemented authorization, reattachment and projection boundaries.
-Operator reconstruction is implemented for the measured synthetic recovery layout;
-the operator CLI and Agent self-status remain open work. The confirmed design in `louiselm-c0vs` requires broker-owned
+Operator reconstruction is implemented for the measured synthetic recovery layout.
+`BrokerService::session_status` composes the canonical `SessionStatus` both status
+surfaces read, but neither surface exists yet: the operator CLI
+(`louiselm-qbr.5.1.2.4.1`) and Agent self-status (`louiselm-qbr.5.1.2.4.2`) remain
+open work, so this composition has no production consumer and is reached only by
+its tests. The confirmed design in `louiselm-c0vs` requires broker-owned
 recovery evidence backed by trusted supervisor retention proof; a reference
 string alone must not authorize disposal. `louiselm-qbr.5.1.2.5` supplies the
 retention mechanics below. `louiselm-qbr.5.1.2.6` connects them to authenticated
@@ -193,6 +197,28 @@ settlement and operator-only reconstruction into a fresh authorized Session.
 The VM test restores a counter in a fresh measured fixture with a reused UID;
 it does not establish a vendor ACP recovery contract or desktop availability.
 
+## Canonical status composition
+
+`BrokerService::session_status` reads authenticated mechanical state through the
+existing supervisor channel, then adds the two broker-owned fields the supervisor
+must not author: the Verified posture summary and the lifecycle actions this
+caller may currently request.
+
+`LifecycleCaller::allowed_actions` derives that action set from one predicate
+shared with `LifecycleCaller::permits`, so status cannot advertise a mutation the
+next request would refuse. It reports the mechanically valid transitions out of
+the current state, narrowed by caller scope: only operators see Resume, a
+coordinator sees only actions on a descendant inside its unexpired envelope, and
+an Agent capability channel sees none at any state. A durable quarantine marker
+withdraws Resume and leaves every unrelated action intact. A serialized operation
+still in flight withdraws all of them, because the status schema rejects a
+pending operation advertised alongside an executable action.
+
+The posture summary is currently a parameter, not broker-owned state: no
+component persists a `Posture` for a live Session, and `LaunchEvidence` carries
+none. `louiselm-rn38` owns that decision and blocks both status surfaces.
+Composition authorizes nothing, resets no budget and grants no capability.
+
 ## Lifecycle authority
 
 `InstalledBroker::request_lifecycle` authenticates outcomes with the installed
@@ -261,7 +287,9 @@ restart. Lifecycle request history has the same explicit bound per Session.
 
 `skills-core/tests/broker/lifecycle.rs` covers authorization, coordinator scope,
 CAS races, restart/replay, refusals, signed-outcome binding and socket-level
-quarantine ordering. `skills-core/tests/broker/attention.rs` covers outbox
+quarantine ordering. It also covers status composition: caller-scoped allowed
+actions across state, quarantine, expiry and non-descendant targets, and the
+composed `SessionStatus` round-tripping through `parse_canonical`. `skills-core/tests/broker/attention.rs` covers outbox
 ordering, retry identity, validation and authenticated socket acknowledgements.
 `capture-service/tests/attention.rs` covers receiver restart, stale delivery,
 gaps/conflicts, capability authentication and the shared wire fixture.

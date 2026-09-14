@@ -5,8 +5,8 @@ use crate::{
     broker::lifecycle::LifecycleCaller,
     launch::PROTOCOL_VERSION,
     launch_protocol::{
-        CompletedRequest, LifecycleRequest, ResponseResult, STATUS_REQUEST_SCHEMA, StatusRequest,
-        SupervisorStatus, evaluate_request,
+        CompletedRequest, LifecycleRequest, PostureSummary, ResponseResult, STATUS_REQUEST_SCHEMA,
+        SessionStatus, StatusRequest, SupervisorStatus, evaluate_request,
     },
     launch_receipt::SignedReceipt,
     launch_transport::{AuthenticatedPacket, LauncherPacket},
@@ -147,6 +147,51 @@ impl BrokerService {
             }
         })();
         if result.is_err() && !matches!(result, Err(BrokerError::Policy(_))) {
+            session.close();
+        }
+        result
+    }
+
+    /// Composes canonical Session status for one authenticated caller.
+    ///
+    /// Mechanical facts come from the supervisor over the retained channel;
+    /// `posture` and the advertised actions are broker-owned. The action set is
+    /// narrowed to what `caller` could actually request, and a serialized
+    /// operation still in flight withdraws all of them, so status never offers
+    /// a mutation the next request would refuse.
+    ///
+    /// Run on the Session's broker worker, never concurrently with another
+    /// receive. This reads state and authorizes nothing.
+    ///
+    /// # Errors
+    /// Refuses malformed, foreign, stale-head or unavailable supervisor responses,
+    /// unreadable quarantine state, or a composition the status schema rejects.
+    pub fn session_status<F>(
+        &self,
+        session: &mut BrokerSession,
+        caller: &LifecycleCaller,
+        posture: PostureSummary,
+        now_ms: u64,
+        mut verify: F,
+    ) -> Result<SessionStatus, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let result = (|| {
+            let status = self.supervisor_status(session, &mut verify)?;
+            let quarantined = self
+                .lifecycle
+                .is_quarantined(&session.authorization.session_id)?;
+            // A pending operation and an advertised action contradict each other;
+            // the status schema rejects the pair, so offer nothing while one runs.
+            let actions = if status.pending_operation.is_some() {
+                Vec::new()
+            } else {
+                caller.allowed_actions(&session.authorization, status.state, quarantined, now_ms)
+            };
+            Ok(SessionStatus::compose(status, posture, actions)?)
+        })();
+        if result.is_err() {
             session.close();
         }
         result
