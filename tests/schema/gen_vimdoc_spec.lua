@@ -47,7 +47,7 @@ T["generate"]["wraps long descriptions to the help width"] = function()
     if line:find("require wrapping across multiple help lines.", 1, true) ~= nil then
       wrapped = true
     end
-    if #line > 78 and line:find("*", 1, true) == nil then
+    if #line > 78 then
       error("vimdoc line exceeds 78 columns: " .. line)
     end
   end

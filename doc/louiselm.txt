@@ -2,33 +2,69 @@
 
 
 ==============================================================================
-Overview                                                      *louiselm*
+Contents                                                   *louiselm-contents*
+
+  1. Overview ..................................................... |louiselm|
+  2. Sessions ............................................ |louiselm-sessions|
+  3. Workflow ............................................ |louiselm-workflow|
+  4. Permissions ...................................... |louiselm-permissions|
+  5. Context and skills ................................... |louiselm-context|
+  6. Default mappings .................................... |louiselm-mappings|
+  7. Commands ............................................ |louiselm-commands|
+  8. Configuration .................................. |louiselm-configuration|
+  9. Session API .............................................. |louiselm-api|
+  10. Troubleshooting ............................. |louiselm-troubleshooting|
+
+==============================================================================
+Overview                                                            *louiselm*
 
   LouiseLM is an ACP-first Neovim client with an interactive chat and a
   headless Session API.
-
-  Configure at least one Agent with require('louiselm').setup(), then use
-  :LouiselmChat to start a Session.
-
-  Use :checkhealth louiselm to validate configured Agents, local skills, and
-  capture tools. Health output is operational evidence, not a substitute for
-  this reference.
 
   Sessions remain bound to their Agent. A Handoff creates a new Session with a
   configured Agent, including the current Agent, and seeds it with your
   takeover task and a compacted source transcript. The source Session remains
   attached.
 
-==============================================================================
-Sessions                                                      *louiselm-sessions*
+Setup ~                                                     *louiselm.setup()*
 
-  A Session is bound to one Agent for its lifetime. Use :LouiselmSessionNew to
-  start another Session without stopping the current one, and
-  :LouiselmSessionSwitch to focus an attached Session.
+  Call setup() once with at least one Agent. Every Agent needs a command and
+  the Provider supplying its access or quota; see |louiselm-configuration| for
+  the complete schema.
+
+>lua
+  require("louiselm").setup({
+    agents = {
+      claude = {
+        command = "claude-code-acp",
+        provider = "Anthropic",
+      },
+      codex = {
+        command = "codex-acp",
+        provider = "OpenAI",
+      },
+    },
+    context = {
+      instructions_file = "AGENTS.md",
+    },
+  })
+<
+
+  Then use |:LouiselmChat| to start a Session, or |louiselm-api| to drive an
+  Agent without the chat UI. Use |:checkhealth| louiselm to validate
+  configured Agents, local skills, and capture tools. Health output is
+  operational evidence, not a substitute for this reference.
+
+==============================================================================
+Sessions                                                   *louiselm-sessions*
+
+  A Session is bound to one Agent for its lifetime. Use |:LouiselmSessionNew|
+  to start another Session without stopping the current one, and
+  |:LouiselmSessionSwitch| to focus an attached Session.
 
   Prompt silence has no time limit. A quiet or reconnecting Agent keeps its
   Session active until it responds, reports an error, or you dispose it. Use
-  :LouiselmCancel to request cancellation; dispose the Session if the Agent
+  |:LouiselmCancel| to request cancellation; dispose the Session if the Agent
   cannot respond. LouiseLM never resubmits an interrupted prompt
   automatically.
 
@@ -37,21 +73,23 @@ Sessions                                                      *louiselm-sessions
   Session remains attached.
 
 ==============================================================================
-Workflow                                                      *louiselm-workflow*
+Workflow                                                   *louiselm-workflow*
 
   Configure an Agent, start or resume a Session, queue optional context, then
   submit a prompt. Respond deliberately to permission requests and cancel a
   current turn when the intent changes.
 
 ==============================================================================
-Permissions                                                   *louiselm-permissions*
+Permissions                                             *louiselm-permissions*
 
   Sessions ask a human to answer ACP permission requests by default.
   Persistent choices remain scoped to the configured Agent, exact adapter
   command and arguments, and Session workspace.
 
+  Use |:LouiselmPermissions| to inspect and revoke remembered decisions.
+
 ==============================================================================
-Context and skills                                            *louiselm-context*
+Context and skills                                          *louiselm-context*
 
   Use the context commands to queue a buffer, visual selection, file, or skill
   for the next prompt. Queued context is sent only when you submit that
@@ -62,174 +100,191 @@ Context and skills                                            *louiselm-context*
   skills with intact leading chips. Edited chip fragments remain ordinary
   text; other queued context and the hidden skill catalog are retained.
 
-==============================================================================
-Troubleshooting                                               *louiselm-troubleshooting*
-
-  Run :checkhealth louiselm to validate configuration and local tool
-  availability. For Session-specific reports, :LouiselmSessionId copies the
-  Agent-scoped ACP Session identifier.
-
-  Direct vendor commands, including wrappers, have no LouiseLM Verified
-  posture. With louiselm-skills on PATH, :LouiselmPreflight request-file
-  [manifest-file [prior-request-file prior-manifest-file]] asynchronously
-  inspects canonical launch request/2 and Session input-manifest/1 artifacts
-  and opens health. Prior files are explicitly selected, never inferred from
-  history.
-
-  The selected prospective snapshot separates proposed identities from
-  independently checked supply/runtime artifacts. Native loading, isolation,
-  network enforcement and disclosure remain unproven; network scope is
-  unresolved without revision-bound rules. The snapshot is not approval,
-  launch authority or live Session status. Refresh after input changes; future
-  launch integration must bind the exact displayed request digest. Setup/reset
-  forgets the selection and cancels pending reads.
+  |louiselm-config-skills| decides where skills are discovered and who
+  executes them.
 
 ==============================================================================
-Commands                                                      *louiselm-commands*
+Default mappings                                           *louiselm-mappings*
 
-  Commands are registered by |require('louiselm').setup()|.
+  Installed by |louiselm.setup()| unless |louiselm-config-keymaps| is false.
+  Each mapping runs the command it links to; |mapleader| decides what <leader>
+  expands to.
 
-:LouiselmCancel                                               *:LouiselmCancel*
+  n   <leader>lc     Louiselm chat                             |:LouiselmChat|
+  n   <leader>lr     Louiselm resume session                 |:LouiselmResume|
+  n   <leader>lR     Louiselm resume any session             |:LouiselmResume|
+  n   <leader>lsn    Louiselm session new                |:LouiselmSessionNew|
+  n   <leader>lsw    Louiselm session switch          |:LouiselmSessionSwitch|
+  n   <leader>lsr    Louiselm session rename          |:LouiselmSessionRename|
+  n   <leader>lsx    Louiselm session close            |:LouiselmSessionClose|
+  n   <leader>lsi    Louiselm session id                  |:LouiselmSessionId|
+  n   <leader>lso    Louiselm session options        |:LouiselmSessionOptions|
+  n   <leader>lI     Louiselm capture inbox            |:LouiselmCaptureInbox|
+  n   <leader>lm     Louiselm export markdown            |:LouiselmToMarkdown|
+  n   <leader>lC     Louiselm cancel turn                    |:LouiselmCancel|
+  n   <leader>lp     Louiselm permissions               |:LouiselmPermissions|
+  n   <leader>lk     Louiselm pick skill                  |:LouiselmPickSkill|
+  n   <leader>lf     Louiselm pick file                    |:LouiselmPickFile|
+  n   <leader>lb     Louiselm mention buffer          |:LouiselmMentionBuffer|
+  x   <leader>ls     Louiselm send selection          |:LouiselmSendSelection|
+  n   <leader>le     Louiselm inline edit                    |:LouiselmInline|
+  x   <leader>le     Louiselm inline edit                    |:LouiselmInline|
+  n   <leader>lT     Louiselm inspect tool call         |:LouiselmInspectTool|
+  n   <leader>lP     Louiselm inspect provenance  |:LouiselmInspectProvenance|
+  n   <leader>lB     Louiselm inspect Beads issue       |:LouiselmInspectBead|
+  n   <leader>lH     Louiselm hand off session              |:LouiselmHandOff|
+  n   <leader>lF     Louiselm collect forensics           |:LouiselmForensics|
+  n   <leader>lV     Louiselm view forensics          |:LouiselmForensicsView|
+  n   <leader>lL     Louiselm inspect limits                 |:LouiselmLimits|
+  n   <leader>ld     Louiselm queue diagnostics         |:LouiselmDiagnostics|
+  n   <leader>lz     Louiselm resume parked run          |:LouiselmResumePark|
+
+==============================================================================
+Commands                                                   *louiselm-commands*
+
+  Commands are registered by |louiselm.setup()|.
+
+:LouiselmCancel                                              *:LouiselmCancel*
     Cancel the current louiselm turn
     Arguments: none
 
-:LouiselmCapture                                              *:LouiselmCapture*
+:LouiselmCapture                                            *:LouiselmCapture*
     Start or stop a durable speech capture
     Arguments: none
 
-:LouiselmCaptureInbox                                         *:LouiselmCaptureInbox*
+:LouiselmCaptureInbox                                  *:LouiselmCaptureInbox*
     Inspect durable captures and transcripts
     Arguments: none
 
-:LouiselmCapturePair                                          *:LouiselmCapturePair*
+:LouiselmCapturePair                                    *:LouiselmCapturePair*
     Create a one-time Android pairing QR
     Arguments: none
 
-:LouiselmCaptureRetry                                         *:LouiselmCaptureRetry*
+:LouiselmCaptureRetry                                  *:LouiselmCaptureRetry*
     Retry capture transcription
     Arguments: one required
 
-:LouiselmCaptureRevoke                                        *:LouiselmCaptureRevoke*
+:LouiselmCaptureRevoke                                *:LouiselmCaptureRevoke*
     Revoke an Android capture device
     Arguments: one required
 
-:LouiselmCaptureSetup                                         *:LouiselmCaptureSetup*
+:LouiselmCaptureSetup                                  *:LouiselmCaptureSetup*
     Verify capture service setup
     Arguments: none
 
-:LouiselmCaptureStatus                                        *:LouiselmCaptureStatus*
+:LouiselmCaptureStatus                                *:LouiselmCaptureStatus*
     Inspect capture and paired-device status
     Arguments: none
 
-:LouiselmChat                                                 *:LouiselmChat*
+:LouiselmChat                                                  *:LouiselmChat*
     Open the louiselm chat buffer
     Arguments: none
 
-:LouiselmDiagnostics                                          *:LouiselmDiagnostics*
+:LouiselmDiagnostics                                    *:LouiselmDiagnostics*
     Queue the source buffer's diagnostics as louiselm context
     Arguments: none
 
-:LouiselmForensics                                            *:LouiselmForensics*
+:LouiselmForensics                                        *:LouiselmForensics*
     Collect private Forensics for the current Session
     Arguments: none
 
-:LouiselmForensicsExport                                      *:LouiselmForensicsExport*
+:LouiselmForensicsExport                            *:LouiselmForensicsExport*
     Export selected redacted Forensics evidence to a new file
     Arguments: one or more
 
-:LouiselmForensicsView                                        *:LouiselmForensicsView*
+:LouiselmForensicsView                                *:LouiselmForensicsView*
     View a Forensics record
     Arguments: optional
 
-:LouiselmHandOff                                              *:LouiselmHandOff*
+:LouiselmHandOff                                            *:LouiselmHandOff*
     Hand the current session's reviewed transcript off to another agent
     Arguments: none
 
-:LouiselmInline                                               *:LouiselmInline*
+:LouiselmInline                                              *:LouiselmInline*
     Replace the current selection with louiselm output
     Arguments: none
 
-:LouiselmInspectBead                                          *:LouiselmInspectBead*
+:LouiselmInspectBead                                    *:LouiselmInspectBead*
     Inspect the Beads issue under the cursor
     Arguments: none
 
-:LouiselmInspectProvenance                                    *:LouiselmInspectProvenance*
+:LouiselmInspectProvenance                        *:LouiselmInspectProvenance*
     Inspect commit or issue Provenance under the cursor
     Arguments: none
 
-:LouiselmInspectTool                                          *:LouiselmInspectTool*
+:LouiselmInspectTool                                    *:LouiselmInspectTool*
     Inspect the raw payload under the cursor
     Arguments: none
 
-:LouiselmLimits                                               *:LouiselmLimits*
+:LouiselmLimits                                              *:LouiselmLimits*
     Inspect account limits for the active or named louiselm Agent
     Arguments: optional
 
-:LouiselmMentionBuffer                                        *:LouiselmMentionBuffer*
+:LouiselmMentionBuffer                                *:LouiselmMentionBuffer*
     Queue the source buffer as louiselm context
     Arguments: none
 
-:LouiselmPark                                                 *:LouiselmPark*
+:LouiselmPark                                                  *:LouiselmPark*
     Cold-Park the current louiselm Session
     Arguments: none
 
-:LouiselmPermissions                                          *:LouiselmPermissions*
+:LouiselmPermissions                                    *:LouiselmPermissions*
     Inspect and revoke remembered louiselm permissions
     Arguments: none
 
-:LouiselmPickFile                                             *:LouiselmPickFile*
+:LouiselmPickFile                                          *:LouiselmPickFile*
     Pick a file to queue as louiselm context
     Arguments: optional
 
-:LouiselmPickSkill                                            *:LouiselmPickSkill*
+:LouiselmPickSkill                                        *:LouiselmPickSkill*
     Pick a louiselm skill to invoke
     Arguments: none
 
-:LouiselmPreflight                                            *:LouiselmPreflight*
+:LouiselmPreflight                                        *:LouiselmPreflight*
     Inspect prospective artifacts without launching an Agent
     Arguments: one or more
 
-:LouiselmProvenanceDecisions                                  *:LouiselmProvenanceDecisions*
+:LouiselmProvenanceDecisions                    *:LouiselmProvenanceDecisions*
     Show the Provenance Decision index
     Arguments: none
 
-:LouiselmResume[!]                                            *:LouiselmResume*
+:LouiselmResume[!]                                           *:LouiselmResume*
     Resume a prior louiselm session; use ! for all workspaces
     Arguments: none
 
-:LouiselmResumePark                                           *:LouiselmResumePark*
+:LouiselmResumePark                                      *:LouiselmResumePark*
     Resume a durable cold-Parked Run
     Arguments: none
 
-:LouiselmSendSelection                                        *:LouiselmSendSelection*
+:LouiselmSendSelection                                *:LouiselmSendSelection*
     Queue the visual selection as louiselm context
     Arguments: none
 
-:LouiselmSessionClose                                         *:LouiselmSessionClose*
+:LouiselmSessionClose                                  *:LouiselmSessionClose*
     Close the current louiselm session
     Arguments: none
 
-:LouiselmSessionId                                            *:LouiselmSessionId*
+:LouiselmSessionId                                        *:LouiselmSessionId*
     Copy the current agent-scoped ACP session id
     Arguments: none
 
-:LouiselmSessionNew                                           *:LouiselmSessionNew*
+:LouiselmSessionNew                                      *:LouiselmSessionNew*
     Create a separate louiselm session
     Arguments: none
 
-:LouiselmSessionOptions                                       *:LouiselmSessionOptions*
+:LouiselmSessionOptions                              *:LouiselmSessionOptions*
     Configure the current idle louiselm session
     Arguments: none
 
-:LouiselmSessionRename                                        *:LouiselmSessionRename*
+:LouiselmSessionRename                                *:LouiselmSessionRename*
     Rename the current louiselm session
     Arguments: none
 
-:LouiselmSessionSwitch                                        *:LouiselmSessionSwitch*
+:LouiselmSessionSwitch                                *:LouiselmSessionSwitch*
     Switch between louiselm sessions
     Arguments: none
 
-:LouiselmToMarkdown                                           *:LouiselmToMarkdown*
+:LouiselmToMarkdown                                      *:LouiselmToMarkdown*
     Export a louiselm session transcript to markdown; takes an optional
     session id
     Arguments: optional
@@ -239,22 +294,22 @@ Commands                                                      *louiselm-commands
     Arguments: none
 
 ==============================================================================
-Configuration                                                 *louiselm-configuration*
+Configuration                                         *louiselm-configuration*
 
 ------------------------------------------------------------------------------
-agents                                                        *louiselm-config-agents*
+agents                                                *louiselm-config-agents*
     Type: string-keyed map of table
     Default: {}
     Description: Named ACP agent processes.
 
 ------------------------------------------------------------------------------
-agents.<name>.args                                            *louiselm-config-agents-name-args*
+agents.<name>.args                          *louiselm-config-agents-name-args*
     Type: array of string
     Default: {}
     Description: Arguments passed after the executable.
 
 ------------------------------------------------------------------------------
-agents.<name>.capabilities                                    *louiselm-config-agents-name-capabilities*
+agents.<name>.capabilities          *louiselm-config-agents-name-capabilities*
     Type: array of string
     Default: {}
     Description: Capability tags this agent declares support for (e.g.
@@ -263,18 +318,18 @@ agents.<name>.capabilities                                    *louiselm-config-a
     itself.
 
 ------------------------------------------------------------------------------
-agents.<name>.command                                         *louiselm-config-agents-name-command*
+agents.<name>.command                    *louiselm-config-agents-name-command*
     Type: string
     Description: Executable to start.
 
 ------------------------------------------------------------------------------
-agents.<name>.env                                             *louiselm-config-agents-name-env*
+agents.<name>.env                            *louiselm-config-agents-name-env*
     Type: string-keyed map of string
     Default: {}
     Description: Environment variables passed to the process.
 
 ------------------------------------------------------------------------------
-agents.<name>.latest                                          *louiselm-config-agents-name-latest*
+agents.<name>.latest                      *louiselm-config-agents-name-latest*
     Type: table
     Default: {}
     Description: Optional command that resolves the agent's latest available
@@ -282,24 +337,24 @@ agents.<name>.latest                                          *louiselm-config-a
     check.
 
 ------------------------------------------------------------------------------
-agents.<name>.latest.args                                     *louiselm-config-agents-name-latest-args*
+agents.<name>.latest.args            *louiselm-config-agents-name-latest-args*
     Type: array of string
     Default: {}
     Description: Arguments passed after the executable.
 
 ------------------------------------------------------------------------------
-agents.<name>.latest.command                                  *louiselm-config-agents-name-latest-command*
+agents.<name>.latest.command      *louiselm-config-agents-name-latest-command*
     Type: string
     Description: Executable that prints the latest available version.
 
 ------------------------------------------------------------------------------
-agents.<name>.latest.env                                      *louiselm-config-agents-name-latest-env*
+agents.<name>.latest.env              *louiselm-config-agents-name-latest-env*
     Type: string-keyed map of string
     Default: {}
     Description: Environment variables passed to the process.
 
 ------------------------------------------------------------------------------
-agents.<name>.provider                                        *louiselm-config-agents-name-provider*
+agents.<name>.provider                  *louiselm-config-agents-name-provider*
     Type: one of: string, array of table, table
     Description: Required access/quota service: a fixed name, exact typed
     option routes, or { option, prefixes } mapping literal prefixes of an
@@ -307,42 +362,46 @@ agents.<name>.provider                                        *louiselm-config-a
     match before each prompt; display names never determine Provider.
 
 ------------------------------------------------------------------------------
-agents.<name>.provider[].options                              *louiselm-config-agents-name-provider-options*
+                                *louiselm-config-agents-name-provider-options*
+agents.<name>.provider[].options
     Type: string-keyed map of one of: string, boolean
 
 ------------------------------------------------------------------------------
-agents.<name>.provider[].provider                             *louiselm-config-agents-name-provider-provider*
+                               *louiselm-config-agents-name-provider-provider*
+agents.<name>.provider[].provider
     Type: string
 
 ------------------------------------------------------------------------------
-agents.<name>.provider.option                                 *louiselm-config-agents-name-provider-option*
+agents.<name>.provider.option    *louiselm-config-agents-name-provider-option*
     Type: string
     Description: Advertised string-valued option ID to match, not its display
     name.
 
 ------------------------------------------------------------------------------
-agents.<name>.provider.prefixes                               *louiselm-config-agents-name-provider-prefixes*
+                               *louiselm-config-agents-name-provider-prefixes*
+agents.<name>.provider.prefixes
     Type: string-keyed map of string
     Description: Nonempty literal, case-sensitive prefixes mapped to
     access/quota services. No regex or longest-match precedence; multiple
     matches are ambiguous even for the same service.
 
 ------------------------------------------------------------------------------
-agents.<name>.skills                                          *louiselm-config-agents-name-skills*
+agents.<name>.skills                      *louiselm-config-agents-name-skills*
     Type: table
     Default: {}
     Description: Agent-specific Agent Skills policy override; paths remain
     global and the effective value is fixed when a session is created.
 
 ------------------------------------------------------------------------------
-agents.<name>.skills.policy                                   *louiselm-config-agents-name-skills-policy*
+agents.<name>.skills.policy        *louiselm-config-agents-name-skills-policy*
     Type: string
     Description: Override the global Agent Skills policy: native delegates to
     the adapter, inject uses LouiseLM discovery, and off disables automation;
     omission inherits the global policy.
 
 ------------------------------------------------------------------------------
-agents.<name>.transcript_layout                               *louiselm-config-agents-name-transcript-layout*
+                               *louiselm-config-agents-name-transcript-layout*
+agents.<name>.transcript_layout
     Type: string
     Default: ""
     Description: Optional Provenance layout override for this Agent's
@@ -351,7 +410,7 @@ agents.<name>.transcript_layout                               *louiselm-config-a
     layouts.
 
 ------------------------------------------------------------------------------
-agents.<name>.upgrade                                         *louiselm-config-agents-name-upgrade*
+agents.<name>.upgrade                    *louiselm-config-agents-name-upgrade*
     Type: one of: array of string, string
     Default: {}
     Description: Optional upgrade executable and arguments (e.g. { 'npm',
@@ -363,7 +422,7 @@ agents.<name>.upgrade                                         *louiselm-config-a
     in that command.
 
 ------------------------------------------------------------------------------
-agents.<name>.version                                         *louiselm-config-agents-name-version*
+agents.<name>.version                    *louiselm-config-agents-name-version*
     Type: table
     Default: {}
     Description: Optional override for querying the installed version,
@@ -372,30 +431,30 @@ agents.<name>.version                                         *louiselm-config-a
     debug script.
 
 ------------------------------------------------------------------------------
-agents.<name>.version.args                                    *louiselm-config-agents-name-version-args*
+agents.<name>.version.args          *louiselm-config-agents-name-version-args*
     Type: array of string
     Default: {}
     Description: Arguments passed after the executable.
 
 ------------------------------------------------------------------------------
-agents.<name>.version.command                                 *louiselm-config-agents-name-version-command*
+agents.<name>.version.command    *louiselm-config-agents-name-version-command*
     Type: string
     Description: Executable that prints the installed version.
 
 ------------------------------------------------------------------------------
-agents.<name>.version.env                                     *louiselm-config-agents-name-version-env*
+agents.<name>.version.env            *louiselm-config-agents-name-version-env*
     Type: string-keyed map of string
     Default: {}
     Description: Environment variables passed to the process.
 
 ------------------------------------------------------------------------------
-beads                                                         *louiselm-config-beads*
+beads                                                  *louiselm-config-beads*
     Type: table
     Default: {}
     Description: Beads issue-inspector settings.
 
 ------------------------------------------------------------------------------
-beads.sibling_roots                                           *louiselm-config-beads-sibling-roots*
+beads.sibling_roots                      *louiselm-config-beads-sibling-roots*
     Type: array of string
     Default: {}
     Description: Directories globbed one level for a sibling
@@ -404,59 +463,117 @@ beads.sibling_roots                                           *louiselm-config-b
     cross-workspace lookup.
 
 ------------------------------------------------------------------------------
-capture                                                       *louiselm-config-capture*
+capture                                              *louiselm-config-capture*
     Type: table
     Default: {}
     Description: Durable speech-capture command settings.
 
 ------------------------------------------------------------------------------
-capture.recorder                                              *louiselm-config-capture-recorder*
+capture.recorder                            *louiselm-config-capture-recorder*
     Type: array of string
     Default: {}
     Description: Recorder argv with one {output} placeholder.
 
 ------------------------------------------------------------------------------
-capture.service                                               *louiselm-config-capture-service*
+capture.service                              *louiselm-config-capture-service*
     Type: array of string
     Default: {}
     Description: Capture-service argv prefix.
 
 ------------------------------------------------------------------------------
-context                                                       *louiselm-config-context*
+context                                              *louiselm-config-context*
     Type: table
     Default: {}
     Description: Project-context injection settings.
 
 ------------------------------------------------------------------------------
-context.instructions_file                                     *louiselm-config-context-instructions-file*
+context.instructions_file          *louiselm-config-context-instructions-file*
     Type: string
     Default: ""
     Description: Project-root filename attached as a resource_link on new
     sessions; empty disables.
 
 ------------------------------------------------------------------------------
-keymaps                                                       *louiselm-config-keymaps*
+keymaps                                              *louiselm-config-keymaps*
     Type: boolean
     Default: true
     Description: Install LouiseLM's global default keymaps; false disables
     them.
 
 ------------------------------------------------------------------------------
-skills                                                        *louiselm-config-skills*
+skills                                                *louiselm-config-skills*
     Type: table
     Default: {}
     Description: Agent Skill discovery and injection settings.
 
 ------------------------------------------------------------------------------
-skills.paths                                                  *louiselm-config-skills-paths*
+skills.paths                                    *louiselm-config-skills-paths*
     Type: array of string
     Default: {}
     Description: Global directories searched for Agent Skills; relative paths
     resolve against each session workspace.
 
 ------------------------------------------------------------------------------
-skills.policy                                                 *louiselm-config-skills-policy*
+skills.policy                                  *louiselm-config-skills-policy*
     Type: string
     Default: "native"
     Description: Default Agent Skills policy: native delegates to the adapter,
     inject uses LouiseLM discovery, and off disables automation.
+
+==============================================================================
+Session API                                                     *louiselm-api*
+
+  The headless Session API drives Agents without the chat UI. It takes the
+  same Agent definitions as |louiselm-config-agents|, returns the definitions
+  it rejected instead of raising, and hands back Sessions the caller owns and
+  disposes.
+
+>lua
+  local Session = require("louiselm.session")
+  local api, errors = Session.new({
+    codex = { command = "codex-acp", provider = "OpenAI" },
+  })
+  if not api then
+    return vim.notify(vim.inspect(errors), vim.log.levels.ERROR)
+  end
+
+  api:create_session("codex", { cwd = vim.uv.cwd() }, function(session, err)
+    if not session then
+      return vim.notify(err, vim.log.levels.ERROR)
+    end
+    session:prompt("Summarise AGENTS.md", function(_, prompt_error)
+      if prompt_error then
+        vim.notify(prompt_error, vim.log.levels.ERROR)
+      end
+      session:dispose()
+    end)
+  end)
+<
+
+  Prompt completion, permission requests, and Agent output arrive as typed
+  events on the Session. doc/api.md in the repository is the complete typed
+  surface, generated from the same annotations.
+
+==============================================================================
+Troubleshooting                                     *louiselm-troubleshooting*
+
+  Run |:checkhealth| louiselm to validate configuration and local tool
+  availability. For Session-specific reports, |:LouiselmSessionId| copies the
+  Agent-scoped ACP Session identifier.
+
+  Direct vendor commands, including wrappers, have no LouiseLM Verified
+  posture. With louiselm-skills on PATH, |:LouiselmPreflight| {request-file}
+  [{manifest-file} [{prior-request-file} {prior-manifest-file}]]
+  asynchronously inspects canonical launch request/2 and Session
+  input-manifest/1 artifacts and opens health. Prior files are explicitly
+  selected, never inferred from history.
+
+  The selected prospective snapshot separates proposed identities from
+  independently checked supply/runtime artifacts. Native loading, isolation,
+  network enforcement and disclosure remain unproven; network scope is
+  unresolved without revision-bound rules. The snapshot is not approval,
+  launch authority or live Session status. Refresh after input changes; future
+  launch integration must bind the exact displayed request digest. Setup/reset
+  forgets the selection and cancels pending reads.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:

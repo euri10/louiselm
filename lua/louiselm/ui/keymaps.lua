@@ -41,6 +41,19 @@ local DEFAULTS = {
   { mode = "n", lhs = "<leader>lz", rhs = "<cmd>LouiselmResumePark<cr>", desc = "Louiselm resume parked run" },
 }
 
+---Default mappings installed unless `keymaps` is disabled.
+---
+---Returned as a copy: the documentation generator reads this table, and a
+---caller that edits it would silently change what `setup()` installs.
+---@return louiselm.ui.KeymapDefault[] defaults
+function M.defaults()
+  local copy = {}
+  for index, mapping in ipairs(DEFAULTS) do
+    copy[index] = { mode = mapping.mode, lhs = mapping.lhs, rhs = mapping.rhs, desc = mapping.desc }
+  end
+  return copy
+end
+
 ---@type louiselm.ui.KeymapDefault[]
 local installed = {}
 

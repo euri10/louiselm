@@ -16,7 +16,8 @@ assert(health.register())
 
 local output = require("louiselm.docs.vimdoc").generate(
   require("louiselm.config").schema,
-  nvim.api.nvim_get_commands({ builtin = false })
+  nvim.api.nvim_get_commands({ builtin = false }),
+  require("louiselm.ui.keymaps").defaults()
 )
 
 ---@param path string

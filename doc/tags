@@ -36,6 +36,7 @@
 :LouiselmToMarkdown	louiselm.txt	/*:LouiselmToMarkdown*
 :LouiselmTutor	louiselm.txt	/*:LouiselmTutor*
 louiselm	louiselm.txt	/*louiselm*
+louiselm-api	louiselm.txt	/*louiselm-api*
 louiselm-commands	louiselm.txt	/*louiselm-commands*
 louiselm-config-agents	louiselm.txt	/*louiselm-config-agents*
 louiselm-config-agents-name-args	louiselm.txt	/*louiselm-config-agents-name-args*
@@ -71,9 +72,12 @@ louiselm-config-skills	louiselm.txt	/*louiselm-config-skills*
 louiselm-config-skills-paths	louiselm.txt	/*louiselm-config-skills-paths*
 louiselm-config-skills-policy	louiselm.txt	/*louiselm-config-skills-policy*
 louiselm-configuration	louiselm.txt	/*louiselm-configuration*
+louiselm-contents	louiselm.txt	/*louiselm-contents*
 louiselm-context	louiselm.txt	/*louiselm-context*
+louiselm-mappings	louiselm.txt	/*louiselm-mappings*
 louiselm-permissions	louiselm.txt	/*louiselm-permissions*
 louiselm-sessions	louiselm.txt	/*louiselm-sessions*
 louiselm-troubleshooting	louiselm.txt	/*louiselm-troubleshooting*
 louiselm-workflow	louiselm.txt	/*louiselm-workflow*
+louiselm.setup()	louiselm.txt	/*louiselm.setup()*
 louiselm.txt	louiselm.txt	/*louiselm.txt*
