@@ -216,8 +216,24 @@ pending operation advertised alongside an executable action.
 
 The posture summary is currently a parameter, not broker-owned state: no
 component persists a `Posture` for a live Session, and `LaunchEvidence` carries
-none. `louiselm-rn38` owns that decision and blocks both status surfaces.
-Composition authorizes nothing, resets no budget and grants no capability.
+none. `louiselm-rn38` owns that decision; until it resolves, every surface
+reports `PostureSummary::Pending`. Composition authorizes nothing, resets no
+budget and grants no capability.
+
+`BrokerService::serve_agent_status` answers one read-only request from the Agent
+capability channel. It enforces self-scope against the Session's own
+authorization and refuses any other subject with `SubjectMismatch` — identically
+whether that Session is a live sibling or was never authorized, so a refusal
+cannot be used to probe for other Sessions. The answer is the same composition
+the operator reads, differing only in the caller-scoped action set, which for an
+Agent is always empty.
+
+A status request arriving while the worker already holds another operation is
+refused as retryable `OperationPending` by `refuse_nested_status` rather than
+served out of order: answering inline would arm a receive competing with the one
+already waiting. Note that Park disables the capability channel, so the Agent
+path is unreachable while Parked; the operator path still reports the parked
+state and offers Resume.
 
 ## Lifecycle authority
 

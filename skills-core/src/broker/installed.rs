@@ -307,6 +307,38 @@ impl InstalledBroker {
         self.service.inspect_active(session)
     }
 
+    /// Serves one read-only self-status request from the Agent capability channel.
+    ///
+    /// Enforces self-scope and answers with no lifecycle actions, because an
+    /// Agent channel has none. Reading grants nothing.
+    ///
+    /// # Errors
+    /// Returns transport/verification failure, or the typed refusal sent for a
+    /// foreign subject.
+    pub fn serve_agent_status(
+        &self,
+        session: &mut BrokerSession,
+        posture: crate::launch_protocol::PostureSummary,
+    ) -> Result<crate::launch_protocol::SessionStatus, BrokerError> {
+        let mut verification_failure = None;
+        let result = self.service.serve_agent_status(
+            session,
+            posture,
+            now_ms()?,
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    verification_failure = Some(error);
+                    false
+                }
+            },
+        );
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
     /// Reads canonical Session status with installed receipt verification.
     ///
     /// The single status answer both the operator surface and the scoped Agent

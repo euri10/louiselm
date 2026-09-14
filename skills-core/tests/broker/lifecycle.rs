@@ -2,16 +2,20 @@
 
 use super::*;
 use louiselm_skills::{
-    broker::lifecycle::{LifecycleCaller, LifecycleStore},
+    broker::{
+        BrokerSession,
+        lifecycle::{LifecycleCaller, LifecycleStore},
+    },
     launch_protocol::{
         BrokerConnection, ChannelState, LIFECYCLE_REQUEST_SCHEMA, LifecycleAction,
         LifecycleRequest, PendingAction, PendingOperation, PendingPhase, PostureSummary,
-        SUPERVISOR_STATUS_SCHEMA, SessionStatus, SupervisorStatus,
+        STATUS_REQUEST_SCHEMA, SUPERVISOR_STATUS_SCHEMA, SessionStatus, StatusRequest,
+        SupervisorStatus,
     },
     launch_receipt::ReceiptHead,
 };
 
-fn status(authorization: &LaunchAuthorization) -> SupervisorStatus {
+pub(super) fn status(authorization: &LaunchAuthorization) -> SupervisorStatus {
     let start = start_receipt(authorization, &launch_receipt(authorization));
     let head = ReceiptHead {
         sequence: 1,
@@ -581,7 +585,20 @@ fn allowed_actions_follow_caller_scope_session_state_and_quarantine() {
     );
 }
 
-fn answer_one_status_query(channel: &SeqpacketChannel, current: &SupervisorStatus) {
+fn bound_service(root: &Path, socket: &Path, request: &LaunchRequest) -> BrokerService {
+    let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
+    authorizations.authorize(&grant(request), 1000).unwrap();
+    BrokerService::bind(
+        socket,
+        authorizations,
+        ReceiptStore::open(&root.join("receipts"), trusted_release()).unwrap(),
+        AuditLog::open(&root.join("audit")).unwrap(),
+        local_pin(),
+    )
+    .unwrap()
+}
+
+pub(super) fn answer_one_status_query(channel: &SeqpacketChannel, current: &SupervisorStatus) {
     let packet = settle(|complete| channel.receive(complete));
     let LauncherPacket::Request(ProtocolMessage::Status(query)) = packet.packet else {
         panic!("status query")
@@ -597,22 +614,37 @@ fn answer_one_status_query(channel: &SeqpacketChannel, current: &SupervisorStatu
     settle(|complete| channel.send(response.canonical_bytes(), complete));
 }
 
+fn agent_status_query(authorization: &LaunchAuthorization, session_id: &str) -> Vec<u8> {
+    StatusRequest {
+        schema: STATUS_REQUEST_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "agent-status-1".into(),
+        session_id: session_id.to_owned(),
+        run_id: authorization.run_id.clone(),
+    }
+    .canonical_bytes()
+}
+
+fn expect_response(channel: &SeqpacketChannel) -> ProtocolResponse {
+    let packet = settle(|complete| channel.receive(complete));
+    let LauncherPacket::Response(response) = packet.packet else {
+        panic!("broker answers the capability channel with a response")
+    };
+    *response
+}
+
+fn operator() -> LifecycleCaller {
+    LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    }
+}
+
 #[test]
 fn session_status_composes_supervisor_mechanics_with_broker_posture_and_caller_scope() {
     let root = TempDir::new().unwrap();
     let socket = root.path().join("control.sock");
     let request = request("session-1");
-    let authorizations =
-        AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
-    authorizations.authorize(&grant(&request), 1000).unwrap();
-    let service = BrokerService::bind(
-        &socket,
-        authorizations,
-        ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap(),
-        AuditLog::open(&root.path().join("audit")).unwrap(),
-        local_pin(),
-    )
-    .unwrap();
+    let service = bound_service(root.path(), &socket, &request);
     let peer = thread::spawn(move || {
         let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
         let running = status(&authorization);
@@ -625,25 +657,24 @@ fn session_status_composes_supervisor_mechanics_with_broker_posture_and_caller_s
             phase: PendingPhase::Applying,
         });
         answer_one_status_query(&channel, &pending);
-        channel
     });
     let mut session = service
         .serve_launch(2000, verify_fixture_signature)
         .unwrap();
-    let operator = LifecycleCaller::Operator {
-        uid: CONTROLLER_UID,
+    let read = |session: &mut BrokerSession, caller: &LifecycleCaller| {
+        service
+            .session_status(
+                session,
+                caller,
+                PostureSummary::Unverified,
+                2000,
+                verify_fixture_signature,
+            )
+            .unwrap()
     };
 
-    let status = service
-        .session_status(
-            &mut session,
-            &operator,
-            PostureSummary::Unverified,
-            2000,
-            verify_fixture_signature,
-        )
-        .unwrap();
     // Mechanical facts come from the supervisor; posture and actions from the broker.
+    let status = read(&mut session, &operator());
     assert_eq!(status.session_id, "session-1");
     assert_eq!(status.state, SessionState::Running);
     assert_eq!(status.posture, PostureSummary::Unverified);
@@ -659,36 +690,250 @@ fn session_status_composes_supervisor_mechanics_with_broker_posture_and_caller_s
         status.broker_head,
         service.receipts().head("session-1").unwrap()
     );
-    // Canonical bytes round-trip, so no consumer has to parse prose.
     assert_eq!(
         SessionStatus::parse_canonical(&status.canonical_bytes()).unwrap(),
         status,
     );
 
     // The same mechanical state offers an Agent channel nothing at all.
-    let agent = service
-        .session_status(
-            &mut session,
-            &LifecycleCaller::Agent,
-            PostureSummary::Unverified,
-            2000,
-            verify_fixture_signature,
-        )
-        .unwrap();
+    let agent = read(&mut session, &LifecycleCaller::Agent);
     assert!(agent.allowed_actions.is_empty());
     assert_eq!(agent.state, status.state);
 
     // A serialized operation in flight withdraws every advertised action.
-    let pending = service
-        .session_status(
+    let pending = read(&mut session, &operator());
+    assert!(pending.pending_operation.is_some());
+    assert!(pending.allowed_actions.is_empty());
+    peer.join().unwrap();
+}
+
+#[test]
+fn an_agent_reads_only_its_own_session_and_never_learns_of_another() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let service = bound_service(root.path(), &socket, &request);
+    let peer = thread::spawn(move || {
+        let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
+        let current = status(&authorization);
+
+        // The Agent asks about its own Session; the broker asks the supervisor.
+        settle(|complete| channel.send(agent_status_query(&authorization, "session-1"), complete));
+        answer_one_status_query(&channel, &current);
+        let own = expect_response(&channel);
+
+        // The same Agent naming a different Session gets no answer at all.
+        settle(|complete| {
+            channel.send(
+                agent_status_query(&authorization, "other-session"),
+                complete,
+            )
+        });
+        (own, expect_response(&channel))
+    });
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let audit_before = service.audit().unwrap().len();
+    let head_before = service.receipts().head("session-1").unwrap();
+
+    service
+        .serve_agent_status(
             &mut session,
-            &operator,
-            PostureSummary::Unverified,
+            PostureSummary::Pending,
             2000,
             verify_fixture_signature,
         )
         .unwrap();
-    assert!(pending.pending_operation.is_some());
-    assert!(pending.allowed_actions.is_empty());
+    assert!(
+        service
+            .serve_agent_status(
+                &mut session,
+                PostureSummary::Pending,
+                2000,
+                verify_fixture_signature,
+            )
+            .is_err()
+    );
+    // Reading status grants nothing: no durable authority moved either way.
+    assert_eq!(service.audit().unwrap().len(), audit_before);
+    assert_eq!(service.receipts().head("session-1").unwrap(), head_before);
+
+    let (own, foreign) = peer.join().unwrap();
+    assert_eq!(own.request_id, "agent-status-1");
+    let ResponseResult::SessionStatus { status } = own.result else {
+        panic!("an Agent reading its own Session gets canonical Session status")
+    };
+    assert_eq!(status.session_id, "session-1");
+    assert_eq!(status.state, SessionState::Running);
+    // An Agent capability channel has no lifecycle authority, at any state.
+    assert!(status.allowed_actions.is_empty());
+    assert_eq!(
+        SessionStatus::parse_canonical(&status.canonical_bytes()).unwrap(),
+        status,
+    );
+
+    // The refusal discloses nothing about the Session that was asked for,
+    // including whether it exists at all.
+    assert_eq!(foreign.request_id, "agent-status-1");
+    let refusal_json = String::from_utf8(foreign.canonical_bytes()).unwrap();
+    let ResponseResult::Error { error } = foreign.result else {
+        panic!("a foreign subject is refused, never answered")
+    };
+    assert_eq!(error.code, ErrorCode::SubjectMismatch);
+    assert!(!refusal_json.contains("other-session"));
+    let own_json = String::from_utf8(status.canonical_bytes()).unwrap();
+    for forbidden in ["assigned_uid", "assigned_gid", "pid", "slot", "occupied"] {
+        assert!(
+            !refusal_json.contains(forbidden),
+            "refusal leaked {forbidden}"
+        );
+        assert!(
+            !own_json.contains(forbidden),
+            "self status leaked {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn an_agent_and_its_operator_read_one_session_differing_only_by_scope() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let service = bound_service(root.path(), &socket, &request);
+    let peer = thread::spawn(move || {
+        let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
+        let current = status(&authorization);
+        settle(|complete| channel.send(agent_status_query(&authorization, "session-1"), complete));
+        answer_one_status_query(&channel, &current);
+        let own = expect_response(&channel);
+        answer_one_status_query(&channel, &current);
+        own
+    });
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let agent = service
+        .serve_agent_status(
+            &mut session,
+            PostureSummary::Pending,
+            2000,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    let operator = service
+        .session_status(
+            &mut session,
+            &operator(),
+            PostureSummary::Pending,
+            2000,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    peer.join().unwrap();
+
+    assert!(agent.allowed_actions.is_empty());
+    assert_eq!(
+        operator.allowed_actions,
+        vec![
+            LifecycleAction::Park,
+            LifecycleAction::Interrupt,
+            LifecycleAction::Disposal,
+        ],
+    );
+    // Identical Session, identical answer, except for what scope decides.
+    assert_eq!(
+        SessionStatus {
+            allowed_actions: agent.allowed_actions.clone(),
+            ..operator
+        },
+        agent,
+    );
+}
+
+#[test]
+fn status_after_a_park_reports_the_state_the_transition_actually_left_behind() {
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let service = bound_service(root.path(), &socket, &request);
+    let peer = thread::spawn(move || {
+        let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
+        let receipt = drive_park_peer(&authorization, &channel, false);
+        // Mechanics moved; the supervisor now reports the head Park actually wrote.
+        let head = ReceiptHead {
+            sequence: receipt.payload.sequence,
+            digest: receipt.digest().to_string(),
+        };
+        let parked = SupervisorStatus {
+            state: SessionState::Parked,
+            // A Park disables the capability channel; the shape rules require it.
+            channel_state: ChannelState::Disabled,
+            launcher_head: Some(head.clone()),
+            broker_head: Some(head),
+            ..status(&authorization)
+        };
+        answer_one_status_query(&channel, &parked);
+        answer_one_status_query(&channel, &parked);
+    });
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let mutation = park(session.authorization());
+    let receipt = service
+        .request_lifecycle(
+            &mut session,
+            &operator(),
+            &mutation,
+            2000,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert_eq!(receipt.payload.resulting_state, SessionState::Parked);
+
+    let parked = service
+        .session_status(
+            &mut session,
+            &operator(),
+            PostureSummary::Pending,
+            2000,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert_eq!(parked.state, SessionState::Parked);
+    // Resume becomes offerable only now, and only to the operator.
+    assert_eq!(
+        parked.allowed_actions,
+        vec![
+            LifecycleAction::Resume,
+            LifecycleAction::Interrupt,
+            LifecycleAction::Disposal,
+        ],
+    );
+    assert_eq!(
+        parked.broker_head,
+        service.receipts().head("session-1").unwrap()
+    );
+
+    let scope = LifecycleCaller::Coordinator {
+        session_id: "coordinator".into(),
+        run_id: session.authorization().run_id.clone(),
+        descendants: vec!["session-1".into()],
+        envelope_revision: session.authorization().envelope_revision,
+        expires_at_ms: 3_000,
+    };
+    let coordinator = service
+        .session_status(
+            &mut session,
+            &scope,
+            PostureSummary::Pending,
+            2000,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert_eq!(
+        coordinator.allowed_actions,
+        vec![LifecycleAction::Interrupt, LifecycleAction::Disposal],
+    );
     peer.join().unwrap();
 }

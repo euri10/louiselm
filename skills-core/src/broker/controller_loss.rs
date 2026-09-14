@@ -116,6 +116,12 @@ impl BrokerService {
                 session.handle_command(packet)?;
                 Ok(false)
             }
+            // A status read arriving mid-operation cannot be served here without
+            // arming a receive against the one already waiting. Refuse, retryably.
+            LauncherPacket::Request(ProtocolMessage::Status(query)) => {
+                super::lifecycle_service::refuse_nested_status(session, query)?;
+                Ok(false)
+            }
             _ => Err(BrokerError::InvalidGrant),
         }
     }

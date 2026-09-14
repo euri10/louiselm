@@ -236,3 +236,59 @@ fn stored_signature_is_reverified_before_replying_with_a_checkpoint() {
     assert!(service.serve_reconnect(90_000, |_, _, _| false).is_err());
     expect_disconnect(&channel);
 }
+
+#[test]
+fn status_is_answerable_after_a_broker_restart_reattaches_the_exact_prefix() {
+    use louiselm_skills::{
+        broker::lifecycle::LifecycleCaller,
+        launch_protocol::{LifecycleAction, PostureSummary},
+    };
+
+    let root = TempDir::new().unwrap();
+    let (service, authorization, chain) = fixture(root.path());
+    let offer = checkpoint(&chain[1]);
+    let peer_root = root.path().to_owned();
+    let peer_authorization = authorization.clone();
+    let peer = thread::spawn(move || {
+        let channel = peer(&peer_root, &checkpoint(&chain[1]));
+        // Drain the reattachment reply, then answer the broker's status query.
+        let _ = settle(|complete| channel.receive(complete));
+        super::lifecycle::answer_one_status_query(
+            &channel,
+            &super::lifecycle::status(&peer_authorization),
+        );
+        channel
+    });
+    let mut session = service
+        .serve_reconnect(90_000, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(session.authorization(), &authorization);
+
+    // A reattached worker holds no command authority, but status still answers.
+    let status = service
+        .session_status(
+            &mut session,
+            &LifecycleCaller::Operator {
+                uid: CONTROLLER_UID,
+            },
+            PostureSummary::Pending,
+            90_000,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert_eq!(status.session_id, offer.session_id);
+    assert_eq!(status.state, SessionState::Running);
+    assert_eq!(
+        status.broker_head,
+        service.receipts().head(&authorization.session_id).unwrap()
+    );
+    assert_eq!(
+        status.allowed_actions,
+        vec![
+            LifecycleAction::Park,
+            LifecycleAction::Interrupt,
+            LifecycleAction::Disposal,
+        ],
+    );
+    peer.join().unwrap();
+}

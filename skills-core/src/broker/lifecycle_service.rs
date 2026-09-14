@@ -1,12 +1,13 @@
 //! Lifecycle requests on the broker's retained, authenticated supervisor channel.
 
-use super::{BrokerError, BrokerService, BrokerSession, receive, send};
+use super::{BrokerError, BrokerService, BrokerSession, receive, response, send};
 use crate::{
     broker::lifecycle::LifecycleCaller,
     launch::PROTOCOL_VERSION,
     launch_protocol::{
-        CompletedRequest, LifecycleRequest, PostureSummary, ResponseResult, STATUS_REQUEST_SCHEMA,
-        SessionStatus, StatusRequest, SupervisorStatus, evaluate_request,
+        CompletedRequest, ErrorCode, LifecycleRequest, PostureSummary, ProtocolError,
+        ProtocolMessage, ResponseResult, STATUS_REQUEST_SCHEMA, SessionStatus, StatusRequest,
+        SupervisorStatus, evaluate_request,
     },
     launch_receipt::SignedReceipt,
     launch_transport::{AuthenticatedPacket, LauncherPacket},
@@ -152,6 +153,82 @@ impl BrokerService {
         result
     }
 
+    /// Serves one read-only status request arriving on the Agent capability channel.
+    ///
+    /// The Agent has no lifecycle authority, so the answer always advertises no
+    /// actions; it is otherwise the same composition every other consumer reads.
+    /// Self-scope is enforced against this Session's own authorization, and a
+    /// foreign subject is refused identically whether or not it exists, so a
+    /// refusal cannot be used to probe for other Sessions.
+    ///
+    /// Reading status grants nothing: it never resets a budget, revives a grant
+    /// or counts as recovery admission.
+    ///
+    /// Run at the top of the Session's broker worker, where no other receive is
+    /// armed. Requests that arrive while another operation holds the worker are
+    /// refused as retryable `OperationPending` instead, for the Agent to retry.
+    ///
+    /// # Errors
+    /// Returns transport failure, or the typed refusal sent for a foreign subject.
+    pub fn serve_agent_status<F>(
+        &self,
+        session: &mut BrokerSession,
+        posture: PostureSummary,
+        now_ms: u64,
+        mut verify: F,
+    ) -> Result<SessionStatus, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let result = (|| {
+            let packet = receive(&session.channel)?;
+            let LauncherPacket::Request(ProtocolMessage::Status(query)) = &packet.packet else {
+                return Err(BrokerError::InvalidGrant);
+            };
+            query.validate()?;
+            let request_id = query.request_id.clone();
+            if query.session_id != session.authorization.session_id
+                || query.run_id != session.authorization.run_id
+            {
+                // Identical refusal for a live sibling and for a Session that was
+                // never authorized; the Agent learns only that it was not this one.
+                let error = ProtocolError::new(ErrorCode::SubjectMismatch, None, None);
+                send(
+                    &session.channel,
+                    response(
+                        &request_id,
+                        ResponseResult::Error {
+                            error: error.clone(),
+                        },
+                    ),
+                )?;
+                return Err(error.into());
+            }
+            let status = self.session_status(
+                session,
+                &LifecycleCaller::Agent,
+                posture,
+                now_ms,
+                &mut verify,
+            )?;
+            send(
+                &session.channel,
+                response(
+                    &request_id,
+                    ResponseResult::SessionStatus {
+                        status: status.clone(),
+                    },
+                ),
+            )?;
+            Ok(status)
+        })();
+        // A refused subject is a typed answer, not a lost channel.
+        if result.is_err() && !matches!(result, Err(BrokerError::Policy(_))) {
+            session.close();
+        }
+        result
+    }
+
     /// Composes canonical Session status for one authenticated caller.
     ///
     /// Mechanical facts come from the supervisor over the retained channel;
@@ -253,4 +330,27 @@ impl BrokerService {
         self.control_packet(session, packet, crate::broker::now_ms()?, verify)
             .map(|_| ())
     }
+}
+
+/// Refuses a status request that arrived while the worker holds another operation.
+///
+/// Answering inline would arm a receive competing with the one already waiting,
+/// so the Agent is told to retry rather than served out of order. The reply is
+/// retryable and carries no Session state.
+///
+/// # Errors
+/// Returns transport failure while sending the refusal.
+pub(in crate::broker) fn refuse_nested_status(
+    session: &BrokerSession,
+    query: &StatusRequest,
+) -> Result<(), BrokerError> {
+    send(
+        session.channel(),
+        response(
+            &query.request_id,
+            ResponseResult::Error {
+                error: ProtocolError::new(ErrorCode::OperationPending, None, None),
+            },
+        ),
+    )
 }
