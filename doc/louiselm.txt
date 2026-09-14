@@ -273,7 +273,7 @@ Commands                                                   *louiselm-commands*
     Arguments: none
 
 :LouiselmSessionOptions                              *:LouiselmSessionOptions*
-    Configure the current idle louiselm session
+    Inspect session options; configure while idle
     Arguments: none
 
 :LouiselmSessionRename                                *:LouiselmSessionRename*

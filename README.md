@@ -169,17 +169,26 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   lifecycle, permission policies, and typed events are available without the
   chat buffer.
 
-The chat winbar keeps the current turn state, Agent-scoped Session ID, reported
-account limits, and a useful Session name visible while you scroll:
+The chat winbar shows turn state, a useful Session name, Agent, reported account
+limits, and current Model and effort while you scroll:
 
 ```text
-Your turn · codex/<uuid> · limits 98%/7d ↻7d · Review
+Your turn · Review · codex · limits 98%/7d ↻7d · GPT-6 e=high +2 · ctx 53%
 ```
 
-Reported context and cost follow those fields. Before the ACP ID arrives, only
-the Agent name appears. Redundant default quota labels are omitted; distinct
-quota buckets keep their names. Narrow windows truncate the current Session's
-details before background attention entries.
+`+N` counts hidden options, including model or effort when they no longer fit.
+The options block folds to `opts` in narrow windows; Agents without supported
+options have no block. Click the whole block or use `:LouiselmSessionOptions`
+(`<leader>lso`) to inspect every value. During a response the overview is
+read-only; changes require an idle Session. Summaries reflect current settings,
+with no comparison to defaults or the start of the Session.
+
+Context percentage (including stale indication) and cost follow those fields.
+Full ACP identity and raw telemetry remain in the transcript header. Redundant
+default quota labels are omitted; distinct quota buckets keep their names.
+As windows narrow, cost and context disappear, then effort and model fold,
+then limits, Agent, and name give way. At extreme widths even `opts` yields to
+turn state. Background attention has reserved space before optional detail.
 
 Background Sessions that do not fit collapse into counts with the same status
 colors and glyphs: blue `+2…` for two working Sessions, yellow `+1●` for an unseen

@@ -5517,7 +5517,7 @@ T["chat"]["groups session diagnostics and keeps telemetry in the window bar"] = 
   })
   MiniTest.expect.equality(
     nvim.api.nvim_get_option_value("winbar", { win = 0 }),
-    "%#LouiselmStatusReady#Your turn%* · %<%#Normal#codex/acp-session-1%* · %#LouiselmAcpValue#context=148222/258400%* (%#LouiselmDerivedValue#57%%%*) · %#LouiselmAcpValue#cost=1.5 USD%*"
+    "%#LouiselmStatusReady#Your turn%* · %<%#Normal#codex%* · %98@v:lua.__louiselm_winbar_click@%#LouiselmAcpValue#opts%*%X · %#LouiselmDerivedValue#ctx 57%%%* · %#LouiselmAcpValue#cost=1.5 USD%*"
   )
   MiniTest.expect.equality(header_highlights(chat:buffer()), {
     { text = "display=Your turn", group = "LouiselmStatusReady" },
@@ -5554,7 +5554,7 @@ T["chat"]["omits unavailable telemetry and refreshes stale and cleared values"] 
   end, 1)
   MiniTest.expect.equality(
     nvim.api.nvim_get_option_value("winbar", { win = 0 }),
-    "%#LouiselmStatusReady#Your turn%* · %<%#Normal#codex%* · %#LouiselmAcpValue#context=50/100%* (%#LouiselmDerivedValue#50%%%*) · %#LouiselmAcpValue#cost=2 U%%S X%*"
+    "%#LouiselmStatusReady#Your turn%* · %<%#Normal#codex%* · %#LouiselmDerivedValue#ctx 50%%%* · %#LouiselmAcpValue#cost=2 U%%S X%*"
   )
 
   first.state.context.stale = true
@@ -5572,7 +5572,7 @@ T["chat"]["omits unavailable telemetry and refreshes stale and cleared values"] 
   end, 1)
   MiniTest.expect.equality(
     nvim.api.nvim_get_option_value("winbar", { win = 0 }),
-    "%#LouiselmStatusReady#Your turn%* · %<%#Normal#codex%* · %#LouiselmAcpValue#context=60/100%* (%#LouiselmDerivedValue#60%%%*)"
+    "%#LouiselmStatusReady#Your turn%* · %<%#Normal#codex%* · %#LouiselmDerivedValue#ctx 60%%%*"
   )
   chat:dispose()
 end
@@ -5692,7 +5692,7 @@ T["chat"]["shows clickable Agent limits in the window bar"] = function()
 
   MiniTest.expect.equality(
     nvim.api.nvim_eval_statusline(winbar, { use_winbar = true, maxwidth = 200 }).str,
-    "Your turn · codex/acp-session-1 · limits 50%/5h ↻2h · renamed · context=50/100 (50%) · cost=1.5 USD"
+    "Your turn · renamed · codex · limits 50%/5h ↻2h · ctx 50% · cost=1.5 USD"
   )
   assert(chat:winbar_click(99))
   local limits_window = nvim.api.nvim_get_current_win()
@@ -5739,12 +5739,12 @@ end
 T["chat"]["shows active identity and omits redundant Session names"] = function()
   local cases = {
     { status = "starting", expected = "Starting · codex" },
-    { name = "session-1", expected = "Your turn · codex/acp-session-1" },
-    { name = "", expected = "Your turn · codex/acp-session-1" },
-    { name = "acp-session-1", source = "loaded", expected = "Your turn · codex/acp-session-1" },
-    { name = "codex/acp-session-1", expected = "Your turn · codex/acp-session-1" },
-    { name = "codex", expected = "Your turn · codex/acp-session-1" },
-    { name = "Review\n100%", expected = "Your turn · codex/acp-session-1 · Review 100%" },
+    { name = "session-1", expected = "Your turn · codex" },
+    { name = "", expected = "Your turn · codex" },
+    { name = "acp-session-1", source = "loaded", expected = "Your turn · codex" },
+    { name = "codex/acp-session-1", expected = "Your turn · codex" },
+    { name = "codex", expected = "Your turn · codex" },
+    { name = "Review\n100%", expected = "Your turn · Review 100% · codex" },
   }
   for _, case in ipairs(cases) do
     local session = fake_session("session-1", "codex")
@@ -5784,8 +5784,7 @@ T["chat"]["schedules identity updates and ignores queued refreshes after disposa
     nvim.wait(1000, function()
       local winbar = nvim.api.nvim_get_option_value("winbar", { win = window })
       return emitted_in_fast_event
-        and nvim.api.nvim_eval_statusline(winbar, { use_winbar = true }).str
-          == "Your turn · co%dex/acp%id · Review 100%"
+        and nvim.api.nvim_eval_statusline(winbar, { use_winbar = true }).str == "Your turn · Review 100% · co%dex"
     end, 1),
     true
   )
@@ -6098,7 +6097,7 @@ T["chat"]["groups overflow by working unseen and seen state"] = function()
   MiniTest.finally(function()
     nvim.o.columns = original_columns
   end)
-  nvim.o.columns = 72
+  nvim.o.columns = 36
   local sessions = {
     fake_session("session-1", "working-one"),
     fake_session("session-2", "working-two"),
@@ -6383,6 +6382,32 @@ T["chat"]["explains when the Agent exposes no standard ACP options"] = function(
   assert(chat:attach(first))
 
   MiniTest.expect.equality({ chat:session_options() }, { false, "session has no standard ACP options" })
+  chat:dispose()
+end
+
+T["chat"]["busy options can be inspected by keyboard and winbar without mutation"] = function()
+  local session = fake_session("session-1", "codex")
+  session.state.status = "prompting"
+  session.state.config_options = {
+    { id = "fast", name = "Fast", type = "boolean", current_value = false },
+  }
+  local calls = 0
+  nvim.ui.select = function(items, options, callback)
+    calls = calls + 1
+    MiniTest.expect.equality(options.prompt, "louiselm session options (read-only while busy): ")
+    MiniTest.expect.equality(options.format_item(items[1]), "Fast: false")
+    -- Even if the turn finishes while this read-only overview is open,
+    -- selecting an entry must not enter the mutation flow.
+    session.state.status = "ready"
+    callback(items[1])
+    session.state.status = "prompting"
+  end
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  assert(chat:session_options())
+  assert(chat:winbar_click(98))
+  MiniTest.expect.equality(calls, 2)
+  MiniTest.expect.equality(session.config_changes, {})
   chat:dispose()
 end
 
@@ -6782,7 +6807,7 @@ T["chat"]["renames the current session and refreshes its header"] = function()
   MiniTest.expect.equality(chat:session_id(), "claude/acp-session-1")
   MiniTest.expect.equality(
     nvim.api.nvim_eval_statusline(nvim.api.nvim_get_option_value("winbar", { win = 0 }), { use_winbar = true }).str,
-    "Your turn · claude/acp-session-1 · Review"
+    "Your turn · Review · claude"
   )
   chat:dispose()
 end

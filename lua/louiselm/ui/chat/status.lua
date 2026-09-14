@@ -45,6 +45,7 @@ local STATUS_HIGHLIGHTS = {
 -- global as a stable forwarder to its own reassignable `M.winbar_click`.
 local WINBAR_CLICK_HANDLER = "v:lua.__louiselm_winbar_click"
 local LIMITS_CLICK_TARGET = 99
+local OPTIONS_CLICK_TARGET = 98
 
 ---@param value number
 ---@return string
@@ -449,45 +450,105 @@ end
 ---@class louiselm.ui.LimitsTarget
 ---@field agent string
 
+---@class louiselm.ui.OptionsTarget
+---@field session string Session whose options should be inspected.
+
 ---Render the active Session segment from a snapshot and optional Limits summary.
 ---@param state louiselm.session.State
 ---@param limits? louiselm.ui.StatusLimits
+---@param available? integer Display columns reserved for the active Session.
 ---@return string winbar
 ---@return string? limits_agent Absent when no Limits summary is supplied.
-function M.session_winbar(state, limits)
-  local identity = state.acp_session_id and report_id(state.agent, state.acp_session_id) or state.agent
-  local fields = {
-    winbar_segment(turn_highlight(state), turn_label(state)),
-    -- Truncate identity/telemetry before clipping background attention on the right.
-    "%<" .. winbar_segment("Normal", identity),
-  }
-  local limits_text = limits and limits.text
-  local limits_group = limits and limits.group
-  if limits_text ~= nil and limits_group ~= nil then
-    fields[#fields + 1] = clickable_winbar_segment(LIMITS_CLICK_TARGET, limits_group, limits_text)
+---@return boolean options_visible
+function M.session_winbar(state, limits, available)
+  local options = state.config_options or {}
+  local model, effort
+  for _, option in ipairs(options) do
+    if option.category == "model" and model == nil then
+      model = M.option_display_value(option)
+    elseif option.category == "thought_level" and effort == nil then
+      effort = "e=" .. M.option_display_value(option)
+    end
   end
+  local name = state.name ---@type string?
   if
-    state.name ~= nil
-    and state.name ~= ""
-    and state.name ~= state.id
-    and state.name ~= state.acp_session_id
-    and state.name ~= state.agent
-    and state.name ~= identity
+    name == ""
+    or name == state.id
+    or name == state.acp_session_id
+    or name == state.agent
+    or (state.acp_session_id ~= nil and name == report_id(state.agent, state.acp_session_id))
   then
-    fields[#fields + 1] = winbar_segment("Normal", state.name)
+    name = nil
   end
-  local raw_context, derived_context = context_display(state)
-  if raw_context ~= "" then
-    fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, raw_context)
-      .. " ("
-      .. winbar_segment(DERIVED_HIGHLIGHT, derived_context)
-      .. ")"
+  -- Remove telemetry, then effort/model, then limits/Agent/name. Critical turn
+  -- state is last; native truncation only handles physically impossible widths.
+  for stage = 0, 8 do
+    local fields = { winbar_segment(turn_highlight(state), turn_label(state)) }
+    local function add(text, group, target)
+      if text ~= nil then
+        fields[#fields + 1] = target and clickable_winbar_segment(target, group, text) or winbar_segment(group, text)
+      end
+    end
+    if stage < 7 then
+      add(name, "Normal")
+    end
+    if stage < 6 then
+      add(state.agent, "Normal")
+    end
+    local limits_visible = limits ~= nil and stage < 5
+    if limits ~= nil and limits_visible then
+      add(limits.text, limits.group, LIMITS_CLICK_TARGET)
+    end
+    local options_visible = #options > 0 and stage < 8
+    if options_visible then
+      local tokens = {}
+      local hidden = #options
+      if stage < 4 and model ~= nil then
+        tokens[#tokens + 1] = model
+        hidden = hidden - 1
+      end
+      if stage < 3 and effort ~= nil then
+        tokens[#tokens + 1] = effort
+        hidden = hidden - 1
+      end
+      if #tokens == 0 then
+        tokens[1] = "opts"
+      elseif hidden > 0 then
+        tokens[#tokens + 1] = "+" .. hidden
+      end
+      add(table.concat(tokens, " "), ACP_HIGHLIGHT, OPTIONS_CLICK_TARGET)
+    end
+    if stage < 2 and state.context ~= nil then
+      local _, derived = context_display(state)
+      add("ctx " .. derived, DERIVED_HIGHLIGHT)
+    end
+    if stage < 1 then
+      add(cost_display(state), ACP_HIGHLIGHT)
+    end
+    if fields[2] ~= nil then
+      fields[2] = "%<" .. fields[2]
+    end
+    local bar = table.concat(fields, " · ")
+    if
+      available == nil
+      or nvim.api.nvim_eval_statusline(bar, { maxwidth = 100000 }).width <= available
+      or stage == 8
+    then
+      return bar, limits_visible and state.agent or nil, options_visible
+    end
   end
-  local cost = cost_display(state)
-  if cost ~= nil then
-    fields[#fields + 1] = winbar_segment(ACP_HIGHLIGHT, cost)
+  error("winbar layout exhausted")
+end
+
+---Return the minimum space needed for collapsed background summaries.
+---@param backgrounds louiselm.ui.BackgroundStatus[]
+---@return integer width
+function M.background_width(backgrounds)
+  local entries = {}
+  for _, background in ipairs(backgrounds) do
+    entries[#entries + 1] = background_winbar_entry(background)
   end
-  return table.concat(fields, " · "), limits_text ~= nil and state.agent or nil
+  return winbar_entries_width(collapsed_winbar_entries(entries, 0))
 end
 
 ---Lay out background summaries within the available width; inputs are unchanged.
@@ -495,9 +556,10 @@ end
 ---@param limits_agent string? Agent targeted by the base Limits segment.
 ---@param backgrounds louiselm.ui.BackgroundStatus[] Background Sessions in view order.
 ---@param available integer Display columns left after the base segment.
+---@param options_session? string Active Session with a visible options block.
 ---@return string winbar
----@return table<integer, string|false|louiselm.ui.LimitsTarget> targets Session IDs, false for picker overflow, or Limits targets.
-function M.layout_winbar(base, limits_agent, backgrounds, available)
+---@return table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget> targets Session IDs, picker overflow, Limits or options targets.
+function M.layout_winbar(base, limits_agent, backgrounds, available, options_session)
   local quiet = {} ---@type louiselm.ui.WinbarEntry[]
   local attention = {} ---@type louiselm.ui.WinbarEntry[]
   for _, background in ipairs(backgrounds) do
@@ -505,7 +567,10 @@ function M.layout_winbar(base, limits_agent, backgrounds, available)
     local entries = entry.attention and attention or quiet
     entries[#entries + 1] = entry
   end
-  local targets = {} ---@type table<integer, string|false|louiselm.ui.LimitsTarget>
+  local targets = {} ---@type table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget>
+  if options_session ~= nil then
+    targets[OPTIONS_CLICK_TARGET] = { session = options_session }
+  end
   if limits_agent ~= nil then
     targets[LIMITS_CLICK_TARGET] = { agent = limits_agent }
   end
@@ -538,8 +603,9 @@ function M.layout_winbar(base, limits_agent, backgrounds, available)
 
   local segments = {}
   for index, entry in ipairs(entries) do
-    targets[index] = entry.id ~= "" and entry.id or false
-    segments[index] = clickable_winbar_segment(index, entry.group, entry.text)
+    local target = index >= OPTIONS_CLICK_TARGET and index + 2 or index
+    targets[target] = entry.id ~= "" and entry.id or false
+    segments[index] = clickable_winbar_segment(target, entry.group, entry.text)
   end
   return base .. "%=" .. table.concat(segments, " · "), targets
 end

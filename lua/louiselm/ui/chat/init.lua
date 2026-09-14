@@ -70,7 +70,7 @@ local nvim = vim
 ---@field limits_timers table<string, louiselm.ui.LimitsTimer> Pending reset-expiry timers by Agent.
 ---@field limits_unsubscribe fun() Agent-limit observer removal function.
 ---@field winbars table<integer, string> Previous window bars by window id.
----@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget>> Click targets by window and minwid.
+---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget>> Click targets by window and minwid.
 ---@field winbar_resize_autocmd? integer Resize observer removed on disposal.
 ---@field current_id string? Currently displayed session id.
 ---@field handoffs louiselm.ui.Handoffs Review buffers and takeover validation.
@@ -353,7 +353,6 @@ local function chat_winbar(self, view, win)
       limits = { text = text, group = group }
     end
   end
-  local base, limits_agent = Status.session_winbar(state, limits)
   local backgrounds = {} ---@type louiselm.ui.BackgroundStatus[]
   for _, id in ipairs(self.view_order) do
     local background = self.views[id]
@@ -364,9 +363,13 @@ local function chat_winbar(self, view, win)
       }
     end
   end
-  local available = nvim.api.nvim_win_get_width(win)
-    - nvim.api.nvim_eval_statusline(base, { winid = win, use_winbar = true }).width
-  local winbar, targets = Status.layout_winbar(base, limits_agent, backgrounds, available)
+  local width = nvim.api.nvim_win_get_width(win)
+  local base, limits_agent, options_visible =
+    Status.session_winbar(state, limits, width - Status.background_width(backgrounds))
+  local available = width
+    - nvim.api.nvim_eval_statusline(base, { winid = win, use_winbar = true, maxwidth = 100000 }).width
+  local winbar, targets =
+    Status.layout_winbar(base, limits_agent, backgrounds, available, options_visible and state.id or nil)
   self.winbar_targets[win] = targets
   return winbar
 end
@@ -760,7 +763,7 @@ open_session_options = function(self, view, initial)
     return
   end
   local state = view.session:inspect()
-  if state.status ~= "ready" or #state.config_options == 0 then
+  if #state.config_options == 0 or (initial and state.status ~= "ready") then
     return
   end
   if initial then
@@ -771,6 +774,7 @@ open_session_options = function(self, view, initial)
   end
   view.options_revision = (view.options_revision or 0) + 1
   local revision = view.options_revision
+  local readonly = state.status ~= "ready"
   local function current()
     return not self.disposed
       and self.views[state.id] == view
@@ -781,12 +785,12 @@ open_session_options = function(self, view, initial)
       and nvim.deep_equal(view.session:inspect().config_options, state.config_options)
   end
   Picker.select(state.config_options, {
-    prompt = "louiselm session options: ",
+    prompt = readonly and "louiselm session options (read-only while busy): " or "louiselm session options: ",
     format_item = function(option)
       return option.name .. ": " .. Status.option_display_value(option)
     end,
   }, function(option)
-    if option == nil or not current() then
+    if readonly or option == nil or not current() then
       return
     end
     view.session:option_usage(option.id, function(candidates, query_error)
@@ -1799,6 +1803,15 @@ function Chat:winbar_click(target, clicked_window)
     return self:switch_session()
   end
   if type(destination) == "table" then
+    if destination.session ~= nil then
+      if self.current_id ~= destination.session then
+        local switched, switch_error = self:switch(destination.session)
+        if not switched then
+          return false, switch_error
+        end
+      end
+      return self:session_options()
+    end
     return self:show_limits(destination.agent)
   end
   if type(destination) ~= "string" then
@@ -2066,7 +2079,7 @@ function Chat:cancel()
   return view.session:cancel()
 end
 
----Open the complete configuration overview for the current idle session.
+---Inspect current configuration, including while busy; changes require an idle Session.
 ---@param self louiselm.ui.Chat
 ---@return boolean opened
 ---@return string? error_message Lifecycle or state error.
@@ -2082,9 +2095,6 @@ function Chat:session_options()
     return false, "no chat session is attached"
   end
   local state = view.session:inspect()
-  if state.status ~= "ready" then
-    return false, "session is not idle; cancel the active turn first"
-  end
   if #state.config_options == 0 then
     return false, "session has no standard ACP options"
   end

@@ -747,7 +747,7 @@ function M.register()
   nvim.api.nvim_create_user_command(
     "LouiselmSessionOptions",
     chat_command("session_options"),
-    { desc = "Configure the current idle louiselm session", force = true }
+    { desc = "Inspect session options; configure while idle", force = true }
   )
 
   nvim.api.nvim_create_user_command("LouiselmLimits", function(arguments)

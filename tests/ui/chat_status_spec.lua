@@ -10,6 +10,64 @@ local function snapshot(id, agent)
   return { id = id, name = id, agent = agent, status = "ready", current_turn = 0, config_options = {} }
 end
 
+T["compact options count hidden controls and restore after resize"] = function()
+  local state = snapshot("session-1", "codex")
+  state.name = "Review"
+  state.config_options = {
+    { id = "m", name = "Model", category = "model", type = "select", current_value = "GPT-6" },
+    { id = "e", name = "Effort", category = "thought_level", type = "select", current_value = "high" },
+    { id = "fast", name = "Fast", type = "boolean", current_value = false },
+  }
+  local function rendered(width)
+    local bar = Status.session_winbar(state, nil, width)
+    return nvim.api.nvim_eval_statusline(bar, { use_winbar = true, maxwidth = 200 }).str
+  end
+  MiniTest.expect.equality(rendered(200), "Your turn · Review · codex · GPT-6 e=high +1")
+  MiniTest.expect.equality(rendered(37), "Your turn · Review · codex · GPT-6 +2")
+  MiniTest.expect.equality(rendered(35), "Your turn · Review · codex · opts")
+  state.source = "loaded"
+  MiniTest.expect.equality(rendered(200), "Your turn · Review · codex · GPT-6 e=high +1")
+end
+
+T["options and limits targets never collide with background Sessions"] = function()
+  local state = snapshot("current", "codex")
+  state.config_options = { { id = "fast", name = "Fast", type = "boolean", current_value = false } }
+  local backgrounds = {}
+  for index = 1, 100 do
+    backgrounds[index] = { state = snapshot("background-" .. index, "codex"), unread_turn = false }
+  end
+  local base, agent, visible = Status.session_winbar(state, { text = "limits", group = "Normal" }, 200)
+  local _, targets = Status.layout_winbar(base, agent, backgrounds, 10000, visible and state.id or nil)
+  MiniTest.expect.equality(targets[98], { session = "current" })
+  MiniTest.expect.equality(targets[99], { agent = "codex" })
+  MiniTest.expect.equality(targets[100], "background-98")
+  MiniTest.expect.equality(targets[102], "background-100")
+end
+
+T["whole-line budget preserves urgent attention before optional details"] = function()
+  local state = snapshot("current", "codex")
+  state.name = "Review"
+  state.config_options = {
+    { id = "model", name = "Model", category = "model", type = "select", current_value = "界 100% long-model" },
+  }
+  local urgent = snapshot("urgent", "claude")
+  urgent.status = "waiting_permission"
+  local backgrounds = { { state = urgent, unread_turn = false } }
+  local width = 30
+  local base, agent, visible = Status.session_winbar(state, nil, width - Status.background_width(backgrounds))
+  local used = nvim.api.nvim_eval_statusline(base, { maxwidth = 200 }).width
+  local bar, targets = Status.layout_winbar(base, agent, backgrounds, width - used, visible and state.id or nil)
+  local rendered = nvim.api.nvim_eval_statusline(bar, { use_winbar = true, maxwidth = width }).str
+  MiniTest.expect.equality(rendered:find("Your turn", 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered:find("! urgent", 1, true) ~= nil, true)
+  MiniTest.expect.equality(targets[98], { session = "current" })
+  local wide = Status.session_winbar(state, nil, 200)
+  MiniTest.expect.equality(
+    nvim.api.nvim_eval_statusline(wide, { maxwidth = 200 }).str,
+    "Your turn · Review · codex · 界 100% long-model"
+  )
+end
+
 T["renders header highlights and escaped winbars without changing snapshots"] = function()
   local state = snapshot("session-1", "codex")
   state.name = "界\n100%"
@@ -53,7 +111,7 @@ T["renders header highlights and escaped winbars without changing snapshots"] = 
   MiniTest.expect.equality(agent, nil)
   MiniTest.expect.equality(
     nvim.api.nvim_eval_statusline(base, { use_winbar = true, maxwidth = 200 }).str,
-    "Your turn · codex/acp-1 · 界 100% · context=25/100 (25% stale) · cost=0.5 USD"
+    "Your turn · 界 100% · codex · opts · ctx 25% stale · cost=0.5 USD"
   )
   MiniTest.expect.equality(state, before)
 end
