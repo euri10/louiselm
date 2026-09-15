@@ -574,7 +574,7 @@ function M.register()
     local _, overview_error = current:session_overview()
     report_error(overview_error)
   end, {
-    desc = "Open a left sidebar showing the current Session's modified files and edition lines",
+    desc = "Open the current Session's file overview; closes when another Session gains focus",
     force = true,
   })
 

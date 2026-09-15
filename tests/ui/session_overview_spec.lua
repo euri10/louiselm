@@ -441,9 +441,11 @@ T["sidebar"]["opens one left sidebar for the invoking Session and reuses it"] = 
 
   nvim.api.nvim_set_current_win(chat_win)
   assert(chat:switch("session-1"))
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(sidebar_buf), false)
   assert(chat:session_overview())
-  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), sidebar_win)
-  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), sidebar_buf)
+  sidebar_buf = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(#nvim.api.nvim_tabpage_list_wins(tabpage), window_count + 1)
   MiniTest.expect.equality(text():find("task_1.txt", 1, true) ~= nil, true)
   MiniTest.expect.equality(text():find("task_5.txt", 1, true), nil)
 
@@ -603,6 +605,53 @@ T["sidebar"]["uses the focused chat buffer even when another Session was last sw
   assert(SessionOverview.refresh(chat))
   MiniTest.expect.equality(text():find("SESSION: focused", 1, true) ~= nil, true)
   SessionOverview.close(chat)
+  nvim.api.nvim_win_close(second_window, true)
+end
+
+T["sidebar"]["switching from the sidebar closes it before selecting the destination window"] = function()
+  local chat = new_chat()
+  local first = fake_session("first", "codex")
+  assert(chat:attach(first))
+  assert(chat:attach(fake_session("second", "codex")))
+  assert(chat:switch("first"))
+  local host = nvim.api.nvim_get_current_win()
+  assert(chat:session_overview())
+  local sidebar = nvim.api.nvim_get_current_win()
+  first:emit({ type = "turn_done", session_id = "first" })
+
+  assert(chat:switch("second"))
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
+  MiniTest.expect.equality(nvim.api.nvim_win_is_valid(sidebar), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), host)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), chat:buffer("second"))
+  nvim.wait(20)
+  MiniTest.expect.equality(chat.overview, nil)
+  assert(chat:switch("first"))
+  MiniTest.expect.equality(chat.overview, nil)
+end
+
+T["sidebar"]["another visible chat closes the sidebar but own chat and file focus preserve it"] = function()
+  local chat = new_chat()
+  assert(chat:attach(fake_session("first", "codex")))
+  local first_window = nvim.api.nvim_get_current_win()
+  nvim.cmd("vsplit")
+  local second_window = nvim.api.nvim_get_current_win()
+  assert(chat:attach(fake_session("second", "codex")))
+  nvim.api.nvim_set_current_win(first_window)
+  assert(chat:session_overview())
+  nvim.api.nvim_set_current_win(first_window)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
+
+  local file = nvim.api.nvim_create_buf(true, false)
+  local file_window = nvim.api.nvim_open_win(file, true, { split = "right", win = first_window })
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
+  nvim.api.nvim_set_current_win(first_window)
+  nvim.api.nvim_win_close(file_window, true)
+  nvim.api.nvim_buf_delete(file, { force = true })
+
+  nvim.api.nvim_set_current_win(second_window)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), second_window)
   nvim.api.nvim_win_close(second_window, true)
 end
 

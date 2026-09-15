@@ -1425,8 +1425,11 @@ end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
-local function mark_view_seen(self, view)
+local function enter_view(self, view)
   local state = view.session:inspect()
+  if self.overview ~= nil and self.overview.session_id ~= state.id then
+    require("louiselm.ui.session_overview").close(self)
+  end
   if state.acp_session_id ~= nil then
     self.attention:seen(state.acp_session_id)
   end
@@ -1493,7 +1496,7 @@ local function attach_session(self, session, event_relay)
     end,
     on_enter = function()
       if not self.disposed and self.views[state.id] == view then
-        mark_view_seen(self, view)
+        enter_view(self, view)
       end
     end,
     submit = function()
@@ -1756,6 +1759,7 @@ function Chat:switch(session_id)
   if not nvim.api.nvim_buf_is_valid(view.renderer.buffer) then
     return false, "session buffer is invalid"
   end
+  enter_view(self, view)
   local window = nvim.api.nvim_get_current_win()
   if nvim.api.nvim_win_get_config(window).relative ~= "" then
     -- A provider-owned picker can restore its buffer during BufWinEnter.
@@ -1772,8 +1776,6 @@ function Chat:switch(session_id)
   restore_winbars(self)
   self.current_id = session_id
   view.unread_turn = false
-  local state = view.session:inspect()
-  mark_view_seen(self, view)
   view.renderer:show(window, self.start_insert_on_switch)
   render_winbars(self)
   return true

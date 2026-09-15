@@ -278,8 +278,8 @@ Commands                                                   *louiselm-commands*
     Arguments: none
 
 :LouiselmSessionOverview                            *:LouiselmSessionOverview*
-    Open a left sidebar showing the current Session's modified files and
-    edition lines
+    Open the current Session's file overview; closes when another Session
+    gains focus
     Arguments: none
 
 :LouiselmSessionRename                                *:LouiselmSessionRename*
