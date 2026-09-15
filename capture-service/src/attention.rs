@@ -16,7 +16,11 @@ use uuid::Uuid;
 mod projection;
 pub use projection::{BrokerProjection, ProjectionChange, ProjectionResult};
 
+#[path = "attention_runs.rs"]
+mod run_conditions;
+
 use crate::permissions::set_private_permissions;
+use crate::runs::{RunStore, RunStoreError};
 
 const SCHEMA_VERSION: u8 = 1;
 const MAX_SESSION_ID_BYTES: usize = 256;
@@ -214,6 +218,9 @@ pub enum AttentionError {
     /// Persisted Attention JSON is malformed.
     #[error("Attention data is malformed: {0}")]
     Json(#[from] serde_json::Error),
+    /// Authoritative Run state could not be read or validated.
+    #[error("Attention Run reconciliation failed: {0}")]
+    Run(#[from] RunStoreError),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -230,19 +237,21 @@ struct PersistedAttention {
 #[derive(Clone, Debug)]
 pub struct AttentionStore {
     root: PathBuf,
+    runs: RunStore,
 }
 
 impl AttentionStore {
-    /// Open or initialize the private Attention directory.
+    /// Open or initialize Attention with its authoritative local Run store.
     ///
     /// # Errors
     ///
     /// Returns filesystem or malformed-state errors.
-    pub fn new(root: impl AsRef<Path>) -> Result<Self, AttentionError> {
+    pub fn new(root: impl AsRef<Path>, runs: RunStore) -> Result<Self, AttentionError> {
         fs::create_dir_all(root.as_ref())?;
         set_private_permissions(root.as_ref(), true)?;
         let store = Self {
             root: root.as_ref().to_path_buf(),
+            runs,
         };
         store.with_lock(|store| {
             reject_symlink(&store.state_path(), "Attention state")?;
@@ -261,7 +270,10 @@ impl AttentionStore {
         Ok(store)
     }
 
-    /// Read the current unresolved snapshot.
+    /// Read current conditions, durably clearing resolved local Park alerts.
+    ///
+    /// Broker conditions and delivery eligibility of retained items are unchanged.
+    /// This blocking operation may read Run records and advance the generation.
     ///
     /// # Errors
     ///
@@ -289,6 +301,7 @@ impl AttentionStore {
     }
 
     /// Add or update one condition; repeating identical data is a no-op.
+    /// Late local Park updates for resolved Runs are also no-ops.
     ///
     /// # Errors
     ///
@@ -297,6 +310,9 @@ impl AttentionStore {
         validate_draft(&draft)?;
         self.with_lock(|store| {
             let mut state = store.load()?;
+            if store.local_park_resolved(&draft.key())? {
+                return Ok(snapshot(state));
+            }
             let item = AttentionItem {
                 subject_kind: draft.subject_kind,
                 subject_id: draft.subject_id,
@@ -455,9 +471,10 @@ impl AttentionStore {
     }
 
     fn load(&self) -> Result<PersistedAttention, AttentionError> {
-        let state: PersistedAttention =
+        let mut state: PersistedAttention =
             serde_json::from_reader(BufReader::new(File::open(self.state_path())?))?;
         validate_state(&state)?;
+        self.reconcile_local_parks(&mut state)?;
         Ok(state)
     }
 

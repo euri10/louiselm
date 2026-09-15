@@ -276,10 +276,18 @@ async fn pairing_json_is_bounded_before_deserialization() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One receiver conversation proves snapshot authentication, read-only access and revocation."
+)]
 async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = Store::new(temporary.path().join("captures")).expect("store");
-    let attention = AttentionStore::new(temporary.path().join("attention")).expect("attention");
+    let attention = AttentionStore::new(
+        temporary.path().join("attention"),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("attention");
     attention
         .upsert(AttentionDraft {
             subject_kind: AttentionSubjectKind::Run,

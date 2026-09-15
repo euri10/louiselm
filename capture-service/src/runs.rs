@@ -683,12 +683,18 @@ impl RunStore {
     /// Rejects an invalid UUID, absent record, malformed JSON, or inconsistent
     /// stored schema/identity/accounting metadata; propagates file-read errors.
     pub fn run(&self, id: &str) -> Result<Run, RunStoreError> {
+        self.find_run(id)?
+            .ok_or_else(|| RunStoreError::Invalid("Run was not found".to_owned()))
+    }
+
+    fn find_run(&self, id: &str) -> Result<Option<Run>, RunStoreError> {
         validate_id(id)?;
-        let path = self.path(id);
-        if !path.is_file() {
-            return Err(RunStoreError::Invalid("Run was not found".to_owned()));
-        }
-        let run: Run = serde_json::from_reader(BufReader::new(File::open(path)?))?;
+        let file = match File::open(self.path(id)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let run: Run = serde_json::from_reader(BufReader::new(file))?;
         if run.schema_version != 4
             || run.revision == 0
             || run.id != id
@@ -697,7 +703,11 @@ impl RunStore {
         {
             return Err(RunStoreError::Invalid("stored Run is invalid".to_owned()));
         }
-        Ok(run)
+        Ok(Some(run))
+    }
+
+    pub(crate) fn find_view(&self, id: &str) -> Result<Option<RunView>, RunStoreError> {
+        Ok(self.find_run(id)?.map(run_view))
     }
 
     /// Return every durable Run through a non-sensitive observer projection.

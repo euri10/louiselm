@@ -92,7 +92,11 @@ mod tests {
             pairing
                 .configure_notifications(NotificationHealth::Ready)
                 .unwrap();
-            let attention = AttentionStore::new(root.path().join("attention")).unwrap();
+            let attention = AttentionStore::new(
+                root.path().join("attention"),
+                crate::RunStore::new(root.path().join("runs")).unwrap(),
+            )
+            .unwrap();
             let before = attention.snapshot().unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let path = configured.then(|| root.path().join("absent-credential.json"));

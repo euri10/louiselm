@@ -139,6 +139,17 @@ storage error if Attention state cannot be read. The local `attention.sock` acce
 only operator-capability mutations and no Agent-authored text. Paired devices can
 `GET /v1/attention` with their pairing credential; that route is read-only.
 
+All snapshot consumers reconcile local Run Park conditions against the durable
+Run store, including after editor or receiver restart. Resume, disposal, or
+expiry removes the stale condition and advances the Attention generation; late
+local upserts cannot recreate it. Valid Parks retain their existing inactivity
+eligibility. This applies only to the deterministic `run_parked:<Run UUID>`
+condition identity emitted by the Neovim controller (SHA-256 truncated to UUID
+bytes with v4/variant bits). Broker operation identities and unrelated Session
+conditions are untouched; a missing local Run alone is not proof of resolution.
+Malformed Run state fails explicitly without erasing Attention. Reconciliation
+does not dispose Runs, release claims, or delete their retained records.
+
 Broker projections use the separate `/run/louiselm-attention/project.sock`
 endpoint, authenticated by kernel UID and a dedicated producer credential.
 It exposes only `project`; the operator socket rejects that verb. From the

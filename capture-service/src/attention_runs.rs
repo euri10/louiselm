@@ -1,0 +1,60 @@
+//! Reconcile only the deterministic Park conditions emitted by the local controller.
+
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use super::{
+    AttentionError, AttentionKey, AttentionKind, AttentionStore, AttentionSubjectKind,
+    PersistedAttention, advance_generation,
+};
+use crate::{runs::RunStoreError, time::now_ms};
+
+impl AttentionStore {
+    pub(super) fn local_park_resolved(&self, key: &AttentionKey) -> Result<bool, AttentionError> {
+        if key.subject_kind != AttentionSubjectKind::Run || key.kind != AttentionKind::RunParked {
+            return Ok(false);
+        }
+        // Wire identity used by ui/attention.lua:run_parked, not every broker Park
+        // on the same Run. Keep this derivation covered by the captured-key fixture.
+        let digest = Sha256::digest(format!("run_parked:{}", key.subject_id));
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&digest[..16]);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        if key.source_operation_id != Uuid::from_bytes(bytes).to_string() {
+            return Ok(false);
+        }
+        let Some(run) = self.runs.find_view(&key.subject_id)? else {
+            // Absence is not authoritative resolution (e.g. another controller's Run).
+            return Ok(false);
+        };
+        match run.state.as_str() {
+            "parked" | "cold_parked" if run.park_expires_at_ms > 0 => {
+                Ok(run.park_expires_at_ms <= now_ms())
+            }
+            "active" | "resuming" | "disposed" => Ok(true),
+            _ => Err(RunStoreError::Invalid("stored Run lifecycle state is invalid".into()).into()),
+        }
+    }
+
+    pub(super) fn reconcile_local_parks(
+        &self,
+        state: &mut PersistedAttention,
+    ) -> Result<(), AttentionError> {
+        // Called under the Attention lock. Run reads see atomic record replacements;
+        // no Run lock is acquired, so Run writers never wait on an Attention reader.
+        let previous = state.items.len();
+        let mut retained = Vec::with_capacity(previous);
+        for item in state.items.drain(..) {
+            if !self.local_park_resolved(&item.key())? {
+                retained.push(item);
+            }
+        }
+        state.items = retained;
+        if state.items.len() != previous {
+            advance_generation(state)?;
+            self.persist(state)?;
+        }
+        Ok(())
+    }
+}

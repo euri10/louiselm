@@ -34,7 +34,11 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
     let other = pair(&registry, "tablet");
     let app = Receiver::with_attention(
         Store::new(root.path().join("captures")).unwrap(),
-        AttentionStore::new(root.path().join("attention")).unwrap(),
+        AttentionStore::new(
+            root.path().join("attention"),
+            louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        )
+        .unwrap(),
         registry.clone(),
         root.path().join("uploads"),
         &"a".repeat(64),

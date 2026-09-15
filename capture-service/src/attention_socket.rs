@@ -183,7 +183,7 @@ async fn serve_client(
 ) -> Result<(), AttentionSocketError> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
-    let initial = store.snapshot()?;
+    let initial = read_snapshot(&store).await?;
     let mut known_generation = initial.generation;
     write_message(
         &mut writer,
@@ -198,7 +198,7 @@ async fn serve_client(
                 let Some(line) = line? else { return Ok(()); };
                 match serde_json::from_str::<ClientMessage>(&line)? {
                     ClientMessage::Snapshot => {
-                        let snapshot = store.snapshot()?;
+                        let snapshot = read_snapshot(&store).await?;
                         known_generation = snapshot.generation;
                         write_message(&mut writer, &AttentionSocketMessage::Snapshot { snapshot }).await?;
                     }
@@ -206,7 +206,7 @@ async fn serve_client(
                 }
             }
             _ = interval.tick() => {
-                let snapshot = store.snapshot()?;
+                let snapshot = read_snapshot(&store).await?;
                 if snapshot.generation != known_generation {
                     write_message(&mut writer, &AttentionSocketMessage::AttentionChanged { generation: snapshot.generation }).await?;
                     known_generation = snapshot.generation;
@@ -214,6 +214,13 @@ async fn serve_client(
             }
         }
     }
+}
+
+async fn read_snapshot(store: &AttentionStore) -> Result<AttentionSnapshot, AttentionSocketError> {
+    let store = store.clone();
+    Ok(tokio::task::spawn_blocking(move || store.snapshot())
+        .await
+        .map_err(io::Error::other)??)
 }
 
 async fn handle_mutation(
@@ -263,7 +270,8 @@ async fn handle_mutation(
         )
         .await;
     }
-    let result = match request {
+    let store = store.clone();
+    let result = tokio::task::spawn_blocking(move || match request {
         ClientMessage::Upsert { attention, .. } => store.upsert(attention),
         ClientMessage::SetEligible { key, eligible, .. } => store.set_eligible(&key, eligible),
         ClientMessage::Clear { key, .. } => store.clear(&key),
@@ -272,7 +280,9 @@ async fn handle_mutation(
             session_id, kind, ..
         } => store.clear_session_kind(&session_id, kind),
         ClientMessage::Snapshot => unreachable!("snapshot handled separately"),
-    };
+    })
+    .await
+    .map_err(io::Error::other)?;
     let message = match result {
         Ok(snapshot) => AttentionSocketMessage::MutationResult {
             request_id,

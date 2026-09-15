@@ -25,7 +25,11 @@ const OPERATION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 fn broker_projection_order_survives_clear_and_receiver_restart() {
     use louiselm_capture::{BrokerProjection, ProjectionChange};
     let temporary = tempfile::tempdir().unwrap();
-    let store = AttentionStore::new(temporary.path()).unwrap();
+    let store = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .unwrap();
     let item = draft();
     let created = BrokerProjection {
         sequence: 1,
@@ -54,7 +58,11 @@ fn broker_projection_order_survives_clear_and_receiver_restart() {
     };
     store.project(&cleared).unwrap();
     drop(store);
-    let restarted = AttentionStore::new(temporary.path()).unwrap();
+    let restarted = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .unwrap();
     assert!(!restarted.project(&created).unwrap().applied);
     assert!(restarted.snapshot().unwrap().items.is_empty());
     let mut gap = created;
@@ -69,7 +77,11 @@ async fn broker_projection_socket_authenticates_and_consumes_the_shared_wire_fix
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let temporary = tempfile::tempdir().unwrap();
-    let store = AttentionStore::new(temporary.path().join("attention")).unwrap();
+    let store = AttentionStore::new(
+        temporary.path().join("attention"),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .unwrap();
     let socket_path = temporary.path().join("attention.sock");
     let capability_path = temporary.path().join("capability");
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o711)).unwrap();
@@ -147,7 +159,11 @@ fn draft() -> AttentionDraft {
 #[test]
 fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let store = AttentionStore::new(temporary.path()).expect("store");
+    let store = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("store");
     let approval = AttentionDraft {
         subject_kind: AttentionSubjectKind::Run,
         subject_id: RUN_ID.to_owned(),
@@ -221,7 +237,11 @@ fn skill_conditions_have_closed_codes_and_fixed_safe_reasons() {
 #[test]
 fn session_kind_clear_preserves_other_unresolved_conditions() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let store = AttentionStore::new(temporary.path()).expect("store");
+    let store = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("store");
     store.upsert(draft()).expect("turn ready");
     store
         .upsert(AttentionDraft {
@@ -231,7 +251,11 @@ fn session_kind_clear_preserves_other_unresolved_conditions() {
         })
         .expect("permission");
 
-    let reopened = AttentionStore::new(temporary.path()).expect("reopen");
+    let reopened = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("reopen");
     let cleared = reopened
         .clear_session_kind(SESSION_ID, AttentionKind::TurnReady)
         .expect("clear ready kind");
@@ -259,7 +283,11 @@ fn key() -> AttentionKey {
 #[test]
 fn attention_store_is_idempotent_revisioned_and_restart_safe() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let store = AttentionStore::new(temporary.path()).expect("store");
+    let store = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("store");
     assert_eq!(store.snapshot().expect("empty").generation, 0);
 
     let added = store.upsert(draft()).expect("upsert");
@@ -284,7 +312,11 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
         2
     );
 
-    let reopened = AttentionStore::new(temporary.path()).expect("reopen");
+    let reopened = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("reopen");
     let persisted = reopened.snapshot().expect("persisted");
     assert_eq!(persisted.generation, 2);
     assert!(persisted.items[0].eligible);
@@ -329,7 +361,11 @@ fn attention_store_is_idempotent_revisioned_and_restart_safe() {
 #[test]
 fn attention_validation_rejects_untrusted_fields_before_state_changes() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let store = AttentionStore::new(temporary.path()).expect("store");
+    let store = AttentionStore::new(
+        temporary.path(),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("store");
     let mut invalid = draft();
     invalid.stage = Some("arbitrary text".to_owned());
     assert!(store.upsert(invalid).is_err());
@@ -346,7 +382,13 @@ fn attention_validation_rejects_untrusted_fields_before_state_changes() {
         r#"{"schema_version":1,"generation":0,"items":[],"unknown":"reject"}"#,
     )
     .expect("malformed state");
-    assert!(AttentionStore::new(temporary.path()).is_err());
+    assert!(
+        AttentionStore::new(
+            temporary.path(),
+            louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap()
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -356,7 +398,11 @@ fn attention_validation_rejects_untrusted_fields_before_state_changes() {
 )]
 async fn attention_socket_requires_capability_and_retries_without_new_generation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let store = AttentionStore::new(temporary.path().join("attention")).expect("store");
+    let store = AttentionStore::new(
+        temporary.path().join("attention"),
+        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+    )
+    .expect("store");
     let socket_path = temporary.path().join("attention.sock");
     let capability_path = temporary.path().join("operator-capability");
     let socket = AttentionSocket::bind(&socket_path, &capability_path, store.clone())

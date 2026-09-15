@@ -111,7 +111,7 @@ pub async fn run() -> Result<(), CliError> {
     let options = &arguments[1..];
     let paths = Paths::discover()?;
     let store = Store::new(paths.captures())?;
-    let attention = AttentionStore::new(paths.attention())?;
+    let attention = AttentionStore::new(paths.attention(), RunStore::new(paths.runs())?)?;
 
     match command {
         "ingest-local" => ingest_local(&store, options),
