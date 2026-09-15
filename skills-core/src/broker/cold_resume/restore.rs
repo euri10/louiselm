@@ -263,9 +263,7 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
-        let chain = self
-            .receipts()
-            .verified_chain(session.authorization(), verify)?;
+        let chain = self.verified_history(session.authorization(), verify)?;
         // Integration evidence includes the Session identity, so its digest must
         // change on reconstruction. Both chains verify under the installed release;
         // compare the runtime measurement, while the target supervisor independently

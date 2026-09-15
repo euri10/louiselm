@@ -181,6 +181,31 @@ recovery admission. It can receive signed lifecycle outcomes and settle control
 state, but it does not reset spent budgets or automatically Resume a Park.
 The original short-lived launch authorization is not consumed again or renewed.
 
+### Unverifiable Session history
+
+Installed inspection rechecks stored receipts against their original registered
+identity and current public verification authority. Recovery, status, lifecycle,
+promotion and continuing broker packets use the same history refusal boundary.
+An unreadable, missing recovery chain, malformed, contradictory or unverifiable
+history quarantines only its Session. Its exact receipt files are preserved;
+links and special receipt files are refused without following or blocking on them.
+
+The broker records a durable normalized failure under `authorizations/history-failures`,
+uses the existing lifecycle quarantine, and enqueues `SessionFailed` through the
+Attention outbox. Inspection returns the canonical `ReceiptChainInvalid` error
+with `InspectReceiptChain` as its next action, without inventing a process state
+or returning untrusted measurements. Restoring old bytes or retrying after restart
+does not clear that decision. Reporting failures still refuse the operation;
+retry completes the existing projection without changing its identity.
+
+The original worker closes its channel on history failure, withdrawing further
+broker effects and triggering existing supervisor Broker loss handling. This
+does not itself prove that the process tree has frozen or been disposed. Other
+Sessions can still inspect and reconnect. Invalid shared public-key authority
+remains a broker-wide refusal, as does an invalid identity marker at startup.
+The installed isolation gate uses real signing authority and a dedicated broker
+UID to exercise these distinctions; it does not establish live vendor cutover.
+
 ## Controller loss
 
 The installed broker worker accepts the supervisor's authenticated loss request

@@ -85,6 +85,7 @@ impl BrokerService {
             .authorizations
             .consumed_for_session(&request.session_id)?
             .ok_or(BrokerError::UnknownAuthorization)?;
+        self.check_history(&request.session_id)?;
         if request.run_id != pending.run_id
             || request.envelope_revision != pending.envelope_revision
             || self.lifecycle.is_quarantined(&request.session_id)?
@@ -92,7 +93,7 @@ impl BrokerService {
             return Err(BrokerError::RequestMismatch);
         }
         let authorization = pending.launch_authorization();
-        let chain = self.receipts.verified_chain(&authorization, verify)?;
+        let chain = self.verified_history(&authorization, verify)?;
         let start = chain.get(1).ok_or(BrokerError::ReceiptUnauthorized)?;
         let head = chain.last().ok_or(BrokerError::ReceiptUnauthorized)?;
         if request.sequence < head.payload.sequence

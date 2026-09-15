@@ -312,6 +312,7 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        self.require_trusted_history(session, &mut verify)?;
         let request = StatusRequest {
             schema: STATUS_REQUEST_SCHEMA.into(),
             protocol_version: PROTOCOL_VERSION,

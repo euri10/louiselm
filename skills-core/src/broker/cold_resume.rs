@@ -183,9 +183,7 @@ impl BrokerService {
             .authorizations()
             .consumed_for_session(source_id)?
             .ok_or(BrokerError::UnknownAuthorization)?;
-        let chain = self
-            .receipts()
-            .verified_chain(&original.launch_authorization(), verify)?;
+        let chain = self.verified_history(&original.launch_authorization(), verify)?;
         let terminal = chain.last().ok_or(BrokerError::ReceiptUnauthorized)?;
         if terminal.payload.resulting_state != SessionState::Terminal
             || !matches!(

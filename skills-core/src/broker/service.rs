@@ -231,12 +231,19 @@ impl BrokerService {
     /// never launched it.
     ///
     /// # Errors
-    /// Returns [`BrokerError::Storage`] when durable state cannot be read.
+    /// Returns a canonical receipt-chain refusal for quarantined history,
+    /// installed shared-authority failure, or unavailable durable reporting.
+    /// Installed stores reverify history before returning measurements.
     pub fn inspect(&self, session_id: &str) -> Result<Option<SessionInspection>, BrokerError> {
         let Some(authorization) = self.authorizations.consumed_for_session(session_id)? else {
             return Ok(None);
         };
-        let chain = self.receipts.chain(session_id)?;
+        self.check_history(session_id)?;
+        let chain = self.history_result(
+            session_id,
+            self.receipts
+                .inspection_chain(&authorization.launch_authorization()),
+        )?;
         let head = chain.last();
         let last_failure = self
             .audit()?

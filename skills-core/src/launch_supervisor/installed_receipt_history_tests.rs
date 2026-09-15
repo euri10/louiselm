@@ -1,6 +1,9 @@
 //! Installed historical verification and new-chain admission use root authority.
 
 use super::*;
+
+#[path = "installed_history_isolation_tests.rs"]
+mod isolation;
 use crate::{
     broker::{AuthorizationStore, ReceiptStore},
     launch_protocol::LaunchAuthorization,

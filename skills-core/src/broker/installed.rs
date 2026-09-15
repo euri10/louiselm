@@ -401,7 +401,9 @@ impl InstalledBroker {
     /// Reads durable initial launch evidence, without claiming current liveness.
     ///
     /// # Errors
-    /// Returns unreadable or corrupt broker state.
+    /// Returns a typed receipt-chain refusal for quarantined history, invalid
+    /// shared authority, or unavailable durable state. Failed Session history
+    /// is preserved and quarantined without disabling unrelated Sessions.
     pub fn inspect(&self, session_id: &str) -> Result<Option<SessionInspection>, BrokerError> {
         self.service.inspect(session_id)
     }

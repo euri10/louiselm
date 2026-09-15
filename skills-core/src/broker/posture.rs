@@ -70,7 +70,7 @@ impl BrokerService {
         // The chain validates the exact subject, request, revision, trusted
         // release/signature, sequence, and actual Agent identity at Start.
         // Neither a bare measurement digest nor an unrelated signed record is proof.
-        let chain = self.receipts().verified_chain(authorization, verify)?;
+        let chain = self.verified_history(authorization, verify)?;
         let launch = chain.first().ok_or(BrokerError::ReceiptUnauthorized)?;
         let start = chain.get(1).ok_or(BrokerError::ReceiptUnauthorized)?;
         let ReceiptOutcome::Launch { evidence, .. } = &launch.payload.outcome else {

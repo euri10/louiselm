@@ -54,8 +54,7 @@ impl BrokerService {
             {
                 return Err(BrokerError::ControllerMismatch);
             }
-            self.receipts()
-                .verified_chain(&authorization.launch_authorization(), verify)?;
+            self.verified_history(&authorization.launch_authorization(), verify)?;
         }
         if self
             .receipts()

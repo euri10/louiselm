@@ -20,6 +20,7 @@ pub mod authorization;
 pub mod cold_resume;
 pub mod commands;
 pub mod delegation;
+mod history;
 pub mod installed;
 pub mod lifecycle;
 mod posture;

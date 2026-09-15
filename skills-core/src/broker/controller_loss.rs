@@ -104,6 +104,7 @@ impl BrokerService {
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        self.require_trusted_history(session, verify)?;
         match &packet.packet {
             LauncherPacket::SignedReceipt(receipt) => {
                 self.lifecycle.check_receipt(receipt)?;
@@ -161,7 +162,7 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
-        let chain = self.receipts.verified_chain(authorization, verify)?;
+        let chain = self.verified_history(authorization, verify)?;
         let head = chain.last().ok_or(BrokerError::ReceiptUnauthorized)?;
         if head.payload.resulting_state != SessionState::Parked
             || request.parked_head

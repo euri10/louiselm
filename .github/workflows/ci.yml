@@ -482,6 +482,8 @@ jobs:
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             timeout 120 /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
             timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart --exact --nocapture' bash "$library_test"

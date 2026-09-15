@@ -82,6 +82,13 @@ impl LauncherVerifier {
         &self.config
     }
 
+    /// Rechecks shared public trust separately from an individual chain.
+    pub(crate) fn check_authority(&self) -> Result<(), LauncherError> {
+        require_root_metadata(&self.paths.keyring(), 0o444, false, "launcher keyring")?;
+        public_keyring(&self.paths)?;
+        require_measured_tool(&self.config)
+    }
+
     /// Reads the trusted original identity without authorizing a new launch.
     pub(crate) fn receipt_anchor(&self, session_id: &str) -> Result<ChainAnchor, LauncherError> {
         Ok(super::history::load(&self.paths, session_id)?.anchor())

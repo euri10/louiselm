@@ -11,15 +11,14 @@
 
 use std::{
     fs,
+    io::Read,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use crate::{
-    broker::{
-        BrokerError, corrupt, is_record_identifier, lock, read_bounded, sync_directory,
-        write_new_bytes,
-    },
+    broker::{BrokerError, corrupt, is_record_identifier, lock, sync_directory, write_new_bytes},
     launch::PROTOCOL_VERSION,
     launch_protocol::{
         LaunchAuthorization, RECEIPT_ACK_SCHEMA, ReceiptAcknowledgement, ReceiptDisposition,
@@ -66,6 +65,28 @@ enum ReceiptTrust {
 }
 
 impl ReceiptStore {
+    pub(super) fn check_authority(&self) -> Result<(), BrokerError> {
+        if let ReceiptTrust::Installed(verifier) = &self.trust {
+            verifier
+                .check_authority()
+                .map_err(BrokerError::InstallationAuthority)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn inspection_chain(
+        &self,
+        authorization: &LaunchAuthorization,
+    ) -> Result<Vec<SignedReceipt>, BrokerError> {
+        match &self.trust {
+            ReceiptTrust::Fixed(_) => self.chain(&authorization.session_id),
+            ReceiptTrust::Installed(verifier) => self
+                .verified_chain(authorization, &mut |key, payload, signature| {
+                    verifier.verify(key, payload, signature).is_ok()
+                }),
+        }
+    }
+
     /// Opens or creates the durable receipt store under `root`.
     ///
     /// # Errors
@@ -220,8 +241,7 @@ impl ReceiptStore {
         }
         let mut stored = Vec::new();
         for sequence in 0..u64::try_from(count).map_err(|_| BrokerError::InvalidGrant)? {
-            let bytes = read_bounded(&receipt_path(&session, sequence))?
-                .ok_or_else(|| corrupt("stored receipt chain has a gap or unexpected entry"))?;
+            let bytes = read_receipt(&receipt_path(&session, sequence))?;
             stored.push(bytes);
         }
         Ok(stored)
@@ -367,4 +387,28 @@ fn check_authorized(
 /// The durable path holding one sequence's exact signed bytes.
 fn receipt_path(session: &Path, sequence: u64) -> PathBuf {
     session.join(format!("{sequence:020}.receipt.json"))
+}
+
+fn read_receipt(path: &Path) -> Result<Vec<u8>, BrokerError> {
+    // Refuse links and special files without blocking on a FIFO in damaged state.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK)
+                .bits()
+                .cast_signed(),
+        )
+        .open(path)
+        .map_err(BrokerError::Storage)?;
+    if !file.metadata().map_err(BrokerError::Storage)?.is_file() {
+        return Err(corrupt("stored receipt is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(super::MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(BrokerError::Storage)?;
+    if bytes.len() as u64 > super::MAX_RECORD_BYTES {
+        return Err(corrupt("stored receipt exceeds its bound"));
+    }
+    Ok(bytes)
 }

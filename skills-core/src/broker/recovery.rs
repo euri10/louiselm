@@ -195,6 +195,7 @@ impl BrokerService {
     }
 
     fn check_recovery_binding(&self, request: &RecoveryRequest) -> Result<(), BrokerError> {
+        self.check_history(&request.launch.session_id)?;
         let launch = self
             .authorizations()
             .consumed_for_session(&request.launch.session_id)?
@@ -249,6 +250,7 @@ impl BrokerService {
         if self.lifecycle.is_quarantined(session_id)? {
             return Ok(RecoveryReadiness::Quarantined {});
         }
+        self.check_history(session_id)?;
         let pending_path = self
             .authorizations()
             .root
