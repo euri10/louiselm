@@ -47,6 +47,8 @@ use crate::{
 };
 
 pub mod command;
+mod conformance;
+pub use conformance::ConformanceAdmission;
 mod lifecycle;
 pub mod recovery;
 mod recovery_worker;
@@ -193,13 +195,14 @@ pub trait LaunchBroker: Send + Sync {
         complete: SupervisorCompletion<LaunchAuthorization>,
     ) -> Result<(), SupervisorError>;
 
-    /// Durably appends exact canonical signed-envelope bytes.
+    /// Durably appends exact signed bytes and any receipt-bound observation report.
     ///
     /// # Errors
     /// Returns broker admission/unavailability errors; durable append failures after admission arrive through `complete`.
     fn append_receipt(
         &self,
         receipt_bytes: Vec<u8>,
+        report_bytes: Option<Vec<u8>>,
         complete: SupervisorCompletion<ReceiptAcknowledgement>,
     ) -> Result<(), SupervisorError>;
 
@@ -615,6 +618,20 @@ pub trait RunningAgent: Send {
 
 /// OS operations whose concrete implementation holds root authority.
 pub trait LaunchPlatform: Send + Sync {
+    /// Evaluate protected installed policy and freshly measured host evidence.
+    /// This runs on the owning launch coordinator before sequence-zero signing.
+    /// No Agent-supplied observation or attendance value is accepted here.
+    ///
+    /// # Errors
+    /// Returns registration errors; bounded inspection and admission failures
+    /// arrive through `complete`. An unsupported implementation must refuse.
+    fn inspect_conformance(
+        &self,
+        authorization: &LaunchAuthorization,
+        now_ms: u64,
+        complete: SupervisorCompletion<ConformanceAdmission>,
+    ) -> Result<(), SupervisorError>;
+
     /// Rejects known unsupported registrations before privileged resource acquisition.
     /// This prerequisite is rechecked against the actual runtime after restricted start.
     ///
@@ -707,6 +724,12 @@ pub enum SupervisorError {
     /// Prepared isolation evidence did not satisfy the complete contract.
     #[error("isolation evidence rejected")]
     IsolationRejected,
+    /// Protected host inputs or failure history could not be established.
+    #[error("host conformance evidence unavailable; inspect installed certification")]
+    ConformanceUnavailable,
+    /// Fresh protected evidence did not satisfy the authorized admission policy.
+    #[error("host conformance admission refused: {0:?}; inspect installed certification")]
+    ConformanceRefused(crate::conformance::admission::Condition),
     /// The actual Agent process identity could not be authenticated.
     #[error("Agent process identity rejected")]
     AgentIdentityRejected,
@@ -1007,6 +1030,27 @@ fn run_launch(
         ));
     }
     let channel_id = capability_channel.id().to_owned();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let measured_at_ms = now_ms
+        .saturating_add(u64::try_from(validation_clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+    let inspected = inner
+        .platform
+        .inspect_conformance(
+            &authorization,
+            measured_at_ms,
+            Box::new(move |result| {
+                let _ = sender.try_send(result);
+            }),
+        )
+        .and_then(|()| {
+            receiver
+                .recv_timeout(inner.timeout)
+                .map_err(|_| SupervisorError::ConformanceUnavailable)?
+        });
+    let conformance = match inspected {
+        Ok(value) => value,
+        Err(error) => return Err(cleanup_prepared(prepared, capability, identity, error)),
+    };
     let evidence = match launch_evidence(
         request,
         &resolution.runtime,
@@ -1014,6 +1058,7 @@ fn run_launch(
         prepared.backend_id(),
         &receipt_channels,
         broker_loss_grace_ms,
+        conformance.evidence,
     ) {
         Ok(evidence) => evidence,
         Err(error) => {
@@ -1032,20 +1077,24 @@ fn run_launch(
         signing_key_id: inner.signer.signing_key_id().to_owned(),
         outcome: ReceiptOutcome::Launch {
             authorization: Authorization {
-                authorization_id: authorization.authorization_id,
-                request_id: authorization.request_id,
-                request_digest: authorization.request_digest,
+                authorization_id: authorization.authorization_id.clone(),
+                request_id: authorization.request_id.clone(),
+                request_digest: authorization.request_digest.clone(),
             },
             evidence: Box::new(evidence),
         },
         resulting_state: SessionState::Starting,
     };
-    let launch_receipt = match transact_receipt(inner, launch_payload) {
+    let launch_receipt = match transact_receipt(inner, launch_payload, conformance.report_bytes) {
         Ok(receipt) => receipt,
         Err(error) => {
             return Err(cleanup_prepared(prepared, capability, identity, error));
         }
     };
+
+    if let Err(error) = check_conformance_waiver(&authorization, now_ms, validation_clock) {
+        return Err(cleanup_prepared(prepared, capability, identity, error));
+    }
 
     let running = match prepared.start() {
         Ok(running) => running,
@@ -1111,6 +1160,9 @@ fn run_launch(
     if let Err(error) = await_key_authority(inner) {
         return Err(cleanup_running(running, capability, identity, error));
     }
+    if let Err(error) = check_conformance_waiver(&authorization, now_ms, validation_clock) {
+        return Err(cleanup_running(running, capability, identity, error));
+    }
     if let Err(error) = capability
         .bind(binding.clone(), authentication)
         .and_then(|()| capability.enable())
@@ -1142,7 +1194,7 @@ fn run_launch(
         },
         resulting_state: SessionState::Running,
     };
-    let receipt = match transact_receipt(inner, start_payload) {
+    let receipt = match transact_receipt(inner, start_payload, None) {
         Ok(receipt) => receipt,
         Err(error) => {
             return Err(cleanup_running(running, capability, identity, error));
@@ -1152,6 +1204,9 @@ fn run_launch(
     // An acknowledgement may have been in flight when authority was revoked.
     // Recheck before publishing launch success, even when its receipt is durable.
     if let Err(error) = await_key_authority(inner) {
+        return Err(cleanup_running(running, capability, identity, error));
+    }
+    if let Err(error) = check_conformance_waiver(&authorization, now_ms, validation_clock) {
         return Err(cleanup_running(running, capability, identity, error));
     }
 
@@ -1178,6 +1233,22 @@ fn run_launch(
     )
 }
 
+fn check_conformance_waiver(
+    authorization: &LaunchAuthorization,
+    now_ms: u64,
+    clock: Instant,
+) -> Result<(), SupervisorError> {
+    authorization
+        .conformance
+        .validate_for(
+            &authorization.session_id,
+            &authorization.request_digest,
+            authorization.controller_uid,
+            now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        )
+        .map_err(|_| SupervisorError::AuthorizationRejected)
+}
+
 fn await_key_authority(inner: &SupervisorInner) -> Result<(), SupervisorError> {
     let (sender, receiver) = mpsc::sync_channel(1);
     inner.signer.check_authority(Box::new(move |result| {
@@ -1195,6 +1266,7 @@ fn launch_evidence(
     backend_id: &str,
     channels: &[Channel],
     broker_loss_grace_ms: u32,
+    conformance: ConformanceEvidence,
 ) -> Result<LaunchEvidence, SupervisorError> {
     let runtime_bytes = serde_json::to_vec(runtime).map_err(|_| SupervisorError::ReceiptInvalid)?;
     let isolation_bytes =
@@ -1210,10 +1282,7 @@ fn launch_evidence(
         return Err(SupervisorError::ReceiptInvalid);
     }
     let evidence = LaunchEvidence {
-        // The admission gate is not in force before the louiselm-d6fv.9 cutover,
-        // so this launch consulted no host evidence and claims none. Any other
-        // value here would assert a property nothing checked.
-        conformance: ConformanceEvidence::Unevaluated,
+        conformance,
         launch_request_digest: request.digest().to_string(),
         runtime_measurement_digest: Digest::of(&runtime_bytes).to_string(),
         skill_generation_id: request.skill_generation_id.clone(),
@@ -1254,6 +1323,7 @@ fn launch_evidence(
 fn transact_receipt(
     inner: &SupervisorInner,
     payload: ReceiptPayload,
+    report_bytes: Option<Vec<u8>>,
 ) -> Result<SignedReceipt, SupervisorError> {
     payload
         .validate()
@@ -1275,7 +1345,9 @@ fn transact_receipt(
         digest: Digest::of(&receipt_bytes).to_string(),
     };
     let acknowledgement = await_broker(inner, |complete| {
-        inner.broker.append_receipt(receipt_bytes, complete)
+        inner
+            .broker
+            .append_receipt(receipt_bytes, report_bytes, complete)
     })
     .map_err(|error| match error {
         SupervisorError::BrokerTimeout => SupervisorError::BrokerTimeout,

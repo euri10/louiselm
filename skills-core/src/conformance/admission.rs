@@ -15,12 +15,25 @@ use serde::{Deserialize, Serialize};
 use super::installed::{CertificateStatus, HostSnapshot};
 
 /// Whether an operator is present to authorize an explicit waiver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Attendance {
     /// An operator can answer a waiver prompt scoped to this Session.
     Interactive,
     /// No operator is present; an unattended Run never waives.
+    #[default]
     Unattended,
+}
+
+/// Activation policy read only from the protected installed launcher configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Enforcement {
+    /// Ordinary installation remains explicitly unevaluated until cutover.
+    #[default]
+    PreCutover,
+    /// Every new launch must pass conformance admission or an exact authorized waiver.
+    Enforced,
 }
 
 /// The exact condition that stops current evidence from admitting a launch.

@@ -1,0 +1,141 @@
+//! Bounded report fragments bound to an exact signed launch receipt.
+
+use serde::{Deserialize, Serialize};
+
+use super::{ErrorCode, MAX_PROTOCOL_MESSAGE_BYTES, ProtocolError, validate_digest};
+use crate::conformance::{
+    MAX_REPORT_BYTES,
+    admission::{Attendance, Condition},
+};
+
+/// Broker-approved attendance and optional exact waiver, never gate activation.
+///
+/// The trusted controller supplies already-authorized policy. Its waiver
+/// producer owns approval/audit validation; the supervisor independently checks
+/// these bindings and re-evaluates the actual protected host condition.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformanceAuthorization {
+    /// Trusted Run attendance; omission from the wire is invalid, not interactive.
+    pub attendance: Attendance,
+    /// Validated operator decision for this exact launch, if any.
+    pub waiver: Option<ConformanceWaiver>,
+}
+
+/// Exact normalized outcome from the broker's operator-waiver authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformanceWaiver {
+    /// Session explicitly approved by the operator.
+    pub session_id: String,
+    /// Exact request digest, binding Run, authorization and envelope revision too.
+    pub request_digest: String,
+    /// Authenticated operator identity that approved this decision.
+    pub operator_uid: u32,
+    /// Only this condition may be waived; containment failure never may.
+    pub condition: Condition,
+    /// Exclusive absolute expiry; transport and restart cannot renew it.
+    pub expires_at_ms: u64,
+    /// Digest of the broker's durable waiver receipt, not an Agent verdict.
+    pub receipt_digest: String,
+}
+
+impl ConformanceAuthorization {
+    /// Check the exact launch binding and current waiver validity.
+    ///
+    /// # Errors
+    /// Rejects unattended waivers, foreign Session/request/operator decisions,
+    /// invalid receipt digests, expired decisions or non-waivable failures.
+    pub fn validate_for(
+        &self,
+        session_id: &str,
+        request_digest: &str,
+        controller_uid: u32,
+        now_ms: u64,
+    ) -> Result<(), ProtocolError> {
+        if let Some(waiver) = &self.waiver {
+            validate_digest(&waiver.receipt_digest)?;
+            if self.attendance != Attendance::Interactive
+                || waiver.session_id != session_id
+                || waiver.request_digest != request_digest
+                || waiver.operator_uid == 0
+                || waiver.operator_uid != controller_uid
+                || waiver.expires_at_ms <= now_ms
+                || waiver.condition == Condition::ContainmentFailure
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Schema for a supervisor's supplemental observation report fragment.
+pub const CONFORMANCE_REPORT_CHUNK_SCHEMA: &str = "louiselm.launch.conformance-report-chunk/1";
+/// Fixed fragment size; even JSON's largest byte encoding fits one packet.
+pub const CONFORMANCE_REPORT_CHUNK_BYTES: usize = 8192;
+
+/// One exact fragment, sent after its signed receipt and before its durable ACK.
+///
+/// The receipt digest binds the Session, Run, authorization and report digest.
+/// Fragments alone assert no authority; the receiver authenticates the producer,
+/// enforces contiguous order and verifies the complete report against the receipt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConformanceReportChunk {
+    /// Must be [`CONFORMANCE_REPORT_CHUNK_SCHEMA`].
+    pub schema: String,
+    /// Digest of the exact canonical signed receipt preceding this transfer.
+    pub receipt_digest: String,
+    /// Zero-based byte position, aligned to the fixed fragment size.
+    pub offset: usize,
+    /// Complete report length, at most the observation report bound.
+    pub total_bytes: usize,
+    /// Exact report bytes, never normalized or interpreted independently.
+    pub bytes: Vec<u8>,
+}
+
+fn invalid() -> ProtocolError {
+    ProtocolError::new(ErrorCode::MalformedMessage, None, None)
+}
+
+impl ConformanceReportChunk {
+    /// Encode one closed, bounded fragment.
+    ///
+    /// # Errors
+    /// Rejects invalid schema/digest, empty or oversized reports, and non-fixed
+    /// fragment lengths or offsets. The last fragment may be shorter.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ProtocolError> {
+        validate_digest(&self.receipt_digest)?;
+        if self.schema != CONFORMANCE_REPORT_CHUNK_SCHEMA
+            || self.total_bytes == 0
+            || self.total_bytes > MAX_REPORT_BYTES
+            || self.offset >= self.total_bytes
+            || !self.offset.is_multiple_of(CONFORMANCE_REPORT_CHUNK_BYTES)
+            || self.bytes.len()
+                != (self.total_bytes - self.offset).min(CONFORMANCE_REPORT_CHUNK_BYTES)
+        {
+            return Err(invalid());
+        }
+        let bytes = serde_json::to_vec(self).map_err(|_| invalid())?;
+        if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
+            return Err(invalid());
+        }
+        Ok(bytes)
+    }
+
+    /// Decode exact canonical bytes without authenticating their producer.
+    ///
+    /// # Errors
+    /// Rejects oversized, malformed, noncanonical or invalid fragments.
+    pub fn parse_canonical(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        if bytes.len() > MAX_PROTOCOL_MESSAGE_BYTES {
+            return Err(invalid());
+        }
+        let value: Self = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+        if value.canonical_bytes()? != bytes {
+            return Err(invalid());
+        }
+        Ok(value)
+    }
+}

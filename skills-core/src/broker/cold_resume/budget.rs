@@ -86,6 +86,7 @@ mod tests {
 
     fn source() -> PendingAuthorization {
         PendingAuthorization {
+            conformance: crate::launch_protocol::ConformanceAuthorization::default(),
             require_cold_recovery: true,
             authorization_id: "authorization".into(),
             request_id: "request".into(),

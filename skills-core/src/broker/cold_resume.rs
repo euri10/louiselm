@@ -58,6 +58,8 @@ pub struct ColdResumeAllocation {
 impl ColdResumeAllocation {
     fn grant(&self) -> GrantRequest {
         GrantRequest {
+            // Reconstruction is fresh authority, never an inherited Session waiver.
+            conformance: crate::launch_protocol::ConformanceAuthorization::default(),
             require_cold_recovery: self.require_cold_recovery,
             request: self.target.clone(),
             controller_uid: self.controller_uid,

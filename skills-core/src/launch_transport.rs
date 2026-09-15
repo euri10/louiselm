@@ -49,8 +49,8 @@ use thiserror::Error;
 
 use crate::{
     launch_protocol::{
-        MAX_PROTOCOL_MESSAGE_BYTES, ProtocolError, ProtocolMessage, ProtocolResponse,
-        RESPONSE_SCHEMA, decode_message,
+        CONFORMANCE_REPORT_CHUNK_SCHEMA, ConformanceReportChunk, MAX_PROTOCOL_MESSAGE_BYTES,
+        ProtocolError, ProtocolMessage, ProtocolResponse, RESPONSE_SCHEMA, decode_message,
     },
     launch_receipt::{ReceiptError, SIGNED_RECEIPT_SCHEMA, SignedReceipt},
 };
@@ -152,6 +152,8 @@ pub enum LauncherPacket {
     Response(Box<ProtocolResponse>),
     /// Exact signed receipt awaiting durable broker acknowledgement.
     SignedReceipt(SignedReceipt),
+    /// Supplemental report fragment bound to the preceding launch receipt.
+    ConformanceReportChunk(ConformanceReportChunk),
 }
 
 /// One protocol packet accompanied by both kernel credential observations.
@@ -278,6 +280,9 @@ fn decode_packet(bytes: &[u8]) -> Result<LauncherPacket, TransportError> {
         ))
     })?;
     match header.schema.as_str() {
+        CONFORMANCE_REPORT_CHUNK_SCHEMA => ConformanceReportChunk::parse_canonical(bytes)
+            .map(LauncherPacket::ConformanceReportChunk)
+            .map_err(TransportError::Protocol),
         RESPONSE_SCHEMA => ProtocolResponse::parse_canonical(bytes)
             .map(Box::new)
             .map(LauncherPacket::Response)

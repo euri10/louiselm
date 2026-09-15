@@ -190,6 +190,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     let bwrap = PathBuf::from("/usr/bin/bwrap");
     let bwrap_digest = Digest::of(&fs::read(&bwrap).unwrap()).to_string();
     let config = LauncherConfig {
+        conformance: crate::conformance::admission::Enforcement::PreCutover,
         schema: "fixture".to_owned(),
         operator: "fixture".to_owned(),
         operator_uid: 1000,

@@ -63,7 +63,7 @@ pub(crate) fn run_signing_command(
 pub use identity::{Identity, IdentityLease, IdentityPool};
 
 /// Schema for the launcher configuration held by root.
-pub const CONFIG_SCHEMA: &str = "louiselm.launch.config/2";
+pub const CONFIG_SCHEMA: &str = "louiselm.launch.config/3";
 /// Schema for the public launcher verification keyring.
 pub const KEYRING_SCHEMA: &str = "louiselm.launch.keyring/1";
 /// Schema for launcher installation diagnostics.
@@ -192,6 +192,8 @@ pub struct InstallRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LauncherConfig {
+    /// Protected activation policy, never selected by a launch request or broker waiver.
+    pub conformance: crate::conformance::admission::Enforcement,
     /// Schema identifier.
     pub schema: String,
     /// Account allowed by sudoers.
@@ -922,6 +924,10 @@ pub fn install(
     }
 
     let config = LauncherConfig {
+        conformance: existing_config.as_ref().map_or(
+            crate::conformance::admission::Enforcement::PreCutover,
+            |config| config.conformance,
+        ),
         schema: CONFIG_SCHEMA.to_owned(),
         operator: request.operator.clone(),
         operator_uid,
@@ -3221,6 +3227,7 @@ mod tests {
 
     fn config_with_measured_bwrap(program: &Path) -> LauncherConfig {
         LauncherConfig {
+            conformance: crate::conformance::admission::Enforcement::PreCutover,
             schema: CONFIG_SCHEMA.to_owned(),
             operator: "louise".to_owned(),
             operator_uid: 1_000,

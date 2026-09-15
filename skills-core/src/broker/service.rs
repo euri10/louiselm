@@ -29,6 +29,9 @@ mod reconnect;
 #[path = "controller_loss.rs"]
 mod controller_loss;
 
+#[path = "conformance_transfer.rs"]
+mod conformance_transfer;
+
 use crate::{
     broker::{AuditDecision, AuditEntry, AuditLog, AuthorizationStore, BrokerError, ReceiptStore},
     launch::PROTOCOL_VERSION,
@@ -542,10 +545,11 @@ impl BrokerService {
             })
             .transpose()?;
         let (ack, _) =
-            self.store_next_receipt(channel, &authorization, 0, now_ms, verify_signature)?;
+            self.store_next_receipt(channel, &authorization, 0, now_ms, clock, verify_signature)?;
+        check_conformance_waiver(&authorization, now_ms, clock)?;
         send(channel, ack.canonical_bytes())?;
         let (ack, evidence) =
-            self.store_next_receipt(channel, &authorization, 1, now_ms, verify_signature)?;
+            self.store_next_receipt(channel, &authorization, 1, now_ms, clock, verify_signature)?;
         let evidence = evidence.ok_or(BrokerError::ReceiptUnauthorized)?;
         let commands = approved
             .map(|policy| {
@@ -574,6 +578,7 @@ impl BrokerService {
             digest: ack.receipt_digest.clone(),
         };
         let posture_evidence = self.retain_launch_posture(&authorization, verify_signature)?;
+        check_conformance_waiver(&authorization, now_ms, clock)?;
         send(channel, ack.canonical_bytes())?;
         Ok(BrokerSession {
             posture_evidence,
@@ -593,11 +598,13 @@ impl BrokerService {
         authorization: &LaunchAuthorization,
         expected_sequence: u64,
         now_ms: u64,
+        clock: Instant,
         verify_signature: &mut F,
     ) -> Result<(ReceiptAcknowledgement, Option<StartEvidence>), BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
+        let deadline = Instant::now() + STEP_TIMEOUT;
         let packet = receive(channel)?;
         let LauncherPacket::SignedReceipt(receipt) = &packet.packet else {
             return Err(BrokerError::ReceiptUnauthorized);
@@ -614,24 +621,27 @@ impl BrokerService {
         };
         // The exact bytes from the wire are what gets stored: nothing here
         // reserializes the supervisor's signed envelope.
-        let acknowledgement =
-            match self
-                .receipts
-                .append(authorization, &packet.bytes, None, &mut *verify_signature)
-            {
-                Ok(acknowledgement) => acknowledgement,
-                Err(BrokerError::Storage(error)) => return Err(BrokerError::Storage(error)),
-                Err(refusal) => {
-                    self.record_for(
-                        authorization,
-                        now_ms,
-                        AuditDecision::ReceiptRefused {
-                            error: ErrorCode::ReceiptChainInvalid,
-                        },
-                    )?;
-                    return Err(refusal);
-                }
-            };
+        let report = conformance_transfer::receive_report(channel, receipt, deadline)?;
+        check_conformance_waiver(authorization, now_ms, clock)?;
+        let acknowledgement = match self.receipts.append(
+            authorization,
+            &packet.bytes,
+            report.as_deref(),
+            &mut *verify_signature,
+        ) {
+            Ok(acknowledgement) => acknowledgement,
+            Err(BrokerError::Storage(error)) => return Err(BrokerError::Storage(error)),
+            Err(refusal) => {
+                self.record_for(
+                    authorization,
+                    now_ms,
+                    AuditDecision::ReceiptRefused {
+                        error: ErrorCode::ReceiptChainInvalid,
+                    },
+                )?;
+                return Err(refusal);
+            }
+        };
         self.record_for(
             authorization,
             now_ms,
@@ -726,6 +736,22 @@ fn response(request_id: &str, result: ResponseResult) -> Vec<u8> {
         result,
     }
     .canonical_bytes()
+}
+
+fn check_conformance_waiver(
+    authorization: &LaunchAuthorization,
+    now_ms: u64,
+    clock: Instant,
+) -> Result<(), BrokerError> {
+    authorization
+        .conformance
+        .validate_for(
+            &authorization.session_id,
+            &authorization.request_digest,
+            authorization.controller_uid,
+            now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        )
+        .map_err(|_| BrokerError::ReceiptUnauthorized)
 }
 
 /// Receives one authenticated packet, or fails the transaction.

@@ -36,6 +36,9 @@ mod posture;
 #[path = "launch_protocol/recovery_status.rs"]
 mod recovery_status;
 
+#[path = "launch_protocol/conformance.rs"]
+mod conformance;
+
 fn unavailable_recovery() -> launch_protocol::RecoveryReadiness {
     launch_protocol::RecoveryReadiness::Unavailable {
         reason: launch_protocol::RecoveryUnavailableReason::EvidenceMissing,
@@ -115,6 +118,7 @@ fn launch_request() -> LaunchRequest {
 
 fn launch_authorization(request: &LaunchRequest) -> LaunchAuthorization {
     LaunchAuthorization {
+        conformance: launch_protocol::ConformanceAuthorization::default(),
         schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
         authorization_id: request.authorization_id.clone(),
@@ -367,7 +371,7 @@ fn launch_authorization_is_correlated_closed_and_exactly_bound() {
     let authorization = launch_authorization(&request);
     assert_eq!(
         LAUNCH_AUTHORIZATION_SCHEMA,
-        "louiselm.launch.authorization/2"
+        "louiselm.launch.authorization/3"
     );
     assert_eq!(MAX_BROKER_LOSS_GRACE_MS, 5_000);
     authorization

@@ -48,6 +48,7 @@ fn seed_authorizations() {
     for name in ["session", "sibling", "failure"] {
         broker
             .authorize(&GrantRequest {
+                conformance: crate::launch_protocol::ConformanceAuthorization::default(),
                 request: named_request(name),
                 controller_uid: config.operator_uid,
                 require_cold_recovery: false,

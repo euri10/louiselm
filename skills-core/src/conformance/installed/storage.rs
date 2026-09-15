@@ -30,7 +30,9 @@ struct State {
 /// Protected current evidence plus independent persistent failures.
 #[derive(Debug)]
 pub struct CertificateStatus {
-    /// Most recent passing certificate matching these exact host inputs.
+    /// Latest retained certificate matching these exact host inputs.
+    /// Its observations may be incomplete or failed; admission decides whether
+    /// they pass. Filtering here would misclassify existing evidence as missing.
     pub certificate: Option<Certificate>,
     /// Known failures, including those preceding reboot or a release update.
     pub history: FailureHistory,
@@ -150,9 +152,7 @@ impl CertificateStore {
             if &value.host != host {
                 return Err(CertificationError::Invalid);
             }
-            if value.is_current(host) {
-                certificate = Some(value);
-            }
+            certificate = Some(value);
         }
         Ok(CertificateStatus {
             certificate,

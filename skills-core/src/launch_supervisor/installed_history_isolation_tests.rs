@@ -45,6 +45,7 @@ fn installed_history_inspector() {
             authorizations
                 .authorize(
                     &GrantRequest {
+                        conformance: crate::launch_protocol::ConformanceAuthorization::default(),
                         request: request.clone(),
                         controller_uid: verifier.config().operator_uid,
                         expires_at_ms: 30000,

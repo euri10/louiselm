@@ -411,6 +411,28 @@ fn check_authorized(
     {
         return Err(BrokerError::ReceiptUnauthorized);
     }
+    if let ReceiptOutcome::Launch { evidence, .. } = &payload.outcome
+        && let crate::launch_receipt::ConformanceEvidence::Waived { condition, .. } =
+            evidence.conformance
+    {
+        authorization
+            .conformance
+            .validate_for(
+                &authorization.session_id,
+                &authorization.request_digest,
+                authorization.controller_uid,
+                0, // Historical admission remains readable after its waiver expires.
+            )
+            .map_err(|_| BrokerError::ReceiptUnauthorized)?;
+        if !authorization
+            .conformance
+            .waiver
+            .as_ref()
+            .is_some_and(|waiver| waiver.condition == condition)
+        {
+            return Err(BrokerError::ReceiptUnauthorized);
+        }
+    }
     Ok(())
 }
 

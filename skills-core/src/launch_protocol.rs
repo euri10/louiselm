@@ -8,6 +8,11 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 
 mod command;
+mod conformance;
+pub use conformance::{
+    CONFORMANCE_REPORT_CHUNK_BYTES, CONFORMANCE_REPORT_CHUNK_SCHEMA, ConformanceAuthorization,
+    ConformanceReportChunk, ConformanceWaiver,
+};
 mod posture;
 pub use posture::{
     DimensionStatus, EvidenceFreshness, FreshnessBasis, PostureStatus, StatusEvidence,
@@ -68,7 +73,7 @@ pub const STATUS_REQUEST_SCHEMA: &str = "louiselm.launch.status-request/1";
 pub const RECEIPT_ACK_SCHEMA: &str = "louiselm.launch.receipt-ack/2";
 
 /// Schema for a broker-consumed single-use launch authorization.
-pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/2";
+pub const LAUNCH_AUTHORIZATION_SCHEMA: &str = "louiselm.launch.authorization/3";
 
 /// Schema for exact receipt-head exchange during authenticated broker reattachment.
 pub const BROKER_RECONNECT_SCHEMA: &str = "louiselm.launch.broker-reconnect/1";
@@ -909,6 +914,8 @@ impl ReceiptAcknowledgement {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchAuthorization {
+    /// Authenticated attendance and exact waiver; protected install policy owns activation.
+    pub conformance: ConformanceAuthorization,
     /// Authorization schema.
     pub schema: String,
     /// Protocol version.
@@ -952,6 +959,12 @@ impl LaunchAuthorization {
         validate_digest(&self.request_digest)?;
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
+        self.conformance.validate_for(
+            &self.session_id,
+            &self.request_digest,
+            self.controller_uid,
+            0,
+        )?;
         if self.controller_uid == 0
             || self.assigned_uid == 0
             || self.assigned_gid == 0
@@ -979,6 +992,12 @@ impl LaunchAuthorization {
     ) -> Result<(), ProtocolError> {
         self.validate()?;
         request.validate().map_err(protocol_error_from_launch)?;
+        self.conformance.validate_for(
+            &self.session_id,
+            &self.request_digest,
+            self.controller_uid,
+            now_ms,
+        )?;
         if self.authorization_id != request.authorization_id
             || self.request_id != request.request_id
             || self.request_digest != request.digest().to_string()

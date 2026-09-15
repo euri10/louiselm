@@ -81,6 +81,8 @@ impl ApprovedCommands {
 /// A launch the operator's controller has authorized but not yet started.
 #[derive(Clone, Debug)]
 pub struct GrantRequest {
+    /// Attendance and any exact waiver already approved by the trusted controller.
+    pub conformance: crate::launch_protocol::ConformanceAuthorization,
     /// Trusted Run policy: no governed work until durable cold recovery is ready.
     pub require_cold_recovery: bool,
     /// The exact canonical request the controller will hand the launcher.
@@ -99,6 +101,8 @@ pub struct GrantRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingAuthorization {
+    /// Exact approved conformance policy; replay and restart never renew a waiver.
+    pub conformance: crate::launch_protocol::ConformanceAuthorization,
     /// Exact recovery requirement fixed by the trusted Run controller.
     pub require_cold_recovery: bool,
     /// Single-use authorization identity, also its durable record name.
@@ -138,6 +142,7 @@ struct ConsumedAuthorization {
 impl PendingAuthorization {
     pub(super) fn launch_authorization(&self) -> LaunchAuthorization {
         LaunchAuthorization {
+            conformance: self.conformance.clone(),
             schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
             protocol_version: PROTOCOL_VERSION,
             authorization_id: self.authorization_id.clone(),
@@ -193,6 +198,7 @@ impl AuthorizationStore {
         };
         if let Some((prior, path)) = prior {
             if prior.request_digest != grant.request.digest().to_string()
+                || prior.conformance != grant.conformance
                 || prior.controller_uid != grant.controller_uid
                 || prior.commands != grant.commands
                 || prior.expires_at_ms != grant.expires_at_ms
@@ -259,6 +265,15 @@ impl AuthorizationStore {
         if grant.expires_at_ms <= now_ms || grant.controller_uid == 0 {
             return Err(BrokerError::InvalidGrant);
         }
+        grant
+            .conformance
+            .validate_for(
+                &grant.request.session_id,
+                &grant.request.digest().to_string(),
+                grant.controller_uid,
+                now_ms,
+            )
+            .map_err(|_| BrokerError::InvalidGrant)?;
         if let Some(commands) = &grant.commands {
             commands.policy(&grant.request.authorization_id, now_ms)?;
         }
@@ -270,6 +285,7 @@ impl AuthorizationStore {
         }
         let identity = self.assign_identity(now_ms)?;
         let pending = PendingAuthorization {
+            conformance: grant.conformance.clone(),
             require_cold_recovery: grant.require_cold_recovery,
             authorization_id: grant.request.authorization_id.clone(),
             request_id: grant.request.request_id.clone(),
@@ -297,6 +313,7 @@ impl AuthorizationStore {
     /// # Errors
     /// Returns [`BrokerError::UnknownAuthorization`], [`BrokerError::Expired`],
     /// [`BrokerError::RequestMismatch`], [`BrokerError::ControllerMismatch`],
+    /// [`BrokerError::InvalidGrant`] for invalid requests or waiver bindings,
     /// or [`BrokerError::Storage`] when consumption cannot be made durable.
     pub fn consume(
         &self,
@@ -327,6 +344,15 @@ impl AuthorizationStore {
         if now_ms >= pending.expires_at_ms {
             return Err(BrokerError::Expired);
         }
+        pending
+            .conformance
+            .validate_for(
+                &pending.session_id,
+                &pending.request_digest,
+                pending.controller_uid,
+                now_ms,
+            )
+            .map_err(|_| BrokerError::InvalidGrant)?;
 
         // Removing the pending record is the single-winner compare-and-swap.
         // A caller that loses the race, or that arrives after a restart, finds

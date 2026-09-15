@@ -43,6 +43,46 @@ struct Fixture {
     release_id: String,
 }
 
+#[test]
+fn conformance_policy_defaults_to_pre_cutover_and_survives_refresh() {
+    let fixture = Fixture::new();
+    let runner = FakeRunner::default();
+    install(&fixture.paths, &runner, &Fixture::request(), 1000).unwrap();
+    let path = fixture.paths.state_root.join("config.json");
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(config["conformance"], "pre_cutover");
+    config["conformance"] = "enforced".into();
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    install(&fixture.paths, &runner, &Fixture::request(), 2000).unwrap();
+    for path in [path, fixture.paths.state_root.join("public-config.json")] {
+        let config: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            config["conformance"], "enforced",
+            "refresh cannot disable admission"
+        );
+    }
+    for value in [None, Some(serde_json::Value::Null), Some("unknown".into())] {
+        let mut invalid = config.clone();
+        match value {
+            Some(value) => {
+                invalid["conformance"] = value;
+            }
+            None => {
+                invalid.as_object_mut().unwrap().remove("conformance");
+            }
+        }
+        fs::write(
+            fixture.paths.state_root.join("config.json"),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            install(&fixture.paths, &runner, &Fixture::request(), 3000).is_err(),
+            "unreadable activation policy cannot silently become pre-cutover"
+        );
+    }
+}
+
 impl Fixture {
     #[expect(
         clippy::too_many_lines,

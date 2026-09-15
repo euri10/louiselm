@@ -1120,6 +1120,7 @@ mod tests {
             fs::write(
                 paths.state_root.join("config.json"),
                 serde_json::to_vec(&LauncherConfig {
+                    conformance: crate::conformance::admission::Enforcement::PreCutover,
                     schema: CONFIG_SCHEMA.to_owned(),
                     operator: "louise".to_owned(),
                     operator_uid: 1_000,

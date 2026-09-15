@@ -444,7 +444,11 @@ leaves runtime unverified. Isolation and network still need their own producers.
 Signed conformance admission additionally binds exact canonical observations
 retained by the receipt store. Digest-bearing receipts cannot be acknowledged
 without their matching report, and report damage refuses history use and
-reattachment. The posture owner retains a bounded `conformance_report` reference
+reattachment. The supervisor transfers bounded, ordered report fragments on the
+same authenticated connection before the durable ACK. Gate activation comes
+only from protected launcher policy; the broker authorization carries attendance
+and exact operator-waiver bindings, never an activation override. The posture
+owner retains a bounded `conformance_report` reference
 for isolation; it is historical evidence, never primary proof of current host
 conformance. Missing current measurements keep the dimension unverified and
 retain no invented successful-check time. Raw observations are excluded from

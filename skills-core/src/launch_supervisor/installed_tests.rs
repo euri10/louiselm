@@ -345,6 +345,7 @@ fn installed_broker_worker() {
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
     broker
         .authorize(&GrantRequest {
+            conformance: crate::launch_protocol::ConformanceAuthorization::default(),
             require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,

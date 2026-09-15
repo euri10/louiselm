@@ -29,6 +29,29 @@ fn certified(bytes: &[u8]) -> ConformanceEvidence {
     }
 }
 
+fn authorized_admission(
+    root: &Path,
+    request: &LaunchRequest,
+    decision: &ConformanceEvidence,
+) -> LaunchAuthorization {
+    let mut grant = grant(request);
+    if let ConformanceEvidence::Waived { condition, .. } = decision {
+        grant.conformance.attendance =
+            louiselm_skills::conformance::admission::Attendance::Interactive;
+        grant.conformance.waiver = Some(louiselm_skills::launch_protocol::ConformanceWaiver {
+            session_id: request.session_id.clone(),
+            request_digest: request.digest().to_string(),
+            operator_uid: CONTROLLER_UID,
+            condition: *condition,
+            expires_at_ms: 30_000,
+            receipt_digest: Digest::of(b"approved waiver").to_string(),
+        });
+    }
+    let store = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
+    store.authorize(&grant, 1000).unwrap();
+    store.consume(request, CONTROLLER_UID, 2000).unwrap()
+}
+
 fn admission_receipt(
     authorization: &LaunchAuthorization,
     conformance: ConformanceEvidence,
@@ -53,7 +76,8 @@ fn report_digest_without_report_cannot_receive_a_durable_acknowledgement() {
         },
     ] {
         let root = TempDir::new().unwrap();
-        let authorization = consumed_authorization(root.path(), &request("missing-report"));
+        let authorization =
+            authorized_admission(root.path(), &request("missing-report"), &conformance);
         let receipts =
             ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap();
         let receipt = admission_receipt(&authorization, conformance);
@@ -88,7 +112,8 @@ fn exact_admission_reports_survive_start_and_restart() {
         ConformanceEvidence::Unevaluated,
     ] {
         let root = TempDir::new().unwrap();
-        let authorization = consumed_authorization(root.path(), &request("retained-report"));
+        let authorization =
+            authorized_admission(root.path(), &request("retained-report"), &decision);
         let path = root.path().join("receipts");
         let receipts = ReceiptStore::open(&path, trusted_release()).unwrap();
         let supplied = match &decision {
@@ -188,7 +213,8 @@ fn contradictory_or_malformed_reports_never_reach_receipt_storage() {
         ),
     ] {
         let root = TempDir::new().unwrap();
-        let authorization = consumed_authorization(root.path(), &request("refused-report"));
+        let authorization =
+            authorized_admission(root.path(), &request("refused-report"), &decision);
         let path = root.path().join("receipts");
         let receipts = ReceiptStore::open(&path, trusted_release()).unwrap();
         let launch = admission_receipt(&authorization, decision);
@@ -231,6 +257,8 @@ fn nonwaivable_failure_and_unverified_signatures_cannot_publish_reports() {
             report_digest: None,
         },
     );
+    // The authenticated authorization now rejects this impossible waiver
+    // before report validation; containment failures still cannot publish.
     assert!(matches!(
         receipts.append(
             &authorization,
@@ -238,7 +266,7 @@ fn nonwaivable_failure_and_unverified_signatures_cannot_publish_reports() {
             None,
             verify_fixture_signature
         ),
-        Err(BrokerError::ConformanceReport(_))
+        Err(BrokerError::ReceiptUnauthorized)
     ));
     assert!(!path.join("conformance").exists());
     assert!(receipts.head(&authorization.session_id).unwrap().is_none());

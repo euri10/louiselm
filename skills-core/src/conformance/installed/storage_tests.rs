@@ -124,15 +124,51 @@ fn failures_survive_reboot_and_incomplete_runs_but_covered_pass_clears_them() {
     let status = CertificateStore::inspect_owned(&root, &rebooted, uid).unwrap();
     assert!(status.history.failures.is_empty());
     assert!(status.certificate.is_some());
+    // The failed old-host certificate remains inspectable, never passing.
     assert!(
         CertificateStore::inspect_owned(&root, &host(), uid)
             .unwrap()
             .certificate
-            .is_none()
+            .is_some_and(|certificate| !certificate.is_current(&host()))
     );
     fs::write(root.join("state.json"), b"{}").unwrap();
     drop(store);
     assert!(CertificateStore::open_owned(&root, uid).is_err());
+}
+
+#[test]
+fn admission_inspection_keeps_matching_nonpassing_evidence_and_waiver_condition() {
+    use crate::conformance::admission::{self, Admission, Attendance, Condition, Request, Waiver};
+    let directory = private_root();
+    let root = directory.path().join("certificates");
+    let uid = rustix::process::geteuid().as_raw();
+    let host = host();
+    let mut store = CertificateStore::open_owned(&root, uid).unwrap();
+    let mut incomplete = report();
+    incomplete.completed = false;
+    let certificate = Certificate::new(host.clone(), incomplete).unwrap();
+    store.begin(&host).unwrap();
+    store.finish(&certificate).unwrap();
+    drop(store);
+    let status = CertificateStore::inspect_owned(&root, &host, uid).unwrap();
+    let missing_waiver = Waiver {
+        session_id: "session".into(),
+        condition: Condition::Missing,
+    };
+    assert_eq!(
+        admission::evaluate(
+            &status,
+            &host,
+            &Request {
+                session_id: "session",
+                attendance: Attendance::Interactive,
+                waiver: Some(&missing_waiver),
+            }
+        ),
+        Admission::Waivable(Condition::Stale),
+        "a Missing waiver cannot cover existing nonpassing evidence"
+    );
+    assert_eq!(status.certificate, Some(certificate));
 }
 
 #[test]

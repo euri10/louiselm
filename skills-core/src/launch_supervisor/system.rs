@@ -197,6 +197,19 @@ impl SeqpacketLaunchBroker {
     where
         T: Send + 'static,
     {
+        Self::transact_packets_on(channel, vec![bytes].into_iter(), parse, complete)
+    }
+
+    fn transact_packets_on<T>(
+        channel: &SeqpacketChannel,
+        mut packets: std::vec::IntoIter<Vec<u8>>,
+        parse: impl FnOnce(AuthenticatedPacket) -> Result<T, SupervisorError> + Send + 'static,
+        complete: SupervisorCompletion<T>,
+    ) -> Result<(), SupervisorError>
+    where
+        T: Send + 'static,
+    {
+        let bytes = packets.next().ok_or(SupervisorError::ReceiptInvalid)?;
         let completion = Arc::new(Mutex::new(Some(complete)));
         let finish = |completion: &Arc<Mutex<Option<SupervisorCompletion<T>>>>,
                       result: Result<T, SupervisorError>| {
@@ -212,6 +225,19 @@ impl SeqpacketLaunchBroker {
                 Box::new(move |sent| {
                     if sent.is_err() {
                         finish(&send_completion, Err(SupervisorError::BrokerUnavailable));
+                        return;
+                    }
+                    if packets.len() > 0 {
+                        let callback_completion = Arc::clone(&send_completion);
+                        let queued = Self::transact_packets_on(
+                            &receive_channel,
+                            packets,
+                            parse,
+                            Box::new(move |result| finish(&callback_completion, result)),
+                        );
+                        if let Err(error) = queued {
+                            finish(&send_completion, Err(error));
+                        }
                         return;
                     }
                     let receive_completion = Arc::clone(&send_completion);
@@ -282,7 +308,10 @@ impl SeqpacketLaunchBroker {
                 let result = match packet.packet {
                     LauncherPacket::Request(message) => Ok(message),
                     LauncherPacket::Response(_) => unreachable!("response handled above"),
-                    LauncherPacket::SignedReceipt(_) => Err(SupervisorError::BrokerUnavailable),
+                    LauncherPacket::SignedReceipt(_)
+                    | LauncherPacket::ConformanceReportChunk(_) => {
+                        Err(SupervisorError::BrokerUnavailable)
+                    }
                 };
                 if let Some(complete) = lock(&completion).take() {
                     complete(result);
@@ -366,10 +395,37 @@ impl LaunchBroker for SeqpacketLaunchBroker {
     fn append_receipt(
         &self,
         receipt_bytes: Vec<u8>,
+        report_bytes: Option<Vec<u8>>,
         complete: SupervisorCompletion<ReceiptAcknowledgement>,
     ) -> Result<(), SupervisorError> {
-        self.transact(
-            receipt_bytes,
+        let mut packets = Vec::new();
+        if let Some(report) = report_bytes {
+            use crate::launch_protocol::{
+                CONFORMANCE_REPORT_CHUNK_BYTES, CONFORMANCE_REPORT_CHUNK_SCHEMA,
+                ConformanceReportChunk,
+            };
+            if report.is_empty() || report.len() > crate::conformance::MAX_REPORT_BYTES {
+                return Err(SupervisorError::ReceiptInvalid);
+            }
+            let digest = Digest::of(&receipt_bytes).to_string();
+            for (index, bytes) in report.chunks(CONFORMANCE_REPORT_CHUNK_BYTES).enumerate() {
+                packets.push(
+                    ConformanceReportChunk {
+                        schema: CONFORMANCE_REPORT_CHUNK_SCHEMA.into(),
+                        receipt_digest: digest.clone(),
+                        offset: index * CONFORMANCE_REPORT_CHUNK_BYTES,
+                        total_bytes: report.len(),
+                        bytes: bytes.to_vec(),
+                    }
+                    .canonical_bytes()
+                    .map_err(|_| SupervisorError::ReceiptInvalid)?,
+                );
+            }
+        }
+        packets.insert(0, receipt_bytes);
+        Self::transact_packets_on(
+            &self.current_channel()?,
+            packets.into_iter(),
             |packet| match packet.packet {
                 LauncherPacket::Request(ProtocolMessage::ReceiptAcknowledgement(
                     acknowledgement,
@@ -795,6 +851,24 @@ impl SystemLaunchPlatform {
 }
 
 impl LaunchPlatform for SystemLaunchPlatform {
+    fn inspect_conformance(
+        &self,
+        authorization: &LaunchAuthorization,
+        now_ms: u64,
+        complete: SupervisorCompletion<super::ConformanceAdmission>,
+    ) -> Result<(), SupervisorError> {
+        // The dedicated coordinator owns this bounded I/O. No detached worker
+        // can outlive cancellation or the prepared process tree's cleanup.
+        complete(super::conformance::inspect(
+            &self.paths,
+            &self.config,
+            authorization,
+            now_ms,
+            Instant::now() + self.timeout,
+        ));
+        Ok(())
+    }
+
     fn check_integration(
         &self,
         request: &LaunchRequest,

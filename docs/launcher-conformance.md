@@ -154,7 +154,9 @@ Each record and the currentness index are bounded; evidence is not auto-pruned.
 
 `CertificateStore::inspect` reads the protected state and matching certificate
 without mutation. Missing/corrupt existing state or evidence is an error, never
-empty failure history. Reboot, changed inputs, release changes and incomplete
+empty failure history. Matching non-passing certificates remain available to
+admission: filtering them out would turn stale observations into missing evidence
+and incorrectly widen a Missing waiver. Reboot, changed inputs, release changes and incomplete
 attempts cannot clear a known failure. Only a new complete covering pass clears
 ordinary boundary failures; a fresh fixture's successful cleanup cannot clear
 an older unresolved cleanup failure. Abrupt interruption leaves a pending
@@ -167,8 +169,8 @@ namespace and exercises real probes, exact retained reports, stale/reboot
 refusal, cancellation and lease release. Unsupported CI hosts explicitly test
 refusal instead of claiming that this Debian-specific path passed. The existing
 guest hostile matrix remains required. Maintainer acceptance of the actual
-installed command is still required; admission, report-bound launch receipts,
-monitoring and user-visible Verified cutover remain `d6fv.12.3`, `.12.4` and
+installed command is still required. Admission/report transport is tracked by
+`d6fv.9.1`; monitoring and user-visible Verified cutover remain `.12.4` and
 `d6fv.9`, respectively.
 
 The suite found `louiselm-d6fv.4.8.1.1`: Bubblewrap did not close an undeclared
@@ -186,6 +188,30 @@ cleanup, even when a passing certificate exists. Missing, stale or incomplete
 evidence requires an interactive operator waiver for the exact Session and
 condition; unattended execution cannot waive it.
 
+Activation belongs only to the protected installed launcher configuration
+(`louiselm.launch.config/3`, `conformance: "pre_cutover" | "enforced"`). First
+installation defaults to `pre_cutover`; refreshing the installation preserves
+the existing choice. Missing, unreadable or invalid policy is an error, never
+a fallback to ordinary launch. The policy is itself measured: a certificate for
+the pre-cutover configuration cannot certify a subsequently enforced one.
+Do not enable enforcement as part of a routine refresh or test on the desktop.
+
+The broker's authenticated `louiselm.launch.authorization/3` carries explicit
+attendance and any already-approved waiver. A waiver binds the exact Session,
+request digest (including Run, authorization and envelope revision), operator
+UID, condition, exclusive expiry and durable waiver-receipt digest. Unattended,
+foreign, expired and containment-failure waivers are rejected. These fields are
+not accepted in `LaunchRequest`. The operator approval/receipt producer remains
+`d6fv.6.3`; this carrier does not create approval or authorize an Agent to waive.
+Cold resume does not inherit the source Session's waiver.
+
+With enforcement active, the supervisor measures the current installed host and
+reads protected certificate/failure state before signing sequence zero or
+starting the Agent. Unavailable measurements or unreadable failure history are
+non-waivable errors. A refusal disposes the prepared process tree and releases
+its identity only after cleanup is proved. Expiry is rechecked through receipt
+ACKs and before admitting the running Session; this is not lifetime monitoring.
+
 The signed launch receipt records `Certified`, `Waived`, or `Unevaluated`.
 Digest-bearing decisions bind the exact canonical **observation report** bytes,
 not the enclosing certificate. `ReceiptStore::append` takes those bytes alongside
@@ -194,6 +220,16 @@ It rejects missing/mismatched bytes, guest reports, malformed or oversized data,
 certification claims over incomplete observations, and any waived containment
 failure. An unevaluated launch or a waiver without a digest supplies no report;
 unsolicited bytes are refused.
+
+The supervisor sends digest-bearing reports on the same credential-pinned
+connection as the signed receipt, before waiting for its ACK. Closed
+`louiselm.launch.conformance-report-chunk/1` packets bind the exact signed-receipt
+digest, total length and contiguous offset. Reports are bounded to 128 KiB,
+fragments to 8 KiB of raw bytes, and the receipt-plus-report receive to one
+30-second deadline. Missing, truncated, replayed or foreign fragments fail the
+transaction. The broker acknowledges only after the existing receipt store has
+verified and retained the complete report; disconnect or storage failure cannot
+acknowledge partial evidence. This adds no second report store.
 
 Broker state retains one private report at
 `receipts/conformance/<Session>.json`, separate from the unchanged signed receipt
@@ -211,12 +247,13 @@ reject using this reference alone as primary evidence for a verified dimension.
 Raw observations never enter Session status. Currentness, failure monitoring and
 waiver validity remain with their existing conformance producers.
 
-Production launch still records `Unevaluated`, as confirmed in `louiselm-oi5an`.
-The current rendezvous carries signed receipts alone; a digest-bearing launch
-without its report is refused. `louiselm-d6fv.9.1` must connect authenticated
-admission and bounded report transfer to the broker append transaction before
-enabling Verified launch. Component tests of report retention do not satisfy that
-installed cutover or the monitoring work in `louiselm-d6fv.12.4`.
+Ordinary pre-cutover launch still records `Unevaluated`, as confirmed in
+`louiselm-oi5an`, and does not read certification state. The protected enforced
+path can now supply report-bound admission through the broker ACK transaction;
+that does not enable Verified posture by itself. `louiselm-d6fv.9.1` still needs
+the waiver producer (`.6.3`), currentness monitoring (`.12.4`), canonical status
+projection (`.12.6`) and actual installed-release acceptance. Component and
+disposable-guest tests do not satisfy that installed cutover.
 
 Recorded 2026-09-06: ten consecutive complete guest rounds passed after fixing
 the Interrupt fixture oracle. Environment: Debian 13, kernel

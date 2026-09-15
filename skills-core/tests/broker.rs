@@ -66,6 +66,9 @@ mod posture;
 #[path = "broker/conformance.rs"]
 mod conformance;
 
+#[path = "broker/conformance_transport.rs"]
+mod conformance_transport;
+
 #[path = "broker/attention.rs"]
 mod attention;
 
@@ -126,6 +129,7 @@ const CONTROLLER_UID: u32 = 1501;
 
 fn grant(request: &LaunchRequest) -> GrantRequest {
     GrantRequest {
+        conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
         require_cold_recovery: false,
         request: request.clone(),
         controller_uid: CONTROLLER_UID,

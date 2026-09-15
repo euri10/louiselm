@@ -116,6 +116,7 @@ struct BrokerState {
     )>,
     append_behavior: AppendBehavior,
     receipts: Vec<Vec<u8>>,
+    reports: Vec<Option<Vec<u8>>>,
     pending_append: Option<(usize, SupervisorCompletion<ReceiptAcknowledgement>)>,
     pending_session_request: Option<SupervisorCompletion<ProtocolMessage>>,
     session_receipt_send_behavior: SessionReceiptSendBehavior,
@@ -155,6 +156,7 @@ impl FakeBroker {
                 pending_authorization: None,
                 append_behavior,
                 receipts: Vec::new(),
+                reports: Vec::new(),
                 pending_append: None,
                 pending_session_request: None,
                 session_receipt_send_behavior: SessionReceiptSendBehavior::Complete,
@@ -625,6 +627,7 @@ impl LaunchBroker for FakeBroker {
     fn append_receipt(
         &self,
         receipt_bytes: Vec<u8>,
+        report_bytes: Option<Vec<u8>>,
         complete: SupervisorCompletion<ReceiptAcknowledgement>,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "broker.append");
@@ -663,6 +666,7 @@ impl LaunchBroker for FakeBroker {
         record(&self.events, "broker.fsync");
         let mut state = lock(&self.state);
         state.receipts.push(receipt_bytes);
+        state.reports.push(report_bytes);
         state.pending_append = Some((index, complete));
         self.changed.notify_all();
         Ok(())
@@ -1596,6 +1600,21 @@ struct BubblewrapLaunchPlatform {
 }
 
 impl LaunchPlatform for BubblewrapLaunchPlatform {
+    fn inspect_conformance(
+        &self,
+        _: &LaunchAuthorization,
+        _: u64,
+        complete: SupervisorCompletion<louiselm_skills::launch_supervisor::ConformanceAdmission>,
+    ) -> Result<(), SupervisorError> {
+        complete(Ok(
+            louiselm_skills::launch_supervisor::ConformanceAdmission {
+                evidence: ConformanceEvidence::Unevaluated,
+                report_bytes: None,
+            },
+        ));
+        Ok(())
+    }
+
     fn check_integration(
         &self,
         _: &LaunchRequest,
@@ -1747,6 +1766,7 @@ fn process_status_values(pid: u32, field: &str) -> Option<Vec<u32>> {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct PlatformBehavior {
+    conformance_refused: bool,
     agent_credentials: Option<louiselm_skills::launch_transport::KernelCredentials>,
     tool_isolation_unproven: bool,
     integration_unsupported: bool,
@@ -1768,6 +1788,7 @@ struct PlatformBehavior {
 
 #[derive(Default)]
 struct PlatformState {
+    conformance_report: Option<Vec<u8>>,
     plan: Option<ConfinementPlan>,
     gate: Option<Arc<Mutex<GateState>>>,
 }
@@ -1858,6 +1879,38 @@ impl FakePlatform {
 }
 
 impl LaunchPlatform for FakePlatform {
+    fn inspect_conformance(
+        &self,
+        _: &LaunchAuthorization,
+        _: u64,
+        complete: SupervisorCompletion<louiselm_skills::launch_supervisor::ConformanceAdmission>,
+    ) -> Result<(), SupervisorError> {
+        let report_bytes = lock(&self.state).conformance_report.clone();
+        let result = if self.behavior.conformance_refused {
+            Err(SupervisorError::ConformanceRefused(
+                louiselm_skills::conformance::admission::Condition::Missing,
+            ))
+        } else {
+            Ok(louiselm_skills::launch_supervisor::ConformanceAdmission {
+                evidence: report_bytes
+                    .as_ref()
+                    .map_or(ConformanceEvidence::Unevaluated, |bytes| {
+                        ConformanceEvidence::Certified {
+                            report_digest: Digest::of(bytes).to_string(),
+                        }
+                    }),
+                report_bytes,
+            })
+        };
+        thread::Builder::new()
+            .name("fake-conformance-producer".into())
+            .spawn(move || complete(result))
+            .unwrap()
+            .join()
+            .unwrap();
+        Ok(())
+    }
+
     fn check_integration(
         &self,
         _: &LaunchRequest,
@@ -2084,6 +2137,7 @@ fn setup(
         gid: 300_003,
     };
     let mut authorization = LaunchAuthorization {
+        conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
         schema: LAUNCH_AUTHORIZATION_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
         authorization_id: request.authorization_id.clone(),
@@ -2935,6 +2989,72 @@ fn reaper_foreign_process_and_mismatched_agent_ids_never_bind_authority() {
         );
         assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
     }
+}
+
+#[test]
+fn conformance_refusal_cleans_prepared_tree_without_starting_or_signing() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior {
+            conformance_refused: true,
+            ..PlatformBehavior::default()
+        },
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    let result = receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(SupervisorError::ConformanceRefused(
+                louiselm_skills::conformance::admission::Condition::Missing,
+            ))
+        ),
+        "conformance refusal must reach the launch consumer"
+    );
+    assert!(setup.signer.payloads().is_empty());
+    assert!(!lock(&setup.platform.agent).started);
+    let events = event_snapshot(&setup.events);
+    assert!(events.iter().any(|event| event == "agent.dispose"));
+    assert!(events.iter().any(|event| event == "identity.release"));
+}
+
+#[test]
+fn conformance_report_is_bound_and_supplied_before_starting_the_agent() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    // This seam test checks byte ownership and ACK ordering, not certification;
+    // the real sender/store integration uses a complete installed report.
+    let bytes = b"trusted platform test observation bytes".to_vec();
+    lock(&setup.platform.state).conformance_report = Some(bytes.clone());
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    let launch = SignedReceipt::parse_canonical(&setup.broker.receipt_bytes(0)).unwrap();
+    let ReceiptOutcome::Launch { evidence, .. } = launch.payload.outcome else {
+        panic!("launch receipt");
+    };
+    assert_eq!(
+        evidence.conformance,
+        ConformanceEvidence::Certified {
+            report_digest: Digest::of(&bytes).to_string(),
+        }
+    );
+    assert_eq!(lock(&setup.broker.state).reports, [Some(bytes)]);
+    assert!(!lock(&setup.platform.agent).started);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    assert!(lock(&setup.broker.state).reports[1].is_none());
+    // Losing the final ACK cleans up through the existing bounded path.
+    assert!(receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().is_err());
+    assert_eq!(event_count(&setup.events, "agent.dispose"), 1);
+    assert_eq!(event_count(&setup.events, "identity.release"), 1);
 }
 
 #[test]
