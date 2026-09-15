@@ -98,6 +98,7 @@ fn append(
         .append(
             auth,
             &receipt.canonical_bytes(),
+            None,
             |key, payload, signature| {
                 verifier.verify(key, payload, signature).unwrap();
                 true

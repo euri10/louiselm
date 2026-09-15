@@ -22,6 +22,7 @@ fn fixture_on(
             .append(
                 &authorization,
                 &receipt.canonical_bytes(),
+                None,
                 verify_fixture_signature,
             )
             .unwrap();

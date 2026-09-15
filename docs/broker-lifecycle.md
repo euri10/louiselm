@@ -441,6 +441,16 @@ authenticated reattachment, using the original successful launch-proof audit
 time. A missing audit observation has no fabricated success timestamp and
 leaves runtime unverified. Isolation and network still need their own producers.
 
+Signed conformance admission additionally binds exact canonical observations
+retained by the receipt store. Digest-bearing receipts cannot be acknowledged
+without their matching report, and report damage refuses history use and
+reattachment. The posture owner retains a bounded `conformance_report` reference
+for isolation; it is historical evidence, never primary proof of current host
+conformance. Missing current measurements keep the dimension unverified and
+retain no invented successful-check time. Raw observations are excluded from
+status. The admission and report retention section in
+`docs/launcher-conformance.md` describes storage, inspection and pre-cutover limits.
+
 Supply producers construct non-deserializable `SupplyEvidence` from the exact
 authenticated Session inputs and matching `DiscoveryProof`, using the existing
 supply validators and protected store, policy and registry. This blocking work

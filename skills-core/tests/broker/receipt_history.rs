@@ -146,6 +146,7 @@ fn damaged_history_is_isolated_and_stays_refused_after_restart() {
             .append(
                 &healthy,
                 &receipt.canonical_bytes(),
+                None,
                 verify_fixture_signature,
             )
             .unwrap();
@@ -216,6 +217,7 @@ fn admitted_chain_survives_rotation_and_release_upgrade() {
             .append(
                 &authorization,
                 &launch.canonical_bytes(),
+                None,
                 verify_fixture_signature,
             )
             .unwrap();
@@ -235,6 +237,7 @@ fn admitted_chain_survives_rotation_and_release_upgrade() {
             .append(
                 &authorization,
                 &start.canonical_bytes(),
+                None,
                 verify_fixture_signature,
             )
             .expect("admitted history continues under its original authority");
@@ -249,6 +252,7 @@ fn admitted_chain_survives_rotation_and_release_upgrade() {
                 .append(
                     &fresh,
                     &launch_receipt(&fresh).canonical_bytes(),
+                    None,
                     verify_fixture_signature
                 )
                 .is_err(),

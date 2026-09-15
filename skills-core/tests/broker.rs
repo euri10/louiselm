@@ -63,6 +63,9 @@ mod lifecycle;
 #[path = "broker/posture.rs"]
 mod posture;
 
+#[path = "broker/conformance.rs"]
+mod conformance;
+
 #[path = "broker/attention.rs"]
 mod attention;
 
@@ -287,6 +290,7 @@ fn a_signed_start_cannot_change_the_installed_identity() {
         .append(
             &authorization,
             &launch.canonical_bytes(),
+            None,
             verify_fixture_signature,
         )
         .unwrap();
@@ -300,6 +304,7 @@ fn a_signed_start_cannot_change_the_installed_identity() {
         receipts.append(
             &authorization,
             &changed.canonical_bytes(),
+            None,
             verify_fixture_signature
         ),
         Err(BrokerError::ReceiptUnauthorized)
@@ -589,7 +594,12 @@ fn both_launch_receipts_are_durably_stored_with_their_exact_bytes() {
     let launch = launch_receipt(&authorization);
     let launch_bytes = launch.canonical_bytes();
     let acknowledgement = receipts
-        .append(&authorization, &launch_bytes, verify_fixture_signature)
+        .append(
+            &authorization,
+            &launch_bytes,
+            None,
+            verify_fixture_signature,
+        )
         .expect("sequence zero is durable");
     assert_eq!(
         acknowledgement.disposition,
@@ -602,7 +612,7 @@ fn both_launch_receipts_are_durably_stored_with_their_exact_bytes() {
     let start = start_receipt(&authorization, &launch);
     let start_bytes = start.canonical_bytes();
     let acknowledgement = receipts
-        .append(&authorization, &start_bytes, verify_fixture_signature)
+        .append(&authorization, &start_bytes, None, verify_fixture_signature)
         .expect("sequence one is durable");
     assert_eq!(
         acknowledgement.disposition,
@@ -635,7 +645,12 @@ fn a_receipt_whose_signature_fails_verification_is_not_stored() {
         .expect("open receipt store");
     let launch = launch_receipt(&authorization);
 
-    let refusal = receipts.append(&authorization, &launch.canonical_bytes(), |_, _, _| false);
+    let refusal = receipts.append(
+        &authorization,
+        &launch.canonical_bytes(),
+        None,
+        |_, _, _| false,
+    );
     assert!(matches!(refusal, Err(BrokerError::ReceiptRefused(_))));
     assert!(
         receipts
@@ -659,6 +674,7 @@ fn a_receipt_that_skips_its_predecessor_is_not_stored() {
     let refusal = receipts.append(
         &authorization,
         &start.canonical_bytes(),
+        None,
         verify_fixture_signature,
     );
     assert!(matches!(refusal, Err(BrokerError::ReceiptRefused(_))));
@@ -694,6 +710,7 @@ fn a_receipt_answering_another_authorization_is_not_stored() {
     let refusal = receipts.append(
         &authorization,
         &launch.canonical_bytes(),
+        None,
         verify_fixture_signature,
     );
     assert!(
@@ -721,6 +738,7 @@ fn a_restarted_broker_continues_the_stored_chain() {
             .append(
                 &authorization,
                 &launch.canonical_bytes(),
+                None,
                 verify_fixture_signature,
             )
             .expect("sequence zero is durable");
@@ -734,6 +752,7 @@ fn a_restarted_broker_continues_the_stored_chain() {
         .append(
             &authorization,
             &start.canonical_bytes(),
+            None,
             verify_fixture_signature,
         )
         .expect("sequence one continues the recovered chain");
@@ -742,6 +761,7 @@ fn a_restarted_broker_continues_the_stored_chain() {
     let replayed = restarted.append(
         &authorization,
         &start.canonical_bytes(),
+        None,
         verify_fixture_signature,
     );
     assert!(matches!(replayed, Err(BrokerError::ReceiptRefused(_))));
@@ -1224,6 +1244,7 @@ fn a_receipt_that_cannot_be_stored_is_never_acknowledged() {
     let failure = receipts.append(
         &authorization,
         &launch.canonical_bytes(),
+        None,
         verify_fixture_signature,
     );
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700))

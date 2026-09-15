@@ -9,6 +9,8 @@
 //! therefore return an error instead, because an acknowledgement the launch
 //! treats as durability must never outrun the filesystem.
 
+mod conformance;
+
 use std::{
     fs,
     io::Read,
@@ -137,17 +139,24 @@ impl ReceiptStore {
     /// release/key identity, and continue its chain at the next sequence. A new
     /// chain needs current caller authority or a root-registered genesis.
     /// The returned acknowledgement is only produced after the exact bytes and
-    /// their directory entry are durable.
+    /// their directory entry are durable. A launch binding a conformance digest
+    /// also requires its exact canonical installed-host observations in
+    /// `report_bytes`; those bytes become durable first. Other receipts and
+    /// admissions without a digest require `None`. Neither a stored report nor
+    /// its signed admission proves that the host is still conformant.
     ///
     /// # Errors
     /// Returns [`BrokerError::ReceiptRefused`] for bytes this chain does not
     /// accept, [`BrokerError::ReceiptUnauthorized`] when the receipt does not
     /// answer its authorization, and [`BrokerError::Storage`] when the bytes
-    /// cannot be made durable. No acknowledgement follows any of them.
+    /// cannot be made durable. [`BrokerError::ConformanceReport`] refuses
+    /// absent, unexpected or contradictory observations. No acknowledgement
+    /// follows any of them.
     pub fn append<F>(
         &self,
         authorization: &LaunchAuthorization,
         receipt_bytes: &[u8],
+        report_bytes: Option<&[u8]>,
         mut verify_signature: F,
     ) -> Result<ReceiptAcknowledgement, BrokerError>
     where
@@ -179,6 +188,7 @@ impl ReceiptStore {
             }
         }
 
+        self.retain_conformance_report(&receipt, report_bytes)?;
         fs::create_dir_all(&session).map_err(BrokerError::Storage)?;
         sync_directory(&self.root.join(SESSIONS_DIRECTORY))?;
         write_new_bytes(
@@ -272,6 +282,7 @@ impl ReceiptStore {
         for bytes in self.stored_bytes(session_id)? {
             let receipt = SignedReceipt::parse_canonical(&bytes)
                 .map_err(|_| corrupt("stored receipt is not canonical"))?;
+            self.read_conformance_report(&receipt)?;
             chain.push(receipt);
         }
         Ok(chain)
@@ -301,6 +312,7 @@ impl ReceiptStore {
                 .map_err(BrokerError::Storage)?;
         }
         if !chain.is_empty() {
+            self.sync_conformance_report(&chain[0])?;
             sync_directory(&directory)?;
         }
         Ok(chain)

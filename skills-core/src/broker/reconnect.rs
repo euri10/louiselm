@@ -132,7 +132,7 @@ impl BrokerService {
             self.lifecycle.check_receipt(receipt)?;
             let ack = self
                 .receipts
-                .append(&authorization, &packet.bytes, &mut *verify)?;
+                .append(&authorization, &packet.bytes, None, &mut *verify)?;
             send(channel, ack.canonical_bytes())?;
             sequence = next;
         }

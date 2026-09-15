@@ -108,9 +108,9 @@ impl BrokerService {
         match &packet.packet {
             LauncherPacket::SignedReceipt(receipt) => {
                 self.lifecycle.check_receipt(receipt)?;
-                let ack = self
-                    .receipts
-                    .append(&session.authorization, &packet.bytes, verify)?;
+                let ack =
+                    self.receipts
+                        .append(&session.authorization, &packet.bytes, None, verify)?;
                 send(session.channel(), ack.canonical_bytes())?;
                 Ok(receipt.payload.resulting_state == SessionState::Terminal)
             }

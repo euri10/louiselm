@@ -188,7 +188,7 @@ impl DimensionStatus {
         for reference in &self.evidence {
             posture::validate_identifier("status evidence", &reference.id)
                 .map_err(|_| invalid())?;
-            primary |= self.dimension.accepts_evidence(reference.kind);
+            primary |= self.dimension.accepts_primary_evidence(reference.kind);
             waiver |= reference.kind == EvidenceKind::WaiverReceipt;
             if !self.dimension.accepts_evidence(reference.kind)
                 && !matches!(

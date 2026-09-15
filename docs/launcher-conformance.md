@@ -178,6 +178,46 @@ three declared transfers and before READY/exec. No unsafe raw-FD close or new
 crate was added. The independent bootstrap regression fails before the fix and
 preserves declared stdio/status/gate transfers after it.
 
+### Admission and broker report retention
+
+The admission evaluator consumes protected certificate/failure state and fresh
+host measurements. It refuses retained containment failures, including unresolved
+cleanup, even when a passing certificate exists. Missing, stale or incomplete
+evidence requires an interactive operator waiver for the exact Session and
+condition; unattended execution cannot waive it.
+
+The signed launch receipt records `Certified`, `Waived`, or `Unevaluated`.
+Digest-bearing decisions bind the exact canonical **observation report** bytes,
+not the enclosing certificate. `ReceiptStore::append` takes those bytes alongside
+the signed receipt and makes them durable before acknowledging the receipt.
+It rejects missing/mismatched bytes, guest reports, malformed or oversized data,
+certification claims over incomplete observations, and any waived containment
+failure. An unevaluated launch or a waiver without a digest supplies no report;
+unsolicited bytes are refused.
+
+Broker state retains one private report at
+`receipts/conformance/<Session>.json`, separate from the unchanged signed receipt
+chain. An interrupted append may leave a report before its receipt exists;
+retry can reuse only identical bytes and never replaces conflicting evidence.
+History reads and authenticated restart revalidate the report against the signed
+admission. Missing, changed, oversized, symlinked or nonregular evidence refuses
+history use; it cannot become a cached verified result. Trusted callers can read
+the exact bytes through `ReceiptStore::conformance_report`.
+
+Canonical posture retains a bounded `conformance_report` reference for isolation.
+This is admission history, not a fresh measurement: it supplies neither current
+host proof nor a successful-check timestamp. Both the evaluator and status schema
+reject using this reference alone as primary evidence for a verified dimension.
+Raw observations never enter Session status. Currentness, failure monitoring and
+waiver validity remain with their existing conformance producers.
+
+Production launch still records `Unevaluated`, as confirmed in `louiselm-oi5an`.
+The current rendezvous carries signed receipts alone; a digest-bearing launch
+without its report is refused. `louiselm-d6fv.9.1` must connect authenticated
+admission and bounded report transfer to the broker append transaction before
+enabling Verified launch. Component tests of report retention do not satisfy that
+installed cutover or the monitoring work in `louiselm-d6fv.12.4`.
+
 Recorded 2026-09-06: ten consecutive complete guest rounds passed after fixing
 the Interrupt fixture oracle. Environment: Debian 13, kernel
 `6.12.107+deb13-cloud-amd64`, Bubblewrap 0.12.0, Rust 1.97.1. Each matrix took

@@ -6,7 +6,7 @@ use crate::{
         BrokerConnection, EvidenceFreshness, FreshnessBasis, LaunchAuthorization, PostureStatus,
         SupervisorStatus,
     },
-    launch_receipt::{ReceiptOutcome, SessionState},
+    launch_receipt::{ConformanceEvidence, ReceiptOutcome, SessionState},
     posture::{DimensionInput, DimensionName, EvidenceKind, EvidenceRef, FailureCode, Posture},
 };
 
@@ -21,6 +21,7 @@ pub(super) struct LaunchPostureEvidence {
     checked_at_ms: Option<u64>,
     launch_receipt_id: String,
     supply: Option<supply::RetainedSupply>,
+    conformance_report: Option<EvidenceRef>,
 }
 
 impl BrokerService {
@@ -88,6 +89,19 @@ impl BrokerService {
             Err(error) => return Err(error),
         };
         Ok(LaunchPostureEvidence {
+            // verified_history also validates the exact retained report. The
+            // reference preserves admission history, never current host proof.
+            conformance_report: match &evidence.conformance {
+                ConformanceEvidence::Certified { report_digest }
+                | ConformanceEvidence::Waived {
+                    report_digest: Some(report_digest),
+                    ..
+                } => Some(EvidenceRef::new(
+                    EvidenceKind::ConformanceReport,
+                    report_digest,
+                )?),
+                _ => None,
+            },
             launch_receipt_id: launch.digest().to_string(),
             supply: None,
             measurement: EvidenceRef::new(
@@ -115,6 +129,18 @@ impl LaunchPostureEvidence {
         let mut freshness = [missing; 6];
         let mut inputs = Vec::with_capacity(6);
         for (index, dimension) in DimensionName::ALL.into_iter().enumerate() {
+            if dimension == DimensionName::Isolation
+                && let Some(report) = &self.conformance_report
+            {
+                // Admission observations are retained; freshly applicable host
+                // measurements/failure history still need the .12.4 producer.
+                inputs.push(DimensionInput::failed(
+                    dimension,
+                    FailureCode::EvidenceMissing,
+                    vec![report.clone()],
+                ));
+                continue;
+            }
             if let Some(supply) = &self.supply
                 && let Some((input, validity)) =
                     supply.dimension(dimension, supervisor, quarantined, now_ms)

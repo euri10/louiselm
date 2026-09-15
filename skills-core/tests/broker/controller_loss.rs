@@ -129,6 +129,7 @@ fn check_absent(fault: &str) {
         .append(
             &authorization,
             &park.canonical_bytes(),
+            None,
             verify_fixture_signature,
         )
         .unwrap();

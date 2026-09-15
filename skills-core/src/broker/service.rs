@@ -617,7 +617,7 @@ impl BrokerService {
         let acknowledgement =
             match self
                 .receipts
-                .append(authorization, &packet.bytes, &mut *verify_signature)
+                .append(authorization, &packet.bytes, None, &mut *verify_signature)
             {
                 Ok(acknowledgement) => acknowledgement,
                 Err(BrokerError::Storage(error)) => return Err(BrokerError::Storage(error)),

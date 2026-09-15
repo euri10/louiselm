@@ -86,12 +86,21 @@ impl DimensionName {
                 kind,
                 EvidenceKind::RuntimeMeasurement | EvidenceKind::ReleaseManifest
             ),
-            Self::Isolation => matches!(kind, EvidenceKind::IsolationReceipt),
+            Self::Isolation => matches!(
+                kind,
+                EvidenceKind::IsolationReceipt | EvidenceKind::ConformanceReport,
+            ),
             Self::Network => matches!(
                 kind,
                 EvidenceKind::CapabilityEnvelope | EvidenceKind::BrokerReceipt
             ),
         }
+    }
+
+    pub(crate) const fn accepts_primary_evidence(self, kind: EvidenceKind) -> bool {
+        // A retained observation report lacks current host measurements and
+        // failure history. It can explain admission, never prove currentness.
+        !matches!(kind, EvidenceKind::ConformanceReport) && self.accepts_evidence(kind)
     }
 
     pub(crate) const fn accepts_failure(self, code: FailureCode) -> bool {
@@ -174,6 +183,8 @@ pub enum EvidenceKind {
     ReleaseManifest,
     /// A successful isolation receipt.
     IsolationReceipt,
+    /// Exact installed-host observations bound by signed admission, not current proof.
+    ConformanceReport,
     /// The exact capability envelope revision.
     CapabilityEnvelope,
     /// An authenticated control-broker receipt.
@@ -194,6 +205,7 @@ impl EvidenceKind {
             Self::RuntimeMeasurement => "runtime_measurement",
             Self::ReleaseManifest => "release_manifest",
             Self::IsolationReceipt => "isolation_receipt",
+            Self::ConformanceReport => "conformance_report",
             Self::CapabilityEnvelope => "capability_envelope",
             Self::BrokerReceipt => "broker_receipt",
             Self::AuditReceipt => "audit_receipt",
@@ -589,7 +601,7 @@ fn evaluate_dimension(mut input: DimensionInput) -> Result<DimensionPosture, Pos
         && !input
             .evidence
             .iter()
-            .any(|evidence| input.dimension.accepts_evidence(evidence.kind))
+            .any(|evidence| input.dimension.accepts_primary_evidence(evidence.kind))
     {
         return Err(PostureError::EvidenceRequired(input.dimension));
     }
