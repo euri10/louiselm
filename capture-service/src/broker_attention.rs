@@ -11,7 +11,7 @@ use std::{
         fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         net::UnixListener as StdListener,
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::{
@@ -43,15 +43,24 @@ impl BrokerAttentionConfig {
     /// # Errors
     /// Refuses links, non-root/writable policy, oversized or malformed records.
     pub fn load_installed() -> io::Result<Option<Self>> {
-        let parent = fs::symlink_metadata("/etc")?;
-        if !parent.is_dir() || parent.uid() != 0 || parent.mode() & 0o022 != 0 {
-            return Err(invalid("broker Attention policy directory is untrusted"));
-        }
-        let metadata = match fs::symlink_metadata(CONFIG) {
+        Self::load(Path::new(CONFIG))
+    }
+
+    fn load(path: &Path) -> io::Result<Option<Self>> {
+        // With no broker policy, projection is disabled. A hardened user service
+        // may see /etc's root owner as unmapped; that must not prevent capture.
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
+        let parent = fs::symlink_metadata(
+            path.parent()
+                .ok_or_else(|| invalid("broker Attention policy needs a parent directory"))?,
+        )?;
+        if !parent.is_dir() || parent.uid() != 0 || parent.mode() & 0o022 != 0 {
+            return Err(invalid("broker Attention policy directory is untrusted"));
+        }
         if !metadata.is_file()
             || metadata.uid() != 0
             || metadata.mode() & 0o022 != 0
@@ -61,7 +70,7 @@ impl BrokerAttentionConfig {
                 "broker Attention policy is not a trusted regular file",
             ));
         }
-        let file = File::open(CONFIG)?;
+        let file = File::open(path)?;
         let opened = file.metadata()?;
         if (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
             return Err(invalid("broker Attention policy changed while opening"));
@@ -250,4 +259,43 @@ async fn project(stream: UnixStream, store: AttentionStore, hash: String) -> io:
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Policy fixtures abort on setup failure."
+)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn absent_policy_disables_projection_even_with_untrusted_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o777)).unwrap();
+        let policy = directory.path().join("policy.json");
+
+        assert!(BrokerAttentionConfig::load(&policy).unwrap().is_none());
+    }
+
+    #[test]
+    fn existing_policy_in_untrusted_parent_still_fails_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o777)).unwrap();
+        let policy = directory.path().join("policy.json");
+        fs::write(&policy, b"{}").unwrap();
+        assert_eq!(
+            BrokerAttentionConfig::load(&policy)
+                .err()
+                .unwrap()
+                .to_string(),
+            "broker Attention policy directory is untrusted"
+        );
+
+        // A dangling policy link is invalid configuration, not absent configuration.
+        fs::remove_file(&policy).unwrap();
+        symlink(directory.path().join("missing.json"), &policy).unwrap();
+        assert!(BrokerAttentionConfig::load(&policy).is_err());
+    }
 }
