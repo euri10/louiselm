@@ -215,11 +215,26 @@ end
 
 T["failed asynchronous admission preserves its error and never attaches"] = function()
   local f = fixture()
+  -- louiselm-dont9: keep the real async query without host br or its workspace.
+  local directory = nvim.fn.tempname()
+  local original_path = nvim.env.PATH
+  MiniTest.finally(function()
+    nvim.env.PATH = original_path
+    assert(nvim.fn.delete(directory, "rf") == 0)
+  end)
+  assert(nvim.fn.mkdir(directory, "p", 448) == 1)
+  assert(nvim.fn.writefile({
+    "#!/bin/sh",
+    '[ "$*" = "list --assignee qa/admission-failure --status in_progress --json" ] || exit 1',
+    [[printf '%s\n' '{"issues":[]}']],
+  }, directory .. "/br") == 0)
+  assert(nvim.fn.setfperm(directory .. "/br", "rwx------") == 1)
+  nvim.env.PATH = directory
   local admit, attach = Service.admit, Service.attach
   local attached = false
   local session = {
     inspect = function()
-      return { agent = "qa", acp_session_id = "admission-failure", working_dir = nvim.fn.getcwd() }
+      return { agent = "qa", acp_session_id = "admission-failure", working_dir = directory }
     end,
   }
   rawset(Service, "admit", function(_, callback)
