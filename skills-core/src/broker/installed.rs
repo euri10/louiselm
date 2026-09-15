@@ -31,6 +31,32 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Reports a revoked Session's trusted binding and local containment observation.
+    /// Receipt bytes remain untouched and untrusted. This inspection never grants authority.
+    /// # Errors
+    /// Refuses unknown Sessions or unavailable authority/reporting storage.
+    pub fn key_revocation(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::launcher_install::SessionKeyRevocation>, BrokerError> {
+        self.service
+            .authorizations()
+            .consumed_for_session(session_id)?
+            .ok_or(BrokerError::UnknownAuthorization)?;
+        let report = self
+            .verifier
+            .key_revocation(session_id)
+            .map_err(BrokerError::Verification)?;
+        if report.is_some() {
+            match self.service.check_history(session_id) {
+                Err(BrokerError::Policy(error))
+                    if error.code == crate::launch_protocol::ErrorCode::SigningKeyRevoked => {}
+                Err(error) => return Err(error),
+                Ok(()) => return Err(BrokerError::ReceiptUnauthorized),
+            }
+        }
+        Ok(report)
+    }
     /// Retains exact launch-bound supply facts produced on the trusted I/O worker.
     /// This updates status evidence only; it does not grant Session authority.
     /// Missing vendor discovery integrations must supply no native proof.

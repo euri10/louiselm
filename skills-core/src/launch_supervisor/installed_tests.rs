@@ -395,6 +395,15 @@ fn installed_broker_worker() {
     let proof = inspection.start_evidence.unwrap();
     assert_eq!(proof.assigned_uid, AGENT_UID);
     println!("BROKER_RUNNING {}", proof.agent_pid);
+    if root.join("key-revocation").exists() {
+        while broker.step(&mut session).is_ok() {}
+        assert!(broker.key_revocation("session").unwrap().is_some());
+        assert!(
+            matches!(broker.inspect("session"), Err(crate::broker::BrokerError::Policy(error)) if error.code == crate::launch_protocol::ErrorCode::SigningKeyRevoked)
+        );
+        println!("BROKER_REVOKED");
+        return;
+    }
     recovery::controller_registers(&broker, &mut session, config.operator_uid);
     while !broker.step(&mut session).unwrap() {}
     assert_eq!(

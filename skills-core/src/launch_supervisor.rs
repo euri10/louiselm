@@ -290,6 +290,21 @@ pub trait LaunchSigner: Send + Sync {
     /// Active signing-key digest selected for a new chain.
     fn signing_key_id(&self) -> &str;
 
+    /// Rechecks installed authority asynchronously; failure forbids continuation.
+    /// # Errors
+    /// Returns worker admission failure; authority failures arrive in `complete`.
+    fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError>;
+
+    /// Records a supervisor's local containment observation, never a signed receipt.
+    /// # Errors
+    /// Returns worker admission failure; persistence failures arrive in `complete`.
+    fn record_containment(
+        &self,
+        session_id: String,
+        containment: crate::launcher_install::KeyContainment,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Signs exact canonical [`ReceiptPayload`] bytes asynchronously.
     ///
     /// # Errors
@@ -1078,6 +1093,9 @@ fn run_launch(
         agent_pid: authentication.credentials.pid,
     };
     let agent_process = authentication.process.clone();
+    if let Err(error) = await_key_authority(inner) {
+        return Err(cleanup_running(running, capability, identity, error));
+    }
     if let Err(error) = capability
         .bind(binding.clone(), authentication)
         .and_then(|()| capability.enable())
@@ -1116,6 +1134,12 @@ fn run_launch(
         }
     };
 
+    // An acknowledgement may have been in flight when authority was revoked.
+    // Recheck before publishing launch success, even when its receipt is durable.
+    if let Err(error) = await_key_authority(inner) {
+        return Err(cleanup_running(running, capability, identity, error));
+    }
+
     if let Some(process) = agent_process
         && process.valid().ok() != Some(true)
     {
@@ -1137,6 +1161,16 @@ fn run_launch(
         Arc::clone(&inner.timer),
         Duration::from_millis(u64::from(broker_loss_grace_ms)),
     )
+}
+
+fn await_key_authority(inner: &SupervisorInner) -> Result<(), SupervisorError> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    inner.signer.check_authority(Box::new(move |result| {
+        let _ = sender.try_send(result);
+    }))?;
+    receiver
+        .recv_timeout(inner.timeout)
+        .map_err(|_| SupervisorError::SigningUnavailable)?
 }
 
 fn launch_evidence(

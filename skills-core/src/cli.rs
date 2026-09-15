@@ -1157,6 +1157,17 @@ fn launcher_command(options: &Options) -> Result<i32, CliError> {
             let status = launcher_install::status(&paths);
             report_launcher_status(options, &status)
         }
+        "revoke-key" => {
+            let key_id = required(options.expected_key_id.as_ref(), "--expected-key-id")?;
+            require_verified_running_release(&paths)?;
+            let outcome = launcher_install::revoke_key(&paths, key_id, now_ms())?;
+            report(options, &outcome, |outcome| {
+                format!(
+                    "launcher key {} revoked; all associated receipts are untrusted; inspect affected Sessions for containment",
+                    outcome.key_id
+                )
+            })
+        }
         other => Err(CliError::Invalid(format!(
             "unknown launcher command '{other}'"
         ))),
@@ -1302,6 +1313,7 @@ Privileged launcher authority (install/rotation require current verified release
                                     --broker-gid <id> --uid-start <id>
                                     --gid-start <id> --slots <count>
   louiselm-skills launcher rotate-key --rotation-id <id> --expected-key-id <id>
+  louiselm-skills launcher revoke-key --expected-key-id <id>
   louiselm-skills launcher status
 
 Emergency quarantine (narrows only; no token needed):

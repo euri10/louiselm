@@ -647,6 +647,50 @@ fn rotation_replays_once_and_keeps_every_old_public_and_private_key() {
 }
 
 #[test]
+fn compromise_revocation_survives_retry_rotation_and_reinstall() {
+    let fixture = Fixture::new();
+    let runner = FakeRunner::default();
+    let installed = install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
+    let first = installed.active_key_id.unwrap();
+    let revoked =
+        louiselm_skills::launcher_install::revoke_key(&fixture.paths, &first, 20).unwrap();
+    assert_eq!(revoked.revoked_at_ms, 20);
+    assert_eq!(
+        louiselm_skills::launcher_install::revoke_key(&fixture.paths, &first, 30)
+            .unwrap()
+            .revoked_at_ms,
+        20
+    );
+    let ring = public_keyring(&fixture.paths).unwrap();
+    assert_eq!(ring.key(&first).unwrap().retired_at_ms, None);
+    assert_eq!(ring.key(&first).unwrap().revoked_at_ms, Some(20));
+    assert!(
+        louiselm_skills::launcher_install::revoke_key(
+            &fixture.paths,
+            &Digest::of(b"foreign").to_string(),
+            30
+        )
+        .is_err()
+    );
+    let rotation = rotate(
+        &fixture.paths,
+        &runner,
+        &RotationRequest {
+            rotation_id: "new-authority".into(),
+            expected_active_key_id: first.clone(),
+        },
+        40,
+    )
+    .unwrap();
+    let reinstalled = install(&fixture.paths, &runner, &Fixture::request(), 50).unwrap();
+    assert_eq!(reinstalled.revoked_key_ids, vec![first.clone()]);
+    let ring = public_keyring(&fixture.paths).unwrap();
+    assert_eq!(ring.key(&first).unwrap().revoked_at_ms, Some(20));
+    assert_eq!(ring.key(&first).unwrap().retired_at_ms, Some(40));
+    assert_eq!(ring.key(&rotation.key_id).unwrap().revoked_at_ms, None);
+}
+
+#[test]
 fn rotation_resumes_the_same_key_after_post_generation_failure() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();

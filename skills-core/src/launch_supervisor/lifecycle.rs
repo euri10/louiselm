@@ -3,6 +3,8 @@
 #[path = "tool_dispatch.rs"]
 mod tool_dispatch;
 
+#[path = "key_authority.rs"]
+mod key_authority;
 #[path = "recovery_dispatch.rs"]
 mod recovery_dispatch;
 #[path = "restore_dispatch.rs"]
@@ -251,6 +253,15 @@ impl Drop for LaunchedSession {
 }
 
 enum OwnerEvent {
+    KeyAuthorityPoll,
+    KeyAuthorityChecked {
+        epoch: u64,
+        result: Result<(), SupervisorError>,
+    },
+    KeyAuthorityDeadline {
+        epoch: u64,
+    },
+    KeyContainmentRecorded(Result<(), SupervisorError>),
     AgentStatusDeadline {
         request_id: String,
     },
@@ -468,6 +479,7 @@ struct SessionOwner {
     controller_loss_settlement: Option<ActiveControllerLossSettlement>,
     cleanup_unproven: bool,
     quarantined: bool,
+    key_authority: key_authority::KeyAuthority,
     queued_terminal_event: Option<QueuedTerminalEvent>,
     widening_blocked: bool,
     operation_epoch: u64,
@@ -536,6 +548,7 @@ impl SessionOwner {
             controller_loss_settlement: None,
             cleanup_unproven: false,
             quarantined: false,
+            key_authority: key_authority::KeyAuthority::default(),
             queued_terminal_event: None,
             widening_blocked: false,
             operation_epoch: 0,
@@ -566,13 +579,31 @@ impl SessionOwner {
         }
         self.arm_broker_receive();
         self.arm_agent_receive();
+        self.check_key_authority();
         let _ = ready.send(Ok(()));
         loop {
             let event = self
                 .receiver
                 .recv()
                 .map_err(|_| SupervisorError::WorkerUnavailable)?;
+            if self.key_authority.withdrawn {
+                self.handle_withdrawn_key(&event);
+                if let Some(result) = self.finished.take() {
+                    return result;
+                }
+                continue;
+            }
             match event {
+                OwnerEvent::KeyAuthorityPoll => self.check_key_authority(),
+                OwnerEvent::KeyAuthorityChecked { epoch, result } => {
+                    self.key_authority_checked(epoch, &result);
+                }
+                OwnerEvent::KeyAuthorityDeadline { epoch } => {
+                    self.key_authority_checked(epoch, &Err(SupervisorError::SigningUnavailable));
+                }
+                OwnerEvent::KeyContainmentRecorded(result) => {
+                    self.key_containment_recorded(&result);
+                }
                 OwnerEvent::AgentStatusDeadline { request_id } => {
                     self.expire_agent_status(&request_id);
                 }

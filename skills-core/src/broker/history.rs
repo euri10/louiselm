@@ -35,6 +35,17 @@ impl BrokerService {
 
     pub(super) fn check_history(&self, session_id: &str) -> Result<(), BrokerError> {
         self.receipts().check_authority()?;
+        if self
+            .history_result(session_id, self.receipts().key_revocation(session_id))?
+            .is_some()
+        {
+            return match self.history_result::<()>(session_id, Err(refusal())) {
+                Err(BrokerError::Policy(error)) if error.code == ErrorCode::ReceiptChainInvalid => {
+                    Err(ProtocolError::new(ErrorCode::SigningKeyRevoked, None, None).into())
+                }
+                result => result,
+            };
+        }
         let path = self
             .authorizations()
             .root

@@ -147,6 +147,11 @@ impl BrokerService {
                 self.lifecycle_packet(session, packet, &mut verify)?;
             }
         })();
+        if result.is_ok() {
+            // Stored bytes and an earlier verification do not authorize a late
+            // response after key revocation. Recheck before publishing success.
+            self.require_trusted_history(session, &mut verify)?;
+        }
         if result.is_err() && !matches!(result, Err(BrokerError::Policy(_))) {
             session.close();
         }

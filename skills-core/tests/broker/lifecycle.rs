@@ -454,6 +454,14 @@ pub(super) fn drive_park_peer(
 }
 
 fn drive_lifecycle_peer(channel: &SeqpacketChannel, current: &SupervisorStatus) -> SignedReceipt {
+    drive_lifecycle_peer_before_reply(channel, current, || {})
+}
+
+fn drive_lifecycle_peer_before_reply(
+    channel: &SeqpacketChannel,
+    current: &SupervisorStatus,
+    before_reply: impl FnOnce(),
+) -> SignedReceipt {
     answer_one_status_query(channel, current);
     let packet = settle(|complete| channel.receive(complete));
     let LauncherPacket::Request(ProtocolMessage::Lifecycle(mutation)) = packet.packet else {
@@ -484,8 +492,53 @@ fn drive_lifecycle_peer(channel: &SeqpacketChannel, current: &SupervisorStatus) 
             receipt: receipt.clone(),
         },
     };
+    before_reply();
     settle(|complete| channel.send(response.canonical_bytes(), complete));
     receipt
+}
+
+#[test]
+fn late_lifecycle_reply_cannot_outlive_its_key_authority() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = TempDir::new().unwrap();
+    let socket = root.path().join("control.sock");
+    let request = request("session-1");
+    let service = bound_service(root.path(), &socket, &request);
+    let trusted = Arc::new(AtomicBool::new(true));
+    let signer_trust = Arc::clone(&trusted);
+    let peer = thread::spawn(move || {
+        let (authorization, channel) = fake_supervisor(&socket, &request, 2000);
+        drive_lifecycle_peer_before_reply(&channel, &status(&authorization), || {
+            signer_trust.store(false, Ordering::SeqCst);
+        })
+    });
+    let mut session = service
+        .serve_launch(2000, verify_fixture_signature)
+        .unwrap();
+    let mutation = park(session.authorization());
+    let result = service.request_lifecycle(
+        &mut session,
+        &operator(),
+        &mutation,
+        2000,
+        |key, bytes, signature| {
+            trusted.load(Ordering::SeqCst) && verify_fixture_signature(key, bytes, signature)
+        },
+    );
+    let receipt = peer.join().unwrap();
+    assert!(
+        matches!(result, Err(BrokerError::Policy(error)) if error.code == ErrorCode::ReceiptChainInvalid)
+    );
+    assert!(session.channel().is_closed());
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes("session-1")
+            .unwrap()
+            .last()
+            .unwrap(),
+        &receipt.canonical_bytes()
+    );
 }
 
 #[test]

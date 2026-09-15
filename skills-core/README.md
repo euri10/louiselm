@@ -448,8 +448,47 @@ broker. A release upgrade preserves the root binding and canonical broker
 receipt bytes; historical verification does not authorize running an old
 release or automatically resume a Session. Unknown/unregistered histories fail
 closed rather than acquiring trust from their own signatures or timestamps.
-Compromise revocation, per-Session failure isolation and retired-private-key
-cleanup remain tracked by `louiselm-d6fv.13.2`–`.13.4`.
+Unverifiable histories are quarantined per Session. Retired-private-key cleanup
+remains tracked by `louiselm-d6fv.13.4`.
+
+### Compromised launcher keys
+
+From a trusted administrator terminal, set `compromised_key_id` to the exact
+installed key ID being revoked and use the current verified release:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher revoke-key \
+  --expected-key-id "$compromised_key_id" --robot-json
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher status --robot-json
+```
+
+Revocation persists `revoked_at_ms` independently of routine retirement. It
+invalidates every receipt under that key, including receipts created before
+the decision. The timestamp is administrative metadata, never a trust cutoff.
+The operation shares signing/rotation serialization; a busy operation refuses
+and may be retried with the same key. Success proves durable revocation only.
+Retry, reinstall and rotation cannot undo it. Revoking the active key does not
+automatically create a replacement key or launch a replacement Session.
+
+Installed supervisors recheck authority on a fixed 250 ms host interval, with
+their existing bounded operation timeout. Authority-read failure also withdraws
+continuation. They revoke the capability enforcer before attempting whole-tree
+freeze, retain successfully frozen identities, and use existing fail-closed
+cleanup if narrowing fails. Late signatures, receipts and reconnects cannot
+reenable a withdrawn Session. A controller disconnect still disposes its tree.
+New launch signing and pre-enable checks also require current authority.
+
+`launcher status` reports revoked keys and affected root-registered Sessions.
+`InstalledBroker::key_revocation` exposes the same per-Session inspection to
+trusted broker consumers. `observation: null` means containment is unconfirmed;
+`frozen` or `failed` records a local supervisor observation below
+`launcher/key-containment/`. These root-owned records are unsigned control
+observations, not Launcher receipts or continuing liveness guarantees. A
+failure reading them must not become a successful containment claim. Inspect
+controller/supervisor health and keep affected Sessions disabled. Original
+receipt bytes remain untouched and untrusted; no automatic recovery, re-trust,
+replacement launch or host-compromise repair is provided. Unaffected keys remain
+usable. Neither Agent actions nor broker projections can change key trust.
 
 Closing the rendezvous listener does not close returned Sessions. Explicitly
 closing or dropping a `BrokerSession` closes its channel, including clones.

@@ -4,6 +4,8 @@ use super::*;
 
 #[path = "installed_history_isolation_tests.rs"]
 mod isolation;
+#[path = "installed_key_revocation_tests.rs"]
+mod revocation;
 use crate::{
     broker::{AuthorizationStore, ReceiptStore},
     launch_protocol::LaunchAuthorization,

@@ -38,7 +38,11 @@ mod foreground;
 mod foreground_tests;
 mod history;
 mod identity;
+mod revocation;
 pub use broker::{LauncherVerifier, public_runtime_config};
+pub use revocation::{
+    KeyContainment, KeyContainmentReport, KeyRevocation, SessionKeyRevocation, revoke_key,
+};
 
 pub(crate) fn run_signing_command(
     invocation: &CommandInvocation,
@@ -232,6 +236,8 @@ pub struct LauncherKey {
     pub created_at_ms: u64,
     /// Retirement time, absent only for the active key.
     pub retired_at_ms: Option<u64>,
+    /// Explicit compromise revocation; invalidates all receipts, regardless of age.
+    pub revoked_at_ms: Option<u64>,
     /// Idempotency identity of the rotation that created this key.
     pub rotation_id: Option<String>,
     /// Key replaced by that rotation.
@@ -323,6 +329,10 @@ pub struct LauncherStatus {
     pub active_key_id: Option<String>,
     /// Keys retained for live chains.
     pub retained_key_ids: Vec<String>,
+    /// Compromised keys whose history and live authority must not be trusted.
+    pub revoked_key_ids: Vec<String>,
+    /// Trusted affected-Session bindings and local, unsigned containment observations.
+    pub affected_sessions: Vec<SessionKeyRevocation>,
     /// Slots currently held by a supervisor.
     pub occupied_slots: Vec<u32>,
     /// Every observed failure.
@@ -944,6 +954,7 @@ pub fn install(
                 public_key: generated.public_key,
                 created_at_ms: now_ms,
                 retired_at_ms: None,
+                revoked_at_ms: None,
                 rotation_id: None,
                 replaces: None,
             }],
@@ -1046,6 +1057,7 @@ pub fn rotate(
         public_key: generated.public_key,
         created_at_ms: pending.created_at_ms,
         retired_at_ms: None,
+        revoked_at_ms: None,
         rotation_id: Some(request.rotation_id.clone()),
         replaces: Some(request.expected_active_key_id.clone()),
     });
@@ -1390,12 +1402,43 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
         .map(PublicKeyring::retained_key_ids)
         .unwrap_or_default();
 
+    let affected_sessions = if keyring
+        .as_ref()
+        .is_some_and(|ring| ring.keys.iter().any(|key| key.revoked_at_ms.is_some()))
+    {
+        if let Ok(affected) = revocation::affected_sessions(paths) {
+            affected
+        } else {
+            failures.push(LauncherFailure {
+                code: "key_containment_unavailable".into(),
+                detail: "Affected Session containment could not be inspected".into(),
+                next_action:
+                    "Inspect launcher authority as administrator; keep revoked Sessions disabled"
+                        .into(),
+            });
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
     LauncherStatus {
         schema: STATUS_SCHEMA.to_owned(),
         trusted: failures.is_empty(),
         config: config.filter(|_| config_valid),
         active_key_id,
         retained_key_ids,
+        affected_sessions,
+        revoked_key_ids: keyring
+            .as_ref()
+            .filter(|_| keyring_valid)
+            .map(|ring| {
+                ring.keys
+                    .iter()
+                    .filter(|key| key.revoked_at_ms.is_some())
+                    .map(|key| key.key_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
         occupied_slots,
         failures,
     }
@@ -1535,6 +1578,7 @@ impl LauncherSigner {
             ));
         }
         let _install_lock = history::signing_lock(&self.paths, deadline)?;
+        self.require_key_authority(key_id)?;
         let registration = history::prepare(&self.paths, &receipt)?;
         let enrolled = self.keyring.key(key_id).ok_or_else(|| {
             LauncherError::Invalid(format!(
@@ -3487,6 +3531,7 @@ mod tests {
                     public_key: first.public_key.clone(),
                     created_at_ms: 1,
                     retired_at_ms: Some(2),
+                    revoked_at_ms: None,
                     rotation_id: None,
                     replaces: None,
                 },
@@ -3495,6 +3540,7 @@ mod tests {
                     public_key: second.public_key,
                     created_at_ms: 2,
                     retired_at_ms: None,
+                    revoked_at_ms: None,
                     rotation_id: Some("rotate-1".to_owned()),
                     replaces: Some(first.key_id.clone()),
                 },
@@ -3512,6 +3558,7 @@ mod tests {
             keyring,
         };
         let payload = receipt_bytes(&signer.release_id, &first.key_id);
+        write_json_atomic(&paths.keyring(), &signer.keyring, 0o444).unwrap();
 
         // An existing live chain was admitted before this key was retired.
         // Retirement permits continuation, never an unregistered new chain.
@@ -3613,5 +3660,18 @@ mod tests {
             .expect_err("changed signing tool is refused");
         assert!(error.to_string().contains("changed"), "{error}");
         assert_eq!(runner.calls.borrow().len(), 2, "changed tool was not run");
+
+        signer.ssh_keygen_digest = hash_file(&paths.ssh_keygen, "ssh-keygen")
+            .unwrap()
+            .to_string();
+        let mut revoked = serde_json::to_value(&signer.keyring).unwrap();
+        revoked["keys"][0]["revoked_at_ms"] = serde_json::json!(3);
+        write_json_atomic(&paths.keyring(), &revoked, 0o444).unwrap();
+        assert!(
+            signer
+                .sign_receipt_with(&runner, &first.key_id, &payload)
+                .is_err(),
+            "an already-open signer must refuse a compromised retired key"
+        );
     }
 }

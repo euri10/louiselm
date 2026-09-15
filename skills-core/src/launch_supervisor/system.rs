@@ -651,6 +651,42 @@ impl InstalledLaunchSigner {
 }
 
 impl LaunchSigner for InstalledLaunchSigner {
+    fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
+        let signer = Arc::clone(&self.signer);
+        let key_id = self.signing_key_id.clone();
+        thread::Builder::new()
+            .name("louiselm-key-authority".into())
+            .spawn(move || {
+                complete(
+                    signer
+                        .require_key_authority(&key_id)
+                        .map_err(|_| SupervisorError::SigningUnavailable),
+                );
+            })
+            .map(drop)
+            .map_err(|_| SupervisorError::SigningUnavailable)
+    }
+
+    fn record_containment(
+        &self,
+        session_id: String,
+        containment: crate::launcher_install::KeyContainment,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let signer = Arc::clone(&self.signer);
+        let key_id = self.signing_key_id.clone();
+        thread::Builder::new()
+            .name("louiselm-key-containment".into())
+            .spawn(move || {
+                complete(
+                    signer
+                        .record_containment(&key_id, &session_id, containment)
+                        .map_err(|_| SupervisorError::DurabilityUnavailable),
+                );
+            })
+            .map(drop)
+            .map_err(|_| SupervisorError::DurabilityUnavailable)
+    }
     fn release_id(&self) -> &str {
         &self.release_id
     }

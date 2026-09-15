@@ -183,6 +183,19 @@ impl Timer {
 }
 struct NoSigner;
 impl LaunchSigner for NoSigner {
+    fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
+        complete(Ok(()));
+        Ok(())
+    }
+    fn record_containment(
+        &self,
+        _: String,
+        _: crate::launcher_install::KeyContainment,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        complete(Ok(()));
+        Ok(())
+    }
     fn release_id(&self) -> &'static str {
         "fixture-release"
     }

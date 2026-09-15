@@ -61,6 +61,16 @@ pub struct LauncherVerifier {
 }
 
 impl LauncherVerifier {
+    /// Inspects compromise independently of receipt signatures or claimed times.
+    /// # Errors
+    /// Refuses unavailable shared authority or malformed local containment evidence.
+    pub fn key_revocation(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<super::SessionKeyRevocation>, LauncherError> {
+        self.check_authority()?;
+        super::revocation::session_revocation(&self.paths, session_id)
+    }
     /// Opens public authority; `scratch` must be the broker's private state directory.
     ///
     /// # Errors
@@ -91,7 +101,9 @@ impl LauncherVerifier {
 
     /// Reads the trusted original identity without authorizing a new launch.
     pub(crate) fn receipt_anchor(&self, session_id: &str) -> Result<ChainAnchor, LauncherError> {
-        Ok(super::history::load(&self.paths, session_id)?.anchor())
+        let anchor = super::history::load(&self.paths, session_id)?.anchor();
+        super::revocation::require_key(&self.paths, &anchor.signing_key_id)?;
+        Ok(anchor)
     }
 
     /// Verifies exact signed payload bytes with the fixed receipt namespace.
@@ -118,6 +130,7 @@ impl LauncherVerifier {
         let key = keyring
             .key(key_id)
             .ok_or_else(|| LauncherError::Invalid("unknown launcher key".to_owned()))?;
+        super::revocation::require_key(&self.paths, key_id)?;
         let parsed = sshsig::parse(signature)
             .map_err(|_| LauncherError::Invalid("invalid launcher signature".to_owned()))?;
         if parsed.namespace != RECEIPT_SCHEMA || parsed.openssh_public_key() != key.public_key {
@@ -163,6 +176,6 @@ impl LauncherVerifier {
                 "launcher signature verification failed".to_owned(),
             ));
         }
-        Ok(())
+        super::revocation::require_key(&self.paths, key_id)
     }
 }

@@ -65,6 +65,17 @@ enum ReceiptTrust {
 }
 
 impl ReceiptStore {
+    pub(super) fn key_revocation(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::launcher_install::SessionKeyRevocation>, BrokerError> {
+        match &self.trust {
+            ReceiptTrust::Fixed(_) => Ok(None),
+            ReceiptTrust::Installed(verifier) => verifier
+                .key_revocation(session_id)
+                .map_err(BrokerError::Verification),
+        }
+    }
     pub(super) fn check_authority(&self) -> Result<(), BrokerError> {
         if let ReceiptTrust::Installed(verifier) = &self.trust {
             verifier
@@ -174,6 +185,13 @@ impl ReceiptStore {
             &receipt_path(&session, receipt.payload.sequence),
             receipt_bytes,
         )?;
+        // A revocation during disk I/O must not turn an old verification into
+        // new launch/continuation authority. Preserve bytes but withhold the ACK.
+        if let ReceiptTrust::Installed(verifier) = &self.trust {
+            verifier
+                .receipt_anchor(&authorization.session_id)
+                .map_err(BrokerError::Verification)?;
+        }
         drop(appending);
 
         let acknowledgement = ReceiptAcknowledgement {

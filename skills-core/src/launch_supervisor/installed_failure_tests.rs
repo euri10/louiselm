@@ -10,6 +10,18 @@ struct FaultSigner {
 }
 
 impl LaunchSigner for FaultSigner {
+    fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
+        self.signer.check_authority(complete)
+    }
+    fn record_containment(
+        &self,
+        session_id: String,
+        containment: crate::launcher_install::KeyContainment,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.signer
+            .record_containment(session_id, containment, complete)
+    }
     fn release_id(&self) -> &str {
         self.signer.release_id()
     }

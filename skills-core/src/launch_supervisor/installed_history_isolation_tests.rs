@@ -5,7 +5,8 @@ use crate::broker::BrokerError;
 use crate::launch_protocol::{ErrorCode, RecoveryReadiness};
 
 const INSPECTOR: &str = "launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector";
-const SUBJECTS: [&str; 4] = ["bad-signature", "unknown-identity", "unreadable", "healthy"];
+pub(super) const SUBJECTS: [&str; 4] =
+    ["bad-signature", "unknown-identity", "unreadable", "healthy"];
 
 #[test]
 fn installed_history_inspector() {
@@ -66,10 +67,25 @@ fn installed_history_inspector() {
             assert!(broker.inspect(subject).unwrap().is_some());
         }
     } else {
-        for subject in &SUBJECTS[..3] {
+        let refused = if phase == "binding" {
+            &SUBJECTS[..1]
+        } else {
+            &SUBJECTS[..3]
+        };
+        for subject in refused {
+            if phase == "revoked" {
+                let report = broker.key_revocation(subject).unwrap().unwrap();
+                assert_eq!(report.session_id, *subject);
+                assert!(report.observation.is_none());
+            }
             let error = broker.inspect(subject).unwrap_err();
+            let expected = if phase == "revoked" {
+                ErrorCode::SigningKeyRevoked
+            } else {
+                ErrorCode::ReceiptChainInvalid
+            };
             assert!(
-                matches!(error, BrokerError::Policy(ref error) if error.code == ErrorCode::ReceiptChainInvalid),
+                matches!(error, BrokerError::Policy(ref error) if error.code == expected),
                 "{subject}: {error:?}"
             );
             assert_eq!(
@@ -84,7 +100,7 @@ fn installed_history_inspector() {
     }
 }
 
-fn inspect_process(root: &Path, phase: &str) {
+pub(super) fn inspect_process(root: &Path, phase: &str) {
     let socket = paths(root).broker_socket;
     if socket.exists() {
         fs::remove_file(socket).unwrap();

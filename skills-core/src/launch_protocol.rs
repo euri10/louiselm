@@ -230,6 +230,8 @@ pub enum ErrorCode {
     LifecycleMechanicUnavailable,
     /// Receipt bytes or their chain do not verify.
     ReceiptChainInvalid,
+    /// Installed administrative revocation invalidates this Session's signing key.
+    SigningKeyRevoked,
     /// Receipt signing is temporarily unavailable.
     SigningUnavailable,
     /// Durable receipt storage is temporarily unavailable.
@@ -2209,6 +2211,11 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
         ),
         ErrorCode::LifecycleMechanicUnavailable => (
             "Session lifecycle mechanic is unavailable",
+            false,
+            NextAction::ContactOperator,
+        ),
+        ErrorCode::SigningKeyRevoked => (
+            "Launcher signing key revoked",
             false,
             NextAction::ContactOperator,
         ),

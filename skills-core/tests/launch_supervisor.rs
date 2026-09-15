@@ -788,6 +788,8 @@ type PendingSignature = (
 );
 
 struct FakeSigner {
+    authority_valid: AtomicBool,
+    containments: Mutex<Vec<louiselm_skills::launcher_install::KeyContainment>>,
     events: Events,
     release_id: String,
     signing_key_id: String,
@@ -799,8 +801,23 @@ struct FakeSigner {
 }
 
 impl FakeSigner {
+    fn wait_for_containment(&self) -> louiselm_skills::launcher_install::KeyContainment {
+        let (observations, timeout) = self
+            .changed
+            .wait_timeout_while(lock(&self.containments), CALLBACK_TIMEOUT, |observations| {
+                observations.is_empty()
+            })
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "key containment observation never arrived"
+        );
+        observations[0]
+    }
     fn new(events: Events) -> Self {
         Self {
+            authority_valid: AtomicBool::new(true),
+            containments: Mutex::new(Vec::new()),
             events,
             release_id: Digest::of(b"release").to_string(),
             signing_key_id: Digest::of(b"signing-key").to_string(),
@@ -848,6 +865,26 @@ impl FakeSigner {
 }
 
 impl LaunchSigner for FakeSigner {
+    fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
+        let result = if self.authority_valid.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(SupervisorError::SigningUnavailable)
+        };
+        thread::spawn(move || complete(result));
+        Ok(())
+    }
+    fn record_containment(
+        &self,
+        _: String,
+        containment: louiselm_skills::launcher_install::KeyContainment,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        lock(&self.containments).push(containment);
+        self.changed.notify_all();
+        thread::spawn(move || complete(Ok(())));
+        Ok(())
+    }
     fn release_id(&self) -> &str {
         &self.release_id
     }
@@ -3147,6 +3184,192 @@ fn launch_acks_starting_then_starts_and_acks_linked_running_before_success() {
             .any(|events| { events == ["capability.close", "agent.dispose", "identity.release"] })
     );
     assert!(setup.broker.is_closed());
+}
+
+#[test]
+fn revoked_key_freezes_live_session_without_signing_a_containment_receipt() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    setup.signer.authority_valid.store(false, Ordering::SeqCst);
+    let observations = lock(&setup.signer.containments);
+    let (observations, timeout) = setup
+        .signer
+        .changed
+        .wait_timeout_while(observations, CALLBACK_TIMEOUT, |observations| {
+            observations.is_empty()
+        })
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "live authority withdrawal was never contained"
+    );
+    assert_eq!(
+        *observations,
+        vec![louiselm_skills::launcher_install::KeyContainment::Frozen]
+    );
+    drop(observations);
+    assert!(lock(&setup.platform.agent).parked);
+    assert!(
+        !lock(&setup.platform.agent).disposed,
+        "freeze retains the Session"
+    );
+    assert_eq!(
+        setup.signer.payloads().len(),
+        2,
+        "compromised key must not sign containment"
+    );
+    let events = lock(&setup.events).clone();
+    assert!(
+        events
+            .iter()
+            .position(|e| e == "capability.revoke")
+            .unwrap()
+            < events.iter().position(|e| e == "agent.park").unwrap()
+    );
+    assert!(session.dispose().is_err());
+}
+
+#[test]
+fn revoked_key_reports_failed_narrowing_and_cannot_leave_a_runnable_session() {
+    for behavior in [
+        PlatformBehavior {
+            revoke_fails: true,
+            ..PlatformBehavior::default()
+        },
+        PlatformBehavior {
+            park_fails: true,
+            ..PlatformBehavior::default()
+        },
+    ] {
+        let setup = setup(
+            true,
+            |_| {},
+            AppendBehavior::Hold,
+            behavior,
+            SUPERVISOR_TIMEOUT,
+        );
+        let session = complete_launch(&setup);
+        setup.signer.authority_valid.store(false, Ordering::SeqCst);
+        assert_eq!(
+            setup.signer.wait_for_containment(),
+            louiselm_skills::launcher_install::KeyContainment::Failed
+        );
+        assert!(session.dispose().is_err());
+        assert!(lock(&setup.platform.agent).disposed);
+        assert_eq!(setup.signer.payloads().len(), 2);
+    }
+}
+
+#[test]
+fn revoked_key_during_start_ack_cannot_report_a_successful_launch() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    setup.signer.authority_valid.store(false, Ordering::SeqCst);
+    setup.broker.acknowledge();
+    assert!(matches!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+        Err(SupervisorError::SigningUnavailable)
+    ));
+    assert!(lock(&setup.platform.agent).disposed);
+}
+
+#[test]
+fn revoked_key_cannot_complete_pending_resume_after_controller_loss() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    let (input, receiver, worker, _) = park_launched_session(&setup, session);
+    setup.signer.hold_on_call(setup.signer.payloads().len());
+    let resume = resume_request(&setup, "revoked-resume");
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(resume));
+    setup.signer.wait_for_held_call();
+    assert_eq!(event_count(&setup.events, "agent.resume"), 1);
+    setup.signer.authority_valid.store(false, Ordering::SeqCst);
+    assert_eq!(
+        setup.signer.wait_for_containment(),
+        louiselm_skills::launcher_install::KeyContainment::Frozen
+    );
+    setup.signer.release_held_call();
+    input.shutdown(Shutdown::Write).unwrap();
+    assert!(receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().is_err());
+    worker.join().unwrap();
+    assert_eq!(
+        setup.broker.session_receipt_count(),
+        1,
+        "only the pre-compromise Park was stored"
+    );
+    assert_eq!(
+        event_count(&setup.events, "capability.enable"),
+        1,
+        "late Resume cannot re-enable"
+    );
+}
+
+#[test]
+fn revoked_key_ignores_a_late_lifecycle_signature_and_unaffected_session_continues() {
+    let affected = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let healthy = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&affected);
+    let healthy_session = complete_launch(&healthy);
+    // A late valid signature cannot become trusted after withdrawal.
+    affected.signer.hold_on_call(2);
+    affected.broker.wait_for_session_request();
+    let park = lifecycle_request(&affected, "park-before-compromise", "park-authority", 1);
+    affected
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(park));
+    affected.signer.wait_for_held_call();
+    affected
+        .signer
+        .authority_valid
+        .store(false, Ordering::SeqCst);
+    assert_eq!(
+        affected.signer.wait_for_containment(),
+        louiselm_skills::launcher_install::KeyContainment::Frozen
+    );
+    affected.signer.release_held_call();
+    assert!(session.dispose().is_err());
+    assert_eq!(affected.broker.session_receipt_count(), 0);
+    assert!(!lock(&healthy.platform.agent).parked);
+    // The unaffected Session still uses its authenticated lifecycle channel.
+    let (input, receiver, worker, _) = park_launched_session(&healthy, healthy_session);
+    assert!(lock(&healthy.platform.agent).parked);
+    finish_session_relay(&healthy, input, receiver, worker);
 }
 
 #[test]

@@ -361,6 +361,26 @@ pub fn install_status(status: &crate::install::InstallStatus) -> String {
 /// Renders privileged launcher authority as operator-facing text.
 pub fn launcher_status(status: &crate::launcher_install::LauncherStatus) -> String {
     let mut out = String::new();
+    for key in &status.revoked_key_ids {
+        push(
+            &mut out,
+            &format!("REVOKED key {key}: all associated receipts are untrusted"),
+        );
+    }
+    for affected in &status.affected_sessions {
+        push(
+            &mut out,
+            &format!(
+                "  Session {}: local containment observation {:?}; {}",
+                affected.session_id,
+                affected
+                    .observation
+                    .as_ref()
+                    .map(|report| report.containment),
+                affected.next_action
+            ),
+        );
+    }
     push(
         &mut out,
         &format!(
