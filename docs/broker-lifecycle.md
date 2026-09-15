@@ -206,6 +206,21 @@ remains a broker-wide refusal, as does an invalid identity marker at startup.
 The installed isolation gate uses real signing authority and a dedicated broker
 UID to exercise these distinctions; it does not establish live vendor cutover.
 
+### Retired private-key completion
+
+The root-owned keyring records every admitted Session's signing lifetime.
+The supervisor retains its reference through Park/resume, broker loss and
+pending terminal receipts. It completes the reference only after proven
+process/identity cleanup, relay quiescence and exact terminal receipt ACK,
+after disconnecting its event receiver. Unproven exits leave a live reference.
+
+Completion, signing, admission and rotation share the install lock. Once a
+retired key has no live references, cleanup durably forbids further signing,
+unlinks only that private key and fsyncs its directory. Historical public keys,
+bindings and exact receipts survive restart and upgrade. Missing authority or
+stale references never establish completion; revoked keys are excluded from
+routine cleanup. See [maintenance and acceptance limits](../skills-core/README.md#retired-launcher-private-keys).
+
 ### Compromised launcher keys
 
 An explicit trusted administrator `launcher revoke-key --expected-key-id <id>`

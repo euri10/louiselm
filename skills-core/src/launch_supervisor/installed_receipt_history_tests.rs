@@ -2,6 +2,8 @@
 
 use super::*;
 
+#[path = "installed_key_cleanup_tests.rs"]
+mod cleanup;
 #[path = "installed_history_isolation_tests.rs"]
 mod isolation;
 #[path = "installed_key_revocation_tests.rs"]
@@ -359,7 +361,7 @@ fn raw_signature(paths: &LauncherPaths, receipt: &ReceiptPayload, scratch: &Path
     fs::read_to_string(message.with_extension("sig")).unwrap()
 }
 
-fn upgrade(paths: &LauncherPaths, config: &LauncherConfig) {
+pub(super) fn upgrade(paths: &LauncherPaths, config: &LauncherConfig) {
     let old = paths
         .release_prefix
         .join("releases")

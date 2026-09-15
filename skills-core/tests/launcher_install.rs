@@ -606,7 +606,7 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
 }
 
 #[test]
-fn rotation_replays_once_and_keeps_every_old_public_and_private_key() {
+fn rotation_replays_once_and_removes_unused_private_key_only() {
     let fixture = Fixture::new();
     let runner = FakeRunner::default();
     let installed = install(&fixture.paths, &runner, &Fixture::request(), 10).unwrap();
@@ -635,7 +635,20 @@ fn rotation_replays_once_and_keeps_every_old_public_and_private_key() {
     let private_keys = fs::read_dir(fixture.paths.state_root.join("private/keys"))
         .expect("private key directory is readable")
         .count();
-    assert_eq!(private_keys, 2, "retired private key remains available");
+    assert_eq!(
+        private_keys, 2,
+        "historical key directories remain available"
+    );
+    let retired_private = fixture
+        .paths
+        .state_root
+        .join("private/keys")
+        .join(Digest::parse(&first).unwrap().directory_name())
+        .join("key");
+    assert!(
+        !retired_private.exists(),
+        "unused retired private key is removed"
+    );
 
     let conflicting = RotationRequest {
         rotation_id: request.rotation_id,
@@ -688,6 +701,67 @@ fn compromise_revocation_survives_retry_rotation_and_reinstall() {
     assert_eq!(ring.key(&first).unwrap().revoked_at_ms, Some(20));
     assert_eq!(ring.key(&first).unwrap().retired_at_ms, Some(40));
     assert_eq!(ring.key(&rotation.key_id).unwrap().revoked_at_ms, None);
+    assert!(louiselm_skills::launcher_install::cleanup_key(&fixture.paths, &first).is_err());
+    assert!(
+        fixture
+            .paths
+            .state_root
+            .join("private/keys")
+            .join(Digest::parse(&first).unwrap().directory_name())
+            .join("key")
+            .is_file()
+    );
+}
+
+#[test]
+fn cleanup_refuses_missing_authority_stale_references_and_active_keys() {
+    use louiselm_skills::launcher_install::{SessionKeyState, cleanup_key};
+    for references in [
+        None,
+        Some(std::collections::BTreeMap::from([(
+            "stale-session".into(),
+            SessionKeyState::Live,
+        )])),
+    ] {
+        let fixture = Fixture::new();
+        let runner = FakeRunner::default();
+        let first = install(&fixture.paths, &runner, &Fixture::request(), 10)
+            .unwrap()
+            .active_key_id
+            .unwrap();
+        assert!(cleanup_key(&fixture.paths, &first).is_err());
+        let keyring = fixture.paths.state_root.join("keyring.json");
+        let mut ring = public_keyring(&fixture.paths).unwrap();
+        ring.keys[0].signing_sessions = references;
+        fs::set_permissions(&keyring, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&keyring, serde_json::to_vec(&ring).unwrap()).unwrap();
+        fs::set_permissions(&keyring, fs::Permissions::from_mode(0o444)).unwrap();
+        rotate(
+            &fixture.paths,
+            &runner,
+            &RotationRequest {
+                rotation_id: "retain-uncertain".into(),
+                expected_active_key_id: first.clone(),
+            },
+            20,
+        )
+        .unwrap();
+        assert!(
+            cleanup_key(&fixture.paths, &first).is_err(),
+            "no binding inventory is not proof"
+        );
+        assert!(
+            fixture
+                .paths
+                .state_root
+                .join("private/keys")
+                .join(Digest::parse(&first).unwrap().directory_name())
+                .join("key")
+                .is_file()
+        );
+        fs::rename(&keyring, fixture.root.path().join("saved-keyring")).unwrap();
+        assert!(cleanup_key(&fixture.paths, &first).is_err());
+    }
 }
 
 #[test]

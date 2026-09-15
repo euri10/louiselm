@@ -38,8 +38,10 @@ mod foreground;
 mod foreground_tests;
 mod history;
 mod identity;
+mod key_cleanup;
 mod revocation;
 pub use broker::{LauncherVerifier, public_runtime_config};
+pub use key_cleanup::{KeyCleanup, SessionKeyState, cleanup_key};
 pub use revocation::{
     KeyContainment, KeyContainmentReport, KeyRevocation, SessionKeyRevocation, revoke_key,
 };
@@ -238,6 +240,11 @@ pub struct LauncherKey {
     pub retired_at_ms: Option<u64>,
     /// Explicit compromise revocation; invalidates all receipts, regardless of age.
     pub revoked_at_ms: Option<u64>,
+    /// Exhaustive root-registered references; absent authority forbids cleanup.
+    pub signing_sessions: Option<std::collections::BTreeMap<String, SessionKeyState>>,
+    /// Durable, irreversible permission to unlink this retired private key.
+    #[serde(default)]
+    pub private_key_cleanup_authorized: bool,
     /// Idempotency identity of the rotation that created this key.
     pub rotation_id: Option<String>,
     /// Key replaced by that rotation.
@@ -955,6 +962,8 @@ pub fn install(
                 created_at_ms: now_ms,
                 retired_at_ms: None,
                 revoked_at_ms: None,
+                signing_sessions: Some(std::collections::BTreeMap::new()),
+                private_key_cleanup_authorized: false,
                 rotation_id: None,
                 replaces: None,
             }],
@@ -1016,6 +1025,7 @@ pub fn rotate(
             )));
         }
         clear_matching_pending_rotation(paths, request, &key.key_id)?;
+        key_cleanup::cleanup_if_ready(paths, &request.expected_active_key_id)?;
         return Ok(RotationOutcome {
             key_id: key.key_id.clone(),
             active_key_id: keyring.active_key_id,
@@ -1058,12 +1068,15 @@ pub fn rotate(
         created_at_ms: pending.created_at_ms,
         retired_at_ms: None,
         revoked_at_ms: None,
+        signing_sessions: Some(std::collections::BTreeMap::new()),
+        private_key_cleanup_authorized: false,
         rotation_id: Some(request.rotation_id.clone()),
         replaces: Some(request.expected_active_key_id.clone()),
     });
     keyring.active_key_id.clone_from(&generated.key_id);
     write_json_atomic(&paths.keyring(), &keyring, 0o444)?;
     clear_pending_rotation(paths)?;
+    key_cleanup::cleanup_if_ready(paths, &request.expected_active_key_id)?;
     Ok(RotationOutcome {
         key_id: generated.key_id.clone(),
         active_key_id: generated.key_id,
@@ -1502,8 +1515,8 @@ impl LauncherSigner {
 
     /// Signs exact canonical receipt bytes with the key bound to a live chain.
     ///
-    /// Both active and retired keys are usable; retired private keys are kept so
-    /// a registered chain can retain the key named by its genesis receipt.
+    /// Both active and retired keys are usable until authoritative completion;
+    /// a live registered chain retains the key named by its genesis receipt.
     /// New chains require the current release and active key under the install
     /// lock. Exact genesis authority is durable before its signature is returned.
     ///
@@ -1580,6 +1593,7 @@ impl LauncherSigner {
         let _install_lock = history::signing_lock(&self.paths, deadline)?;
         self.require_key_authority(key_id)?;
         let registration = history::prepare(&self.paths, &receipt)?;
+        key_cleanup::register_session(&self.paths, &receipt, registration.is_some())?;
         let enrolled = self.keyring.key(key_id).ok_or_else(|| {
             LauncherError::Invalid(format!(
                 "launcher key '{key_id}' is not in the installed keyring"
@@ -2718,7 +2732,8 @@ fn validate_keyring(
                 "retained launcher key has no retirement time".to_owned(),
             ));
         }
-        if require_private {
+        key_cleanup::validate(key, &keyring.active_key_id)?;
+        if require_private && !key.private_key_cleanup_authorized {
             let path = private_key_path(&paths.keys(), &key.key_id)?;
             ensure_private_key(&path)?;
         }
@@ -2791,6 +2806,9 @@ fn validate_private_public_keys(
     keyring: &PublicKeyring,
 ) -> Result<(), LauncherError> {
     for enrolled in &keyring.keys {
+        if enrolled.private_key_cleanup_authorized {
+            continue;
+        }
         let private = private_key_path(&paths.keys(), &enrolled.key_id)?;
         validate_one_private_public_key(
             paths,
@@ -2890,6 +2908,9 @@ fn require_private_key_ownership(
     keyring: &PublicKeyring,
 ) -> Result<(), LauncherError> {
     for key in &keyring.keys {
+        if key.private_key_cleanup_authorized {
+            continue;
+        }
         let path = private_key_path(&paths.keys(), &key.key_id)?;
         let metadata = fs::symlink_metadata(path)
             .map_err(|source| io_error("launcher private key", source))?;
@@ -2966,6 +2987,11 @@ fn read_required_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, La
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), LauncherError> {
     let bytes =
         serde_json::to_vec(value).map_err(|error| LauncherError::Malformed(error.to_string()))?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        return Err(LauncherError::Invalid(
+            "launcher state update exceeds its size limit; existing authority preserved".into(),
+        ));
+    }
     write_atomic(path, &bytes, mode)
 }
 
@@ -3079,6 +3105,25 @@ fn check_private_key_metadata(
     failures: &mut Vec<LauncherFailure>,
 ) {
     for key in &keyring.keys {
+        if key.private_key_cleanup_authorized {
+            if private_key_path(&paths.keys(), &key.key_id).is_ok_and(|path| {
+                !matches!(fs::symlink_metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
+            }) {
+                failures.push(failure(
+                    "private_key_cleanup_pending",
+                    format!("Retired key {} has unfinished private-file removal.", key.key_id),
+                    &format!("As administrator, retry launcher cleanup-key --expected-key-id {}.", key.key_id),
+                ));
+            }
+            continue;
+        }
+        if key.retired_at_ms.is_some() && key.signing_sessions.is_none() {
+            failures.push(failure(
+                "private_key_cleanup_unknown",
+                format!("Retired key {} lacks exhaustive signing references.", key.key_id),
+                "Retain its private material and inspect trusted launcher authority; do not infer completion from an empty inventory.",
+            ));
+        }
         let Ok(path) = private_key_path(&paths.keys(), &key.key_id) else {
             continue;
         };
@@ -3482,7 +3527,7 @@ mod tests {
         }
     }
 
-    fn receipt_bytes(release_id: &str, signing_key_id: &str) -> Vec<u8> {
+    pub(super) fn receipt_bytes(release_id: &str, signing_key_id: &str) -> Vec<u8> {
         let request_id = "request-1".to_owned();
         ReceiptPayload {
             schema: RECEIPT_SCHEMA.to_owned(),
@@ -3532,6 +3577,8 @@ mod tests {
                     created_at_ms: 1,
                     retired_at_ms: Some(2),
                     revoked_at_ms: None,
+                    signing_sessions: None,
+                    private_key_cleanup_authorized: false,
                     rotation_id: None,
                     replaces: None,
                 },
@@ -3541,6 +3588,8 @@ mod tests {
                     created_at_ms: 2,
                     retired_at_ms: None,
                     revoked_at_ms: None,
+                    signing_sessions: Some(std::collections::BTreeMap::new()),
+                    private_key_cleanup_authorized: false,
                     rotation_id: Some("rotate-1".to_owned()),
                     replaces: Some(first.key_id.clone()),
                 },

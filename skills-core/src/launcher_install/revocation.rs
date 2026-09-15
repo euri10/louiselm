@@ -244,6 +244,15 @@ impl LauncherSigner {
     /// # Errors
     /// Refuses revoked/unknown keys or unreadable installed authority.
     pub fn require_key_authority(&self, key_id: &str) -> Result<(), LauncherError> {
-        require_key(&self.paths, key_id)
+        require_key(&self.paths, key_id)?;
+        if public_keyring(&self.paths)?
+            .key(key_id)
+            .is_none_or(|key| key.private_key_cleanup_authorized)
+        {
+            return Err(LauncherError::Invalid(
+                "retired private-key signing is closed".into(),
+            ));
+        }
+        Ok(())
     }
 }

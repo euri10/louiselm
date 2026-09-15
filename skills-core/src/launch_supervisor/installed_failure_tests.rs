@@ -10,6 +10,13 @@ struct FaultSigner {
 }
 
 impl LaunchSigner for FaultSigner {
+    fn complete_session(
+        &self,
+        terminal: ReceiptPayload,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        self.signer.complete_session(terminal, complete)
+    }
     fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
         self.signer.check_authority(complete)
     }

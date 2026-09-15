@@ -292,7 +292,28 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     let sibling = launch(&paths, &config, root.path(), "sibling").unwrap();
     eprintln!("daemon: concurrent sibling launch");
     assert_eq!(sibling.receipt().payload.sequence, 1);
+    let retired = session.receipt().payload.signing_key_id.clone();
+    let original = session.receipt().canonical_bytes();
+    let retired_private = paths
+        .state_root
+        .join("private/keys")
+        .join(Digest::parse(&retired).unwrap().directory_name())
+        .join("key");
+    crate::launcher_install::rotate(
+        &paths,
+        &SystemCommandRunner,
+        &crate::launcher_install::RotationRequest {
+            rotation_id: "two-live-sessions".into(),
+            expected_active_key_id: retired.clone(),
+        },
+        4000,
+    )
+    .unwrap();
     sibling.dispose().unwrap();
+    assert!(
+        retired_private.is_file(),
+        "the other live Session still needs its key"
+    );
     let receipts = Path::new(STATE).join("receipts/sessions");
     fs::set_permissions(&receipts, fs::Permissions::from_mode(0o500)).unwrap();
     assert!(matches!(
@@ -360,8 +381,35 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     // The retained supervisor reattaches to the same manager-owned socket and
     // then completes the ordinary controller-loss/terminal receipt path.
     session.dispose().unwrap();
+    assert!(
+        !retired_private.exists(),
+        "final authoritative disposal removes the private key"
+    );
+    assert_eq!(
+        fs::read(
+            Path::new(STATE).join("receipts/sessions/session/00000000000000000001.receipt.json")
+        )
+        .unwrap(),
+        original
+    );
+    crate::launcher_install::LauncherSigner::open(&paths).unwrap();
     assert!(restarted.0.try_wait().unwrap().is_none());
     terminate(&mut restarted);
+    // Upgrade and restart validate exact old history using only public authority.
+    super::receipt_history::upgrade(&paths, &config);
+    let verifier =
+        crate::launcher_install::LauncherVerifier::open(&paths, Path::new(STATE)).unwrap();
+    let receipt = crate::launch_receipt::SignedReceipt::parse_canonical(&original).unwrap();
+    verifier
+        .verify(
+            &retired,
+            &receipt.payload.canonical_bytes(),
+            &receipt.signature,
+        )
+        .unwrap();
+    let mut after_cleanup = process(&manager, BROKER_UID, false);
+    ready(&config);
+    terminate(&mut after_cleanup);
     let terminal = fs::read_dir(Path::new(STATE).join("receipts/sessions/session"))
         .unwrap()
         .filter_map(Result::ok)

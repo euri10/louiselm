@@ -448,8 +448,57 @@ broker. A release upgrade preserves the root binding and canonical broker
 receipt bytes; historical verification does not authorize running an old
 release or automatically resume a Session. Unknown/unregistered histories fail
 closed rather than acquiring trust from their own signatures or timestamps.
-Unverifiable histories are quarantined per Session. Retired-private-key cleanup
-remains tracked by `louiselm-d6fv.13.4`.
+Unverifiable histories are quarantined per Session.
+
+### Retired launcher private keys
+
+Newly installed keys carry an exhaustive `signing_sessions` ledger in the
+root-owned keyring. Admission records a live reference before returning the
+genesis signature. Park, a signed terminal receipt, broker restart, or loss of
+the supervisor does not release it. The owning supervisor completes the
+reference only after process/identity cleanup, relay quiescence and durable
+terminal receipt acknowledgement, with its event receiver disconnected.
+Completed Sessions cannot sign again, even when another Session retains the key.
+
+Rotation removes an unused retired private key; final Session completion removes
+it when the last reference completes. Both share the admission/signing/rotation
+lock. Cleanup durably closes signing before unlinking exactly `key` in that
+key's private directory, then fsyncs the directory. It preserves public keys,
+historical genesis bindings, key directories and exact receipt bytes. Installed
+validation accepts the deliberately absent historical private file.
+
+For a failed cleanup, use the current verified release from a trusted
+administrator terminal, with the exact retired key ID from `launcher status`:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher cleanup-key \
+  --expected-key-id "$retired_key_id" --robot-json
+sudo /usr/local/lib/louiselm/current/bin/louiselm-skills launcher status --robot-json
+```
+
+Retry the same key after lock contention, unlink failure or failed fsync, even
+if the file already appears absent. `private_key_cleanup_authorized` records
+irreversible signing shutdown; it alone does not claim successful unlink/fsync.
+Status reports pending removal and missing reference authority with next actions.
+Supervisor completion failures return `KeyCleanupUnavailable` with that maintenance
+action; they do not report an already acknowledged receipt as unstored.
+Active keys, revoked keys and outstanding references refuse routine cleanup.
+Revocation remains a separate compromise decision and is never undone here.
+
+Missing reference authority stays unknown, including keys created without the
+ledger. No directory scan or release upgrade backfills it. A crash or incomplete
+launch may leave a stale live reference: retain that key and inspect trusted
+supervisor/lifecycle evidence; this command has no force option. Do not edit
+references, infer completion from age, Agent claims or process absence, or restore a key whose
+signing lifetime has closed. Uncertain cleanup preserves required material.
+The ledger shares the installed JSON size bound; an oversized update refuses
+before replacing existing authority. It does not discard historical references.
+
+Disposable installed tests cover two real Sessions, final disposal, broker
+restart, release upgrade and unchanged historical verification; separate signer
+tests cover Park/resume and signing races, and fault tests cover unlink/fsync
+retry. These gates do not perform production maintenance or prove recovery
+after root compromise.
 
 ### Compromised launcher keys
 
@@ -756,8 +805,8 @@ sudo grep -Fx \
   /etc/sudoers.d/louiselm-launch
 ```
 
-Prove reinstall and rotation are idempotent, and that rotation retains both
-public and private history without exposing private bytes to the operator:
+Prove reinstall and rotation are idempotent, retaining public history and only
+private keys needed by live Sessions, without exposing private bytes:
 
 ```sh
 old_key=$(jq -r .active_key_id /tmp/launcher-install.json)
@@ -787,8 +836,9 @@ jq -e --arg old "$old_key" --arg new "$new_key" '
 ' /tmp/launcher-status.json
 sudo -u "$operator" test -r /usr/local/lib/louiselm/launcher/keyring.json
 ! sudo -u "$operator" test -r /usr/local/lib/louiselm/launcher/private
-test "$(sudo find /usr/local/lib/louiselm/launcher/private/keys \
-  -mindepth 2 -maxdepth 2 -name key | wc -l)" -eq 2
+# This fresh-install fixture has admitted no Sessions: the old private key is gone.
+old_directory="sha256-${old_key#sha256:}"
+! sudo test -e "/usr/local/lib/louiselm/launcher/private/keys/$old_directory/key"
 ```
 
 #### Runtime acceptance

@@ -1157,6 +1157,17 @@ fn launcher_command(options: &Options) -> Result<i32, CliError> {
             let status = launcher_install::status(&paths);
             report_launcher_status(options, &status)
         }
+        "cleanup-key" => {
+            let key_id = required(options.expected_key_id.as_ref(), "--expected-key-id")?;
+            require_verified_running_release(&paths)?;
+            let outcome = launcher_install::cleanup_key(&paths, key_id)?;
+            report(options, &outcome, |outcome| {
+                format!(
+                    "retired private key {} removed; public history retained",
+                    outcome.key_id
+                )
+            })
+        }
         "revoke-key" => {
             let key_id = required(options.expected_key_id.as_ref(), "--expected-key-id")?;
             require_verified_running_release(&paths)?;
@@ -1308,12 +1319,13 @@ Trusted release:
   louiselm-skills release status [--prefix <dir>]
   louiselm-skills release identity
 
-Privileged launcher authority (install/rotation require current verified release):
+Privileged launcher authority (mutations require current verified release):
   louiselm-skills launcher install --operator <user> --broker-uid <id>
                                     --broker-gid <id> --uid-start <id>
                                     --gid-start <id> --slots <count>
   louiselm-skills launcher rotate-key --rotation-id <id> --expected-key-id <id>
   louiselm-skills launcher revoke-key --expected-key-id <id>
+  louiselm-skills launcher cleanup-key --expected-key-id <id>
   louiselm-skills launcher status
 
 Emergency quarantine (narrows only; no token needed):

@@ -789,6 +789,7 @@ type PendingSignature = (
 
 struct FakeSigner {
     authority_valid: AtomicBool,
+    fail_completion: AtomicBool,
     containments: Mutex<Vec<louiselm_skills::launcher_install::KeyContainment>>,
     events: Events,
     release_id: String,
@@ -817,6 +818,7 @@ impl FakeSigner {
     fn new(events: Events) -> Self {
         Self {
             authority_valid: AtomicBool::new(true),
+            fail_completion: AtomicBool::new(false),
             containments: Mutex::new(Vec::new()),
             events,
             release_id: Digest::of(b"release").to_string(),
@@ -865,6 +867,21 @@ impl FakeSigner {
 }
 
 impl LaunchSigner for FakeSigner {
+    fn complete_session(
+        &self,
+        terminal: louiselm_skills::launch_receipt::ReceiptPayload,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        assert_eq!(terminal.resulting_state, SessionState::Terminal);
+        record(&self.events, "signer.complete");
+        let result = if self.fail_completion.load(Ordering::SeqCst) {
+            Err(SupervisorError::DurabilityUnavailable)
+        } else {
+            Ok(())
+        };
+        thread::spawn(move || complete(result));
+        Ok(())
+    }
     fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
         let result = if self.authority_valid.load(Ordering::SeqCst) {
             Ok(())
@@ -2523,6 +2540,11 @@ fn park_launched_session(
         panic!("warm Park completes before Resume testing");
     };
     assert_eq!(receipt, park_receipt);
+    assert_eq!(
+        event_count(&setup.events, "signer.complete"),
+        0,
+        "Park retains the signing lifetime"
+    );
     (controller_input, relay_receiver, relay_worker, park_receipt)
 }
 
@@ -4717,6 +4739,11 @@ fn terminal_disposal_waits_for_relay_quiescence_and_ignores_late_relay_events() 
         .broker
         .deliver_session_request(ProtocolMessage::Lifecycle(disposal.clone()));
     setup.broker.wait_for_session_receipt(0);
+    assert_eq!(
+        event_count(&setup.events, "signer.complete"),
+        0,
+        "a pending terminal receipt retains signing authority"
+    );
     setup.broker.wait_for_session_request();
     setup
         .broker
@@ -4733,6 +4760,7 @@ fn terminal_disposal_waits_for_relay_quiescence_and_ignores_late_relay_events() 
         Err(mpsc::TryRecvError::Empty)
     ));
     assert!(!setup.broker.is_closed());
+    assert_eq!(event_count(&setup.events, "signer.complete"), 0);
 
     setup.platform.complete_relay_quiescence();
     assert_eq!(
@@ -4743,6 +4771,7 @@ fn terminal_disposal_waits_for_relay_quiescence_and_ignores_late_relay_events() 
         0,
     );
     assert!(setup.broker.is_closed());
+    assert_eq!(event_count(&setup.events, "signer.complete"), 1);
     relay_worker.join().expect("terminal relay worker finishes");
 
     let receipts = setup.broker.session_receipt_count();
@@ -4762,6 +4791,43 @@ fn terminal_disposal_waits_for_relay_quiescence_and_ignores_late_relay_events() 
     assert_eq!(event_count(&setup.events, "identity.release"), releases);
 
     drop(controller_input);
+}
+
+#[test]
+fn failed_key_completion_reports_maintenance_after_terminal_ack() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    setup.signer.fail_completion.store(true, Ordering::SeqCst);
+    let session = complete_launch(&setup);
+    let (input, receiver, worker) = begin_session_relay(session);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(disposal_request(
+            &setup,
+            "cleanup-failure",
+        )));
+    setup.broker.wait_for_session_receipt(0);
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    let error = receiver
+        .recv_timeout(CALLBACK_TIMEOUT)
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("signing-key cleanup"), "{error}");
+    assert_eq!(event_count(&setup.events, "identity.release"), 1);
+    assert_eq!(event_count(&setup.events, "signer.complete"), 1);
+    drop(input);
+    worker.join().unwrap();
 }
 
 #[test]

@@ -305,6 +305,16 @@ pub trait LaunchSigner: Send + Sync {
         complete: SupervisorCompletion<()>,
     ) -> Result<(), SupervisorError>;
 
+    /// Completes signing authority after proven cleanup and terminal receipt ACK.
+    /// Called with the event receiver disconnected; no subsequent signing is permitted.
+    /// # Errors
+    /// Returns worker admission failure; durable completion/cleanup errors arrive in `complete`.
+    fn complete_session(
+        &self,
+        terminal: ReceiptPayload,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Signs exact canonical [`ReceiptPayload`] bytes asynchronously.
     ///
     /// # Errors
@@ -712,6 +722,11 @@ pub enum SupervisorError {
     /// Exact receipt persistence failed.
     #[error("launcher receipt was not durably stored")]
     DurabilityUnavailable,
+    /// Signing-lifetime completion or retired-private-key cleanup needs maintenance.
+    #[error(
+        "launcher signing-key cleanup failed; inspect launcher status and retry cleanup-key for the exact retired key"
+    )]
+    KeyCleanupUnavailable,
     /// Broker acknowledgement did not name the exact signed envelope.
     #[error("launcher receipt acknowledgement mismatched")]
     AcknowledgementMismatch,

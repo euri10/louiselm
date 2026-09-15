@@ -183,6 +183,14 @@ impl Timer {
 }
 struct NoSigner;
 impl LaunchSigner for NoSigner {
+    fn complete_session(
+        &self,
+        _: crate::launch_receipt::ReceiptPayload,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        std::thread::spawn(move || complete(Ok(())));
+        Ok(())
+    }
     fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
         complete(Ok(()));
         Ok(())

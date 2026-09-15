@@ -651,6 +651,28 @@ impl InstalledLaunchSigner {
 }
 
 impl LaunchSigner for InstalledLaunchSigner {
+    fn complete_session(
+        &self,
+        terminal: crate::launch_receipt::ReceiptPayload,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let signer = Arc::clone(&self.signer);
+        let deadline = Instant::now()
+            .checked_add(self.timeout)
+            .unwrap_or_else(Instant::now);
+        thread::Builder::new()
+            .name("louiselm-key-completion".into())
+            .spawn(move || {
+                complete(
+                    signer
+                        .complete_session(&terminal, deadline)
+                        .map_err(|_| SupervisorError::KeyCleanupUnavailable),
+                );
+            })
+            .map(drop)
+            .map_err(|_| SupervisorError::KeyCleanupUnavailable)
+    }
+
     fn check_authority(&self, complete: SupervisorCompletion<()>) -> Result<(), SupervisorError> {
         let signer = Arc::clone(&self.signer);
         let key_id = self.signing_key_id.clone();

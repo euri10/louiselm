@@ -161,6 +161,12 @@ impl LaunchedSession {
                 let (_, disconnected) = mpsc::sync_channel(1);
                 owner.receiver = disconnected;
                 let cleanup = owner.resources.cleanup();
+                // A terminal receipt alone cannot prove process cleanup or that
+                // the owner has finished its signing obligations. Uncertain
+                // exits keep the durable reference for operator inspection.
+                if cleanup.is_ok() {
+                    owner.complete_signing_lifetime()?;
+                }
                 match (result, cleanup) {
                     (_, Err(error)) => Err(error),
                     (result, Ok(())) => result,
@@ -249,6 +255,35 @@ impl Drop for LaunchedSession {
             self.detach_controller();
             let _ = self.owner.take();
         }
+    }
+}
+
+impl SessionOwner {
+    fn complete_signing_lifetime(&self) -> Result<(), SupervisorError> {
+        if self.state != SessionState::Terminal
+            || self.cleanup_unproven
+            || self.quarantined
+            || self.key_authority.withdrawn
+            || self.pending.is_some()
+            || self.has_receipt_backlog()
+            || self.receipt().payload.resulting_state != SessionState::Terminal
+            || self.relay_quiescence_result != Some(Ok(()))
+        {
+            return Ok(());
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.signer
+            .complete_session(
+                self.receipt().payload.clone(),
+                Box::new(move |result| {
+                    let _ = sender.send(result);
+                }),
+            )
+            .map_err(|_| SupervisorError::KeyCleanupUnavailable)?;
+        receiver
+            .recv_timeout(self.timeout)
+            .map_err(|_| SupervisorError::KeyCleanupUnavailable)?
+            .map_err(|_| SupervisorError::KeyCleanupUnavailable)
     }
 }
 
