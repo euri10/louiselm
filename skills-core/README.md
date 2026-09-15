@@ -433,6 +433,24 @@ credential-authenticated supervisor channel. The continuing broker worker owns
 packet ordering and correlation; `launch_head()` is a launch snapshot, not live
 Session status.
 
+Installed receipt verification uses a root-owned genesis binding below
+`launcher/receipt-bindings/`, indexed by the digest of the Session ID. The
+signer records the exact genesis payload digest and original Session, Run,
+release and key before returning its first signature. Registration shares the
+installer/rotation lock, so a stale signer cannot admit a new chain after its
+key or release changes. Exact retries preserve the original binding; failed
+registration returns no signature or durability claim.
+
+Routine key rotation permits already registered Sessions to continue with their
+original key. Installed verification rereads the public keyring and checks the
+registered binding, so both old and new chains verify without restarting the
+broker. A release upgrade preserves the root binding and canonical broker
+receipt bytes; historical verification does not authorize running an old
+release or automatically resume a Session. Unknown/unregistered histories fail
+closed rather than acquiring trust from their own signatures or timestamps.
+Compromise revocation, per-Session failure isolation and retired-private-key
+cleanup remain tracked by `louiselm-d6fv.13.2`–`.13.4`.
+
 Closing the rendezvous listener does not close returned Sessions. Explicitly
 closing or dropping a `BrokerSession` closes its channel, including clones.
 This initiates existing broker-loss handling; closing a socket is not proof of
@@ -794,7 +812,9 @@ Rotate the launcher key once and capture another pair. Verify both linked
 receipts from each launch. The public keyring must retain both the active and
 retired public keys while no private key is readable by the operator. Verify
 each canonical payload against the public key selected by its `signing_key_id`
-and the fixed namespace:
+and the fixed namespace. This raw OpenSSH check establishes the signature only;
+the installed broker additionally requires the protected genesis binding and
+validates the complete receipt chain:
 
 ```sh
 key_id=$(jq -r .signing_key_id /tmp/receipt.payload)

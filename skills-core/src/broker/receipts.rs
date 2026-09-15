@@ -12,7 +12,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -28,6 +28,7 @@ use crate::{
         ChainAnchor, ReceiptError, ReceiptHead, ReceiptOutcome, SessionState, SignedReceipt,
         VerifiedReceiptHead, verify_chain, verify_suffix,
     },
+    launcher_install::LauncherVerifier,
 };
 
 /// Directory holding one subdirectory per Session chain.
@@ -39,7 +40,8 @@ const SESSIONS_DIRECTORY: &str = "sessions";
 /// or hostile state directory cannot turn chain recovery into unbounded work.
 const MAX_CHAIN_RECEIPTS: usize = 1024;
 
-/// The installed release whose signed receipts this broker accepts.
+/// Caller-supplied authority for new chains in an explicitly owned store.
+/// Installed brokers instead use the launcher's registered Session identities.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedRelease {
     /// Digest of the trusted launcher release.
@@ -52,9 +54,15 @@ pub struct TrustedRelease {
 #[derive(Debug)]
 pub struct ReceiptStore {
     root: PathBuf,
-    release: TrustedRelease,
+    trust: ReceiptTrust,
     /// Serializes append decisions so two receipts cannot claim one sequence.
     appending: Mutex<()>,
+}
+
+#[derive(Debug)]
+enum ReceiptTrust {
+    Fixed(TrustedRelease),
+    Installed(Arc<LauncherVerifier>),
 }
 
 impl ReceiptStore {
@@ -72,15 +80,30 @@ impl ReceiptStore {
         sync_directory(root)?;
         Ok(Self {
             root: root.to_owned(),
-            release,
+            trust: ReceiptTrust::Fixed(release),
+            appending: Mutex::new(()),
+        })
+    }
+
+    /// Opens production storage using root-registered Session chain identities.
+    pub(crate) fn installed(
+        root: &Path,
+        verifier: Arc<LauncherVerifier>,
+    ) -> Result<Self, BrokerError> {
+        fs::create_dir_all(root.join(SESSIONS_DIRECTORY)).map_err(BrokerError::Storage)?;
+        sync_directory(root)?;
+        Ok(Self {
+            root: root.to_owned(),
+            trust: ReceiptTrust::Installed(verifier),
             appending: Mutex::new(()),
         })
     }
 
     /// Verifies one exact signed envelope and stores it durably.
     ///
-    /// The receipt must answer `authorization`, carry the trusted release and
-    /// signing key, and continue this Session's chain at its next sequence.
+    /// The receipt must answer `authorization`, match this Session's admitted
+    /// release/key identity, and continue its chain at the next sequence. A new
+    /// chain needs current caller authority or a root-registered genesis.
     /// The returned acknowledgement is only produced after the exact bytes and
     /// their directory entry are durable.
     ///
@@ -117,7 +140,7 @@ impl ReceiptStore {
             None => {
                 verify_chain(
                     std::slice::from_ref(&receipt),
-                    &self.anchor(authorization),
+                    &self.anchor(authorization, None)?,
                     &mut verify_signature,
                 )
                 .map_err(BrokerError::ReceiptRefused)?;
@@ -258,22 +281,45 @@ impl ReceiptStore {
         if stored.is_empty() {
             return Ok(None);
         }
-        verify_chain(stored, &self.anchor(authorization), verify_signature)
-            .map(Some)
-            .map_err(|error| match error {
-                ReceiptError::InvalidSignature { .. } => corrupt("stored chain no longer verifies"),
-                other => BrokerError::ReceiptRefused(other),
-            })
+        verify_chain(
+            stored,
+            &self.anchor(authorization, stored.first())?,
+            verify_signature,
+        )
+        .map(Some)
+        .map_err(|error| match error {
+            ReceiptError::InvalidSignature { .. } => corrupt("stored chain no longer verifies"),
+            other => BrokerError::ReceiptRefused(other),
+        })
     }
 
     /// The trusted identity a chain for this authorization must match.
-    fn anchor(&self, authorization: &LaunchAuthorization) -> ChainAnchor {
-        ChainAnchor {
+    fn anchor(
+        &self,
+        authorization: &LaunchAuthorization,
+        admitted: Option<&SignedReceipt>,
+    ) -> Result<ChainAnchor, BrokerError> {
+        let release = match &self.trust {
+            ReceiptTrust::Installed(verifier) => {
+                return verifier
+                    .receipt_anchor(&authorization.session_id)
+                    .map_err(BrokerError::Verification);
+            }
+            ReceiptTrust::Fixed(release) => release,
+        };
+        // This branch serves explicitly supplied authority, including in-memory
+        // peers. Existing bytes were admitted by this store; new genesis still
+        // requires the caller's current release. Production uses root history.
+        Ok(ChainAnchor {
             session_id: authorization.session_id.clone(),
             run_id: authorization.run_id.clone(),
-            release_id: self.release.release_id.clone(),
-            signing_key_id: self.release.signing_key_id.clone(),
-        }
+            release_id: admitted
+                .map_or(&release.release_id, |r| &r.payload.release_id)
+                .clone(),
+            signing_key_id: admitted
+                .map_or(&release.signing_key_id, |r| &r.payload.signing_key_id)
+                .clone(),
+        })
     }
 
     fn session_directory(&self, session_id: &str) -> Result<PathBuf, BrokerError> {

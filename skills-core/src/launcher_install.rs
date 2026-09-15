@@ -36,6 +36,7 @@ mod broker;
 mod foreground;
 #[cfg(all(test, target_os = "linux"))]
 mod foreground_tests;
+mod history;
 mod identity;
 pub use broker::{LauncherVerifier, public_runtime_config};
 
@@ -1402,6 +1403,7 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
 
 /// A measured signer bound to the launch-receipt namespace and installed keyring.
 pub struct LauncherSigner {
+    paths: LauncherPaths,
     ssh_keygen: PathBuf,
     ssh_keygen_digest: String,
     release_id: String,
@@ -1445,6 +1447,7 @@ impl LauncherSigner {
         require_private_key_ownership(paths, &keyring)?;
         validate_private_public_keys(paths, runner, &config, &keyring)?;
         Ok(Self {
+            paths: paths.clone(),
             ssh_keygen: config.ssh_keygen_path,
             ssh_keygen_digest: config.ssh_keygen_digest,
             release_id: config.release_id,
@@ -1457,10 +1460,13 @@ impl LauncherSigner {
     /// Signs exact canonical receipt bytes with the key bound to a live chain.
     ///
     /// Both active and retired keys are usable; retired private keys are kept so
-    /// a chain can retain the key named by its genesis receipt.
+    /// a registered chain can retain the key named by its genesis receipt.
+    /// New chains require the current release and active key under the install
+    /// lock. Exact genesis authority is durable before its signature is returned.
     ///
     /// # Errors
-    /// Refuses unknown keys or invalid receipt bindings; returns tool measurement, scratch I/O, signing, or signature-verification errors.
+    /// Refuses unknown keys, unregistered continuations or conflicting genesis;
+    /// returns lock, measurement, scratch, signing, verification or registration errors.
     pub fn sign_receipt(&self, key_id: &str, payload: &[u8]) -> Result<String, LauncherError> {
         self.sign_receipt_with(&SystemCommandRunner, key_id, payload)
     }
@@ -1471,7 +1477,12 @@ impl LauncherSigner {
         payload: &[u8],
         deadline: Instant,
     ) -> Result<String, LauncherError> {
-        self.sign_receipt_with(&BoundedSystemCommandRunner { deadline }, key_id, payload)
+        self.sign_receipt_using(
+            &BoundedSystemCommandRunner { deadline },
+            key_id,
+            payload,
+            deadline,
+        )
     }
 
     /// Release identity fixed by the validated launcher installation.
@@ -1486,15 +1497,30 @@ impl LauncherSigner {
         &self.keyring.active_key_id
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Validation, signing, verification and private-scratch cleanup form one transaction."
-    )]
     fn sign_receipt_with(
         &self,
         runner: &impl CommandRunner,
         key_id: &str,
         payload: &[u8],
+    ) -> Result<String, LauncherError> {
+        self.sign_receipt_using(
+            runner,
+            key_id,
+            payload,
+            Instant::now() + Duration::from_secs(30),
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Validation, signing, verification and private-scratch cleanup form one transaction."
+    )]
+    fn sign_receipt_using(
+        &self,
+        runner: &impl CommandRunner,
+        key_id: &str,
+        payload: &[u8],
+        deadline: Instant,
     ) -> Result<String, LauncherError> {
         let receipt = ReceiptPayload::parse_canonical(payload)
             .map_err(|error| LauncherError::Malformed(error.to_string()))?;
@@ -1508,6 +1534,8 @@ impl LauncherSigner {
                 "receipt release does not match the configured launcher release".to_owned(),
             ));
         }
+        let _install_lock = history::signing_lock(&self.paths, deadline)?;
+        let registration = history::prepare(&self.paths, &receipt)?;
         let enrolled = self.keyring.key(key_id).ok_or_else(|| {
             LauncherError::Invalid(format!(
                 "launcher key '{key_id}' is not in the installed keyring"
@@ -1602,7 +1630,11 @@ impl LauncherSigner {
             }
             Ok(signature)
         })();
-        finish_private_scratch(&scratch, result)
+        let signature = finish_private_scratch(&scratch, result)?;
+        if let Some(binding) = registration {
+            history::register(&self.paths, &binding)?;
+        }
+        Ok(signature)
     }
 }
 
@@ -3387,7 +3419,7 @@ mod tests {
         }
     }
 
-    fn signer_paths(root: &Path) -> LauncherPaths {
+    pub(super) fn signer_paths(root: &Path) -> LauncherPaths {
         let release_prefix = root.join("release");
         LauncherPaths {
             state_root: release_prefix.join("launcher"),
@@ -3469,6 +3501,7 @@ mod tests {
             ],
         };
         let mut signer = LauncherSigner {
+            paths: paths.clone(),
             ssh_keygen: paths.ssh_keygen.clone(),
             ssh_keygen_digest: hash_file(&paths.ssh_keygen, "ssh-keygen")
                 .unwrap()
@@ -3479,6 +3512,19 @@ mod tests {
             keyring,
         };
         let payload = receipt_bytes(&signer.release_id, &first.key_id);
+
+        // An existing live chain was admitted before this key was retired.
+        // Retirement permits continuation, never an unregistered new chain.
+        let binding = serde_json::from_value(serde_json::json!({
+            "schema": "louiselm.launch.receipt-binding/1",
+            "session_id": "session-1",
+            "run_id": "run-1",
+            "release_id": signer.release_id,
+            "signing_key_id": first.key_id,
+            "genesis_payload_digest": Digest::of(b"admitted genesis").to_string(),
+        }))
+        .unwrap();
+        history::register(&paths, &binding).unwrap();
 
         let signature = signer
             .sign_receipt_with(&runner, &first.key_id, &payload)

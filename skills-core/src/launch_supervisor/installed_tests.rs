@@ -54,6 +54,9 @@ mod socket_activation;
 #[path = "installed_daemon_tests.rs"]
 mod daemon;
 
+#[path = "installed_receipt_history_tests.rs"]
+mod receipt_history;
+
 struct BrokerAccount;
 
 impl BrokerAccount {

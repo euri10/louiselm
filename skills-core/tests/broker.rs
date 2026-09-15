@@ -75,6 +75,9 @@ mod recovery_status;
 #[path = "broker/reconnect.rs"]
 mod reconnect;
 
+#[path = "broker/receipt_history.rs"]
+mod receipt_history;
+
 #[path = "broker/serving.rs"]
 mod serving;
 

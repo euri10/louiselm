@@ -1,13 +1,12 @@
 //! Public installed authority and bounded, measured receipt verification.
 
 use super::{
-    CommandInvocation, LauncherConfig, LauncherError, LauncherPaths, PublicKeyring, io_error,
-    public_keyring, read_required_json, require_configured_release, require_measured_tool,
-    require_root_metadata, require_secure_tool, run_signing_command, validate_config,
-    validate_paths,
+    CommandInvocation, LauncherConfig, LauncherError, LauncherPaths, io_error, public_keyring,
+    read_required_json, require_configured_release, require_measured_tool, require_root_metadata,
+    require_secure_tool, run_signing_command, validate_config, validate_paths,
 };
 use crate::{
-    launch_receipt::{MAX_RECEIPT_BYTES, RECEIPT_SCHEMA, ReceiptPayload},
+    launch_receipt::{ChainAnchor, MAX_RECEIPT_BYTES, RECEIPT_SCHEMA, ReceiptPayload},
     sshsig,
 };
 use std::{
@@ -50,13 +49,14 @@ pub fn public_runtime_config(paths: &LauncherPaths) -> Result<LauncherConfig, La
     Ok(config)
 }
 
-/// Public-key verifier pinned to one installed release and keyring snapshot.
+/// Public-key verifier consuming root-registered historical Session authority.
 ///
 /// Verification uses the existing bounded process runner with an empty
 /// environment and measured absolute OpenSSH executable. No signing key is read.
+#[derive(Debug)]
 pub struct LauncherVerifier {
     config: LauncherConfig,
-    keyring: PublicKeyring,
+    paths: LauncherPaths,
     scratch: PathBuf,
 }
 
@@ -68,10 +68,10 @@ impl LauncherVerifier {
     pub fn open(paths: &LauncherPaths, scratch: &Path) -> Result<Self, LauncherError> {
         let config = public_runtime_config(paths)?;
         require_root_metadata(&paths.keyring(), 0o444, false, "launcher keyring")?;
-        let keyring = public_keyring(paths)?;
+        public_keyring(paths)?;
         Ok(Self {
             config,
-            keyring,
+            paths: paths.clone(),
             scratch: scratch.to_owned(),
         })
     }
@@ -82,10 +82,9 @@ impl LauncherVerifier {
         &self.config
     }
 
-    /// Key fixed for new receipt chains opened by this verifier.
-    #[must_use]
-    pub fn active_key_id(&self) -> &str {
-        &self.keyring.active_key_id
+    /// Reads the trusted original identity without authorizing a new launch.
+    pub(crate) fn receipt_anchor(&self, session_id: &str) -> Result<ChainAnchor, LauncherError> {
+        Ok(super::history::load(&self.paths, session_id)?.anchor())
     }
 
     /// Verifies exact signed payload bytes with the fixed receipt namespace.
@@ -101,16 +100,15 @@ impl LauncherVerifier {
     ) -> Result<(), LauncherError> {
         let receipt = ReceiptPayload::parse_canonical(payload)
             .map_err(|_| LauncherError::Invalid("invalid launcher receipt payload".to_owned()))?;
-        if signature.len() > MAX_RECEIPT_BYTES
-            || receipt.release_id != self.config.release_id
-            || receipt.signing_key_id != key_id
-        {
+        if signature.len() > MAX_RECEIPT_BYTES || receipt.signing_key_id != key_id {
             return Err(LauncherError::Invalid(
                 "launcher receipt authority mismatch".to_owned(),
             ));
         }
-        let key = self
-            .keyring
+        super::history::load(&self.paths, &receipt.session_id)?.check(&receipt)?;
+        require_root_metadata(&self.paths.keyring(), 0o444, false, "launcher keyring")?;
+        let keyring = public_keyring(&self.paths)?;
+        let key = keyring
             .key(key_id)
             .ok_or_else(|| LauncherError::Invalid("unknown launcher key".to_owned()))?;
         let parsed = sshsig::parse(signature)

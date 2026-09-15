@@ -1,6 +1,6 @@
 //! Installed, unprivileged composition of launch policy, verification and transport.
 
-use std::{fs, os::unix::fs::MetadataExt, path::Path};
+use std::{fs, os::unix::fs::MetadataExt, path::Path, sync::Arc};
 
 #[path = "promotion/installed.rs"]
 mod promotion;
@@ -9,7 +9,7 @@ mod verification;
 
 use super::{
     AuditLog, AuthorizationStore, BrokerError, BrokerService, BrokerSession, GrantRequest,
-    PendingAuthorization, ReceiptStore, SessionInspection, TrustedRelease, now_ms,
+    PendingAuthorization, ReceiptStore, SessionInspection, now_ms,
 };
 use crate::{
     broker::lifecycle::LifecycleCaller,
@@ -27,7 +27,7 @@ use crate::{
 /// All methods perform blocking I/O on the explicitly owned broker worker.
 pub struct InstalledBroker {
     pub(in crate::broker) service: BrokerService,
-    pub(in crate::broker) verifier: LauncherVerifier,
+    pub(in crate::broker) verifier: Arc<LauncherVerifier>,
 }
 
 impl InstalledBroker {
@@ -224,8 +224,9 @@ impl InstalledBroker {
         state: &Path,
         listener: Option<SeqpacketListener>,
     ) -> Result<Self, BrokerError> {
-        let verifier =
-            LauncherVerifier::open(paths, state).map_err(BrokerError::InstallationAuthority)?;
+        let verifier = Arc::new(
+            LauncherVerifier::open(paths, state).map_err(BrokerError::InstallationAuthority)?,
+        );
         let config = verifier.config();
         let uid = rustix::process::geteuid().as_raw();
         let gid = rustix::process::getegid().as_raw();
@@ -268,13 +269,7 @@ impl InstalledBroker {
             listener,
             &config.broker_socket_path,
             AuthorizationStore::open(&state.join("authorizations"), config.pool.clone())?,
-            ReceiptStore::open(
-                &state.join("receipts"),
-                TrustedRelease {
-                    release_id: config.release_id.clone(),
-                    signing_key_id: verifier.active_key_id().to_owned(),
-                },
-            )?,
+            ReceiptStore::installed(&state.join("receipts"), Arc::clone(&verifier))?,
             AuditLog::open(&state.join("audit"))?,
             CredentialPin::Identity { uid: 0, gid: 0 },
         )?;
