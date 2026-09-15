@@ -845,9 +845,10 @@ function Buffer:render(event, replay_active, continuing_prompt)
         end
         view.last_block_kind = "tool"
       end
-      view.tool_lines[id] = nil
+      -- Terminal replay updates may follow an already-completed tool_call.
+      -- Retain its row and title so late details update the same tool.
+      view.tool_lines[id] = rendered_line
       view.tool_statuses[id] = status or "finished"
-      view.tool_titles[id] = nil
       if rendered_line ~= nil then
         view.tool_ids[rendered_line] = id
       end

@@ -88,6 +88,49 @@ T["keeps context folds and prompt navigation behind the buffer API"] = function(
   MiniTest.expect.equality(nvim.api.nvim_get_current_line(), "answer")
 end
 
+T["updates one completed tool row across replay notifications and late payloads"] = function()
+  local owner = new_buffer()
+  -- louiselm-r141: proxy/sessions/01a07efc-1094-7873-9c89-91e31c3e6f52/log.jsonl
+  -- lines 194-201: completed tool_call followed by titleless completed update.
+  for _, id in ipairs({ "one", "two", "three" }) do
+    owner:render({
+      type = "tool_call_finished",
+      session_id = "buffer-test",
+      data = { toolCallId = id, title = "Read " .. id, status = "completed" },
+    })
+    owner:render({
+      type = "tool_call_finished",
+      session_id = "buffer-test",
+      data = { toolCallId = id, status = "completed" },
+    })
+  end
+  owner:finish_turn()
+  local rows = {}
+  for line, text in ipairs(buffer_lines(owner.buffer)) do
+    if text:match("^%[tool%]") then
+      rows[#rows + 1] = text
+      nvim.api.nvim_win_set_cursor(0, { line, 0 })
+      MiniTest.expect.equality(owner:tool_at_cursor(), ({ "one", "two", "three" })[#rows])
+    end
+  end
+  MiniTest.expect.equality(rows, {
+    "[tool] one: Read one (completed)",
+    "[tool] two: Read two (completed)",
+    "[tool] three: Read three (completed)",
+  })
+  local before = #buffer_lines(owner.buffer)
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = { toolCallId = "one", title = "Updated read", status = "failed" },
+  })
+  MiniTest.expect.equality(#buffer_lines(owner.buffer), before)
+  MiniTest.expect.equality(
+    table.concat(buffer_lines(owner.buffer), "\n"):find("Updated read (failed)", 1, true) ~= nil,
+    true
+  )
+end
+
 T["renders hidden buffers and deletes buffer-local resources on repeated disposal"] = function()
   local entered, submitted, edited = 0, 0, 0
   local owner = new_buffer({

@@ -289,6 +289,11 @@ local SECTIONS = {
         "A Handoff creates a new Session with a configured Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
         context
       )
+      append_prose(
+        lines,
+        "Cold Park requires an Agent that supports session/load and persisted conversation history. A fresh Session must send a prompt first; a successfully loaded, ready Session can Park immediately without another prompt. Cold resume restores recoverable history after editor exit, but staged context is lost.",
+        context
+      )
     end,
   },
   {

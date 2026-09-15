@@ -548,6 +548,11 @@ T["chat"]["reconstructs the Run and preserves replay after cold resume"] = funct
       data = { toolCallId = "replay-tool", title = "Replay tool", status = "completed" },
     })
     restored:emit({
+      type = "tool_call_finished",
+      session_id = "loaded-session",
+      data = { toolCallId = "replay-tool", status = "completed" },
+    })
+    restored:emit({
       type = "chunk",
       session_id = "loaded-session",
       data = { content = { type = "text", text = "Replay answer" } },

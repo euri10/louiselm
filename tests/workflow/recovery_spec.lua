@@ -134,7 +134,7 @@ T["failed initialization releases the client and permits retry"] = function()
   MiniTest.expect.equality(f.connected, 2)
 end
 
-local function loading_fixture()
+local function loading_fixture(synchronous_failure)
   local f = fixture()
   local summary = {
     id = "run",
@@ -169,6 +169,10 @@ local function loading_fixture()
   f.owner.options.load_session = function(_, _, options, callback)
     f.ready = callback
     f.event = options.on_event
+    if synchronous_failure then
+      callback(nil, "startup failed")
+      return nil, "startup failed"
+    end
     return f.session
   end
   assert(f.owner:list(f.result))
@@ -181,6 +185,7 @@ local function loading_fixture()
     return true
   end
   function f.client:finalize_resume(_, _, _, succeeded, callback)
+    f.finalizations = (f.finalizations or 0) + 1
     f.finalized = succeeded
     nvim.schedule(function()
       callback(run)
@@ -189,6 +194,7 @@ local function loading_fixture()
   end
   f.snapshot({ run })
   assert(f.owner:resume(summary, function(result, err)
+    f.completions = (f.completions or 0) + 1
     f.resumed = result
     f.resume_error = err
   end))
@@ -196,6 +202,53 @@ local function loading_fixture()
     return f.ready ~= nil
   end))
   return f
+end
+
+T["immediate startup failure finalizes and completes resume once"] = function()
+  local f = loading_fixture(true)
+  assert(nvim.wait(1000, function()
+    return f.resume_error ~= nil
+  end))
+  MiniTest.expect.equality(f.resume_error, "startup failed")
+  MiniTest.expect.equality({ f.finalizations, f.completions }, { 1, 1 })
+end
+
+T["failed asynchronous admission preserves its error and never attaches"] = function()
+  local f = fixture()
+  local admit, attach = Service.admit, Service.attach
+  local attached = false
+  local session = {
+    inspect = function()
+      return { agent = "qa", acp_session_id = "admission-failure", working_dir = nvim.fn.getcwd() }
+    end,
+  }
+  rawset(Service, "admit", function(_, callback)
+    nvim.schedule(function()
+      callback(nil, "admission unavailable")
+    end)
+    return true
+  end)
+  rawset(Service, "attach", function(_, callback)
+    attached = true
+    nvim.schedule(function()
+      callback(false, "attachment should not happen")
+    end)
+    return true
+  end)
+  MiniTest.finally(function()
+    rawset(Service, "admit", admit)
+    rawset(Service, "attach", attach)
+  end)
+  local failure
+  assert(f.owner:park(session, function(_, err)
+    failure = err
+  end))
+  assert(nvim.wait(3000, function()
+    return failure ~= nil
+  end))
+  MiniTest.expect.equality(failure, "admission unavailable")
+  MiniTest.expect.equality(attached, false)
+  MiniTest.expect.equality(session.owner_run, nil)
 end
 
 T["failed load disposes the starting Session even when the callback returns nil"] = function()

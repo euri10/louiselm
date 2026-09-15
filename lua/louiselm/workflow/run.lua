@@ -144,11 +144,13 @@ local function cold_park_record(worker, request)
   if type(capabilities) ~= "table" or capabilities.loadSession ~= true then
     return nil, "cold Park requires an Agent that supports session/load"
   end
-  if type(state.current_turn) ~= "number" or state.current_turn < 1 then
+  local loaded_history = state.source == "loaded" and state.status == "ready"
+  if not loaded_history and (type(state.current_turn) ~= "number" or state.current_turn < 1) then
     -- An Agent that has never received a prompt has nothing durable on disk
     -- for `session/load` to find, even when it advertises `loadSession`:
     -- the capability describes what the Agent can resume, not what this
-    -- particular Session has persisted yet (louiselm-aaw0.1).
+    -- particular Session has persisted yet (louiselm-aaw0.1). A successful
+    -- load already proves history exists without a new prompt (louiselm-s6xr).
     return nil, "cold Park requires a Session that has sent at least one prompt"
   end
   return {

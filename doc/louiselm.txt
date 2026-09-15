@@ -72,6 +72,12 @@ Sessions                                                   *louiselm-sessions*
   its takeover task and review the compacted source transcript. The source
   Session remains attached.
 
+  Cold Park requires an Agent that supports session/load and persisted
+  conversation history. A fresh Session must send a prompt first; a
+  successfully loaded, ready Session can Park immediately without another
+  prompt. Cold resume restores recoverable history after editor exit, but
+  staged context is lost.
+
 ==============================================================================
 Workflow                                                   *louiselm-workflow*
 

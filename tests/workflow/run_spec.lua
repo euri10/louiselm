@@ -1,6 +1,9 @@
 local MiniTest = require("mini.test")
 local Workflow = require("louiselm.workflow")
 
+---@diagnostic disable-next-line: undefined-global -- Neovim injects its runtime API.
+local nvim = vim
+
 local T = MiniTest.new_set()
 
 local function worker(status)
@@ -296,6 +299,58 @@ T["durable Park"]["rejects cold Park when the Session has never sent a prompt"] 
   local started, error_message = run:park_cold({ id = "run", claims = { "issue" } })
   MiniTest.expect.equality(started, false)
   MiniTest.expect.equality(error_message, "cold Park requires a Session that has sent at least one prompt")
+end
+
+T["durable Park"]["parks successfully loaded history without another prompt"] = function()
+  local session = worker("ready")
+  function session:inspect()
+    return {
+      status = self.status,
+      source = "loaded",
+      agent = "codex",
+      acp_session_id = "acp-session",
+      working_dir = "/tmp/project",
+      current_turn = 0,
+    }
+  end
+  session.client = { agent_capabilities = { loadSession = true } }
+  local persisted = false
+  local run = assert(Workflow.new_run({
+    park_service = function(_, callback)
+      persisted = true
+      nvim.schedule(function()
+        callback(true)
+      end)
+      return true
+    end,
+  }))
+  assert(run:adopt_session(session))
+  assert(run:park_cold({ id = "loaded-run", claims = {} }))
+  assert(nvim.wait(1000, function()
+    return run.status == "parked"
+  end))
+  MiniTest.expect.equality(persisted, true)
+end
+
+T["durable Park"]["does not treat an unfinished or failed load as persisted history"] = function()
+  for _, status in ipairs({ "starting", "error" }) do
+    local session = worker(status)
+    function session:inspect()
+      return {
+        status = self.status,
+        source = "loaded",
+        agent = "codex",
+        acp_session_id = "acp-session",
+        working_dir = "/tmp/project",
+        current_turn = 0,
+      }
+    end
+    session.client = { agent_capabilities = { loadSession = true } }
+    local run = assert(Workflow.new_run())
+    assert(run:adopt_session(session))
+    local started = run:park_cold({ id = "unfinished-load", claims = {} })
+    MiniTest.expect.equality(started, false)
+  end
 end
 
 T["durable Park"]["does not transition before service confirmation"] = function()

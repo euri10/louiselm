@@ -491,7 +491,14 @@ function Recovery:park(session, callback)
       id = run_id,
       generated_work_max = PARK_GENERATED_WORK_MAX,
       park_ttl_ms = PARK_TTL_MS,
-    }, function()
+    }, function(token, error_message)
+      if self.disposed or not self.options.is_live(session) then
+        return
+      end
+      if token == nil then
+        callback(nil, error_message or "could not admit Run")
+        return
+      end
       local attached, attach_error = WorkflowService.attach({
         id = run_id,
         session_id = session_id,
