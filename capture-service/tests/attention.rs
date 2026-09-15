@@ -9,11 +9,11 @@
 use std::{fs, time::Duration};
 
 use louiselm_capture::{
-    AttentionCode, AttentionDraft, AttentionKey, AttentionKind, AttentionSocket,
+    AttentionCode, AttentionDraft, AttentionKey, AttentionKind, AttentionSnapshot, AttentionSocket,
     AttentionSocketMessage, AttentionStore, AttentionSubjectKind,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     net::UnixStream,
 };
 
@@ -392,10 +392,57 @@ fn attention_validation_rejects_untrusted_fields_before_state_changes() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "One socket conversation proves authorization and retry generation semantics."
-)]
+async fn mutation_result_skips_interleaved_attention_changes() {
+    let (mut server, client) = UnixStream::pair().expect("socket pair");
+    let snapshot = AttentionSnapshot {
+        generation: 2,
+        items: vec![],
+    };
+    // louiselm-efhro: the socket multiplexes invalidations with correlated ACKs.
+    for message in [
+        AttentionSocketMessage::AttentionChanged { generation: 1 },
+        AttentionSocketMessage::AttentionChanged { generation: 2 },
+        AttentionSocketMessage::MutationResult {
+            request_id: "clear".to_owned(),
+            snapshot: snapshot.clone(),
+        },
+    ] {
+        server
+            .write_all(format!("{}\n", serde_json::to_string(&message).unwrap()).as_bytes())
+            .await
+            .expect("write frame");
+    }
+    let mut lines = BufReader::new(client).lines();
+    assert_eq!(mutation_result(&mut lines, "clear").await, snapshot);
+}
+
+async fn mutation_result(
+    lines: &mut Lines<BufReader<UnixStream>>,
+    expected_id: &str,
+) -> AttentionSnapshot {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let message: AttentionSocketMessage =
+                serde_json::from_str(&lines.next_line().await.expect("read").expect("reply"))
+                    .expect("reply JSON");
+            match message {
+                AttentionSocketMessage::AttentionChanged { .. } => {}
+                AttentionSocketMessage::MutationResult {
+                    request_id,
+                    snapshot,
+                } => {
+                    assert_eq!(request_id, expected_id);
+                    return snapshot;
+                }
+                _ => panic!("expected mutation result, got {message:?}"),
+            }
+        }
+    })
+    .await
+    .expect("mutation reply deadline")
+}
+
+#[tokio::test]
 async fn attention_socket_requires_capability_and_retries_without_new_generation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let store = AttentionStore::new(
@@ -453,13 +500,7 @@ async fn attention_socket_requires_capability_and_retries_without_new_generation
         .write_all(format!("{valid}\n").as_bytes())
         .await
         .expect("valid request");
-    let result: AttentionSocketMessage =
-        serde_json::from_str(&lines.next_line().await.expect("read").expect("result"))
-            .expect("result JSON");
-    assert!(matches!(
-        result,
-        AttentionSocketMessage::MutationResult { .. }
-    ));
+    assert_eq!(mutation_result(&mut lines, "request-1").await.generation, 1);
     assert_eq!(store.snapshot().expect("added").generation, 1);
 
     let replay = serde_json::json!({
@@ -473,11 +514,7 @@ async fn attention_socket_requires_capability_and_retries_without_new_generation
         .write_all(format!("{replay}\n").as_bytes())
         .await
         .expect("replay request");
-    lines
-        .next_line()
-        .await
-        .expect("read")
-        .expect("replay result");
+    assert_eq!(mutation_result(&mut lines, "request-2").await.generation, 1);
     assert_eq!(store.snapshot().expect("replay").generation, 1);
 
     let clear_session_kind = serde_json::json!({
@@ -492,18 +529,12 @@ async fn attention_socket_requires_capability_and_retries_without_new_generation
         .write_all(format!("{clear_session_kind}\n").as_bytes())
         .await
         .expect("clear session request");
-    let cleared: AttentionSocketMessage = serde_json::from_str(
-        &lines
-            .next_line()
+    assert!(
+        mutation_result(&mut lines, "request-3")
             .await
-            .expect("read")
-            .expect("clear result"),
-    )
-    .expect("clear result JSON");
-    assert!(matches!(
-        cleared,
-        AttentionSocketMessage::MutationResult { .. }
-    ));
+            .items
+            .is_empty()
+    );
     assert!(store.snapshot().expect("session cleared").items.is_empty());
     server.abort();
     let _ = tokio::time::timeout(Duration::from_secs(1), server).await;
