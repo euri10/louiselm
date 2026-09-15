@@ -358,6 +358,9 @@ jobs:
       # The bootstrap executes as UID 60000, which cannot traverse the runner's
       # private home. Keep all Cargo artifacts outside the checkout ancestry.
       CARGO_TARGET_DIR: /var/tmp/louiselm-skills-target
+      # louiselm-cjpep: measured fixtures hash entire executables repeatedly.
+      # Keep backtrace locations without full type/variable debug metadata.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     defaults:
       run:
         working-directory: skills-core
@@ -388,7 +391,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ${{ env.CARGO_TARGET_DIR }}
-          key: cargo-skills-var-tmp-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
+          key: cargo-skills-line-tables-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
 
       - name: Format
         run: cargo fmt --check

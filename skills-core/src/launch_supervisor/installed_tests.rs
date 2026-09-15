@@ -418,7 +418,14 @@ fn broker_process(root: &Path, fault: Option<&str>) -> (BrokerChild, mpsc::Recei
             "--clear-groups",
         ])
         .arg(std::env::current_exe().unwrap())
-        .args([WORKER, "--exact", "--nocapture"])
+        // Keep libtest's human label out of the line-framed worker protocol.
+        .args([
+            WORKER,
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+            "--format=terse",
+        ])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LOUISELM_BROKER_FIXTURE", root)
@@ -446,10 +453,11 @@ fn marker(lines: &mpsc::Receiver<String>, prefix: &str) -> String {
     loop {
         let line = lines
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap();
+            .unwrap_or_else(|error| panic!("waiting for {prefix:?}: {error}"));
         if line.starts_with(prefix) {
             return line;
         }
+        assert!(!line.contains(prefix), "unframed marker: {line}");
     }
 }
 

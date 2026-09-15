@@ -69,6 +69,13 @@ boundaries. Direct Cargo under a polluted runner can trigger the bootstrap's
 ambient-authority refusal (louiselm-u4c3) or personal signing in witness tests
 (louiselm-8zdb).
 
+The `skills-core` CI job sets `CARGO_PROFILE_DEV_DEBUG=line-tables-only`;
+Cargo's test profile inherits it. Use the same environment when reproducing
+its measured-binary gates. Full debug metadata bloats the repeatedly hashed
+executables and can exhaust fixture deadlines on slow runners
+(louiselm-cjpep). Line tables retain backtrace locations; optimization, debug
+assertions, overflow checks, and security verification stay unchanged.
+
 Run that suite from outside your own ACP Session. `acp-proxy` is a child
 subreaper that never reaps adopted orphans, so a killed descendant lingers as a
 zombie, keeps its process group probeable, and fails three `bounded_system_runner`
