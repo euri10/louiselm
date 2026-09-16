@@ -191,6 +191,7 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   MiniTest.expect.equality(#fake.upserts, 2)
   MiniTest.expect.equality(fake.upserts[2].linked_run_id, "11111111-2222-4333-8444-555555555555")
   attention:prompt_started("session-1")
+  MiniTest.expect.equality(#fake.clears, 2)
   MiniTest.expect.equality(fake.clear_session_kinds, {
     { session_id = "session-1", kind = "turn_ready" },
   })
@@ -273,6 +274,7 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   attention:turn_done({ status = "ready", acp_session_id = "session-2", agent = "codex", current_turn = 1 }, false)
   attention:seen("session-2")
   attention:prompt_started("session-2")
+  attention:session_resumed("session-2")
   attention:permission_required({ acp_session_id = "session-2", current_turn = 1 }, { request_id = 1 })
   attention:permission_resolved("session-2", 1)
   attention:permission_cancelled("session-2", { 1 })

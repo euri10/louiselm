@@ -33,6 +33,7 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field permission_resolved fun(self: louiselm.ui.Attention, session_id: string, request_id: string|number)
 ---@field permission_cancelled fun(self: louiselm.ui.Attention, session_id: string, request_ids: table)
 ---@field session_failed fun(self: louiselm.ui.Attention, state: table, linked_run_id?: string)
+---@field session_resumed fun(self: louiselm.ui.Attention, session_id: string)
 ---@field run_parked fun(self: louiselm.ui.Attention, run_id: string)
 ---@field run_resumed fun(self: louiselm.ui.Attention, run_id: string)
 ---@field skill_approval_pending fun(self: louiselm.ui.Attention, projection: louiselm.ui.SkillAttentionProjection): boolean, string?
@@ -441,6 +442,21 @@ end
 ---@param session_id string Agent-side Session identifier.
 function Attention:prompt_started(session_id)
   self:seen(session_id)
+  clear_entries(self, function(entry)
+    return entry.kind == "session_failed" and entry.key.subject_id == session_id
+  end)
+end
+
+---Clear a terminal failure when a Session is successfully resumed.
+---@param self louiselm.ui.Attention
+---@param session_id string Agent-side Session identifier.
+function Attention:session_resumed(session_id)
+  if self.disposed then
+    return
+  end
+  clear_entries(self, function(entry)
+    return entry.kind == "session_failed" and entry.key.subject_id == session_id
+  end)
 end
 
 ---Record an explicit ACP permission request.

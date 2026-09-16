@@ -2631,6 +2631,10 @@ function Chat:resume_park()
         end
         if self.attention ~= nil then
           self.attention:run_resumed(selected.id)
+          local state = result.session:inspect()
+          if state.acp_session_id ~= nil then
+            self.attention:session_resumed(state.acp_session_id)
+          end
         end
         local message = result.relay == nil and "louiselm: Park resumed"
           or "louiselm: cold Park resumed (recoverable, lossy)"
