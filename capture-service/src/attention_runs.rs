@@ -9,6 +9,20 @@ use super::{
 };
 use crate::{runs::RunStoreError, time::now_ms};
 
+pub(super) fn is_local_park(key: &AttentionKey) -> bool {
+    if key.subject_kind != AttentionSubjectKind::Run || key.kind != AttentionKind::RunParked {
+        return false;
+    }
+    // Wire identity used by ui/attention.lua:run_parked, not every broker Park
+    // on the same Run. Keep this derivation covered by the captured-key fixture.
+    let digest = Sha256::digest(format!("run_parked:{}", key.subject_id));
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    key.source_operation_id == Uuid::from_bytes(bytes).to_string()
+}
+
 impl AttentionStore {
     /// Reads only durable lifecycle facts; never returns Run credentials or policy.
     pub(crate) fn broker_run_lifecycle(
@@ -31,17 +45,7 @@ impl AttentionStore {
         let Some(runs) = &self.runs else {
             return Ok(false);
         };
-        if key.subject_kind != AttentionSubjectKind::Run || key.kind != AttentionKind::RunParked {
-            return Ok(false);
-        }
-        // Wire identity used by ui/attention.lua:run_parked, not every broker Park
-        // on the same Run. Keep this derivation covered by the captured-key fixture.
-        let digest = Sha256::digest(format!("run_parked:{}", key.subject_id));
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&digest[..16]);
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        if key.source_operation_id != Uuid::from_bytes(bytes).to_string() {
+        if !is_local_park(key) {
             return Ok(false);
         }
         let Some(run) = runs.find_view(&key.subject_id)? else {
@@ -52,7 +56,9 @@ impl AttentionStore {
             "parked" | "cold_parked" if run.park_expires_at_ms > 0 => {
                 Ok(run.park_expires_at_ms <= now_ms())
             }
-            "active" | "resuming" | "disposed" => Ok(true),
+            // A pending resume may fail; keep its unresolved condition until finalization.
+            "resuming" => Ok(false),
+            "active" | "disposed" => Ok(true),
             _ => Err(RunStoreError::Invalid("stored Run lifecycle state is invalid".into()).into()),
         }
     }

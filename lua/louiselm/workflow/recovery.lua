@@ -25,7 +25,7 @@ local nvim = vim
 
 ---@class louiselm.workflow.RecoveredSession
 ---@field session louiselm.session.Session
----@field relay louiselm.workflow.EventRelay
+---@field relay? louiselm.workflow.EventRelay Replay owned by a newly loaded Session; absent for a retained Session.
 
 ---@class louiselm.workflow.Recovery
 ---@field options louiselm.workflow.RecoveryOptions
@@ -246,7 +246,15 @@ end
 ---@return boolean started
 ---@return string? error_message
 local function ensure_resume_controller(self, callback)
-  if self.resume_controller ~= nil then
+  local client = self.resume_client
+  if
+    not self.resume_initializing
+    and self.resume_controller ~= nil
+    and client ~= nil
+    and not client.disposed
+    and client.pipe ~= nil
+    and not client.pipe:is_closing()
+  then
     callback(self.resume_controller)
     return true
   end
@@ -255,6 +263,15 @@ local function ensure_resume_controller(self, callback)
     return true
   end
   self.resume_initializing = true
+  if self.park_observer ~= nil then
+    self.park_observer:dispose()
+    self.park_observer = nil
+  end
+  if client ~= nil then
+    client:dispose()
+    self.resume_client = nil
+  end
+  self.resume_revisions = {}
   local settled = false
   local function finish(controller, error_message)
     if settled then
@@ -316,6 +333,7 @@ local function ensure_resume_controller(self, callback)
           end
           return
         end
+        self.resume_revisions = {}
         for _, run in ipairs(runs) do
           self.resume_revisions[run.id] = run.revision
         end
@@ -326,19 +344,24 @@ local function ensure_resume_controller(self, callback)
           finish(nil, "Run service connected without a client")
           return
         end
-        local controller, controller_error = ResumeController.new({
-          client = connect_client,
-          find_run = function(id)
-            return resume_run(self, id)
-          end,
-          load_cold = function(run, load_callback)
-            load_cold_run(self, run, load_callback)
-          end,
-        })
+        local controller, controller_error = self.resume_controller, nil
+        if controller == nil then
+          controller, controller_error = ResumeController.new({
+            client = connect_client,
+            find_run = function(id)
+              return resume_run(self, id)
+            end,
+            load_cold = function(run, load_callback)
+              load_cold_run(self, run, load_callback)
+            end,
+          })
+        end
         if controller == nil then
           finish(nil, controller_error or "could not create resume controller")
           return
         end
+        -- Keep in-flight load callbacks owned by this controller; only replace transport.
+        controller.client = connect_client
         self.resume_client = connect_client
         self.resume_controller = controller
         finish(controller)
@@ -401,7 +424,7 @@ function Recovery:list(callback)
   end)
 end
 
----Reconstruct and finalize a selected Run before transferring its Session and replay.
+---Finalize a selected Run using its retained Session or a new load with replay.
 ---@param self louiselm.workflow.Recovery
 ---@param selected louiselm.workflow.ParkSummary
 ---@param callback fun(result: louiselm.workflow.RecoveredSession?, error_message?: string)
@@ -447,6 +470,18 @@ function Recovery:resume(selected, callback)
     end
     if session == nil then
       M.discard_relay(relay)
+      local live = self.options.find_run(selected.id)
+      local retained = live ~= nil and #live.workers == 1 and live.workers[1] or nil
+      -- Recovery only admits ACP Sessions; the consumer verifies attachment below.
+      ---@diagnostic disable-next-line: cast-type-mismatch -- RunWorker erases Session-specific fields at the shared Run boundary.
+      ---@cast retained louiselm.session.Session?
+      if retained ~= nil and self.options.is_live(retained) then
+        local state = retained:inspect()
+        if state.agent == selected.agent and state.acp_session_id == selected.acp_session_id then
+          callback({ session = retained })
+          return
+        end
+      end
       callback(nil, "resumed Run has no loaded Session")
       return
     end

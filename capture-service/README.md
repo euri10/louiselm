@@ -181,10 +181,15 @@ only operator-capability mutations and no Agent-authored text. Paired devices ca
 `GET /v1/attention` with their pairing credential; that route is read-only.
 
 All snapshot consumers reconcile local Run Park conditions against the durable
-Run store, including after editor or receiver restart. Resume, disposal, or
+Run store, including after editor or receiver restart. Successful resume, disposal, or
 expiry removes the stale condition and advances the Attention generation; late
 local upserts cannot recreate it. Valid Parks retain their existing inactivity
-eligibility. This applies only to the deterministic `run_parked:<Run UUID>`
+eligibility. Pending or failed resume preserves the condition and generation
+until successful finalization, disposal or expiry. Another editor rediscovering
+the same unresolved Park retains its original creation time, so discovery alone
+cannot trigger a fresh notification. A new Park after resolution still creates
+a new condition. This applies only to the
+deterministic `run_parked:<Run UUID>`
 condition identity emitted by the Neovim controller (SHA-256 truncated to UUID
 bytes with v4/variant bits). Broker operation identities and unrelated Session
 conditions are untouched; a missing local Run alone is not proof of resolution.

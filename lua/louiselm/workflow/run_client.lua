@@ -272,6 +272,7 @@ function M.connect(path, on_snapshot, options)
         return
       end
       if read_error ~= nil then
+        Socket.close_pipe(pipe)
         nvim.schedule(function()
           Socket.fail_pending(client, read_error)
           report_error(client, read_error)

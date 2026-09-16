@@ -2623,14 +2623,18 @@ function Chat:resume_park()
         local attached, attach_error = attach_session(self, result.session, result.relay)
         if not attached then
           Recovery.discard_relay(result.relay)
-          result.session:dispose()
+          if result.relay ~= nil then
+            result.session:dispose()
+          end
           nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
           return
         end
         if self.attention ~= nil then
           self.attention:run_resumed(selected.id)
         end
-        nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
+        local message = result.relay == nil and "louiselm: Park resumed"
+          or "louiselm: cold Park resumed (recoverable, lossy)"
+        nvim.notify(message, nvim.log.levels.INFO)
       end)
       if not started then
         nvim.notify("louiselm: " .. (resume_error or "could not resume cold Park"), nvim.log.levels.ERROR)

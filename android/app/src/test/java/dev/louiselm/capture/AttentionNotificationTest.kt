@@ -1,24 +1,56 @@
 package dev.louiselm.capture
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
+import androidx.work.Configuration
+import androidx.work.WorkManager
+import androidx.work.impl.WorkManagerImpl
 import com.google.firebase.messaging.RemoteMessage
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.util.concurrent.PausedExecutorService
 import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28, 34, 37], qualifiers = "en")
 class AttentionNotificationTest {
+    private lateinit var workExecutor: PausedExecutorService
+
+    @Before
+    fun setUp() {
+        // Configured FCM wakeups enqueue real work. Keep it paused so this
+        // notification fixture never performs token lookup or receiver I/O.
+        workExecutor = PausedExecutorService()
+        WorkManager.initialize(RuntimeEnvironment.getApplication(), Configuration.Builder()
+            .setExecutor(workExecutor)
+            .setTaskExecutor(workExecutor)
+            .build())
+    }
+
+    @After
+    @SuppressLint("RestrictedApi") // Fixture owns WorkManager's database and singleton lifetime.
+    fun tearDown() {
+        if (::workExecutor.isInitialized) workExecutor.shutdownNow()
+        if (WorkManagerImpl.isInitialized()) {
+            WorkManagerImpl.getInstance(RuntimeEnvironment.getApplication()).closeDatabase()
+        }
+        WorkManagerImpl.setDelegate(null)
+        ReflectionHelpers.setStaticField(WorkManagerImpl::class.java, "sDefaultInstance", null)
+    }
+
     @Test
     @Config(sdk = [34, 37])
     fun deniedRuntimePermissionNeverDisplaysANotification() {

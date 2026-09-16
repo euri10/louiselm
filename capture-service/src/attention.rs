@@ -302,6 +302,7 @@ impl AttentionStore {
     }
 
     /// Add or update one condition; repeating identical data is a no-op.
+    /// Local Park replays retain the unresolved condition's original creation time.
     /// Late local Park updates for resolved Runs are also no-ops.
     ///
     /// # Errors
@@ -314,7 +315,7 @@ impl AttentionStore {
             if store.local_park_resolved(&draft.key())? {
                 return Ok(snapshot(state));
             }
-            let item = AttentionItem {
+            let mut item = AttentionItem {
                 subject_kind: draft.subject_kind,
                 subject_id: draft.subject_id,
                 kind: draft.kind,
@@ -327,18 +328,24 @@ impl AttentionStore {
                 code: draft.code,
             };
             let key = item.key();
-            let changed = match state.items.iter_mut().find(|current| current.key() == key) {
-                Some(current) if same_content(current, &item) => false,
-                Some(current) => {
+            let changed = if let Some(current) =
+                state.items.iter_mut().find(|current| current.key() == key)
+            {
+                if run_conditions::is_local_park(&key) {
+                    // Another editor may discover this same unresolved Park later.
+                    item.created_at_ms = current.created_at_ms;
+                }
+                if same_content(current, &item) {
+                    false
+                } else {
                     let eligible = current.eligible;
                     *current = item;
                     current.eligible = eligible;
                     true
                 }
-                None => {
-                    state.items.push(item);
-                    true
-                }
+            } else {
+                state.items.push(item);
+                true
             };
             if changed {
                 advance_generation(&mut state)?;

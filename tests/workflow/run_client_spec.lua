@@ -130,6 +130,44 @@ T["closes a disconnected handle so a new client can reconcile"] = function()
   MiniTest.expect.equality(pipe.closing, true)
 end
 
+T["closes a failed transport and fails pending mutations once on the main loop"] = function()
+  local pipe = fake_pipe()
+  local errors, completions = {}, {}
+  local client = assert(RunClient.connect("/tmp/run.sock", function() end, {
+    pipe_factory = function()
+      return pipe
+    end,
+    operator_capability = "operator-secret",
+    on_error = function(message)
+      MiniTest.expect.equality(nvim.in_fast_event(), false)
+      errors[#errors + 1] = message
+    end,
+  }))
+  MiniTest.finally(function()
+    client:dispose()
+  end)
+  pipe.connect_callback()
+  assert(client:resume("run", 3, "operation", function(_, err)
+    MiniTest.expect.equality(nvim.in_fast_event(), false)
+    completions[#completions + 1] = err
+  end))
+  local async
+  async = nvim.uv.new_async(function()
+    pipe.read_callback("ECONNRESET", nil)
+    async:close()
+  end)
+  async:send()
+  assert(nvim.wait(1000, function()
+    return #errors == 1
+  end))
+  MiniTest.expect.equality(pipe.closing, true)
+  MiniTest.expect.equality(completions, { "ECONNRESET" })
+  local started, err = client:resume("run", 3, "operation", function() end)
+  MiniTest.expect.equality({ started, err }, { false, "Run client is not connected" })
+  client:dispose()
+  MiniTest.expect.equality(completions, { "ECONNRESET" })
+end
+
 T["correlates operator mutations and invokes callbacks once"] = function()
   local pipe = fake_pipe()
   local result

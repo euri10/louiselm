@@ -197,36 +197,119 @@ fn expired_park_is_not_deliverable_while_cleanup_is_still_pending() {
 }
 
 #[test]
-fn failed_resume_can_publish_a_new_valid_park_with_normal_eligibility() {
+fn failed_resume_preserves_park_without_republication_or_another_generation() {
+    for eligible in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let runs = RunStore::new(root.path().join("runs")).unwrap();
+        park(&runs, u64::MAX - 200);
+        let attention =
+            AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
+        attention.upsert(park_alert()).unwrap();
+        let before = attention.set_eligible(&park_key(), eligible).unwrap();
+        runs.begin_resume(
+            RUN,
+            runs.view(RUN).unwrap().revision,
+            OTHER_OPERATION,
+            101,
+            u64::MAX - 200,
+        )
+        .unwrap();
+        // Physical QA 2026-09-16, Run ab88e3e6-f03f-4344-a067-caf6ac8cd61b:
+        // resume failed on an active writer, leaving a cold Park but no alert (.9.9.10).
+        assert_eq!(attention.snapshot().unwrap(), before);
+        runs.finalize_resume(
+            RUN,
+            runs.view(RUN).unwrap().revision,
+            OTHER_OPERATION,
+            false,
+        )
+        .unwrap();
+        assert_eq!(attention.snapshot().unwrap(), before);
+        assert_eq!(attention.upsert(park_alert()).unwrap(), before);
+    }
+}
+
+#[test]
+fn another_observer_preserves_local_park_timestamp_and_generation() {
+    for eligible in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let runs = RunStore::new(root.path().join("runs")).unwrap();
+        park(&runs, u64::MAX - 200);
+        let attention =
+            AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
+        attention.upsert(park_alert()).unwrap();
+        let before = attention.set_eligible(&park_key(), eligible).unwrap();
+        let observer =
+            AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
+        // Physical QA .9.9.11: second-editor discovery changed created_at_ms before
+        // its ACP rejection (Run3e81fe82-705a-4701-84a8-8cb694c3fbcf, gen50 -> 51).
+        let replay = AttentionDraft {
+            created_at_ms: 200,
+            ..park_alert()
+        };
+        assert_eq!(observer.upsert(replay.clone()).unwrap(), before);
+        assert_eq!(attention.snapshot().unwrap(), before);
+
+        // Once that Park resolves, a genuine new Park must use its new timestamp.
+        runs.begin_resume(
+            RUN,
+            runs.view(RUN).unwrap().revision,
+            OTHER_OPERATION,
+            101,
+            1000,
+        )
+        .unwrap();
+        runs.finalize_resume(RUN, runs.view(RUN).unwrap().revision, OTHER_OPERATION, true)
+            .unwrap();
+        assert!(attention.snapshot().unwrap().items.is_empty());
+        runs.park_cold(
+            RunDraft {
+                id: RUN.into(),
+                session_id: "codex/qa".into(),
+                agent: "codex".into(),
+                acp_session_id: "qa".into(),
+                working_dir: "/tmp/qa".into(),
+                load_session: true,
+                claimed_issue_ids: vec![],
+            },
+            200,
+        )
+        .unwrap();
+        let fresh = observer.upsert(replay).unwrap();
+        assert_eq!(fresh.items.len(), 1);
+        assert_eq!(fresh.items[0].created_at_ms, 200);
+        assert!(!fresh.items[0].eligible);
+        assert_eq!(fresh.generation, before.generation + 2);
+    }
+}
+
+#[test]
+fn other_park_identities_still_update_their_content() {
     let root = tempfile::tempdir().unwrap();
-    let runs = RunStore::new(root.path().join("runs")).unwrap();
-    park(&runs, u64::MAX - 200);
-    let attention = AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
-    attention.upsert(park_alert()).unwrap();
-    attention.set_eligible(&park_key(), true).unwrap();
-    runs.begin_resume(
-        RUN,
-        runs.view(RUN).unwrap().revision,
-        OTHER_OPERATION,
-        101,
-        u64::MAX - 200,
-    )
-    .unwrap();
-    assert!(attention.snapshot().unwrap().items.is_empty());
-    runs.finalize_resume(
-        RUN,
-        runs.view(RUN).unwrap().revision,
-        OTHER_OPERATION,
-        false,
-    )
-    .unwrap();
-    let parked = attention.upsert(park_alert()).unwrap();
-    assert_eq!(parked.items.len(), 1);
-    assert!(
-        !parked.items[0].eligible,
-        "reconciliation must not bypass inactivity policy"
-    );
-    assert!(attention.set_eligible(&park_key(), true).unwrap().items[0].eligible);
+    let attention = AttentionStore::new(root.path(), None).unwrap();
+    let draft = AttentionDraft {
+        source_operation_id: OTHER_OPERATION.into(),
+        ..park_alert()
+    };
+    attention.upsert(draft.clone()).unwrap();
+    let before = attention
+        .set_eligible(
+            &AttentionKey {
+                source_operation_id: OTHER_OPERATION.into(),
+                ..park_key()
+            },
+            true,
+        )
+        .unwrap();
+    let changed = attention
+        .upsert(AttentionDraft {
+            created_at_ms: 200,
+            ..draft
+        })
+        .unwrap();
+    assert_eq!(changed.generation, before.generation + 1);
+    assert_eq!(changed.items[0].created_at_ms, 200);
+    assert!(changed.items[0].eligible);
 }
 
 #[test]

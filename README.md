@@ -178,7 +178,8 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   typed conditions such as ready turns, permission requests, failures, and
   Parks. With `br`, a Beads workspace, and the capture service, cold-Park
   eligible Runs and reconstruct them later through ACP `session/load`; recovery
-  is not lossless.
+  is not lossless. After a receiver restart, the next Park or ResumePark action
+  reconnects and reads fresh Run state; Neovim need not be restarted.
 - **Capture speech.** Optional desktop commands record durable local audio and
   manage transcription. The source-built Android companion records offline,
   uploads later to a paired private receiver, and shows a read-only Attention

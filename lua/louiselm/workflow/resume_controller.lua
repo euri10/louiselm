@@ -122,9 +122,9 @@ function Controller:resume(run, callback)
         callback(nil, "resume service returned an invalid state")
         return
       end
-      self.load_cold(resuming, function(worker, load_error)
+      local function finalize(worker, load_error, retained)
         if self.disposed then
-          if worker ~= nil then
+          if worker ~= nil and not retained then
             worker:dispose()
           end
           return
@@ -136,13 +136,13 @@ function Controller:resume(run, callback)
           worker ~= nil,
           function(final, service_error)
             if self.disposed then
-              if worker ~= nil then
+              if worker ~= nil and not retained then
                 worker:dispose()
               end
               return
             end
             if final == nil then
-              if worker ~= nil then
+              if worker ~= nil and not retained then
                 worker:dispose()
               end
               callback(nil, service_error)
@@ -157,12 +157,23 @@ function Controller:resume(run, callback)
           end
         )
         if not finalize_started then
-          if worker ~= nil then
+          if worker ~= nil and not retained then
             worker:dispose()
           end
           callback(nil, finalize_error)
         end
-      end)
+      end
+      local live = self.find_run(run.id)
+      local retained = live ~= nil and live.status == "parked" and #live.workers == 1 and live.workers[1] or nil
+      if retained ~= nil and retained:inspect().status ~= "disposed" then
+        if retained:inspect().status == "ready" then
+          finalize(retained, nil, true)
+        else
+          finalize(nil, "retained Run Session is not ready to resume")
+        end
+      else
+        self.load_cold(resuming, finalize)
+      end
     end)
     if not started then
       callback(nil, start_error)

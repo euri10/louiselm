@@ -50,6 +50,11 @@ local function fixture()
     f.snapshot = callback
     f.fail = options.on_error
     f.client = {
+      pipe = {
+        is_closing = function()
+          return false
+        end,
+      },
       dispose = function()
         f.closed = f.closed + 1
         return true
@@ -179,7 +184,83 @@ T["failed initialization releases the client and permits retry"] = function()
   MiniTest.expect.equality(f.connected, 2)
 end
 
-local function loading_fixture(synchronous_failure)
+T["reconnects after receiver restart and waits for fresh revisions before listing"] = function()
+  local f = fixture()
+  assert(f.owner:list(f.result))
+  deliver(function()
+    f.read("old-capability")
+    f.snapshot({})
+  end)
+  assert(nvim.wait(1000, function()
+    return #f.results == 1
+  end))
+  local old_snapshot, old_error = f.snapshot, f.fail
+  f.client.pipe.is_closing = function()
+    return true
+  end
+  deliver(function()
+    f.fail("Run socket disconnected")
+  end)
+  assert(f.owner:list(f.result))
+  assert(f.owner:list(f.result))
+  MiniTest.expect.equality(f.listed, 1)
+  deliver(function()
+    f.read("new-capability")
+  end)
+  MiniTest.expect.equality(f.connected, 2)
+  MiniTest.expect.equality(f.closed, 1)
+  MiniTest.expect.equality(f.listed, 1)
+  local result
+  function f.client:resume(id, revision, _, callback)
+    result = { id, revision }
+    nvim.schedule(function()
+      callback(nil, "fixture stops before mutation")
+    end)
+    return true
+  end
+  deliver(function()
+    old_snapshot({})
+    old_error("late old connection error")
+    f.snapshot({
+      {
+        id = "run",
+        revision = 7,
+        state = "cold_parked",
+        generated_work_ceiling = 1,
+        generated_work_consumed = 0,
+        generated_work_reserved = 0,
+        pending_mutation_ids = {},
+        park_expires_at_ms = 60000,
+      },
+    })
+  end)
+  assert(nvim.wait(1000, function()
+    return #f.results == 3
+  end))
+  MiniTest.expect.equality(f.error, "Run socket disconnected")
+  local completed
+  assert(f.owner:resume({
+    id = "run",
+    agent = "codex",
+    acp_session_id = "acp",
+    cwd = "/tmp",
+    state = "cold_parked",
+    parked_at_ms = 100,
+    expires_at_ms = 60000,
+    generated_work = { ceiling = 1, consumed = 0, reserved = 0 },
+    claims = {},
+  }, function(_, err)
+    completed = err
+  end))
+  assert(nvim.wait(1000, function()
+    return completed ~= nil
+  end))
+  MiniTest.expect.equality(result, { "run", 7 })
+  MiniTest.expect.equality(completed, "fixture stops before mutation")
+end
+
+local function loading_fixture(options)
+  options = options or {}
   local f = fixture()
   local summary = {
     id = "run",
@@ -204,17 +285,34 @@ local function loading_fixture(synchronous_failure)
   f.session = {
     disposed = false,
     inspect = function()
-      return { status = "ready" }
+      return { status = "ready", agent = "codex", acp_session_id = "acp" }
+    end,
+    cancel = function()
+      return true
     end,
     dispose = function(self)
       self.disposed = true
       return true
     end,
   }
-  f.owner.options.load_session = function(_, _, options, callback)
+  if options.retained then
+    f.run = assert(require("louiselm.workflow.run").new({ id = "run" }))
+    assert(f.run:adopt_session(f.session))
+    assert(f.run:accept_park())
+    f.owner.options.find_run = function()
+      return f.run
+    end
+  end
+  f.loads = 0
+  f.owner.options.load_session = function(_, _, load_options, callback)
+    f.loads = f.loads + 1
     f.ready = callback
-    f.event = options.on_event
-    if synchronous_failure then
+    f.event = load_options.on_event
+    if f.run ~= nil then
+      callback(nil, "session is already open in another client")
+      return nil, "session is already open in another client"
+    end
+    if options.synchronous_failure then
       callback(nil, "startup failed")
       return nil, "startup failed"
     end
@@ -232,9 +330,19 @@ local function loading_fixture(synchronous_failure)
   function f.client:finalize_resume(_, _, _, succeeded, callback)
     f.finalizations = (f.finalizations or 0) + 1
     f.finalized = succeeded
-    nvim.schedule(function()
+    local function complete()
+      if options.finalization_failure then
+        callback(nil, "Run changed while resuming")
+        return
+      end
+      run.state = succeeded and "active" or "cold_parked"
       callback(run)
-    end)
+    end
+    if options.defer_finalization then
+      f.complete_finalization = complete
+    else
+      nvim.schedule(complete)
+    end
     return true
   end
   f.snapshot({ run })
@@ -244,18 +352,57 @@ local function loading_fixture(synchronous_failure)
     f.resume_error = err
   end))
   assert(nvim.wait(1000, function()
-    return f.ready ~= nil
+    return f.ready ~= nil or f.finalizations ~= nil
   end))
   return f
 end
 
 T["immediate startup failure finalizes and completes resume once"] = function()
-  local f = loading_fixture(true)
+  local f = loading_fixture({ synchronous_failure = true })
   assert(nvim.wait(1000, function()
     return f.resume_error ~= nil
   end))
   MiniTest.expect.equality(f.resume_error, "startup failed")
   MiniTest.expect.equality({ f.finalizations, f.completions }, { 1, 1 })
+end
+
+T["same-editor resume reuses its retained Session and finalizes the durable Run"] = function()
+  -- Physical QA Run ab88e3e6-f03f-4344-a067-caf6ac8cd61b, 2026-09-16:
+  -- Park retained its ACP writer; a second session/load was rejected (.9.9.9).
+  local f = loading_fixture({ retained = true })
+  assert(nvim.wait(1000, function()
+    return f.completions ~= nil
+  end))
+  MiniTest.expect.equality(f.loads, 0)
+  MiniTest.expect.equality(f.resume_error, nil)
+  MiniTest.expect.equality(f.resumed.session, f.session)
+  MiniTest.expect.equality(f.resumed.relay, nil)
+  MiniTest.expect.equality(f.finalized, true)
+  MiniTest.expect.equality(f.run.status, "active")
+  f.owner:dispose()
+  MiniTest.expect.equality(f.session.disposed, false)
+end
+
+T["failed retained-Session finalization preserves its caller-owned Session"] = function()
+  local f = loading_fixture({ retained = true, finalization_failure = true })
+  assert(nvim.wait(1000, function()
+    return f.completions ~= nil
+  end))
+  MiniTest.expect.equality(f.loads, 0)
+  MiniTest.expect.equality(f.resume_error, "Run changed while resuming")
+  MiniTest.expect.equality(f.resumed, nil)
+  MiniTest.expect.equality(f.run.status, "parked")
+  f.owner:dispose()
+  MiniTest.expect.equality(f.session.disposed, false)
+end
+
+T["disposal during retained-Session finalization leaves its caller-owned Session alive"] = function()
+  local f = loading_fixture({ retained = true, defer_finalization = true })
+  MiniTest.expect.equality(f.loads, 0)
+  f.owner:dispose()
+  deliver(f.complete_finalization)
+  MiniTest.expect.equality(f.completions, nil)
+  MiniTest.expect.equality(f.session.disposed, false)
 end
 
 T["failed asynchronous admission preserves its error and never attaches"] = function()

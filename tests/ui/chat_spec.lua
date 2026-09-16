@@ -12,6 +12,19 @@ local T = MiniTest.new_set()
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
+local function connected_run_client()
+  return {
+    pipe = {
+      is_closing = function()
+        return false
+      end,
+    },
+    dispose = function()
+      return true
+    end,
+  }
+end
+
 local function fake_session(id, agent)
   local listeners = {}
   local session = {
@@ -319,6 +332,7 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   session.client = { agent_capabilities = { loadSession = true } }
   local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
   -- This fixture starts after the authenticated Run service readiness handshake.
+  rawset(chat.recovery, "resume_client", connected_run_client())
   rawset(chat.recovery, "resume_controller", {
     dispose = function()
       return true
@@ -378,6 +392,7 @@ T["chat"]["reuses the admitted Run id after a cold Park write fails"] = function
   session.state.current_turn = 1
   session.client = { agent_capabilities = { loadSession = true } }
   local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  rawset(chat.recovery, "resume_client", connected_run_client())
   rawset(chat.recovery, "resume_controller", {
     dispose = function()
       return true
@@ -439,6 +454,64 @@ T["chat"]["reuses the admitted Run id after a cold Park write fails"] = function
   MiniTest.expect.equality(parked_record.id, admitted_ids[1])
 end
 
+T["chat"]["retained Park resume focuses its existing history without replacing the view"] = function()
+  local session = fake_session("retained-session", "codex")
+  session.state.acp_session_id = "retained-acp"
+  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  local original_select = nvim.ui.select
+  local original_notify = nvim.notify
+  local messages = {}
+  MiniTest.finally(function()
+    nvim.ui.select = original_select
+    rawset(nvim, "notify", original_notify)
+    chat:dispose()
+  end)
+  nvim.ui.select = function(items, _, callback)
+    callback(items[1])
+  end
+  rawset(nvim, "notify", function(message)
+    messages[#messages + 1] = message
+  end)
+  assert(chat:attach(session))
+  session:emit({ type = "chunk", data = { content = { type = "text", text = "Retained answer" } } })
+  local buffer = assert(chat:buffer())
+  local view = chat.views["retained-session"]
+  local lines = buffer_lines(buffer)
+  function chat.recovery:list(callback)
+    nvim.schedule(function()
+      callback({
+        {
+          id = "run",
+          agent = "codex",
+          acp_session_id = "retained-acp",
+          cwd = "/tmp",
+          state = "cold_parked",
+          parked_at_ms = 1,
+          expires_at_ms = 60000,
+          generated_work = { ceiling = 1, consumed = 0, reserved = 0 },
+          claims = {},
+        },
+      })
+    end)
+    return true
+  end
+  function chat.recovery:resume(_, callback)
+    nvim.schedule(function()
+      callback({ session = session })
+    end)
+    return true
+  end
+  assert(chat:resume_park())
+  assert(nvim.wait(1000, function()
+    return #messages > 0
+  end))
+  MiniTest.expect.equality(chat:buffer(), buffer)
+  MiniTest.expect.equality(chat.views["retained-session"], view)
+  MiniTest.expect.equality(buffer_lines(buffer), lines)
+  MiniTest.expect.equality(session.disposed, false)
+  MiniTest.expect.equality(messages, { "louiselm: Park resumed" })
+end
+
 T["chat"]["reconstructs the Run and preserves replay after cold resume"] = function()
   local restored = fake_session("loaded-session", "codex")
   restored.state.source = "loaded"
@@ -466,7 +539,7 @@ T["chat"]["reconstructs the Run and preserves replay after cold resume"] = funct
   local resume_call
   local finalize_call
   local finalize_callback
-  local fake_client = {}
+  local fake_client = connected_run_client()
   function fake_client:resume(id, revision, operation_id, callback)
     resume_call = { id, revision, operation_id }
     callback({
