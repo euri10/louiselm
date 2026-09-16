@@ -198,7 +198,7 @@ function Client:initialize(params, callback)
             air = { version = 1, capabilities = { "sessionFailure" } },
           },
         },
-        session = { configOptions = { boolean = {} } },
+        session = { configOptions = { boolean = {} }, compaction = nvim.empty_dict() },
         terminal = false,
       },
       clientInfo = { name = "louiselm.nvim", version = Version.version },

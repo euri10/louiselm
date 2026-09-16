@@ -9,6 +9,7 @@
 ---| "config_options_changed"
 ---| "commands_changed"
 ---| "usage_updated"
+---| "compaction_updated"
 ---| "recording_changed"
 ---| "prompt_rejected"
 ---| "state_changed"
@@ -46,6 +47,10 @@
 ---@class louiselm.session.UsageUpdatedEvent: louiselm.session.EventBase
 ---@field type "usage_updated"
 ---@field data louiselm.session.UsageUpdatedData
+
+---@class louiselm.session.CompactionUpdatedEvent: louiselm.session.EventBase
+---@field type "compaction_updated"
+---@field data louiselm.session.Compaction Complete owned snapshot, with stable first-seen placement by ID.
 
 ---@class louiselm.session.RecordingChangedData
 ---@field error? louiselm.session.RecordingError Storage failure or unresolved Session Provider; active work continues, new dispatch requires correction/recovery.
@@ -87,7 +92,7 @@
 ---"user_chunk" only arrives while replaying a resumed session's history via session/load, never
 ---for a live turn, while "thought_chunk" carries the agent's reasoning text (live or replayed).
 
----@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
+---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 
 ---@alias louiselm.session.EventCallback fun(event: louiselm.session.Event)
 

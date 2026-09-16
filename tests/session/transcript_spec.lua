@@ -42,6 +42,116 @@ end
 
 T["record"] = MiniTest.new_set()
 
+T["Handoff uses the latest completed summary with boundary overlap and subsequent conversation"] = function()
+  local transcript = Transcript.new()
+  local function record(kind, data)
+    transcript:record(event({ type = kind, session_id = "s", data = data }))
+  end
+  transcript:record_user("old user")
+  record("chunk", { text = "obsolete history" })
+  record("tool_call_started", { toolCallId = "spanning", title = "Running check", status = "in_progress" })
+  transcript:record_user("current instruction")
+  record(
+    "compaction_updated",
+    { id = "first", status = "completed", summary = { { type = "text", text = "first summary" } } }
+  )
+  record("tool_call_finished", { toolCallId = "spanning", status = "completed", rawOutput = "private tool payload" })
+  record("chunk", { text = "result after compaction" })
+  local first = Transcript.render_handoff(transcript:snapshot(), state())
+  for _, text in ipairs({
+    "first summary",
+    "Running check",
+    "completed",
+    "current instruction",
+    "result after compaction",
+  }) do
+    MiniTest.expect.equality(first:find(text, 1, true) ~= nil, true)
+  end
+  MiniTest.expect.equality(first:find("obsolete history", 1, true), nil)
+  MiniTest.expect.equality(first:find("private tool payload", 1, true), nil)
+  transcript:record_user("next instruction")
+  record(
+    "compaction_updated",
+    { id = "second", status = "completed", summary = { { type = "text", text = "second summary" } } }
+  )
+  record(
+    "compaction_updated",
+    { id = "first", status = "completed", summary = { { type = "text", text = "late first replacement" } } }
+  )
+  record("chunk", { text = "latest answer" })
+  local snapshot = transcript:snapshot()
+  local latest = Transcript.render_handoff(snapshot, state())
+  MiniTest.expect.equality(latest:find("second summary", 1, true) ~= nil, true)
+  MiniTest.expect.equality(latest:find("late first replacement", 1, true), nil)
+  MiniTest.expect.equality(latest:find("latest answer", 1, true) ~= nil, true)
+  MiniTest.expect.equality(snapshot, transcript:snapshot())
+  MiniTest.expect.equality(Transcript.render(snapshot, state()):find("obsolete history", 1, true) ~= nil, true)
+end
+
+T["Handoff falls back for unusable summaries and retains later failed compactions"] = function()
+  for _, entity in ipairs({
+    { id = "c", status = "in_progress", summary = { { type = "text", text = "unfinished" } } },
+    { id = "c", status = "failed" },
+    { id = "c", status = "cancelled" },
+    { id = "c", status = "_unknown", summary = { { type = "text", text = "opaque" } } },
+    { id = "c", status = "completed" },
+    { id = "c", status = "completed", summary = {} },
+    { id = "c", status = "completed", summary = { { type = "image", data = "blob" } } },
+  }) do
+    local transcript = Transcript.new()
+    transcript:record_user("preserved history")
+    transcript:record(event({ type = "compaction_updated", session_id = "s", data = entity }))
+    local entries = transcript:snapshot()
+    MiniTest.expect.equality(Transcript.render_handoff(entries, state()), Transcript.render_compact(entries, state()))
+  end
+  local ambiguous = {
+    { kind = "user", text = "unknown boundary history" },
+    {
+      kind = "compaction",
+      compaction = { id = "c", status = "completed", summary = { { type = "text", text = "retained" } } },
+    },
+  }
+  MiniTest.expect.equality(Transcript.render_handoff(ambiguous, state()), Transcript.render_compact(ambiguous, state()))
+  local transcript = Transcript.new()
+  transcript:record_user("before")
+  transcript:record(event({
+    type = "compaction_updated",
+    session_id = "s",
+    data = { id = "c", status = "completed", summary = { { type = "text", text = "retained" } } },
+  }))
+  transcript:record_user("intervening work")
+  transcript:record(
+    event({ type = "compaction_updated", session_id = "s", data = { id = "failed", status = "failed" } })
+  )
+  local text = Transcript.render_handoff(transcript:snapshot(), state())
+  for _, expected in ipairs({ "retained", "intervening work", "failed" }) do
+    MiniTest.expect.equality(text:find(expected, 1, true) ~= nil, true)
+  end
+end
+
+T["record"]["compaction patches retain timeline position and full history"] = function()
+  local transcript = Transcript.new()
+  transcript:record_user("original instruction")
+  transcript:record(event({ type = "chunk", session_id = "s", data = { text = "old answer" } }))
+  transcript:record(
+    event({ type = "compaction_updated", session_id = "s", data = { id = "c", status = "in_progress" } })
+  )
+  transcript:record_user("new instruction")
+  transcript:record(event({
+    type = "compaction_updated",
+    session_id = "s",
+    data = { id = "c", status = "completed", summary = { { type = "text", text = "retained context" } } },
+  }))
+  local entries = transcript:snapshot()
+  MiniTest.expect.equality(#entries, 4)
+  MiniTest.expect.equality(entries[3].kind, "compaction")
+  MiniTest.expect.equality(entries[4].text, "new instruction")
+  local full = Transcript.render(entries, state())
+  for _, text in ipairs({ "original instruction", "old answer", "retained context", "new instruction" }) do
+    MiniTest.expect.equality(full:find(text, 1, true) ~= nil, true)
+  end
+end
+
 T["record"]["merges consecutive assistant chunks into one block"] = function()
   local transcript = Transcript.new()
   transcript:record(event({

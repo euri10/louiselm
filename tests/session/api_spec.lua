@@ -168,7 +168,97 @@ local function start_ready_session(api, processes, name, cwd, agent_capabilities
   return session, process
 end
 
+T["compaction"] = MiniTest.new_set()
+T["compaction"]["negotiates generic compactions and owns isolated snapshots"] = function()
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({
+    north = { provider = "test", command = "north" },
+    south = { provider = "test", command = "south" },
+  }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  for _, name in ipairs({ "north", "south" }) do
+    local session, process = start_ready_session(api, processes, name, "/tmp/project")
+    local init = assert(Protocol.decode(process.writes[1]:sub(1, -2)))
+    MiniTest.expect.equality(type(init.params.clientCapabilities.session.compaction), "table")
+    MiniTest.expect.equality(nvim.json.encode(init.params.clientCapabilities.session.compaction), "{}")
+    local events = {}
+    session:on(function(event)
+      if event.type == "compaction_updated" then
+        events[#events + 1] = event
+      end
+    end)
+    -- Synthetic ACP contract sequence; not a captured runtime trace.
+    for _, update in ipairs({
+      { sessionUpdate = "compaction_update", compactionId = "c", status = "in_progress" },
+      {
+        sessionUpdate = "compaction_summary_chunk",
+        compactionId = "c",
+        content = { type = "text", text = "retained" },
+      },
+      { sessionUpdate = "compaction_update", compactionId = "c", status = "completed" },
+    }) do
+      notification(process, "session/update", { sessionId = name .. "-acp", update = update })
+    end
+    MiniTest.expect.equality(#events, 3)
+    MiniTest.expect.equality(events[1].data.summary, nil)
+    MiniTest.expect.equality(session:inspect().compactions[1].summary[1].text, "retained")
+    events[3].data.summary[1].text = "consumer edit"
+    MiniTest.expect.equality(session:inspect().compactions[1].summary[1].text, "retained")
+    session:dispose()
+    notification(process, "session/update", {
+      sessionId = name .. "-acp",
+      update = {
+        sessionUpdate = "compaction_update",
+        compactionId = "late",
+        status = "completed",
+      },
+    })
+    MiniTest.expect.equality(#events, 3)
+  end
+end
+
 T["forensics"] = MiniTest.new_set()
+
+T["compaction"]["replays terminal-only compactions and rejects malformed state before publication"] = function()
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session = assert(api:load_session("agent", "stored", { cwd = "/tmp/project" }))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  notification(process, "session/update", {
+    sessionId = "stored",
+    update = {
+      sessionUpdate = "compaction_update",
+      compactionId = "replayed",
+      status = "completed",
+      summary = { { type = "text", text = "retained history" } },
+    },
+  })
+  respond(process, 2, {})
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(session:inspect().compactions[1].summary[1].text, "retained history")
+  notification(process, "session/update", {
+    sessionId = "stored",
+    update = {
+      sessionUpdate = "compaction_summary_chunk",
+      compactionId = "replayed",
+      content = { type = "text", text = "invalid late chunk" },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(session:inspect().compactions[1].summary[1].text, "retained history")
+end
 
 T["provider"] = MiniTest.new_set()
 
@@ -1551,6 +1641,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     recording_pending = false,
     config_options = {},
     commands = {},
+    compactions = {},
     skills_policy = "off",
     embedded_context = false,
   })
@@ -1567,6 +1658,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     recording_pending = false,
     config_options = {},
     commands = {},
+    compactions = {},
     skills_policy = "off",
     embedded_context = false,
   })

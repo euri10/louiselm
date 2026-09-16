@@ -861,6 +861,43 @@ T["chat"]["focuses the prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["hands off retained compaction context from an errored source without a source turn"] = function()
+  local source = fake_session("source", "north")
+  source.state.acp_session_id = "stored"
+  local target = fake_session("target", "south")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(source))
+  assert(chat:attach(target))
+  source:emit({ type = "user_chunk", session_id = "source", data = { text = "old request" } })
+  source:emit({ type = "chunk", session_id = "source", data = { text = "old answer" } })
+  source:emit({ type = "user_chunk", session_id = "source", data = { text = "current request" } })
+  source:emit({
+    type = "compaction_updated",
+    session_id = "source",
+    data = {
+      id = "c",
+      status = "completed",
+      summary = { { type = "text", text = "retained decisions" } },
+    },
+  })
+  source:emit({ type = "chunk", session_id = "source", data = { text = "recent work" } })
+  source.state.status = "error"
+  local original = chat.views.source.transcript:snapshot()
+  local buffer = assert(chat:open_handoff(target, "source"))
+  fill_takeover_task(buffer, "finish the current request")
+  assert(chat:submit_handoff(buffer))
+  MiniTest.expect.equality(source.prompts, {})
+  MiniTest.expect.equality(source.state.status, "error")
+  MiniTest.expect.equality(chat.views.source.transcript:snapshot(), original)
+  MiniTest.expect.equality(target.prompts[1]:find("old answer", 1, true), nil)
+  for _, expected in ipairs({ "retained decisions", "current request", "recent work" }) do
+    MiniTest.expect.equality(target.prompts[1]:find(expected, 1, true) ~= nil, true)
+  end
+end
+
 T["chat"]["opens a takeover brief and submits the reviewed edit"] = function()
   local source = fake_session("source", "claude")
   source.state.acp_session_id = "source-acp"
@@ -1970,6 +2007,70 @@ T["chat"]["rebuilds a reasoning fold that something else silently dropped mid-re
   assert(live_header ~= nil, "post-resume reasoning header rendered")
   MiniTest.expect.equality({ fold_range(live_header + 1) }, { live_header, live_header + 1 })
   chat:dispose()
+end
+
+T["chat"]["schedules compaction display and inspection and ignores queued updates after disposal"] = function()
+  local first = fake_session("session-1", "arbitrary")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  local buffer = chat:buffer()
+  local before = buffer_lines(buffer)
+  local timer = assert(nvim.uv.new_timer())
+  local observed_fast, unchanged
+  timer:start(0, 0, function()
+    observed_fast = nvim.in_fast_event()
+    first:emit({
+      type = "compaction_updated",
+      session_id = "session-1",
+      data = { id = "c", status = "completed", summary = { { type = "text", text = "retained decisions" } } },
+    })
+    timer:stop()
+    timer:close()
+  end)
+  unchanged = nvim.deep_equal(buffer_lines(buffer), before)
+  assert(nvim.wait(1000, function()
+    return #buffer_lines(buffer) > #before
+  end, 1))
+  MiniTest.expect.equality(observed_fast, true)
+  MiniTest.expect.equality(unchanged, true)
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  assert(chat:inspect_tool())
+  local inspector = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(table.concat(buffer_lines(inspector), "\n"):find("retained decisions", 1, true) ~= nil, true)
+  first:emit({ type = "compaction_updated", session_id = "session-1", data = { id = "late", status = "in_progress" } })
+  chat:dispose()
+  nvim.wait(20, function()
+    return false
+  end, 1)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(buffer), false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(inspector), false)
+end
+
+T["chat"]["late compaction patches do not split a replayed user turn"] = function()
+  local source = fake_session("source", "generic")
+  source.state.source = "loaded"
+  source.state.status = "starting"
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(source))
+  for _, message in ipairs({
+    { type = "compaction_updated", data = { id = "c", status = "completed" } },
+    { type = "user_chunk", data = { text = "part one" } },
+    { type = "compaction_updated", data = { id = "c", status = "completed", meta = { enriched = true } } },
+    { type = "user_chunk", data = { text = "part two" } },
+  }) do
+    message.session_id = "source"
+    source:emit(message)
+  end
+  nvim.wait(30, function()
+    return false
+  end, 1)
+  MiniTest.expect.equality(chat.views.source.replay_turn, 1)
 end
 
 T["chat"]["inspects finished and active tool payloads from their lines"] = function()

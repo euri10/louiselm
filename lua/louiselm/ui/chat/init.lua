@@ -1095,6 +1095,10 @@ local function handle_event(self, view, event, completed_state)
   then
     view.replay_user_open = false
     view.renderer:render(event)
+  elseif event.type == "compaction_updated" then
+    if view.renderer:compaction(event.data) then
+      view.replay_user_open = false
+    end
   elseif event.type == "prompt_rejected" then
     view.renderer:append({ "Prompt not sent: " .. event.data.message })
   elseif event.type == "recording_changed" then
@@ -1663,7 +1667,7 @@ function Chat:abandon_handoff(buffer)
   return self.handoffs:abandon(buffer)
 end
 
----Open the full raw payload for the tool call under the cursor.
+---Open the full payload for the tool call or compaction under the cursor.
 ---@param self louiselm.ui.Chat
 ---@return boolean opened
 ---@return string? error_message
@@ -1674,6 +1678,16 @@ function Chat:inspect_tool()
   local view = self.current_id and self.views[self.current_id]
   if view == nil or nvim.api.nvim_get_current_buf() ~= view.renderer.buffer then
     return false, "no chat session is open"
+  end
+  local compaction_id = view.renderer:compaction_at_cursor()
+  if compaction_id ~= nil then
+    for _, entry in ipairs(view.transcript:snapshot()) do
+      if entry.kind == "compaction" and entry.id == compaction_id then
+        open_payload_inspector(self, nvim.split(nvim.inspect(entry.compaction), "\n", { plain = true }))
+        return true
+      end
+    end
+    return false, "compaction summary is unavailable"
   end
   local id = view.renderer:tool_at_cursor()
   if id == nil then

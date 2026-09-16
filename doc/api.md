@@ -86,6 +86,7 @@ string|table
 - `activity: string?` -- Current generic tool activity.
 - `agent: string` -- Named agent definition.
 - `commands: louiselm.session.AvailableCommand[]` -- Latest agent-advertised commands, replaced wholesale on each update.
+- `compactions: louiselm.session.Compaction[]` -- Compaction snapshots in first-seen order, including replay.
 - `config_options: louiselm.session.ConfigOption[]` -- Supported agent-advertised options in priority order.
 - `context: (louiselm.session.ContextUsage)?` -- Latest agent-reported context state.
 - `cost: (louiselm.session.Cost)?` -- Latest agent-reported cumulative cost.
@@ -115,7 +116,7 @@ string|table
 - `cwd: string?` -- Working directory for the ACP session.
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `name: string?` -- User-facing session name.
-- `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))?` -- Initial event listener.
+- `on_event: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))?` -- Initial event listener.
 - `permission_policy: (louiselm.permission.Policy)?` -- Policy for agent-requested operations.
 - `permission_store: (louiselm.permission.Store)?` -- Remembered-permission owner.
 - `schedule: fun(delay_ms: integer, callback: fun())?` -- Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -139,7 +140,7 @@ string|table
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.
 - `inspect: fun(self: louiselm.session.Session):louiselm.session.State`
 - `load_session_id: string?` -- Agent-side session identifier to load.
-- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))):fun()`
+- `on: fun(self: louiselm.session.Session, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))):fun()`
 - `option_observer_id: string` -- Random identity of this live observation stream.
 - `option_sequence: integer` -- Number of confirmed value transitions observed outside replay.
 - `option_usage: fun(self: louiselm.session.Session, option_id: string, callback: fun(candidates?: louiselm.session.OptionUsage[], error?: louiselm.session.RecordingError))`
@@ -379,6 +380,7 @@ louiselm.session.EventType:
     | "config_options_changed"
     | "commands_changed"
     | "usage_updated"
+    | "compaction_updated"
     | "recording_changed"
     | "prompt_rejected"
     | "state_changed"
@@ -429,6 +431,12 @@ louiselm.session.EventType:
 - `data: louiselm.session.UsageUpdatedData`
 - `session_id: string` -- Local session identifier.
 - `type: "usage_updated"`
+
+### louiselm.session.CompactionUpdatedEvent
+
+- `data: louiselm.session.Compaction` -- Complete owned snapshot, with stable first-seen placement by ID.
+- `session_id: string` -- Local session identifier.
+- `type: "compaction_updated"`
 
 ### louiselm.session.RecordingChangedData
 
@@ -483,22 +491,22 @@ louiselm.session.EventType:
 ### louiselm.session.Event
 
 ```lua
-louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4)
+louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5)
 ```
 
 ### louiselm.session.EventCallback
 
 ```lua
-fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))
+fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))
 ```
 
 ### louiselm.session.EventEmitter
 
 - `clear: fun(self: louiselm.session.EventEmitter)`
-- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))`
-- `listeners: table<integer, fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))>`
+- `emit: fun(self: louiselm.session.EventEmitter, event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))`
+- `listeners: table<integer, fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))>`
 - `next_id: integer` -- Next listener identifier.
-- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.PermissionEvent...(+4))):fun()` -- Remove the listener.
+- `on: fun(self: louiselm.session.EventEmitter, callback: fun(event: louiselm.session.CommandsChangedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.GenericEvent|louiselm.session.PermissionCancelledEvent...(+5))):fun()` -- Remove the listener.
 - `order: integer[]` -- Listener registration order.
 
 ## Permission Policies

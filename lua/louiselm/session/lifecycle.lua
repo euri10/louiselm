@@ -2,6 +2,7 @@ local Acp = require("louiselm.acp")
 local Permission = require("louiselm.permission")
 local Events = require("louiselm.session.events")
 local Validation = require("louiselm.session.validation")
+local Compaction = require("louiselm.session.compaction")
 local Provider = require("louiselm.agent.provider")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -39,6 +40,7 @@ local nvim = vim
 ---@field skills_policy louiselm.skills.Policy Effective session-static Agent Skills policy.
 ---@field embedded_context boolean Whether the Agent accepts embedded resource prompt context.
 ---@field commands louiselm.session.AvailableCommand[] Latest agent-advertised commands, replaced wholesale on each update.
+---@field compactions louiselm.session.Compaction[] Compaction snapshots in first-seen order, including replay.
 
 ---@class louiselm.session.AvailableCommand
 ---@field name string Command name as advertised by the agent.
@@ -456,6 +458,24 @@ local function handle_notification(self, message)
       emit(self, "tool_call_started", update)
     end
     emit(self, "state_changed", { status = self.state.status, activity = self.state.activity })
+  elseif update_type == "compaction_update" or update_type == "compaction_summary_chunk" then
+    local index = #self.state.compactions + 1
+    for position, entity in ipairs(self.state.compactions) do
+      if entity.id == update.compactionId then
+        index = position
+        break
+      end
+    end
+    local entity, compaction_error = Compaction.apply(self.state.compactions[index], update)
+    if entity == nil then
+      fail(self, compaction_error or "malformed ACP compaction update")
+      return
+    end
+    if index > #self.state.compactions then
+      self.replay_user_open = false
+    end
+    self.state.compactions[index] = entity
+    emit(self, "compaction_updated", nvim.deepcopy(entity))
   elseif update_type == "config_option_update" then
     local options = Validation.config_options(update.configOptions)
     if options == nil then
@@ -890,6 +910,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       recording_error = nvim.deepcopy(owner.recording.error),
       config_options = {},
       commands = {},
+      compactions = {},
       skills_policy = definition.skills.policy,
       embedded_context = false,
     },

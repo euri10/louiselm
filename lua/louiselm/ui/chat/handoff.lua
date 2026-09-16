@@ -100,7 +100,7 @@ function Handoffs:open(target_session, source_state, entries)
       user_turns = user_turns + 1
     end
   end
-  local context = Transcript.render_compact(entries, source_state)
+  local context = Transcript.render_handoff(entries, source_state)
   local source_ref = source_state.acp_session_id ~= nil and (source_state.agent .. "/" .. source_state.acp_session_id)
     or source_state.agent
   local brief = table.concat({

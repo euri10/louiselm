@@ -291,7 +291,12 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "A Handoff creates a new Session with a configured Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
+        "A Handoff creates a new Session with a configured Agent after you fill in its takeover task and review the context. When available, it uses the latest usable completed ACP compaction summary plus recent conversation, including conservative overlap for the current instruction and open tools. Otherwise it uses the filtered full transcript. This is lossy context, not the Agent's complete replacement history. No new source turn is requested; the source Session and full transcript remain intact.",
+        context
+      )
+      append_prose(
+        lines,
+        "Experimental ACP compaction updates appear as separate timeline rows. Use :LouiselmInspectTool on a compaction row to inspect its retained summary and status. Agents may omit summaries. LouiseLM consumes the shared protocol without adapter-specific hooks or transcript parsing; compaction does not replace usage telemetry or erase the source transcript.",
         context
       )
       append_prose(

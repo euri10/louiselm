@@ -28,6 +28,26 @@ local function new_buffer(options)
   return owner
 end
 
+T["patches compaction rows in place without splitting subsequent prose"] = function()
+  local owner = new_buffer()
+  owner:compaction({ id = "same", status = "in_progress" })
+  owner:render({ type = "chunk", session_id = "buffer-test", data = { text = "after " } })
+  owner:compaction({ id = "same", status = "completed", summary = { { type = "text", text = "summary" } } })
+  owner:render({ type = "chunk", session_id = "buffer-test", data = { text = "boundary" } })
+  local count = 0
+  for line, text in ipairs(buffer_lines(owner.buffer)) do
+    if text:find("[compaction]", 1, true) then
+      count = count + 1
+      MiniTest.expect.equality(text:find("completed", 1, true) ~= nil, true)
+      nvim.api.nvim_win_set_cursor(owner.window, { line, 0 })
+      MiniTest.expect.equality(owner:compaction_at_cursor(), "same")
+      MiniTest.expect.equality(owner:tool_at_cursor(), nil)
+    end
+  end
+  MiniTest.expect.equality(count, 1)
+  MiniTest.expect.equality(table.concat(buffer_lines(owner.buffer), "\n"):find("after boundary", 1, true) ~= nil, true)
+end
+
 T["preserves multiline prompts and drafts while prose streams between tool and reasoning blocks"] = function()
   local owner = new_buffer()
   owner:replace_prompt("first\nsecond")

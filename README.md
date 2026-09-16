@@ -137,10 +137,17 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
 
 - **Chat in Neovim.** Stream replies, reasoning when supplied, tool activity,
   context usage, and cost or account limits when the Agent reports them.
+  Agents supporting experimental ACP compaction updates also provide timeline
+  status and optional retained summaries; inspect a compaction row with
+  `:LouiselmInspectTool`. Support depends on protocol events, not Agent names.
 - **Use several Agents and Sessions.** Create, switch, rename, and close
   independent Sessions. Resume history when the Agent supports ACP Session
   discovery and loading. With at least two Agents configured, a reviewed
   Handoff opens a separate Session while preserving the source Session.
+  It reuses the latest usable completed compaction summary with recent
+  conversation when available, or falls back to the filtered full transcript.
+  You review the context and supply the takeover task before sending; the
+  source Agent is never asked for another turn to prepare the Handoff.
 - **Send editor context.** Queue the current buffer, a file, a Visual selection,
   or diagnostics for the next prompt. `:LouiselmInline` replaces a selection
   as the response streams.

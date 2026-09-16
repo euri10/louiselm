@@ -54,7 +54,7 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
             air = { version = 1, capabilities = { "sessionFailure" } },
           },
         },
-        session = { configOptions = { boolean = {} } },
+        session = { configOptions = { boolean = {} }, compaction = nvim.empty_dict() },
         terminal = false,
       },
       clientInfo = { name = "louiselm.nvim", version = nvim.fn.readfile("VERSION")[1] },

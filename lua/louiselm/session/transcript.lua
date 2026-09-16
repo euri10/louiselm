@@ -31,8 +31,11 @@
 ---with no payload, reasoning blocks are dropped entirely, and `[resource]` blocks
 ---injected into replayed user entries are stripped. It is the same deterministic
 ---mapping constraint: never fold compaction into `M.render`.
+---`M.render_handoff` prefers a completed ACP summary and recent conversation,
+---retaining overlap for the current user instruction and open tools. Unusable
+---or ambiguous summaries fall back to `M.render_compact`.
 
----@alias louiselm.session.TranscriptEntryKind "user"|"assistant"|"reasoning"|"tool_call"
+---@alias louiselm.session.TranscriptEntryKind "user"|"assistant"|"reasoning"|"tool_call"|"compaction"
 
 ---@class louiselm.session.TranscriptEntry
 ---@field kind louiselm.session.TranscriptEntryKind
@@ -40,6 +43,8 @@
 ---@field handoff_source_session_id? string Source Session identity for a Handoff user entry.
 ---@field id? string ACP tool call id for a "tool_call" entry.
 ---@field raw? table Every field seen across this tool call's ACP notifications.
+---@field compaction? louiselm.session.Compaction Complete compaction snapshot at its first-seen position.
+---@field retain_from? integer Earliest entry retained alongside this summary; fixed on first sight.
 
 ---@alias louiselm.session.TranscriptIdentity { id: string, agent: string, acp_session_id?: string }
 
@@ -52,6 +57,7 @@
 ---@field snapshot fun(self: louiselm.session.Transcript): louiselm.session.TranscriptEntry[] Copy of recorded entries in order.
 
 local M = {}
+local Compaction = require("louiselm.session.compaction")
 local Transcript = {}
 Transcript.__index = Transcript
 
@@ -129,7 +135,34 @@ end
 ---@param self louiselm.session.Transcript
 ---@param event louiselm.session.Event
 function Transcript:record(event)
-  if event.type == "chunk" then
+  if event.type == "compaction_updated" then
+    for _, entry in ipairs(self.entries) do
+      if entry.kind == "compaction" and entry.id == event.data.id then
+        entry.compaction = nvim.deepcopy(event.data)
+        return
+      end
+    end
+    -- A marker is not a coverage manifest. Preserve the current instruction
+    -- and tools whose final results may arrive after this boundary.
+    local retain_from = math.max(1, #self.entries)
+    for index = #self.entries, 1, -1 do
+      if self.entries[index].kind == "user" then
+        retain_from = index
+        break
+      end
+    end
+    for index, entry in ipairs(self.entries) do
+      if entry.kind == "tool_call" and entry.id ~= nil and self.open_tool_calls[entry.id] == entry then
+        retain_from = math.min(retain_from, index)
+      end
+    end
+    self.entries[#self.entries + 1] = {
+      kind = "compaction",
+      id = event.data.id,
+      compaction = nvim.deepcopy(event.data),
+      retain_from = retain_from,
+    }
+  elseif event.type == "chunk" then
     local text = chunk_text(event.data)
     if text ~= nil then
       append_text(self, "assistant", text)
@@ -233,6 +266,18 @@ end
 ---@param entry louiselm.session.TranscriptEntry
 ---@return string[] lines
 local function render_entry(entry)
+  local entity = entry.compaction
+  if entry.kind == "compaction" and entity ~= nil then
+    return {
+      "## Compaction",
+      "",
+      single_line(entity.status),
+      "",
+      Compaction.text(entity) or nvim.inspect(entity.summary or {}),
+      entity.error or "",
+      "",
+    }
+  end
   if entry.kind == "user" then
     local lines = { "## User", "" }
     if entry.handoff_source_session_id ~= nil then
@@ -322,6 +367,10 @@ end
 ---@param entry louiselm.session.TranscriptEntry
 ---@return string[]? lines
 local function render_compact_entry(entry)
+  if entry.kind == "compaction" then
+    local entity = entry.compaction
+    return { "## Compaction", "", entity and single_line(entity.status) or "unknown", "" }
+  end
   if entry.kind == "user" then
     local lines = { "## User", "" }
     if entry.handoff_source_session_id ~= nil then
@@ -393,6 +442,44 @@ function M.render_compact(entries, state)
     end
   end
   return table.concat(lines, "\n")
+end
+
+---Render reviewed Handoff context from the latest usable completed summary.
+---Retain conservative boundary overlap and all later conversation; fall back to
+---the filtered full transcript when no summary has a known, usable boundary.
+---Never alters the source snapshot or invokes the source Agent.
+---@param entries louiselm.session.TranscriptEntry[] Source transcript snapshot.
+---@param state louiselm.session.TranscriptIdentity Source identity.
+---@return string markdown Lossy context for operator review.
+function M.render_handoff(entries, state)
+  for index = #entries, 1, -1 do
+    local entry = entries[index]
+    local entity = entry.compaction
+    local summary = entity and entity.status == "completed" and Compaction.text(entity) or nil
+    if entry.kind == "compaction" and summary ~= nil then
+      local start = entry.retain_from
+      if start == nil or start < 1 or start > index or start % 1 ~= 0 then
+        break
+      end
+      local lines = {
+        "# Retained compaction summary",
+        "",
+        summary,
+        "",
+        "# Recent conversation (including boundary overlap)",
+        "",
+      }
+      local recent = {}
+      for position = start, #entries do
+        if position ~= index then
+          recent[#recent + 1] = entries[position]
+        end
+      end
+      lines[#lines + 1] = M.render_compact(recent, state)
+      return table.concat(lines, "\n")
+    end
+  end
+  return M.render_compact(entries, state)
 end
 
 return M

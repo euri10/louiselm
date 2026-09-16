@@ -26,6 +26,8 @@ local nvim = vim
 ---@field package trailing_blank boolean Whether the line at `transcript_tail` is already a blank separator, counted as part of `transcript_tail` itself; meaningful only while `last_block_kind == "prose"`, since a completed prose block is the only thing that always leaves one behind.
 ---@field package tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field package tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
+---@field package compaction_lines table<string, integer> Compaction rows by ID, separate from tool IDs.
+---@field package compaction_ids table<integer, string> Compaction IDs by zero-based rendered line.
 ---@field package tool_statuses table<string, string> Latest tool status by ID.
 ---@field package tool_titles table<string, string> Tool titles by ID.
 ---@field package context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
@@ -51,10 +53,12 @@ local nvim = vim
 ---@field set_prefix fun(self: louiselm.ui.ChatBuffer, prefix: string, text: string)
 ---@field accept_prompt fun(self: louiselm.ui.ChatBuffer, text: string, contexts: louiselm.ui.ContextItem[], next_prefix: string, focus: boolean)
 ---@field render fun(self: louiselm.ui.ChatBuffer, event: louiselm.session.GenericEvent, replay_active?: boolean, continuing_prompt?: boolean)
+---@field compaction fun(self: louiselm.ui.ChatBuffer, entity: louiselm.session.Compaction): boolean
 ---@field finish_turn fun(self: louiselm.ui.ChatBuffer)
 ---@field reset_response fun(self: louiselm.ui.ChatBuffer)
 ---@field error fun(self: louiselm.ui.ChatBuffer, message: string)
 ---@field tool_at_cursor fun(self: louiselm.ui.ChatBuffer): string?
+---@field compaction_at_cursor fun(self: louiselm.ui.ChatBuffer): string?
 ---@field show fun(self: louiselm.ui.ChatBuffer, window: integer, start_insert: boolean)
 ---@field dispose fun(self: louiselm.ui.ChatBuffer)
 
@@ -656,6 +660,34 @@ function Buffer:accept_prompt(text, contexts, next_prefix, focus)
   end
 end
 
+---Insert or patch a compaction row without disturbing later streamed prose.
+---@param self louiselm.ui.ChatBuffer
+---@param entity louiselm.session.Compaction Validated Session snapshot.
+---@return boolean inserted Whether this is a new timeline boundary.
+function Buffer:compaction(entity)
+  local view = self
+  local text = "[compaction] "
+    .. single_line(entity.id)
+    .. " ("
+    .. single_line(entity.status)
+    .. ") — :LouiselmInspectTool"
+  local line = view.compaction_lines[entity.id]
+  if line ~= nil then
+    set_line(view.buffer, line, text)
+    return false
+  else
+    close_thought_fold_run(view)
+    close_tool_fold_run(view)
+    line = insert_transcript(view, { text })
+    view.compaction_lines[entity.id] = line
+    view.compaction_ids[line] = entity.id
+    view.response_tail = nil
+    view.response_started = false
+    view.last_block_kind = nil
+    return true
+  end
+end
+
 ---Apply one already-scheduled streaming event; never records or queues Session events.
 ---@param self louiselm.ui.ChatBuffer
 ---@param event louiselm.session.GenericEvent User/prose/reasoning chunk or tool update.
@@ -907,6 +939,14 @@ function Buffer:tool_at_cursor()
   return self.tool_ids[cursor[1] - 1]
 end
 
+---Return the compaction ID under the cursor, or nil on another row.
+---@param self louiselm.ui.ChatBuffer
+---@return string? id
+function Buffer:compaction_at_cursor()
+  local cursor = nvim.api.nvim_win_get_cursor(self.window)
+  return self.compaction_ids[cursor[1] - 1]
+end
+
 ---Show this buffer in the selected window and install its context/tool folds.
 ---@param self louiselm.ui.ChatBuffer
 ---@param window integer Normal window chosen by Chat.
@@ -973,6 +1013,8 @@ function M.new(state, options)
     trailing_blank = false,
     tool_lines = {},
     tool_ids = {},
+    compaction_lines = {},
+    compaction_ids = {},
     tool_statuses = {},
     tool_titles = {},
     context_folds = {},
