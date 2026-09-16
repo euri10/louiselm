@@ -469,6 +469,24 @@ T["cancellation"]["cooperatively cancels ordinary workers without disposal"] = f
   MiniTest.expect.equality(run.status, "cancelled")
 end
 
+T["cancellation"]["waits for autonomous processing to acknowledge cancellation"] = function()
+  local scheduled
+  local run = assert(Workflow.new_run({
+    schedule = function(_, callback)
+      scheduled = callback
+    end,
+  }))
+  local session = worker("running")
+  assert(run:adopt_session(session))
+  assert(run:cancel())
+  MiniTest.expect.equality(session.cancelled, 1)
+  MiniTest.expect.equality(run.status, "cancelling")
+  session.status = "ready"
+  scheduled()
+  MiniTest.expect.equality(run.status, "cancelled")
+  MiniTest.expect.equality(session.disposed, 0)
+end
+
 T["cancellation"]["disposes a worker that does not acknowledge by the bound"] = function()
   local scheduled
   local session = worker("prompting")

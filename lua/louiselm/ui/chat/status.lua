@@ -31,6 +31,7 @@ local STATUS_HIGHLIGHTS = {
   ready = "LouiselmStatusReady",
   preparing = "LouiselmStatusActive",
   prompting = "LouiselmStatusActive",
+  running = "LouiselmStatusActive",
   configuring = "LouiselmStatusActive",
   starting = "LouiselmStatusActive",
   waiting_permission = "LouiselmStatusWarning",
@@ -189,7 +190,7 @@ local function turn_label(state)
   if state.status == "ready" then
     return "Your turn"
   end
-  if state.status == "prompting" then
+  if state.status == "prompting" or state.status == "running" then
     if state.session_failure ~= nil then
       return single_line(state.session_failure.title)
     end
@@ -213,7 +214,7 @@ end
 ---@param state louiselm.session.State
 ---@return string group
 local function turn_highlight(state)
-  if state.status == "prompting" and state.session_failure ~= nil then
+  if (state.status == "prompting" or state.status == "running") and state.session_failure ~= nil then
     return state.session_failure.severity == "error" and "LouiselmStatusError" or "LouiselmStatusWarning"
   end
   return STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"

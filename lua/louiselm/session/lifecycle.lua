@@ -7,7 +7,7 @@ local Provider = require("louiselm.agent.provider")
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 
----@alias louiselm.session.Status "starting"|"ready"|"configuring"|"preparing"|"prompting"|"waiting_permission"|"cancelling"|"error"|"disposed"
+---@alias louiselm.session.Status "starting"|"ready"|"configuring"|"preparing"|"prompting"|"running"|"waiting_permission"|"cancelling"|"error"|"disposed"
 ---@alias louiselm.session.Prompt string|table
 
 ---@class louiselm.session.TurnIdentity
@@ -75,6 +75,7 @@ local nvim = vim
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
+---@field agent_running? boolean Agent-reported processing, independent of the client prompt response; nil until observed.
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
 ---@field definition louiselm.agent.Definition Agent process definition.
@@ -211,8 +212,9 @@ local function set_status(self, status)
   if self.state.status == status then
     return
   end
+  local previous_status = self.state.status
   self.state.status = status
-  emit(self, "state_changed", { status = status, activity = self.state.activity })
+  emit(self, "state_changed", { status = status, previous_status = previous_status, activity = self.state.activity })
 end
 
 ---@param self louiselm.session.Session
@@ -290,6 +292,12 @@ local function prompt_active(self)
 end
 
 ---@param self louiselm.session.Session
+---@return louiselm.session.Status
+local function settled_status(self)
+  return self.agent_running and "running" or "ready"
+end
+
+---@param self louiselm.session.Session
 ---@param result unknown
 local function complete_turn(self, result)
   if self.state.status == "disposed" or self.state.status == "error" then
@@ -299,7 +307,7 @@ local function complete_turn(self, result)
     self.turn_done_turn = self.state.current_turn
     clear_session_failure(self)
     if self.permission_active == nil and #self.permission_queue == 0 then
-      set_status(self, "ready")
+      set_status(self, settled_status(self))
     else
       set_status(self, "waiting_permission")
     end
@@ -319,7 +327,7 @@ local function reject_prompt(self, message)
   local completion = self.prompt_callback
   local turn_id = self.state.turn_id
   self.prompt_callback = nil
-  set_status(self, "ready")
+  set_status(self, settled_status(self))
   emit(self, "prompt_rejected", { turn_id = turn_id, message = message })
   if completion then
     completion(nil, message)
@@ -388,7 +396,7 @@ end
 ---@param self louiselm.session.Session
 ---@param message louiselm.acp.JsonRpcNotification
 local function handle_notification(self, message)
-  if self.state.status == "disposed" then
+  if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
   self.owner:handle_agent_notification(self, message)
@@ -479,6 +487,30 @@ local function handle_notification(self, message)
     self.state.commands = commands
     emit(self, "commands_changed", { commands = nvim.deepcopy(commands), diagnostics = diagnostics })
   elseif update_type == "session_info_update" then
+    -- Historical session/load state is not live activity. Prompt completion
+    -- remains independent: idle never resolves a pending session/prompt.
+    if self.state.status ~= "starting" then
+      local running, activity_error = Validation.session_activity(update._meta)
+      if activity_error ~= nil then
+        fail(self, activity_error)
+        return
+      end
+      if running ~= nil then
+        self.agent_running = running
+        if not running then
+          self.state.activity = nil
+        end
+        local status = self.state.status
+        local turn = self.recording_turn
+        if
+          status == "ready"
+          or status == "running"
+          or (status == "cancelling" and (turn == nil or turn.finished) and not running)
+        then
+          set_status(self, settled_status(self))
+        end
+      end
+    end
     if Validation.codex_system_error(update._meta) then
       -- The agent still resolves this turn's session/prompt with a normal
       -- end_turn stopReason; failing now (instead of waiting for that response)
@@ -521,7 +553,10 @@ local function send_permission(self, entry, result, rpc_error)
   end
   pump_permissions(self)
   if self.permission_active == nil and self.state.status == "waiting_permission" then
-    local status = self.turn_done_turn == self.state.current_turn and "ready" or "prompting"
+    local turn = self.recording_turn
+    local completed = self.turn_done_turn == self.state.current_turn
+      or (self.agent_running ~= nil and (turn == nil or turn.finished))
+    local status = completed and settled_status(self) or "prompting"
     set_status(self, status)
   end
   return true
@@ -1132,6 +1167,10 @@ function Session:prompt(prompt, callback)
     if turn == nil or turn.finished then
       return
     end
+    if self.agent_running then
+      reject_prompt(self, "Agent started processing while preparing; submit the prompt after it becomes idle")
+      return
+    end
     set_status(self, "prompting")
     -- A state observer may dispose/cancel synchronously before the write.
     if self.state.status ~= "prompting" then
@@ -1166,7 +1205,7 @@ function Session:prompt(prompt, callback)
   return turn_id
 end
 
----Request cancellation of the active prompt turn.
+---Request cancellation of the active prompt or autonomous agent processing.
 ---@param self louiselm.session.Session
 ---@return boolean sent
 ---@return string? error_message ACP write or state error.
@@ -1181,6 +1220,7 @@ function Session:cancel()
   end
   if
     self.state.status ~= "prompting"
+    and self.state.status ~= "running"
     and self.state.status ~= "waiting_permission"
     and self.state.status ~= "cancelling"
   then
@@ -1256,7 +1296,7 @@ function Session:set_config_option(id, value, callback)
     end
     if rpc_error ~= nil then
       local message = "ACP session/set_config_option failed: " .. error_message(rpc_error)
-      set_status(self, "ready")
+      set_status(self, settled_status(self))
       if callback ~= nil then
         callback(nil, message)
       end
@@ -1274,14 +1314,14 @@ function Session:set_config_option(id, value, callback)
     end
     ---@cast request_id string|number -- ACP returns the ID before receiving the asynchronous response.
     accept_options(self, options, { id = request_id, option = id, value = value })
-    set_status(self, "ready")
+    set_status(self, settled_status(self))
     emit(self, "config_options_changed", nvim.deepcopy(options))
     if callback ~= nil then
       callback(nvim.deepcopy(options))
     end
   end)
   if request_id == nil then
-    set_status(self, "ready")
+    set_status(self, settled_status(self))
     return nil, request_error or "ACP config option request could not be sent"
   end
   return request_id

@@ -5612,6 +5612,7 @@ T["chat"]["uses semantic window bar highlights for every lifecycle state"] = fun
   local cases = {
     { status = "ready", label = "Your turn", group = "LouiselmStatusReady" },
     { status = "prompting", label = "Model responding", group = "LouiselmStatusActive" },
+    { status = "running", label = "Model responding", group = "LouiselmStatusActive" },
     { status = "waiting_permission", label = "Waiting for permission", group = "LouiselmStatusWarning" },
     { status = "cancelling", label = "Stopping", group = "LouiselmStatusWarning" },
     { status = "starting", label = "Starting", group = "LouiselmStatusActive" },
@@ -6121,6 +6122,82 @@ T["chat"]["keeps attention sessions visible when quiet sessions overflow"] = fun
   assert(chat:winbar_click(1))
   MiniTest.expect.equality(picker_opened, true)
   chat:dispose()
+end
+
+T["chat"]["keeps autonomous processing active and queues input until idle"] = function()
+  local session = fake_session("session-1", "claude")
+  session.state.status = "running"
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:submit("next synthetic prompt"))
+  MiniTest.expect.equality(#session.prompts, 0)
+  local function label()
+    return nvim.api.nvim_eval_statusline(nvim.api.nvim_get_option_value("winbar", { win = 0 }), { maxwidth = 200 }).str
+  end
+  MiniTest.expect.equality(label():find("Model responding", 1, true) ~= nil, true)
+  local timer = assert(nvim.uv.new_timer())
+  local fast, delivered = false, false
+  timer:start(0, 0, function()
+    fast = nvim.in_fast_event()
+    session.state.status = "ready"
+    session:emit({ type = "state_changed", session_id = session.state.id, data = { status = "ready" } })
+    nvim.schedule(function()
+      delivered = true
+    end)
+    timer:close()
+  end)
+  assert(nvim.wait(1000, function()
+    return delivered
+  end))
+  MiniTest.expect.equality(fast, true)
+  MiniTest.expect.equality(session.prompts, { "next synthetic prompt" })
+end
+
+T["chat"]["marks an autonomous background response unread only when processing stops"] = function()
+  local session = fake_session("session-1", "claude")
+  session.state.status = "running"
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:attach(fake_session("session-2", "other")))
+  session:emit({ type = "turn_done", session_id = session.state.id, data = { stopReason = "end_turn" } })
+  local delivered = false
+  nvim.schedule(function()
+    delivered = true
+  end)
+  assert(nvim.wait(1000, function()
+    return delivered
+  end))
+  MiniTest.expect.equality(chat.views[session.state.id].unread_turn, false)
+  session.state.status = "ready"
+  session:emit({
+    type = "state_changed",
+    session_id = session.state.id,
+    data = { status = "ready", previous_status = "running" },
+  })
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return chat.views[session.state.id].unread_turn
+    end),
+    true
+  )
+  session.state.status = "running"
+  session:emit({
+    type = "state_changed",
+    session_id = session.state.id,
+    data = { status = "running", previous_status = "ready" },
+  })
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return not chat.views[session.state.id].unread_turn
+    end),
+    true
+  )
 end
 
 T["chat"]["groups overflow by working unseen and seen state"] = function()

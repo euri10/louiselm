@@ -286,6 +286,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Agents supporting the Session activity extension can run again after a prompt completes, for example when Claude wakes for a scheduled check. LouiseLM shows Model responding and queues input until the Agent reports idle. Each client prompt still completes once. Cancellation requests a stop; the Session remains active until the Agent acknowledges it. Agents without this extension retain their ordinary prompt lifecycle.",
+        context
+      )
+      append_prose(
+        lines,
         "A Handoff creates a new Session with a configured Agent after you fill in its takeover task and review the compacted source transcript. The source Session remains attached.",
         context
       )

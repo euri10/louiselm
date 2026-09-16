@@ -60,6 +60,7 @@ louiselm.session.Status:
     | "configuring"
     | "preparing"
     | "prompting"
+    | "running"
     | "waiting_permission"
     | "cancelling"
     | "error"
@@ -97,7 +98,7 @@ string|table
 - `session_failure: (louiselm.session.SessionFailure)?` -- Latest Agent-provided Session failure status.
 - `skills_policy: "inject"|"native"|"off"` -- Effective session-static Agent Skills policy.
 - `source: "loaded"|"new"` -- Whether the session was created or restored.
-- `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+4)` -- Lifecycle state.
+- `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+5)` -- Lifecycle state.
 - `turn_id: string?` -- Durable identity of the latest accepted prompt attempt; independent of local turn ordinal.
 - `turn_identity: (louiselm.session.TurnIdentity)?` -- Owned identity for the latest accepted attempt; later option changes never rewrite it.
 - `turn_options_changed: boolean` -- Whether the current/last attempt had confirmed value changes; unsuitable for fixed-option comparisons.
@@ -129,6 +130,7 @@ string|table
 ### louiselm.session.Session
 
 - `acp_session_id: string?` -- Agent-side session identifier.
+- `agent_running: boolean?` -- Agent-reported processing, independent of the client prompt response; nil until observed.
 - `attribution_error: (louiselm.session.RecordingError)?` -- Unresolved current Provider; cleared only by a confirmed correction.
 - `cancel: fun(self: louiselm.session.Session):boolean, string?`
 - `client: (louiselm.acp.Client)?` -- ACP client.
@@ -240,7 +242,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `agent: string` -- Configured Agent name.
 - `recoverable: boolean` -- Whether the Agent advertises ACP session/load.
 - `session: louiselm.session.Session` -- Live Session represented by this verdict.
-- `turn_active: boolean` -- Whether a prompt turn is still in flight.
+- `turn_active: boolean` -- Whether a prompt or autonomous agent processing is still active.
 
 ### louiselm.session.LimitsStatus
 
@@ -391,7 +393,8 @@ louiselm.session.EventType:
 ### louiselm.session.StateChangedData
 
 - `activity: string?` -- Current generic tool activity.
-- `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+4)` -- Current lifecycle state.
+- `previous_status: ("cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+5))?` -- Previous state when the lifecycle changed, absent for refreshes.
+- `status: "cancelling"|"configuring"|"disposed"|"error"|"preparing"...(+5)` -- Current lifecycle state.
 
 ### louiselm.session.StateChangedEvent
 

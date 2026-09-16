@@ -3003,6 +3003,210 @@ T["new"]["keeps a Session alive through a long human permission wait and subsequ
   restore_processes(original_system)
 end
 
+local function session_activity(process, state, session_id)
+  notification(process, "session/update", {
+    sessionId = session_id or "agent-acp",
+    update = {
+      sessionUpdate = "session_info_update",
+      _meta = { ["io.github.euri10.louiselm.sessionActivity"] = { version = 1, state = state } },
+    },
+  })
+end
+
+T["new"]["tracks scheduled work separately from the completed client prompt"] = function()
+  -- Reported ACP sequence: claude/f995461f-3871-4cd4-81d9-330b5a697424,
+  -- proxy session log lines 26362 (end_turn), 26367 (new tool), 26382 (thought).
+  -- Native result -> idle -> wakeup running -> idle verified with SDK 0.3.270,
+  -- Session d860f6c9-e24e-406d-be16-5443f9b5303f, local simulated provider:
+  -- /tmp/louiselm-claude-wakeup.ft5NG0/native-probe3.log; durable evidence in louiselm-gmcod.
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local callbacks, completions = 0, 0
+  session:on(function(event)
+    if event.type == "turn_done" then
+      completions = completions + 1
+    end
+  end)
+  local request_id = assert(submit(session, "synthetic task", function()
+    callbacks = callbacks + 1
+  end))
+  session_activity(process, "running")
+  respond(process, request_id, { stopReason = "end_turn" })
+  MiniTest.expect.equality(session:inspect().status, "running")
+  MiniTest.expect.equality({ callbacks, completions }, { 1, 1 })
+  session_activity(process, "idle")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  session_activity(process, "running")
+  MiniTest.expect.equality(session:inspect().status, "running")
+  MiniTest.expect.equality(Session.exit_verdict()[1].turn_active, true)
+  MiniTest.expect.equality(session:prompt("overlap"), nil)
+  local _, config_error = session:set_config_option("mode", "agent")
+  MiniTest.expect.equality(config_error, "session is not idle")
+  session_activity(process, "idle", "other-session")
+  MiniTest.expect.equality(session:inspect().status, "running")
+  session_activity(process, "requires_action")
+  MiniTest.expect.equality(session:inspect().status, "running")
+  permission_request(process, "agent-acp", 81, { "allow", "deny" })
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  -- Cancellation answers pending permissions and waits for native idle.
+  assert(session:cancel())
+  MiniTest.expect.equality(session:inspect().status, "cancelling")
+  local cancel = assert(Protocol.decode(process.writes[#process.writes]:sub(1, -2)))
+  -- A permission cancellation response can follow the cancel notification.
+  local saw_cancel = cancel.method == "session/cancel"
+  for _, wire in ipairs(process.writes) do
+    saw_cancel = saw_cancel or assert(Protocol.decode(wire:sub(1, -2))).method == "session/cancel"
+  end
+  MiniTest.expect.equality(saw_cancel, true)
+  session_activity(process, "idle")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality({ callbacks, completions, session:inspect().current_turn }, { 1, 1, 1 })
+  MiniTest.expect.equality(Session.exit_verdict()[1].turn_active, false)
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "tool_call_update", toolCallId = "late", status = "completed" },
+  })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+end
+
+T["new"]["native idle does not complete a pending prompt and late states cannot revive disposal"] = function()
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local callbacks = 0
+  local request_id = assert(submit(session, "synthetic task", function()
+    callbacks = callbacks + 1
+  end))
+  session_activity(process, "running")
+  session_activity(process, "idle")
+  MiniTest.expect.equality({ session:inspect().status, callbacks }, { "prompting", 0 })
+  respond(process, request_id, { stopReason = "end_turn" })
+  MiniTest.expect.equality({ session:inspect().status, callbacks }, { "ready", 1 })
+  assert(session:dispose())
+  session_activity(process, "running")
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+end
+
+T["new"]["rejects malformed native activity without accepting a false idle"] = function()
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session_activity(process, "running")
+  session_activity(process, false)
+  MiniTest.expect.equality(session:inspect().status, "error")
+  session_activity(process, "idle")
+  MiniTest.expect.equality(session:inspect().status, "error")
+end
+
+T["new"]["activity preserves permissions and ignores replay and unsupported extensions"] = function()
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session = assert(api:load_session("agent", "agent-acp", { cwd = "/tmp/project" }))
+  local process = processes[1]
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = { loadSession = true } })
+  session_activity(process, "running")
+  respond(process, 2, {})
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = {
+      sessionUpdate = "session_info_update",
+      _meta = { ["io.github.euri10.louiselm.sessionActivity"] = { version = 2, state = "running" } },
+    },
+  })
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  local permissions = {}
+  session:on(function(event)
+    if event.type == "permission_requested" then
+      permissions[#permissions + 1] = event
+    end
+  end)
+  session_activity(process, "running")
+  permission_request(process, "agent-acp", 91, { "once", "reject" })
+  assert(permissions[1].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+  MiniTest.expect.equality(session:inspect().status, "running")
+  permission_request(process, "agent-acp", 92, { "once", "reject" })
+  session_activity(process, "idle")
+  MiniTest.expect.equality(session:inspect().status, "waiting_permission")
+  assert(permissions[2].respond({ outcome = { outcome = "selected", optionId = "once" } }))
+  MiniTest.expect.equality(session:inspect().status, "ready")
+end
+
+T["new"]["does not dispatch a prepared prompt over newly started autonomous work"] = function()
+  -- Synthetic admission race, not claimed as observed peer ordering.
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  session:on(function(event)
+    if event.type == "state_changed" and event.data.status == "preparing" then
+      session_activity(process, "running")
+    end
+  end)
+  local failure
+  assert(submit(session, "overlap", function(_, err)
+    failure = err
+  end))
+  MiniTest.expect.equality({ session:inspect().status, type(failure) }, { "running", "string" })
+  for _, wire in ipairs(process.writes) do
+    MiniTest.expect.equality(assert(Protocol.decode(wire:sub(1, -2))).method ~= "session/prompt", true)
+  end
+end
+
+T["new"]["configuration responses preserve independently reported activity"] = function()
+  local processes, original_system = fake_processes()
+  MiniTest.finally(function()
+    restore_processes(original_system)
+  end)
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent" } }))
+  MiniTest.finally(function()
+    api:dispose()
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local options = { { id = "enabled", name = "Enabled", type = "boolean", currentValue = false } }
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "config_option_update", configOptions = options },
+  })
+  local id = assert(session:set_config_option("enabled", true))
+  session_activity(process, "running")
+  options[1].currentValue = true
+  respond(process, id, { configOptions = options })
+  MiniTest.expect.equality(session:inspect().status, "running")
+  session_activity(process, "idle")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+end
+
 T["new"]["keeps a prompt alive when a tool completes before prolonged silence"] = function()
   local processes, original_system = fake_processes()
   local schedule, advance = fake_clock()

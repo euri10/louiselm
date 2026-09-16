@@ -68,6 +68,33 @@ local function optional_string(value)
   return nil, false
 end
 
+---Read the opt-in Session activity extension; absent/unsupported versions are ignored.
+---@param meta unknown Session update metadata.
+---@return boolean? running False means authoritative idle, nil means absent/unsupported.
+---@return string? error_message Malformed consumed state.
+function M.session_activity(meta)
+  if type(meta) ~= "table" then
+    return nil
+  end
+  local value = meta["io.github.euri10.louiselm.sessionActivity"]
+  if value == nil then
+    return nil
+  end
+  if type(value) ~= "table" or type(value.version) ~= "number" then
+    return nil, "malformed Session activity extension"
+  end
+  if value.version ~= 1 then
+    return nil
+  end
+  if value.state == "idle" then
+    return false
+  end
+  if value.state == "running" or value.state == "requires_action" then
+    return true
+  end
+  return nil, "malformed Session activity state"
+end
+
 ---@param value unknown
 ---@return boolean
 local function absolute_path(value)

@@ -49,6 +49,7 @@ T["connect"]["correlates responses and builds ACP requests"] = function()
       clientCapabilities = {
         fs = { readTextFile = false, writeTextFile = false },
         _meta = {
+          ["io.github.euri10.louiselm.sessionActivity"] = { version = 1 },
           jetbrains = {
             air = { version = 1, capabilities = { "sessionFailure" } },
           },

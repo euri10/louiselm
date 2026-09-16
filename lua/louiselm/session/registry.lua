@@ -68,7 +68,7 @@ local registries = {} ---@type louiselm.session.Registry[]
 ---@field agent string Configured Agent name.
 ---@field acp_session_id? string Agent-side Session identifier, once initialized.
 ---@field recoverable boolean Whether the Agent advertises ACP session/load.
----@field turn_active boolean Whether a prompt turn is still in flight.
+---@field turn_active boolean Whether a prompt or autonomous agent processing is still active.
 
 ---@param self louiselm.session.Registry
 ---@param agent_name string
@@ -282,6 +282,7 @@ function M.exit_verdict()
       recoverable = capabilities.loadSession == true,
       turn_active = state.status == "preparing"
         or state.status == "prompting"
+        or state.status == "running"
         or state.status == "waiting_permission"
         or state.status == "cancelling",
     }
