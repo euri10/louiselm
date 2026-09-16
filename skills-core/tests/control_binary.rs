@@ -28,7 +28,7 @@ fn validates_verbs_confirmation_and_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected 'serve', 'adopt-state --confirm', or 'session inspect ID --json'"
+                "expected 'serve', 'adopt-state --confirm', 'session inspect ID --json', or 'skill-request inspect|reject|cancel ID --json'"
             }),
             "{error}"
         );
