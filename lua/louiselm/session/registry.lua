@@ -321,6 +321,39 @@ function M.identity(acp_session_id)
   return agents[1] .. "/" .. acp_session_id
 end
 
+---Collect Forensics for a subject Session owned by any headless API in this process.
+---
+---Diagnosis must not depend on the chat that is broken, so the caller names the
+---subject by Agent plus ACP session id rather than holding its API. Collection
+---itself stays the owning registry's: it alone holds the subject's private
+---record directory and live client state.
+---@param agent_name string Configured Agent name of the subject Session.
+---@param acp_session_id string Agent-side ACP session id of the subject Session.
+---@param options? louiselm.session.ForensicsOptions Collection options.
+---@param callback? louiselm.session.ForensicsCallback Completion boundary for the written path.
+---@return boolean started
+---@return string? error_message Why no live Session could be diagnosed.
+function M.collect_forensics(agent_name, acp_session_id, options, callback)
+  if type(agent_name) ~= "string" or agent_name == "" then
+    return false, "agent name must be a non-empty string"
+  end
+  if type(acp_session_id) ~= "string" or acp_session_id == "" then
+    return false, "ACP session id must be a non-empty string"
+  end
+  for _, registry in ipairs(registries) do
+    if not registry.disposed then
+      for _, id in ipairs(registry.order) do
+        local session = registry.sessions[id]
+        local state = session and session:inspect() or nil
+        if state ~= nil and state.agent == agent_name and state.acp_session_id == acp_session_id then
+          return registry:collect_forensics(agent_name, acp_session_id, options, callback)
+        end
+      end
+    end
+  end
+  return false, string.format("no live Session has ACP session id %s for Agent %s", acp_session_id, agent_name)
+end
+
 ---Dispose every Session registry created in this Neovim process.
 ---@return boolean disposed
 ---@return string? error_message First disposal failure, if any.

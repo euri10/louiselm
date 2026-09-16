@@ -229,4 +229,19 @@ function M.version()
   return VERSION
 end
 
+---Return the sensitive properties an evidence source preserves.
+---
+---This is what makes a source worth guarding, not a claim about its current
+---contents. An unknown kind preserves nothing known, which is not the same as
+---preserving nothing.
+---@param kind string Evidence source kind.
+---@return string[] properties Canonical property names; empty for an unknown kind.
+function M.source_properties(kind)
+  local properties = SOURCE_PROPERTIES[kind]
+  if properties == nil then
+    return {}
+  end
+  return copy(properties) --[[@as string[] ]]
+end
+
 return M

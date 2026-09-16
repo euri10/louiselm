@@ -212,8 +212,8 @@ Commands                                                   *louiselm-commands*
     Arguments: none
 
 :LouiselmForensics                                        *:LouiselmForensics*
-    Collect private Forensics for the current Session
-    Arguments: none
+    Collect private Forensics for the current or a named Session
+    Arguments: any number
 
 :LouiselmForensicsExport                            *:LouiselmForensicsExport*
     Export selected redacted Forensics evidence to a new file

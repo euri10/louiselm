@@ -199,6 +199,13 @@ For all tests:
   insufficient coverage for fast-event behavior.
 - Keep tests deterministic: no network, credentials, or real agent binaries.
   Use the mock ACP agent for process/protocol integration tests.
+- Dispose every Session a test creates through `MiniTest.finally`, never as the
+  last statements of the case body. Session registries are process-wide
+  (`lua/louiselm/session/registry.lua`), so a case that fails before its own
+  cleanup leaks a live Session into every later cross-API case — `exit_verdict`
+  and `identity` then fail with counts nobody changed, and the real failure
+  looks like three unrelated regressions. Cleanup belongs where a failed
+  expectation cannot skip it.
 - When a change depends on a real ACP peer, derive its fixture from a captured
   log frame rather than inventing the payload. Cite the log path and Session ID
   in the test or its comment so observed shapes are distinguishable from

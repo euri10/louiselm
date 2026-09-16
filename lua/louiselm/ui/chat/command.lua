@@ -3,6 +3,7 @@ local nvim = vim
 local Agent = require("louiselm.agent")
 local Beads = require("louiselm.ui.beads")
 local ForensicsStore = require("louiselm.forensics.store")
+local ForensicsView = require("louiselm.forensics.view")
 local EvidenceExport = require("louiselm.forensics.export")
 local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
@@ -630,22 +631,42 @@ function M.register()
     nvim.notify("louiselm: " .. message .. session_id, nvim.log.levels.INFO)
   end, { desc = "Copy the current agent-scoped ACP session id", force = true })
 
-  nvim.api.nvim_create_user_command("LouiselmForensics", function()
-    if chat == nil then
-      report_error("no chat session is open")
-      return
-    end
-    local started, forensics_error = chat:collect_forensics(function(path, error_message)
+  nvim.api.nvim_create_user_command("LouiselmForensics", function(arguments)
+    local function report_path(path, error_message)
       if error_message ~= nil then
         report_error(error_message)
       elseif path ~= nil then
         nvim.notify("louiselm: Forensics record written to " .. path, nvim.log.levels.INFO)
       end
-    end)
+    end
+    -- An explicit subject diagnoses any live Session, including one whose own
+    -- chat is the thing that is broken. Only the bare form needs a chat, and
+    -- only because that is what supplies the diagnosing Session and the queue.
+    if #arguments.fargs > 0 then
+      if #arguments.fargs ~= 2 then
+        report_error("use :LouiselmForensics AGENT ACP_SESSION_ID, or no argument for the current Session")
+        return
+      end
+      local started, forensics_error =
+        session_module().collect_forensics(arguments.fargs[1], arguments.fargs[2], nil, report_path)
+      if not started then
+        report_error(forensics_error)
+      end
+      return
+    end
+    if chat == nil then
+      report_error("no chat session is open; use :LouiselmForensics AGENT ACP_SESSION_ID to diagnose another Session")
+      return
+    end
+    local started, forensics_error = chat:collect_forensics(report_path)
     if not started then
       report_error(forensics_error)
     end
-  end, { desc = "Collect private Forensics for the current Session", force = true })
+  end, {
+    nargs = "*",
+    desc = "Collect private Forensics for the current or a named Session",
+    force = true,
+  })
 
   nvim.api.nvim_create_user_command("LouiselmForensicsView", function(arguments)
     local path = arguments.args
@@ -671,9 +692,9 @@ function M.register()
       report_error(inspection_error)
       return
     end
-    local encoded_ok, encoded = pcall(nvim.json.encode, inspection)
-    if not encoded_ok then
-      report_error("could not encode Forensics inspection")
+    local rendered_ok, rendered = pcall(ForensicsView.lines, inspection)
+    if not rendered_ok then
+      report_error("could not render Forensics inspection")
       return
     end
     local buffer = nvim.api.nvim_create_buf(false, true)
@@ -681,8 +702,8 @@ function M.register()
     nvim.bo[buffer].buftype = "nofile"
     nvim.bo[buffer].bufhidden = "wipe"
     nvim.bo[buffer].swapfile = false
-    nvim.bo[buffer].filetype = "json"
-    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { encoded })
+    nvim.bo[buffer].filetype = "markdown"
+    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, rendered)
     nvim.bo[buffer].modifiable = false
     nvim.api.nvim_set_current_buf(buffer)
   end, { nargs = "?", desc = "View a Forensics record", complete = "file", force = true })

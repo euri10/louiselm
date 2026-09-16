@@ -27,6 +27,7 @@
 ---@field new fun(definitions: unknown, default_skills_policy?: unknown, options?: louiselm.session.ApiOptions): louiselm.session.Api?, louiselm.agent.ConfigError[] Create a headless session API.
 ---@field exit_verdict fun(): louiselm.session.ExitVerdict[] Inspect live Sessions across every headless API.
 ---@field identity fun(acp_session_id: string): string?, string? Resolve the calling Session's `<agent>/<acp session id>` identity.
+---@field collect_forensics fun(agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: louiselm.session.ForensicsCallback): boolean, string? Collect Forensics for any live Session in this process.
 ---@field dispose_all fun(): boolean, string? Dispose every live Session in this Neovim process.
 
 local M = {}
@@ -60,6 +61,22 @@ end
 ---@return string? error_message Why no single live Session answered for this caller.
 function M.identity(acp_session_id)
   return Registry.identity(acp_session_id)
+end
+
+---Collect Forensics for any live Session in this Neovim process.
+---
+---Use this when the diagnosing caller holds no headless API for the subject —
+---notably when the chat UI that owns it is the thing being diagnosed. The
+---subject is named by Agent plus ACP session id; unrelated Sessions are never
+---inspected.
+---@param agent_name string Configured Agent name of the subject Session.
+---@param acp_session_id string Agent-side ACP session id of the subject Session.
+---@param options? louiselm.session.ForensicsOptions Collection options.
+---@param callback? louiselm.session.ForensicsCallback Completion boundary for the written path.
+---@return boolean started
+---@return string? error_message Why no live Session could be diagnosed.
+function M.collect_forensics(agent_name, acp_session_id, options, callback)
+  return Registry.collect_forensics(agent_name, acp_session_id, options, callback)
 end
 
 ---Dispose every live Session in this Neovim process.

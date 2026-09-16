@@ -46,6 +46,7 @@ fun(path?: string, error_message?: string)
 
 ### louiselm.session.Module
 
+- `collect_forensics: fun(agent_name: string, acp_session_id: string, options?: louiselm.session.ForensicsOptions, callback?: fun(path?: string, error_message?: string)):boolean, string?` -- Collect Forensics for any live Session in this process.
 - `dispose_all: fun():boolean, string?` -- Dispose every live Session in this Neovim process.
 - `exit_verdict: fun():louiselm.session.ExitVerdict[]` -- Inspect live Sessions across every headless API.
 - `identity: fun(acp_session_id: string):string?, string?` -- Resolve the calling Session's `<agent>/<acp session id>` identity.

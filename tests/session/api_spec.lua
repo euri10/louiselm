@@ -548,6 +548,11 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
       { forensics_directory = root }
     )
   )
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+    nvim.fn.delete(root, "rf")
+  end)
   local session = start_ready_session(api, processes, "agent", "/tmp/project")
   local path, collection_error
 
@@ -573,10 +578,6 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
   -- notation (louiselm-ysh3): a raw `tostring()` on the double once produced
   -- ids like "1787715628-2.0264597271177e+14".
   MiniTest.expect.equality(record.id:match("^%d+%-%d+$") ~= nil, true)
-
-  api:dispose()
-  restore_processes(original_system)
-  nvim.fn.delete(root, "rf")
 end
 
 T["forensics"]["records embedded_context from nested promptCapabilities, not a top-level field"] = function()
@@ -590,6 +591,11 @@ T["forensics"]["records embedded_context from nested promptCapabilities, not a t
       { forensics_directory = root }
     )
   )
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+    nvim.fn.delete(root, "rf")
+  end)
   local session = start_ready_session(api, processes, "agent", "/tmp/project", {
     promptCapabilities = { embeddedContext = true },
   })
@@ -608,10 +614,6 @@ T["forensics"]["records embedded_context from nested promptCapabilities, not a t
   MiniTest.expect.equality(collection_error, nil)
   local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
   MiniTest.expect.equality(record.observations.capabilities.embedded_context, true)
-
-  api:dispose()
-  restore_processes(original_system)
-  nvim.fn.delete(root, "rf")
 end
 
 T["new"] = MiniTest.new_set()
@@ -3444,6 +3446,75 @@ T["new"]["skips malformed advertised commands, diagnoses them, and keeps duplica
 
   api:dispose()
   restore_processes(original_system)
+end
+
+T["forensics"]["collects process-wide for a subject owned by another headless API"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local processes, original_system = fake_processes()
+  -- Two independent APIs, as a broken chat UI and a diagnosing caller would be.
+  local other = assert(Session.new({ bystander = { provider = "test-service", command = "bystander" } }))
+  local api = assert(
+    Session.new(
+      { agent = { provider = "test-service", command = "agent", args = {} } },
+      nil,
+      { forensics_directory = root }
+    )
+  )
+  -- Disposal must survive a failing expectation: a leaked Session stays in the
+  -- process-wide registry list and fails every later cross-API case.
+  MiniTest.finally(function()
+    other:dispose()
+    api:dispose()
+    restore_processes(original_system)
+    nvim.fn.delete(root, "rf")
+  end)
+  start_ready_session(other, processes, "bystander", "/tmp/other")
+  start_ready_session(api, processes, "agent", "/tmp/project")
+  local path, collection_error
+
+  assert(Session.collect_forensics("agent", "agent-acp", nil, function(value, err)
+    path = value
+    collection_error = err
+  end))
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return path ~= nil or collection_error ~= nil
+    end, 10),
+    true
+  )
+  MiniTest.expect.equality(collection_error, nil)
+  local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+  MiniTest.expect.equality(record.subject, { agent = "agent", acp_session_id = "agent-acp" })
+end
+
+T["forensics"]["refuses a subject no live Session owns"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+  end)
+  start_ready_session(api, processes, "agent", "/tmp/project")
+
+  local started, message = Session.collect_forensics("agent", "absent-acp", nil, function() end)
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(message, "no live Session has ACP session id absent-acp for Agent agent")
+end
+
+T["forensics"]["refuses collection once every Session is disposed"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+  end)
+  start_ready_session(api, processes, "agent", "/tmp/project")
+  api:dispose()
+
+  local started, message = Session.collect_forensics("agent", "agent-acp", nil, function() end)
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(message, "no live Session has ACP session id agent-acp for Agent agent")
 end
 
 return T

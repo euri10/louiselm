@@ -36,6 +36,13 @@ local function fake_process()
         return false
       end,
     }
+    -- Forensics collection asks Git for repository facts. Answer it here so the
+    -- collection completes deterministically instead of waiting on a real repo.
+    if command[1] == "git" then
+      nvim.schedule(function()
+        on_exit({ code = 128, stdout = "", stderr = "not a repository" })
+      end)
+    end
     return process.handle
   end)
   return process, original_system
@@ -203,22 +210,99 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
 end
 
-T["command"]["views current Forensics evidence availability without a chat"] = function()
+T["command"]["collects Forensics for an explicit Session while no chat is open"] = function()
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "notify", original_notify)
+    Command.configure(nil)
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensics", args = { "codex", "absent-acp" } }, {})
+
+  MiniTest.expect.equality(#notifications, 1)
+  -- Reaching process-wide resolution is the point: a chat-only command would
+  -- have refused with "no chat session is open" and never looked for a subject.
+  MiniTest.expect.equality(
+    notifications[1].message:find("no live Session has ACP session id absent-acp for Agent codex", 1, true) ~= nil,
+    true
+  )
+end
+
+T["command"]["names the explicit form when a bare collection has no chat to diagnose"] = function()
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "notify", original_notify)
+    Command.configure(nil)
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensics", args = {} }, {})
+
+  MiniTest.expect.equality(#notifications, 1)
+  MiniTest.expect.equality(
+    notifications[1].message:find("use :LouiselmForensics AGENT ACP_SESSION_ID", 1, true) ~= nil,
+    true
+  )
+end
+
+T["command"]["writes a record for an explicit Session named beside an open chat"] = function()
+  local state_home = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(state_home, "p") == 1)
+  local original_state_home = nvim.env.XDG_STATE_HOME
+  nvim.env.XDG_STATE_HOME = state_home
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  local notifications = {}
+  rawset(nvim, "notify", function(message, level)
+    notifications[#notifications + 1] = { message = message, level = level }
+  end)
+  MiniTest.finally(function()
+    rawset(nvim, "system", original_system)
+    rawset(nvim, "notify", original_notify)
+    Command.configure(nil)
+    nvim.env.XDG_STATE_HOME = original_state_home
+    nvim.fn.delete(state_home, "rf")
+  end)
+  Command.register()
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "first-acp" })
+
+  nvim.api.nvim_cmd({ cmd = "LouiselmForensics", args = { "codex", "first-acp" } }, {})
+
+  assert(nvim.wait(2000, function()
+    return #notifications > 0
+  end, 10))
+  local message = notifications[#notifications].message
+  MiniTest.expect.equality(message:find("Forensics record written to", 1, true) ~= nil, true)
+  MiniTest.expect.equality(message:find(state_home, 1, true) ~= nil, true)
+end
+
+T["command"]["renders a Forensics record as a human projection, not raw JSON"] = function()
   local root = nvim.fn.tempname()
   local store = assert(ForensicsStore.new(nvim.fs.joinpath(root, "forensics")))
   local record_path = assert(store:write({
     schema_version = 1,
     id = "record-1",
-    observed_at = 100,
+    observed_at = 1787715628,
     subject = { agent = "codex", acp_session_id = "acp-1" },
-    observations = {},
+    diagnosing_session = "claude/acp-diagnoser",
+    observations = { cwd = "/tmp/project" },
     evidence_sources = {
-      {
-        kind = "acp_log",
-        state = "omitted",
-        mutable = true,
-        reason = "ACP adapter did not advertise a log path",
-      },
+      { kind = "acp_log", state = "omitted", mutable = true, reason = "ACP adapter did not advertise a log path" },
       { kind = "git", state = "present", mutable = true },
     },
   }))
@@ -229,12 +313,15 @@ T["command"]["views current Forensics evidence availability without a chat"] = f
   nvim.api.nvim_cmd({ cmd = "LouiselmForensicsView", args = { record_path } }, {})
 
   local buffer = nvim.api.nvim_get_current_buf()
-  local inspected = nvim.json.decode(table.concat(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n"))
-  MiniTest.expect.equality(inspected.evidence_availability, {
-    conversation_content = "missing",
-    repository_state = "available",
-    wire_ordering = "missing",
-  })
+  local lines = nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+  local text = table.concat(lines, "\n")
+  MiniTest.expect.equality(text:find("Subject Session:    codex/acp-1", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("Diagnosing Session: claude/acp-diagnoser", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("Observed at:        2026-08-26T03:40:28Z", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("why: ACP adapter did not advertise a log path", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("repository_state: available", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("conversation_content: missing", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text:find("wire_ordering: missing", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_get_option_value("buftype", { buf = buffer }), "nofile")
   MiniTest.expect.equality(nvim.api.nvim_get_option_value("modifiable", { buf = buffer }), false)
 end
