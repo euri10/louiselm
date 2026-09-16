@@ -25,6 +25,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use rustix::{
@@ -351,8 +352,21 @@ struct SendCommand {
     completion: TransportCompletion<()>,
 }
 
-struct ReceiveCommand {
-    completion: TransportCompletion<AuthenticatedPacket>,
+enum ReceiveCommand {
+    Packet(TransportCompletion<AuthenticatedPacket>),
+    Readable {
+        deadline: Instant,
+        completion: TransportCompletion<bool>,
+    },
+}
+
+impl ReceiveCommand {
+    fn refuse(self, error: TransportError) {
+        match self {
+            Self::Packet(callback) => complete(callback, Err(error)),
+            Self::Readable { completion, .. } => complete(completion, Err(error)),
+        }
+    }
 }
 
 struct ChannelCore {
@@ -526,6 +540,31 @@ impl SeqpacketChannel {
         &self,
         completion: TransportCompletion<AuthenticatedPacket>,
     ) -> Result<(), TransportError> {
+        self.queue_receive(ReceiveCommand::Packet(completion))
+    }
+
+    /// Waits for readability without consuming a packet or arming a receive.
+    /// The fixed receive worker completes with false at the deadline; timeout
+    /// leaves the channel open. One owner must serialize this with real receives.
+    /// Closure wakes the wait. A true result can also indicate peer disconnect.
+    ///
+    /// # Errors
+    /// Returns queue/closure/deadline admission errors; I/O failures use the callback.
+    pub fn wait_readable(
+        &self,
+        timeout: Duration,
+        completion: TransportCompletion<bool>,
+    ) -> Result<(), TransportError> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(TransportError::ReceiveFailed)?;
+        self.queue_receive(ReceiveCommand::Readable {
+            deadline,
+            completion,
+        })
+    }
+
+    fn queue_receive(&self, command: ReceiveCommand) -> Result<(), TransportError> {
         let commands = lock(&self.inner.core.receive_commands);
         if self.inner.core.is_closed() {
             return Err(TransportError::Closed);
@@ -533,9 +572,7 @@ impl SeqpacketChannel {
         let Some(commands) = commands.as_ref() else {
             return Err(TransportError::Closed);
         };
-        commands
-            .try_send(ReceiveCommand { completion })
-            .map_err(map_receive_admission)
+        commands.try_send(command).map_err(map_receive_admission)
     }
 
     /// Closes this channel and wakes both fixed I/O workers.
@@ -632,13 +669,26 @@ fn send_one(fd: &OwnedFd, bytes: &[u8]) -> Result<(), TransportError> {
 fn receive_loop(fd: OwnedFd, commands: Receiver<ReceiveCommand>, core: Arc<ChannelCore>) {
     while let Ok(command) = commands.recv() {
         if core.is_closed() {
-            complete(command.completion, Err(TransportError::Closed));
+            command.refuse(TransportError::Closed);
             drain_receives(&commands);
             return;
         }
-        let result = receive_one(&fd, &core.pin, core.peer_credentials);
-        let fatal = result.is_err();
-        if core.finish(command.completion, result, fatal) {
+        let closed = match command {
+            ReceiveCommand::Packet(completion) => {
+                let result = receive_one(&fd, &core.pin, core.peer_credentials);
+                let fatal = result.is_err();
+                core.finish(completion, result, fatal)
+            }
+            ReceiveCommand::Readable {
+                deadline,
+                completion,
+            } => {
+                let result = wait_readable(&fd, deadline);
+                let fatal = result.is_err();
+                core.finish(completion, result, fatal)
+            }
+        };
+        if closed {
             drain_receives(&commands);
             return;
         }
@@ -647,7 +697,21 @@ fn receive_loop(fd: OwnedFd, commands: Receiver<ReceiveCommand>, core: Arc<Chann
 
 fn drain_receives(commands: &Receiver<ReceiveCommand>) {
     for command in commands.try_iter() {
-        complete(command.completion, Err(TransportError::Closed));
+        command.refuse(TransportError::Closed);
+    }
+}
+
+fn wait_readable(fd: &OwnedFd, deadline: Instant) -> Result<bool, TransportError> {
+    loop {
+        let timeout =
+            rustix::event::Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| TransportError::ReceiveFailed)?;
+        let mut ready = [PollFd::new(fd, PollFlags::IN)];
+        match poll(&mut ready, Some(&timeout)) {
+            Ok(count) => return Ok(count != 0),
+            Err(Errno::INTR) => {}
+            Err(_) => return Err(TransportError::ReceiveFailed),
+        }
     }
 }
 

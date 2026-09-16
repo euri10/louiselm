@@ -49,9 +49,11 @@ class BrokerUnits(unittest.TestCase):
             root.chmod(0o755)
             name = root.name
             runtime = Path("/run") / name
+            operator_runtime = Path("/run") / f"{name}-operator"
             state_parent = Path("/var/lib") / name
             state = state_parent / "broker"
             self.assertFalse(runtime.exists())
+            self.assertFalse(operator_runtime.exists())
             self.assertFalse(state_parent.exists())
             script = root / "probe.py"
             shutil.copyfile(__file__, script)
@@ -63,6 +65,7 @@ class BrokerUnits(unittest.TestCase):
                     text = (source / f"louiselm-broker.{kind}").read_text()
                     text = text.replace("louiselm-broker", name)
                     text = text.replace("=louiselm\n", f"={name}\n")
+                    text = text.replace("=louiselm-operator\n", f"={name}-operator\n")
                     text = text.replace("=louiselm/broker", f"={name}/broker")
                     text = text.replace("/run/louiselm/", f"{runtime}/")
                     text = text.replace(f"User={name}", "User=nobody")
@@ -96,6 +99,9 @@ class BrokerUnits(unittest.TestCase):
                 first = connect()
                 self.assertEqual(first["uid"], account.pw_uid)
                 self.assertEqual(first["gid"], account.pw_gid)
+                self.assertEqual((operator_runtime.stat().st_uid,
+                                  stat.S_IMODE(operator_runtime.stat().st_mode)),
+                                 (account.pw_uid, 0o755))
                 self.assertTrue(all(group == account.pw_gid for group in first["groups"]))
                 self.assertEqual((state.stat().st_uid, stat.S_IMODE(state.stat().st_mode)),
                                  (account.pw_uid, 0o700))
@@ -117,6 +123,7 @@ class BrokerUnits(unittest.TestCase):
                 self.assertEqual(endpoint.stat().st_ino, inode)
                 run("systemctl", "stop", f"{name}.socket", f"{name}.service")
                 self.assertFalse(runtime.exists())
+                self.assertFalse(operator_runtime.exists())
                 self.assertEqual(marker.read_text(), "durable state")
             finally:
                 if units:

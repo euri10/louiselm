@@ -53,7 +53,7 @@ fn run() -> io::Result<()> {
         }
         let message = decode_message(&bytes).map_err(io::Error::other)?;
         if !matches!(&message, ProtocolMessage::ToolExecution(_))
-            && !matches!(&message, ProtocolMessage::Command(message) if matches!(message.operation, CommandOperation::Delegate { .. }))
+            && !matches!(&message, ProtocolMessage::Command(message) if matches!(message.operation, CommandOperation::Delegate { .. } | CommandOperation::StatusRequest {}))
         {
             return Err(io::Error::other("unsupported fixture request"));
         }

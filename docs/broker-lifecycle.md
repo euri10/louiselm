@@ -3,11 +3,11 @@
 `louiselm-qbr.5.1.2` owns the full recovery/status integration. This document
 describes its implemented authorization, reattachment and projection boundaries.
 Operator reconstruction is implemented for the measured synthetic recovery layout.
-`BrokerService::session_status` composes the canonical `SessionStatus` both status
-surfaces read, but neither surface exists yet: the operator CLI
-(`louiselm-qbr.5.1.2.4.1`) and Agent self-status (`louiselm-qbr.5.1.2.4.2`) remain
-open work, so this composition has no production consumer and is reached only by
-its tests. The confirmed design in `louiselm-c0vs` requires broker-owned
+`BrokerService::session_status` composes the canonical `SessionStatus` consumed
+by the installed operator CLI and authenticated Agent self-status relay. These
+surfaces do not enable the maintainer's ordinary editor path to create installed
+broker Sessions or establish vendor recovery support. The confirmed design in
+`louiselm-c0vs` requires broker-owned
 recovery evidence backed by trusted supervisor retention proof; a reference
 string alone must not authorize disposal. `louiselm-qbr.5.1.2.5` supplies the
 retention mechanics below. `louiselm-qbr.5.1.2.6` connects them to authenticated
@@ -27,8 +27,8 @@ the tests drive; all three share the same post-accept transactions.
 
 `louiselm-control serve` runs the installed broker under its dedicated non-root
 UID/GID, with no additional group authority, using `/var/lib/louiselm/broker` as its
-machine-lifetime state. The other supported verb is the explicit offline
-`adopt-state --confirm` operation below; neither accepts caller-selected paths.
+machine-lifetime state. It also supports read-only `session inspect ID --json`
+and explicit offline `adopt-state --confirm`; none accepts caller-selected paths.
 The executable must belong to the configured trusted release. Startup
 checks the installed authority, private directories and durable identity marker
 before opening the broker stores. The supplementary list may repeat the primary
@@ -51,7 +51,7 @@ storage I/O. There is no drain, worker join or synthetic acknowledgement on stop
 Only the existing durable-before-ACK receipt path can acknowledge an outcome;
 the supervisor observes Broker loss and reattaches through the same retained
 manager listener after restart. The system units below provision the listener;
-this command does not provide client verbs or authorize new work. Its independent
+inspection does not authorize new work. Its independent
 Attention worker delivers queued projections without waiting for a Session
 connection.
 
@@ -125,14 +125,20 @@ The socket owns `RuntimeDirectory=louiselm` at mode 0700 and creates
 runtime directory before binding. `PassCredentials=true` applies before any
 packet can queue. The service owns `StateDirectory=louiselm/broker` at mode
 0700; systemd leaves the intermediate `/var/lib/louiselm` root-owned, satisfying
-the installed broker's ancestor checks.
+the installed broker's ancestor checks. The service also owns the separate
+`RuntimeDirectory=louiselm-operator` at mode 0755. The daemon creates
+`/run/louiselm-operator/inspect.sock` there at mode 0666: peers can connect to
+receive a typed refusal, but only the installed operator UID reaches a request
+read or Session lookup. This directory must not replace the private supervisor
+rendezvous directory.
 
 Both units are enabled: the service runs even without new connections, so
 Attention delivery and reconciliation continue. A crash restarts it after
 250ms. Stopping or restarting only the service preserves the socket inode and
 runtime directory; stopping the socket releases its runtime directory. Durable
-state survives either stop. Do not put `RuntimeDirectory` on the service or
-delete the broker state during unit upgrades. Startup still rechecks identity,
+state survives either stop. Do not move the supervisor rendezvous directory to
+the service, or delete broker state during unit upgrades. The separate inspection
+directory is service-owned and is recreated on service start. Startup rechecks identity,
 directory permissions, release authority and the durable identity marker.
 
 `sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 python3 scripts/test-broker-systemd.py`
@@ -441,6 +447,44 @@ settlement and operator-only reconstruction into a fresh authorized Session.
 The VM test restores a counter in a fresh measured fixture with a reused UID;
 it does not establish a vendor ACP recovery contract or desktop availability.
 
+## Operator inspection
+
+As the installed operator, without sudo:
+
+```sh
+/usr/local/lib/louiselm/current/bin/louiselm-control session inspect SESSION_ID --json
+```
+
+Success exits 0 and writes exactly canonical `louiselm.launch.session-status/5` JSON to
+stdout, without prose or an added newline. Refusals leave stdout empty and write
+`louiselm.operator-error/1` JSON to stderr, with `error` and `next_action`:
+
+| Exit | Error | Next safe action |
+| --- | --- | --- |
+| 2 | `invalid_request` | `check_request` |
+| 3 | `broker_unavailable` | `check_broker_service` |
+| 4 | `authentication_refused` | `use_configured_operator` |
+| 5 | `unknown_session` | `check_session_id` |
+| 6 | `status_unavailable` | `retry_inspection` |
+
+The CLI verifies its installed release and pins the daemon's kernel UID before
+sending any Session ID. The daemon pins the client's kernel UID before reading
+the request or touching Session state. Root, the broker account and Session
+identities are not substitutes for the installed operator. This is a separate
+daemon-created Unix stream socket, not the manager-created supervisor socket;
+its peer credentials therefore identify the actual broker. Frames and queues
+are bounded, with a 35-second total exchange deadline and a 30-second worker
+reply budget. Reads grant nothing and require no new sudo permission.
+
+Each Session worker owns all receives. It services a bounded inspection queue
+between supervisor packets, using non-consuming readiness waits while idle;
+operator queries never race another reader or hold a shared registry lock over
+I/O. Busy or disconnected Sessions return `status_unavailable`. After restart,
+inspection resumes when the retained supervisor reattaches. A known Session
+without a live owner also returns `status_unavailable`, even if durable receipts
+exist: old evidence is not current authenticated mechanical status. An unknown
+Session returns `unknown_session` only after operator authentication.
+
 ## Canonical status composition
 
 `BrokerService::session_status` reads authenticated mechanical state through the
@@ -733,6 +777,17 @@ that bound. History is not silently truncated and sequences never reset on
 restart. Lifecycle request history has the same explicit bound per Session.
 
 ## Verification
+
+`skills-core/tests/operator.rs` covers UID refusal before lookup, malformed and
+oversized frames, slow-peer deadlines, stale socket recovery and foreign/live
+path preservation. `tests/control_binary.rs` asserts typed CLI errors and empty
+stdout on refusal; the control binary's queue tests reject expired inspection
+work and preserve the original exchange deadline. `tests/launch_transport.rs`
+checks that idle readiness timeouts neither consume packets nor close channels.
+The installed-daemon VM gate executes the actual CLI, compares its canonical
+bytes with Agent self-status, checks foreign-Session redaction and distinct
+errors, and inspects again after retained-supervisor reattachment. The real
+systemd gate checks both runtime directories without conflating their lifetimes.
 
 `skills-core/tests/broker/lifecycle.rs` covers authorization, coordinator scope,
 CAS races, restart/replay, refusals, signed-outcome binding and socket-level

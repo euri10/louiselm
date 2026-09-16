@@ -18,9 +18,15 @@ use louiselm_skills::{
 
 #[path = "control/attention.rs"]
 mod attention;
+#[path = "control/inspection.rs"]
+mod inspection;
 
 fn main() -> ExitCode {
-    let mut arguments = std::env::args_os().skip(1);
+    let collected: Vec<_> = std::env::args_os().skip(1).collect();
+    if collected.first().is_some_and(|verb| verb == "session") {
+        return ExitCode::from(inspection::cli(&collected[1..]));
+    }
+    let mut arguments = collected.into_iter();
     let verb = arguments.next();
     let result = match verb.as_deref() {
         Some(value) if value == OsStr::new("serve") && arguments.next().is_none() => start(),
@@ -31,7 +37,9 @@ fn main() -> ExitCode {
         {
             adopt_state()
         }
-        _ => Err("expected 'serve' or 'adopt-state --confirm'".to_owned()),
+        _ => Err(
+            "expected 'serve', 'adopt-state --confirm', or 'session inspect ID --json'".to_owned(),
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -123,6 +131,7 @@ fn activated_descriptor() -> Result<OwnedFd, TransportError> {
 
 fn serve(broker: InstalledBroker) -> Result<(), BrokerError> {
     let broker = Arc::new(broker);
+    let queries = inspection::Queries::start(Arc::clone(&broker))?;
     let _attention_worker = attention::start(Arc::clone(&broker))?;
     let mut workers: Vec<JoinHandle<Result<(), BrokerError>>> = Vec::new();
     // SIGTERM deliberately keeps its native terminating action. Kernel process
@@ -148,13 +157,13 @@ fn serve(broker: InstalledBroker) -> Result<(), BrokerError> {
             }
         }
         let owner = Arc::clone(&broker);
+        let queries = Arc::clone(&queries);
         workers.push(
             thread::Builder::new()
                 .name("louiselm-broker-session".into())
                 .spawn(move || {
                     let mut session = owner.serve_accepted(channel)?;
-                    while !owner.step(&mut session)? {}
-                    Ok(())
+                    queries.run_session(&owner, &mut session)
                 })
                 .map_err(|_| BrokerError::Transport(TransportError::WorkerUnavailable))?,
         );

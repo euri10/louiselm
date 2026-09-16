@@ -23,6 +23,7 @@ pub mod delegation;
 mod history;
 pub mod installed;
 pub mod lifecycle;
+pub mod operator;
 mod posture;
 pub mod promotion;
 pub mod receipts;

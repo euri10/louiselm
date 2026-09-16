@@ -227,6 +227,37 @@ fn connected_pair(pin: CredentialPin) -> ConnectedPair {
     }
 }
 
+#[test]
+fn readiness_wait_times_out_without_closing_or_consuming_a_packet() {
+    let pair = connected_pair(identity_pin());
+    let ready = |channel: &SeqpacketChannel| {
+        let (send, recv) = mpsc::sync_channel(1);
+        channel
+            .wait_readable(
+                Duration::from_millis(10),
+                Box::new(move |value| {
+                    send.send(value).unwrap();
+                }),
+            )
+            .unwrap();
+        wait(recv).unwrap()
+    };
+    assert!(!ready(&pair.server));
+    assert!(!pair.server.is_closed());
+    send_packet(&pair.client, status_bytes("ready")).unwrap();
+    assert!(ready(&pair.server));
+    assert!(ready(&pair.server));
+    assert_request(
+        receive_packet(&pair.server).unwrap(),
+        &status_bytes("ready"),
+        "ready",
+    );
+    assert!(!ready(&pair.server));
+    pair.client.close();
+    assert!(ready(&pair.server));
+    assert!(receive_packet(&pair.server).is_err());
+}
+
 struct RawConnection {
     _directory: TempDir,
     _listener: SeqpacketListener,

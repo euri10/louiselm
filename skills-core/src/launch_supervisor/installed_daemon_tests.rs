@@ -13,6 +13,9 @@ const SEED: &str = "launch_supervisor::system::installed_tests::daemon::seed_aut
 #[path = "installed_daemon_attention_tests.rs"]
 mod attention;
 
+#[path = "installed_daemon_inspection_tests.rs"]
+mod inspection;
+
 fn completed<T: Send + 'static>(queue: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -> T {
     let (tx, rx) = mpsc::channel();
     queue(Box::new(move |value| tx.send(value).unwrap()));
@@ -238,6 +241,7 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     mounts(root.path());
     let _account = BrokerAccount::create();
     let (paths, config, _) = install_fixture_at(root.path(), 3, LauncherPaths::system());
+    inspection::provision();
     fs::create_dir(STATE).unwrap();
     chown(STATE, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     fs::set_permissions(STATE, fs::Permissions::from_mode(0o700)).unwrap();
@@ -286,6 +290,23 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     // after startup, without restarting the daemon or connecting a Session.
     attention::configure();
     eprintln!("daemon: ready");
+    inspection::refusal(
+        config.operator_uid,
+        "unknown",
+        crate::broker::operator::InspectError::UnknownSession,
+    );
+    for uid in [0, AGENT_UID, BROKER_UID] {
+        inspection::refusal(
+            uid,
+            "session",
+            crate::broker::operator::InspectError::AuthenticationRefused,
+        );
+        inspection::refusal(
+            uid,
+            "unknown",
+            crate::broker::operator::InspectError::AuthenticationRefused,
+        );
+    }
     let silent = connect(&config);
     let session = launch(&paths, &config, root.path(), "session").unwrap();
     eprintln!("daemon: first launch");
@@ -293,6 +314,15 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     let sibling = launch(&paths, &config, root.path(), "sibling").unwrap();
     eprintln!("daemon: concurrent sibling launch");
     assert_eq!(sibling.receipt().payload.sequence, 1);
+    let inspected = inspection::status(&config, "session");
+    assert_eq!(
+        inspected.state,
+        crate::launch_receipt::SessionState::Running
+    );
+    assert!(matches!(
+        inspected.recovery,
+        crate::launch_protocol::RecoveryReadiness::Unavailable { .. }
+    ));
     let retired = session.receipt().payload.signing_key_id.clone();
     let original = session.receipt().canonical_bytes();
     let retired_private = paths
@@ -310,7 +340,7 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
         4000,
     )
     .unwrap();
-    sibling.dispose().unwrap();
+    inspection::agent(sibling, &config);
     assert!(
         retired_private.is_file(),
         "the other live Session still needs its key"
@@ -379,6 +409,7 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     );
     attention::reply(retry, &repeated, true);
     attention::wait_ack(sequence);
+    inspection::status(&config, "session");
     // The retained supervisor reattaches to the same manager-owned socket and
     // then completes the ordinary controller-loss/terminal receipt path.
     session.dispose().unwrap();
@@ -410,7 +441,17 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
         .unwrap();
     let mut after_cleanup = process(&manager, BROKER_UID, false);
     ready(&config);
+    inspection::refusal(
+        config.operator_uid,
+        "session",
+        crate::broker::operator::InspectError::StatusUnavailable,
+    );
     terminate(&mut after_cleanup);
+    inspection::refusal(
+        config.operator_uid,
+        "session",
+        crate::broker::operator::InspectError::BrokerUnavailable,
+    );
     let terminal = fs::read_dir(Path::new(STATE).join("receipts/sessions/session"))
         .unwrap()
         .filter_map(Result::ok)
