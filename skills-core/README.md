@@ -339,7 +339,7 @@ configured Provider names. The isolation/network owners must supply their own
 evidence; all four supply dimensions passing does not establish a Verified
 launch. Installed status/launch consumption remains `louiselm-d6fv.9`.
 
-The broker's canonical `louiselm.launch.session-status/5` now includes a
+The broker's canonical `louiselm.launch.session-status/6` includes a
 display-only six-dimension `PostureStatus`, derived from retained trusted facts.
 Callers cannot supply its verdict. The initial runtime producer consumes the
 authenticated launch/start chain and preserves its original proof-validation
@@ -348,6 +348,10 @@ producers are connected. Status reads run no evidence probes and grant no
 authority. The same response includes broker-owned cold-recovery readiness,
 with typed missing/pending evidence reasons and the original retained-point
 expiry. Readiness grants no admission and promises no future load success.
+The required `conformance_admission` field separately reports immutable launch
+history: `unevaluated`, `certified` with a report digest, or `waived` with the
+exact condition and optional report digest. Historical certification or waiver
+never supplies current isolation proof, renews approval or grants authority.
 See [canonical status composition](../docs/broker-lifecycle.md#canonical-status-composition)
 for the launch-based freshness meaning and remaining integration scope.
 

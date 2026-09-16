@@ -107,6 +107,11 @@ fn session_status_uses_launch_evidence_and_reports_missing_dimensions() {
     assert!(forged.validate().is_err());
 
     let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["conformance_admission"],
+        serde_json::json!({"status": "unevaluated"}),
+        "ordinary launch must explicitly report its absent admission evidence"
+    );
     assert_eq!(json["posture"]["state"], "unverified");
     let dimensions = json["posture"]["dimensions"].as_array().unwrap();
     assert_eq!(dimensions.len(), 6);

@@ -27,6 +27,97 @@ fn waiver(request: &LaunchRequest) -> ConformanceAuthorization {
 }
 
 #[test]
+fn conformance_admission_history_is_required_bounded_and_not_current_posture() {
+    for admission in [
+        ConformanceEvidence::Unevaluated,
+        ConformanceEvidence::Certified {
+            report_digest: digest(b"report"),
+        },
+        ConformanceEvidence::Waived {
+            condition: Condition::Missing,
+            report_digest: None,
+        },
+        ConformanceEvidence::Waived {
+            condition: Condition::Stale,
+            report_digest: Some(digest(b"report")),
+        },
+        ConformanceEvidence::Waived {
+            condition: Condition::Incomplete,
+            report_digest: None,
+        },
+    ] {
+        let status = SessionStatus::compose(
+            supervisor(SessionState::Running),
+            status_posture(PostureSummary::Unverified),
+            admission.clone(),
+            unavailable_recovery(),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(status.conformance_admission, admission);
+        assert_eq!(status.posture.state, PostureSummary::Unverified);
+        assert_eq!(
+            SessionStatus::parse_canonical(&status.canonical_bytes()).unwrap(),
+            status
+        );
+        let mut missing = serde_json::to_value(&status).unwrap();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("conformance_admission");
+        assert!(serde_json::from_value::<SessionStatus>(missing).is_err());
+        let mut old = status.clone();
+        old.schema = "louiselm.launch.session-status/5".into();
+        assert!(SessionStatus::parse_canonical(&old.canonical_bytes()).is_err());
+        for field in ["path", "pid", "observations", "expires_at_ms", "current"] {
+            let original = serde_json::to_string(&admission).unwrap();
+            let injected = format!(
+                "{},\"{field}\":\"untrusted\"}}",
+                original.strip_suffix('}').unwrap()
+            );
+            // Exercise the canonical public parser, including unit variants
+            // whose unknown fields serde alone can discard.
+            let wire = String::from_utf8(status.canonical_bytes())
+                .unwrap()
+                .replace(&original, &injected);
+            assert!(
+                SessionStatus::parse_canonical(wire.as_bytes()).is_err(),
+                "{field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn admission_history_rejects_malformed_and_impossible_outcomes() {
+    for admission in [
+        serde_json::json!({"status":"certified","report_digest":"/private/report"}),
+        serde_json::json!({"status":"certified","report_digest":"x".repeat(4096)}),
+        serde_json::json!({"status":"certified"}),
+        serde_json::json!({"status":"waived","condition":"containment_failure","report_digest":null}),
+        serde_json::json!({"status":"waived","condition":"missing","report_digest":digest(b"contradictory")}),
+        serde_json::json!({"status":"waived","condition":"stale","report_digest":"not-a-digest"}),
+        serde_json::json!({"status":"waived","condition":"arbitrary-producer-text","report_digest":null}),
+        serde_json::json!({"status":"unknown"}),
+        serde_json::Value::Null,
+    ] {
+        let status = SessionStatus::compose(
+            supervisor(SessionState::Running),
+            status_posture(PostureSummary::Unverified),
+            ConformanceEvidence::Unevaluated,
+            unavailable_recovery(),
+            vec![],
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(status).unwrap();
+        value["conformance_admission"] = admission;
+        if let Ok(decoded) = serde_json::from_value::<SessionStatus>(value) {
+            assert!(SessionStatus::parse_canonical(&decoded.canonical_bytes()).is_err());
+        }
+    }
+}
+
+#[test]
 fn conformance_waivers_bind_exact_authenticated_launch_and_exclusive_expiry() {
     let request = launch_request();
     let mut authorization = launch_authorization(&request);

@@ -455,7 +455,7 @@ As the installed operator, without sudo:
 /usr/local/lib/louiselm/current/bin/louiselm-control session inspect SESSION_ID --json
 ```
 
-Success exits 0 and writes exactly canonical `louiselm.launch.session-status/5` JSON to
+Success exits 0 and writes exactly canonical `louiselm.launch.session-status/6` JSON to
 stdout, without prose or an added newline. Refusals leave stdout empty and write
 `louiselm.operator-error/1` JSON to stderr, with `error` and `next_action`:
 
@@ -489,8 +489,9 @@ Session returns `unknown_session` only after operator authentication.
 
 `BrokerService::session_status` reads authenticated mechanical state through the
 existing supervisor channel, then adds the broker-owned fields the supervisor
-must not author: detailed Verified posture, retained recovery readiness and the
-lifecycle actions this caller may currently request.
+must not author: detailed Verified posture, conformance admission history,
+retained recovery readiness and the lifecycle actions this caller may currently
+request.
 
 `LifecycleCaller::allowed_actions` derives that action set from one predicate
 shared with `LifecycleCaller::permits`, so status cannot advertise a mutation the
@@ -503,13 +504,31 @@ still in flight withdraws all of them, because the status schema rejects a
 pending operation advertised alongside an executable action.
 
 `SessionStatus.posture` is the broker-derived, display-only `PostureStatus` in
-`louiselm.launch.session-status/5`. Status callers supply no posture verdict.
+`louiselm.launch.session-status/6`. Status callers supply no posture verdict.
 Each response includes all six dimensions in canonical order, with state,
 requirement, bounded evidence references, a typed failure and fixed next action,
 and freshness. The aggregate must agree with the dimensions; `Pending` is valid
 only during actual initialization. A missing producer is `unverified` with
 `evidence_missing` in its failed dimension. A waived dimension never counts as
 fully verified. Parsing this record cannot construct trusted `Posture` inputs.
+
+Every response also includes `conformance_admission`, copied from the exact
+authenticated launch receipt, separately from current `posture`:
+
+| Historical `status` | Additional fields | Meaning at admission |
+| --- | --- | --- |
+| `unevaluated` | None | No host conformance evidence was consulted. |
+| `certified` | `report_digest` | Passing report that admitted this launch. |
+| `waived` | `condition`, `report_digest` (digest or `null`) | Exact operator-approved condition: `missing`, `stale`, or `incomplete`. |
+
+This bounded history grants nothing and remains unchanged after restart or
+waiver expiry. `certified` does not mean isolation is verified **now**, and
+`waived` does not mean a waiver is still applicable. Without current evidence,
+isolation stays failed with `evidence_missing`, `collect_trusted_evidence`, and
+no invented successful-check timestamp. Operator and self-scoped Agent status
+carry identical admission/posture facts. Status reads neither probe the host nor
+renew waivers or rewrite receipts. The required field changes the closed status
+schema to `/6`; `/5` responses are not accepted.
 
 The first producer uses the exact authenticated launch/start receipt chain,
 bound to the authorized Session, Run, request, revision, installed identity,

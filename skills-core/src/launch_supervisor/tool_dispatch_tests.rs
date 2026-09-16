@@ -512,6 +512,7 @@ fn agent_status_crosses_the_authenticated_capability_relay() {
                 last_verified_at_ms: None,
             }; 6],
         ),
+        crate::launch_receipt::ConformanceEvidence::Unevaluated,
         crate::launch_protocol::RecoveryReadiness::Expired {},
         vec![],
     )

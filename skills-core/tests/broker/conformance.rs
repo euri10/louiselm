@@ -6,6 +6,9 @@ use louiselm_skills::conformance::{
     admission::Condition,
 };
 
+#[path = "conformance_status.rs"]
+mod status;
+
 fn observations() -> Report {
     Report {
         schema: REPORT_SCHEMA.into(),

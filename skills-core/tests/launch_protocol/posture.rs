@@ -47,6 +47,7 @@ fn detailed_status_requires_exactly_six_closed_dimensions() {
     let status = SessionStatus::compose(
         supervisor(SessionState::Running),
         status_posture(PostureSummary::Unverified),
+        ConformanceEvidence::Unevaluated,
         unavailable_recovery(),
         vec![],
     )
@@ -113,11 +114,19 @@ fn pending_only_describes_startup_and_waived_never_means_verified() {
     let mut starting = supervisor(SessionState::Starting);
     starting.launcher_head.as_mut().unwrap().sequence = 0;
     starting.broker_head.as_mut().unwrap().sequence = 0;
-    SessionStatus::compose(starting, pending.clone(), unavailable_recovery(), vec![]).unwrap();
+    SessionStatus::compose(
+        starting,
+        pending.clone(),
+        ConformanceEvidence::Unevaluated,
+        unavailable_recovery(),
+        vec![],
+    )
+    .unwrap();
     assert!(
         SessionStatus::compose(
             supervisor(SessionState::Running),
             pending,
+            ConformanceEvidence::Unevaluated,
             unavailable_recovery(),
             vec![]
         )

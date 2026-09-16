@@ -247,13 +247,23 @@ reject using this reference alone as primary evidence for a verified dimension.
 Raw observations never enter Session status. Currentness, failure monitoring and
 waiver validity remain with their existing conformance producers.
 
+Canonical Session status separately exposes immutable `conformance_admission`
+history (`unevaluated`, `certified` with its report digest, or `waived` with its
+exact condition and optional report digest). It comes from the authenticated
+launch receipt and survives restart without renewing the decision. Historical
+certification or waiver never upgrades current isolation posture: absent current
+evidence remains `evidence_missing` with a safe collection action and no invented
+success timestamp. Both operator and self-scoped Agent responses include this
+bounded history by default; raw reports and operator/process identities do not.
+
 Ordinary pre-cutover launch still records `Unevaluated`, as confirmed in
 `louiselm-oi5an`, and does not read certification state. The protected enforced
 path can now supply report-bound admission through the broker ACK transaction;
 that does not enable Verified posture by itself. `louiselm-d6fv.9.1` still needs
-the waiver producer (`.6.3`), currentness monitoring (`.12.4`), canonical status
-projection (`.12.6`) and actual installed-release acceptance. Component and
-disposable-guest tests do not satisfy that installed cutover.
+the waiver producer (`.6.3`), currentness monitoring (`.12.4`) and actual
+installed-release acceptance. Canonical admission-history projection (`.12.6`)
+is present but does not establish currentness. Component and disposable-guest
+tests do not satisfy that installed cutover.
 
 Recorded 2026-09-06: ten consecutive complete guest rounds passed after fixing
 the Interrupt fixture oracle. Environment: Debian 13, kernel

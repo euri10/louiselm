@@ -21,6 +21,7 @@ pub(super) struct LaunchPostureEvidence {
     checked_at_ms: Option<u64>,
     launch_receipt_id: String,
     supply: Option<supply::RetainedSupply>,
+    pub(super) conformance_admission: ConformanceEvidence,
     conformance_report: Option<EvidenceRef>,
 }
 
@@ -89,6 +90,7 @@ impl BrokerService {
             Err(error) => return Err(error),
         };
         Ok(LaunchPostureEvidence {
+            conformance_admission: evidence.conformance.clone(),
             // verified_history also validates the exact retained report. The
             // reference preserves admission history, never current host proof.
             conformance_report: match &evidence.conformance {

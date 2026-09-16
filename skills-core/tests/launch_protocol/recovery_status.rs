@@ -20,6 +20,7 @@ fn recovery_status_round_trips_all_states_and_rejects_unbounded_fields() {
         let status = SessionStatus::compose(
             supervisor(SessionState::Running),
             status_posture(PostureSummary::Unverified),
+            ConformanceEvidence::Unevaluated,
             recovery,
             vec![],
         )
@@ -48,6 +49,7 @@ fn recovery_status_round_trips_all_states_and_rejects_unbounded_fields() {
             SessionStatus::compose(
                 supervisor(SessionState::Running),
                 status_posture(PostureSummary::Unverified),
+                ConformanceEvidence::Unevaluated,
                 RecoveryReadiness::Ready {
                     operation_id: operation_id.into(),
                     expires_at_ms

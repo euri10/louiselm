@@ -7,6 +7,33 @@ use crate::conformance::{
     MAX_REPORT_BYTES,
     admission::{Attendance, Condition},
 };
+use crate::launch_receipt::ConformanceEvidence;
+
+/// Checks bounded historical display facts, never their present applicability.
+pub(super) fn validate_admission_history(
+    admission: &ConformanceEvidence,
+) -> Result<(), ProtocolError> {
+    match admission {
+        ConformanceEvidence::Waived {
+            condition: Condition::ContainmentFailure,
+            ..
+        }
+        | ConformanceEvidence::Waived {
+            condition: Condition::Missing,
+            report_digest: Some(_),
+        } => Err(invalid()),
+        ConformanceEvidence::Certified { report_digest }
+        | ConformanceEvidence::Waived {
+            report_digest: Some(report_digest),
+            ..
+        } => validate_digest(report_digest),
+        ConformanceEvidence::Unevaluated
+        | ConformanceEvidence::Waived {
+            report_digest: None,
+            ..
+        } => Ok(()),
+    }
+}
 
 /// Broker-approved attendance and optional exact waiver, never gate activation.
 ///

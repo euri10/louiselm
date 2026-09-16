@@ -44,8 +44,9 @@ use crate::{
     canonical::Digest,
     launch::{LaunchError, LaunchRequest, REQUEST_SCHEMA},
     launch_receipt::{
-        Authorization, ProcessExitClassification, RECEIPT_SCHEMA, ReceiptAuthority, ReceiptError,
-        ReceiptHead, ReceiptOutcome, ReceiptPayload, SessionState, SignedReceipt,
+        Authorization, ConformanceEvidence, ProcessExitClassification, RECEIPT_SCHEMA,
+        ReceiptAuthority, ReceiptError, ReceiptHead, ReceiptOutcome, ReceiptPayload, SessionState,
+        SignedReceipt,
     },
 };
 
@@ -88,7 +89,7 @@ pub const CONTROLLER_LOSS_ACK_SCHEMA: &str = "louiselm.launch.controller-loss-ac
 pub const SUPERVISOR_STATUS_SCHEMA: &str = "louiselm.launch.supervisor-status/3";
 
 /// Schema for broker-composed canonical Session status.
-pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/5";
+pub const SESSION_STATUS_SCHEMA: &str = "louiselm.launch.session-status/6";
 
 /// Schema for a response to a request.
 pub const RESPONSE_SCHEMA: &str = "louiselm.launch.response/2";
@@ -1244,6 +1245,9 @@ pub struct SessionStatus {
     pub state: SessionState,
     /// Non-authoritative projection of all six broker-owned posture dimensions.
     pub posture: Box<PostureStatus>,
+    /// Immutable conformance admission from the authenticated launch receipt.
+    /// Historical certification or waiver is not current isolation proof or authority.
+    pub conformance_admission: ConformanceEvidence,
     /// Broker-owned retained-point readiness; not lossless continuation or admission.
     pub recovery: RecoveryReadiness,
     /// Supervisor/broker connection state.
@@ -1269,14 +1273,15 @@ pub struct SessionStatus {
 }
 
 impl SessionStatus {
-    /// Composes broker-owned posture, recovery and actions with supervisor facts.
+    /// Composes broker-owned posture, admission history, recovery and actions with supervisor facts.
     ///
     /// # Errors
-    /// Rejects invalid supervisor, posture or recovery fields, duplicate actions,
+    /// Rejects invalid supervisor, posture, admission or recovery fields, duplicate actions,
     /// or actions inconsistent with the resulting Session status.
     pub fn compose(
         supervisor: SupervisorStatus,
         posture: PostureStatus,
+        conformance_admission: ConformanceEvidence,
         recovery: RecoveryReadiness,
         mut allowed_actions: Vec<LifecycleAction>,
     ) -> Result<Self, ProtocolError> {
@@ -1296,6 +1301,7 @@ impl SessionStatus {
             run_id: supervisor.run_id,
             state: supervisor.state,
             posture: Box::new(posture),
+            conformance_admission,
             recovery,
             broker_connection: supervisor.broker_connection,
             envelope_revision: supervisor.envelope_revision,
@@ -1329,7 +1335,7 @@ impl SessionStatus {
     /// Validates subject, head, errors, and allowed-action mechanics.
     ///
     /// # Errors
-    /// Rejects inconsistent posture or recovery details, Pending outside startup, invalid
+    /// Rejects inconsistent posture, admission history or recovery details, Pending outside startup, invalid
     /// status fields, pending work with allowed actions, or invalid actions.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         validate_schema(&self.schema, SESSION_STATUS_SCHEMA)?;
@@ -1337,6 +1343,7 @@ impl SessionStatus {
         validate_identifier(&self.session_id)?;
         validate_identifier(&self.run_id)?;
         self.posture.validate()?;
+        conformance::validate_admission_history(&self.conformance_admission)?;
         self.recovery.validate()?;
         if self.posture.state == PostureSummary::Pending && self.state != SessionState::Starting {
             return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));

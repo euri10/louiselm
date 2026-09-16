@@ -813,6 +813,7 @@ fn terminal_audit_can_follow_a_mechanic_without_a_process_exit_classification() 
             let composed = SessionStatus::compose(
                 status.clone(),
                 status_posture(PostureSummary::Unverified),
+                ConformanceEvidence::Unevaluated,
                 unavailable_recovery(),
                 Vec::new(),
             )
@@ -844,6 +845,7 @@ fn process_exit_classification_is_terminal_only_and_composes_without_raw_status(
     let status = SessionStatus::compose(
         exited,
         status_posture(PostureSummary::Unverified),
+        ConformanceEvidence::Unevaluated,
         unavailable_recovery(),
         Vec::new(),
     )
@@ -1268,6 +1270,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
     let status = SessionStatus::compose(
         pending_supervisor,
         status_posture(PostureSummary::FullyVerified),
+        ConformanceEvidence::Unevaluated,
         unavailable_recovery(),
         Vec::new(),
     )
@@ -1282,7 +1285,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
                 &serde_json::to_string(&status.posture).unwrap(),
                 "\"fully_verified\""
             ),
-        r#"{"schema":"louiselm.launch.session-status/5","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","recovery":{"state":"unavailable","reason":"evidence_missing"},"broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
+        r#"{"schema":"louiselm.launch.session-status/6","protocol_version":1,"session_id":"session-1","run_id":"run-1","state":"running","posture":"fully_verified","conformance_admission":{"status":"unevaluated"},"recovery":{"state":"unavailable","reason":"evidence_missing"},"broker_connection":"connected","envelope_revision":7,"channel_state":"enabled","launcher_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"broker_head":{"sequence":1,"digest":"sha256:fea5396a7f4325c408b1b65b33a4d77ba5486ceba941804d8889a8546cfbab96"},"pending_receipt_count":0,"pending_operation":{"request_id":"request-2","action":"park","phase":"applying"},"allowed_actions":[],"process_exit":null,"last_failure":{"code":"broker_unavailable","message":"control broker is unavailable","retryable":true,"current_state":"running","expected_sequence":1,"next_action":"reconnect_broker"}}"#,
     );
 
     let response = ProtocolResponse {
@@ -1323,6 +1326,7 @@ fn status_and_errors_have_pinned_safe_wire_shapes() {
     let ready = SessionStatus::compose(
         supervisor(SessionState::Running),
         status_posture(PostureSummary::FullyVerified),
+        ConformanceEvidence::Unevaluated,
         unavailable_recovery(),
         vec![LifecycleAction::Disposal, LifecycleAction::Park],
     )
@@ -1710,6 +1714,7 @@ fn identity_exhaustion_is_bounded_sorted_operator_evidence_and_redacted_from_sel
     let self_status = SessionStatus::compose(
         self_supervisor,
         status_posture(PostureSummary::FullyVerified),
+        ConformanceEvidence::Unevaluated,
         unavailable_recovery(),
         vec![LifecycleAction::Park, LifecycleAction::Disposal],
     )

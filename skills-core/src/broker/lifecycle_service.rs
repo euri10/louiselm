@@ -296,7 +296,13 @@ impl BrokerService {
                 .saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
             let recovery =
                 self.recovery_readiness(&session.authorization.session_id, observed_at_ms)?;
-            Ok(SessionStatus::compose(status, posture, recovery, actions)?)
+            Ok(SessionStatus::compose(
+                status,
+                posture,
+                session.posture_evidence.conformance_admission.clone(),
+                recovery,
+                actions,
+            )?)
         })();
         if result.is_err() {
             session.close();
