@@ -147,6 +147,8 @@ impl CredentialPin {
 /// One decoded packet in either launcher protocol direction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LauncherPacket {
+    /// Ordered current conformance facts from the owning supervisor.
+    ConformanceUpdate(crate::launch_protocol::ConformanceUpdate),
     /// Broker-to-supervisor request.
     Request(ProtocolMessage),
     /// Correlated supervisor or broker response.
@@ -281,6 +283,11 @@ fn decode_packet(bytes: &[u8]) -> Result<LauncherPacket, TransportError> {
         ))
     })?;
     match header.schema.as_str() {
+        crate::launch_protocol::CONFORMANCE_UPDATE_SCHEMA => {
+            crate::launch_protocol::ConformanceUpdate::parse_canonical(bytes)
+                .map(LauncherPacket::ConformanceUpdate)
+                .map_err(TransportError::Protocol)
+        }
         CONFORMANCE_REPORT_CHUNK_SCHEMA => ConformanceReportChunk::parse_canonical(bytes)
             .map(LauncherPacket::ConformanceReportChunk)
             .map_err(TransportError::Protocol),

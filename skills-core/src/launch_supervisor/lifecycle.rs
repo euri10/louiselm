@@ -3,6 +3,8 @@
 #[path = "tool_dispatch.rs"]
 mod tool_dispatch;
 
+#[path = "conformance_monitor.rs"]
+pub(super) mod conformance_monitor;
 #[path = "key_authority.rs"]
 mod key_authority;
 #[path = "recovery_dispatch.rs"]
@@ -47,12 +49,12 @@ use super::{
 const EVENT_QUEUE_CAPACITY: usize = 32;
 const FAILED_REQUEST_CAPACITY: usize = 64;
 
-#[derive(Default)]
 pub(super) struct SessionResources {
     process: Option<Box<dyn RunningAgent>>,
     capability: Option<Box<dyn CapabilityGate>>,
     identity: Option<Box<dyn IdentityGuard>>,
     broker: Option<Arc<dyn LaunchBroker>>,
+    conformance: conformance_monitor::Monitor,
 }
 
 impl SessionResources {
@@ -61,12 +63,14 @@ impl SessionResources {
         capability: Box<dyn CapabilityGate>,
         identity: Box<dyn IdentityGuard>,
         broker: Arc<dyn LaunchBroker>,
+        conformance: conformance_monitor::Monitor,
     ) -> Self {
         Self {
             process: Some(process),
             capability: Some(capability),
             identity: Some(identity),
             broker: Some(broker),
+            conformance,
         }
     }
 
@@ -97,7 +101,8 @@ impl SessionResources {
         if let Some(broker) = self.broker.take() {
             broker.close();
         }
-        terminal
+        let checked = self.conformance.finish();
+        terminal.and(checked)
     }
 }
 
@@ -419,7 +424,9 @@ impl DeferredReceipt {
                     && *envelope_revision > 0
                     && matches!(
                         cause,
-                        ReceiptCause::AcknowledgementFailed | ReceiptCause::BrokerLost
+                        ReceiptCause::AcknowledgementFailed
+                            | ReceiptCause::BrokerLost
+                            | ReceiptCause::ConformanceInvalid
                     )
             }
         }
@@ -535,7 +542,7 @@ impl SessionOwner {
         reason = "LaunchedSession supplies a nonempty receipt chain; the owner only appends to it."
     )]
     fn new(
-        resources: SessionResources,
+        mut resources: SessionResources,
         signer: Arc<dyn LaunchSigner>,
         receipts: Vec<SignedReceipt>,
         binding: CapabilityBinding,
@@ -544,6 +551,11 @@ impl SessionOwner {
         broker_loss_grace: Duration,
     ) -> Self {
         let broker_head = receipt_head(receipts.last().expect("a launched Session has a receipt"));
+        resources.conformance.enabled = matches!(
+            &receipts[0].payload.outcome,
+            ReceiptOutcome::Launch { evidence, .. }
+                if evidence.conformance != crate::launch_receipt::ConformanceEvidence::Unevaluated
+        );
         let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         Self {
             resources,
@@ -615,12 +627,26 @@ impl SessionOwner {
         self.arm_broker_receive();
         self.arm_agent_receive();
         self.check_key_authority();
+        self.maintain_conformance();
         let _ = ready.send(Ok(()));
         loop {
-            let event = self
-                .receiver
-                .recv()
-                .map_err(|_| SupervisorError::WorkerUnavailable)?;
+            self.maintain_conformance();
+            if let Some(result) = self.finished.take() {
+                return result;
+            }
+            let wait = if self.resources.conformance.enabled {
+                Duration::from_millis(10)
+            } else {
+                Duration::from_mins(1)
+            };
+            let event = match self.receiver.recv_timeout(wait) {
+                Ok(event) => event,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(SupervisorError::WorkerUnavailable);
+                }
+            };
+            self.maintain_conformance();
             if self.key_authority.withdrawn {
                 self.handle_withdrawn_key(&event);
                 if let Some(result) = self.finished.take() {
@@ -886,7 +912,14 @@ impl SessionOwner {
             }
             return;
         }
-        let status = self.status();
+        let mut status = self.status();
+        // Disposal may cancel a fresh-check wait, but only after the caller's
+        // subject and compare-and-swap fields have passed normal validation.
+        let cancels_check = request.action == LifecycleAction::Disposal
+            && self.resources.conformance.resume.is_some();
+        if cancels_check {
+            status.pending_operation = None;
+        }
         if let Some(completed) = self
             .completed
             .iter()
@@ -972,7 +1005,11 @@ impl SessionOwner {
             Ok(RequestDisposition::Execute(intent))
                 if request.action == LifecycleAction::Resume =>
             {
-                self.begin_resume(request, intent);
+                if self.resources.conformance.enabled {
+                    self.request_conformance_resume(request, intent);
+                } else {
+                    self.begin_resume(request, intent);
+                }
             }
             Ok(RequestDisposition::Execute(intent))
                 if request.action == LifecycleAction::Interrupt =>
@@ -982,6 +1019,7 @@ impl SessionOwner {
             Ok(RequestDisposition::Execute(intent))
                 if request.action == LifecycleAction::Disposal =>
             {
+                self.cancel_conformance_resume();
                 self.begin_disposal(request, intent);
             }
             Ok(RequestDisposition::Execute(_)) => self.send_error(
@@ -1485,6 +1523,7 @@ impl SessionOwner {
     }
 
     fn begin_controller_loss(&mut self) {
+        self.cancel_conformance_resume();
         if self.state == SessionState::Terminal
             || self.controller_loss_unresolved
             || self.controller_loss_park_request_id.is_some()
@@ -2052,6 +2091,7 @@ impl SessionOwner {
         if pending.request.action == LifecycleAction::Resume
             && permit_resume_enable
             && self.state != SessionState::Terminal
+            && !self.resources.conformance.suspended
         {
             let enabled = self
                 .resources
@@ -2062,6 +2102,7 @@ impl SessionOwner {
             if enabled.is_ok() {
                 self.channel_state = ChannelState::Enabled;
                 self.last_failure = None;
+                self.resumed_conformance();
                 self.resume_command_reception();
             } else {
                 self.channel_state = ChannelState::Revoked;
@@ -2792,6 +2833,10 @@ impl SessionOwner {
     }
 
     fn begin_broker_loss_park(&mut self) {
+        self.begin_caused_park(ReceiptCause::BrokerLost, "broker-loss");
+    }
+
+    fn begin_caused_park(&mut self, cause: ReceiptCause, label: &str) {
         let receipt_backlog = self.has_receipt_backlog();
         let Some(operation_epoch) = self.operation_epoch.checked_add(1) else {
             self.last_failure = Some(ProtocolError::new(
@@ -2810,14 +2855,14 @@ impl SessionOwner {
             ));
             return;
         };
-        let request_id = format!("broker-loss-{}", head.digest().hex());
+        let request_id = format!("{label}-{}", head.digest().hex());
         let request = LifecycleRequest {
             schema: LIFECYCLE_REQUEST_SCHEMA.to_owned(),
             protocol_version: PROTOCOL_VERSION,
             request_id: request_id.clone(),
             session_id: self.binding.session_id.clone(),
             run_id: head.payload.run_id.clone(),
-            authorization_id: "broker-loss".to_owned(),
+            authorization_id: label.to_owned(),
             action: LifecycleAction::Park,
             expected_state: SessionState::Running,
             expected_receipt_sequence: Some(head.payload.sequence),
@@ -2826,7 +2871,7 @@ impl SessionOwner {
         let intent = ReceiptIntent {
             session_id: self.binding.session_id.clone(),
             run_id: head.payload.run_id.clone(),
-            authorization_id: "broker-loss".to_owned(),
+            authorization_id: label.to_owned(),
             request_id: request_id.clone(),
             request_digest: request.digest().to_string(),
             action: LifecycleAction::Park,
@@ -2846,9 +2891,7 @@ impl SessionOwner {
             release_id: self.signer.release_id().to_owned(),
             signing_key_id: self.signer.signing_key_id().to_owned(),
             outcome: ReceiptOutcome::Park {
-                authority: ReceiptAuthority::Cause {
-                    cause: ReceiptCause::BrokerLost,
-                },
+                authority: ReceiptAuthority::Cause { cause },
             },
             resulting_state: SessionState::Parked,
         };
@@ -3235,6 +3278,7 @@ impl SessionOwner {
     }
 
     fn finish_broker_reconnect(&mut self, arm_receive: bool) {
+        self.reconnect_conformance();
         self.reconnect_request = None;
         self.reconciliation = None;
 
@@ -3284,6 +3328,7 @@ impl SessionOwner {
         self.broker_loss_deadline = None;
 
         let restore = self.restore_after_reconnect
+            && !self.resources.conformance.suspended
             && !self.controller_loss_unresolved
             && !self.cleanup_unproven
             && self.state == SessionState::Running
@@ -3383,11 +3428,25 @@ impl SessionOwner {
     }
 
     fn status(&self) -> SupervisorStatus {
-        let pending_operation = self.pending.as_ref().map(|pending| PendingOperation {
-            request_id: pending.request.request_id.clone(),
-            action: pending.request.action.into(),
-            phase: pending.phase,
-        });
+        let pending_operation = self
+            .pending
+            .as_ref()
+            .map(|pending| PendingOperation {
+                request_id: pending.request.request_id.clone(),
+                action: pending.request.action.into(),
+                phase: pending.phase,
+            })
+            .or_else(|| {
+                self.resources
+                    .conformance
+                    .resume
+                    .as_ref()
+                    .map(|(request, _, _)| PendingOperation {
+                        request_id: request.request_id.clone(),
+                        action: crate::launch_protocol::PendingAction::Resume,
+                        phase: PendingPhase::Applying,
+                    })
+            });
         SupervisorStatus {
             schema: SUPERVISOR_STATUS_SCHEMA.to_owned(),
             protocol_version: PROTOCOL_VERSION,

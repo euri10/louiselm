@@ -9,9 +9,14 @@ use serde::{Deserialize, Serialize};
 
 mod command;
 mod conformance;
+mod conformance_update;
 pub use conformance::{
     CONFORMANCE_REPORT_CHUNK_BYTES, CONFORMANCE_REPORT_CHUNK_SCHEMA, ConformanceAuthorization,
     ConformanceReportChunk, ConformanceWaiver,
+};
+pub use conformance_update::{
+    CONFORMANCE_FRESHNESS_MS, CONFORMANCE_UPDATE_SCHEMA, ConformanceCheck, ConformanceFailure,
+    ConformanceUpdate,
 };
 mod posture;
 pub use posture::{
@@ -234,6 +239,8 @@ pub enum ErrorCode {
     InvalidTransition,
     /// The authorized whole-tree lifecycle mechanic failed.
     LifecycleMechanicUnavailable,
+    /// Current host evidence is unavailable or invalid; operator recovery is required.
+    ConformanceUnavailable,
     /// Receipt bytes or their chain do not verify.
     ReceiptChainInvalid,
     /// Installed administrative revocation invalidates this Session's signing key.
@@ -2237,6 +2244,11 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
         ),
         ErrorCode::LifecycleMechanicUnavailable => (
             "Session lifecycle mechanic is unavailable",
+            false,
+            NextAction::ContactOperator,
+        ),
+        ErrorCode::ConformanceUnavailable => (
+            "host conformance requires fresh evidence and operator recovery",
             false,
             NextAction::ContactOperator,
         ),

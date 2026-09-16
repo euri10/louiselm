@@ -119,6 +119,15 @@ impl BrokerService {
     {
         self.require_trusted_history(session, verify)?;
         match &packet.packet {
+            LauncherPacket::ConformanceUpdate(update) => {
+                if packet.peer_credentials != session.channel().peer_credentials()
+                    || packet.message_credentials != packet.peer_credentials
+                {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                self.retain_conformance_update(session, update, now_ms)?;
+                Ok(false)
+            }
             LauncherPacket::SignedReceipt(receipt) => {
                 self.lifecycle.check_receipt(receipt)?;
                 let append = || {

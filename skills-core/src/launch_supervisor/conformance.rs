@@ -28,6 +28,17 @@ pub(super) fn inspect(
     now_ms: u64,
     deadline: Instant,
 ) -> Result<ConformanceAdmission, SupervisorError> {
+    inspect_current(paths, config, authorization, now_ms, deadline, true)
+}
+
+pub(super) fn inspect_current(
+    paths: &LauncherPaths,
+    config: &LauncherConfig,
+    authorization: &LaunchAuthorization,
+    now_ms: u64,
+    deadline: Instant,
+    admitting: bool,
+) -> Result<ConformanceAdmission, SupervisorError> {
     if config.conformance == Enforcement::PreCutover {
         return Ok(ConformanceAdmission {
             evidence: ConformanceEvidence::Unevaluated,
@@ -35,27 +46,27 @@ pub(super) fn inspect(
         });
     }
     let started = Instant::now();
+    if !admitting {
+        crate::launcher_install::require_session_policy(paths, config)
+            .map_err(|_| SupervisorError::ConformanceUnavailable)?;
+    }
     let host =
         measure(paths, config, deadline).map_err(|_| SupervisorError::ConformanceUnavailable)?;
     let status = CertificateStore::inspect(&paths.state_root.join("conformance"), &host)
         .map_err(|_| SupervisorError::ConformanceUnavailable)?;
+    if !status.history.failures.is_empty() {
+        return Err(SupervisorError::ConformanceRefused(
+            admission::Condition::ContainmentFailure,
+        ));
+    }
     if Instant::now() >= deadline {
         return Err(SupervisorError::ConformanceUnavailable);
     }
     let now_ms =
         now_ms.saturating_add(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
-    if now_ms >= authorization.expires_at_ms {
+    if admitting && now_ms >= authorization.expires_at_ms {
         return Err(SupervisorError::AuthorizationRejected);
     }
-    authorization
-        .conformance
-        .validate_for(
-            &authorization.session_id,
-            &authorization.request_digest,
-            authorization.controller_uid,
-            now_ms,
-        )
-        .map_err(|_| SupervisorError::AuthorizationRejected)?;
     let waiver = authorization
         .conformance
         .waiver
@@ -73,6 +84,17 @@ pub(super) fn inspect(
             waiver: waiver.as_ref(),
         },
     );
+    if admitting || matches!(decision, Admission::Waived { .. }) {
+        authorization
+            .conformance
+            .validate_for(
+                &authorization.session_id,
+                &authorization.request_digest,
+                authorization.controller_uid,
+                now_ms,
+            )
+            .map_err(|_| SupervisorError::AuthorizationRejected)?;
+    }
     let evidence = match decision {
         Admission::Admitted { report_digest } => ConformanceEvidence::Certified { report_digest },
         Admission::Waived {

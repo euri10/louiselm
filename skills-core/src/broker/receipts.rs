@@ -54,10 +54,10 @@ pub struct TrustedRelease {
 /// Durable store for exact signed receipt bytes, one chain per Session.
 #[derive(Debug)]
 pub struct ReceiptStore {
-    root: PathBuf,
+    pub(super) root: PathBuf,
     trust: ReceiptTrust,
     /// Serializes append decisions so two receipts cannot claim one sequence.
-    appending: Mutex<()>,
+    pub(super) appending: Mutex<()>,
 }
 
 #[derive(Debug)]

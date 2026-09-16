@@ -309,6 +309,7 @@ impl SeqpacketLaunchBroker {
                     LauncherPacket::Request(message) => Ok(message),
                     LauncherPacket::Response(_) => unreachable!("response handled above"),
                     LauncherPacket::SignedReceipt(_)
+                    | LauncherPacket::ConformanceUpdate(_)
                     | LauncherPacket::ConformanceReportChunk(_) => {
                         Err(SupervisorError::BrokerUnavailable)
                     }
@@ -368,6 +369,22 @@ impl SeqpacketLaunchBroker {
 }
 
 impl LaunchBroker for SeqpacketLaunchBroker {
+    fn send_conformance(
+        &self,
+        update: crate::launch_protocol::ConformanceUpdate,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let bytes = update
+            .canonical_bytes()
+            .map_err(|_| SupervisorError::ConformanceUnavailable)?;
+        self.current_channel()?
+            .send(
+                bytes,
+                Box::new(move |result| complete(result.map_err(map_transport))),
+            )
+            .map_err(map_transport)
+    }
+
     fn consume_authorization(
         &self,
         request: LaunchRequest,
@@ -851,6 +868,27 @@ impl SystemLaunchPlatform {
 }
 
 impl LaunchPlatform for SystemLaunchPlatform {
+    fn revalidate_conformance(
+        &self,
+        authorization: &LaunchAuthorization,
+        now_ms: u64,
+        deadline: Instant,
+        complete: SupervisorCompletion<crate::launch_receipt::ConformanceEvidence>,
+    ) -> Result<(), SupervisorError> {
+        complete(
+            super::conformance::inspect_current(
+                &self.paths,
+                &self.config,
+                authorization,
+                now_ms,
+                deadline,
+                false,
+            )
+            .map(|inspection| inspection.evidence),
+        );
+        Ok(())
+    }
+
     fn inspect_conformance(
         &self,
         authorization: &LaunchAuthorization,

@@ -33,6 +33,8 @@ use crate::{
 };
 
 mod broker;
+#[cfg(test)]
+mod conformance_policy_tests;
 mod foreground;
 #[cfg(all(test, target_os = "linux"))]
 mod foreground_tests;
@@ -1128,6 +1130,32 @@ pub fn runtime_config(paths: &LauncherPaths) -> Result<LauncherConfig, LauncherE
     runtime_config_with_runner(paths, &SystemCommandRunner)
 }
 
+/// Recheck governing policy while retaining a Session's exact installed release.
+/// Installing another release changes neither the pinned bytes nor approval of
+/// a retained protected release. Key revocation is checked by the signer owner.
+pub(crate) fn require_session_policy(
+    paths: &LauncherPaths,
+    pinned: &LauncherConfig,
+) -> Result<(), LauncherError> {
+    require_system_config(paths)?;
+    let mut current: LauncherConfig = read_required_json(&paths.config())?;
+    validate_config(&current, paths)?;
+    current.release_id.clone_from(&pinned.release_id);
+    current.launcher_digest.clone_from(&pinned.launcher_digest);
+    if current != *pinned {
+        return Err(LauncherError::Invalid(
+            "Session governing policy changed".into(),
+        ));
+    }
+    let retained = load_release(paths, &pinned.release_id)?;
+    if retained.launcher_digest != pinned.launcher_digest {
+        return Err(LauncherError::Invalid(
+            "pinned launcher release changed".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Loads the fixed runtime authority while bounding every NSS helper by one
 /// absolute operation deadline.
 ///
@@ -2048,13 +2076,19 @@ fn load_current_release(paths: &LauncherPaths) -> Result<ReleaseBinding, Launche
             "current release symlink does not match installed state".to_owned(),
         ));
     }
-    let root = paths.release_prefix.join(&expected_current);
+    load_release(paths, &state.release_id)
+}
+
+fn load_release(paths: &LauncherPaths, release_id: &str) -> Result<ReleaseBinding, LauncherError> {
+    Digest::parse(release_id)
+        .map_err(|_| LauncherError::Invalid("invalid pinned release".into()))?;
+    let root = paths.release_prefix.join("releases").join(release_id);
     let bytes = fs::read(root.join("manifest.json"))
         .map_err(|source| io_error("current release manifest", source))?;
     let manifest: ReleaseManifest = serde_json::from_slice(&bytes)
         .map_err(|error| LauncherError::Malformed(error.to_string()))?;
     if manifest.schema != MANIFEST_SCHEMA
-        || manifest.release_id != state.release_id
+        || manifest.release_id != release_id
         || manifest.digest().to_string() != manifest.release_id
     {
         return Err(LauncherError::Malformed(
@@ -3225,7 +3259,7 @@ mod tests {
     use super::*;
     use crate::launch_receipt::{Authorization, ReceiptOutcome, SessionState};
 
-    fn config_with_measured_bwrap(program: &Path) -> LauncherConfig {
+    pub(super) fn config_with_measured_bwrap(program: &Path) -> LauncherConfig {
         LauncherConfig {
             conformance: crate::conformance::admission::Enforcement::PreCutover,
             schema: CONFIG_SCHEMA.to_owned(),

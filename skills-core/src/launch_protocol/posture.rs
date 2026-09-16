@@ -19,6 +19,8 @@ pub enum FreshnessBasis {
     Missing,
     /// The broker validated the launch proof, not a new probe on this read.
     Launch,
+    /// A fresh supervisor-owned conformance validity check, with its own expiry.
+    Check,
     /// A previously checked proof no longer establishes the current dimension.
     Invalidated,
 }
@@ -212,7 +214,7 @@ impl DimensionStatus {
                     return Err(invalid());
                 }
             }
-            FreshnessBasis::Launch | FreshnessBasis::Invalidated => {
+            FreshnessBasis::Launch | FreshnessBasis::Check | FreshnessBasis::Invalidated => {
                 if self.freshness.last_verified_at_ms.is_none()
                     || !primary
                     || (self.freshness.basis == FreshnessBasis::Invalidated

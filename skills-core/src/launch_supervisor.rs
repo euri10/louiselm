@@ -185,6 +185,15 @@ pub struct AgentAuthentication {
 
 /// Broker operations needed by the one-shot launch transaction.
 pub trait LaunchBroker: Send + Sync {
+    /// Publish current facts on the owning authenticated Session channel.
+    /// # Errors
+    /// Refuses unavailable transport; later send failures arrive through `complete`.
+    fn send_conformance(
+        &self,
+        update: crate::launch_protocol::ConformanceUpdate,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError>;
+
     /// Atomically consumes the pending authorization for `request`.
     ///
     /// # Errors
@@ -618,6 +627,24 @@ pub trait RunningAgent: Send {
 
 /// OS operations whose concrete implementation holds root authority.
 pub trait LaunchPlatform: Send + Sync {
+    /// Revalidate retained Session authority without renewing launch authorization.
+    /// Runs on the owned conformance worker, never the lifecycle dispatcher.
+    /// Implementations must bound their I/O by `deadline`; a stalled worker does
+    /// not prevent the independent supervisor freshness deadline from expiring.
+    ///
+    /// # Errors
+    /// Refuses unavailable or invalid current evidence through `complete`.
+    fn revalidate_conformance(
+        &self,
+        _authorization: &LaunchAuthorization,
+        _now_ms: u64,
+        _deadline: Instant,
+        complete: SupervisorCompletion<ConformanceEvidence>,
+    ) -> Result<(), SupervisorError> {
+        complete(Err(SupervisorError::ConformanceUnavailable));
+        Ok(())
+    }
+
     /// Evaluate protected installed policy and freshly measured host evidence.
     /// This runs on the owning launch coordinator before sequence-zero signing.
     /// No Agent-supplied observation or attendance value is accepted here.
@@ -1051,6 +1078,9 @@ fn run_launch(
         Ok(value) => value,
         Err(error) => return Err(cleanup_prepared(prepared, capability, identity, error)),
     };
+    let conformance_clock = inner.timer.now();
+    let conformance_clock_ms = now_ms
+        .saturating_add(u64::try_from(validation_clock.elapsed().as_millis()).unwrap_or(u64::MAX));
     let evidence = match launch_evidence(
         request,
         &resolution.runtime,
@@ -1220,8 +1250,18 @@ fn run_launch(
             SupervisorError::AgentIdentityRejected,
         ));
     }
-    let resources =
-        lifecycle::SessionResources::new(running, capability, identity, Arc::clone(&inner.broker));
+    let monitor = lifecycle::conformance_monitor::Monitor::new(
+        Some((Arc::clone(&inner.platform), authorization)),
+        conformance_clock_ms,
+        conformance_clock,
+    );
+    let resources = lifecycle::SessionResources::new(
+        running,
+        capability,
+        identity,
+        Arc::clone(&inner.broker),
+        monitor,
+    );
     LaunchedSession::new(
         resources,
         Arc::clone(&inner.signer),

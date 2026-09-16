@@ -61,8 +61,14 @@ pub fn measure(
         return Err(CertificationError::Unsupported);
     }
     let mut inputs = BTreeMap::new();
+    // A Session measures its immutable release, not the mutable current symlink.
+    let launcher = paths
+        .release_prefix
+        .join("releases")
+        .join(&config.release_id)
+        .join("bin/louiselm-launch");
     for (name, path) in [
-        ("launcher", config.launcher_path.as_path()),
+        ("launcher", launcher.as_path()),
         ("backend", config.bwrap_path.as_path()),
         ("loader", Path::new(LOADER)),
         ("os-release", Path::new("/usr/lib/os-release")),
@@ -94,7 +100,7 @@ pub fn measure(
     kernel_inputs(&mut inputs, deadline)?;
     loader_configuration(&mut inputs, deadline)?;
     for executable in [
-        config.launcher_path.as_path(),
+        launcher.as_path(),
         config.bwrap_path.as_path(),
         paths.getent.as_path(),
         paths.ssh_keygen.as_path(),

@@ -327,6 +327,7 @@ impl Harness {
                     disposition: Arc::clone(&identity_disposition),
                 })),
                 broker: Some(parts.broker),
+                conformance: super::super::conformance_monitor::Monitor::new(None, 0, timer.now()),
             },
             Arc::new(NoSigner),
             vec![receipt],

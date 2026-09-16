@@ -21,6 +21,7 @@ pub mod audit;
 pub mod authorization;
 pub mod cold_resume;
 pub mod commands;
+mod current_conformance;
 pub mod delegation;
 mod history;
 pub mod installed;

@@ -44,6 +44,18 @@ impl BrokerSession {
         let LauncherPacket::Request(ProtocolMessage::Command(mut message)) = packet.packet else {
             return Err(BrokerError::InvalidGrant);
         };
+        if matches!(
+            message.operation,
+            CommandOperation::Request { .. } | CommandOperation::DelegationRequest { .. }
+        ) && !self
+            .posture_evidence
+            .permits_commands(crate::broker::now_ms()?)
+        {
+            message.operation = CommandOperation::Reject {
+                error: ErrorCode::ConformanceUnavailable,
+            };
+            return send(&self.channel, message.canonical_bytes());
+        }
         if self.require_cold_recovery
             && self
                 .recovery_admitted_until

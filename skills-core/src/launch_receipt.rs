@@ -82,6 +82,8 @@ pub enum ReceiptCause {
     RelayFailed,
     /// The authenticated Agent lifetime or executable proof ended without an exit status.
     AgentIdentityLost,
+    /// Required current host-conformance evidence was lost or invalidated.
+    ConformanceInvalid,
 }
 
 /// Why the supervisor performed one non-launch lifecycle action.
@@ -373,6 +375,7 @@ impl ReceiptPayload {
                     ReceiptAuthority::Authorized(_)
                         | ReceiptAuthority::Cause {
                             cause: ReceiptCause::BrokerLost
+                                | ReceiptCause::ConformanceInvalid
                                 | ReceiptCause::ControllerLost
                                 | ReceiptCause::AcknowledgementFailed
                         }

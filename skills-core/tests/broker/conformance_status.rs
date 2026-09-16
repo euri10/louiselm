@@ -1,6 +1,8 @@
 //! Admission history survives restart without becoming current posture.
 
 use super::*;
+#[path = "current_conformance.rs"]
+mod current;
 use louiselm_skills::{
     broker::lifecycle::LifecycleCaller,
     launch_protocol::{COMMAND_SCHEMA, CommandMessage, CommandOperation, SessionStatus},

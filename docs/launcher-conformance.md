@@ -210,7 +210,8 @@ reads protected certificate/failure state before signing sequence zero or
 starting the Agent. Unavailable measurements or unreadable failure history are
 non-waivable errors. A refusal disposes the prepared process tree and releases
 its identity only after cleanup is proved. Expiry is rechecked through receipt
-ACKs and before admitting the running Session; this is not lifetime monitoring.
+ACKs and before admitting the running Session. The same owner then monitors the
+admitted Session as described below.
 
 The signed launch receipt records `Certified`, `Waived`, or `Unevaluated`.
 Digest-bearing decisions bind the exact canonical **observation report** bytes,
@@ -247,6 +248,42 @@ reject using this reference alone as primary evidence for a verified dimension.
 Raw observations never enter Session status. Currentness, failure monitoring and
 waiver validity remain with their existing conformance producers.
 
+### Current checks, suspension and recovery
+
+For an enforced admission, the existing Launch supervisor starts one validity
+check per second. It remeasures the pinned release, dependencies and governing
+policy, then inspects protected certificate and failure history. Installing a new
+default release alone does not invalidate an unchanged protected pinned release.
+Removing/changing that release, changing policy or dependencies, or revoking its
+signing authority does. Pre-cutover Sessions do not start this monitor.
+
+Checks have one owned worker; stalled I/O cannot occupy the lifecycle dispatcher.
+A mismatch suspends immediately, and five seconds without successful validation
+suspends independently of check completion or status requests. This is bounded
+deadline handling under ordinary scheduling, not a hard-real-time guarantee.
+The supervisor first revokes capabilities, then confirms whole-tree freeze.
+If either cannot be proved, it attempts full termination. Unproved cleanup
+poisons the identity instead of reporting successful disposal or reuse.
+
+Recertification alone never thaws a Session or restores authority. An explicit,
+broker-authorized Resume starts a new check after the request; thaw and durable
+Resume acknowledgement must succeed before capabilities are enabled. The fresh
+check wait has a deadline and can be cancelled by Disposal. Late check results,
+signatures and ACKs cannot restore authority after invalidation. Evidence-only
+failures permit this recovery; a retained containment failure requires diagnostic
+preservation, Disposal and a fresh Session after recertification. An old waiver
+cannot hide a containment failure or be renewed by a read or reconnect.
+
+Authenticated `louiselm.launch.conformance-update/1` packets publish bounded,
+ordered source facts to the broker's retained evidence owner. One private record
+at `receipts/current-conformance/<Session>.json` retains the latest check and the
+last verified report reference/time. Exact replays do not renew timestamps;
+foreign, backdated or contradictory updates are refused. Missing/corrupt records
+cannot establish current posture. Restart retains the source's original expiry.
+Canonical isolation posture uses these facts alongside the immutable signed
+admission receipt; other dimensions retain their own evidence and freshness.
+Neither reading status nor receiving a passing check implicitly resumes work.
+
 Canonical Session status separately exposes immutable `conformance_admission`
 history (`unevaluated`, `certified` with its report digest, or `waived` with its
 exact condition and optional report digest). It comes from the authenticated
@@ -260,8 +297,8 @@ Ordinary pre-cutover launch still records `Unevaluated`, as confirmed in
 `louiselm-oi5an`, and does not read certification state. The protected enforced
 path can now supply report-bound admission through the broker ACK transaction;
 that does not enable Verified posture by itself. `louiselm-d6fv.9.1` still needs
-the waiver producer (`.6.3`), currentness monitoring (`.12.4`) and actual
-installed-release acceptance. Canonical admission-history projection (`.12.6`)
+the waiver producer (`.6.3`) and actual installed-release acceptance.
+Currentness monitoring (`.12.4`) and canonical admission-history projection (`.12.6`)
 is present but does not establish currentness. Component and disposable-guest
 tests do not satisfy that installed cutover.
 

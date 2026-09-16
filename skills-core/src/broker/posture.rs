@@ -23,6 +23,8 @@ pub(super) struct LaunchPostureEvidence {
     supply: Option<supply::RetainedSupply>,
     pub(super) conformance_admission: ConformanceEvidence,
     conformance_report: Option<EvidenceRef>,
+    pub(super) current_conformance: Option<super::current_conformance::RetainedConformance>,
+    conformance_authorization: crate::launch_protocol::ConformanceAuthorization,
 }
 
 impl BrokerService {
@@ -90,6 +92,12 @@ impl BrokerService {
             Err(error) => return Err(error),
         };
         Ok(LaunchPostureEvidence {
+            current_conformance: match self.receipts().current_conformance(authorization) {
+                Ok(current) => current,
+                Err(BrokerError::Storage(_)) => None,
+                Err(error) => return Err(error),
+            },
+            conformance_authorization: authorization.conformance.clone(),
             conformance_admission: evidence.conformance.clone(),
             // verified_history also validates the exact retained report. The
             // reference preserves admission history, never current host proof.
@@ -117,6 +125,13 @@ impl BrokerService {
 }
 
 impl LaunchPostureEvidence {
+    pub(super) fn permits_commands(&self, now_ms: u64) -> bool {
+        self.conformance_admission == ConformanceEvidence::Unevaluated
+            || self.current_conformance.as_ref().is_some_and(|current| {
+                current.permits_commands(now_ms, &self.conformance_authorization)
+            })
+    }
+
     /// Pure projection of retained proof and already-read mechanical facts.
     pub(super) fn status(
         &self,
@@ -131,6 +146,20 @@ impl LaunchPostureEvidence {
         let mut freshness = [missing; 6];
         let mut inputs = Vec::with_capacity(6);
         for (index, dimension) in DimensionName::ALL.into_iter().enumerate() {
+            if dimension == DimensionName::Isolation
+                && let Some(current) = &self.current_conformance
+            {
+                let (input, validity) = current.dimension(
+                    supervisor,
+                    quarantined,
+                    now_ms,
+                    &self.conformance_authorization,
+                    &self.launch_receipt_id,
+                )?;
+                inputs.push(input);
+                freshness[index] = validity;
+                continue;
+            }
             if dimension == DimensionName::Isolation
                 && let Some(report) = &self.conformance_report
             {

@@ -11,6 +11,9 @@
 
 mod support;
 
+#[path = "launch_supervisor_cases/conformance.rs"]
+mod conformance_monitor_tests;
+
 use std::{
     env, fs,
     io::{self, BufReader, Cursor, Read, Write},
@@ -107,6 +110,7 @@ enum SessionReceiptSendBehavior {
 }
 
 struct BrokerState {
+    conformance_updates: Vec<louiselm_skills::launch_protocol::ConformanceUpdate>,
     authorization: Option<LaunchAuthorization>,
     authorization_error: Option<SupervisorError>,
     hold_authorization: bool,
@@ -150,6 +154,7 @@ impl FakeBroker {
         Self {
             events,
             state: Mutex::new(BrokerState {
+                conformance_updates: Vec::new(),
                 authorization,
                 authorization_error: None,
                 hold_authorization: false,
@@ -589,6 +594,18 @@ impl FakeBroker {
 }
 
 impl LaunchBroker for FakeBroker {
+    fn send_conformance(
+        &self,
+        update: louiselm_skills::launch_protocol::ConformanceUpdate,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        update.validate().unwrap();
+        lock(&self.state).conformance_updates.push(update);
+        self.changed.notify_all();
+        complete(Ok(()));
+        Ok(())
+    }
+
     fn send_command(
         &self,
         _message: louiselm_skills::launch_protocol::CommandMessage,
@@ -1597,6 +1614,8 @@ struct BubblewrapLaunchPlatform {
     backend_id: String,
     capability_root: PathBuf,
     observation: Arc<Mutex<Option<OuterProcessObservation>>>,
+    monitor_conformance: bool,
+    conformance_invalid: Arc<AtomicBool>,
 }
 
 impl LaunchPlatform for BubblewrapLaunchPlatform {
@@ -1608,10 +1627,35 @@ impl LaunchPlatform for BubblewrapLaunchPlatform {
     ) -> Result<(), SupervisorError> {
         complete(Ok(
             louiselm_skills::launch_supervisor::ConformanceAdmission {
-                evidence: ConformanceEvidence::Unevaluated,
-                report_bytes: None,
+                evidence: if self.monitor_conformance {
+                    ConformanceEvidence::Certified {
+                        report_digest: Digest::of(b"fixture admission").to_string(),
+                    }
+                } else {
+                    ConformanceEvidence::Unevaluated
+                },
+                report_bytes: self
+                    .monitor_conformance
+                    .then(|| b"fixture admission".to_vec()),
             },
         ));
+        Ok(())
+    }
+
+    fn revalidate_conformance(
+        &self,
+        _: &LaunchAuthorization,
+        _: u64,
+        _: Instant,
+        complete: SupervisorCompletion<ConformanceEvidence>,
+    ) -> Result<(), SupervisorError> {
+        complete(if self.conformance_invalid.load(Ordering::SeqCst) {
+            Err(SupervisorError::ConformanceUnavailable)
+        } else {
+            Ok(ConformanceEvidence::Certified {
+                report_digest: Digest::of(b"fixture admission").to_string(),
+            })
+        });
         Ok(())
     }
 
@@ -1789,6 +1833,8 @@ struct PlatformBehavior {
 #[derive(Default)]
 struct PlatformState {
     conformance_report: Option<Vec<u8>>,
+    conformance_checks: Vec<Option<SupervisorCompletion<ConformanceEvidence>>>,
+    conformance_blocked: bool,
     plan: Option<ConfinementPlan>,
     gate: Option<Arc<Mutex<GateState>>>,
 }
@@ -1798,6 +1844,7 @@ struct FakePlatform {
     expected_identity: Identity,
     behavior: PlatformBehavior,
     state: Mutex<PlatformState>,
+    conformance_changed: Condvar,
     agent: Arc<Mutex<AgentState>>,
     agent_changed: Arc<Condvar>,
     agent_output: Vec<u8>,
@@ -1879,6 +1926,23 @@ impl FakePlatform {
 }
 
 impl LaunchPlatform for FakePlatform {
+    fn revalidate_conformance(
+        &self,
+        _: &LaunchAuthorization,
+        _: u64,
+        _: Instant,
+        complete: SupervisorCompletion<ConformanceEvidence>,
+    ) -> Result<(), SupervisorError> {
+        lock(&self.state).conformance_checks.push(Some(complete));
+        self.conformance_changed.notify_all();
+        drop(
+            self.conformance_changed
+                .wait_while(lock(&self.state), |state| state.conformance_blocked)
+                .unwrap(),
+        );
+        Ok(())
+    }
+
     fn inspect_conformance(
         &self,
         _: &LaunchAuthorization,
@@ -2168,6 +2232,7 @@ fn setup(
         expected_identity,
         behavior: platform_behavior,
         state: Mutex::new(PlatformState::default()),
+        conformance_changed: Condvar::new(),
         agent: Arc::new(Mutex::new(AgentState::default())),
         agent_changed: Arc::new(Condvar::new()),
         agent_output: vec![0x00, 0xff, b'o', b'u', b't', b'\n'],
@@ -9394,6 +9459,7 @@ fn privileged_supervisor_launches_agent_under_the_assigned_outer_identity() {
         PrivilegedEnding::NaturalExit,
         PrivilegedEnding::ControllerEof,
         PrivilegedEnding::RelayFailure,
+        PrivilegedEnding::ConformanceInvalid,
     ] {
         privileged_supervisor_case(ending);
     }
@@ -9404,6 +9470,7 @@ enum PrivilegedEnding {
     NaturalExit,
     ControllerEof,
     RelayFailure,
+    ConformanceInvalid,
 }
 
 #[expect(
@@ -9490,6 +9557,7 @@ fn privileged_supervisor_case(ending: PrivilegedEnding) {
     };
     let observation = Arc::new(Mutex::new(None));
     let bwrap = Path::new("/usr/bin/bwrap");
+    let conformance_invalid = Arc::new(AtomicBool::new(false));
     let platform = Arc::new(BubblewrapLaunchPlatform {
         events: Arc::clone(&setup.events),
         expected_identity,
@@ -9498,6 +9566,8 @@ fn privileged_supervisor_case(ending: PrivilegedEnding) {
         backend_id: Digest::of(&fs::read(bwrap).expect("Bubblewrap is installed")).to_string(),
         capability_root: setup.fixture.path("real-capability"),
         observation: Arc::clone(&observation),
+        monitor_conformance: ending == PrivilegedEnding::ConformanceInvalid,
+        conformance_invalid: Arc::clone(&conformance_invalid),
     });
     let supervisor = LaunchSupervisor::new(
         setup.broker.clone(),
@@ -9563,6 +9633,14 @@ fn privileged_supervisor_case(ending: PrivilegedEnding) {
     }
     let echoed_before_eof = *lock(&output) == acp;
     let mut receipts = Vec::new();
+    if ending == PrivilegedEnding::ConformanceInvalid {
+        conformance_monitor_tests::real_tree_recovery(
+            &setup,
+            agent_pid,
+            &conformance_invalid,
+            &mut receipts,
+        );
+    }
     let fault_write = if ending == PrivilegedEnding::RelayFailure {
         // The real relay now hits EPIPE on its next output write, while the
         // controller input stays open and the Agent remains alive in cat.
