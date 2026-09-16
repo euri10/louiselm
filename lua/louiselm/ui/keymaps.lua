@@ -21,7 +21,7 @@ local DEFAULTS = {
   { mode = "n", lhs = "<leader>lsx", rhs = "<cmd>LouiselmSessionClose<cr>", desc = "Louiselm session close" },
   { mode = "n", lhs = "<leader>lsi", rhs = "<cmd>LouiselmSessionId<cr>", desc = "Louiselm session id" },
   { mode = "n", lhs = "<leader>lso", rhs = "<cmd>LouiselmSessionOptions<cr>", desc = "Louiselm session options" },
-  { mode = "n", lhs = "<leader>sO", rhs = "<cmd>LouiselmSessionOverview<cr>", desc = "Session Overview" },
+  { mode = "n", lhs = "<leader>lsO", rhs = "<cmd>LouiselmSessionOverview<cr>", desc = "Session Overview" },
   { mode = "n", lhs = "<leader>lI", rhs = "<cmd>LouiselmCaptureInbox<cr>", desc = "Louiselm capture inbox" },
   { mode = "n", lhs = "<leader>lm", rhs = "<cmd>LouiselmToMarkdown<cr>", desc = "Louiselm export markdown" },
   { mode = "n", lhs = "<leader>lC", rhs = "<cmd>LouiselmCancel<cr>", desc = "Louiselm cancel turn" },

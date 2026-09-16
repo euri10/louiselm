@@ -145,7 +145,7 @@ Default mappings                                           *louiselm-mappings*
   n   <leader>lsx    Louiselm session close            |:LouiselmSessionClose|
   n   <leader>lsi    Louiselm session id                  |:LouiselmSessionId|
   n   <leader>lso    Louiselm session options        |:LouiselmSessionOptions|
-  n   <leader>sO     Session Overview               |:LouiselmSessionOverview|
+  n   <leader>lsO    Session Overview               |:LouiselmSessionOverview|
   n   <leader>lI     Louiselm capture inbox            |:LouiselmCaptureInbox|
   n   <leader>lm     Louiselm export markdown            |:LouiselmToMarkdown|
   n   <leader>lC     Louiselm cancel turn                    |:LouiselmCancel|

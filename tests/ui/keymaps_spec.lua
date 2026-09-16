@@ -61,7 +61,7 @@ T["keymaps"]["installs defaults"] = function()
   MiniTest.expect.equality(mapping("n", " lI"), nil)
   MiniTest.expect.equality(mapping("n", " lk"), nil)
   MiniTest.expect.equality(mapping("n", " lz"), nil)
-  MiniTest.expect.equality(mapping("n", " sO").rhs, "<Cmd>LouiselmSessionOverview<CR>")
+  MiniTest.expect.equality(mapping("n", " lsO").rhs, "<Cmd>LouiselmSessionOverview<CR>")
 end
 
 T["keymaps"]["installs only opted-in optional mappings and removes them on reconfigure"] = function()
