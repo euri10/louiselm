@@ -1,6 +1,7 @@
 package dev.louiselm.capture
 
 import org.json.JSONObject
+import org.json.JSONException
 import java.net.URI
 
 internal enum class UploadDisposition {
@@ -196,6 +197,15 @@ internal sealed class AttentionFetch {
     data class Success(val snapshot: AttentionSnapshot) : AttentionFetch()
     data class Retry(val message: String) : AttentionFetch()
     data class OperatorAction(val message: String) : AttentionFetch()
+}
+
+/** Convert untrusted private-inbox JSON into a sanitized fetch result, without effects. */
+internal fun parseAttentionResponse(payload: String): AttentionFetch = try {
+    AttentionFetch.Success(AttentionSnapshot.parse(payload))
+} catch (_: JSONException) {
+    AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox")
+} catch (_: IllegalArgumentException) {
+    AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox")
 }
 
 internal fun validCanonicalUuid(value: String): Boolean {

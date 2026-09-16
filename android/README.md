@@ -115,7 +115,85 @@ failures retain the last safely parsed screen and offer refresh, while revoked
 pairing or pin failures require pairing/operator repair. The seen generation is
 stored only in app-private preferences.
 
+## Attention notifications (explicit opt-in)
+
+Ordinary builds do not contain Firebase configuration and cannot register for
+push. The private inbox and recording work without it. To build a push-enabled
+APK, provision the Firebase Android client through `infra/firebase` and place
+its generated `android_firebase_config_json` output in the ignored
+`app/src/debug/google-services.json` (normal app) or
+`app/src/qa/google-services.json` (QA app). Never commit or print that output.
+The QA client must use **dev.louiselm.capture.qa** and its signing fingerprint;
+a production-package client cannot configure the QA APK.
+
+```sh
+# Run from android/, after supplying the configuration for this variant.
+./gradlew -PlouiselmFirebase=true :app:assembleQa
+```
+
+The build fails if the requested Firebase client configuration is missing or
+does not match the package. Keep the ordinary no-configuration gate above in CI.
+Install only after checking the package ID and preserving existing data as
+described under side-by-side QA. A device with Google Play services and internet
+access is required for FCM; Tailscale/private receiver access is separately
+required for registration and inbox details.
+
+1. Pair the app to the private receiver, with its notification endpoints enabled.
+2. Tap **Enable notifications**, allow Android notification permission (API 33+),
+   and allow Nearby devices access when required (API 37+).
+3. Keep Tailscale connected while registration reaches the receiver. The receiver
+   also needs its configured FCM sender credential; the APK contains no sender key.
+4. Trigger a real eligible Attention transition, then background the app. Expect
+   only **LouiseLM needs your attention** and fixed generic text. Tap it to open
+   and refresh **Attention inbox** over the existing pinned HTTPS connection.
+
+Firebase auto-registration is initially off. Only a successful in-app opt-in and
+paired token registration enable SDK token maintenance. A token refresh updates
+that paired device via authenticated `PUT /v1/attention/token`; pairing changes
+rotate the token and discard old generation/cache state. WorkManager performs
+network-constrained, backoff-based registration and inbox retries, not polling.
+Revoked or rejected pairing stops background registration/fetch until pairing is
+repaired. Credentials remain Keystore-owned; work requests carry only an opaque
+pairing revision. Cached inbox data and seen/notified generations are app-private
+and scoped to that pairing. Background fetching does not mark anything seen.
+
+The sender uses high-priority, collapsible **data-only** FCM messages with exactly
+one decimal `generation` value. It must not send an FCM `notification` block:
+Android would display that block in the background before app validation. The
+app rejects malformed, duplicate, older, and already-seen wake-ups. It never
+puts Session/Run IDs, remote display text, or inbox content into notifications.
+Do not use Firebase Console notification campaigns as this protocol's test.
+
+The pinned SDK still supports the receiver's token-addressed protocol, although
+Google now deprecates those client APIs in favor of Firebase Installation IDs.
+Client and sender must migrate together; the narrow API suppressions document
+this existing wire boundary, not an additional compatibility layer. See the
+[Firebase token API reference](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessaging).
+
+FCM is best-effort: OS battery policy, connectivity, and force-stop can delay or
+prevent delivery. Reopen after force-stop. Neither local gates nor an FCM
+submission acknowledgement prove phone delivery; physical acceptance is tracked
+in `louiselm-qbr.9.9`.
+
 ## Physical acceptance checklist
+
+- Notifications: record the configured APK/package/build and paired test device.
+  Deny notification permission first: capture and manual inbox access must remain
+  usable. Grant it and enable notifications; confirm receiver token registration
+  without logging the token. On API 28 verify the notification channel can also
+  be disabled without breaking capture.
+- Trigger a new eligible Attention generation with the app backgrounded. Verify
+  only the fixed generic copy; tap to fetch the matching private inbox. Repeat
+  the same/older generation, then a newer one: no duplicate alert, then a new
+  alert. Reopen/restart the app and repeat to check durable deduplication.
+- Disconnect Tailscale but leave internet available. Trigger a wake-up: generic
+  notification still appears; tapping shows a retryable unavailable inbox, with
+  no action resolved. Restore Tailscale and refresh/reopen to consume the
+  WorkManager-refreshed private snapshot.
+- Revoke pairing and refresh: background registration/fetch must stop. Renew
+  pairing and enable again; verify notification delivery resumes for the new
+  paired device. Replace the receiver and verify old queued work cannot publish
+  an old inbox into the new pairing.
 
 - On Android 17, deny Nearby devices access from Pair or Sync; verify offline
   recording still saves. Grant access and retry Pair, Sync, and Refresh. Revoke

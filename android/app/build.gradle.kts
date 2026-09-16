@@ -2,6 +2,12 @@ plugins {
     id("com.android.application")
 }
 
+// A configured build still requires the user's in-app notification opt-in.
+val firebaseChoice = providers.gradleProperty("louiselmFirebase").orElse("false").get()
+require(firebaseChoice in setOf("true", "false")) { "louiselmFirebase must be true or false" }
+val firebaseEnabled = firebaseChoice == "true"
+if (firebaseEnabled) apply(plugin = "com.google.gms.google-services")
+
 android {
     namespace = "dev.louiselm.capture"
     compileSdk = 37
@@ -12,8 +18,10 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
-
+        buildConfigField("boolean", "FIREBASE_ENABLED", firebaseEnabled.toString())
     }
+
+    buildFeatures { buildConfig = true }
 
     buildTypes {
         create("qa") {
@@ -53,6 +61,7 @@ dependencies {
     implementation("androidx.core:core:1.19.0")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("com.google.firebase:firebase-messaging:25.1.3")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")

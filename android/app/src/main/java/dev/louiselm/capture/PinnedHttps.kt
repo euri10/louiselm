@@ -79,12 +79,13 @@ internal object PinnedHttps {
             config.receiverIdentitySha256,
         ).apply {
             requestMethod = "GET"
+            readTimeout = CONNECT_TIMEOUT_MS
             setRequestProperty("Authorization", "Bearer ${config.credential}")
             setRequestProperty("Accept", "application/json")
         }
         try {
             when (val status = connection.responseCode) {
-                200 -> AttentionFetch.Success(AttentionSnapshot.parse(readBounded(connection)))
+                200 -> parseAttentionResponse(readBounded(connection))
                 401, 403 -> AttentionFetch.OperatorAction("receiver pairing was revoked; pair this device again")
                 408, 429 -> AttentionFetch.Retry("receiver is temporarily unavailable ($status)")
                 in 500..599 -> AttentionFetch.Retry("receiver is temporarily unavailable ($status)")
@@ -105,6 +106,42 @@ internal object PinnedHttps {
         AttentionFetch.OperatorAction("receiver security configuration is invalid")
     } catch (_: IllegalArgumentException) {
         AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox")
+    }
+
+    /** Register only through the paired receiver; the token never carries inbox content. */
+    fun registerAttentionToken(config: PairingConfig, token: String): UploadAttempt = try {
+        require(token.length in 1..4096 && token.all { it.code in 33..126 }) { "invalid notification token" }
+        val body = JSONObject().put("token", token).toString().toByteArray(Charsets.UTF_8)
+        val connection = connection("${config.receiverUrl}/v1/attention/token", config.receiverIdentitySha256).apply {
+            requestMethod = "PUT"
+            readTimeout = CONNECT_TIMEOUT_MS
+            doOutput = true
+            setRequestProperty("Authorization", "Bearer ${config.credential}")
+            setRequestProperty("Content-Type", "application/json")
+            setFixedLengthStreamingMode(body.size)
+        }
+        try {
+            connection.outputStream.use { it.write(body) }
+            when (val status = connection.responseCode) {
+                204 -> UploadAttempt.Success
+                408, 429, in 500..599 -> UploadAttempt.Retry("receiver is temporarily unavailable ($status)")
+                else -> UploadAttempt.OperatorAction("receiver rejected notification registration ($status)")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    } catch (error: SSLHandshakeException) {
+        if (hasCertificateCause(error)) {
+            UploadAttempt.OperatorAction("receiver identity does not match pairing")
+        } else {
+            UploadAttempt.Retry("secure connection failed")
+        }
+    } catch (_: IOException) {
+        UploadAttempt.Retry("receiver is unreachable")
+    } catch (_: SecurityException) {
+        UploadAttempt.OperatorAction("receiver security configuration is invalid")
+    } catch (_: IllegalArgumentException) {
+        UploadAttempt.OperatorAction("notification token is invalid")
     }
 
     fun pair(offer: PairingOffer, deviceName: String): PairingConfig {

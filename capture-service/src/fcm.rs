@@ -176,10 +176,8 @@ fn payload(token: &str, generation: u64) -> Value {
     // can enter this boundary. The token is required FCM routing metadata.
     json!({"message": {
         "token": token,
-        "notification": {"title": "LouiseLM", "body": "Attention is waiting in LouiseLM."},
         "data": {"generation": generation.to_string()},
-        "android": {"collapse_key": COLLAPSE_KEY, "priority": "high",
-            "notification": {"tag": COLLAPSE_KEY}}
+        "android": {"collapse_key": COLLAPSE_KEY, "priority": "high"}
     }})
 }
 

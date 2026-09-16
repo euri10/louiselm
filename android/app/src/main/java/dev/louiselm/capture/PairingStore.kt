@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONObject
 import java.security.KeyStore
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -21,6 +22,13 @@ internal data class PairingConfig(
 
 internal class PairingStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+
+    /** Opaque revision of the encrypted pairing, for rejecting obsolete background work. */
+    fun binding(): String? {
+        val ciphertext = preferences.getString(CIPHERTEXT, null) ?: return null
+        return MessageDigest.getInstance("SHA-256").digest(ciphertext.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
 
     @SuppressLint("UseKtx") // KTX edit returns Unit; credential durability requires the commit Boolean.
     fun save(config: PairingConfig) {

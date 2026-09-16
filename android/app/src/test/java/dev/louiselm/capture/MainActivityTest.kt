@@ -2,6 +2,7 @@ package dev.louiselm.capture
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.os.Looper
 import android.view.View
@@ -80,6 +81,44 @@ class MainActivityTest {
             WorkManagerImpl.setDelegate(null)
             ReflectionHelpers.setStaticField(WorkManagerImpl::class.java, "sDefaultInstance", null)
         }
+    }
+
+    @Test
+    fun notificationTapRefreshesInboxAndIgnoresLateCompletionAfterDestruction() {
+        val inbox = views(activity.window.decorView).filterIsInstance<TextView>()
+            .single { it.text.toString() == activity.getString(R.string.attention_unpaired) }
+        inbox.text = "stale screen"
+        controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
+        drainStatus()
+        assertEquals(activity.getString(R.string.attention_unpaired), inbox.text.toString())
+        controller.newIntent(Intent(activity, MainActivity::class.java).setAction(ATTENTION_INBOX_ACTION))
+        controller.close()
+        inbox.text = "destroyed screen"
+        drainStatus()
+        assertEquals("destroyed screen", inbox.text.toString())
+    }
+
+    @Test
+    @Config(sdk = [28, 34, 37])
+    fun notificationConfigurationAndPermissionNeverPreventRecording() {
+        button(R.string.attention_enable).performClick()
+        if (!BuildConfig.FIREBASE_ENABLED) {
+            assertEquals(null, shadowOf(activity).lastRequestedPermission)
+            assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+                .any { it.text.toString() == activity.getString(R.string.attention_not_configured) })
+        } else if (android.os.Build.VERSION.SDK_INT >= 33) {
+            val request = shadowOf(activity).lastRequestedPermission
+            assertEquals(listOf(Manifest.permission.POST_NOTIFICATIONS), request.requestedPermissions.toList())
+            activity.onRequestPermissionsResult(request.requestCode, request.requestedPermissions, intArrayOf(-1))
+            assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+                .any { it.text.toString() == activity.getString(R.string.attention_notification_denied) })
+        } else {
+            assertEquals(null, shadowOf(activity).lastRequestedPermission)
+            drainStatus()
+            assertTrue(views(activity.window.decorView).filterIsInstance<TextView>()
+                .any { it.text.toString() == activity.getString(R.string.attention_notification_failed) })
+        }
+        assertTrue(button(R.string.start_capture).isEnabled)
     }
 
     @Test

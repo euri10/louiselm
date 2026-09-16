@@ -43,6 +43,14 @@
     <string name="minutes_age">%1$d min</string>
     <string name="hours_age">%1$d h</string>
     <string name="attention_title">Attention inbox</string>
+    <string name="attention_channel">LouiseLM Attention</string>
+    <string name="attention_notification_title">LouiseLM needs your attention</string>
+    <string name="attention_notification_body">Open the private inbox to see what needs attention.</string>
+    <string name="attention_enable">Enable notifications</string>
+    <string name="attention_not_configured">Notifications are not configured in this build. The private inbox still works.</string>
+    <string name="attention_notification_denied">Notifications are disabled. Allow them in app settings and try again. Recording and the inbox still work.</string>
+    <string name="attention_notification_queued">Notification registration queued. Keep Tailscale connected to reach the paired receiver.</string>
+    <string name="attention_notification_failed">Notifications need a valid pairing and writable app storage. Repair pairing and try again.</string>
     <string name="attention_unpaired">Pair a receiver to view Attention.</string>
     <string name="attention_empty">Nothing needs attention.</string>
     <plurals name="attention_count">

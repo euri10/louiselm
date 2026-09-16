@@ -10,6 +10,17 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun malformedPrivateResponsesBecomeOperatorActionWithoutRemoteText() {
+        val malformed = listOf(
+            "{", "{}", "{\"generation\":\"secret-invalid-value\",\"items\":[]}", "{\"generation\":-1,\"items\":[]}",
+        )
+        for (payload in malformed) {
+            assertEquals(AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox"), parseAttentionResponse(payload))
+        }
+        assertEquals(AttentionFetch.Success(AttentionSnapshot(0, emptyList())), parseAttentionResponse("{\"generation\":0,\"items\":[]}"))
+    }
+
+    @Test
     fun uploadStatusDistinguishesRetriesFromOwnerAttention() {
         assertEquals(UploadDisposition.SUCCESS, uploadDisposition(201))
         assertEquals(UploadDisposition.RETRY, uploadDisposition(429))

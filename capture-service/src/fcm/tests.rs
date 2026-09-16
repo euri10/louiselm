@@ -110,9 +110,8 @@ fn exact_oauth_and_fcm_requests_use_verified_assertions_and_short_lived_tokens()
                 body,
                 json!({"message": {
                     "token": "device-token",
-                    "notification": {"title": "LouiseLM", "body": "Attention is waiting in LouiseLM."},
                     "data": {"generation": "42"},
-                    "android": {"collapse_key": "louiselm-attention", "priority": "high", "notification": {"tag": "louiselm-attention"}}
+                    "android": {"collapse_key": "louiselm-attention", "priority": "high"}
                 }})
             );
             Ok(accepted())

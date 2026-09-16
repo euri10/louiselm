@@ -250,10 +250,11 @@ already-started bounded submission; after it returns, no future submission can
 use that pairing. HTTP pairing/authentication runs off the async executor while
 waiting for this lock.
 
-The FCM message contains only the required routing token, fixed text
-(`LouiseLM` / `Attention is waiting in LouiseLM.`), a decimal-string `generation`,
-and fixed Android priority/collapse/tag fields. Both collapse key and notification
-tag are `louiselm-attention`. No Attention kind, Session/Run/issue identity, path,
+The data-only FCM message contains only the required routing token, a
+decimal-string `generation`, high Android priority, and collapse key
+`louiselm-attention`. It deliberately has no `notification` block: Android's
+background SDK display would bypass local generation validation and deduplication.
+The app owns the fixed generic text and local notification tag. No Attention kind, Session/Run/issue identity, path,
 prompt, transcript, or caller-authored display text is serialized to Google.
 The authenticated private inbox remains the source of work details.
 

@@ -21,7 +21,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
-import androidx.core.content.edit
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import androidx.work.WorkInfo
@@ -30,6 +29,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import java.io.File
+import java.io.IOException
 
 private data class PairingPlan(
     val offer: PairingOffer,
@@ -45,6 +45,8 @@ class MainActivity : Activity() {
     private lateinit var attentionStatusView: TextView
     private lateinit var attentionCards: LinearLayout
     private lateinit var attentionRetryButton: Button
+    private lateinit var notificationStatusView: TextView
+    private lateinit var page: ScrollView
     private lateinit var captureButton: Button
     private lateinit var pairButton: Button
     private val networkExecutor = Executors.newSingleThreadExecutor()
@@ -53,8 +55,9 @@ class MainActivity : Activity() {
     private var startedAtElapsedMs = 0L
     private var qrPhoto: File? = null
     private var lastAttention: AttentionSnapshot? = null
+    private var lastAttentionOwner: String? = null
+    private var inboxVisible = false
     private var pendingReceiverAction: (() -> Unit)? = null
-    private val attentionPreferences by lazy { getSharedPreferences("attention-ui", MODE_PRIVATE) }
     private val uploadObserver = Observer<List<WorkInfo>> { workInfos ->
         if (hasFinishedUpload(workInfos)) refreshStatus()
     }
@@ -64,16 +67,46 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         captureStore = CaptureStore(applicationContext)
         pairingStore = PairingStore(applicationContext)
-        setContentView(contentView())
+        page = contentView()
+        setContentView(page)
+        if (intent.action == ATTENTION_INBOX_ACTION) focusAttentionInbox()
         refreshStatus()
         refreshAttention()
     }
 
     override fun onResume() {
         super.onResume()
+        inboxVisible = true
+        networkExecutor.execute {
+            try {
+                AttentionWorker.enqueue(applicationContext, replaceExisting = true)
+            } catch (_: IOException) {
+                showNotificationStatus(R.string.attention_notification_failed)
+            }
+        }
         if (recorder == null) {
             refreshStatus()
             refreshAttention()
+        }
+    }
+
+    override fun onPause() {
+        inboxVisible = false
+        super.onPause()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ATTENTION_INBOX_ACTION) {
+            focusAttentionInbox()
+            refreshAttention()
+        }
+    }
+
+    private fun focusAttentionInbox() {
+        page.post {
+            if (!isDestroyed && !isFinishing) page.smoothScrollTo(0, attentionStatusView.top)
         }
     }
 
@@ -136,6 +169,12 @@ class MainActivity : Activity() {
             setOnClickListener { withReceiverNetworkAccess { refreshAttention() } }
         }
         content.addView(attentionRetryButton, matchWidth(topMargin = padding / 2))
+        content.addView(Button(this).apply {
+            text = getString(R.string.attention_enable)
+            setOnClickListener { enableNotifications() }
+        }, matchWidth())
+        notificationStatusView = TextView(this).apply { textSize = 16f }
+        content.addView(notificationStatusView, matchWidth())
         captureButton = Button(this).apply {
             text = getString(R.string.start_capture)
             setOnClickListener { toggleRecording() }
@@ -382,6 +421,7 @@ class MainActivity : Activity() {
                         pairingStore.save(config)
                     }
                 }
+                AttentionWorker.enqueue(applicationContext, replaceExisting = true)
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
@@ -459,16 +499,40 @@ class MainActivity : Activity() {
             return
         }
         networkExecutor.execute {
-            val result: AttentionFetch? = if (!hasReceiverNetworkAccess(applicationContext)) {
-                AttentionFetch.OperatorAction(getString(R.string.local_network_denied))
-            } else {
-                runCatching { pairingStore.load() }.fold(
-                    onSuccess = { pairing -> pairing?.let(PinnedHttps::fetchAttention) },
-                    onFailure = { AttentionFetch.OperatorAction("stored pairing configuration needs operator attention") },
-                )
+            val owner = pairingStore.binding()
+            val state = AttentionState(applicationContext)
+            val cached = try {
+                owner?.let(state::cached)
+            } catch (_: IOException) {
+                // A corrupt local cache is not authoritative; replace it only after a valid private fetch.
+                null
+            }
+            val result: AttentionFetch? = try {
+                if (owner != null && state.blocked(owner)) {
+                    AttentionFetch.OperatorAction(getString(R.string.attention_notification_failed))
+                } else if (!hasReceiverNetworkAccess(applicationContext)) {
+                    AttentionFetch.OperatorAction(getString(R.string.local_network_denied))
+                } else {
+                    runCatching { pairingStore.load() }.fold(
+                        onSuccess = { pairing ->
+                            pairing?.let(PinnedHttps::fetchAttention)?.also {
+                                if (it is AttentionFetch.OperatorAction && owner != null) state.block(owner)
+                            }
+                        },
+                        onFailure = { AttentionFetch.OperatorAction("stored pairing configuration needs operator attention") },
+                    )
+                }
+            } catch (_: IOException) {
+                AttentionFetch.OperatorAction(getString(R.string.attention_notification_failed))
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
+                if (pairingStore.binding() != owner) return@runOnUiThread
+                if (lastAttentionOwner != owner) {
+                    lastAttentionOwner = owner
+                    lastAttention = null
+                    attentionCards.removeAllViews()
+                }
                 if (result == null) {
                     lastAttention = null
                     attentionStatusView.text = getString(R.string.attention_unpaired)
@@ -477,8 +541,19 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 when (result) {
-                    is AttentionFetch.Success -> renderAttention(result.snapshot)
+                    is AttentionFetch.Success -> {
+                        renderAttention(result.snapshot)
+                        if (owner != null && inboxVisible) networkExecutor.execute {
+                            try {
+                                state.cache(owner, result.snapshot)
+                                state.seen(owner, result.snapshot.generation)
+                            } catch (_: IOException) {
+                                showNotificationStatus(R.string.attention_notification_failed)
+                            }
+                        }
+                    }
                     is AttentionFetch.Retry -> {
+                        if (cached != null) renderAttention(cached)
                         attentionStatusView.text = getString(R.string.attention_retry_state, result.message)
                         attentionRetryButton.isEnabled = true
                     }
@@ -538,7 +613,38 @@ class MainActivity : Activity() {
             }
         }
         attentionRetryButton.isEnabled = true
-        attentionPreferences.edit { putLong("seen_generation", snapshot.generation) }
+    }
+
+    private fun enableNotifications() {
+        if (!BuildConfig.FIREBASE_ENABLED) {
+            showNotificationStatus(R.string.attention_not_configured)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+            return
+        }
+        withReceiverNetworkAccess {
+            networkExecutor.execute {
+                try {
+                    val state = AttentionState(applicationContext)
+                    if (state.enable()) {
+                        AttentionWorker.enqueue(applicationContext, state)
+                        showNotificationStatus(R.string.attention_notification_queued)
+                    } else {
+                        showNotificationStatus(R.string.attention_notification_failed)
+                    }
+                } catch (_: IOException) {
+                    showNotificationStatus(R.string.attention_notification_failed)
+                }
+            }
+        }
+    }
+
+    private fun showNotificationStatus(message: Int) = runOnUiThread {
+        if (!isDestroyed && !isFinishing) notificationStatusView.text = getString(message)
     }
 
     private fun formatAttentionAge(createdAtMs: Long): String {
@@ -562,6 +668,11 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
         if (isDestroyed || isFinishing) return
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) {
+            if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) enableNotifications()
+            else showNotificationStatus(R.string.attention_notification_denied)
+            return
+        }
         if (requestCode == LOCAL_NETWORK_PERMISSION_REQUEST) {
             val action = pendingReceiverAction ?: return
             pendingReceiverAction = null
@@ -584,5 +695,6 @@ class MainActivity : Activity() {
         private const val MICROPHONE_PERMISSION_REQUEST = 1
         private const val QR_CAMERA_REQUEST = 2
         private const val LOCAL_NETWORK_PERMISSION_REQUEST = 3
+        private const val NOTIFICATION_PERMISSION_REQUEST = 4
     }
 }
