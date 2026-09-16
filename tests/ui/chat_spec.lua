@@ -4153,6 +4153,76 @@ T["chat"]["reports history read errors and ignores late history after Disposal"]
   end
 end
 
+T["chat"]["ordinary resume clears failure only after successful attached load"] = function()
+  for _, outcome in ipairs({ "ready", "error", "disposed" }) do
+    local restored = fake_session("loaded-local-id", "codex")
+    restored.state.status = "starting"
+    restored.state.acp_session_id = "retained-acp-id"
+    local api = fake_api()
+    local ready_callback
+    function api:discover_sessions(_, callback)
+      callback({ { agent = "codex", session_id = "retained-acp-id", cwd = "/tmp/project" } }, {})
+      return true
+    end
+    function api:load_session(_, _, _, callback)
+      ready_callback = callback
+      return restored
+    end
+    local chat = assert(Chat.new(api, { attention = true }))
+    local original_select = nvim.ui.select
+    local original_notify = nvim.notify
+    MiniTest.finally(function()
+      nvim.ui.select = original_select
+      nvim.notify = original_notify
+      chat:dispose()
+    end)
+    nvim.ui.select = function(items, _, callback)
+      callback(items[1])
+    end
+    ---@diagnostic disable-next-line: duplicate-set-field -- Silence the expected load failure in this fixture.
+    nvim.notify = function() end
+    local resumed = {}
+    chat.attention.session_resumed = function(_, session_id)
+      resumed[#resumed + 1] = session_id
+    end
+    assert(chat:resume_session())
+    assert(nvim.wait(1000, function()
+      return ready_callback ~= nil
+    end, 1))
+    MiniTest.expect.equality(resumed, {})
+    restored.state.status = outcome == "error" and "error" or "ready"
+    local drained = false
+    local function complete_load()
+      ready_callback(outcome ~= "error" and restored or nil, outcome == "error" and "load failed" or nil)
+      nvim.schedule(function()
+        drained = true
+      end)
+    end
+    if outcome == "ready" then
+      local event = assert(nvim.uv.new_async(function()
+        assert(nvim.in_fast_event())
+        complete_load()
+      end))
+      MiniTest.finally(function()
+        event:close()
+      end)
+      event:send()
+    else
+      complete_load()
+      if outcome == "disposed" then
+        chat:dispose()
+      end
+    end
+    assert(nvim.wait(1000, function()
+      return drained
+    end, 1))
+    MiniTest.expect.equality(resumed, outcome == "ready" and { "retained-acp-id" } or {})
+    chat:dispose()
+    nvim.ui.select = original_select
+    nvim.notify = original_notify
+  end
+end
+
 T["chat"]["discovers and resumes into a separate scheduled chat view"] = function()
   local first = fake_session("session-1", "claude")
   local restored = fake_session("session-2", "codex")

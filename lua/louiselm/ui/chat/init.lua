@@ -2559,8 +2559,20 @@ function Chat:resume_session(all_workspaces)
         local session, load_error = self.api:load_session(selected.agent, selected.session_id, {
           cwd = selected.cwd,
           name = selected.session_id,
-        }, function(_, ready_error)
+        }, function(ready_session, ready_error)
           if ready_error == nil then
+            if ready_session ~= nil and self.attention ~= nil then
+              nvim.schedule(function()
+                if self.disposed then
+                  return
+                end
+                local state = ready_session:inspect()
+                local view = self.views[state.id]
+                if view ~= nil and view.session == ready_session and state.status == "ready" then
+                  self.attention:session_resumed(state.acp_session_id)
+                end
+              end)
+            end
             return
           end
           error_reported = true

@@ -414,16 +414,13 @@ function Attention:turn_done(state, seen)
   enqueue_entry(self, entry)
 end
 
----Mark a Session condition seen and clear it durably.
----@param self louiselm.ui.Attention
----@param session_id string Agent-side Session identifier.
-function Attention:seen(session_id)
+local function clear_session_condition(self, session_id, kind)
   if self.disposed then
     return
   end
   local entries = {}
   for _, entry in pairs(self.entries) do
-    if entry.session_id == session_id and entry.kind == "turn_ready" then
+    if entry.session_id == session_id and entry.kind == kind then
       entries[#entries + 1] = entry
     end
   end
@@ -432,31 +429,31 @@ function Attention:seen(session_id)
   end
   enqueue(self, {
     send = function(client, callback)
-      return client:clear_session_kind(session_id, "turn_ready", callback)
+      return client:clear_session_kind(session_id, kind, callback)
     end,
   })
 end
 
----Clear a ready condition when a new prompt starts.
+---Mark a Session condition seen and clear it durably.
+---@param self louiselm.ui.Attention
+---@param session_id string Agent-side Session identifier.
+function Attention:seen(session_id)
+  clear_session_condition(self, session_id, "turn_ready")
+end
+
+---Clear ready and failure conditions when a new prompt starts.
 ---@param self louiselm.ui.Attention
 ---@param session_id string Agent-side Session identifier.
 function Attention:prompt_started(session_id)
   self:seen(session_id)
-  clear_entries(self, function(entry)
-    return entry.kind == "session_failed" and entry.key.subject_id == session_id
-  end)
+  self:session_resumed(session_id)
 end
 
 ---Clear a terminal failure when a Session is successfully resumed.
 ---@param self louiselm.ui.Attention
 ---@param session_id string Agent-side Session identifier.
 function Attention:session_resumed(session_id)
-  if self.disposed then
-    return
-  end
-  clear_entries(self, function(entry)
-    return entry.kind == "session_failed" and entry.key.subject_id == session_id
-  end)
+  clear_session_condition(self, session_id, "session_failed")
 end
 
 ---Record an explicit ACP permission request.

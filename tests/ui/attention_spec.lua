@@ -8,9 +8,68 @@ local nvim = vim
 
 local T = MiniTest.new_set()
 
+T["resuming in a fresh controller durably clears only that Session failure"] = function()
+  local original_read = RunClient.read_operator_capability
+  local original_connect = AttentionClient.connect
+  local attention
+  MiniTest.finally(function()
+    if attention ~= nil then
+      attention:dispose()
+    end
+    RunClient.read_operator_capability = original_read
+    AttentionClient.connect = original_connect
+  end)
+  local retained = {
+    { subject_id = "resumed", kind = "session_failed" },
+    { subject_id = "resumed", kind = "session_failed" },
+    { subject_id = "other", kind = "session_failed" },
+    { subject_id = "resumed", kind = "permission_required" },
+    { subject_id = "resumed", kind = "skill_approval_pending" },
+    { subject_id = "resumed", kind = "turn_ready" },
+  }
+  local fake = { ready = false }
+  function fake:clear_session_kind(session_id, kind, callback)
+    retained = nvim.tbl_filter(function(item)
+      return item.subject_id ~= session_id or item.kind ~= kind
+    end, retained)
+    callback({ generation = 1, items = retained })
+    return true
+  end
+  function fake:dispose()
+    return true
+  end
+  local connected
+  ---@diagnostic disable-next-line: duplicate-set-field
+  RunClient.read_operator_capability = function(_, callback)
+    callback("capability", nil)
+    return true
+  end
+  ---@diagnostic disable-next-line: duplicate-set-field
+  AttentionClient.connect = function(_, on_snapshot)
+    connected = on_snapshot
+    return fake
+  end
+  attention = Attention.new({ socket_path = "/tmp/attention.sock", capability_path = "/tmp/operator-capability" })
+  attention:session_resumed("resumed")
+  MiniTest.expect.equality(#retained, 6)
+  MiniTest.expect.equality(type(connected), "function")
+  fake.ready = true
+  connected({ generation = 0, items = retained })
+  MiniTest.expect.equality(retained, {
+    { subject_id = "other", kind = "session_failed" },
+    { subject_id = "resumed", kind = "permission_required" },
+    { subject_id = "resumed", kind = "skill_approval_pending" },
+    { subject_id = "resumed", kind = "turn_ready" },
+  })
+end
+
 T["emits unseen turns only after inactivity and clears when seen"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
+  MiniTest.finally(function()
+    RunClient.read_operator_capability = original_read
+    AttentionClient.connect = original_connect
+  end)
   local fake = {
     ready = true,
     disposed = false,
@@ -96,6 +155,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   attention:seen("session-1")
   MiniTest.expect.equality(fake.clear_session_kinds, {
     { session_id = "session-1", kind = "turn_ready" },
+    { session_id = "session-1", kind = "session_failed" },
     { session_id = "session-1", kind = "turn_ready" },
   })
   MiniTest.expect.equality(fake.clear_sessions, {})
@@ -109,6 +169,10 @@ end
 T["deduplicates typed conditions and clears their authoritative transitions"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
+  MiniTest.finally(function()
+    RunClient.read_operator_capability = original_read
+    AttentionClient.connect = original_connect
+  end)
   local fake = {
     ready = true,
     disposed = false,
@@ -191,9 +255,10 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   MiniTest.expect.equality(#fake.upserts, 2)
   MiniTest.expect.equality(fake.upserts[2].linked_run_id, "11111111-2222-4333-8444-555555555555")
   attention:prompt_started("session-1")
-  MiniTest.expect.equality(#fake.clears, 2)
+  MiniTest.expect.equality(#fake.clears, 1)
   MiniTest.expect.equality(fake.clear_session_kinds, {
     { session_id = "session-1", kind = "turn_ready" },
+    { session_id = "session-1", kind = "session_failed" },
   })
   MiniTest.expect.equality(fake.clear_sessions, {})
 
