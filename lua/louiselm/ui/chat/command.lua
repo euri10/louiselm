@@ -8,6 +8,7 @@ local Provenance = require("louiselm.ui.provenance")
 local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
 local Paths = require("louiselm.paths")
+local Config = require("louiselm.config")
 
 local M = {}
 local configured ---@type table?
@@ -278,7 +279,7 @@ function M.configure(config)
   if type(config) ~= "table" then
     return false, "chat command configuration must be a table"
   end
-  configured = config
+  configured = nvim.deepcopy(config)
   return true
 end
 
@@ -400,8 +401,7 @@ function M.register()
       instructions_context = configured_instructions(configured)
     end
     if skills_error ~= nil then
-      nvim.notify("louiselm: " .. skills_error, nvim.log.levels.ERROR)
-      return nil
+      nvim.notify("louiselm: skill injection is unavailable: " .. skills_error, nvim.log.levels.WARN)
     end
     local workflow, workflow_error = configured_workflow(definitions)
     if workflow == nil then
@@ -415,6 +415,9 @@ function M.register()
       skill_catalog = skill_catalog,
       instructions_context = instructions_context,
       workflow = workflow,
+      attention = Config.enabled(configured, "attention"),
+      workflows = Config.enabled(configured, "workflows"),
+      beads = Config.enabled(configured, "beads"),
     }))
     return chat
   end
@@ -472,6 +475,10 @@ function M.register()
   end
 
   local function inspect_bead()
+    if not Config.enabled(configured, "beads") then
+      report_error("Beads is disabled; set beads.enabled = true and run :checkhealth louiselm")
+      return
+    end
     local buffer = chat and chat:buffer() or nil
     if buffer == nil or nvim.api.nvim_get_current_buf() ~= buffer then
       report_error("no chat session is open")
@@ -494,6 +501,7 @@ function M.register()
     local buffer = nvim.api.nvim_get_current_buf()
     local _, inspect_error = Provenance.inspect(buffer, {
       definitions = configured and configured.agents or {},
+      beads = Config.enabled(configured, "beads"),
       on_error = report_error,
     })
     report_error(inspect_error)
@@ -519,7 +527,8 @@ function M.register()
   })
 
   nvim.api.nvim_create_user_command("LouiselmProvenanceDecisions", function()
-    local _, decisions_error = Provenance.show_decisions({ on_error = report_error })
+    local _, decisions_error =
+      Provenance.show_decisions({ beads = Config.enabled(configured, "beads"), on_error = report_error })
     report_error(decisions_error)
   end, { desc = "Show the Provenance Decision index", force = true })
 
@@ -542,6 +551,10 @@ function M.register()
   end, { bang = true, desc = "Resume a prior louiselm session; use ! for all workspaces", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmResumePark", function()
+    if not Config.enabled(configured, "workflows") then
+      report_error("workflows are disabled; set workflows.enabled = true and run :checkhealth louiselm")
+      return
+    end
     local current = ensure_chat()
     if current == nil then
       return
@@ -551,6 +564,10 @@ function M.register()
   end, { desc = "Resume a durable cold-Parked Run", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmPark", function()
+    if not Config.enabled(configured, "workflows") then
+      report_error("workflows are disabled; set workflows.enabled = true and run :checkhealth louiselm")
+      return
+    end
     local current = ensure_chat()
     if current == nil then
       return

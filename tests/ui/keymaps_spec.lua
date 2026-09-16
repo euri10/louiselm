@@ -57,8 +57,29 @@ T["keymaps"]["installs defaults"] = function()
   MiniTest.expect.equality(mapping("x", " ls").rhs, "<Cmd>LouiselmSendSelection<CR>")
   MiniTest.expect.equality(mapping("n", " le").rhs, "<Cmd>LouiselmInline<CR>")
   MiniTest.expect.equality(mapping("n", " lT").rhs, "<Cmd>LouiselmInspectTool<CR>")
-  MiniTest.expect.equality(mapping("n", " lB").rhs, "<Cmd>LouiselmInspectBead<CR>")
+  MiniTest.expect.equality(mapping("n", " lB"), nil)
+  MiniTest.expect.equality(mapping("n", " lI"), nil)
+  MiniTest.expect.equality(mapping("n", " lk"), nil)
+  MiniTest.expect.equality(mapping("n", " lz"), nil)
   MiniTest.expect.equality(mapping("n", " sO").rhs, "<Cmd>LouiselmSessionOverview<CR>")
+end
+
+T["keymaps"]["installs only opted-in optional mappings and removes them on reconfigure"] = function()
+  Keymaps.configure({
+    beads = { enabled = true },
+    capture = { enabled = true },
+    workflows = { enabled = true },
+    agents = { agent = { skills = { policy = "native" } } },
+  })
+  MiniTest.expect.equality(mapping("n", " lB").rhs, "<Cmd>LouiselmInspectBead<CR>")
+  MiniTest.expect.equality(mapping("n", " lI").rhs, "<Cmd>LouiselmCaptureInbox<CR>")
+  MiniTest.expect.equality(mapping("n", " lk").rhs, "<Cmd>LouiselmPickSkill<CR>")
+  MiniTest.expect.equality(mapping("n", " lz").rhs, "<Cmd>LouiselmResumePark<CR>")
+  Keymaps.configure({})
+  MiniTest.expect.equality(mapping("n", " lB"), nil)
+  MiniTest.expect.equality(mapping("n", " lI"), nil)
+  MiniTest.expect.equality(mapping("n", " lk"), nil)
+  MiniTest.expect.equality(mapping("n", " lz"), nil)
 end
 
 T["keymaps"]["can be disabled"] = function()

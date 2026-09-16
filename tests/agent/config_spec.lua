@@ -56,7 +56,7 @@ T["validate"]["accepts named agent definitions and returns owned copies"] = func
   MiniTest.expect.equality(normalized.claude.command, definitions.claude.command)
   MiniTest.expect.equality(normalized.claude.args, definitions.claude.args)
   MiniTest.expect.equality(normalized.claude.args == definitions.claude.args, false)
-  MiniTest.expect.equality(normalized.claude.skills.policy, "native")
+  MiniTest.expect.equality(normalized.claude.skills.policy, "off")
 end
 
 T["validate"]["preserves an optional transcript layout"] = function()

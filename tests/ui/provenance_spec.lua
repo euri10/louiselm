@@ -190,11 +190,22 @@ end
 
 T["issue Provenance"] = MiniTest.new_set()
 
+T["issue Provenance"]["rejects disabled Beads operations before spawning tools"] = function()
+  local buffer = source_buffer("louiselm-kpod", 3)
+  local calls = fake_system()
+  local started, err = Provenance.inspect(buffer)
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(assert(err):find("beads.enabled = true", 1, true) ~= nil, true)
+  local decisions = Provenance.show_decisions()
+  MiniTest.expect.equality(decisions, false)
+  MiniTest.expect.equality(#calls, 0)
+end
+
 T["issue Provenance"]["renders bvr correlations and milestones"] = function()
   local buffer = source_buffer("Inspect louiselm-kpod", 10)
   local calls = fake_system()
 
-  assert(Provenance.inspect(buffer))
+  assert(Provenance.inspect(buffer, { beads = true }))
   MiniTest.expect.equality(calls[1].command, {
     "bvr",
     "--robot-history",
@@ -260,7 +271,7 @@ end
 T["issue Provenance"]["renders an issue with no correlated commits"] = function()
   local buffer = source_buffer("louiselm-kpod", 5)
   local calls = fake_system()
-  assert(Provenance.inspect(buffer))
+  assert(Provenance.inspect(buffer, { beads = true }))
   finish_bvr(calls, '{"histories":{}}')
   finish_br(calls, '[{"id":"louiselm-kpod","assignee":"","created_by":"lotso"}]')
 
@@ -286,11 +297,21 @@ end
 
 T["Session Provenance"] = MiniTest.new_set()
 
+T["Session Provenance"]["keeps Git-only lookup available while Beads is disabled"] = function()
+  local buffer = source_buffer("codex/session-123", 6)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer))
+  finish(calls, "fix: tracked work\n\nRefs codex/session-123\n")
+  MiniTest.expect.equality(#calls, 1)
+  MiniTest.expect.equality(calls[1].command[1], "git")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0), "louiselm://provenance/session/codex/session-123")
+end
+
 T["Session Provenance"]["accepts a Markdown-formatted Session id under the cursor"] = function()
   local buffer = source_buffer("`codex/session-1`", 8)
   local calls = fake_system()
 
-  assert(Provenance.inspect(buffer, { definitions = {} }))
+  assert(Provenance.inspect(buffer, { beads = true, definitions = {} }))
   MiniTest.expect.equality(calls[1].command, {
     "git",
     "log",
@@ -314,7 +335,7 @@ T["Session Provenance"]["accepts a Markdown-formatted Session id from the prompt
     callback("`codex/session-1`")
   end)
 
-  assert(Provenance.inspect(buffer, { definitions = {} }))
+  assert(Provenance.inspect(buffer, { beads = true, definitions = {} }))
   MiniTest.expect.equality(calls[1].command, {
     "git",
     "log",
@@ -335,7 +356,7 @@ T["Session Provenance"]["renders reverse commit and issue edges"] = function()
   local buffer = source_buffer("Session codex/session-1", 10)
   local calls = fake_system()
 
-  assert(Provenance.inspect(buffer, { definitions = {} }))
+  assert(Provenance.inspect(buffer, { beads = true, definitions = {} }))
   MiniTest.expect.equality(calls[1].command, {
     "git",
     "log",
@@ -374,7 +395,7 @@ end
 T["Session Provenance"]["renders empty sides for a Session with no work"] = function()
   local buffer = source_buffer("codex/session-1", 5)
   local calls = fake_system()
-  assert(Provenance.inspect(buffer, { definitions = {} }))
+  assert(Provenance.inspect(buffer, { beads = true, definitions = {} }))
   finish(calls, "chore: unrelated\n")
   finish_beads_issues(calls, '{"issues":[]}')
 
@@ -410,7 +431,7 @@ end
 
 T["Decision index"]["renders Decision anchors with state, sorted by recent activity"] = function()
   local calls = fake_system()
-  assert(Provenance.show_decisions({ cwd = "/repo" }))
+  assert(Provenance.show_decisions({ beads = true, cwd = "/repo" }))
   MiniTest.expect.equality(calls[1].command, { "br", "list", "--type", "question", "--status", "all", "--json" })
   finish_beads_questions(
     calls,
@@ -448,7 +469,7 @@ end
 
 T["Decision index"]["renders a legible empty state with no Decision anchors"] = function()
   local calls = fake_system()
-  assert(Provenance.show_decisions({}))
+  assert(Provenance.show_decisions({ beads = true }))
   finish_beads_questions(calls, '{"issues":[]}')
 
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), {
@@ -462,7 +483,7 @@ T["Decision index"]["reuses an existing named buffer"] = function()
   local calls = fake_system()
   local existing_buffer = nvim.api.nvim_create_buf(false, true)
   nvim.api.nvim_buf_set_name(existing_buffer, "louiselm://provenance/decisions")
-  assert(Provenance.show_decisions({}))
+  assert(Provenance.show_decisions({ beads = true }))
   finish_beads_questions(calls, '{"issues":[]}')
 
   MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), existing_buffer)
@@ -470,7 +491,7 @@ end
 
 T["Decision index"]["navigates a selected row to its issue Provenance"] = function()
   local calls = fake_system()
-  assert(Provenance.show_decisions({}))
+  assert(Provenance.show_decisions({ beads = true }))
   finish_beads_questions(
     calls,
     nvim.json.encode({
@@ -507,7 +528,7 @@ end
 
 T["Decision index"]["resizes an existing window after loading evidence"] = function()
   local calls = fake_system()
-  assert(Provenance.show_decisions({}))
+  assert(Provenance.show_decisions({ beads = true }))
   finish_beads_questions(
     calls,
     nvim.json.encode({
@@ -559,7 +580,7 @@ end
 
 T["Decision index"]["opens a read-only evidence timeline with recorded and inferred paths"] = function()
   local calls = fake_system()
-  assert(Provenance.show_decisions({ definitions = {} }))
+  assert(Provenance.show_decisions({ beads = true, definitions = {} }))
   finish_beads_questions(
     calls,
     nvim.json.encode({
@@ -647,7 +668,7 @@ end
 
 T["Decision index"]["keeps missing evidence explicit"] = function()
   local calls = fake_system()
-  assert(Provenance.show_decisions({}))
+  assert(Provenance.show_decisions({ beads = true }))
   finish_beads_questions(
     calls,
     nvim.json.encode({
@@ -685,7 +706,7 @@ T["Decision index"]["shows the backlog at a closed Decision and its current drif
     '{"id":"current","status":"open"}',
     '{"id":"louiselm-decision","status":"closed"}',
   }, nvim.fs.joinpath(root, ".beads", "issues.jsonl")) == 0)
-  assert(Provenance.show_decisions({ cwd = root }))
+  assert(Provenance.show_decisions({ beads = true, cwd = root }))
   finish_beads_questions(
     calls,
     nvim.json.encode({
@@ -737,6 +758,7 @@ T["Decision index"]["ignores a scheduled result after the view becomes inactive"
     scheduled[#scheduled + 1] = callback
   end)
   assert(Provenance.show_decisions({
+    beads = true,
     is_active = function()
       return false
     end,

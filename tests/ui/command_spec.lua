@@ -289,7 +289,10 @@ T["command"]["opens the Tutor without a configured Agent"] = function()
 end
 
 T["command"]["inspects Beads from the active Session workspace"] = function()
-  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
+  Command.configure({
+    beads = { enabled = true },
+    agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } },
+  })
   local process, original_system = fake_process()
   local original_inspect = Beads.inspect
   local original_cwd = nvim.fn.getcwd()
@@ -1061,7 +1064,29 @@ T["command"]["does not block a native session when local picker discovery lacks 
   delete_chat_buffers()
 end
 
-T["command"]["reports a terse lyaml error for an injected session"] = function()
+T["command"]["rejects setup transitions without disposing a live Session"] = function()
+  assert(Louiselm.setup({ agents = { agent = { provider = "test-service", command = "configured-agent" } } }))
+  local process, original_system = fake_process()
+  local original_notify = nvim.notify
+  rawset(nvim, "notify", function() end)
+  nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "retained-acp" })
+  local before = Session.exit_verdict()
+  local ok, report = Louiselm.setup({ attention = { enabled = true } })
+  local after = Session.exit_verdict()
+  rawset(nvim, "notify", original_notify)
+  rawset(nvim, "system", original_system)
+  Command.configure(nil)
+  delete_chat_buffers()
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(assert(report).text:find("live Sessions retain their configuration", 1, true) ~= nil, true)
+  MiniTest.expect.equality(#before, 1)
+  MiniTest.expect.equality(#after, 1)
+  MiniTest.expect.equality(before[1].session, after[1].session)
+end
+
+T["command"]["keeps chat available while reporting unavailable skill injection"] = function()
   local skill_root = nvim.fn.tempname()
   local skill_dir = nvim.fs.joinpath(skill_root, "local-skill")
   assert(nvim.fn.mkdir(skill_dir, "p") == 1)
@@ -1087,17 +1112,21 @@ T["command"]["reports a terse lyaml error for an injected session"] = function()
     error("module 'lyaml' not found", 0)
   end)
   Command.register()
+  local process, original_system = fake_process()
 
   nvim.api.nvim_cmd({ cmd = "LouiselmChat", args = {} }, {})
+  respond(process, 1, { protocolVersion = 1, agentCapabilities = {} })
+  respond(process, 2, { sessionId = "skills-unavailable-acp" })
 
   package.loaded.lyaml = loaded
   rawset(package.preload, "lyaml", preload)
   rawset(nvim, "notify", original_notify)
+  rawset(nvim, "system", original_system)
   Command.configure(nil)
   nvim.fn.delete(skill_root, "rf")
   MiniTest.expect.equality(notification, {
-    message = "louiselm: Neovim cannot load lyaml; run :checkhealth louiselm",
-    level = nvim.log.levels.ERROR,
+    message = "louiselm: skill injection is unavailable: Neovim cannot load lyaml; run :checkhealth louiselm",
+    level = nvim.log.levels.WARN,
   })
   delete_chat_buffers()
 end

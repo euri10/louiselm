@@ -1551,7 +1551,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     recording_pending = false,
     config_options = {},
     commands = {},
-    skills_policy = "native",
+    skills_policy = "off",
     embedded_context = false,
   })
   MiniTest.expect.equality(second:inspect(), {
@@ -1567,7 +1567,7 @@ T["new"]["creates concurrent addressable sessions and exposes state"] = function
     recording_pending = false,
     config_options = {},
     commands = {},
-    skills_policy = "native",
+    skills_policy = "off",
     embedded_context = false,
   })
   MiniTest.expect.equality(api:list_sessions(), { "session-1", "session-2" })

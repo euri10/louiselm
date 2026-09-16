@@ -9,6 +9,7 @@ local Locator = require("louiselm.session.locator")
 local M = {}
 
 ---@class louiselm.ui.ProvenanceOptions
+---@field beads? boolean Explicit Beads integration opt-in; defaults to false. Git-only inspection stays available.
 ---@field cwd? string Working directory used for git lookup.
 ---@field definitions? table<string, louiselm.session.TranscriptDefinition> Agent definitions for transcript lookup.
 ---@field locator_options? louiselm.session.LocatorOptions Test or host-specific transcript roots.
@@ -393,6 +394,9 @@ end
 ---@return boolean started
 ---@return string? error_message
 local function show_issue(issue_id, options)
+  if options.beads ~= true then
+    return false, "Beads is disabled; set beads.enabled = true and run :checkhealth louiselm"
+  end
   local started, start_error = Sources.bvr_history(
     options.cwd or nvim.fn.getcwd(),
     issue_id,
@@ -718,28 +722,30 @@ local function show_session(session_id, options)
       report_error(options, "could not read commit history")
       return
     end
-    local issues_started, issues_error = Sources.beads_issues(
-      options.cwd or nvim.fn.getcwd(),
-      function(issues, issue_source_error)
-        if options.is_active ~= nil and not options.is_active() then
-          return
-        end
-        if issues == nil or issue_source_error ~= nil then
-          report_error(options, "could not read Beads issues")
-          return
-        end
-        local edges, correlate_error = Correlate.session(session_id, commits, issues)
-        if edges == nil or correlate_error ~= nil then
-          report_error(options, "could not correlate Session " .. session_id)
-          return
-        end
-        local opened, open_error =
-          open_provenance("louiselm://provenance/session/" .. session_id, session_lines(session_id, edges, options))
-        if not opened then
-          report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
-        end
+    local function complete(issues, issue_source_error)
+      if options.is_active ~= nil and not options.is_active() then
+        return
       end
-    )
+      if issues == nil or issue_source_error ~= nil then
+        report_error(options, "could not read Beads issues")
+        return
+      end
+      local edges, correlate_error = Correlate.session(session_id, commits, issues)
+      if edges == nil or correlate_error ~= nil then
+        report_error(options, "could not correlate Session " .. session_id)
+        return
+      end
+      local opened, open_error =
+        open_provenance("louiselm://provenance/session/" .. session_id, session_lines(session_id, edges, options))
+      if not opened then
+        report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+      end
+    end
+    if options.beads ~= true then
+      complete({})
+      return
+    end
+    local issues_started, issues_error = Sources.beads_issues(options.cwd or nvim.fn.getcwd(), complete)
     if not issues_started then
       report_error(options, issues_error and issues_error.message or "could not start br")
     end
@@ -790,6 +796,9 @@ function M.show_decisions(options)
     return false, "Provenance options must be a table"
   end
   options = options or {}
+  if options.beads ~= true then
+    return false, "Beads is disabled; set beads.enabled = true and run :checkhealth louiselm"
+  end
   if options.cwd ~= nil and (type(options.cwd) ~= "string" or options.cwd == "") then
     return false, "Provenance cwd must be a non-empty string"
   end

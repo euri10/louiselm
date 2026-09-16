@@ -29,6 +29,39 @@ end
 
 T["setup"] = MiniTest.new_set()
 
+T["setup"]["accepts independent explicit optional capability opt-ins"] = function()
+  local config = {
+    attention = { enabled = true },
+    beads = { enabled = true },
+    capture = { enabled = true },
+    workflows = { enabled = true },
+    skills = { management = { enabled = true } },
+  }
+  local original = nvim.deepcopy(config)
+  local ok, report = capture_setup(config)
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(report, nil)
+  MiniTest.expect.equality(config, original)
+end
+
+T["setup"]["validates disabled sections and every optional switch"] = function()
+  local ok, report = capture_setup({
+    attention = { enabled = "yes" },
+    beads = { enabled = false, surprise = true },
+    capture = { enabled = false, recorder = {} },
+    workflows = { enabled = 1 },
+    skills = { management = { enabled = "yes" } },
+  })
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(report.count, 5)
+end
+
+T["setup"]["leaves Agent skill automation off unless explicitly selected"] = function()
+  local definitions = { agent = { provider = "test-service", command = "agent" } }
+  local agents = assert(require("louiselm.agent").normalize(definitions))
+  MiniTest.expect.equality(agents.agent.skills.policy, "off")
+end
+
 T["setup"]["requires Provider and validates fixed and routed service mappings"] = function()
   for _, definition in ipairs({
     { command = "agent" },

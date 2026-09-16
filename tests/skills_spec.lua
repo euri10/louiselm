@@ -760,8 +760,8 @@ end
 
 T["policy"] = MiniTest.new_set()
 
-T["policy"]["defaults to native and accepts the three policies"] = function()
-  MiniTest.expect.equality(Skills.policy(), "native")
+T["policy"]["defaults to off and accepts the three policies"] = function()
+  MiniTest.expect.equality(Skills.policy(), "off")
   MiniTest.expect.equality(Skills.policy("native"), "native")
   MiniTest.expect.equality(Skills.policy("inject"), "inject")
   MiniTest.expect.equality(Skills.policy("off"), "off")

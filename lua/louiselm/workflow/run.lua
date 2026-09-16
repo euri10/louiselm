@@ -120,10 +120,10 @@ local function transition_parked(self)
   end
 end
 
----@param worker louiselm.workflow.RunWorker
----@return louiselm.workflow.ParkRecord? record
+---@param worker louiselm.workflow.RunWorker|louiselm.session.Session
+---@return louiselm.session.State? state
 ---@return string? error_message
-local function cold_park_record(worker, request)
+local function cold_park_state(worker)
   local state = worker.inspect(worker)
   local client = worker.client
   local capabilities = client and client.agent_capabilities or nil
@@ -152,6 +152,27 @@ local function cold_park_record(worker, request)
     -- particular Session has persisted yet (louiselm-aaw0.1). A successful
     -- load already proves history exists without a new prompt (louiselm-s6xr).
     return nil, "cold Park requires a Session that has sent at least one prompt"
+  end
+  return state
+end
+
+---Check Session prerequisites before admitting or changing a durable Run.
+---@param worker louiselm.workflow.RunWorker|louiselm.session.Session Session being considered for cold Park.
+---@return boolean allowed No effects are performed.
+---@return string? error_message Missing Session capability or history.
+function M.check_cold_park(worker)
+  local state, err = cold_park_state(worker)
+  return state ~= nil, err
+end
+
+---@param worker louiselm.workflow.RunWorker
+---@param request table
+---@return louiselm.workflow.ParkRecord? record
+---@return string? error_message
+local function cold_park_record(worker, request)
+  local state, err = cold_park_state(worker)
+  if state == nil then
+    return nil, err
   end
   return {
     id = request.id,

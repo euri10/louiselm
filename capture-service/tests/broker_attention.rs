@@ -36,7 +36,7 @@ async fn projection_requires_both_kernel_identity_and_scoped_credential() {
     };
     let store = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     let socket = BrokerAttentionSocket::bind(config.clone(), store.clone())
@@ -129,7 +129,7 @@ async fn operator_endpoint_never_accepts_broker_projections() {
     let root = tempfile::tempdir().unwrap();
     let store = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     let path = root.path().join("attention.sock");
@@ -175,7 +175,7 @@ async fn producer_token_cannot_authorize_ordinary_attention_or_run_mutations() {
     let run_path = root.path().join("run.sock");
     let attention = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     let run = RunStore::new(root.path().join("runs")).unwrap();

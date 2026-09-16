@@ -1,10 +1,12 @@
 ---@class louiselm.Config
 ---@field agents? table<string, louiselm.ConfigAgentsValue> Named ACP agent processes.
+---@field attention? louiselm.ConfigAttention Durable Attention integration; local Session status remains available independently.
 ---@field beads? louiselm.ConfigBeads Beads issue-inspector settings.
 ---@field capture? louiselm.ConfigCapture Durable speech-capture command settings.
 ---@field context? louiselm.ConfigContext Project-context injection settings.
 ---@field keymaps? boolean Install LouiseLM's global default keymaps; false disables them.
 ---@field skills? louiselm.ConfigSkills Agent Skill discovery and injection settings.
+---@field workflows? louiselm.ConfigWorkflows Workflow Run and Park integration; ordinary Handoff remains available independently.
 
 ---@class louiselm.ConfigAgentsValue
 ---@field args? string[] Arguments passed after the executable.
@@ -39,10 +41,15 @@
 ---@field command string Executable that prints the installed version.
 ---@field env? table<string, string> Environment variables passed to the process.
 
+---@class louiselm.ConfigAttention
+---@field enabled? boolean Connect to the explicitly configured local Attention service; does not enable capture or delivery.
+
 ---@class louiselm.ConfigBeads
+---@field enabled? boolean Enable Beads inspection of existing workspaces; never initialize a tracker.
 ---@field sibling_roots? string[] Directories globbed one level for a sibling `.beads/beads.db`, tried in order when the cursor is on a full issue ID belonging to a different workspace's prefix; empty disables cross-workspace lookup.
 
 ---@class louiselm.ConfigCapture
+---@field enabled? boolean Enable desktop capture commands. Receiver, transcription and push require separate service opt-ins.
 ---@field recorder? string[] Recorder argv with one {output} placeholder.
 ---@field service? string[] Capture-service argv prefix.
 
@@ -50,5 +57,12 @@
 ---@field instructions_file? string Project-root filename attached as a resource_link on new sessions; empty disables.
 
 ---@class louiselm.ConfigSkills
+---@field management? louiselm.ConfigSkillsManagement Trusted skill-management integration; independent of skill invocation and Admission.
 ---@field paths? string[] Global directories searched for Agent Skills; relative paths resolve against each session workspace.
 ---@field policy? string Default Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation.
+
+---@class louiselm.ConfigSkillsManagement
+---@field enabled? boolean Expose installed trusted skill-management operations; never install tools or admit skills automatically.
+
+---@class louiselm.ConfigWorkflows
+---@field enabled? boolean Enable workflow Runs and Park, subject to operation-specific prerequisites.

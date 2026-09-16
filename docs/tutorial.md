@@ -31,6 +31,13 @@ Health checks tell you whether LouiseLM can find your configured Agents and
 their executables. If no Agent is configured, finish the setup instructions in
 the README or [onboarding guide](onboarding.md), then run the health check again.
 
+The same health report lists optional capabilities and their exact opt-in settings.
+Attention, Beads, capture, workflow Runs, skill invocation and trusted skill
+management start disabled. Enable the integrations you want, install their
+prerequisites manually, and rerun health. Existing tools or credentials do not
+enable them. See `:help louiselm-optional-capabilities` for editor and service
+choices; ordinary chat retains your configured Agent permission policy.
+
 ## 3. Try a first prompt
 
 Open the chat:

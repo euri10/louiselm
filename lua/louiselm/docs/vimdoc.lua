@@ -172,7 +172,7 @@ local function emit_overview(lines, context)
   append_code(lines, code)
   append_prose(
     lines,
-    "Then use :LouiselmChat to start a Session, or |louiselm-api| to drive an Agent without the chat UI. Use |:checkhealth| louiselm to validate configured Agents, local skills, and capture tools. Health output is operational evidence, not a substitute for this reference.",
+    "Then use :LouiselmChat to start a Session, or |louiselm-api| to drive an Agent without the chat UI. Use |:checkhealth| louiselm to discover optional capabilities and validate the prerequisites of explicitly enabled integrations. Ordinary chat requires an authenticated Agent and sqlite3 >= 3.38 with JSON support.",
     context
   )
 end
@@ -182,7 +182,7 @@ end
 local function emit_mappings(lines, context)
   append_prose(
     lines,
-    "Installed by |louiselm.setup()| unless |louiselm-config-keymaps| is false. Each mapping runs the command it links to; |mapleader| decides what <leader> expands to.",
+    "Installed by |louiselm.setup()| unless |louiselm-config-keymaps| is false. Capture, Beads, skill and Park mappings are installed only when their integration is enabled. Existing user mappings are preserved. Each mapping runs the command it links to; |mapleader| decides what <leader> expands to.",
     context
   )
   lines[#lines + 1] = ""
@@ -343,6 +343,45 @@ local SECTIONS = {
   { title = "Default mappings", tag = "louiselm-mappings", emit = emit_mappings },
   { title = "Commands", tag = "louiselm-commands", emit = emit_commands },
   { title = "Configuration", tag = "louiselm-configuration", emit = emit_configuration },
+  {
+    title = "Optional capabilities",
+    tag = "louiselm-optional-capabilities",
+    emit = function(lines, context)
+      append_prose(
+        lines,
+        "Attention, Beads, desktop capture, workflow Runs and trusted skill management default to disabled. skills.policy defaults to off; explicit native/inject choices and per-Agent overrides remain available. Installed tools, skill paths, tracker directories and credentials never enable integrations. Agent permission and YOLO choices are independent.",
+        context
+      )
+      append_code(lines, {
+        "-- Explicit opt-ins for an operator who wants every delivered integration:",
+        "attention = { enabled = true },",
+        "beads = { enabled = true },",
+        "capture = { enabled = true },",
+        "workflows = { enabled = true },",
+        'skills = { policy = "native", paths = {}, management = { enabled = true } },',
+      })
+      append_prose(
+        lines,
+        "These fields belong inside setup({...}). Run |:checkhealth| louiselm for setup guidance and readiness. It never installs dependencies, starts services, initializes Beads, pairs devices, enrolls trust or admits skills. Disabled commands explain the required setting. Close live Sessions and finish recording/ingestion before reconfiguring; retained data is never deleted by a toggle.",
+        context
+      )
+      append_prose(
+        lines,
+        "Service choices belong in ~/.config/louiselm/capture.env: LOUISELM_ATTENTION_ENABLED, LOUISELM_RUNS_ENABLED, LOUISELM_RECEIVER_ENABLED, LOUISELM_TRANSCRIPTION_ENABLED and LOUISELM_PUSH_ENABLED each require true. Omission means false. Attention-only startup needs no microphone, receiver or cloud credentials. Runs require LOUISELM_BEADS_WORKSPACE and LOUISELM_REAL_BR for cleanup. Cold Park also requires explicit editor Attention and Beads opt-ins, a ready service, and resumable Agent history. Keep Run support enabled while retained Runs have obligations.",
+        context
+      )
+      append_prose(
+        lines,
+        "Manual installation and service setup are documented in capture-service/README.md in the plugin checkout. Desktop capture retains audio locally; transcription explicitly sends audio to the configured OpenAI API, and push uses separately configured Google credentials. The client cannot reconfigure a daemon shared by another editor.",
+        context
+      )
+      append_prose(
+        lines,
+        "Trusted skill management currently exposes :LouiselmPreflight for selected artifacts. Packaging, Admission, and trust operations remain explicit installed CLI operations documented in skills-core/README.md. Enabling management never grants Verified posture or changes an Agent launch command.",
+        context
+      )
+    end,
+  },
   { title = "Session API", tag = "louiselm-api", emit = emit_api },
   {
     title = "Troubleshooting",
@@ -355,7 +394,7 @@ local SECTIONS = {
       )
       append_prose(
         lines,
-        "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With louiselm-skills on PATH, :LouiselmPreflight {request-file} [{manifest-file} [{prior-request-file} {prior-manifest-file}]] asynchronously inspects canonical launch request/2 and Session input-manifest/1 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
+        "Direct vendor commands, including wrappers, have no LouiseLM Verified posture. With skills.management.enabled = true and louiselm-skills on PATH, :LouiselmPreflight {request-file} [{manifest-file} [{prior-request-file} {prior-manifest-file}]] asynchronously inspects canonical launch request/2 and Session input-manifest/1 artifacts and opens health. Prior files are explicitly selected, never inferred from history.",
         context
       )
       append_prose(

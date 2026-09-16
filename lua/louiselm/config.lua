@@ -154,9 +154,21 @@ M.schema = assert(Schema.define({
       },
       policy = {
         type = "string",
-        default = "native",
+        default = "off",
         validator = valid_skill_policy,
         description = "Default Agent Skills policy: native delegates to the adapter, inject uses LouiseLM discovery, and off disables automation.",
+      },
+      management = {
+        type = "table",
+        default = {},
+        description = "Trusted skill-management integration; independent of skill invocation and Admission.",
+        fields = {
+          enabled = {
+            type = "boolean",
+            default = false,
+            description = "Expose installed trusted skill-management operations; never install tools or admit skills automatically.",
+          },
+        },
       },
     },
   },
@@ -182,6 +194,11 @@ M.schema = assert(Schema.define({
     default = {},
     description = "Beads issue-inspector settings.",
     fields = {
+      enabled = {
+        type = "boolean",
+        default = false,
+        description = "Enable Beads inspection of existing workspaces; never initialize a tracker.",
+      },
       sibling_roots = {
         type = "array-of",
         items = "string",
@@ -195,6 +212,11 @@ M.schema = assert(Schema.define({
     default = {},
     description = "Durable speech-capture command settings.",
     fields = {
+      enabled = {
+        type = "boolean",
+        default = false,
+        description = "Enable desktop capture commands. Receiver, transcription and push require separate service opt-ins.",
+      },
       recorder = {
         type = "array-of",
         items = "string",
@@ -211,6 +233,56 @@ M.schema = assert(Schema.define({
       },
     },
   },
+  attention = {
+    type = "table",
+    default = {},
+    description = "Durable Attention integration; local Session status remains available independently.",
+    fields = {
+      enabled = {
+        type = "boolean",
+        default = false,
+        description = "Connect to the explicitly configured local Attention service; does not enable capture or delivery.",
+      },
+    },
+  },
+  workflows = {
+    type = "table",
+    default = {},
+    description = "Workflow Run and Park integration; ordinary Handoff remains available independently.",
+    fields = {
+      enabled = {
+        type = "boolean",
+        default = false,
+        description = "Enable workflow Runs and Park, subject to operation-specific prerequisites.",
+      },
+    },
+  },
 }))
+
+---Read one explicit optional integration choice from validated configuration.
+---@param config? table Validated user configuration; never mutated.
+---@param name "attention"|"beads"|"capture"|"workflows"
+---@return boolean enabled Omission is disabled; paths and installed tools do not opt in.
+function M.enabled(config, name)
+  return config ~= nil and type(config[name]) == "table" and config[name].enabled == true
+end
+
+---Whether any configured Agent explicitly enables LouiseLM skill invocation.
+---@param config? table Validated user configuration; never mutated.
+---@return boolean enabled Includes per-Agent overrides of the global off default.
+function M.skills_enabled(config)
+  config = config or {}
+  local policy = config.skills and config.skills.policy or "off"
+  local agents = config.agents or {}
+  if next(agents) == nil then
+    return policy ~= "off"
+  end
+  for _, agent in pairs(agents) do
+    if (agent.skills and agent.skills.policy or policy) ~= "off" then
+      return true
+    end
+  end
+  return false
+end
 
 return M

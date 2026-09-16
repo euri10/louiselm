@@ -6,12 +6,6 @@ use std::{
     io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::Duration,
 };
 
 use qrcode::{
@@ -23,16 +17,16 @@ use thiserror::Error;
 
 #[path = "notification_worker.rs"]
 mod notification_worker;
+mod service;
 
 use crate::time::now_ms;
 use crate::{
-    AttentionError, AttentionSocket, AttentionSocketError, AttentionStore, BeadsCleanup,
-    BeadsGenerator, BrokerAttentionConfig, BrokerAttentionSocket, CaptureDraft, CaptureRecord,
-    CaptureSource, CaptureState, GenerateRequest, GeneratedWorkReservation, GenerationError,
-    IdentityError, NetworkProfile, NetworkProfileError, NetworkProfileKind, OpenAiTranscriber,
-    PairingError, PairingRegistry, Receiver, ReserveResult, RunAdmission, RunDraft, RunSession,
-    RunSocket, RunSocketError, RunStore, RunStoreError, Store, StoreError, TlsIdentity, Transcript,
-    TranscriptionWorker,
+    AttentionError, AttentionSocketError, AttentionStore, BeadsGenerator, CaptureDraft,
+    CaptureRecord, CaptureSource, CaptureState, GenerateRequest, GeneratedWorkReservation,
+    GenerationError, IdentityError, NetworkProfile, NetworkProfileError, NetworkProfileKind,
+    OpenAiTranscriber, PairingError, PairingRegistry, ReserveResult, RunAdmission, RunDraft,
+    RunSession, RunSocketError, RunStore, RunStoreError, Store, StoreError, TlsIdentity,
+    Transcript, TranscriptionWorker,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o-transcribe";
@@ -110,16 +104,17 @@ pub async fn run() -> Result<(), CliError> {
     }
     let options = &arguments[1..];
     let paths = Paths::discover()?;
-    let store = Store::new(paths.captures())?;
-    let attention = AttentionStore::new(paths.attention(), RunStore::new(paths.runs())?)?;
-
     match command {
-        "ingest-local" => ingest_local(&store, options),
-        "list" => list(&store),
-        "status" => status(&store, &attention, &paths),
-        "attention" => attention_command(&attention, options),
-        "retry" => retry(&store, options),
-        "transcribe-once" => transcribe_once(&store),
+        "ingest-local" => ingest_local(&Store::new(paths.captures())?, options),
+        "list" => list(&Store::new(paths.captures())?),
+        "status" => status(
+            &Store::new(paths.captures())?,
+            &attention_store(&paths)?,
+            &paths,
+        ),
+        "attention" => attention_command(&attention_store(&paths)?, options),
+        "retry" => retry(&Store::new(paths.captures())?, options),
+        "transcribe-once" => transcribe_once(&Store::new(paths.captures())?),
         "run" => run_command(&paths, options),
         "configure-network" => configure_network(&paths, options),
         "pair" => pair(&paths, options),
@@ -129,9 +124,21 @@ pub async fn run() -> Result<(), CliError> {
             PairingRegistry::open(paths.pairing())?.retry_notifications()?;
             Ok(())
         }
-        "serve" => serve(store, attention, &paths, options).await,
+        "serve" => {
+            no_arguments(options, "serve")?;
+            service::serve(paths).await
+        }
         other => Err(CliError::Invalid(format!("unknown command '{other}'"))),
     }
+}
+
+fn attention_store(paths: &Paths) -> Result<AttentionStore, CliError> {
+    let runs = if paths.runs().try_exists()? {
+        Some(RunStore::new(paths.runs())?)
+    } else {
+        None
+    };
+    Ok(AttentionStore::new(paths.attention(), runs)?)
 }
 
 fn run_command(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
@@ -556,115 +563,6 @@ fn revoke_device(paths: &Paths, arguments: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
-async fn serve(
-    store: Store,
-    attention: AttentionStore,
-    paths: &Paths,
-    arguments: &[String],
-) -> Result<(), CliError> {
-    no_arguments(arguments, "serve")?;
-    let bind = NetworkProfile::load_or_default(&paths.network())?.bind();
-    let identity = TlsIdentity::load_or_create(paths.tls())?;
-    let pairing = Arc::new(PairingRegistry::open(paths.pairing())?);
-    let receiver = Receiver::with_attention(
-        store.clone(),
-        attention.clone(),
-        pairing.clone(),
-        paths.uploads(),
-        identity.public_key_sha256(),
-    )?;
-    let run_socket = RunSocket::bind(
-        paths.run_socket(),
-        paths.operator_capability(),
-        RunStore::new(paths.runs())?,
-    )
-    .await?;
-    let attention_socket = AttentionSocket::bind(
-        paths.attention_socket(),
-        paths.operator_capability(),
-        attention.clone(),
-    )
-    .await?;
-    let broker_policy = tokio::task::spawn_blocking(BrokerAttentionConfig::load_installed)
-        .await
-        .map_err(std::io::Error::other)??;
-    let broker_socket = match broker_policy {
-        Some(config) => Some(BrokerAttentionSocket::bind(config, attention.clone()).await?),
-        None => None,
-    };
-    if let Some(workspace) =
-        env::var_os("LOUISELM_BEADS_WORKSPACE").filter(|value| !value.is_empty())
-    {
-        let runs = RunStore::new(paths.runs())?;
-        // A bare "br" would resolve against this process's own PATH, which a long-running
-        // daemon's environment (e.g. a systemd unit's minimal default) is not guaranteed to
-        // contain; require an explicit path rather than fail silently (louiselm-hvot).
-        let br_executable = required_environment("LOUISELM_REAL_BR")?;
-        let cleanup = BeadsCleanup::new(PathBuf::from(workspace), br_executable)?;
-        thread::spawn(move || {
-            loop {
-                match runs.reap_expired(now_ms(), |action| cleanup.release(action)) {
-                    Ok(summary) if summary.disposed > 0 || !summary.failed.is_empty() => {
-                        eprintln!(
-                            "louiselm-capture: reap pass disposed {} Run(s), {} release(s) still failing: {:?}",
-                            summary.disposed,
-                            summary.failed.len(),
-                            summary.failed
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(error) => eprintln!("louiselm-capture: reap pass failed: {error}"),
-                }
-                thread::sleep(Duration::from_secs(10));
-            }
-        });
-    }
-    if let Ok(provider) = openai_provider() {
-        thread::spawn(move || {
-            loop {
-                let _ = TranscriptionWorker::new(&store, &provider).process_ready(now_ms());
-                thread::sleep(Duration::from_secs(10));
-            }
-        });
-    }
-    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-        identity.certificate_path(),
-        identity.private_key_path(),
-    )
-    .await?;
-    let network_server =
-        axum_server::bind_rustls(bind, tls).serve(receiver.router().into_make_service());
-    let stop_notifications = Arc::new(AtomicBool::new(false));
-    let credentials = env::var_os("GOOGLE_APPLICATION_CREDENTIALS")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    let mut notifications = tokio::spawn(notification_worker::run(
-        attention,
-        pairing,
-        credentials,
-        stop_notifications.clone(),
-    ));
-    let (result, worker_finished) = tokio::select! {
-        result = run_socket.serve() => (result.map_err(CliError::from), false),
-        result = attention_socket.serve() => (result.map_err(CliError::from), false),
-        result = async move {
-            match broker_socket {
-                Some(socket) => socket.serve().await,
-                None => std::future::pending().await,
-            }
-        } => (result.map_err(CliError::from), false),
-        result = network_server => (result.map_err(CliError::from), false),
-        result = &mut notifications => (result.unwrap_or(Err(CliError::NotificationWorker)), true),
-    };
-    stop_notifications.store(true, Ordering::Release);
-    if !worker_finished {
-        notifications
-            .await
-            .map_err(|_| CliError::NotificationWorker)??;
-    }
-    result
-}
-
 fn openai_provider() -> Result<OpenAiTranscriber, CliError> {
     let api_key = env::var("OPENAI_API_KEY").map_err(|_| {
         CliError::Invalid("OPENAI_API_KEY is required for transcription".to_owned())
@@ -723,6 +621,7 @@ struct CaptureStatus {
     transcript: Option<Transcript>,
 }
 
+#[derive(Clone)]
 struct Paths {
     config: PathBuf,
     data: PathBuf,

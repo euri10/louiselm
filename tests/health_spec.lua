@@ -14,7 +14,7 @@ local function with_health_stubs(callback, system)
   local original_executable = nvim.fn.executable
   local original_system = nvim.system
   local original_in_fast_event = nvim.in_fast_event
-  local calls = { ok = {}, error = {}, info = {}, warn = {} }
+  local calls = { ok = {}, error = {}, info = {}, warn = {}, executables = {} }
   nvim.health = {
     start = function(message)
       calls.start = message
@@ -32,7 +32,8 @@ local function with_health_stubs(callback, system)
       calls.warn[#calls.warn + 1] = message
     end,
   }
-  nvim.fn.executable = function()
+  nvim.fn.executable = function(command)
+    calls.executables[#calls.executables + 1] = command
     return 1
   end
   nvim.in_fast_event = function()
@@ -58,6 +59,28 @@ local function with_health_stubs(callback, system)
 end
 
 T["check"] = MiniTest.new_set()
+
+T["check"]["disabled capabilities explain opt-ins without probing installed tools or skill paths"] = function()
+  assert(Health.configure({ skills = { paths = { "/does-not-exist" } } }, require("louiselm.config").schema))
+  with_health_stubs(function(calls)
+    Health.check()
+    MiniTest.expect.equality(calls.error, {})
+    MiniTest.expect.equality(calls.warn, {})
+    MiniTest.expect.equality(calls.executables, { "sqlite3" })
+    local guidance = table.concat(calls.info, "\n")
+    for _, setting in ipairs({
+      "attention.enabled = true",
+      "beads.enabled = true",
+      "capture.enabled = true",
+      "workflows.enabled = true",
+      "skills.management.enabled = true",
+      "skills.policy",
+    }) do
+      MiniTest.expect.equality(guidance:find(setting, 1, true) ~= nil, true)
+    end
+  end)
+  Health.reset()
+end
 
 T["check"]["reports a missing required SQLite executable"] = function()
   assert(Health.configure({}, require("louiselm.config").schema))
@@ -88,7 +111,8 @@ T["check"]["reports setup validation and agent version"] = function()
   assert(nvim.fn.mkdir(skill_path, "p") == 1)
   assert(Louiselm.setup({
     agents = { agent = { provider = "test-service", command = "agent" } },
-    skills = { paths = { skill_path } },
+    skills = { policy = "native", paths = { skill_path } },
+    capture = { enabled = true },
   }))
 
   with_health_stubs(function(calls)
@@ -166,12 +190,14 @@ T["check"]["reports discovered skills alongside invalid siblings"] = function()
   assert(nvim.fn.writefile({ "# no frontmatter" }, invalid) == 0)
   assert(Louiselm.setup({
     agents = { agent = { provider = "test-service", command = "agent" } },
-    skills = { paths = { skill_path } },
+    skills = { policy = "native", paths = { skill_path } },
   }))
 
   with_health_stubs(function(calls)
     Health.check()
-    MiniTest.expect.equality(calls.error, { invalid .. ": missing YAML frontmatter" })
+    MiniTest.expect.equality(calls.error, {})
+    MiniTest.expect.equality(calls.warn[1], invalid .. ": missing YAML frontmatter")
+    MiniTest.expect.equality(calls.warn[2]:find("symlink resolves outside configured root", 1, true) ~= nil, true)
     MiniTest.expect.equality(calls.ok[3], "discovered 1 skill")
   end)
 
@@ -223,7 +249,7 @@ T["check"]["reports the Neovim working directory used for relative skill roots"]
   nvim.api.nvim_set_current_dir(workspace)
   assert(Louiselm.setup({
     agents = { agent = { provider = "test-service", command = "agent" } },
-    skills = { paths = { "skills" } },
+    skills = { policy = "native", paths = { "skills" } },
   }))
 
   local call_ok, call_error = pcall(function()
@@ -260,7 +286,7 @@ T["check"]["reports persistent LuaRocks path guidance"] = function()
   )
   assert(Louiselm.setup({
     agents = { agent = { provider = "test-service", command = "agent" } },
-    skills = { paths = { skill_path } },
+    skills = { policy = "native", paths = { skill_path } },
   }))
   local loaded = package.loaded.lyaml
   local preload = package.preload.lyaml
@@ -272,7 +298,7 @@ T["check"]["reports persistent LuaRocks path guidance"] = function()
   local call_ok, call_error = pcall(function()
     with_health_stubs(function(calls)
       Health.check()
-      MiniTest.expect.equality(calls.error, {
+      MiniTest.expect.equality(calls.warn, {
         'skills: Neovim cannot find lyaml in package.path or package.cpath; install it with `luarocks --lua-version 5.1 install lyaml` or, if LuaRocks already reports it installed, add `eval "$(luarocks path --lua-version 5.1 --no-bin)"` to the shell startup file that launches Neovim',
       })
     end)
@@ -298,6 +324,25 @@ T["check"]["reports missing setup as a warning"] = function()
   end)
 end
 
+T["check"]["enabled Beads warns about a missing workspace without initializing one"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local previous = nvim.fn.getcwd()
+  nvim.api.nvim_set_current_dir(root)
+  assert(Health.configure({ beads = { enabled = true } }, require("louiselm.config").schema))
+  local ok, err = pcall(function()
+    with_health_stubs(function(calls)
+      Health.check()
+      MiniTest.expect.equality(table.concat(calls.warn, "\n"):find("existing .beads workspace", 1, true) ~= nil, true)
+      MiniTest.expect.equality(calls.error, {})
+      MiniTest.expect.equality(nvim.fn.isdirectory(root .. "/.beads"), 0)
+    end)
+  end)
+  nvim.api.nvim_set_current_dir(previous)
+  nvim.fn.delete(root, "rf")
+  assert(ok, err)
+end
+
 T["check"]["direct launches and wrappers do not imply Verified posture"] = function()
   assert(Louiselm.setup({ agents = { wrapped = { provider = "test-service", command = "some-wrapper" } } }))
   with_health_stubs(function(calls)
@@ -316,7 +361,7 @@ T["check"]["direct launches and wrappers do not imply Verified posture"] = funct
 end
 
 T["check"]["selected async preview reaches health and reset suppresses late results"] = function()
-  assert(Health.configure({}, require("louiselm.config").schema))
+  assert(Health.configure({ skills = { management = { enabled = true } } }, require("louiselm.config").schema))
   local payload = table.concat(nvim.fn.readfile("tests/fixtures/preflight_v1.json"), "\n")
   local pending = {}
   with_health_stubs(function(calls)
@@ -332,7 +377,7 @@ T["check"]["selected async preview reaches health and reset suppresses late resu
     end))
     Health.check()
     MiniTest.expect.equality(nvim.tbl_contains(calls.info, "proposed envelope_revision: 2"), true)
-    MiniTest.expect.equality(nvim.tbl_contains(calls.error, "Verified posture: unverified"), true)
+    MiniTest.expect.equality(nvim.tbl_contains(calls.warn, "Verified posture: unverified"), true)
     local late = false
     assert(Health.preview({ request = "/new" }, function()
       late = true

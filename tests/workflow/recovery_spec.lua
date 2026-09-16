@@ -28,6 +28,9 @@ local function fixture()
   local f = { connected = 0, closed = 0, listed = 0, results = {} }
   local read, connect, list = RunClient.read_operator_capability, RunClient.connect, Service.list
   local owner = Recovery.new({
+    enabled = true,
+    attention = true,
+    beads = true,
     load_session = function() end,
     find_run = function() end,
     is_live = function()
@@ -72,6 +75,48 @@ local function fixture()
     f.results[#f.results + 1] = { runs = runs, error = err }
   end
   return f
+end
+
+T["requires explicit composite opt-ins before any recovery I/O"] = function()
+  for _, options in ipairs({ {}, { enabled = true }, { enabled = true, attention = true } }) do
+    local owner = Recovery.new(options)
+    local started, err = owner:list(function()
+      error("disabled recovery must not call its completion")
+    end)
+    MiniTest.expect.equality(started, false)
+    MiniTest.expect.equality(assert(err):find("enabled = true", 1, true) ~= nil, true)
+    local session = {
+      inspect = function()
+        error("prerequisites must be checked before examining a Session")
+      end,
+    }
+    local parked, park_error = owner:park(session, function() end)
+    MiniTest.expect.equality(parked, false)
+    MiniTest.expect.equality(park_error, err)
+    owner:dispose()
+  end
+end
+
+T["checks Agent resume capability and history before service admission"] = function()
+  for _, case in ipairs({
+    { load = false, turns = 1, message = "supports session/load" },
+    { load = true, turns = 0, message = "sent at least one prompt" },
+  }) do
+    local options = { enabled = true, attention = true, beads = true }
+    local owner = Recovery.new(options)
+    local session = {
+      client = { agent_capabilities = { loadSession = case.load } },
+      inspect = function()
+        return { agent = "agent", acp_session_id = "acp", working_dir = "/tmp", current_turn = case.turns }
+      end,
+    }
+    local started, err = owner:park(session, function()
+      error("ineligible Sessions must fail before asynchronous effects")
+    end)
+    MiniTest.expect.equality(started, false)
+    MiniTest.expect.equality(assert(err):find(case.message, 1, true) ~= nil, true)
+    owner:dispose()
+  end
 end
 
 T["shares initialization and releases its connected client"] = function()
@@ -233,8 +278,9 @@ T["failed asynchronous admission preserves its error and never attaches"] = func
   local admit, attach = Service.admit, Service.attach
   local attached = false
   local session = {
+    client = { agent_capabilities = { loadSession = true } },
     inspect = function()
-      return { agent = "qa", acp_session_id = "admission-failure", working_dir = directory }
+      return { agent = "qa", acp_session_id = "admission-failure", working_dir = directory, current_turn = 1 }
     end,
   }
   rawset(Service, "admit", function(_, callback)
@@ -258,6 +304,10 @@ T["failed asynchronous admission preserves its error and never attaches"] = func
   assert(f.owner:park(session, function(_, err)
     failure = err
   end))
+  deliver(function()
+    f.read("capability")
+    f.snapshot({})
+  end)
   assert(nvim.wait(3000, function()
     return failure ~= nil
   end))

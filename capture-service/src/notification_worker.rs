@@ -94,7 +94,7 @@ mod tests {
                 .unwrap();
             let attention = AttentionStore::new(
                 root.path().join("attention"),
-                crate::RunStore::new(root.path().join("runs")).unwrap(),
+                Some(crate::RunStore::new(root.path().join("runs")).unwrap()),
             )
             .unwrap();
             let before = attention.snapshot().unwrap();

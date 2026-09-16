@@ -6,6 +6,7 @@
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
+local Config = require("louiselm.config")
 
 local M = {}
 
@@ -115,13 +116,21 @@ function M.configure(config)
   end
 
   local skipped = {}
+  local optional = {
+    ["<leader>lI"] = Config.enabled(config, "capture"),
+    ["<leader>lB"] = Config.enabled(config, "beads"),
+    ["<leader>lz"] = Config.enabled(config, "workflows"),
+    ["<leader>lk"] = Config.skills_enabled(config),
+  }
   for _, mapping in ipairs(DEFAULTS) do
-    local current = find_mapping(mapping.mode, mapping.lhs)
-    if current ~= nil then
-      skipped[#skipped + 1] = mapping.lhs
-    else
-      nvim.keymap.set(mapping.mode, mapping.lhs, mapping.rhs, { silent = true, desc = mapping.desc })
-      installed[#installed + 1] = mapping
+    if optional[mapping.lhs] ~= false then
+      local current = find_mapping(mapping.mode, mapping.lhs)
+      if current ~= nil then
+        skipped[#skipped + 1] = mapping.lhs
+      else
+        nvim.keymap.set(mapping.mode, mapping.lhs, mapping.rhs, { silent = true, desc = mapping.desc })
+        installed[#installed + 1] = mapping
+      end
     end
   end
 

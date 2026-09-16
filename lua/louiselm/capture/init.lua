@@ -3,6 +3,7 @@ local nvim = vim
 local Paths = require("louiselm.paths")
 
 ---@class louiselm.capture.Config
+---@field enabled? boolean Explicit desktop capture opt-in; defaults to false.
 ---@field recorder? string[] Recorder argv containing one `{output}` placeholder.
 ---@field service? string[] Capture-service argv prefix.
 
@@ -11,6 +12,8 @@ local Paths = require("louiselm.paths")
 ---@field outcome string Ingestion outcome.
 
 ---@class louiselm.capture.Instance
+---@field private enabled boolean
+---@field private pending integer
 ---@field private recorder string[]
 ---@field private service string[]
 ---@field private recording? table
@@ -106,12 +109,17 @@ end
 ---@return boolean started
 ---@return string? error_message
 function Capture:run_service(arguments, decode_json, callback)
+  if not self.enabled then
+    return false, "capture is disabled; set capture.enabled = true and run :checkhealth louiselm"
+  end
   local command = nvim.deepcopy(self.service)
   for _, argument in ipairs(arguments) do
     command[#command + 1] = argument
   end
+  self.pending = self.pending + 1
   local call_ok, handle_or_error = pcall(nvim.system, command, { text = true }, function(result)
     nvim.schedule(function()
+      self.pending = self.pending - 1
       if result.code ~= 0 then
         complete(callback, nil, process_error(result.stderr))
         return
@@ -129,7 +137,11 @@ function Capture:run_service(arguments, decode_json, callback)
     end)
   end)
   if not call_ok then
+    self.pending = self.pending - 1
     return false, tostring(handle_or_error)
+  end
+  if handle_or_error == nil then
+    self.pending = self.pending - 1
   end
   return handle_or_error ~= nil, handle_or_error == nil and "capture service did not start" or nil
 end
@@ -189,9 +201,12 @@ function M.new(config)
     return nil, "capture configuration must be a table"
   end
   for key in pairs(config) do
-    if key ~= "recorder" and key ~= "service" then
+    if key ~= "enabled" and key ~= "recorder" and key ~= "service" then
       return nil, "unknown capture configuration key: " .. tostring(key)
     end
+  end
+  if config.enabled ~= nil and type(config.enabled) ~= "boolean" then
+    return nil, "capture.enabled must be a boolean"
   end
   local recorder, recorder_error = validate_command(config.recorder or DEFAULT_RECORDER, "capture recorder", true)
   if recorder == nil then
@@ -202,6 +217,8 @@ function M.new(config)
     return nil, service_error
   end
   local capture = setmetatable({
+    enabled = config.enabled == true,
+    pending = 0,
     recorder = nvim.deepcopy(recorder),
     service = nvim.deepcopy(service),
   }, Capture)
@@ -213,6 +230,9 @@ end
 ---@return string? id Capture UUID, or nil when recording cannot start.
 ---@return string? error_message Immediate failure.
 function Capture:start(callback)
+  if not self.enabled then
+    return nil, "capture is disabled; set capture.enabled = true and run :checkhealth louiselm"
+  end
   if self.recording ~= nil then
     return nil, "a capture is already recording"
   end
@@ -284,6 +304,12 @@ end
 ---@return boolean recording
 function Capture:is_recording()
   return self.recording ~= nil
+end
+
+---Whether replacing this owner would abandon recording or pending service work.
+---@return boolean busy Wait for completion before reconfiguration.
+function Capture:is_busy()
+  return self.recording ~= nil or self.pending > 0
 end
 
 ---List durable captures and their transcription state.

@@ -64,6 +64,7 @@ T["recorder"]["records, stops, then ingests only after leaving the fast event"] 
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
     local capture = assert(Capture.new({
+      enabled = true,
       recorder = { "test-recorder", "--output", "{output}" },
       service = { "test-capture-service" },
     }))
@@ -112,7 +113,7 @@ end
 T["recorder"]["reports recorder failure without invoking ingestion"] = function()
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
-    local capture = assert(Capture.new({ recorder = { "bad-recorder", "{output}" } }))
+    local capture = assert(Capture.new({ enabled = true, recorder = { "bad-recorder", "{output}" } }))
     assert(capture:start())
     local completed
     assert(capture:stop(function(result, completion_error)
@@ -134,6 +135,7 @@ T["recorder"]["accepts a stopped recorder with an audio file"] = function()
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
     local capture = assert(Capture.new({
+      enabled = true,
       recorder = { "pw-record", "{output}" },
       service = { "test-capture-service" },
     }))
@@ -169,12 +171,13 @@ T["service"] = MiniTest.new_set()
 T["service"]["decodes capture listings after scheduling"] = function()
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
-    local capture = assert(Capture.new({ service = { "test-capture-service" } }))
+    local capture = assert(Capture.new({ enabled = true, service = { "test-capture-service" } }))
     local listed
 
     assert(capture:list(function(result, list_error)
       listed = { result = result, error_message = list_error }
     end))
+    MiniTest.expect.equality(capture:is_busy(), true)
     runtime.processes[1].callback({
       code = 0,
       signal = 0,
@@ -183,7 +186,9 @@ T["service"]["decodes capture listings after scheduling"] = function()
     })
 
     MiniTest.expect.equality(listed, nil)
+    MiniTest.expect.equality(capture:is_busy(), true)
     runtime.scheduled[1]()
+    MiniTest.expect.equality(capture:is_busy(), false)
     MiniTest.expect.equality(listed.result[1].record.id, "capture-id")
     MiniTest.expect.equality(listed.error_message, nil)
   end)
@@ -192,6 +197,20 @@ T["service"]["decodes capture listings after scheduling"] = function()
 end
 
 T["commands"] = MiniTest.new_set()
+
+T["commands"]["unset or false capture never starts recording or service commands"] = function()
+  for _, config in ipairs({ {}, { enabled = false }, { service = { "installed-service" } } }) do
+    local capture = assert(Capture.new(config))
+    local id, start_error = capture:start()
+    MiniTest.expect.equality(id, nil)
+    MiniTest.expect.equality(assert(start_error):find("capture.enabled = true", 1, true) ~= nil, true)
+    local listed, list_error = capture:list(function()
+      error("disabled capture must not complete an operation")
+    end)
+    MiniTest.expect.equality(listed, false)
+    MiniTest.expect.equality(assert(list_error):find("checkhealth", 1, true) ~= nil, true)
+  end
+end
 
 T["commands"]["register exposes capture workflow commands"] = function()
   assert(CaptureCommand.configure({}))
@@ -210,9 +229,12 @@ end
 T["commands"]["opens inbox when a capture transcript is null"] = function()
   local runtime = fake_runtime()
   local ok, error_message = pcall(function()
-    assert(CaptureCommand.configure({ capture = { service = { "test-capture-service" } } }))
+    assert(CaptureCommand.configure({ capture = { enabled = true, service = { "test-capture-service" } } }))
     assert(CaptureCommand.register())
     nvim.cmd("LouiselmCaptureInbox")
+    local replaced, replace_error = CaptureCommand.configure({ capture = { enabled = false } })
+    MiniTest.expect.equality(replaced, false)
+    MiniTest.expect.equality(assert(replace_error):find("wait for ingestion", 1, true) ~= nil, true)
     runtime.processes[1].callback({
       code = 0,
       signal = 0,
@@ -228,6 +250,7 @@ T["commands"]["opens inbox when a capture transcript is null"] = function()
       stderr = "",
     })
     runtime.scheduled[1]()
+    MiniTest.expect.equality(CaptureCommand.configure({ capture = { enabled = false } }), true)
 
     MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(0, 0, -1, false), {
       "# LouiseLM capture inbox",
@@ -246,7 +269,7 @@ T["commands"]["pairing QR is black on white independently of the colorscheme"] =
   local original_list = nvim.wo.list
   nvim.wo.list = true
   local ok, error_message = pcall(function()
-    assert(CaptureCommand.configure({}))
+    assert(CaptureCommand.configure({ capture = { enabled = true } }))
     assert(CaptureCommand.register())
     nvim.cmd("LouiselmCapturePair")
     MiniTest.expect.equality(runtime.processes[1].command, { "louiselm-capture", "pair" })

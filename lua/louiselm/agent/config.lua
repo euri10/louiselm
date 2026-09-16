@@ -347,7 +347,7 @@ function M.normalize(definitions, default_skills_policy)
   local default_policy, policy_error = Policy.normalize(default_skills_policy)
   if default_policy == nil then
     add_error(errors, "skills.policy", "invalid_value", policy_error or "invalid skills policy")
-    default_policy = "native"
+    default_policy = "off"
   end
   if type(definitions) ~= "table" then
     add_error(

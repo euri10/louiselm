@@ -24,6 +24,9 @@ local nvim = vim
 ---@field skill_catalog? string Hidden catalog held for the first accepted model prompt in a new inject session.
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
+---@field attention? boolean Explicit durable Attention opt-in; defaults to false.
+---@field workflows? boolean Explicit workflow Run opt-in; defaults to false.
+---@field beads? boolean Explicit Beads integration opt-in; defaults to false.
 ---@field markdown_highlighting? boolean Whether chat buffers start Markdown tree-sitter highlighting; defaults to true.
 ---@field start_insert_on_switch? boolean Whether switching to a chat starts Insert mode; defaults to true.
 
@@ -57,7 +60,7 @@ local nvim = vim
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field markdown_highlighting boolean Whether chat buffers start Markdown tree-sitter highlighting.
 ---@field start_insert_on_switch boolean Whether switching to a chat starts Insert mode.
----@field attention louiselm.ui.Attention Shared durable Attention controller.
+---@field attention? louiselm.ui.Attention Shared durable Attention controller when enabled.
 ---@field decisions louiselm.ui.Decisions Permission presentation and responder lifecycle.
 ---@field usage louiselm.routing.Usage Persistent measured usage ledger.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
@@ -677,7 +680,7 @@ local function submit_prompt(self, view, text)
     notify_prompt_error(message)
     return nil, message
   end
-  if state.acp_session_id ~= nil then
+  if self.attention ~= nil and state.acp_session_id ~= nil then
     self.attention:prompt_started(state.acp_session_id)
   end
   view.transcript:record_user(text)
@@ -1035,7 +1038,7 @@ local function handle_event(self, view, event, completed_state)
     view.renderer:header(view.session:inspect())
     render_winbars(self)
   end
-  if event.type == "state_changed" then
+  if self.attention ~= nil and event.type == "state_changed" then
     if event.data.status == "prompting" and view.session:inspect().acp_session_id ~= nil then
       self.attention:prompt_started(view.session:inspect().acp_session_id)
     elseif event.data.status == "disposed" then
@@ -1090,11 +1093,13 @@ local function handle_event(self, view, event, completed_state)
     view.renderer:error(message)
     local state = view.session:inspect()
     local run = view.session.owner_run
-    self.attention:session_failed(state, run and run.id or nil)
+    if self.attention ~= nil then
+      self.attention:session_failed(state, run and run.id or nil)
+    end
   elseif event.type == "permission_requested" then
     local data = event.data
     local state = view.session:inspect()
-    if type(data) == "table" then
+    if self.attention ~= nil and type(data) == "table" then
       self.attention:permission_required(state, data)
     end
     if type(data) == "table" and type(data.permission_error) == "string" then
@@ -1105,14 +1110,16 @@ local function handle_event(self, view, event, completed_state)
     self.decisions:request(view.session, data, event.respond)
   elseif event.type == "permission_cancelled" then
     local state = view.session:inspect()
-    if state.acp_session_id ~= nil and type(event.data) == "table" then
+    if self.attention ~= nil and state.acp_session_id ~= nil and type(event.data) == "table" then
       self.attention:permission_cancelled(state.acp_session_id, event.data.request_ids)
     end
     self.decisions:cancel(view.session, type(event.data) == "table" and event.data.request_ids or nil)
   elseif event.type == "turn_done" then
     view.renderer:finish_turn()
     local state = completed_state or view.session:inspect()
-    self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.renderer.buffer)
+    if self.attention ~= nil then
+      self.attention:turn_done(state, nvim.api.nvim_get_current_buf() == view.renderer.buffer)
+    end
     local line = usage_line(state.usage)
     if line ~= nil then
       view.renderer:usage(line)
@@ -1164,7 +1171,9 @@ end
 ---@param self louiselm.ui.Chat
 ---@param presentation louiselm.workflow.ParkPresentation
 local function present_park(self, presentation)
-  self.attention:run_parked(presentation.id)
+  if self.attention ~= nil then
+    self.attention:run_parked(presentation.id)
+  end
   nvim.notify(
     string.format(
       "louiselm: budget Park: generated work %d/%d, reserved %d, pending %d, mutation %s",
@@ -1256,11 +1265,22 @@ function M.new(api, options)
         and key ~= "skill_catalog"
         and key ~= "instructions_context"
         and key ~= "workflow"
+        and key ~= "attention"
+        and key ~= "workflows"
+        and key ~= "beads"
         and key ~= "markdown_highlighting"
         and key ~= "start_insert_on_switch"
       then
         return nil, "unknown chat option '" .. tostring(key) .. "'"
       end
+    end
+  end
+  if options ~= nil and options.attention ~= nil and type(options.attention) ~= "boolean" then
+    return nil, "chat attention must be a boolean"
+  end
+  for _, key in ipairs({ "workflows", "beads" }) do
+    if options ~= nil and options[key] ~= nil and type(options[key]) ~= "boolean" then
+      return nil, "chat " .. key .. " must be a boolean"
     end
   end
   local agents, agents_error = copy_string_array(options and options.agents, "agents")
@@ -1313,7 +1333,7 @@ function M.new(api, options)
     markdown_highlighting = markdown_highlighting,
     start_insert_on_switch = start_insert_on_switch,
     workflow = options and options.workflow,
-    attention = Attention.new(),
+    attention = options and options.attention == true and Attention.new() or nil,
     usage = usage,
     views = {},
     view_order = {},
@@ -1358,6 +1378,9 @@ function M.new(api, options)
     end,
   })
   chat.recovery = Recovery.new({
+    enabled = options and options.workflows == true,
+    attention = options and options.attention == true,
+    beads = options and options.beads == true,
     load_session = function(agent, acp_session_id, load_options, callback)
       return api:load_session(agent, acp_session_id, load_options, callback)
     end,
@@ -1396,7 +1419,7 @@ function M.new(api, options)
     end,
     resolved = function(session, request_id)
       local state = session:inspect()
-      if state.acp_session_id ~= nil then
+      if chat.attention ~= nil and state.acp_session_id ~= nil then
         chat.attention:permission_resolved(state.acp_session_id, request_id)
       end
     end,
@@ -1430,7 +1453,7 @@ local function enter_view(self, view)
   if self.overview ~= nil and self.overview.session_id ~= state.id then
     require("louiselm.ui.session_overview").close(self)
   end
-  if state.acp_session_id ~= nil then
+  if self.attention ~= nil and state.acp_session_id ~= nil then
     self.attention:seen(state.acp_session_id)
   end
 end
@@ -1689,6 +1712,9 @@ function Chat:park()
   if self.disposed then
     return false, "chat UI is disposed"
   end
+  if self.recovery.prerequisite_error ~= nil then
+    return false, self.recovery.prerequisite_error
+  end
   local view = self.current_id and self.views[self.current_id]
   if view == nil then
     return false, "no chat session is attached"
@@ -1711,7 +1737,9 @@ function Chat:park()
         nvim.notify("louiselm: " .. (error_message or "could not cold-Park Session"), nvim.log.levels.ERROR)
         return
       end
-      self.attention:run_parked(run_id)
+      if self.attention ~= nil then
+        self.attention:run_parked(run_id)
+      end
       nvim.notify("louiselm: Session cold-Parked", nvim.log.levels.INFO)
     end)
     if not started then
@@ -2004,7 +2032,7 @@ local function close_view(self, view)
     require("louiselm.ui.session_overview").close(self)
   end
   local state = view.session:inspect()
-  if state.acp_session_id ~= nil then
+  if self.attention ~= nil and state.acp_session_id ~= nil then
     self.attention:session_disposed(state.acp_session_id)
   end
   restore_winbars(self)
@@ -2295,7 +2323,8 @@ function Chat:pick_skill()
   end
   local state = view.session:inspect()
   if state.skills_policy == "off" then
-    return false, "skill picker is disabled for this session"
+    return false,
+      "skill picker is disabled; set skills.policy or the Agent's skills.policy before creating a Session; run :checkhealth louiselm"
   end
   local skills = self.skills
   if #self.skill_paths > 0 then
@@ -2567,7 +2596,9 @@ function Chat:resume_park()
           nvim.notify("louiselm: " .. (attach_error or "could not attach loaded session"), nvim.log.levels.ERROR)
           return
         end
-        self.attention:run_resumed(selected.id)
+        if self.attention ~= nil then
+          self.attention:run_resumed(selected.id)
+        end
         nvim.notify("louiselm: cold Park resumed (recoverable, lossy)", nvim.log.levels.INFO)
       end)
       if not started then
@@ -2603,7 +2634,9 @@ function Chat:dispose()
     nvim.api.nvim_del_autocmd(self.winbar_resize_autocmd)
     self.winbar_resize_autocmd = nil
   end
-  self.attention:dispose()
+  if self.attention ~= nil then
+    self.attention:dispose()
+  end
   self.recovery:dispose()
   self.limits_unsubscribe()
   for agent_name in pairs(self.limits_timers) do

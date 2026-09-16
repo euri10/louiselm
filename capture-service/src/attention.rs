@@ -237,16 +237,17 @@ struct PersistedAttention {
 #[derive(Clone, Debug)]
 pub struct AttentionStore {
     root: PathBuf,
-    runs: RunStore,
+    runs: Option<RunStore>,
 }
 
 impl AttentionStore {
-    /// Open or initialize Attention with its authoritative local Run store.
+    /// Open or initialize Attention, optionally reconciling local Run conditions.
+    /// Without Run support, retain Run alerts rather than inferring resolution.
     ///
     /// # Errors
     ///
     /// Returns filesystem or malformed-state errors.
-    pub fn new(root: impl AsRef<Path>, runs: RunStore) -> Result<Self, AttentionError> {
+    pub fn new(root: impl AsRef<Path>, runs: Option<RunStore>) -> Result<Self, AttentionError> {
         fs::create_dir_all(root.as_ref())?;
         set_private_permissions(root.as_ref(), true)?;
         let store = Self {

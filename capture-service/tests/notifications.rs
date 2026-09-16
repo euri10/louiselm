@@ -36,7 +36,7 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
         Store::new(root.path().join("captures")).unwrap(),
         AttentionStore::new(
             root.path().join("attention"),
-            louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+            Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
         )
         .unwrap(),
         registry.clone(),

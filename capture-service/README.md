@@ -4,6 +4,43 @@
 transcription state, pairing credentials, and the authenticated Android upload
 boundary. It deliberately does not interpret or delete ideas.
 
+## Explicit capability selection
+
+`serve` starts only capabilities explicitly set to `true` in its environment.
+Configure the installed user service through `~/.config/louiselm/capture.env`:
+
+```sh
+LOUISELM_ATTENTION_ENABLED=true
+LOUISELM_RUNS_ENABLED=false
+LOUISELM_RECEIVER_ENABLED=false
+LOUISELM_TRANSCRIPTION_ENABLED=false
+LOUISELM_PUSH_ENABLED=false
+```
+
+This Attention-only example creates its local store and authenticated socket,
+without recording storage, Run storage, TLS, pairing, transcription or push.
+All five choices default to false. With none enabled, `serve` refuses startup
+before creating state. An installed tool, network profile or credential never
+enables a capability. Invalid switch values are errors.
+
+Enable Runs separately and set `LOUISELM_BEADS_WORKSPACE` and the absolute
+`LOUISELM_REAL_BR` executable for retained-claim cleanup. Disabling Run support
+while undisposed Runs remain is refused; settle those Runs first. Toggles never
+delete durable records or pairing state.
+
+Enable the receiver separately before the phone setup below. Transcription
+requires its own opt-in and `OPENAI_API_KEY`; it sends pending audio to the
+OpenAI API. Push requires its own opt-in, Attention, and
+`GOOGLE_APPLICATION_CREDENTIALS`; pairing credentials alone never authorize
+outbound delivery. Explicit one-shot CLI commands such as `transcribe-once`
+remain deliberate operator actions.
+
+Install or update the binary manually using `scripts/install-capture-service`
+from the checkout, inspect the example environment file, then start or restart
+the service at a safe boundary. Plugin setup and health never run the installer
+or restart the service. Editor choices (`attention.enabled`, `capture.enabled`,
+`workflows.enabled`) enable client integrations and cannot control a shared daemon.
+
 ## Commands
 
 ```text
@@ -23,7 +60,8 @@ attention list
 attention status
 ```
 
-The default user service binds TLS on `127.0.0.1:7391` and `pair` refuses while
+When explicitly enabled, the receiver binds TLS on `127.0.0.1:7391` unless
+configured otherwise, and `pair` refuses while
 that safe, phone-unreachable default is active. Configure exactly one private
 profile, then restart the service and pair:
 
@@ -108,7 +146,8 @@ appends `louiselm/...`.
 
 ## Transcription
 
-Set `OPENAI_API_KEY` to enable the background worker and optionally set
+Set `LOUISELM_TRANSCRIPTION_ENABLED=true` and supply `OPENAI_API_KEY` to enable
+the background worker, and optionally set
 `LOUISELM_TRANSCRIPTION_MODEL` (default `gpt-4o-transcribe`). Transient network,
 rate-limit, and server failures use durable exponential backoff. Authentication,
 configuration, and rejected-input failures stop until `retry CAPTURE_UUID`.
@@ -119,12 +158,14 @@ No API key is required for recording, pairing, upload, listing, or retention.
 
 ## Durable workflow Parks
 
-The service also owns cold-Parked workflow records. Configure the Beads
-workspace in `~/.config/louiselm/capture.env` so the background reaper can
-release expired claims:
+When Run support is enabled, the service owns cold-Parked workflow records.
+Configure its cleanup prerequisites in `~/.config/louiselm/capture.env` so the
+background reaper can release expired claims:
 
 ```text
+LOUISELM_RUNS_ENABLED=true
 LOUISELM_BEADS_WORKSPACE=/absolute/path/to/louiselm
+LOUISELM_REAL_BR=/absolute/path/to/br
 ```
 
 The systemd unit grants write access to that workspace's `.beads` directory;
@@ -172,9 +213,10 @@ and authentication details are in `docs/broker-lifecycle.md`.
 
 ## Optional Android push
 
-`serve` submits eligible Attention generations independently to every active
+With push explicitly enabled, `serve` submits eligible Attention generations to every active
 paired device with a registered FCM token. The inbox remains available without
-push configuration. Enable the sender by setting `GOOGLE_APPLICATION_CREDENTIALS`
+push configuration. Enable the sender with `LOUISELM_PUSH_ENABLED=true` and
+`LOUISELM_ATTENTION_ENABLED=true`, and set `GOOGLE_APPLICATION_CREDENTIALS`
 in the service's `capture.env` to an external Google **service-account JSON key
 file**, then restart the service. On Unix, the key file must be owner-only
 (`0600`); its parent directory should also be private. The sender uses that

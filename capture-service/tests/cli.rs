@@ -6,12 +6,54 @@
     reason = "Test fixtures abort on setup failure and assert failures directly."
 )]
 
-use std::{fs, process::Command};
+use std::{
+    fs,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use louiselm_capture::PairingRegistry;
+
+#[test]
+fn serve_requires_explicit_capabilities_before_creating_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let state = root.path().join("state");
+    let mut child = command(&data, &state)
+        .arg("serve")
+        .env("OPENAI_API_KEY", "unused-test-credential")
+        .env(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            root.path().join("absent.json"),
+        )
+        .env("LOUISELM_ATTENTION_ENABLED", "false")
+        .env("LOUISELM_RUNS_ENABLED", "false")
+        .env("LOUISELM_RECEIVER_ENABLED", "false")
+        .env("LOUISELM_TRANSCRIPTION_ENABLED", "false")
+        .env("LOUISELM_PUSH_ENABLED", "false")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("disabled service started instead of refusing startup");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no capabilities enabled"));
+    assert!(!data.exists());
+    assert!(!state.exists());
+}
 
 #[cfg(unix)]
 #[test]

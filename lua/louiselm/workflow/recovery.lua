@@ -4,6 +4,7 @@ local ParkObserver = require("louiselm.workflow.park_observer")
 local ResumeController = require("louiselm.workflow.resume_controller")
 local RunClient = require("louiselm.workflow.run_client")
 local WorkflowService = require("louiselm.workflow.service")
+local Run = require("louiselm.workflow.run")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -13,6 +14,9 @@ local nvim = vim
 ---@field deliver? fun(event: louiselm.session.Event) Event ingress of the attached consumer.
 
 ---@class louiselm.workflow.RecoveryOptions
+---@field enabled? boolean Explicit workflows.enabled choice; defaults to false.
+---@field attention? boolean Explicit attention.enabled prerequisite; defaults to false.
+---@field beads? boolean Explicit beads.enabled prerequisite; defaults to false.
 ---@field load_session fun(agent: string, acp_session_id: string, options: louiselm.session.Options, callback: fun(session: louiselm.session.Session?, error_message?: string)): louiselm.session.Session?, string?
 ---@field find_run fun(id: string): louiselm.workflow.Run?
 ---@field is_live fun(session: louiselm.session.Session): boolean
@@ -36,6 +40,7 @@ local nvim = vim
 ---@field pending_resume_sessions table<string, louiselm.session.Session>
 ---@field pending_resume_relays table<string, louiselm.workflow.EventRelay>
 ---@field disposed boolean
+---@field prerequisite_error? string Fixed configuration failure preventing new operations.
 local Recovery = {}
 Recovery.__index = Recovery
 local M = {}
@@ -44,8 +49,18 @@ local M = {}
 ---@param options louiselm.workflow.RecoveryOptions
 ---@return louiselm.workflow.Recovery recovery
 function M.new(options)
+  local prerequisite_error
+  for _, choice in ipairs({ { "enabled", "workflows" }, { "attention", "attention" }, { "beads", "beads" } }) do
+    if options[choice[1]] ~= true then
+      prerequisite_error = "Run recovery is disabled; set "
+        .. choice[2]
+        .. ".enabled = true and run :checkhealth louiselm"
+      break
+    end
+  end
   return setmetatable({
     options = options,
+    prerequisite_error = prerequisite_error,
     resume_initializing = false,
     resume_waiters = {},
     resume_revisions = {},
@@ -364,6 +379,9 @@ function Recovery:list(callback)
   if self.disposed then
     return false, "Run recovery is disposed"
   end
+  if self.prerequisite_error ~= nil then
+    return false, self.prerequisite_error
+  end
   return ensure_resume_controller(self, function(controller, error_message)
     if self.disposed then
       return
@@ -392,6 +410,9 @@ end
 function Recovery:resume(selected, callback)
   if self.disposed then
     return false, "Run recovery is disposed"
+  end
+  if self.prerequisite_error ~= nil then
+    return false, self.prerequisite_error
   end
   local controller = self.resume_controller
   if controller == nil then
@@ -452,78 +473,97 @@ function Recovery:park(session, callback)
   if self.disposed then
     return false, "Run recovery is disposed"
   end
+  if self.prerequisite_error ~= nil then
+    return false, self.prerequisite_error
+  end
+  local allowed, prerequisite_error = Run.check_cold_park(session)
+  if not allowed then
+    return false, prerequisite_error
+  end
   local state = session:inspect()
   if state.acp_session_id == nil then
     return false, "current Session has no ACP Session id yet"
   end
   local session_id = state.agent .. "/" .. state.acp_session_id
-  return live_claims(session_id, state.working_dir, function(claims, claim_error)
+  return ensure_resume_controller(self, function(controller, readiness_error)
     if self.disposed or not self.options.is_live(session) then
       return
     end
-    if claim_error ~= nil then
-      callback(nil, claim_error)
+    if controller == nil then
+      callback(nil, readiness_error or "Run service is unavailable")
       return
     end
-    local run = session.owner_run
-    local run_id = run and run.id or park_run_id()
-    if run == nil then
-      local run_error
-      run, run_error = Workflow.new_run({ id = run_id })
-      if run == nil then
-        callback(nil, run_error)
-        return
-      end
-    end
-    local function cold_park()
-      local started, park_error = run:park_cold({ id = run_id, claims = claims }, function(ok, error_message)
-        callback(ok and run_id or nil, error_message)
-      end)
-      if not started then
-        callback(nil, park_error or "could not cold-Park Session")
-      end
-    end
-    if session.owner_run ~= nil then
-      cold_park()
-      return
-    end
-    local admitted, admission_error = WorkflowService.admit({
-      id = run_id,
-      generated_work_max = PARK_GENERATED_WORK_MAX,
-      park_ttl_ms = PARK_TTL_MS,
-    }, function(token, error_message)
+    local started, claims_error = live_claims(session_id, state.working_dir, function(claims, claim_error)
       if self.disposed or not self.options.is_live(session) then
         return
       end
-      if token == nil then
-        callback(nil, error_message or "could not admit Run")
+      if claim_error ~= nil then
+        callback(nil, claim_error)
         return
       end
-      local attached, attach_error = WorkflowService.attach({
-        id = run_id,
-        session_id = session_id,
-        agent = state.agent,
-        acp_session_id = state.acp_session_id,
-        cwd = state.working_dir,
-        load_session = true,
-      }, function(ok, error_message)
-        if not ok then
-          callback(nil, error_message or "could not attach Session to Run")
+      local run = session.owner_run
+      local run_id = run and run.id or park_run_id()
+      if run == nil then
+        local run_error
+        run, run_error = Workflow.new_run({ id = run_id })
+        if run == nil then
+          callback(nil, run_error)
           return
         end
-        local adopted, adopt_error = run:adopt_session(session)
-        if not adopted then
-          callback(nil, adopt_error or "could not attach Session to Run")
-          return
+      end
+      local function cold_park()
+        local started, park_error = run:park_cold({ id = run_id, claims = claims }, function(ok, error_message)
+          callback(ok and run_id or nil, error_message)
+        end)
+        if not started then
+          callback(nil, park_error or "could not cold-Park Session")
         end
+      end
+      if session.owner_run ~= nil then
         cold_park()
+        return
+      end
+      local admitted, admission_error = WorkflowService.admit({
+        id = run_id,
+        generated_work_max = PARK_GENERATED_WORK_MAX,
+        park_ttl_ms = PARK_TTL_MS,
+      }, function(token, error_message)
+        if self.disposed or not self.options.is_live(session) then
+          return
+        end
+        if token == nil then
+          callback(nil, error_message or "could not admit Run")
+          return
+        end
+        local attached, attach_error = WorkflowService.attach({
+          id = run_id,
+          session_id = session_id,
+          agent = state.agent,
+          acp_session_id = state.acp_session_id,
+          cwd = state.working_dir,
+          load_session = true,
+        }, function(ok, error_message)
+          if not ok then
+            callback(nil, error_message or "could not attach Session to Run")
+            return
+          end
+          local adopted, adopt_error = run:adopt_session(session)
+          if not adopted then
+            callback(nil, adopt_error or "could not attach Session to Run")
+            return
+          end
+          cold_park()
+        end)
+        if not attached then
+          callback(nil, attach_error or "could not attach Session to Run")
+        end
       end)
-      if not attached then
-        callback(nil, attach_error or "could not attach Session to Run")
+      if not admitted then
+        callback(nil, admission_error or "could not admit Run")
       end
     end)
-    if not admitted then
-      callback(nil, admission_error or "could not admit Run")
+    if not started then
+      callback(nil, claims_error)
     end
   end)
 end

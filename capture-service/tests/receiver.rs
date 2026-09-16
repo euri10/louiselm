@@ -285,7 +285,7 @@ async fn authenticated_attention_snapshot_is_read_only_and_revocable() {
     let store = Store::new(temporary.path().join("captures")).expect("store");
     let attention = AttentionStore::new(
         temporary.path().join("attention"),
-        louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(temporary.path().join("runs")).unwrap()),
     )
     .expect("attention");
     attention

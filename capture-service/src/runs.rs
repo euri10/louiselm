@@ -345,6 +345,17 @@ pub struct RunStore {
 }
 
 impl RunStore {
+    /// Inspect retained obligations without initializing or changing storage.
+    pub(crate) fn has_pending(root: &Path) -> Result<bool, RunStoreError> {
+        if !root.try_exists()? {
+            return Ok(false);
+        }
+        let store = Self {
+            root: root.to_path_buf(),
+        };
+        Ok(store.snapshot()?.iter().any(|run| run.state != "disposed"))
+    }
+
     /// Open or create the Run-record root.
     ///
     /// # Errors

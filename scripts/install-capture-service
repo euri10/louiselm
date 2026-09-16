@@ -17,6 +17,8 @@ if [ ! -e "$config_root/louiselm/capture.env" ]; then
 fi
 
 systemctl --user daemon-reload
-systemctl --user enable louiselm-capture.service
-systemctl --user restart louiselm-capture.service
-systemctl --user --no-pager status louiselm-capture.service
+printf '%s\n' 'Installed LouiseLM capture service.' \
+    "Choose explicit capabilities in $config_root/louiselm/capture.env (see capture-service/README.md)." \
+    'After retained Runs and active recordings are safe, start it manually:' \
+    '  systemctl --user enable --now louiselm-capture.service' \
+    'For an already-running service, restart manually at the same safe boundary.'

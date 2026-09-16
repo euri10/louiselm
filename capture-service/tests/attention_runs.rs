@@ -79,7 +79,7 @@ fn resumed_park_is_cleared_after_restart_without_clearing_broker_or_session_item
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     let attention = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     park(&runs, u64::MAX - 200);
@@ -121,7 +121,7 @@ fn resumed_park_is_cleared_after_restart_without_clearing_broker_or_session_item
 
     let restarted = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     let current = restarted.snapshot().unwrap();
@@ -152,7 +152,7 @@ fn expired_disposal_clears_park_and_rejects_late_delivery_callbacks() {
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     let attention = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     park(&runs, u64::MAX - 200);
@@ -177,7 +177,7 @@ fn missing_local_run_does_not_resolve_an_unknown_park_condition() {
     let root = tempfile::tempdir().unwrap();
     let attention = AttentionStore::new(
         root.path().join("attention"),
-        louiselm_capture::RunStore::new(root.path().join("runs")).unwrap(),
+        Some(louiselm_capture::RunStore::new(root.path().join("runs")).unwrap()),
     )
     .unwrap();
     attention.upsert(park_alert()).unwrap();
@@ -190,7 +190,7 @@ fn expired_park_is_not_deliverable_while_cleanup_is_still_pending() {
     let root = tempfile::tempdir().unwrap();
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     park(&runs, 1);
-    let attention = AttentionStore::new(root.path().join("attention"), runs.clone()).unwrap();
+    let attention = AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
     assert!(attention.upsert(park_alert()).unwrap().items.is_empty());
     assert_eq!(runs.view(RUN).unwrap().state, "cold_parked");
     assert_eq!(attention.snapshot().unwrap().generation, 0);
@@ -201,7 +201,7 @@ fn failed_resume_can_publish_a_new_valid_park_with_normal_eligibility() {
     let root = tempfile::tempdir().unwrap();
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     park(&runs, u64::MAX - 200);
-    let attention = AttentionStore::new(root.path().join("attention"), runs.clone()).unwrap();
+    let attention = AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
     attention.upsert(park_alert()).unwrap();
     attention.set_eligible(&park_key(), true).unwrap();
     runs.begin_resume(
@@ -234,7 +234,7 @@ fn invalid_run_state_returns_an_error_without_erasing_attention() {
     let root = tempfile::tempdir().unwrap();
     let runs = RunStore::new(root.path().join("runs")).unwrap();
     park(&runs, u64::MAX - 200);
-    let attention = AttentionStore::new(root.path().join("attention"), runs.clone()).unwrap();
+    let attention = AttentionStore::new(root.path().join("attention"), Some(runs.clone())).unwrap();
     attention.upsert(park_alert()).unwrap();
     let stored = root.path().join("attention/attention.json");
     let before = std::fs::read(&stored).unwrap();
@@ -261,7 +261,7 @@ async fn blocked_attention_read_does_not_block_the_socket_executor() {
 
     let root = tempfile::tempdir().unwrap();
     let runs = RunStore::new(root.path().join("runs")).unwrap();
-    let attention = AttentionStore::new(root.path().join("attention"), runs).unwrap();
+    let attention = AttentionStore::new(root.path().join("attention"), Some(runs)).unwrap();
     let socket_path = root.path().join("attention.sock");
     let socket = AttentionSocket::bind(&socket_path, root.path().join("capability"), attention)
         .await

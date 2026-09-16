@@ -10,6 +10,7 @@ local Agent = require("louiselm.agent")
 local Schema = require("louiselm.schema")
 local Skills = require("louiselm.skills")
 local Preflight = require("louiselm.preflight")
+local Config = require("louiselm.config")
 
 local M = {}
 local configuration ---@type louiselm.health.Configuration?
@@ -217,7 +218,9 @@ local function check_skills(config)
     end
   end
   if not local_enabled then
-    nvim().health.info("LouiseLM-managed local skills are disabled")
+    nvim().health.info(
+      "Local skill invocation is disabled; set skills.policy = 'native' or 'inject', or agents.<name>.skills.policy. Configure skills.paths; local discovery needs lyaml. See :help louiselm-config-skills."
+    )
     return
   end
 
@@ -237,14 +240,14 @@ local function check_skills(config)
     if error_item.severity == "warning" then
       nvim().health.warn(message)
     else
-      report(message, false)
+      nvim().health.warn(message)
     end
   end
   report(string.format("discovered %d skill%s", #skills, #skills == 1 and "" or "s"), true)
   if inject_enabled then
     local catalog, catalog_error = Skills.inject(skills)
     if catalog == nil then
-      report("injected skill catalog: " .. (catalog_error or "could not build catalog"), false)
+      nvim().health.warn("injected skill catalog: " .. (catalog_error or "could not build catalog"))
       return
     end
     nvim().health.info(string.format("injected skill catalog: %d/8000 bytes", #catalog.text))
@@ -259,6 +262,12 @@ end
 
 ---@param config louiselm.health.Configuration
 local function check_capture(config)
+  if not Config.enabled(config.config, "capture") then
+    nvim().health.info(
+      "Desktop capture is disabled; set capture.enabled = true. Requires a recorder and louiselm-capture; see :help louiselm-config-capture. Audio is stored locally; receiver, transcription and push are separate service opt-ins."
+    )
+    return
+  end
   local capture = type(config.config) == "table" and config.config.capture or nil
   capture = type(capture) == "table" and capture or {}
   local commands = {
@@ -269,8 +278,100 @@ local function check_capture(config)
     if nvim().fn.executable(item.command) == 1 then
       report(item.label .. " is executable: " .. item.command, true)
     else
-      report(item.label .. " is not executable: " .. item.command, false)
+      nvim().health.warn(
+        item.label
+          .. " is not executable: "
+          .. item.command
+          .. "; install it manually, then rerun :checkhealth louiselm (:help louiselm-config-capture)"
+      )
     end
+  end
+end
+
+local function check_optional(config)
+  local health = nvim().health
+  if Config.enabled(config.config, "beads") then
+    if nvim().fn.executable("br") == 1 then
+      local editor = nvim()
+      local workspace = editor.fs.find(".beads", { path = editor.fn.getcwd(), upward = true, type = "directory" })[1]
+      if workspace == nil then
+        health.warn(
+          "Beads inspection is blocked here: select an existing .beads workspace; never initialized automatically"
+        )
+      else
+        health.ok("Beads inspection: br is executable and an existing workspace is available")
+      end
+    else
+      health.warn("Beads inspection is blocked: install br manually, then rerun :checkhealth louiselm")
+    end
+    health.info(
+      "bvr is needed only for Beads Provenance correlations; basic inspection needs only br. See :help louiselm-config-beads."
+    )
+  else
+    health.info(
+      "Beads inspection is disabled; set beads.enabled = true. Requires br and an existing .beads workspace; see :help louiselm-config-beads."
+    )
+  end
+  for _, feature in ipairs({ "attention", "workflows" }) do
+    if not Config.enabled(config.config, feature) then
+      health.info(
+        feature
+          .. " is disabled; set "
+          .. feature
+          .. ".enabled = true. Requires the corresponding local service capability; see :help louiselm-optional-capabilities."
+      )
+    else
+      health.info(
+        feature
+          .. " is enabled in the editor. Configure the service separately; this setting cannot start or reconfigure a shared daemon. See :help louiselm-optional-capabilities."
+      )
+      local editor = nvim()
+      local root = editor.env.LOUISELM_CAPTURE_STATE_DIR
+      if root == nil or root == "" then
+        root = editor.env.XDG_STATE_HOME
+      end
+      if root == nil or root == "" then
+        root = editor.fs.joinpath(editor.fn.expand("~"), ".local", "state")
+      end
+      local socket = feature == "attention" and "attention.sock" or "run.sock"
+      local path = editor.fs.joinpath(root, "louiselm", "workflow", socket)
+      local stat = editor.uv.fs_stat(path)
+      if stat == nil or stat.type ~= "socket" then
+        health.warn(
+          feature
+            .. " is blocked: no service socket at "
+            .. path
+            .. "; enable the service capability and start it manually"
+        )
+      else
+        health.info(feature .. " service socket exists; authentication and operation readiness are checked on use")
+      end
+      if feature == "workflows" then
+        for _, prerequisite in ipairs({ "attention", "beads" }) do
+          if not Config.enabled(config.config, prerequisite) then
+            health.warn("Cold Park is blocked: set " .. prerequisite .. ".enabled = true explicitly")
+          end
+        end
+      end
+    end
+  end
+  local value = type(config.config) == "table" and config.config.skills or nil
+  local management = type(value) == "table" and value.management or nil
+  if type(management) ~= "table" or management.enabled ~= true then
+    health.info(
+      "Trusted skill management is disabled; set skills.management.enabled = true. Requires louiselm-skills for :LouiselmPreflight; see :help louiselm-optional-capabilities. Installation does not grant Skill Admission or Verified posture."
+    )
+  elseif nvim().fn.executable("louiselm-skills") ~= 1 then
+    health.warn(
+      "Trusted skill management is blocked: install louiselm-skills manually; see skills-core/README.md, then rerun :checkhealth louiselm"
+    )
+  else
+    health.ok(
+      "Trusted skill management: louiselm-skills is executable; :LouiselmPreflight inspects explicitly selected artifacts"
+    )
+    health.info(
+      "Packaging and Skill Admission remain explicit louiselm-skills CLI operations; no editor approval or verified-launch integration is implied. See skills-core/README.md."
+    )
   end
 end
 
@@ -284,7 +385,7 @@ function M.configure(config, schema)
     return false, "health configuration requires a normalized schema"
   end
   M.reset()
-  configuration = { config = config, schema = schema }
+  configuration = { config = nvim().deepcopy(config), schema = schema }
   return true
 end
 
@@ -314,6 +415,12 @@ function M.preview(options, callback)
   local owner = configuration
   if owner == nil then
     return false, "configure LouiseLM before selecting a preflight snapshot"
+  end
+  local config = type(owner.config) == "table" and owner.config or {}
+  local management = config.skills and config.skills.management
+  if management == nil or management.enabled ~= true then
+    return false,
+      "trusted skill management is disabled; set skills.management.enabled = true and run :checkhealth louiselm"
   end
   if type(callback) ~= "function" then
     return false, "preflight requires a completion callback"
@@ -393,6 +500,7 @@ function M.check()
   check_agents(configuration)
   check_skills(configuration)
   check_capture(configuration)
+  check_optional(configuration)
   report(
     "turn recording requires sqlite3 >= 3.38 with JSON support on PATH (features verified at each write)",
     nvim().fn.executable("sqlite3") == 1
@@ -403,13 +511,18 @@ function M.check()
   if configuration.preflight_handle ~= nil then
     health.info("Prospective artifact preflight is pending; no selected snapshot is available yet")
   elseif configuration.preflight_error ~= nil then
-    health.error(configuration.preflight_error)
+    health.warn(configuration.preflight_error)
   elseif configuration.preflight_items ~= nil then
     health.info("Selected prospective snapshot, not live state; refresh with :LouiselmPreflight before relying on it")
     for _, item in ipairs(configuration.preflight_items) do
-      health[item.level](item.message)
+      health[item.level == "error" and "warn" or item.level](item.message)
     end
-  else
+  elseif
+    type(configuration.config) == "table"
+    and configuration.config.skills ~= nil
+    and configuration.config.skills.management ~= nil
+    and configuration.config.skills.management.enabled == true
+  then
     health.info("No prospective snapshot selected; use :LouiselmPreflight with explicit request and manifest files")
   end
   return true

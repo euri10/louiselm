@@ -14,7 +14,7 @@ local policies = {
 ---@return string? error_message Specific validation failure.
 function M.normalize(value)
   if value == nil then
-    return "native"
+    return "off"
   end
   if type(value) ~= "string" or not policies[value] then
     return nil, "skills policy must be one of: inject, native, off"

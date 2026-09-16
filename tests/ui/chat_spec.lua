@@ -285,6 +285,16 @@ T["chat"]["schedules recording failures and ignores queued notices after Disposa
   MiniTest.expect.equality(chat.disposed, true)
 end
 
+T["chat"]["leaves durable Attention unconstructed unless explicitly enabled"] = function()
+  for _, options in ipairs({ {}, { attention = false }, { attention = true } }) do
+    local chat = assert(Chat.new(fake_api(), options))
+    MiniTest.finally(function()
+      chat:dispose()
+    end)
+    MiniTest.expect.equality(chat.attention ~= nil, options.attention == true)
+  end
+end
+
 T["chat"]["can attach without starting Markdown tree-sitter"] = function()
   local started = false
   nvim.treesitter.start = function()
@@ -307,7 +317,13 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   -- Agent has nothing durable to `session/load` back before that.
   session.state.current_turn = 1
   session.client = { agent_capabilities = { loadSession = true } }
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  -- This fixture starts after the authenticated Run service readiness handshake.
+  rawset(chat.recovery, "resume_controller", {
+    dispose = function()
+      return true
+    end,
+  })
   assert(chat:attach(session))
 
   local original_system = nvim.system
@@ -353,18 +369,20 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   MiniTest.expect.equality(session.owner_run.status, "parked")
 end
 
-T["chat"]["reuses the admitted Run id after a cold Park attempt fails validation"] = function()
-  -- Regression for louiselm-psz9: park_cold's own validation (a Session
-  -- that has not sent a prompt yet) can reject the first Park attempt
-  -- after the Run was already admitted and attached. Chat:park had no
-  -- way to recall that admitted id on retry, so it minted a fresh one
-  -- the capture-service had never admitted -- "Run was not found".
+T["chat"]["reuses the admitted Run id after a cold Park write fails"] = function()
+  -- Preserve louiselm-psz9's retry contract after moving Session prerequisite
+  -- validation before admission: a later service failure still retains the Run.
   local session = fake_session("park-session", "codex")
   session.state.acp_session_id = "acp-session"
   session.state.working_dir = "/tmp/project"
-  session.state.current_turn = 0
+  session.state.current_turn = 1
   session.client = { agent_capabilities = { loadSession = true } }
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  rawset(chat.recovery, "resume_controller", {
+    dispose = function()
+      return true
+    end,
+  })
   assert(chat:attach(session))
 
   local original_system = nvim.system
@@ -373,6 +391,7 @@ T["chat"]["reuses the admitted Run id after a cold Park attempt fails validation
   local original_park = WorkflowService.park
   local admitted_ids = {}
   local parked_record
+  local park_attempts = 0
   rawset(nvim, "system", function(_, _, callback)
     callback({ code = 0, stderr = "", stdout = '{"issues":[]}' })
     return {}
@@ -387,6 +406,11 @@ T["chat"]["reuses the admitted Run id after a cold Park attempt fails validation
     return true
   end)
   rawset(WorkflowService, "park", function(record, callback)
+    park_attempts = park_attempts + 1
+    if park_attempts == 1 then
+      callback(false, "service write failed")
+      return true
+    end
     parked_record = record
     callback(true)
     return true
@@ -407,7 +431,6 @@ T["chat"]["reuses the admitted Run id after a cold Park attempt fails validation
   MiniTest.expect.equality(session.owner_run ~= nil, true)
   MiniTest.expect.equality(parked_record, nil)
 
-  session.state.current_turn = 1
   assert(chat:park())
   nvim.wait(50, function()
     return parked_record ~= nil
@@ -432,7 +455,7 @@ T["chat"]["reconstructs the Run and preserves replay after cold resume"] = funct
     end
     return session
   end
-  local chat = assert(Chat.new(api))
+  local chat = assert(Chat.new(api, { workflows = true, attention = true, beads = true }))
   local original_list = WorkflowService.list
   local original_read_capability = RunClient.read_operator_capability
   local original_connect = RunClient.connect
@@ -704,7 +727,7 @@ T["chat"]["reconciles service Parks into live Runs and bounded operator state"] 
   end
   local run = assert(Runs.new_run({ id = "11111111-2222-4333-8444-555555555555" }))
   assert(run:adopt_session(session))
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
   assert(chat:attach(session))
 
   local original_list = WorkflowService.list
@@ -785,7 +808,7 @@ T["chat"]["reconciles service Parks into live Runs and bounded operator state"] 
 end
 
 T["chat"]["reports cold Park list errors instead of announcing an empty list"] = function()
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
   local read, connect, list, notify =
     RunClient.read_operator_capability, RunClient.connect, WorkflowService.list, nvim.notify
   local messages = {}
@@ -2251,7 +2274,10 @@ T["chat"]["shows skill status and keeps slash prompts when skills are off"] = fu
   MiniTest.expect.equality(first.prompts, { "/compact" })
   MiniTest.expect.equality(buffer_lines(chat:buffer())[2], "Session: status=ready · display=Your turn · skills=off")
   MiniTest.expect.equality(picked, false)
-  MiniTest.expect.equality(pick_error, "skill picker is disabled for this session")
+  MiniTest.expect.equality(
+    pick_error,
+    "skill picker is disabled; set skills.policy or the Agent's skills.policy before creating a Session; run :checkhealth louiselm"
+  )
   chat:dispose()
 end
 
@@ -3461,7 +3487,7 @@ T["chat"]["clears Session Attention when closing an active session"] = function(
   local first = fake_session("session-1", "claude")
   first.state.status = "waiting_permission"
   first.state.acp_session_id = "acp-session"
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { attention = true }))
   assert(chat:attach(first))
   local seen_session_id
   chat.attention.session_disposed = function(_, session_id)
@@ -4780,7 +4806,7 @@ T["chat"]["confirms Session close without replacing its permission picker"] = fu
   local first = fake_session("session-1", "opencode")
   first.state.status = "waiting_permission"
   first.state.acp_session_id = "acp-session"
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { attention = true }))
   assert(chat:attach(first))
   local buffer = chat:buffer()
   local request, run_scheduled, pickers, responses = permission_harness()
@@ -6884,7 +6910,7 @@ end
 T["chat"]["marks a directly focused session buffer as seen"] = function()
   local session = fake_session("session-1", "claude")
   session.state.acp_session_id = "acp-session"
-  local chat = assert(Chat.new(fake_api()))
+  local chat = assert(Chat.new(fake_api(), { attention = true }))
   assert(chat:attach(session))
 
   local seen = {}

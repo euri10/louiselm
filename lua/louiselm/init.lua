@@ -23,9 +23,6 @@ end
 ---@return boolean ok False and a report when validation fails; true when startup may continue.
 ---@return louiselm.schema.Report? report Full validation report on failure.
 function M.setup(config)
-  Health.reset()
-  CaptureCommand.configure(nil)
-  Command.configure(nil)
   local schema = Config.schema
 
   local report = Schema.report(Schema.validate(schema, config))
@@ -34,6 +31,22 @@ function M.setup(config)
     ---@diagnostic disable-next-line: undefined-global
     local error_level = vim.log.levels.ERROR
     notify(report.text, error_level)
+    return false, report
+  end
+
+  local transition_error
+  if #require("louiselm.session").exit_verdict() > 0 then
+    transition_error = "live Sessions retain their configuration; close them before reconfiguring LouiseLM"
+  else
+    local capture_configured, capture_error = CaptureCommand.configure(config)
+    if not capture_configured then
+      transition_error = capture_error
+    end
+  end
+  if transition_error ~= nil then
+    report = Schema.report({ { type = "validation_failed", path = "", message = transition_error } })
+    ---@diagnostic disable-next-line: undefined-global -- Setup reports a rejected lifecycle transition.
+    notify(report.text, vim.log.levels.ERROR)
     return false, report
   end
 
@@ -48,10 +61,6 @@ function M.setup(config)
   local keymaps_configured, keymaps_error = Keymaps.configure(config)
   if not keymaps_configured then
     error(keymaps_error)
-  end
-  local capture_configured, capture_error = CaptureCommand.configure(config)
-  if not capture_configured then
-    error(capture_error)
   end
   Command.surface_abandonment()
   Command.register()

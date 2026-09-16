@@ -11,6 +11,9 @@ use crate::{runs::RunStoreError, time::now_ms};
 
 impl AttentionStore {
     pub(super) fn local_park_resolved(&self, key: &AttentionKey) -> Result<bool, AttentionError> {
+        let Some(runs) = &self.runs else {
+            return Ok(false);
+        };
         if key.subject_kind != AttentionSubjectKind::Run || key.kind != AttentionKind::RunParked {
             return Ok(false);
         }
@@ -24,7 +27,7 @@ impl AttentionStore {
         if key.source_operation_id != Uuid::from_bytes(bytes).to_string() {
             return Ok(false);
         }
-        let Some(run) = self.runs.find_view(&key.subject_id)? else {
+        let Some(run) = runs.find_view(&key.subject_id)? else {
             // Absence is not authoritative resolution (e.g. another controller's Run).
             return Ok(false);
         };

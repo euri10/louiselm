@@ -4,7 +4,7 @@ local nvim = vim
 local Capture = require("louiselm.capture")
 
 local M = {}
-local configured = assert(Capture.new())
+local configured ---@type louiselm.capture.Instance?
 
 ---@param message string
 ---@param level integer
@@ -87,6 +87,9 @@ end
 ---@return boolean configured_ok
 ---@return string? error_message
 function M.configure(config)
+  if configured ~= nil and configured:is_busy() then
+    return false, "stop the active capture and wait for ingestion before reconfiguring LouiseLM"
+  end
   local capture_config = type(config) == "table" and config.capture or nil
   local value, error_message = Capture.new(capture_config)
   if value == nil then
@@ -98,10 +101,21 @@ end
 
 ---Register the speech-capture workflow commands.
 ---@return boolean registered
+---@return string? error_message Configuration failure.
 function M.register()
+  if configured == nil then
+    local ok, err = M.configure(nil)
+    if not ok then
+      return false, err
+    end
+  end
+  local capture = configured
+  if capture == nil then
+    return false, "capture commands require configuration"
+  end
   nvim.api.nvim_create_user_command("LouiselmCapture", function()
-    if configured:is_recording() then
-      local stopping, error_message = configured:stop()
+    if capture:is_recording() then
+      local stopping, error_message = capture:stop()
       if stopping then
         notify("capture stopped; durable ingestion is running", nvim.log.levels.INFO)
       else
@@ -109,7 +123,7 @@ function M.register()
       end
       return
     end
-    local id, error_message = configured:start(function(result, completion_error)
+    local id, error_message = capture:start(function(result, completion_error)
       if completion_error ~= nil then
         report_error(completion_error)
       else
@@ -124,7 +138,7 @@ function M.register()
   end, { desc = "Start or stop a durable speech capture", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmCaptureInbox", function()
-    local started, error_message = configured:list(function(captures, list_error)
+    local started, error_message = capture:list(function(captures, list_error)
       if captures == nil then
         report_error(list_error)
         return
@@ -137,7 +151,7 @@ function M.register()
   end, { desc = "Inspect durable captures and transcripts", force = true })
 
   local function show_status()
-    local started, error_message = configured:status(function(status, status_error)
+    local started, error_message = capture:status(function(status, status_error)
       if status == nil then
         report_error(status_error)
         return
@@ -165,7 +179,7 @@ function M.register()
   })
 
   nvim.api.nvim_create_user_command("LouiselmCapturePair", function()
-    local started, error_message = configured:pair(function(output, pair_error)
+    local started, error_message = capture:pair(function(output, pair_error)
       if output == nil then
         report_error(pair_error)
         return
@@ -179,7 +193,7 @@ function M.register()
   end, { desc = "Create a one-time Android pairing QR", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmCaptureRevoke", function(arguments)
-    local started, error_message = configured:revoke(arguments.args, function(_, revoke_error)
+    local started, error_message = capture:revoke(arguments.args, function(_, revoke_error)
       if revoke_error ~= nil then
         report_error(revoke_error)
       else
@@ -192,7 +206,7 @@ function M.register()
   end, { nargs = 1, desc = "Revoke an Android capture device", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmCaptureRetry", function(arguments)
-    local started, error_message = configured:retry(arguments.args, function(_, retry_error)
+    local started, error_message = capture:retry(arguments.args, function(_, retry_error)
       if retry_error ~= nil then
         report_error(retry_error)
       else
