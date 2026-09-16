@@ -141,8 +141,11 @@ Default shortcuts:
 
 The overview shows the invoking Session's modified files, change totals, and
 edition lines beside the conversation. It refreshes as the Session works.
-Press Enter on a file or edition to open that location, `d` to preview its diff,
-`s` to return to the chat, `r` to refresh, and `q` or Escape to close the sidebar.
+Press Enter on a file or edition to open that location in a numbered file window
+below the sidebar, with the conversation on the right. Further jumps reuse that
+file window. Press `d` to preview its diff, `s` to return to the chat, `r` to
+refresh, and `q` or Escape to close the sidebar. The file stays open when the
+sidebar closes.
 Switching to another Session closes the sidebar. Moving into an ordinary file
 or the diff preview keeps it open. To inspect a different Session, invoke
 `<leader>sO` from that Session's chat; returning to an earlier Session does not

@@ -52,6 +52,7 @@ local M = {}
 ---@field unsubscribes fun()[]
 ---@field augroup integer Window/buffer cleanup observers.
 ---@field preview_buffer? integer Diff preview closed with the sidebar.
+---@field file_window? integer Ordinary file window below the sidebar, retained when it closes.
 
 ---Parse unified diff hunks into line ranges and edit counts.
 ---@param diff_text string Unified diff text
@@ -652,20 +653,29 @@ local function jump_to_file(current)
   if target == nil then
     return
   end
-  local destination
-  for _, window in ipairs(nvim.api.nvim_tabpage_list_wins(0)) do
-    local buffer = nvim.api.nvim_win_get_buf(window)
-    if nvim.bo[buffer].buftype == "" and nvim.api.nvim_win_get_config(window).relative == "" then
-      destination = window
-      break
-    end
-  end
+  local destination = current.file_window
   local ok, err = pcall(function()
-    if destination ~= nil then
+    if
+      destination ~= nil
+      and nvim.api.nvim_win_is_valid(destination)
+      and nvim.api.nvim_win_get_tabpage(destination) == nvim.api.nvim_win_get_tabpage(current.window)
+      and nvim.bo[nvim.api.nvim_win_get_buf(destination)].buftype == ""
+      and nvim.api.nvim_win_get_config(destination).relative == ""
+    then
       nvim.api.nvim_set_current_win(destination)
       nvim.api.nvim_cmd({ cmd = "edit", args = { target.path } }, {})
     else
-      nvim.api.nvim_cmd({ cmd = "vsplit", args = { target.path }, mods = { split = "botright" } }, {})
+      local buffer = nvim.fn.bufadd(target.path)
+      nvim.fn.bufload(buffer)
+      destination = nvim.api.nvim_open_win(buffer, true, { split = "below", win = current.window })
+      current.file_window = destination
+      -- A split inherits the sidebar's window options, including its hidden gutter.
+      for _, option in ipairs({ "relativenumber", "signcolumn", "foldcolumn", "winbar" }) do
+        nvim.api.nvim_set_option_value(option, nvim.api.nvim_get_option_value(option, { scope = "global" }), {
+          win = destination,
+        })
+      end
+      nvim.wo[destination].number = true
     end
     local line = math.min(math.max(1, target.line), nvim.api.nvim_buf_line_count(0))
     nvim.api.nvim_win_set_cursor(0, { line, 0 })

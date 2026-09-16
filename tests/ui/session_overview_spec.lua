@@ -500,7 +500,7 @@ T["sidebar"]["chat:session_overview opens and refreshes live on events"] = funct
   MiniTest.expect.equality(SessionOverview.is_open(chat), false)
 end
 
-T["sidebar"]["jump keymap navigates to target file and line"] = function()
+T["sidebar"]["jump keymap reuses a numbered file window below the sidebar with chat on the right"] = function()
   local tmp_file = nvim.fn.tempname() .. ".lua"
   local content = {}
   for i = 1, 50 do
@@ -523,6 +523,7 @@ T["sidebar"]["jump keymap navigates to target file and line"] = function()
   local chat_win = nvim.api.nvim_get_current_win()
   local chat_buf = nvim.api.nvim_get_current_buf()
   assert(chat:session_overview())
+  local sidebar_win = nvim.api.nvim_get_current_win()
 
   local buf = nvim.api.nvim_get_current_buf()
   local lines = nvim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -556,12 +557,102 @@ T["sidebar"]["jump keymap navigates to target file and line"] = function()
   MiniTest.expect.equality(cursor[1], 35)
   MiniTest.expect.equality(SessionOverview.is_open(chat), true)
   MiniTest.expect.equality(nvim.api.nvim_win_get_buf(chat_win), chat_buf)
+  local file_win = nvim.api.nvim_get_current_win()
+  MiniTest.expect.equality(nvim.fn.winlayout(), {
+    "row",
+    { { "col", { { "leaf", sidebar_win }, { "leaf", file_win } } }, { "leaf", chat_win } },
+  })
+  MiniTest.expect.equality(nvim.wo[file_win].number, true)
+  MiniTest.expect.equality(nvim.wo[file_win].winbar, nvim.go.winbar)
+  MiniTest.expect.equality(nvim.wo[sidebar_win].number, false)
+
+  -- A second edition reuses the same file window and updates its cursor.
+  s1.edits[1].rawInput.start_line = 12
+  assert(SessionOverview.refresh(chat))
+  nvim.api.nvim_set_current_win(sidebar_win)
+  nvim.api.nvim_win_set_cursor(sidebar_win, { target_row, 0 })
+  map()
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), file_win)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(file_win)[1], 12)
+  MiniTest.expect.equality(#nvim.api.nvim_tabpage_list_wins(0), 3)
+
+  -- Closing the file split does not leave a stale navigation destination.
+  nvim.api.nvim_win_close(file_win, true)
+  nvim.api.nvim_set_current_win(sidebar_win)
+  map()
+  file_win = nvim.api.nvim_get_current_win()
+  MiniTest.expect.equality(nvim.fn.winlayout(), {
+    "row",
+    { { "col", { { "leaf", sidebar_win }, { "leaf", file_win } } }, { "leaf", chat_win } },
+  })
+  MiniTest.expect.equality(nvim.wo[file_win].number, true)
 
   SessionOverview.close(chat)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(file_win), current_buf)
+  nvim.api.nvim_win_close(file_win, true)
   chat:dispose()
   if nvim.api.nvim_buf_is_valid(current_buf) then
     nvim.api.nvim_buf_delete(current_buf, { force = true })
   end
+  nvim.fn.delete(tmp_file)
+end
+
+T["sidebar"]["file navigation preserves unrelated edits and a repurposed destination"] = function()
+  local tmp_file = nvim.fn.tempname() .. ".lua"
+  nvim.fn.writefile({ "return true" }, tmp_file)
+  local chat = new_chat()
+  local session = fake_session("file-windows", "codex")
+  session.edits = { { rawInput = { path = tmp_file, start_line = 1 } } }
+  assert(chat:attach(session))
+  local chat_win = nvim.api.nvim_get_current_win()
+  local unrelated = nvim.api.nvim_create_buf(true, false)
+  nvim.api.nvim_buf_set_lines(unrelated, 0, -1, false, { "unsaved work" })
+  local unrelated_win = nvim.api.nvim_open_win(unrelated, true, { split = "right", win = chat_win })
+  nvim.api.nvim_set_current_win(chat_win)
+  assert(chat:session_overview())
+  local sidebar_win = nvim.api.nvim_get_current_win()
+  local sidebar_buf = nvim.api.nvim_get_current_buf()
+  for row, line in ipairs(nvim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)) do
+    if line:find("▾", 1, true) ~= nil then
+      nvim.api.nvim_win_set_cursor(sidebar_win, { row, 0 })
+      break
+    end
+  end
+  local jump
+  for _, map in ipairs(nvim.api.nvim_buf_get_keymap(sidebar_buf, "n")) do
+    if map.lhs == "<CR>" then
+      jump = map.callback
+      break
+    end
+  end
+  assert(type(jump) == "function")
+  jump()
+  local file_win = nvim.api.nvim_get_current_win()
+  local file_buf = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(nvim.fs.normalize(nvim.api.nvim_buf_get_name(file_buf)), nvim.fs.normalize(tmp_file))
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(unrelated_win), unrelated)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(unrelated, 0, -1, false), { "unsaved work" })
+  MiniTest.expect.equality(nvim.bo[unrelated].modified, true)
+
+  local inspector = nvim.api.nvim_create_buf(false, true)
+  nvim.api.nvim_win_set_buf(file_win, inspector)
+  nvim.api.nvim_set_current_win(sidebar_win)
+  jump()
+  local replacement_win = nvim.api.nvim_get_current_win()
+  MiniTest.expect.equality(replacement_win ~= file_win, true)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(file_win), inspector)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(replacement_win), file_buf)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_position(replacement_win)[2], 0)
+  MiniTest.expect.equality(nvim.wo[replacement_win].number, true)
+
+  SessionOverview.close(chat)
+  for _, win in ipairs({ unrelated_win, file_win, replacement_win }) do
+    nvim.api.nvim_win_close(win, true)
+  end
+  for _, buf in ipairs({ unrelated, inspector, file_buf }) do
+    nvim.api.nvim_buf_delete(buf, { force = true })
+  end
+  chat:dispose()
   nvim.fn.delete(tmp_file)
 end
 
