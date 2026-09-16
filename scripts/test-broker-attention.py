@@ -112,6 +112,7 @@ class InstalledAttention(unittest.TestCase):
                 data.mkdir(mode=0o700)
                 os.chown(data, receiver.pw_uid, receiver.pw_gid)
                 env = {"PATH": "/usr/bin:/bin", "HOME": str(data),
+                       "LOUISELM_ATTENTION_ENABLED": "true",
                        "LOUISELM_CAPTURE_CONFIG_DIR": str(data / "config"),
                        "LOUISELM_CAPTURE_DATA_DIR": str(data / "data"),
                        "LOUISELM_CAPTURE_STATE_DIR": str(data / "state")}
@@ -131,6 +132,8 @@ class InstalledAttention(unittest.TestCase):
                     except BaseException:
                         child.terminate()
                         child.wait(timeout=5)
+                        log.seek(0)
+                        sys.stderr.write(log.read().decode(errors="replace"))
                         log.close()
                         raise
                     log.close()
