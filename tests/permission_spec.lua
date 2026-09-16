@@ -54,6 +54,28 @@ T["policy"]["accepts ACP command strings for human review"] = function()
   MiniTest.expect.equality(err, nil)
 end
 
+T["policy"]["accepts Antigravity CommandLine without splitting shell text"] = function()
+  -- Antigravity ACP 1.1.1, Session d04b77b3-6061-4a74-9f01-8a3f9ef67155:
+  -- ~/.local/state/acp-llm-adapter/proxy/sessions/<session-id>/log.jsonl,
+  -- session/request_permission. Shape captured; compound text is a safety case.
+  local data = {
+    toolCall = {
+      kind = "execute",
+      rawInput = { CommandLine = "pwd", Cwd = "/tmp/louiselm-antigravity.KEcmf0", WaitMsBeforeAsync = 5000 },
+    },
+  }
+  local request = Permission.gates.from_acp(data)
+  MiniTest.expect.equality(request, { kind = "command", command = { "pwd" } })
+  MiniTest.expect.equality(Permission.gates.check(Permission.ask_human(), request), "ask")
+  MiniTest.expect.equality(data.toolCall.rawInput.CommandLine, "pwd")
+
+  local scoped = assert(Permission.auto_approve_scoped({ commands = { { "pwd" } } }))
+  data.toolCall.rawInput.CommandLine = "pwd && echo unapproved"
+  request = Permission.gates.from_acp(data)
+  MiniTest.expect.equality(request.command, { "pwd && echo unapproved" })
+  MiniTest.expect.equality(Permission.gates.check(scoped, request), "deny")
+end
+
 T["remembered"] = MiniTest.new_set()
 
 local function permission_context(workspace)

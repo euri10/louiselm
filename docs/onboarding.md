@@ -141,6 +141,85 @@ The adapter maps `DEEPSEEK_API_KEY` to the `LLM_API_KEY` it consumes. See its
 [official installation and editor setup](https://github.com/euri10/acp-llm-adapter#editor-setup)
 for the current command, backend name, and requirements.
 
+### Google Antigravity
+
+Use Google's **Antigravity ACP server**, distributed through the
+[ACP registry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json).
+Download the archive for your platform and extract both files together:
+`agy_acp_server.par` and `localharness_external` on Linux. The server is a
+separate distribution from the `agy` terminal application.
+
+For Linux x86-64, the checked version is 1.1.1:
+
+```sh
+curl -fL https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip \
+  -o antigravity-acp.zip
+mkdir -p ~/.local/share/antigravity-acp/1.1.1
+unzip -n antigravity-acp.zip -d ~/.local/share/antigravity-acp/1.1.1
+chmod u+x ~/.local/share/antigravity-acp/1.1.1/agy_acp_server.par \
+  ~/.local/share/antigravity-acp/1.1.1/localharness_external
+```
+
+Use this profile; Linux requires the empty `--uid=` argument listed in the
+registry. Other platforms use their registry entry's executable and arguments.
+
+```lua
+agents = {
+  antigravity = {
+    provider = "Google Antigravity",
+    command = vim.fn.expand("~/.local/share/antigravity-acp/1.1.1/agy_acp_server.par"),
+    args = { "--uid=" },
+  },
+}
+```
+
+For personal Google-account access, set the server's own
+`~/.gemini/antigravity-acp/settings.json` to the following, preserving any
+other existing settings:
+
+```json
+{ "auth": { "type": "oauth-personal" } }
+```
+
+The `.gemini` directory is Google's storage location for Antigravity. This
+setting selects the login method; it contains no credentials. The server
+opens browser sign-in when it needs authentication, then caches credentials
+locally. See Google's [Antigravity authentication guidance](https://antigravity.google/docs/ide/extensions#authentication--licensing)
+for account eligibility and plans.
+
+First login can exceed LouiseLM's normal 20-second startup deadline. In an
+editor with LouiseLM loaded, run this one-time command with a three-minute
+deadline and complete the browser sign-in:
+
+```vim
+lua << EOF
+local api = assert(require("louiselm.session").new({
+  antigravity = {
+    provider = "Google Antigravity",
+    command = vim.fn.expand("~/.local/share/antigravity-acp/1.1.1/agy_acp_server.par"),
+    args = { "--uid=" },
+  },
+}))
+local session, err = api:create_session("antigravity", { start_timeout_ms = 180000 }, function(_, failure)
+  api:dispose()
+  vim.schedule(function() vim.notify(failure or "Antigravity sign-in completed") end)
+end)
+if not session then api:dispose(); error(err) end
+EOF
+```
+
+Then select `antigravity` with `:LouiselmSessionNew` and check its executable
+with `:checkhealth louiselm`. The server advertises session loading/listing,
+image/audio prompts, and embedded context. A successful handshake alone does
+not verify authentication, tool permissions, or cancellation.
+
+Checked with Antigravity ACP server 1.1.1 on 2026-09-16: authenticated text
+response, a bounded command with allow-once permission, cancellation, session
+loading, and disposal through LouiseLM's headless Session API. Image/audio
+support is advertised but not tested. Keep permission choices explicit in the
+Agent's supported controls and LouiseLM policy; this profile does not force
+auto-approval.
+
 ## If the quickstart cannot download
 
 The quickstart needs network access because `vim.pack` fetches LouiseLM on its
@@ -176,6 +255,6 @@ use:
 :help louiselm
 ```
 
-Verification date for the provider recipes above: 2026-08-28. Provider
+Verification date for the Codex, Claude, and DeepSeek recipes: 2026-08-28. Provider
 installers, executable names, authentication flows, and links can change while
 LouiseLM and these adapters are alpha software.

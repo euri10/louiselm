@@ -31,8 +31,18 @@ assert(require("louiselm").setup({
     --   args = { "serve", "--backend", "deepseek" },
     --   env = { LLM_API_KEY = assert(nvim.env.DEEPSEEK_API_KEY) },
     -- },
+
+    -- Optional Google Antigravity profile (Linux).
+    -- Install Google's ACP archive and configure its Google login as described
+    -- in docs/onboarding.md. Keep the companion localharness_external beside it.
+    -- antigravity = {
+    --   provider = "Google Antigravity",
+    --   command = nvim.fn.expand("~/.local/share/antigravity-acp/1.1.1/agy_acp_server.par"),
+    --   args = { "--uid=" },
+    -- },
   },
 }))
 
 -- Optional provider commands and environment mappings were verified against
--- upstream sources on 2026-08-28. See docs/onboarding.md for links and limits.
+-- upstream sources on 2026-08-28 (Antigravity: 2026-09-16).
+-- See docs/onboarding.md for authentication alternatives and limits.

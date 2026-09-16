@@ -242,6 +242,7 @@ Session. Capabilities and authentication still depend on each Agent.
 | [Codex](https://github.com/agentclientprotocol/codex-acp) | `codex-acp` | Documented recipe and local quickstart profile |
 | [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp) | `claude-agent-acp` | Documented API-key recipe |
 | [DeepSeek through `acp-llm-adapter`](https://github.com/euri10/acp-llm-adapter) | `acp-llm-adapter serve --backend deepseek` | Documented recipe |
+| [Google Antigravity](https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp) | `agy_acp_server.par --uid=` (Linux) | Official ACP server; documented setup recipe |
 | [OpenCode](https://opencode.ai/docs/acp) | `opencode acp` | Captured ACP behavior; use upstream setup |
 | [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server) | `copilot --acp --stdio` | Tested transcript layout; use upstream setup |
 

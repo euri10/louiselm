@@ -181,7 +181,7 @@ function M.from_acp(data)
     }
   end
   if kind == "command" or kind == "execute" or kind == "shell" then
-    local command = raw_input.command or raw_input.argv
+    local command = raw_input.command or raw_input.argv or raw_input.CommandLine
     if type(command) == "string" then
       command = { command }
     end
