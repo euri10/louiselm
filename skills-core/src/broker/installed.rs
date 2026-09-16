@@ -16,7 +16,7 @@ use crate::{
     launch_protocol::LifecycleRequest,
     launch_receipt::SignedReceipt,
     launch_transport::{CredentialPin, SeqpacketChannel, SeqpacketListener},
-    launcher_install::{LauncherPaths, LauncherVerifier},
+    launcher_install::{LauncherConfig, LauncherPaths, LauncherVerifier},
 };
 
 /// One dedicated broker process's installed launch service.
@@ -28,9 +28,45 @@ use crate::{
 pub struct InstalledBroker {
     pub(in crate::broker) service: BrokerService,
     pub(in crate::broker) verifier: Arc<LauncherVerifier>,
+    // Drop last, keeping adoption out through destruction of the owned service.
+    _state_lock: fs::File,
 }
 
 impl InstalledBroker {
+    /// Explicitly adopts a valid mismatched marker under the installed broker identity.
+    ///
+    /// `operator_uid` must come from the trusted sudo invocation, never Agent
+    /// input. The CLI requires explicit confirmation before calling this API.
+    /// Directory ownership must already match the systemd-provisioned identity.
+    /// Blocks on filesystem I/O; refuses an active broker without waiting.
+    /// Returns `true` when adopted, or `false` for an unchanged matching marker.
+    /// Receipts and authorization records are never changed or repaired.
+    ///
+    /// # Errors
+    /// Refuses foreign operators, invalid installed identity/authority/directories,
+    /// busy state, missing/corrupt markers or failed audit/marker durability.
+    pub fn adopt_state(
+        paths: &LauncherPaths,
+        state: &Path,
+        operator_uid: u32,
+    ) -> Result<bool, BrokerError> {
+        let verifier =
+            LauncherVerifier::open(paths, state).map_err(BrokerError::InstallationAuthority)?;
+        let config = verifier.config();
+        installed_identity(config)?;
+        if operator_uid != config.operator_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        private_directory(state, config.broker_uid, config.broker_gid)?;
+        super::state_identity::adopt(
+            state,
+            config.broker_uid,
+            config.broker_gid,
+            operator_uid,
+            now_ms()?,
+        )
+    }
+
     /// Reports a revoked Session's trusted binding and local containment observation.
     /// Receipt bytes remain untouched and untrusted. This inspection never grants authority.
     /// # Errors
@@ -254,23 +290,10 @@ impl InstalledBroker {
             LauncherVerifier::open(paths, state).map_err(BrokerError::InstallationAuthority)?,
         );
         let config = verifier.config();
-        let uid = rustix::process::geteuid().as_raw();
-        let gid = rustix::process::getegid().as_raw();
-        if uid == 0
-            || uid != config.broker_uid
-            || gid != config.broker_gid
-            || rustix::process::getuid().as_raw() != uid
-            || rustix::process::getgid().as_raw() != gid
-            // systemd repeats the primary GID in this list. It adds no
-            // authority; every distinct supplementary group is forbidden.
-            || rustix::process::getgroups()
-                .map_err(|_| BrokerError::Installation)?
-                .iter()
-                .any(|group| group.as_raw() != gid)
-        {
-            return Err(BrokerError::Installation);
-        }
+        installed_identity(config)?;
+        let (uid, gid) = (config.broker_uid, config.broker_gid);
         private_directory(state, uid, gid)?;
+        let state_lock = super::state_identity::exclusive(state)?;
         private_directory(
             config
                 .broker_socket_path
@@ -299,7 +322,11 @@ impl InstalledBroker {
             AuditLog::open(&state.join("audit"))?,
             CredentialPin::Identity { uid: 0, gid: 0 },
         )?;
-        Ok(Self { service, verifier })
+        Ok(Self {
+            _state_lock: state_lock,
+            service,
+            verifier,
+        })
     }
 
     /// Persists exact authority already approved by the trusted operator/controller.
@@ -510,6 +537,24 @@ impl InstalledBroker {
             None => result,
         }
     }
+}
+
+fn installed_identity(config: &LauncherConfig) -> Result<(), BrokerError> {
+    let uid = rustix::process::geteuid().as_raw();
+    let gid = rustix::process::getegid().as_raw();
+    if uid == 0
+        || uid != config.broker_uid
+        || gid != config.broker_gid
+        || rustix::process::getuid().as_raw() != uid
+        || rustix::process::getgid().as_raw() != gid
+        // systemd repeats the primary GID; distinct supplementary groups add authority.
+        || rustix::process::getgroups()
+            .map_err(|_| BrokerError::Installation)?
+            .iter().any(|group| group.as_raw() != gid)
+    {
+        return Err(BrokerError::Installation);
+    }
+    Ok(())
 }
 
 fn private_directory(path: &Path, uid: u32, gid: u32) -> Result<(), BrokerError> {

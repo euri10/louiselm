@@ -27,8 +27,9 @@ the tests drive; all three share the same post-accept transactions.
 
 `louiselm-control serve` runs the installed broker under its dedicated non-root
 UID/GID, with no additional group authority, using `/var/lib/louiselm/broker` as its
-machine-lifetime state. It accepts exactly that verb and no caller-selected
-paths. The executable must belong to the configured trusted release. Startup
+machine-lifetime state. The other supported verb is the explicit offline
+`adopt-state --confirm` operation below; neither accepts caller-selected paths.
+The executable must belong to the configured trusted release. Startup
 checks the installed authority, private directories and durable identity marker
 before opening the broker stores. The supplementary list may repeat the primary
 GID, as systemd initializes it; any other GID is refused.
@@ -156,13 +157,46 @@ Changed identity, existing state without a marker, malformed or oversized
 records, links and non-private marker files fail closed. No broker store is
 read or repaired after these refusals. An interrupted initial publication may
 leave an unmarked nonempty directory, which also refuses automatic adoption.
-The diagnostic names explicit state adoption for identity changes or missing
-markers; that command is pending `louiselm-96pv.6`, not available yet.
+Identity mismatch names the explicit adoption command. Missing or corrupt
+markers require inspection/restoration; adoption never invents their prior identity.
 
 This marker detects accidental identity reassignment; it is not tamper-proof
 against the state owner or root and does not replace signed receipt validation.
 The accepted machine-lifetime path is `/var/lib/louiselm/broker`, provisioned by
 the system service above.
+
+For a deliberate broker UID/GID change, update the installed authority and unit
+identities first. Let systemd provision/re-own the state under the new identity;
+the unchanged old marker still refuses startup. Stop both broker units before
+adoption, then run the installed, measured executable from the configured
+operator's account using existing administrative sudo permission:
+
+```sh
+sudo systemctl stop louiselm-broker.service louiselm-broker.socket
+sudo -u louiselm-broker -g louiselm-broker \
+  /usr/local/lib/louiselm/current/bin/louiselm-control adopt-state --confirm
+sudo systemctl start louiselm-broker.socket louiselm-broker.service
+```
+
+Substitute the configured broker account if renamed. The command requires the
+actual broker UID/GID without additional groups and sudo's canonical `SUDO_UID`
+matching the installed operator. Root execution, a foreign operator and absent
+confirmation refuse. No automatic sudo permission is installed for this verb;
+it does not run through an Agent or the launcher's `run` permission. This trusts
+sudo and the broker account, not arbitrary environment input from a Session;
+root and the state-owning broker can already alter the marker directly.
+
+The installed broker holds an exclusive directory lock for its lifetime.
+Adoption takes the same lock without waiting, refuses active state, and does
+nothing if the marker already matches. A changed marker is published atomically
+only after a mode-0600 `identity-adoptions/<milliseconds>.json` audit record and
+its directories are durable. This machine-scoped `StateIdentityAdoption` decision
+names the operator and previous/new UID/GID without inventing Session identifiers.
+It records authorized intent: a crash before marker publication can leave that
+record alongside the old marker. Preserve it and retry explicitly; an existing
+audit filename is never overwritten. Matching retries leave the marker and audit
+untouched. Receipt bytes and authorization records are neither rewritten nor
+repaired; ordinary receipt-chain verification still applies after restart.
 
 ## Broker restart
 

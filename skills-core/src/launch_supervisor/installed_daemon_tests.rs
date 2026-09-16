@@ -446,4 +446,111 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
             .unwrap()
             .success()
     );
+    adoption(&manager, &config, &original, &marker);
+}
+
+fn adopt_command(operator_uid: Option<u32>, arguments: &[&str]) -> std::process::Output {
+    let mut command = Command::new("/usr/bin/setpriv");
+    command
+        .args([
+            "--reuid",
+            &BROKER_UID.to_string(),
+            "--regid",
+            &BROKER_UID.to_string(),
+            "--clear-groups",
+        ])
+        .arg("/usr/local/lib/louiselm/current/bin/louiselm-control")
+        .args(arguments)
+        .env_clear();
+    if let Some(uid) = operator_uid {
+        command.env("SUDO_UID", uid.to_string());
+    }
+    command.output().unwrap()
+}
+
+fn adoption(manager: &OwnedFd, config: &LauncherConfig, receipt: &[u8], marker: &Path) {
+    let before = fs::read(marker).unwrap();
+    for (operator, arguments) in [
+        (None, vec!["adopt-state", "--confirm"]),
+        (
+            Some(config.operator_uid + 1),
+            vec!["adopt-state", "--confirm"],
+        ),
+        (Some(config.operator_uid), vec!["adopt-state"]),
+    ] {
+        let refused = adopt_command(operator, &arguments);
+        assert!(!refused.status.success(), "{refused:?}");
+        assert_eq!(fs::read(marker).unwrap(), before);
+    }
+    // Exercise sudo's actual caller attribution and dedicated-account switch.
+    // Give only this disposable fixture the exact cross-account permission.
+    // The product's fixed run/certify policy grants no adoption permission.
+    let sudoers = Path::new("/etc/sudoers.d/adoption-fixture");
+    fs::write(sudoers, format!(
+        "#{} ALL=(#{BROKER_UID}:#{BROKER_UID}) NOPASSWD: NOSETENV: /usr/local/lib/louiselm/current/bin/louiselm-control adopt-state --confirm\n",
+        config.operator_uid,
+    )).unwrap();
+    fs::set_permissions(sudoers, fs::Permissions::from_mode(0o440)).unwrap();
+    assert!(
+        Command::new("/usr/sbin/visudo")
+            .args(["-c", "-f"])
+            .arg(sudoers)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let adopted = Command::new("/usr/bin/sudo")
+        .args([
+            "-n",
+            "-u",
+            &format!("#{}", config.operator_uid),
+            "/usr/bin/sudo",
+            "-n",
+            "-u",
+            &format!("#{BROKER_UID}"),
+            "/usr/local/lib/louiselm/current/bin/louiselm-control",
+            "adopt-state",
+            "--confirm",
+        ])
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(adopted.status.success(), "{adopted:?}");
+    assert_eq!(adopted.stdout, b"broker state identity adopted\n");
+    let identity: serde_json::Value = serde_json::from_slice(&fs::read(marker).unwrap()).unwrap();
+    assert_eq!(identity["uid"], BROKER_UID);
+    let before = fs::metadata(marker).unwrap();
+    let unchanged = adopt_command(Some(config.operator_uid), &["adopt-state", "--confirm"]);
+    assert!(unchanged.status.success(), "{unchanged:?}");
+    assert_eq!(
+        unchanged.stdout,
+        b"broker state identity already matches; unchanged\n"
+    );
+    assert_eq!(fs::metadata(marker).unwrap().ino(), before.ino());
+    let mut daemon = process(manager, BROKER_UID, false);
+    ready(config);
+    let busy = adopt_command(Some(config.operator_uid), &["adopt-state", "--confirm"]);
+    assert!(!busy.status.success());
+    assert!(
+        String::from_utf8(busy.stderr)
+            .unwrap()
+            .contains("state is in use")
+    );
+    terminate(&mut daemon);
+    assert_eq!(
+        fs::read(
+            Path::new(STATE).join("receipts/sessions/session/00000000000000000001.receipt.json")
+        )
+        .unwrap(),
+        receipt
+    );
+    let entries: Vec<_> = fs::read_dir(Path::new(STATE).join("identity-adoptions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let entry: serde_json::Value = serde_json::from_slice(&fs::read(&entries[0]).unwrap()).unwrap();
+    assert_eq!(entry["decision"]["operator_uid"], config.operator_uid);
+    assert_eq!(entry["decision"]["previous_uid"], BROKER_UID + 1);
+    assert_eq!(entry["decision"]["new_uid"], BROKER_UID);
 }

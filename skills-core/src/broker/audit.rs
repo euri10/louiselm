@@ -29,6 +29,20 @@ const MAX_ENTRIES: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuditDecision {
+    /// Operator authorized marker replacement. Stored in the machine-scoped
+    /// identity-adoptions directory before replacement; not proof of completion.
+    StateIdentityAdoption {
+        /// Authenticated operator that explicitly confirmed adoption.
+        operator_uid: u32,
+        /// Broker UID recorded by the previous marker.
+        previous_uid: u32,
+        /// Broker GID recorded by the previous marker.
+        previous_gid: u32,
+        /// Installed broker UID authorized to adopt state.
+        new_uid: u32,
+        /// Installed broker GID authorized to adopt state.
+        new_gid: u32,
+    },
     /// A pending authorization was atomically spent by the launcher.
     AuthorizationConsumed,
     /// The launcher's request did not consume an authorization.

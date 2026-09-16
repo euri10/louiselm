@@ -21,11 +21,19 @@ mod attention;
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() != Some(OsStr::new("serve")) || arguments.next().is_some() {
-        eprintln!("louiselm-control: expected exactly 'serve'");
-        return ExitCode::FAILURE;
-    }
-    match start() {
+    let verb = arguments.next();
+    let result = match verb.as_deref() {
+        Some(value) if value == OsStr::new("serve") && arguments.next().is_none() => start(),
+        Some(value)
+            if value == OsStr::new("adopt-state")
+                && arguments.next().as_deref() == Some(OsStr::new("--confirm"))
+                && arguments.next().is_none() =>
+        {
+            adopt_state()
+        }
+        _ => Err("expected 'serve' or 'adopt-state --confirm'".to_owned()),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("louiselm-control: {message}");
@@ -39,6 +47,43 @@ fn start() -> Result<(), String> {
     let fd = activated_descriptor().map_err(|_| {
         "socket activation requires exactly one listening descriptor for this process".to_owned()
     })?;
+    let paths = installed_paths()?;
+    let listener = SeqpacketListener::adopt(fd).map_err(|_| {
+        "socket activation requires a listening Unix SOCK_SEQPACKET socket".to_owned()
+    })?;
+    let broker = InstalledBroker::over(&paths, Path::new("/var/lib/louiselm/broker"), listener)
+        .map_err(|error| error.to_string())?;
+    serve(broker).map_err(|error| error.to_string())
+}
+
+fn adopt_state() -> Result<(), String> {
+    // sudo authenticates the invoking user before switching to the dedicated
+    // broker account. Only that account can access the mode-0700 state. A
+    // same-broker process already owns that state; this is not a boundary
+    // against a compromised broker or root forging the environment/marker.
+    let raw =
+        std::env::var("SUDO_UID").map_err(|_| "sudo operator identity required".to_owned())?;
+    let uid = raw
+        .parse::<u32>()
+        .map_err(|_| "sudo operator identity required".to_owned())?;
+    if uid == 0 || uid.to_string() != raw {
+        return Err("sudo operator identity required".to_owned());
+    }
+    let paths = installed_paths()?;
+    let changed = InstalledBroker::adopt_state(&paths, Path::new("/var/lib/louiselm/broker"), uid)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        if changed {
+            "broker state identity adopted"
+        } else {
+            "broker state identity already matches; unchanged"
+        }
+    );
+    Ok(())
+}
+
+fn installed_paths() -> Result<LauncherPaths, String> {
     let running = release::running_identity();
     if !running.verified
         || running
@@ -49,18 +94,13 @@ fn start() -> Result<(), String> {
     {
         return Err("running broker release is untrusted".into());
     }
-    let listener = SeqpacketListener::adopt(fd).map_err(|_| {
-        "socket activation requires a listening Unix SOCK_SEQPACKET socket".to_owned()
-    })?;
     let paths = LauncherPaths::system();
     let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
         .map_err(|_| "installed broker authority is unavailable".to_owned())?;
     if running.release_id.as_deref() != Some(config.release_id.as_str()) {
         return Err("running broker release does not match installed authority".into());
     }
-    let broker = InstalledBroker::over(&paths, Path::new("/var/lib/louiselm/broker"), listener)
-        .map_err(|error| error.to_string())?;
-    serve(broker).map_err(|error| error.to_string())
+    Ok(paths)
 }
 
 #[expect(

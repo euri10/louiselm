@@ -7,12 +7,14 @@
 use std::process::Command;
 
 #[test]
-fn accepts_only_serve_and_requires_socket_activation() {
+fn validates_verbs_confirmation_and_socket_activation() {
     for arguments in [
         vec![],
         vec!["inspect"],
         vec!["serve", "extra"],
         vec!["serve"],
+        vec!["adopt-state"],
+        vec!["adopt-state", "--confirm", "extra"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
             .args(&arguments)
@@ -26,11 +28,27 @@ fn accepts_only_serve_and_requires_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected exactly 'serve'"
+                "expected 'serve' or 'adopt-state --confirm'"
             }),
             "{error}"
         );
     }
+}
+
+#[test]
+fn adoption_requires_the_installed_broker_and_sudo_operator() {
+    let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+        .args(["adopt-state", "--confirm"])
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("sudo operator")
+    );
 }
 
 #[test]
