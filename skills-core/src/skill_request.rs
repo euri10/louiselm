@@ -81,6 +81,8 @@ impl ApprovedSkillRequests {
 pub enum SkillRequestOutcome {
     /// Waiting for exact signed Admission or an operator decision.
     Pending,
+    /// Exact signed Admission persisted; not witnessed, activated or usable supply.
+    Approved,
     /// Explicit operator rejection.
     Rejected,
     /// Operator cancellation or authoritative subject end.
@@ -97,6 +99,12 @@ pub struct SkillRequestStatus {
     pub operation_id: String,
     /// Latest durable result; a terminal result never becomes pending again.
     pub outcome: SkillRequestOutcome,
+    /// Exact package set, also used by the trusted Admission CLI before signing.
+    pub packages: Vec<String>,
+    /// Exact literal Agent scope for every requested package.
+    pub agents: Vec<String>,
+    /// Verified signed Generation, present only for approved outcomes.
+    pub admission: Option<String>,
 }
 
 impl SkillRequestStatus {
@@ -104,6 +112,21 @@ impl SkillRequestStatus {
     #[must_use]
     pub fn valid(&self) -> bool {
         identifier(&self.request_id)
+            && names(&self.agents)
+            && !self.packages.is_empty()
+            && self.packages.len() <= 32
+            && self.packages.windows(2).all(|pair| pair[0] < pair[1])
+            && self
+                .packages
+                .iter()
+                .all(|value| Digest::parse(value).is_ok_and(|digest| digest.to_string() == *value))
+            && match (&self.outcome, &self.admission) {
+                (SkillRequestOutcome::Approved, Some(digest)) => {
+                    Digest::parse(digest).is_ok_and(|parsed| parsed.to_string() == *digest)
+                }
+                (SkillRequestOutcome::Approved, None) | (_, Some(_)) => false,
+                (_, None) => true,
+            }
             && self.operation_id.len() == 36
             && self.operation_id.bytes().enumerate().all(|(index, byte)| {
                 if matches!(index, 8 | 13 | 18 | 23) {

@@ -191,11 +191,7 @@ impl InstalledBroker {
         &self,
         endpoint: Option<&super::attention::AttentionEndpoint>,
     ) -> Result<bool, BrokerError> {
-        let reconciled = self
-            .service
-            .reconcile_skill_requests(endpoint, |key, payload, signature| {
-                self.verifier.verify(key, payload, signature).is_ok()
-            });
+        let reconciled = self.reconcile_admissions(endpoint);
         // A Run observation outage must not suppress already-durable projections.
         let delivered = self
             .service
@@ -216,6 +212,25 @@ impl InstalledBroker {
     ) -> Result<crate::skill_request::SkillRequestStatus, BrokerError> {
         self.service
             .skill_request_control(operator_uid, operation_id, outcome)
+    }
+
+    fn reconcile_admissions(
+        &self,
+        endpoint: Option<&super::attention::AttentionEndpoint>,
+    ) -> Result<(), BrokerError> {
+        let source =
+            super::admission_source::AdmissionSource::installed().map_err(BrokerError::Storage)?;
+        if source.as_ref().is_some_and(|source| {
+            source.operator_uid != self.verifier.config().operator_uid
+                || source.broker_uid != self.verifier.config().broker_uid
+        }) {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        self.service.reconcile_skill_admissions(
+            endpoint,
+            source.as_ref(),
+            |key, payload, signature| self.verifier.verify(key, payload, signature).is_ok(),
+        )
     }
 
     /// Applies emergency quarantine with installed receipt verification.

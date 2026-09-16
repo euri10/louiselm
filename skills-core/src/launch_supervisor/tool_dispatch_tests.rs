@@ -723,6 +723,9 @@ fn skill_relay_preserves_retry_identity_and_drops_late_or_wrong_kind_replies() {
             request_id: "durable-id".into(),
             operation_id: "12345678-1234-4234-8234-123456789abc".into(),
             outcome: SkillRequestOutcome::Pending,
+            packages: vec![crate::Digest::of(b"skill").to_string()],
+            agents: vec!["codex".into()],
+            admission: None,
         },
     };
     assert!(harness.owner.handle_status_reply(&forwarded));

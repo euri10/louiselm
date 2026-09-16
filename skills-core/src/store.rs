@@ -34,6 +34,28 @@ use crate::{
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// An administrator opts into read sharing with a setgid, group-readable parent.
+// Atomic replacement must preserve that choice even under a private umask.
+pub(crate) fn share_evidence(parent: &fs::File, file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if parent.metadata()?.mode() & 0o7777 == 0o2750 {
+        file.set_permissions(fs::Permissions::from_mode(0o640))?;
+    }
+    Ok(())
+}
+
+fn share_package_directories(root: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(root, fs::Permissions::from_mode(0o2750))?;
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            share_package_directories(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 /// A store operation that failed.
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -240,6 +262,43 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens only an existing store, without creating layout or provenance.
+    /// # Errors
+    /// Refuses missing or malformed provenance and inaccessible roots.
+    pub fn open_existing(root: &Path) -> Result<Self, StoreError> {
+        let store = Self {
+            root: root.to_owned(),
+        };
+        store.existing_provenance()?;
+        Ok(store)
+    }
+
+    /// Reads provenance without ever creating or repairing it.
+    /// # Errors
+    /// Refuses absent, malformed or unsupported provenance.
+    pub fn existing_provenance(&self) -> Result<Provenance, StoreError> {
+        let root = &self.root;
+        let path = root.join("provenance.json");
+        let bytes = fs::read(&path).map_err(|source| StoreError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let provenance: Provenance =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Metadata {
+                kind: "provenance".into(),
+                digest: root.display().to_string(),
+                reason: error.to_string(),
+            })?;
+        if provenance.schema != PROVENANCE_SCHEMA {
+            return Err(StoreError::Metadata {
+                kind: "provenance".into(),
+                digest: root.display().to_string(),
+                reason: "unsupported schema".into(),
+            });
+        }
+        Ok(provenance)
+    }
+
     /// Opens, creating the store layout when it does not exist yet.
     ///
     /// # Errors
@@ -374,6 +433,22 @@ impl Store {
             }
             PublishOutcome::Existing
         } else {
+            use std::os::unix::fs::MetadataExt;
+            let parent = self.root.join("packages");
+            if fs::metadata(&parent)
+                .map_err(|source| StoreError::Io {
+                    path: parent.display().to_string(),
+                    source,
+                })?
+                .mode()
+                & 0o7777
+                == 0o2750
+            {
+                share_package_directories(&staged.root).map_err(|source| StoreError::Io {
+                    path: staged.root.display().to_string(),
+                    source,
+                })?;
+            }
             fs::rename(&staged.root, &destination).map_err(|source| StoreError::Io {
                 path: destination.display().to_string(),
                 source,

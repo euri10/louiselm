@@ -806,12 +806,67 @@ and repairs interrupted projection intent. Unavailable Run facts retain pending
 state and cannot block other subjects' local cleanup.
 
 This path grants no Admission, Resume, envelope expansion or Session replacement.
-Signed Admission completion belongs to `louiselm-d6fv.6.8`. The cross-crate gate
+The cross-crate gate
 `python3 scripts/test-skill-requests` exercises the actual broker handler/outbox
 and disposable capture-service through separate processes, including broker and
 receiver restart, Park and Run disposal. Crate tests cover policy/refusal,
 operator decisions, storage crash windows and late relay replies. These gates
 do not certify the maintainer's installed vendor launch path.
+
+### Resolving a request through Skill Admission
+
+The administrator may explicitly enable read-only evidence access:
+
+```sh
+sudo python3 scripts/install-broker-admission.py --store /var/lib/louiselm-skills
+```
+
+The store must already exist, have trusted-release provenance and enrolled trust,
+and be owned by the installed operator. Keep private signing keys outside it.
+Ancestors must not be writable by other identities; the broker also needs traversal
+access. A private home is not a suitable shared-store location. Provisioning reads
+installed identities, shares only package/public trust/Generation evidence with
+the dedicated broker group, and pins the exact store and trust domain in root-owned
+`/etc/louiselm-broker-admission.json`. Staging inherits the group without allowing
+broker traversal. Atomic trust/Generation replacements preserve opted-in read
+permissions; ordinary stores retain private files. No store is promoted, no key is
+enrolled, and no signing secret is shared. Stop writers while provisioning.
+
+With that configuration installed, the operator can run:
+
+```sh
+louiselm-skills generation admit --store /var/lib/louiselm-skills \
+  --member PACKAGE_DIGEST:read=codex --key /private/signing-key \
+  --skill-request OPERATION_UUID --robot-json
+```
+
+Members and literal Agent scope must exactly match the request. The initial linked
+path uses the embedded policy; caller-selected policy or trust roots cannot expand
+it. The operation UUID is covered by the Generation signature. Repeating the same
+linked ceremony recovers those signed bytes and completes uncertain registration
+without signing again; changing its members or review depth refuses.
+
+The broker's independent reconciliation worker reads the configured evidence under
+a shared read-only trust lock. It verifies the signature, persisted approval index,
+exact packaged bytes and Agent scope, and confirms file/directory durability. It
+refuses an activation recovery journal; only the skills tool can repair supply.
+It then persists the approved Generation identity, terminal outcome and exact
+Attention clear intent before reporting approval. Delivery outages leave the clear
+queued, and restart reconciles the same operation. Reject/cancel and authoritative
+subject-end records remain terminal even if Admission subsequently finishes.
+
+`approved` means signed and persisted, including `pending_witness`; it does **not**
+mean witnessed, activated, usable or fully Verified. Existing Instruction views,
+launch authority and operator Resume remain unchanged. Operator inspection remains
+read-only. CLI output therefore may initially report `pending` or an unavailable
+broker alongside a successful global Admission; retry inspection, not a new request.
+Unlinked `generation admit` keeps its original output and needs no broker or Attention.
+
+`scripts/test-broker-admission.py` runs the actual CLI and broker handlers across
+distinct UIDs inside an explicitly enabled private mount namespace. It covers
+unset/standalone operation, opt-in read-only provisioning, broker loss after
+preflight, and restart resolution without access to a signing key. It uses disposable
+software keys and test-only provenance, not hardware or live desktop acceptance.
 
 `scripts/test-broker-attention.py` runs under a private mount namespace in a
 disposable VM with `LOUISELM_REQUIRE_BROKER_ATTENTION=1` and

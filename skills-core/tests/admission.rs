@@ -34,6 +34,209 @@ struct Ceremony {
     release_key: SshKey,
 }
 
+#[test]
+fn linked_admission_is_signed_replayable_and_read_only_verifiable() {
+    let ceremony = Ceremony::new();
+    let package = ceremony.skill("linked");
+    let store = ceremony.fixture.store();
+    let operation = "12345678-1234-4234-8234-123456789abc";
+    let request = AdmissionRequest {
+        members: vec![AdmissionMember {
+            package: package.clone(),
+            depth: ReviewDepth::Read,
+            agents: vec!["claude".into()],
+        }],
+        signer: &SshKeygenSigner::new(ceremony.primary.private_key_path()),
+        admitted_at_ms: 1_756_800_000_000,
+    };
+    let record = admission::admit_linked(&store, &Policy::embedded(), &request, operation).unwrap();
+    assert_eq!(record.state, GenerationState::PendingWitness);
+    let replay = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &AdmissionRequest {
+            signer: &RefuseSigning,
+            ..request
+        },
+        operation,
+    )
+    .unwrap();
+    assert_eq!(record, replay);
+    let read = admission::verify_linked(
+        &store,
+        &Policy::embedded(),
+        "louiselm/skills",
+        operation,
+        &[package.to_string()],
+        &["claude".into()],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(read, record.generation);
+    for (domain, packages) in [
+        ("wrong-domain", vec![package.to_string()]),
+        (
+            "louiselm/skills",
+            vec![louiselm_skills::Digest::of(b"wrong-package").to_string()],
+        ),
+    ] {
+        assert!(
+            admission::verify_linked(
+                &store,
+                &Policy::embedded(),
+                domain,
+                operation,
+                &packages,
+                &["claude".into()]
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        admission::verify_linked(
+            &store,
+            &Policy::embedded(),
+            "louiselm/skills",
+            operation,
+            &[package.to_string()],
+            &["other".into()],
+        )
+        .is_err()
+    );
+    write_file(&store.root().join("activation.pending.json"), "unsettled");
+    assert!(
+        admission::verify_linked(
+            &store,
+            &Policy::embedded(),
+            "louiselm/skills",
+            operation,
+            &[package.to_string()],
+            &["claude".into()],
+        )
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(store.root().join("activation.pending.json")).unwrap(),
+        "unsettled"
+    );
+}
+
+struct RefuseSigning;
+impl louiselm_skills::signer::Signer for RefuseSigning {
+    fn sign(&self, _: &str, _: &[u8]) -> Result<String, louiselm_skills::signer::SignerError> {
+        Err(louiselm_skills::signer::SignerError::Failed(
+            "must not sign again".into(),
+        ))
+    }
+}
+
+#[test]
+fn evidence_sharing_is_opt_in_and_survives_atomic_replacement() {
+    use std::os::unix::fs::PermissionsExt;
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let package = ceremony.skill("private");
+    let first = ceremony
+        .admit(&[(package, ReviewDepth::Read)], &ceremony.primary)
+        .unwrap();
+    let mode =
+        |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode(&admission::record_path(&store, &first.digest())),
+        0o600
+    );
+    assert_eq!(mode(&store.root().join("trust/roles.json")), 0o600);
+    for directory in ["trust", "generations", "packages", "staging"] {
+        std::fs::set_permissions(
+            store.root().join(directory),
+            std::fs::Permissions::from_mode(0o2750),
+        )
+        .unwrap();
+    }
+    let package = ceremony.skill("shared");
+    let second = ceremony
+        .admit(&[(package.clone(), ReviewDepth::Read)], &ceremony.primary)
+        .unwrap();
+    assert_eq!(
+        mode(&admission::record_path(&store, &second.digest())),
+        0o640
+    );
+    assert_eq!(mode(&store.root().join("trust/roles.json")), 0o640);
+    assert_eq!(
+        mode(&store.root().join("packages").join(package.directory_name())),
+        0o750
+    );
+}
+
+#[test]
+fn linked_partial_registration_stays_pending_until_tool_recovery_without_signing() {
+    use std::os::unix::fs::PermissionsExt;
+    let ceremony = Ceremony::new();
+    let package = ceremony.skill("partial");
+    let store = ceremony.fixture.store();
+    let operation = "12345678-1234-4234-8234-123456789abc";
+    let members = vec![AdmissionMember {
+        package: package.clone(),
+        depth: ReviewDepth::Read,
+        agents: vec!["claude".into()],
+    }];
+    let signer = SshKeygenSigner::new(ceremony.primary.private_key_path());
+    let request = AdmissionRequest {
+        members,
+        signer: &signer,
+        admitted_at_ms: 1000,
+    };
+    let record = admission::admit_linked(&store, &Policy::embedded(), &request, operation).unwrap();
+    let verify = || {
+        admission::verify_linked(
+            &store,
+            &Policy::embedded(),
+            "louiselm/skills",
+            operation,
+            &[package.to_string()],
+            &["claude".into()],
+        )
+    };
+    let trust_path = store.root().join("trust/roles.json");
+    let mut trust = TrustStore::load(&store).unwrap().unwrap();
+    trust.approved_admissions.clear();
+    std::fs::write(&trust_path, serde_json::to_vec(&trust).unwrap()).unwrap();
+    let before = std::fs::read(&trust_path).unwrap();
+    assert!(verify().is_err());
+    assert_eq!(
+        std::fs::read(&trust_path).unwrap(),
+        before,
+        "reader must not repair trust"
+    );
+    let recovered = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &AdmissionRequest {
+            signer: &RefuseSigning,
+            ..request
+        },
+        operation,
+    )
+    .unwrap();
+    assert_eq!(recovered, record);
+    assert_eq!(verify().unwrap(), Some(record.generation.clone()));
+    let generation_path = admission::record_path(&store, &record.digest());
+    let original = std::fs::read(&generation_path).unwrap();
+    let mut corrupt = record.clone();
+    corrupt.signature = "not a signature".into();
+    std::fs::write(&generation_path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
+    assert!(verify().is_err());
+    std::fs::write(&generation_path, original).unwrap();
+    let packaged = store
+        .root()
+        .join("packages")
+        .join(package.directory_name())
+        .join("files/SKILL.md");
+    std::fs::set_permissions(&packaged, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&packaged, "changed").unwrap();
+    assert!(verify().is_err());
+}
+
 impl Ceremony {
     fn new() -> Self {
         let fixture = Fixture::new();

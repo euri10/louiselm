@@ -133,6 +133,22 @@ impl BrokerService {
     pub fn reconcile_skill_requests<F>(
         &self,
         endpoint: Option<&AttentionEndpoint>,
+        verify: F,
+    ) -> Result<(), BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        self.reconcile_skill_admissions(endpoint, None, verify)
+    }
+
+    /// Reconciles lifecycle first, then independently verifies configured Admission evidence.
+    /// Disabled evidence never settles approval; failed observations remain pending.
+    /// # Errors
+    /// Returns lifecycle, evidence or durability failures without granting supply authority.
+    pub fn reconcile_skill_admissions<F>(
+        &self,
+        endpoint: Option<&AttentionEndpoint>,
+        source: Option<&super::admission_source::AdmissionSource>,
         mut verify: F,
     ) -> Result<(), BrokerError>
     where
@@ -156,23 +172,43 @@ impl BrokerService {
                 continue;
             }
             let result = (|| {
-                match subject {
+                match &subject {
                     AttentionSubject::Session(id) => {
                         let auth = self
                             .authorizations()
-                            .consumed_for_session(&id)?
+                            .consumed_for_session(id)?
                             .ok_or(BrokerError::UnknownAuthorization)?;
                         let history =
                             self.verified_history(&auth.launch_authorization(), &mut verify)?;
                         if history.last().is_some_and(|receipt| {
                             receipt.payload.resulting_state == SessionState::Terminal
                         }) {
-                            self.skill_requests
-                                .end_subject(&AttentionSubject::Session(id), &self.attention)?;
+                            self.skill_requests.end_subject(
+                                &AttentionSubject::Session(id.clone()),
+                                &self.attention,
+                            )?;
                         }
                     }
                     AttentionSubject::Run(id) => {
-                        self.refresh_run(endpoint.ok_or(BrokerError::InvalidGrant)?, &id)?;
+                        self.refresh_run(endpoint.ok_or(BrokerError::InvalidGrant)?, id)?;
+                    }
+                }
+                if let Some(source) = source {
+                    for pending in self
+                        .skill_requests
+                        .records()?
+                        .iter()
+                        .filter(|item| item.subject() == subject)
+                    {
+                        if pending.binding.controller_uid != source.operator_uid {
+                            return Err(BrokerError::ControllerMismatch);
+                        }
+                        if let Err(error) =
+                            self.skill_requests
+                                .resolve(pending, source, &self.attention)
+                        {
+                            failure.get_or_insert(error);
+                        }
                     }
                 }
                 Ok(())

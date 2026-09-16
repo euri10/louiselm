@@ -121,15 +121,19 @@ impl BrokerService {
         match &packet.packet {
             LauncherPacket::SignedReceipt(receipt) => {
                 self.lifecycle.check_receipt(receipt)?;
-                let ack =
+                let append = || {
                     self.receipts
-                        .append(&session.authorization, &packet.bytes, None, verify)?;
-                if receipt.payload.resulting_state == SessionState::Terminal {
-                    self.skill_requests.end_subject(
+                        .append(&session.authorization, &packet.bytes, None, verify)
+                };
+                let ack = if receipt.payload.resulting_state == SessionState::Terminal {
+                    self.skill_requests.terminal_receipt(
                         &AttentionSubject::Session(session.authorization().session_id.clone()),
                         &self.attention,
-                    )?;
-                }
+                        append,
+                    )?
+                } else {
+                    append()?
+                };
                 send(session.channel(), ack.canonical_bytes())?;
                 Ok(receipt.payload.resulting_state == SessionState::Terminal)
             }

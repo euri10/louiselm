@@ -126,6 +126,9 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
                             request_id: "request".into(),
                             operation_id: operation.into(),
                             outcome: outcome.unwrap_or(SkillRequestOutcome::Pending),
+                            packages: vec![louiselm_skills::Digest::of(b"skill").to_string()],
+                            agents: vec!["codex".into()],
+                            admission: None,
                         })
                     },
                 )

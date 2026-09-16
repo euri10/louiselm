@@ -58,6 +58,14 @@ capture-service processes over disposable authenticated sockets. The fixture
 tests are ignored by standalone Cargo runs; this explicit cross-crate gate,
 also enforced in CI, runs them with their required peer.
 
+Linked Admission additionally runs `scripts/test-broker-admission.py` inside a
+disposable VM/private mount namespace with `LOUISELM_REQUIRE_BROKER_ADMISSION=1`,
+`LOUISELM_TEST_SKILLS` naming the built skills CLI and
+`LOUISELM_TEST_ADMISSION_BROKER` naming the broker integration-test executable.
+The skills CI job requires this distinct-UID gate. It tests the actual CLI,
+read-only provisioning, durable broker handler and restart after delivery failure;
+it does not certify physical signing or an installed desktop Session.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is

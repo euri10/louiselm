@@ -40,10 +40,20 @@ fn fixture_with_run(
     permitted: bool,
     allow_run: bool,
 ) -> (BrokerService, BrokerSession, SeqpacketChannel) {
+    fixture_for(root, permitted, allow_run, CONTROLLER_UID)
+}
+
+fn fixture_for(
+    root: &Path,
+    permitted: bool,
+    allow_run: bool,
+    uid: u32,
+) -> (BrokerService, BrokerSession, SeqpacketChannel) {
     let socket = root.join("broker.sock");
     let mut request = request("skill-session");
     request.run_id = "12345678-1234-4234-8234-123456789abc".into();
     let mut approval = grant(&request);
+    approval.controller_uid = uid;
     approval.skill_requests = permitted.then(|| ApprovedSkillRequests {
         agents: vec!["codex".into()],
         allow_run,
@@ -59,11 +69,305 @@ fn fixture_with_run(
         local_pin(),
     )
     .unwrap();
-    let peer = thread::spawn(move || fake_supervisor(&socket, &request, 2000));
+    let peer = thread::spawn(move || fake_supervisor_for(&socket, &request, 2000, uid));
     let session = service
         .serve_launch(2000, verify_fixture_signature)
         .unwrap();
     (service, session, peer.join().unwrap().1)
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One real-signing scenario follows approval and competing terminal decisions through the same broker owner."
+)]
+fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
+    use louiselm_skills::{
+        Policy, Store,
+        admission::{self, AdmissionMember, AdmissionRequest},
+        broker::admission_source::AdmissionSource,
+        dossier::ReviewDepth,
+        signer::SshKeygenSigner,
+        sshsig::SkPolicy,
+        trust::TrustStore,
+    };
+    use std::os::unix::fs::PermissionsExt;
+    // Evidence ancestors must exclude untrusted writers; /tmp is deliberately refused.
+    let root = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = rustix::process::geteuid().as_raw();
+    let (service, mut session, peer) = fixture_for(root.path(), true, false, uid);
+    let key_fixture = support::Fixture::new();
+    let key = support::SshKey::generate(&key_fixture, "primary");
+    let release = support::SshKey::generate(&key_fixture, "release");
+    let store = Store::open(&root.path().join("supply")).unwrap();
+    TrustStore::bootstrap(
+        &store,
+        "louiselm/skills",
+        &key.public_key(),
+        &release.public_key(),
+        SkPolicy::none(),
+        1000,
+    )
+    .unwrap();
+    // Test-only trusted provenance, with real software-key Admission and verification.
+    fs::write(store.root().join("provenance.json"), br#"{"schema":"louiselm.skills.store-provenance/1","trusted":true,"created_by_release":"fixture"}"#).unwrap();
+    let candidate = key_fixture.candidate("skill");
+    support::write_file(
+        &candidate.join("SKILL.md"),
+        "---\nname: skill\ndescription: Test skill.\n---\nBody.\n",
+    );
+    let (package, _) = store
+        .capture(&candidate, &Policy::embedded(), 1000)
+        .unwrap();
+    let source = AdmissionSource {
+        store: store.root().into(),
+        trust_domain: "louiselm/skills".into(),
+        operator_uid: uid,
+        broker_uid: uid + 1,
+    };
+    let mut message = query(session.authorization());
+    let CommandOperation::SkillRequest { request } = &mut message.operation else {
+        unreachable!()
+    };
+    request.packages = vec![package.digest.to_string()];
+    let first = accepted(exchange(&service, &mut session, &peer, &message, true));
+    let launch_history = service.receipts().stored_bytes("skill-session").unwrap();
+    assert!(
+        service
+            .skill_request_control(
+                uid,
+                &first.operation_id,
+                Some(SkillRequestOutcome::Approved)
+            )
+            .is_err()
+    );
+    let signer = SshKeygenSigner::new(key.private_key_path());
+    let ceremony = AdmissionRequest {
+        members: vec![AdmissionMember {
+            package: package.digest,
+            depth: ReviewDepth::Read,
+            agents: vec!["codex".into()],
+        }],
+        signer: &signer,
+        admitted_at_ms: 4000,
+    };
+    let record =
+        admission::admit_linked(&store, &Policy::embedded(), &ceremony, &first.operation_id)
+            .unwrap();
+    protect_fixture_directories(store.root());
+    for ancestor in store.root().ancestors() {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(ancestor).unwrap();
+        assert!(
+            metadata.is_dir() && metadata.mode() & 0o022 == 0,
+            "{ancestor:?}: {metadata:?}"
+        );
+    }
+    service
+        .reconcile_skill_admissions(None, None, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(
+        service
+            .skill_request_control(uid, &first.operation_id, None)
+            .unwrap()
+            .outcome,
+        SkillRequestOutcome::Pending
+    );
+    service
+        .reconcile_skill_admissions(None, Some(&source), verify_fixture_signature)
+        .unwrap();
+    let approved = service
+        .skill_request_control(uid, &first.operation_id, None)
+        .unwrap();
+    assert_eq!(approved.outcome, SkillRequestOutcome::Approved);
+    assert_eq!(
+        approved.admission.as_deref(),
+        Some(record.generation.as_str())
+    );
+    assert_eq!(
+        record.state,
+        louiselm_skills::generation::GenerationState::PendingWitness
+    );
+    for outcome in [
+        SkillRequestOutcome::Rejected,
+        SkillRequestOutcome::Cancelled,
+    ] {
+        let CommandOperation::SkillRequest { request } = &mut message.operation else {
+            unreachable!()
+        };
+        request.request_id = format!("request-{outcome:?}");
+        let pending = accepted(exchange(&service, &mut session, &peer, &message, true));
+        service
+            .skill_request_control(uid, &pending.operation_id, Some(outcome))
+            .unwrap();
+        admission::admit_linked(
+            &store,
+            &Policy::embedded(),
+            &ceremony,
+            &pending.operation_id,
+        )
+        .unwrap();
+        service
+            .reconcile_skill_admissions(None, Some(&source), verify_fixture_signature)
+            .unwrap();
+        assert_eq!(
+            service
+                .skill_request_control(uid, &pending.operation_id, None)
+                .unwrap()
+                .outcome,
+            outcome
+        );
+    }
+    service
+        .reconcile_skill_admissions(None, Some(&source), verify_fixture_signature)
+        .unwrap();
+    assert_eq!(
+        service
+            .skill_request_control(uid, &first.operation_id, None)
+            .unwrap(),
+        approved
+    );
+    let encoded = serde_json::to_string(&approved).unwrap();
+    assert!(!encoded.contains(store.root().to_str().unwrap()));
+    assert!(!encoded.contains("signature"));
+    assert_eq!(
+        service.receipts().stored_bytes("skill-session").unwrap(),
+        launch_history
+    );
+    let CommandOperation::SkillRequest { request } = &mut message.operation else {
+        unreachable!()
+    };
+    request.request_id = "disposed-request".into();
+    let pending = accepted(exchange(&service, &mut session, &peer, &message, true));
+    let current = lifecycle::status(session.authorization());
+    let mut change = lifecycle::park(session.authorization());
+    change.action = LifecycleAction::Disposal;
+    thread::scope(|scope| {
+        let worker = scope.spawn(|| lifecycle::drive_lifecycle_peer(&peer, &current));
+        service
+            .request_lifecycle(
+                &mut session,
+                &louiselm_skills::broker::lifecycle::LifecycleCaller::Operator { uid },
+                &change,
+                4000,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        worker.join().unwrap();
+    });
+    let late = admission::admit_linked(
+        &store,
+        &Policy::embedded(),
+        &ceremony,
+        &pending.operation_id,
+    )
+    .unwrap();
+    service
+        .reconcile_skill_admissions(None, Some(&source), verify_fixture_signature)
+        .unwrap();
+    assert_eq!(
+        service
+            .skill_request_control(uid, &pending.operation_id, None)
+            .unwrap()
+            .outcome,
+        SkillRequestOutcome::Cancelled
+    );
+    assert_eq!(
+        admission::load_verified(&store, &late.digest()).unwrap(),
+        late
+    );
+    assert_eq!(
+        service
+            .skill_request_control(uid, &first.operation_id, None)
+            .unwrap(),
+        approved
+    );
+    peer.close();
+}
+
+fn protect_fixture_directories(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            protect_fixture_directories(&entry.path());
+        } else {
+            let mode = entry.metadata().unwrap().permissions().mode() & !0o022;
+            fs::set_permissions(entry.path(), fs::Permissions::from_mode(mode)).unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires scripts/test-broker-admission.py private mount namespace and distinct UIDs"]
+fn installed_linked_admission_server() {
+    use louiselm_skills::broker::{
+        admission_source::AdmissionSource,
+        operator::{InspectError, OperatorServer, SOCKET},
+    };
+    let root = PathBuf::from(std::env::var_os("LOUISELM_ADMISSION_STATE").unwrap());
+    let uid: u32 = std::env::var("LOUISELM_ADMISSION_OPERATOR")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let calls: usize = std::env::var("LOUISELM_ADMISSION_CALLS")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (service, operation) = if root.join("operation").exists() {
+        let service = BrokerService::bind(
+            &root.join("restarted.sock"),
+            AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap(),
+            ReceiptStore::open(&root.join("receipts"), trusted_release()).unwrap(),
+            AuditLog::open(&root.join("audit")).unwrap(),
+            local_pin(),
+        )
+        .unwrap();
+        (service, fs::read_to_string(root.join("operation")).unwrap())
+    } else {
+        let (service, mut session, peer) = fixture_for(&root, true, false, uid);
+        let mut message = query(session.authorization());
+        let CommandOperation::SkillRequest { request } = &mut message.operation else {
+            unreachable!()
+        };
+        request.packages = vec![std::env::var("LOUISELM_ADMISSION_PACKAGE").unwrap()];
+        let accepted = accepted(exchange(&service, &mut session, &peer, &message, true));
+        fs::write(root.join("operation"), &accepted.operation_id).unwrap();
+        peer.close();
+        (service, accepted.operation_id)
+    };
+    let reconcile = || {
+        let source = AdmissionSource::installed().unwrap();
+        service
+            .reconcile_skill_admissions(None, source.as_ref(), verify_fixture_signature)
+            .unwrap();
+        fs::write(
+            root.join("status"),
+            serde_json::to_vec(
+                &service
+                    .skill_request_control(uid, &operation, None)
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    reconcile();
+    let server = OperatorServer::bind(Path::new(SOCKET), uid).unwrap();
+    for _ in 0..calls {
+        server
+            .serve_once(
+                |_, _| Err(InspectError::UnknownSession),
+                |id, outcome| {
+                    service
+                        .skill_request_control(uid, id, outcome)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                },
+            )
+            .unwrap();
+    }
 }
 
 #[test]

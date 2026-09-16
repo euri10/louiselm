@@ -823,7 +823,16 @@ fn fake_supervisor(
     request: &LaunchRequest,
     now_ms: u64,
 ) -> (LaunchAuthorization, SeqpacketChannel) {
-    let (authorization, channel) = supervisor_authorization(socket, request, now_ms);
+    fake_supervisor_for(socket, request, now_ms, CONTROLLER_UID)
+}
+
+fn fake_supervisor_for(
+    socket: &Path,
+    request: &LaunchRequest,
+    now_ms: u64,
+    uid: u32,
+) -> (LaunchAuthorization, SeqpacketChannel) {
+    let (authorization, channel) = supervisor_authorization_for(socket, request, now_ms, uid);
 
     let launch = launch_receipt(&authorization);
     settle(|complete| channel.send(launch.canonical_bytes(), complete));
@@ -848,6 +857,15 @@ fn supervisor_authorization(
     request: &LaunchRequest,
     now_ms: u64,
 ) -> (LaunchAuthorization, SeqpacketChannel) {
+    supervisor_authorization_for(socket, request, now_ms, CONTROLLER_UID)
+}
+
+fn supervisor_authorization_for(
+    socket: &Path,
+    request: &LaunchRequest,
+    now_ms: u64,
+    uid: u32,
+) -> (LaunchAuthorization, SeqpacketChannel) {
     let connector = SeqpacketConnector::new().expect("connector");
     let channel = settle(|complete| connector.connect(socket, local_pin(), complete));
 
@@ -860,7 +878,7 @@ fn supervisor_authorization(
         panic!("expected an authorization, got {:?}", response.result);
     };
     authorization
-        .validate_for(request, CONTROLLER_UID, now_ms)
+        .validate_for(request, uid, now_ms)
         .expect("the broker's authorization binds this exact launch");
 
     (authorization, channel)

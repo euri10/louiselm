@@ -14,6 +14,7 @@
 //!
 //! [Launch supervisor]: crate::launch_supervisor
 
+pub mod admission_source;
 pub mod attention;
 mod attention_config;
 pub mod audit;
@@ -71,6 +72,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// Signed skill evidence could not be verified; details stay inside the broker.
+    #[error("Admission evidence is unavailable")]
+    AdmissionEvidence(#[from] crate::admission::AdmissionError),
     /// Supplemental observations are missing or contradict signed admission.
     #[error("broker conformance report: {0}")]
     ConformanceReport(&'static str),

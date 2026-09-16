@@ -22,7 +22,9 @@
 //! under that same lock. Ordinary write failures restore the old supply; failure
 //! to confirm the final commit is reported separately as uncertain durability.
 
+mod linked;
 mod transaction;
+pub use linked::{admit_linked, verify_linked};
 
 use std::{fs, io, path::PathBuf};
 
@@ -218,6 +220,15 @@ pub fn admit(
     policy: &Policy,
     request: &AdmissionRequest<'_>,
 ) -> Result<GenerationRecord, AdmissionError> {
+    admit_inner(store, policy, request, None)
+}
+
+fn admit_inner(
+    store: &Store,
+    policy: &Policy,
+    request: &AdmissionRequest<'_>,
+    operation: Option<&str>,
+) -> Result<GenerationRecord, AdmissionError> {
     let locked = transaction::lock(store)?;
     let mut trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
     let signing_key = trust.admission_key()?.clone();
@@ -271,7 +282,7 @@ pub fn admit(
     }
 
     let previous = current_unlocked(store)?;
-    let payload = GenerationPayload::new(
+    let mut payload = GenerationPayload::new(
         &trust.trust_domain,
         previous
             .as_ref()
@@ -280,6 +291,10 @@ pub fn admit(
         &policy.digest().to_string(),
         members,
     );
+    payload.approval_operation = operation.map(str::to_owned);
+    if let Some(record) = linked::recover(store, &payload, &locked, &mut trust)? {
+        return Ok(record);
+    }
 
     let signature = request
         .signer

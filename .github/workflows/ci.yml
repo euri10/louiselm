@@ -414,6 +414,16 @@ jobs:
       - name: Recovery browser deadline regressions
         run: node --test --test-timeout=5000 tests/recovery_browser.test.cjs
 
+      - name: Linked Admission across operator and read-only broker identities
+        run: |
+          broker_test=$(cargo test --locked --test broker --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .target.name == "broker" and .executable != null) | .executable')
+          sudo env LOUISELM_REQUIRE_BROKER_ADMISSION=1 \
+            "LOUISELM_TEST_SKILLS=$CARGO_TARGET_DIR/debug/louiselm-skills" \
+            "LOUISELM_TEST_ADMISSION_BROKER=$broker_test" \
+            timeout 120 unshare --mount --propagation private -- \
+            python3 ../scripts/test-broker-admission.py
+
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings

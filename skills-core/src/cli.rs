@@ -20,6 +20,7 @@ use std::{
 use serde::Serialize;
 use thiserror::Error;
 
+mod linked_admission;
 mod preflight;
 mod recovery;
 mod workspace;
@@ -161,6 +162,13 @@ pub fn run() -> Result<i32, CliError> {
         return workspace::run(&arguments[1..]);
     }
     let options = Options::parse(&arguments[1..])?;
+    if options.skill_request.is_some()
+        && (command != "generation" || options.subject("generation")? != "admit")
+    {
+        return Err(CliError::Invalid(
+            "--skill-request requires generation admit".into(),
+        ));
+    }
 
     match command {
         "package" => package(&options),
@@ -192,6 +200,7 @@ struct Options {
     release_key: Option<String>,
     trust_domain: Option<String>,
     key: Option<String>,
+    skill_request: Option<String>,
     remote: Option<PathBuf>,
     branch: Option<String>,
     workdir: Option<PathBuf>,
@@ -237,6 +246,7 @@ impl Options {
             release_key: None,
             trust_domain: None,
             key: None,
+            skill_request: None,
             remote: None,
             branch: None,
             workdir: None,
@@ -276,6 +286,13 @@ impl Options {
                     .ok_or_else(|| CliError::Invalid(format!("{name} needs a value")))
             };
             match argument {
+                "--skill-request" => {
+                    if parsed.skill_request.is_some() {
+                        return Err(CliError::Invalid("duplicate --skill-request".into()));
+                    }
+                    parsed.skill_request = Some(value("--skill-request")?);
+                    index += 1;
+                }
                 "--robot-json" => parsed.robot = true,
                 "--digest" => parsed.digest_only = true,
                 "--require-hardware" => parsed.require_hardware = true,
@@ -829,6 +846,9 @@ fn generation(options: &Options) -> Result<i32, CliError> {
     let policy = options.policy()?;
     match options.subject("generation")? {
         "admit" => {
+            if let Some(operation) = &options.skill_request {
+                return linked_admission::run(options, &store, &policy, operation);
+            }
             let key = options.signing_key()?;
             let record = admission::admit(
                 &store,
@@ -1301,7 +1321,7 @@ Trust roles:
   louiselm-skills trust reset --confirm
 
 Skill Generations:
-  louiselm-skills generation admit --member <digest>[:<depth>][=<agent>,...] ...
+  louiselm-skills generation admit --member <digest>[:<depth>][=<agent>,...] ... [--skill-request <operation-uuid>]
                                    --key <privkey>
                                    [--all-agents --registry <dir>]
   louiselm-skills generation witness <digest> --remote <url> [--branch <b>]

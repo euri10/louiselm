@@ -117,6 +117,25 @@ impl Drop for LockedTrust {
 }
 
 impl LockedTrust {
+    pub(crate) fn read_only(store: &Store) -> Result<Self, TrustError> {
+        let root = open_root(store)?;
+        let directory = Directory::open(&root, store)?;
+        let lock = directory.open_regular(LOCK, OFlags::RDONLY)?;
+        fs::flock(&lock, FlockOperation::NonBlockingLockShared)
+            .map_err(|source| io_error(&directory.path.join(LOCK), source.into()))?;
+        Ok(Self { directory, lock })
+    }
+
+    pub(crate) fn confirm(&self) -> Result<(), TrustError> {
+        let file = self
+            .directory
+            .state_file()?
+            .ok_or(TrustError::NotBootstrapped)?;
+        file.sync_all()
+            .map_err(|source| io_error(&self.directory.path.join(STATE), source))?;
+        self.directory.sync()
+    }
+
     pub(crate) fn acquire(store: &Store) -> Result<Self, TrustError> {
         let root = open_root(store)?;
         match fs::mkdirat(&root, "trust", Mode::RWXU) {
@@ -155,6 +174,8 @@ impl LockedTrust {
         let mut file = self
             .directory
             .open_regular(&temporary, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL)?;
+        crate::store::share_evidence(&self.directory.file, &file)
+            .map_err(|source| io_error(&self.directory.path.join(&temporary), source))?;
         let result = (|| {
             file.write_all(&bytes)
                 .and_then(|()| file.sync_all())

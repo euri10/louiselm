@@ -130,9 +130,21 @@ impl BrokerService {
                 return Err(BrokerError::RequestMismatch);
             }
             self.lifecycle.check_receipt(receipt)?;
-            let ack = self
-                .receipts
-                .append(&authorization, &packet.bytes, None, &mut *verify)?;
+            let mut append = || {
+                self.receipts
+                    .append(&authorization, &packet.bytes, None, &mut *verify)
+            };
+            let ack = if receipt.payload.resulting_state
+                == crate::launch_receipt::SessionState::Terminal
+            {
+                self.skill_requests.terminal_receipt(
+                    &AttentionSubject::Session(authorization.session_id.clone()),
+                    &self.attention,
+                    append,
+                )?
+            } else {
+                append()?
+            };
             send(channel, ack.canonical_bytes())?;
             sequence = next;
         }

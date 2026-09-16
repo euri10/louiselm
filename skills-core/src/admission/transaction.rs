@@ -198,6 +198,11 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), AdmissionErr
         .prefix(".admission-")
         .tempfile_in(parent)
         .map_err(|source| io_error(parent, source))?;
+    crate::store::share_evidence(
+        &File::open(parent).map_err(|source| io_error(parent, source))?,
+        staged.as_file(),
+    )
+    .map_err(|source| io_error(path, source))?;
     staged
         .write_all(bytes)
         .and_then(|()| staged.as_file().sync_all())

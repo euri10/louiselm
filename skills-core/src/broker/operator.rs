@@ -140,7 +140,12 @@ pub fn skill_request(
     timeout: Duration,
 ) -> Result<SkillRequestStatus, InspectError> {
     if !super::attention::canonical_uuid(operation_id)
-        || outcome == Some(SkillRequestOutcome::Pending)
+        || outcome.is_some_and(|value| {
+            !matches!(
+                value,
+                SkillRequestOutcome::Rejected | SkillRequestOutcome::Cancelled
+            )
+        })
     {
         return Err(InspectError::InvalidRequest);
     }
@@ -297,7 +302,12 @@ impl OperatorServer {
                     outcome,
                 } => {
                     if !super::attention::canonical_uuid(&operation_id)
-                        || outcome == Some(SkillRequestOutcome::Pending)
+                        || outcome.is_some_and(|value| {
+                            !matches!(
+                                value,
+                                SkillRequestOutcome::Rejected | SkillRequestOutcome::Cancelled
+                            )
+                        })
                     {
                         return Err(InspectError::InvalidRequest);
                     }

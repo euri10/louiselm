@@ -22,6 +22,10 @@ impl AttentionEndpoint {
 }
 
 pub(super) fn read_endpoint(path: &Path) -> io::Result<AttentionEndpoint> {
+    parse_endpoint(&read_protected(path)?)
+}
+
+pub(super) fn read_protected(path: &Path) -> io::Result<Vec<u8>> {
     // Fixed /etc parent is outside broker/Session write authority. Open the
     // leaf without following links or blocking on a substituted FIFO, then
     // validate the same descriptor we read.
@@ -44,7 +48,7 @@ pub(super) fn read_endpoint(path: &Path) -> io::Result<AttentionEndpoint> {
     if bytes.len() > usize::try_from(CONFIG_BYTES).map_err(|_| invalid_config())? {
         return Err(invalid_config());
     }
-    parse_endpoint(&bytes)
+    Ok(bytes)
 }
 
 fn parse_endpoint(bytes: &[u8]) -> io::Result<AttentionEndpoint> {

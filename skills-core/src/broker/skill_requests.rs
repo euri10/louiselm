@@ -71,7 +71,7 @@ pub(super) struct SkillRequests {
 
 impl SkillRequests {
     pub(super) fn open(root: &Path) -> Result<Self, BrokerError> {
-        for directory in ["requests", "outcomes", "ended", "runs"] {
+        for directory in ["requests", "outcomes", "ended", "runs", "admissions"] {
             fs::create_dir_all(root.join(directory)).map_err(BrokerError::Storage)?;
         }
         sync_directory(root)?;
@@ -138,7 +138,11 @@ impl SkillRequests {
     ) -> Result<SkillRequestStatus, BrokerError> {
         let _guard = lock(&self.writing);
         let record = self.record(operation_id)?;
-        if operator_uid != record.binding.controller_uid || outcome == SkillRequestOutcome::Pending
+        if operator_uid != record.binding.controller_uid
+            || !matches!(
+                outcome,
+                SkillRequestOutcome::Rejected | SkillRequestOutcome::Cancelled
+            )
         {
             return Err(BrokerError::ControllerMismatch);
         }
@@ -228,7 +232,44 @@ impl SkillRequests {
             request_id: record.request.request_id.clone(),
             operation_id: record.operation_id.clone(),
             outcome,
+            packages: record.request.packages.clone(),
+            agents: record.request.agents.clone(),
+            admission: if outcome == SkillRequestOutcome::Approved {
+                let path = self.root.join("admissions").join(&record.operation_id);
+                let digest: String = read_record(&path)?.ok_or(BrokerError::InvalidGrant)?;
+                if Digest::parse(&digest).is_err() {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                sync_file(&path)?;
+                Some(digest)
+            } else {
+                None
+            },
         })
+    }
+
+    pub(super) fn resolve(
+        &self,
+        record: &Record,
+        source: &super::admission_source::AdmissionSource,
+        outbox: &Outbox,
+    ) -> Result<(), BrokerError> {
+        let _guard = lock(&self.writing);
+        if self.result(record)?.outcome != SkillRequestOutcome::Pending {
+            return self.project(record, outbox);
+        }
+        if self.ended(&record.subject())? {
+            self.finish_record(record, SkillRequestOutcome::Cancelled)?;
+        } else if let Some(generation) = source.verify(&record.operation_id, &record.request)? {
+            let path = self.root.join("admissions").join(&record.operation_id);
+            match read_record::<String>(&path)? {
+                Some(prior) if prior == generation => sync_file(&path)?,
+                Some(_) => return Err(BrokerError::RequestMismatch),
+                None => write_new_record(&path, &generation)?,
+            }
+            self.finish_record(record, SkillRequestOutcome::Approved)?;
+        }
+        self.project(record, outbox)
     }
 
     fn finish_record(
@@ -268,6 +309,21 @@ impl SkillRequests {
     ) -> Result<(), BrokerError> {
         let _guard = lock(&self.writing);
         self.end_locked(subject, outbox)
+    }
+
+    pub(super) fn terminal_receipt<T>(
+        &self,
+        subject: &AttentionSubject,
+        outbox: &Outbox,
+        append: impl FnOnce() -> Result<T, BrokerError>,
+    ) -> Result<T, BrokerError> {
+        // Receipt publication and request cancellation share approval's lock.
+        // A verified terminal receipt can never become durable between the
+        // approval end-check and its terminal outcome publication.
+        let _guard = lock(&self.writing);
+        let acknowledgement = append()?;
+        self.end_locked(subject, outbox)?;
+        Ok(acknowledgement)
     }
 
     fn end_locked(&self, subject: &AttentionSubject, outbox: &Outbox) -> Result<(), BrokerError> {

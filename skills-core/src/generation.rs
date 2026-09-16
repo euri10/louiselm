@@ -24,6 +24,7 @@ pub const RECORD_SCHEMA: &str = "louiselm.skills.generation-record/1";
 
 /// One admitted package and the review it was admitted on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Member {
     /// Digest of the admitted package.
     pub package_digest: String,
@@ -40,6 +41,7 @@ pub struct Member {
 
 /// The bytes a hardware key signs to admit a Generation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenerationPayload {
     /// Schema identifier.
     pub schema: String,
@@ -57,6 +59,10 @@ pub struct GenerationPayload {
     pub member_root: String,
     /// Admitted members, sorted by package digest.
     pub members: Vec<Member>,
+    /// Optional broker operation whose exact request this Admission resolves.
+    /// Covered by the signature; never grants launch or supply authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_operation: Option<String>,
 }
 
 impl GenerationPayload {
@@ -88,6 +94,7 @@ impl GenerationPayload {
             policy_digest: policy_digest.to_owned(),
             member_root,
             members,
+            approval_operation: None,
         }
     }
 
@@ -167,6 +174,7 @@ impl GenerationState {
 /// bookkeeping, so a witness remote never becomes a source of authority about
 /// what is current here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenerationRecord {
     /// Schema identifier.
     pub schema: String,
