@@ -6,5 +6,7 @@ billing_account_id            = "000000-000000-000000"
 android_package_name          = "dev.louiselm.capture"
 android_sha1_fingerprint      = "0000000000000000000000000000000000000000"
 android_sha256_fingerprints   = []
+# Optional side-by-side QA app. Use its actual signing SHA-1; keep normal inputs unchanged.
+# android_qa_sha1_fingerprint = "0000000000000000000000000000000000000000"
 gitlab_workload_identity_pool_id     = "gitlab"
 gitlab_workload_identity_provider_id = "louiselm"

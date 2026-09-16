@@ -1041,6 +1041,11 @@ This creates a new Hosting release and does not change OpenTofu state.
 
 ## Installing Android configuration
 
+Each output selects exactly its Android client and the corresponding managed
+API key. Firebase's raw SDK response can list both normal and QA keys for both
+clients; app/key binding alone does not guarantee which key Gradle packages.
+Do not replace these outputs with the raw SDK download or hand-edited JSON.
+
 After the reviewed apply, write the sensitive Firebase output directly to a
 protected local file:
 
@@ -1058,3 +1063,105 @@ test "$(stat -c '%a' google-services.json)" = 600
 Install runtime sender credentials through the deployment secret manager or a
 workload identity. This composition never creates a private key, so a key
 cannot enter OpenTofu state accidentally.
+
+### Side-by-side Android notification QA
+
+The normal registration is `dev.louiselm.capture`. To test without replacing
+that app or its recordings, set `android_qa_sha1_fingerprint` to the actual QA
+APK signing certificate's 40 hexadecimal SHA-1 characters, without separators.
+For example, inspect the locally built APK with the installed Android SDK's
+`apksigner verify --print-certs android/app/build/outputs/apk/qa/app-qa.apk`.
+Use the signing certificate fingerprint, not the APK file hash; recheck the
+final Firebase-enabled APK before installing it.
+
+The optional input defaults to null: an unconfigured stack adds no QA resources.
+When supplied, it adds only the fixed `dev.louiselm.capture.qa` Firebase app and
+`louiselm-android-qa` API key. That key accepts only the QA package/certificate
+and the same four client APIs as the normal app's key. Normal-app inputs,
+resource addresses and key restrictions stay unchanged. Retain the QA input
+after provisioning: removing it requests deletion, which the resource deletion
+protections reject. It is not a cleanup switch.
+
+For an existing deployment, do not repeat the first-bootstrap create/import
+steps. Verify the operator identity and existing GCS backend as above, preserve
+all existing inputs, and establish a no-change baseline before adding the QA
+input. Keep the pinned runtime/providers and use isolated backend metadata.
+After the source checks and mocked-provider tests, generate a full saved plan:
+
+```sh
+# From infra/firebase, with the verified GCS backend initialized and all inputs set.
+tofu fmt -check -diff -recursive
+tofu validate
+sh tests/test-plan-iam.sh
+trivy config --exit-code 1 --misconfig-scanners=terraform .
+umask 077
+git check-ignore -q qa-reviewed.plan
+git check-ignore -q .terraform/qa-reviewed-plan.json
+test ! -e qa-reviewed.plan
+test ! -L qa-reviewed.plan
+test ! -e .terraform/qa-reviewed-plan.json
+test ! -L .terraform/qa-reviewed-plan.json
+tofu plan -input=false -lock=true -lock-timeout=5m -out=qa-reviewed.plan
+tofu show -no-color qa-reviewed.plan
+tofu show -json qa-reviewed.plan > .terraform/qa-reviewed-plan.json
+test "$(stat -c '%a' qa-reviewed.plan)" = 600
+test "$(stat -c '%a' .terraform/qa-reviewed-plan.json)" = 600
+sh check-plan-iam.sh .terraform/qa-reviewed-plan.json
+sha256sum qa-reviewed.plan
+```
+
+For the first QA addition, expect exactly two managed creates
+(`google_apikeys_key.android_qa[0]` and `google_firebase_android_app.qa[0]`), a
+QA config data read, and the sensitive `android_qa_firebase_config_json` output.
+No existing managed resource should change, be replaced or be deleted. Inspect
+refresh-only observations too; the IAM gate does not check all resource changes.
+Unexpected drift requires a separate review, not a targeted plan or gate bypass.
+Keep the saved plan and JSON private; report only sanitized action summaries
+and the hash. Obtain explicit approval before applying that exact artifact.
+After apply, verify a full no-change plan with the same inputs.
+
+Export only the QA output to the QA source set, not the normal app's output:
+
+```sh
+# From infra/firebase, after the approved apply and a no-change plan.
+umask 077
+git check-ignore -q ../../android/app/src/qa/google-services.json
+test -d ../../android/app/src/qa
+test ! -L ../../android/app/src/qa
+test ! -e ../../android/app/src/qa/google-services.json
+test ! -L ../../android/app/src/qa/google-services.json
+tofu output -raw android_qa_firebase_config_json > ../../android/app/src/qa/google-services.json
+test "$(stat -c '%a' ../../android/app/src/qa/google-services.json)" = 600
+```
+
+After the configured QA build, verify the **consumed APK key**, not only the
+package, signer and Firebase app ID. From the repository root, with
+`apkanalyzer` on PATH, compare without printing either key:
+
+```sh
+set +x
+qa_config_key=$(jq -er '
+  select(.client | length == 1) | .client[0] |
+  select(.client_info.android_client_info.package_name == "dev.louiselm.capture.qa") |
+  select(.api_key | length == 1) | .api_key[0].current_key
+' android/app/src/qa/google-services.json) || exit 1
+qa_apk_key=$(apkanalyzer resources value --config default --name google_api_key \
+  --type string --package dev.louiselm.capture.qa \
+  android/app/build/outputs/apk/qa/app-qa.apk) || exit 1
+test "$qa_apk_key" = "$qa_config_key" || exit 1
+unset qa_apk_key qa_config_key
+```
+
+Follow the [Android QA build and pairing procedure](https://github.com/euri10/louiselm/blob/main/android/README.md#attention-notifications-explicit-opt-in)
+using the separate QA app and disposable private receiver. The current
+capture-service sender requires an external mode-0600 **service-account JSON
+key**; operator ADC or the Hosting WIF identity cannot configure it. Locate an
+appropriate existing key or separately approve out-of-band key creation for
+`louiselm-fcm-sender@louiselm.iam.gserviceaccount.com`. Do not put a sender key in
+OpenTofu, Git, CI or the APK, and do not widen its send-only role.
+
+Rollback stops only the QA receiver and revokes only its disposable pairing and
+any newly created key after checking for other consumers. Preserve normal app
+data, recordings and receiver identity. Leave the additive cloud resources in
+place unless their exact removal receives a separately reviewed plan and
+approval. Never destroy the projects or state bucket to undo a notification test.

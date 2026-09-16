@@ -121,8 +121,11 @@ Ordinary builds do not contain Firebase configuration and cannot register for
 push. The private inbox and recording work without it. To build a push-enabled
 APK, provision the Firebase Android client through `infra/firebase` and place
 its generated `android_firebase_config_json` output in the ignored
-`app/src/debug/google-services.json` (normal app) or
-`app/src/qa/google-services.json` (QA app). Never commit or print that output.
+`app/src/debug/google-services.json` for the normal app. For QA, supply
+`android_qa_sha1_fingerprint` in OpenTofu and use the separate sensitive
+`android_qa_firebase_config_json` output at `app/src/qa/google-services.json`.
+Follow the [reviewed QA provisioning procedure](https://github.com/euri10/louiselm/blob/main/infra/firebase/README.md#side-by-side-android-notification-qa);
+do not replace the normal app registration. Never commit or print either output.
 The QA client must use **dev.louiselm.capture.qa** and its signing fingerprint;
 a production-package client cannot configure the QA APK.
 

@@ -106,3 +106,10 @@ fi
 jq -r 'select(.type == "test_summary") | .["@message"]' "$test_dir/tofu.jsonl"
 echo 'PASS: actual OpenTofu mock plan passed the production IAM gate'
 echo 'PASS: extra privileged grant in actual mock plan rejected'
+
+# The config read is deferred until the QA app exists. Check plan metadata
+# instead of claiming the mock plan fetched a real Firebase configuration.
+jq -e 'select(.type == "test_plan" and .["@testrun"] == "qa_uses_its_own_restricted_key") |
+  .test_plan.planned_values.outputs.android_qa_firebase_config_json.sensitive == true' \
+  "$test_dir/tofu.jsonl" >/dev/null
+echo 'PASS: QA client configuration output is sensitive'

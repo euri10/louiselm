@@ -86,6 +86,18 @@ variable "android_sha256_fingerprints" {
   }
 }
 
+variable "android_qa_sha1_fingerprint" {
+  description = "Optional QA signing SHA-1, without separators; null leaves the separate dev.louiselm.capture.qa app unprovisioned. Retain this input after provisioning."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.android_qa_sha1_fingerprint == null || can(regex("^[0-9A-Fa-f]{40}$", var.android_qa_sha1_fingerprint))
+    error_message = "android_qa_sha1_fingerprint must be null or contain 40 hexadecimal characters."
+  }
+}
+
 variable "gitlab_issuer_url" {
   description = "Fixed self-managed GitLab OIDC issuer URL."
   type        = string

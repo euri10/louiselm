@@ -1,0 +1,28 @@
+{
+  "project_info": {
+    "project_number": "123456789012",
+    "project_id": "louiselm",
+    "storage_bucket": "louiselm.example.invalid"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:123456789012:android:normal",
+        "android_client_info": { "package_name": "dev.louiselm.capture" }
+      },
+      "oauth_client": [],
+      "api_key": [{ "current_key": "dummy-normal-key" }, { "current_key": "dummy-qa-key" }],
+      "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:123456789012:android:qa",
+        "android_client_info": { "package_name": "dev.louiselm.capture.qa" }
+      },
+      "oauth_client": [],
+      "api_key": [{ "current_key": "dummy-normal-key" }, { "current_key": "dummy-qa-key" }],
+      "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+    }
+  ],
+  "configuration_version": "1"
+}

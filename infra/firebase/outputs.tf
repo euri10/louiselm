@@ -19,9 +19,32 @@ output "android_api_key" {
   sensitive   = true
 }
 
+module "android_config" {
+  source = "./modules/android-config"
+
+  config_file_contents = data.google_firebase_android_app_config.notifications.config_file_contents
+  package_name         = google_firebase_android_app.notifications.package_name
+  api_key              = google_apikeys_key.android.key_string
+}
+
+module "android_qa_config" {
+  count  = var.android_qa_sha1_fingerprint == null ? 0 : 1
+  source = "./modules/android-config"
+
+  config_file_contents = data.google_firebase_android_app_config.qa[0].config_file_contents
+  package_name         = google_firebase_android_app.qa[0].package_name
+  api_key              = google_apikeys_key.android_qa[0].key_string
+}
+
 output "android_firebase_config_json" {
-  description = "Decoded google-services.json content; never commit or print this output."
-  value       = base64decode(data.google_firebase_android_app_config.notifications.config_file_contents)
+  description = "google-services.json containing only the normal client and its restricted key; never commit or print this output."
+  value       = module.android_config.config_json
+  sensitive   = true
+}
+
+output "android_qa_firebase_config_json" {
+  description = "google-services.json containing only the QA client and its restricted key, or null when unconfigured; never commit or print this output."
+  value       = var.android_qa_sha1_fingerprint == null ? null : module.android_qa_config[0].config_json
   sensitive   = true
 }
 
