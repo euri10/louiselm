@@ -26,6 +26,12 @@ fn main() -> ExitCode {
     if collected.first().is_some_and(|verb| verb == "session") {
         return ExitCode::from(inspection::cli(&collected[1..]));
     }
+    if collected
+        .first()
+        .is_some_and(|verb| verb == "skill-request")
+    {
+        return ExitCode::from(inspection::skill_cli(&collected[1..]));
+    }
     let mut arguments = collected.into_iter();
     let verb = arguments.next();
     let result = match verb.as_deref() {
@@ -38,7 +44,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', or 'session inspect ID --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'session inspect ID --json', or 'skill-request inspect|reject|cancel ID --json'".to_owned(),
         ),
     };
     match result {

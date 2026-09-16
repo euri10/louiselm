@@ -1,8 +1,9 @@
-//! Bounded local operator inspection, authenticated before any Session lookup.
+//! Bounded local operator inspection and skill decisions, authenticated before lookup.
 
 mod wire;
 
 use crate::launch_protocol::SessionStatus;
+use crate::skill_request::{SkillRequestOutcome, SkillRequestStatus};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -76,10 +77,15 @@ impl InspectError {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    schema: String,
-    session_id: String,
+#[serde(tag = "schema", deny_unknown_fields)]
+enum Request {
+    #[serde(rename = "louiselm.operator-inspect/1")]
+    Inspect { session_id: String },
+    #[serde(rename = "louiselm.operator-skill-request/1")]
+    Skill {
+        operation_id: String,
+        outcome: Option<SkillRequestOutcome>,
+    },
 }
 
 /// Checks the same bounded Session identifier accepted by durable broker records.
@@ -106,6 +112,64 @@ pub fn inspect(
     timeout: Duration,
 ) -> Result<SessionStatus, InspectError> {
     validate_subject(session_id)?;
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Inspect {
+            session_id: session_id.into(),
+        },
+        timeout,
+    )?;
+    let status =
+        SessionStatus::parse_canonical(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if status.session_id != session_id {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(status)
+}
+
+/// Inspects, rejects or cancels one durable request through the operator endpoint.
+/// Retries name the same operation; no decision grants Admission or Resume.
+/// # Errors
+/// Returns typed authentication, request, storage or transport refusal.
+pub fn skill_request(
+    path: &Path,
+    broker_uid: u32,
+    operation_id: &str,
+    outcome: Option<SkillRequestOutcome>,
+    timeout: Duration,
+) -> Result<SkillRequestStatus, InspectError> {
+    if !super::attention::canonical_uuid(operation_id)
+        || outcome == Some(SkillRequestOutcome::Pending)
+    {
+        return Err(InspectError::InvalidRequest);
+    }
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Skill {
+            operation_id: operation_id.into(),
+            outcome,
+        },
+        timeout,
+    )?;
+    let status: SkillRequestStatus =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if !status.valid()
+        || status.operation_id != operation_id
+        || outcome.is_some_and(|expected| status.outcome != expected)
+    {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(status)
+}
+
+fn exchange(
+    path: &Path,
+    broker_uid: u32,
+    request: &Request,
+    timeout: Duration,
+) -> Result<Vec<u8>, InspectError> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or(InspectError::InvalidRequest)?;
@@ -126,22 +190,13 @@ pub fn inspect(
     if ready != READY {
         return Err(InspectError::BrokerUnavailable);
     }
-    let request = Request {
-        schema: "louiselm.operator-inspect/1".into(),
-        session_id: session_id.into(),
-    };
     let bytes = serde_json::to_vec(&request).map_err(|_| InspectError::InvalidRequest)?;
     wire::write(&mut stream, &bytes, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
     let bytes = wire::read(&mut stream, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
     if let Some(error) = InspectError::parse(&bytes) {
         return Err(error);
     }
-    let status =
-        SessionStatus::parse_canonical(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
-    if status.session_id != session_id {
-        return Err(InspectError::StatusUnavailable);
-    }
-    Ok(status)
+    Ok(bytes)
 }
 
 fn peer_uid(stream: &UnixStream) -> Result<u32, InspectError> {
@@ -213,6 +268,10 @@ impl OperatorServer {
     pub fn serve_once(
         &self,
         lookup: impl FnOnce(&str, Instant) -> Result<SessionStatus, InspectError>,
+        skill: impl FnOnce(
+            &str,
+            Option<SkillRequestOutcome>,
+        ) -> Result<SkillRequestStatus, InspectError>,
     ) -> io::Result<()> {
         let (mut stream, _) = self.listener.accept()?;
         let deadline = Instant::now() + TIMEOUT;
@@ -225,21 +284,31 @@ impl OperatorServer {
                 wire::read(&mut stream, deadline).map_err(|_| InspectError::InvalidRequest)?;
             let request: Request =
                 serde_json::from_slice(&bytes).map_err(|_| InspectError::InvalidRequest)?;
-            if request.schema != "louiselm.operator-inspect/1"
-                || !super::is_record_identifier(&request.session_id)
-            {
-                return Err(InspectError::InvalidRequest);
-            }
             if Instant::now() >= deadline {
                 return Err(InspectError::StatusUnavailable);
             }
-            lookup(&request.session_id, deadline)
+            match request {
+                Request::Inspect { session_id } => {
+                    validate_subject(&session_id)?;
+                    Ok(lookup(&session_id, deadline)?.canonical_bytes())
+                }
+                Request::Skill {
+                    operation_id,
+                    outcome,
+                } => {
+                    if !super::attention::canonical_uuid(&operation_id)
+                        || outcome == Some(SkillRequestOutcome::Pending)
+                    {
+                        return Err(InspectError::InvalidRequest);
+                    }
+                    serde_json::to_vec(&skill(&operation_id, outcome)?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
+            }
         })();
-        let bytes = result.map_or_else(InspectError::canonical_bytes, |status| {
-            status.canonical_bytes()
-        });
-        // A vanished reader loses only its observation; no operation, authority
-        // or durable acknowledgement depends on delivering this read-only reply.
+        let bytes = result.unwrap_or_else(InspectError::canonical_bytes);
+        // A vanished reader never rolls back a durable decision. Retrying names
+        // the same operation and cannot reopen a terminal request.
         let _ = wire::write(&mut stream, &bytes, deadline);
         Ok(())
     }

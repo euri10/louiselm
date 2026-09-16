@@ -154,6 +154,7 @@ pub struct BrokerService {
     supervisor: CredentialPin,
     pub(super) lifecycle: super::lifecycle::LifecycleStore,
     pub(super) attention: super::attention::Outbox,
+    pub(super) skill_requests: super::skill_requests::SkillRequests,
     pub(super) verification_inputs: std::path::PathBuf,
 }
 
@@ -207,6 +208,10 @@ impl BrokerService {
             super::lifecycle::LifecycleStore::open(&authorizations.root.join("lifecycle"))?;
         let attention =
             super::attention::Outbox::open(&authorizations.root.join("attention-outbox"))?;
+        let skill_requests = super::skill_requests::SkillRequests::open(
+            &authorizations.root.join("skill-requests"),
+        )?;
+        skill_requests.reconcile(&attention)?;
         Ok(Self {
             listener,
             authorizations,
@@ -215,6 +220,7 @@ impl BrokerService {
             supervisor,
             lifecycle,
             attention,
+            skill_requests,
             verification_inputs: socket_path
                 .parent()
                 .ok_or(BrokerError::InvalidGrant)?

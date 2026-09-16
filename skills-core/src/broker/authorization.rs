@@ -95,6 +95,8 @@ pub struct GrantRequest {
     pub broker_loss_grace_ms: u32,
     /// Explicit approved effects; absence grants no command authority.
     pub commands: Option<ApprovedCommands>,
+    /// Explicit permission to request Skill Admission, never to approve it.
+    pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
 }
 
 /// One durable single-use authorization awaiting its supervisor.
@@ -127,6 +129,8 @@ pub struct PendingAuthorization {
     pub broker_loss_grace_ms: u32,
     /// Exact effect approval bound to this single-use launch.
     pub commands: Option<ApprovedCommands>,
+    /// Exact request permission bound to this Session and envelope revision.
+    pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
 }
 
 /// Durable evidence that one authorization was spent.
@@ -201,6 +205,7 @@ impl AuthorizationStore {
                 || prior.conformance != grant.conformance
                 || prior.controller_uid != grant.controller_uid
                 || prior.commands != grant.commands
+                || prior.skill_requests != grant.skill_requests
                 || prior.expires_at_ms != grant.expires_at_ms
                 || prior.require_cold_recovery != grant.require_cold_recovery
                 || prior.broker_loss_grace_ms != grant.broker_loss_grace_ms
@@ -277,6 +282,13 @@ impl AuthorizationStore {
         if let Some(commands) = &grant.commands {
             commands.policy(&grant.request.authorization_id, now_ms)?;
         }
+        if grant
+            .skill_requests
+            .as_ref()
+            .is_some_and(|permission| !permission.valid(now_ms))
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
         let record_name = record_name(&grant.request.authorization_id)?;
 
         let assignment = lock(&self.assignment);
@@ -298,6 +310,7 @@ impl AuthorizationStore {
             expires_at_ms: grant.expires_at_ms,
             broker_loss_grace_ms: grant.broker_loss_grace_ms,
             commands: grant.commands.clone(),
+            skill_requests: grant.skill_requests.clone(),
         };
         write_new_record(&self.pending_path(&record_name), &pending)?;
         drop(assignment);

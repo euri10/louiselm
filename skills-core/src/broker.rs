@@ -15,6 +15,7 @@
 //! [Launch supervisor]: crate::launch_supervisor
 
 pub mod attention;
+mod attention_config;
 pub mod audit;
 pub mod authorization;
 pub mod cold_resume;
@@ -29,6 +30,8 @@ pub mod promotion;
 pub mod receipts;
 pub mod recovery;
 pub mod service;
+mod skill_request_service;
+mod skill_requests;
 mod state_identity;
 pub mod verification;
 

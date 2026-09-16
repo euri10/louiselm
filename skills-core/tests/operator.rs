@@ -22,7 +22,10 @@ fn wrong_uid_is_refused_before_session_lookup() {
     let server = OperatorServer::bind(&path, uid + 1).unwrap();
     let worker = thread::spawn(move || {
         server
-            .serve_once(|_, _| panic!("unauthenticated lookup"))
+            .serve_once(
+                |_, _| panic!("unauthenticated lookup"),
+                |_, _| panic!("unauthenticated skill control"),
+            )
             .unwrap();
     });
     assert_eq!(
@@ -40,10 +43,13 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
     let server = OperatorServer::bind(&path, uid).unwrap();
     let worker = thread::spawn(move || {
         server
-            .serve_once(|id, _| {
-                assert_eq!(id, "session");
-                Err(InspectError::UnknownSession)
-            })
+            .serve_once(
+                |id, _| {
+                    assert_eq!(id, "session");
+                    Err(InspectError::UnknownSession)
+                },
+                |_, _| panic!("unexpected skill control"),
+            )
             .unwrap();
     });
     assert_eq!(
@@ -93,6 +99,64 @@ fn malformed_subject_is_rejected_before_connecting() {
     }
 }
 
+#[test]
+fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
+    use louiselm_skills::{
+        broker::operator::skill_request,
+        skill_request::{SkillRequestOutcome, SkillRequestStatus},
+    };
+    let root = private_root();
+    let path = root.path().join("operator.sock");
+    let uid = rustix::process::geteuid().as_raw();
+    let id = "12345678-1234-4234-8234-123456789abc";
+    let server = OperatorServer::bind(&path, uid).unwrap();
+    let worker = thread::spawn(move || {
+        for expected in [
+            None,
+            Some(SkillRequestOutcome::Rejected),
+            Some(SkillRequestOutcome::Cancelled),
+        ] {
+            server
+                .serve_once(
+                    |_, _| panic!("not Session inspection"),
+                    |operation, outcome| {
+                        assert_eq!(operation, id);
+                        assert_eq!(outcome, expected);
+                        Ok(SkillRequestStatus {
+                            request_id: "request".into(),
+                            operation_id: operation.into(),
+                            outcome: outcome.unwrap_or(SkillRequestOutcome::Pending),
+                        })
+                    },
+                )
+                .unwrap();
+        }
+    });
+    for outcome in [
+        None,
+        Some(SkillRequestOutcome::Rejected),
+        Some(SkillRequestOutcome::Cancelled),
+    ] {
+        assert_eq!(
+            skill_request(&path, uid, id, outcome, Duration::from_secs(2))
+                .unwrap()
+                .outcome,
+            outcome.unwrap_or(SkillRequestOutcome::Pending)
+        );
+    }
+    worker.join().unwrap();
+    assert_eq!(
+        skill_request(
+            &path,
+            uid,
+            id,
+            Some(SkillRequestOutcome::Pending),
+            Duration::from_secs(1)
+        ),
+        Err(InspectError::InvalidRequest)
+    );
+}
+
 fn read_frame(stream: &mut std::os::unix::net::UnixStream) -> Vec<u8> {
     use std::io::Read;
     let mut header = [0; 4];
@@ -118,10 +182,18 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
     let count = payloads.len() + 3;
     let worker = thread::spawn(move || {
         for _ in 0..count {
-            server.serve_once(|_, _| panic!("invalid lookup")).unwrap();
+            server
+                .serve_once(
+                    |_, _| panic!("invalid lookup"),
+                    |_, _| panic!("invalid skill control"),
+                )
+                .unwrap();
         }
         server
-            .serve_once(|_, _| Err(InspectError::UnknownSession))
+            .serve_once(
+                |_, _| Err(InspectError::UnknownSession),
+                |_, _| panic!("unexpected skill control"),
+            )
             .unwrap();
     });
     let frames = payloads

@@ -65,6 +65,7 @@ impl BrokerService {
         &self,
         session: &mut BrokerSession,
         now_ms: u64,
+        endpoint: Option<&crate::broker::attention::AttentionEndpoint>,
         mut verify: F,
     ) -> Result<bool, BrokerError>
     where
@@ -73,6 +74,18 @@ impl BrokerService {
         let clock = std::time::Instant::now();
         let result = (|| {
             let packet = super::receive_next(session.channel())?;
+            if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
+                && matches!(query.operation, CommandOperation::SkillRequest { .. })
+            {
+                self.answer_skill_request(
+                    session,
+                    query,
+                    elapsed_ms(now_ms, clock),
+                    endpoint,
+                    &mut verify,
+                )?;
+                return Ok(false);
+            }
             if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
                 && matches!(query.operation, CommandOperation::StatusRequest {})
             {
@@ -111,6 +124,12 @@ impl BrokerService {
                 let ack =
                     self.receipts
                         .append(&session.authorization, &packet.bytes, None, verify)?;
+                if receipt.payload.resulting_state == SessionState::Terminal {
+                    self.skill_requests.end_subject(
+                        &AttentionSubject::Session(session.authorization().session_id.clone()),
+                        &self.attention,
+                    )?;
+                }
                 send(session.channel(), ack.canonical_bytes())?;
                 Ok(receipt.payload.resulting_state == SessionState::Terminal)
             }
@@ -130,7 +149,10 @@ impl BrokerService {
             // A status read arriving mid-operation cannot be served here without
             // arming a receive against the one already waiting. Refuse, retryably.
             LauncherPacket::Request(ProtocolMessage::Command(query))
-                if matches!(query.operation, CommandOperation::StatusRequest {}) =>
+                if matches!(
+                    query.operation,
+                    CommandOperation::StatusRequest {} | CommandOperation::SkillRequest { .. }
+                ) =>
             {
                 super::lifecycle_service::refuse_nested_status(session, query)?;
                 Ok(false)

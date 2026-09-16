@@ -86,6 +86,7 @@ pub(super) fn receive(
                             message.operation,
                             crate::launch_protocol::CommandOperation::Delegate { .. }
                                 | crate::launch_protocol::CommandOperation::StatusRequest {}
+                                | crate::launch_protocol::CommandOperation::SkillRequest { .. }
                         ) =>
                     {
                         Ok(ProtocolMessage::Command(message))

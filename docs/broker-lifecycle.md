@@ -721,7 +721,7 @@ and recovery after an actual delivery, without endpoint contents, capabilities
 or peer responses. If placing the capability under the broker state directory,
 initialize its identity marker on empty state first, then provision the capability.
 
-Capture-service exposes projections only on a separate endpoint. It reads
+Capture-service exposes projections and read-only Run lifecycle facts on a separate endpoint. It reads
 `/etc/louiselm-capture-broker.json` at startup: a closed, root-owned regular record
 that is not group/world-writable, containing `socket`, `broker_uid` and
 `capability_sha256`. The
@@ -760,8 +760,58 @@ connections to 32 concurrent clients, and requests to a two-second deadline.
 The existing operator `attention.sock` remains mode 0600, supports its ordinary
 mutations and observer snapshots, and rejects `project` even with the operator
 token. The producer token cannot authorize those ordinary mutations or Run
-operations. The dedicated endpoint has no snapshot or ordinary mutation verbs.
+lifecycle operations. Its `run_lifecycle` query returns only the exact Run UUID,
+durable storage revision and closed lifecycle state; missing/disabled Run storage
+is a refusal, never evidence that a Run is alive. The storage revision is not a
+capability-envelope revision. The dedicated endpoint has no snapshot or ordinary mutation verbs.
 Neither endpoint grants lifecycle, signing or capability-policy authority.
+
+### Durable Skill Admission requests
+
+`GrantRequest.skill_requests` is an optional, explicit permission on the existing
+broker launch authorization: sorted intended Agent names, `allow_run`, and an
+absolute `expires_at_ms`. Unset grants no request permission. Cold reconstruction
+does not inherit this permission into a replacement Session.
+
+The authenticated Agent channel accepts `skill_request` with a stable nested
+`request_id`, subject kind (`session` or `run`), sorted unique canonical package
+digests and intended Agent names. The supervisor owns relay correlation; the
+broker derives all subject IDs and the envelope revision from its retained
+authorization and checks current Session mechanics and permission lifetime.
+A new Run request also requires a current authenticated lifecycle observation.
+The Agent supplies neither an approval nor a foreign subject ID.
+
+Before a successful reply, the broker persists exact content, a random stable
+operation UUID and the existing outbox's `skill_approval_pending` intent with
+fixed `admission_required` code. Packages, Agent names and prose never enter that
+projection. Exact retries retain the operation and terminal outcome; changed
+content requires a fresh request ID. Accepted retries need no new receiver
+connection. No discovery scan or standalone Admission creates a request.
+
+Use the existing UID-authenticated operator endpoint (no sudo or live editor):
+
+```sh
+louiselm-control skill-request inspect OPERATION_UUID --json
+louiselm-control skill-request reject OPERATION_UUID --json
+louiselm-control skill-request cancel OPERATION_UUID --json
+```
+
+Reject/cancel persist an immutable terminal outcome and enqueue an exact clear
+before replying. Contradictory terminal decisions refuse; explicit resubmission
+uses a fresh operation. Signed Session termination cancels only that Session's
+requests. Capture-service's durable `disposed` Run fact cancels only that Run's
+requests; Session termination never substitutes for Run termination. Park retains
+both. The independent delivery worker reconciles terminal subjects after restart
+and repairs interrupted projection intent. Unavailable Run facts retain pending
+state and cannot block other subjects' local cleanup.
+
+This path grants no Admission, Resume, envelope expansion or Session replacement.
+Signed Admission completion belongs to `louiselm-d6fv.6.8`. The cross-crate gate
+`python3 scripts/test-skill-requests` exercises the actual broker handler/outbox
+and disposable capture-service through separate processes, including broker and
+receiver restart, Park and Run disposal. Crate tests cover policy/refusal,
+operator decisions, storage crash windows and late relay replies. These gates
+do not certify the maintainer's installed vendor launch path.
 
 `scripts/test-broker-attention.py` runs under a private mount namespace in a
 disposable VM with `LOUISELM_REQUIRE_BROKER_ATTENTION=1` and

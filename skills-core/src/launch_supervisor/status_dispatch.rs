@@ -1,4 +1,4 @@
-//! Read-only Agent status on the existing authenticated command relay.
+//! Agent status and Skill Admission requests on the authenticated command relay.
 
 use super::{
     BrokerConnection, ChannelState, CommandMessage, CommandOperation, Duration, ErrorCode,
@@ -12,7 +12,7 @@ pub(super) struct PendingStatus {
 
 impl SessionOwner {
     pub(super) fn forward_agent_status(&mut self, query: CommandMessage) {
-        let refusal =
+        let refused =
             if query.session_id != self.binding.session_id || query.run_id != self.binding.run_id {
                 Some(ErrorCode::SubjectMismatch)
             } else if query.envelope_revision != self.binding.envelope_revision {
@@ -30,9 +30,8 @@ impl SessionOwner {
             } else {
                 None
             };
-        if let Some(error) = refusal {
-            let reply =
-                self.command_message(&query.request_id, CommandOperation::StatusRefused { error });
+        if let Some(error) = refused {
+            let reply = self.command_message(&query.request_id, refusal(&query, error));
             self.send_agent_reply(reply);
             self.arm_agent_receive();
             return;
@@ -59,9 +58,7 @@ impl SessionOwner {
         {
             let reply = self.command_message(
                 &query.request_id,
-                CommandOperation::StatusRefused {
-                    error: ErrorCode::BrokerUnavailable,
-                },
+                refusal(&query, ErrorCode::BrokerUnavailable),
             );
             self.send_agent_reply(reply);
             self.arm_agent_receive();
@@ -79,7 +76,10 @@ impl SessionOwner {
     pub(super) fn handle_status_reply(&mut self, message: &CommandMessage) -> bool {
         if !matches!(
             message.operation,
-            CommandOperation::StatusResult { .. } | CommandOperation::StatusRefused { .. }
+            CommandOperation::StatusResult { .. }
+                | CommandOperation::StatusRefused { .. }
+                | CommandOperation::SkillRequestResult { .. }
+                | CommandOperation::SkillRequestRefused { .. }
         ) {
             return false;
         }
@@ -92,6 +92,7 @@ impl SessionOwner {
             || message.session_id != query.session_id
             || message.run_id != query.run_id
             || message.envelope_revision != query.envelope_revision
+            || !matching_reply(query, message)
         {
             return true;
         }
@@ -122,14 +123,37 @@ impl SessionOwner {
         if let Some(pending) = self.commands.status.take() {
             let reply = self.command_message(
                 &pending.query.request_id,
-                CommandOperation::StatusRefused {
-                    error: ErrorCode::BrokerUnavailable,
-                },
+                refusal(&pending.query, ErrorCode::BrokerUnavailable),
             );
             if !self.commands.closed && self.channel_state == ChannelState::Enabled {
                 self.send_agent_reply(reply);
                 self.arm_agent_receive();
             }
         }
+    }
+}
+
+fn refusal(query: &CommandMessage, error: ErrorCode) -> CommandOperation {
+    if matches!(query.operation, CommandOperation::SkillRequest { .. }) {
+        CommandOperation::SkillRequestRefused { error }
+    } else {
+        CommandOperation::StatusRefused { error }
+    }
+}
+
+fn matching_reply(query: &CommandMessage, reply: &CommandMessage) -> bool {
+    match (&query.operation, &reply.operation) {
+        (
+            CommandOperation::StatusRequest {},
+            CommandOperation::StatusResult { .. } | CommandOperation::StatusRefused { .. },
+        )
+        | (CommandOperation::SkillRequest { .. }, CommandOperation::SkillRequestRefused { .. }) => {
+            true
+        }
+        (
+            CommandOperation::SkillRequest { request },
+            CommandOperation::SkillRequestResult { status },
+        ) => request.request_id == status.request_id,
+        _ => false,
     }
 }

@@ -59,7 +59,7 @@ fn agent_status_after_resume_preserves_registered_recovery_and_admission_history
             for _ in 0..2 {
                 assert!(
                     !service
-                        .step(session, 4000, verify_fixture_signature)
+                        .step(session, 4000, None, verify_fixture_signature)
                         .unwrap()
                 );
             }

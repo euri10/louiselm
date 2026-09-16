@@ -189,9 +189,33 @@ impl InstalledBroker {
     /// Returns projection transport/authentication failure or unavailable outbox state.
     pub fn deliver_attention(
         &self,
-        endpoint: &super::attention::AttentionEndpoint,
+        endpoint: Option<&super::attention::AttentionEndpoint>,
     ) -> Result<bool, BrokerError> {
-        self.service.attention.deliver_next(endpoint)
+        let reconciled = self
+            .service
+            .reconcile_skill_requests(endpoint, |key, payload, signature| {
+                self.verifier.verify(key, payload, signature).is_ok()
+            });
+        // A Run observation outage must not suppress already-durable projections.
+        let delivered = self
+            .service
+            .attention
+            .deliver_next(endpoint.ok_or(BrokerError::InvalidGrant)?)?;
+        reconciled?;
+        Ok(delivered)
+    }
+
+    /// Reads or settles an exact request for the authenticated operator.
+    /// # Errors
+    /// Refuses foreign scope, conflicting terminal decisions or unavailable storage.
+    pub fn skill_request_control(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        outcome: Option<crate::skill_request::SkillRequestOutcome>,
+    ) -> Result<crate::skill_request::SkillRequestStatus, BrokerError> {
+        self.service
+            .skill_request_control(operator_uid, operation_id, outcome)
     }
 
     /// Applies emergency quarantine with installed receipt verification.
@@ -433,18 +457,21 @@ impl InstalledBroker {
     /// Closes the connection on protocol, verification, audit or transport failure;
     /// a closed channel never stands for confirmed process cleanup.
     pub fn step(&self, session: &mut BrokerSession) -> Result<bool, BrokerError> {
+        // Missing/untrusted configuration disables Run requests, not Session control.
+        let endpoint = super::attention::AttentionEndpoint::installed();
         let mut verification_failure = None;
-        let result = self
-            .service
-            .step(session, now_ms()?, |key, payload, signature| {
-                match self.verifier.verify(key, payload, signature) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        verification_failure = Some(error);
-                        false
-                    }
+        let result = self.service.step(
+            session,
+            now_ms()?,
+            endpoint.as_ref().ok(),
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    verification_failure = Some(error);
+                    false
                 }
-            });
+            },
+        );
         match verification_failure {
             Some(error) => Err(BrokerError::Verification(error)),
             None => result,

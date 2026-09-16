@@ -58,6 +58,46 @@ pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
     }
 }
 
+pub(super) fn skill_cli(arguments: &[std::ffi::OsString]) -> u8 {
+    use louiselm_skills::skill_request::SkillRequestOutcome;
+    let result = (|| {
+        let [verb, id, format] = arguments else {
+            return Err(InspectError::InvalidRequest);
+        };
+        if format != "--json" {
+            return Err(InspectError::InvalidRequest);
+        }
+        let outcome = match verb.to_str() {
+            Some("inspect") => None,
+            Some("reject") => Some(SkillRequestOutcome::Rejected),
+            Some("cancel") => Some(SkillRequestOutcome::Cancelled),
+            _ => return Err(InspectError::InvalidRequest),
+        };
+        let id = id.to_str().ok_or(InspectError::InvalidRequest)?;
+        let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
+        let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
+            .map_err(|_| InspectError::BrokerUnavailable)?;
+        let status = operator::skill_request(
+            Path::new(operator::SOCKET),
+            config.broker_uid,
+            id,
+            outcome,
+            operator::TIMEOUT,
+        )?;
+        serde_json::to_vec(&status).map_err(|_| InspectError::StatusUnavailable)
+    })();
+    match result {
+        Ok(bytes) => match io::stdout().lock().write_all(&bytes) {
+            Ok(()) => 0,
+            Err(_) => InspectError::StatusUnavailable.exit_code(),
+        },
+        Err(error) => {
+            let _ = io::stderr().lock().write_all(&error.canonical_bytes());
+            error.exit_code()
+        }
+    }
+}
+
 struct Query {
     expires: Instant,
     reply: SyncSender<Result<SessionStatus, InspectError>>,
@@ -98,9 +138,14 @@ impl Queries {
             .name("louiselm-operator-inspect".into())
             .spawn(move || {
                 loop {
-                    if let Err(error) =
-                        endpoint.serve_once(|id, deadline| owner.inspect(&broker, id, deadline))
-                    {
+                    if let Err(error) = endpoint.serve_once(
+                        |id, deadline| owner.inspect(&broker, id, deadline),
+                        |id, outcome| {
+                            broker
+                                .skill_request_control(owner.operator_uid, id, outcome)
+                                .map_err(|_| InspectError::StatusUnavailable)
+                        },
+                    ) {
                         if error.kind() == io::ErrorKind::Interrupted {
                             continue;
                         }

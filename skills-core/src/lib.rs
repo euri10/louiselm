@@ -45,6 +45,7 @@ pub mod sandbox;
 pub mod scan;
 pub mod session_manifest;
 pub mod signer;
+pub mod skill_request;
 pub mod sshsig;
 pub mod store;
 pub mod supply_posture;

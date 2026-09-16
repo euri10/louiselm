@@ -1,7 +1,7 @@
 //! Authenticated bounded local delivery, independently of Neovim.
 
 use super::{BrokerError, Projection};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Explicit local endpoint provisioned for the dedicated broker identity.
-/// The capability file is a broker-owned private copy of the Attention-only
+/// The capability file is a broker-owned private copy of the scoped Attention/Run-read
 /// producer capability. It is never placed inside a Session or sent to an Agent.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +24,45 @@ pub struct AttentionEndpoint {
     pub capability_file: PathBuf,
     /// Expected kernel UID of the capture-service socket peer.
     pub receiver_uid: u32,
+}
+
+/// Narrow durable lifecycle observed from the authenticated Run store.
+/// Its revision is a storage revision, never a capability-envelope revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunLifecycle {
+    /// Canonical Run UUID requested on this authenticated exchange.
+    pub run_id: String,
+    /// Monotonic revision of this Run's durable record.
+    pub revision: u64,
+    /// Observed lifecycle; this grants no authorization to continue or resume.
+    pub state: RunState,
+}
+
+/// Closed lifecycle vocabulary of the existing capture-service Run store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Durably admitted, before work starts.
+    Admitted,
+    /// Work is active.
+    Active,
+    /// Warm Park retains its waiting requests.
+    Parked,
+    /// Cold Park retains its waiting requests.
+    ColdParked,
+    /// An explicit resume is in progress.
+    Resuming,
+    /// Terminal; later observations cannot reopen requests.
+    Disposed,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunResponse {
+    r#type: String,
+    request_id: String,
+    result: RunLifecycle,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +83,46 @@ struct Response {
 }
 
 impl AttentionEndpoint {
+    /// Reads exact Run lifecycle facts on an owned asynchronous transport worker.
+    /// The caller joins the returned worker; completion runs once on that worker.
+    /// A missing store, subject or trusted peer is an error, never a live Run.
+    /// # Errors
+    /// Refuses malformed Run IDs or a worker-start failure before queuing completion.
+    pub fn read_run(
+        &self,
+        run_id: String,
+        complete: Box<dyn FnOnce(Result<RunLifecycle, BrokerError>) + Send>,
+    ) -> Result<JoinHandle<()>, BrokerError> {
+        if !super::canonical_uuid(&run_id) {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let endpoint = self.clone();
+        thread::Builder::new()
+            .name("louiselm-run-observation".into())
+            .spawn(move || complete(endpoint.query_run(&run_id).map_err(BrokerError::Attention)))
+            .map_err(BrokerError::Attention)
+    }
+
+    fn query_run(&self, run_id: &str) -> io::Result<RunLifecycle> {
+        let (mut stream, token) = self.connect_authenticated()?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+        let request = json!({"type":"run_lifecycle","request_id":"run-lifecycle",
+            "run_id":run_id,"capability":token});
+        stream.write_all(request.to_string().as_bytes())?;
+        stream.write_all(b"\n")?;
+        let bytes = read_frame(&mut BufReader::new(stream), deadline)?;
+        let response: RunResponse = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if response.r#type != "run_lifecycle_result"
+            || response.request_id != "run-lifecycle"
+            || response.result.run_id != run_id
+            || response.result.revision == 0
+        {
+            return Err(invalid("Run lifecycle response does not match"));
+        }
+        Ok(response.result)
+    }
+
     /// Starts one bounded asynchronous delivery and returns its owned worker.
     /// The caller must join the worker. Completion runs on that worker, exactly
     /// once when queued successfully; no UI or authorizing state is accessed.
@@ -67,24 +146,7 @@ impl AttentionEndpoint {
             .change
             .validate()
             .map_err(|_| invalid("invalid projection"))?;
-        let metadata = fs::symlink_metadata(&self.capability_file)?;
-        if !metadata.is_file()
-            || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o077 != 0
-            || metadata.len() > 256
-        {
-            return Err(invalid("Attention capability file is not private"));
-        }
-        let token = fs::read_to_string(&self.capability_file)?;
-        let token = token.trim();
-        if token.is_empty() || token.len() > 256 {
-            return Err(invalid("Attention capability is invalid"));
-        }
-        let mut stream = connect_stream(&self.socket)?;
-        let credentials = rustix::net::sockopt::socket_peercred(&stream)?;
-        if credentials.uid.as_raw() != self.receiver_uid {
-            return Err(invalid("Attention receiver identity does not match"));
-        }
+        let (mut stream, token) = self.connect_authenticated()?;
         let deadline = Instant::now() + Duration::from_secs(30);
         stream.set_write_timeout(Some(Duration::from_secs(30)))?;
         let request_id = format!("projection-{}", entry.sequence);
@@ -114,6 +176,28 @@ impl AttentionEndpoint {
             return Ok(());
         }
         Err(invalid("Attention acknowledgement was not received"))
+    }
+
+    fn connect_authenticated(&self) -> io::Result<(UnixStream, String)> {
+        let metadata = fs::symlink_metadata(&self.capability_file)?;
+        if !metadata.is_file()
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+            || metadata.len() > 256
+        {
+            return Err(invalid("Attention capability file is not private"));
+        }
+        let token = fs::read_to_string(&self.capability_file)?;
+        let token = token.trim();
+        if token.is_empty() || token.len() > 256 {
+            return Err(invalid("Attention capability is invalid"));
+        }
+        let stream = connect_stream(&self.socket)?;
+        let credentials = rustix::net::sockopt::socket_peercred(&stream)?;
+        if credentials.uid.as_raw() != self.receiver_uid {
+            return Err(invalid("Attention receiver identity does not match"));
+        }
+        Ok((stream, token.to_owned()))
     }
 }
 

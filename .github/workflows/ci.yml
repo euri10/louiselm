@@ -338,7 +338,10 @@ jobs:
       - name: Test
         run: cargo test --all-features --locked
 
-      - name: Test installed broker Attention across identities
+      - name: Test cross-service durable skill requests
+        run: python3 ../scripts/test-skill-requests
+
+      - name: Test installed broker Attention provisioning across identities
         run: |
           cargo build --all-features --locked
           sudo env LOUISELM_REQUIRE_BROKER_ATTENTION=1 \

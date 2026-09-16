@@ -97,6 +97,21 @@ pub enum CommandOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandOperation {
+    /// Agent asks for exact Skill Admission within its approved request scope.
+    SkillRequest {
+        /// Immutable content and stable retry identity, not Admission authority.
+        request: crate::skill_request::SkillRequest,
+    },
+    /// Broker persisted the exact request and its projection intent.
+    SkillRequestResult {
+        /// Stable operation and durable outcome.
+        status: crate::skill_request::SkillRequestStatus,
+    },
+    /// No successful request acknowledgement; retry with the same identity.
+    SkillRequestRefused {
+        /// Stable refusal without external prose.
+        error: ErrorCode,
+    },
     /// Authenticated Agent asks for its own read-only canonical Session status.
     StatusRequest {},
     /// Broker-derived self status; never carries lifecycle authority.
@@ -236,6 +251,17 @@ impl CommandMessage {
             validate_identifier(id)?;
         }
         match &self.operation {
+            CommandOperation::SkillRequest { request } => {
+                if !request.valid() {
+                    return Err(invalid());
+                }
+            }
+            CommandOperation::SkillRequestResult { status } => {
+                validate_identifier(&status.request_id)?;
+                if !status.valid() {
+                    return Err(invalid());
+                }
+            }
             CommandOperation::StatusResult { status } => {
                 status.validate()?;
                 if status.session_id != self.session_id
@@ -336,6 +362,7 @@ impl CommandMessage {
             CommandOperation::Result { .. }
             | CommandOperation::StatusRequest {}
             | CommandOperation::StatusRefused { .. }
+            | CommandOperation::SkillRequestRefused { .. }
             | CommandOperation::Reject { .. }
             | CommandOperation::OutcomeAcknowledged { .. }
             | CommandOperation::Revoke

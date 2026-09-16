@@ -346,6 +346,7 @@ fn installed_broker_worker() {
     broker
         .authorize(&GrantRequest {
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+            skill_requests: None,
             require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,

@@ -10,6 +10,23 @@ use super::{
 use crate::{runs::RunStoreError, time::now_ms};
 
 impl AttentionStore {
+    /// Reads only durable lifecycle facts; never returns Run credentials or policy.
+    pub(crate) fn broker_run_lifecycle(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, AttentionError> {
+        let unavailable = || RunStoreError::Invalid("Run lifecycle unavailable".into());
+        let runs = self.runs.as_ref().ok_or_else(unavailable)?;
+        let run = runs.find_view(id)?.ok_or_else(unavailable)?;
+        if !matches!(
+            run.state.as_str(),
+            "admitted" | "active" | "parked" | "cold_parked" | "resuming" | "disposed"
+        ) {
+            return Err(unavailable().into());
+        }
+        Ok(serde_json::json!({"run_id":run.id,"revision":run.revision,"state":run.state}))
+    }
+
     pub(super) fn local_park_resolved(&self, key: &AttentionKey) -> Result<bool, AttentionError> {
         let Some(runs) = &self.runs else {
             return Ok(false);

@@ -673,6 +673,73 @@ fn status_deadline_allows_a_retry_without_restoring_command_authority() {
 }
 
 #[test]
+fn skill_relay_preserves_retry_identity_and_drops_late_or_wrong_kind_replies() {
+    use crate::skill_request::{
+        SkillRequest, SkillRequestOutcome, SkillRequestStatus, SkillSubject,
+    };
+    let mut harness = Harness::new("true", false);
+    let query = harness.owner.command_message(
+        "outer-id",
+        CommandOperation::SkillRequest {
+            request: SkillRequest {
+                request_id: "durable-id".into(),
+                subject: SkillSubject::Session,
+                packages: vec![crate::Digest::of(b"package").to_string()],
+                agents: vec!["codex".into()],
+            },
+        },
+    );
+    settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_none() {
+        harness.tick();
+    }
+    let mut forwarded = receive(&harness.broker);
+    assert_ne!(forwarded.request_id, query.request_id);
+    assert_eq!(forwarded.operation, query.operation);
+    let mut wrong = forwarded.clone();
+    wrong.operation = CommandOperation::StatusRefused {
+        error: ErrorCode::OperationPending,
+    };
+    assert!(harness.owner.handle_status_reply(&wrong));
+    assert!(harness.owner.commands.status.is_some());
+    harness.timer.expire();
+    while harness.owner.commands.status.is_some() {
+        harness.tick();
+    }
+    assert!(matches!(
+        receive(&harness.agent).operation,
+        CommandOperation::SkillRequestRefused {
+            error: ErrorCode::BrokerUnavailable
+        }
+    ));
+    settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_none() {
+        harness.tick();
+    }
+    let next = receive(&harness.broker);
+    assert_eq!(next.operation, query.operation);
+    forwarded.operation = CommandOperation::SkillRequestResult {
+        status: SkillRequestStatus {
+            request_id: "durable-id".into(),
+            operation_id: "12345678-1234-4234-8234-123456789abc".into(),
+            outcome: SkillRequestOutcome::Pending,
+        },
+    };
+    assert!(harness.owner.handle_status_reply(&forwarded));
+    assert!(harness.owner.commands.status.is_some());
+    forwarded.request_id = next.request_id;
+    settle(|complete| harness.broker.send(forwarded.canonical_bytes(), complete));
+    while harness.owner.commands.status.is_some() {
+        harness.tick();
+    }
+    let reply = receive(&harness.agent);
+    assert_eq!(reply.request_id, query.request_id);
+    assert_eq!(reply.operation, forwarded.operation);
+    assert!(harness.audit.entries().unwrap().is_empty());
+    assert_eq!(harness.owner.commands.sequence, 0);
+}
+
+#[test]
 fn agent_packet_round_trips_through_policy_and_isolated_mechanics() {
     let command = "printf private-output; printf done > result";
     let mut harness = Harness::new(command, false);

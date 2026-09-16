@@ -27,7 +27,7 @@ fn dispose_source(
     settle(|complete| channel.send(loss.canonical_bytes(), complete));
     assert!(
         !service
-            .step(session, 4000, verify_fixture_signature)
+            .step(session, 4000, None, verify_fixture_signature)
             .unwrap()
     );
     let _ = settle(|complete| channel.receive(complete));
@@ -46,7 +46,7 @@ fn dispose_source(
     settle(|complete| channel.send(receipt.canonical_bytes(), complete));
     assert!(
         service
-            .step(session, 4000, verify_fixture_signature)
+            .step(session, 4000, None, verify_fixture_signature)
             .unwrap()
     );
     let _ = settle(|complete| channel.receive(complete));

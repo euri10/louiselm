@@ -55,7 +55,7 @@ fn idle_session_waits_past_the_handshake_deadline() {
         finished
             .send(
                 service
-                    .step(&mut session, 90_000, verify_fixture_signature)
+                    .step(&mut session, 90_000, None, verify_fixture_signature)
                     .is_err(),
             )
             .unwrap();

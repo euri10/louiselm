@@ -1,4 +1,4 @@
-//! Dedicated, UID-pinned broker projection endpoint; no observer or Run authority.
+//! UID-pinned broker projections and narrow read-only Run lifecycle facts.
 
 use crate::operator_socket::{remove_stale_socket, verify_capability};
 use crate::{AttentionSocketMessage, AttentionStore, BrokerProjection};
@@ -105,7 +105,7 @@ impl BrokerAttentionConfig {
     }
 }
 
-/// Process-owned listener and bounded client tasks for broker projections only.
+/// Process-owned listener for broker projections and read-only Run facts.
 pub struct BrokerAttentionSocket {
     listener: UnixListener,
     config: BrokerAttentionConfig,
@@ -215,6 +215,11 @@ enum Request {
         projection: BrokerProjection,
         capability: String,
     },
+    RunLifecycle {
+        request_id: String,
+        run_id: String,
+        capability: String,
+    },
 }
 
 async fn project(stream: UnixStream, store: AttentionStore, hash: String) -> io::Result<()> {
@@ -226,35 +231,68 @@ async fn project(stream: UnixStream, store: AttentionStore, hash: String) -> io:
     {
         return Err(invalid("projection frame is incomplete or oversized"));
     }
-    let Request::Project {
-        request_id,
-        projection,
-        capability,
-    } = serde_json::from_slice(&bytes).map_err(|_| invalid("projection request is malformed"))?;
+    let request: Request =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("broker request is malformed"))?;
+    let (request_id, capability) = match &request {
+        Request::Project {
+            request_id,
+            capability,
+            ..
+        }
+        | Request::RunLifecycle {
+            request_id,
+            capability,
+            ..
+        } => (request_id, capability),
+    };
     let message = if request_id.is_empty()
         || request_id.len() > 128
         || capability.len() > 256
-        || !verify_capability(&hash, &capability)
+        || !verify_capability(&hash, capability)
     {
-        AttentionSocketMessage::MutationError {
+        serde_json::to_value(AttentionSocketMessage::MutationError {
             request_id: String::new(),
-            message: "projection authorization refused".into(),
-        }
+            message: "broker authorization refused".into(),
+        })?
     } else {
-        match tokio::task::spawn_blocking(move || store.project(&projection))
+        tokio::task::spawn_blocking(move || reply(request, &store))
             .await
-            .map_err(io::Error::other)?
-        {
-            Ok(result) => AttentionSocketMessage::ProjectionResult { request_id, result },
-            Err(_) => AttentionSocketMessage::MutationError {
-                request_id,
-                message: "projection refused".into(),
-            },
-        }
+            .map_err(io::Error::other)??
     };
     let stream = reader.get_mut().get_mut();
     stream.write_all(&serde_json::to_vec(&message)?).await?;
     stream.write_all(b"\n").await
+}
+
+fn reply(request: Request, store: &AttentionStore) -> io::Result<serde_json::Value> {
+    let (request_id, result) = match request {
+        Request::Project {
+            request_id,
+            projection,
+            ..
+        } => {
+            let result = store.project(&projection).map(|result| {
+                serde_json::json!({"type":"projection_result","request_id":request_id,"result":result})
+            });
+            (request_id, result)
+        }
+        Request::RunLifecycle {
+            request_id, run_id, ..
+        } => {
+            let result = store.broker_run_lifecycle(&run_id).map(|result| {
+                serde_json::json!({"type":"run_lifecycle_result","request_id":request_id,"result":result})
+            });
+            (request_id, result)
+        }
+    };
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => serde_json::to_value(AttentionSocketMessage::MutationError {
+            request_id,
+            message: "broker request refused".into(),
+        })
+        .map_err(io::Error::other),
+    }
 }
 
 fn invalid(message: &str) -> io::Error {

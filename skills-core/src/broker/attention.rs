@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-pub use transport::AttentionEndpoint;
+pub use transport::{AttentionEndpoint, RunLifecycle, RunState};
 
 /// Trusted subject of one condition.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,7 +344,7 @@ impl Outbox {
     }
 }
 
-fn canonical_uuid(value: &str) -> bool {
+pub(super) fn canonical_uuid(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| {
             if [8, 13, 18, 23].contains(&index) {

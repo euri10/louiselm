@@ -66,6 +66,8 @@ impl ColdResumeAllocation {
             expires_at_ms: self.expires_at_ms,
             broker_loss_grace_ms: self.broker_loss_grace_ms,
             commands: self.commands.clone(),
+            // Request permission needs explicit approval for the new Session.
+            skill_requests: None,
         }
     }
 }

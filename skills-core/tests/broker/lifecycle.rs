@@ -453,7 +453,10 @@ pub(super) fn drive_park_peer(
     drive_lifecycle_peer(channel, &current)
 }
 
-fn drive_lifecycle_peer(channel: &SeqpacketChannel, current: &SupervisorStatus) -> SignedReceipt {
+pub(super) fn drive_lifecycle_peer(
+    channel: &SeqpacketChannel,
+    current: &SupervisorStatus,
+) -> SignedReceipt {
     drive_lifecycle_peer_before_reply(channel, current, || {})
 }
 
@@ -866,7 +869,7 @@ fn an_agent_and_its_operator_read_one_session_differing_only_by_scope() {
         .unwrap();
     assert!(
         !service
-            .step(&mut session, observed_at_ms, verify_fixture_signature)
+            .step(&mut session, observed_at_ms, None, verify_fixture_signature)
             .unwrap()
     );
     let operator = service
@@ -944,7 +947,7 @@ fn agent_status_refusals_do_not_disclose_subjects_or_close_the_worker() {
     for _ in 0..5 {
         assert!(
             !service
-                .step(&mut session, 2000, verify_fixture_signature)
+                .step(&mut session, 2000, None, verify_fixture_signature)
                 .unwrap()
         );
     }

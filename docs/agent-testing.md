@@ -51,6 +51,13 @@ dependencies), run from the repository root:
 `node --test --test-timeout=5000 skills-core/tests/recovery_browser.test.cjs`.
 CI runs it alongside the Rust gates; Cargo alone does not execute the client.
 
+Broker Skill Admission request changes also run
+`python3 scripts/test-skill-requests` from the repository root. It builds both
+crates' existing integration-test targets and connects separate broker and
+capture-service processes over disposable authenticated sockets. The fixture
+tests are ignored by standalone Cargo runs; this explicit cross-crate gate,
+also enforced in CI, runs them with their required peer.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is

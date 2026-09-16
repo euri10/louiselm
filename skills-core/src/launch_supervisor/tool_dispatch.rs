@@ -436,7 +436,10 @@ impl SessionOwner {
                 self.forward_command(request, None);
             }
             Some(Ok(ProtocolMessage::Command(request))) => {
-                if matches!(request.operation, CommandOperation::StatusRequest {}) {
+                if matches!(
+                    request.operation,
+                    CommandOperation::StatusRequest {} | CommandOperation::SkillRequest { .. }
+                ) {
                     self.forward_agent_status(request);
                 } else {
                     self.request_grant(&request);

@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Cross-crate broker request/Attention gate; disposable local state, no new dependencies."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_binary(crate, target):
+    result = subprocess.run(
+        ["cargo", "test", "--locked", "--test", target, "--no-run", "--message-format=json"],
+        cwd=ROOT / crate, capture_output=True, text=True, check=False, timeout=600,
+    )
+    if result.returncode:
+        sys.stderr.write(result.stderr)
+        for line in result.stdout.splitlines():
+            record = json.loads(line)
+            if record.get("reason") == "compiler-message":
+                sys.stderr.write(record["message"].get("rendered", ""))
+        result.check_returncode()
+    for line in result.stdout.splitlines():
+        record = json.loads(line)
+        if record.get("reason") == "compiler-artifact" and record.get("executable"):
+            if record["target"]["name"] == target:
+                return record["executable"]
+    raise RuntimeError(f"missing {crate}/{target} test executable")
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("CARGO_PROFILE_DEV_DEBUG", "line-tables-only")
+    broker = test_binary("skills-core", "broker")
+    capture = test_binary("capture-service", "broker_runs")
+    subprocess.run(
+        [capture, "--ignored", "--exact", "cross_crate_requests_survive_restart_park_and_disposal", "--nocapture"],
+        env={**os.environ, "LOUISELM_TEST_REQUEST_BROKER": broker}, check=True, timeout=120,
+    )

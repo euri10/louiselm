@@ -36,7 +36,7 @@ fn registered_point_settles_identically_but_expired_retry_cannot_renew_it() {
         settle(|complete| channel.send(request.canonical_bytes(), complete));
         assert!(
             !service
-                .step(session, 4000, verify_fixture_signature)
+                .step(session, 4000, None, verify_fixture_signature)
                 .unwrap()
         );
         let original = acknowledgement(channel);
@@ -47,13 +47,13 @@ fn registered_point_settles_identically_but_expired_retry_cannot_renew_it() {
         );
         settle(|complete| channel.send(request.canonical_bytes(), complete));
         service
-            .step(session, 5000, verify_fixture_signature)
+            .step(session, 5000, None, verify_fixture_signature)
             .unwrap();
         assert_eq!(acknowledgement(channel), original);
         settle(|complete| channel.send(request.canonical_bytes(), complete));
         assert!(
             service
-                .step(session, 60000, verify_fixture_signature)
+                .step(session, 60000, None, verify_fixture_signature)
                 .is_err()
         );
         expect_disconnect(channel);
@@ -66,7 +66,7 @@ fn expired_point_before_loss_records_no_recovery() {
         let request = settlement(session.authorization(), recovery.head.clone());
         settle(|complete| channel.send(request.canonical_bytes(), complete));
         service
-            .step(session, 60000, verify_fixture_signature)
+            .step(session, 60000, None, verify_fixture_signature)
             .unwrap();
         assert!(matches!(
             acknowledgement(channel).disposition,
@@ -89,7 +89,7 @@ fn foreign_or_stale_settlement_never_acknowledges_disposal() {
             settle(|complete| channel.send(request.canonical_bytes(), complete));
             assert!(
                 service
-                    .step(session, 4000, verify_fixture_signature)
+                    .step(session, 4000, None, verify_fixture_signature)
                     .is_err()
             );
             expect_disconnect(channel);
@@ -160,7 +160,7 @@ fn check_absent(fault: &str) {
     if fault != "none" {
         assert!(
             service
-                .step(&mut session, 4000, verify_fixture_signature)
+                .step(&mut session, 4000, None, verify_fixture_signature)
                 .is_err()
         );
         expect_disconnect(&channel);
@@ -177,7 +177,7 @@ fn check_absent(fault: &str) {
     }
     assert!(
         !service
-            .step(&mut session, 4000, verify_fixture_signature)
+            .step(&mut session, 4000, None, verify_fixture_signature)
             .unwrap()
     );
     let outbox = louiselm_skills::broker::attention::Outbox::open(
@@ -191,7 +191,7 @@ fn check_absent(fault: &str) {
     ));
     settle(|complete| channel.send(request.canonical_bytes(), complete));
     service
-        .step(&mut session, 5000, verify_fixture_signature)
+        .step(&mut session, 5000, None, verify_fixture_signature)
         .unwrap();
     let _ = acknowledgement(&channel);
     assert_eq!(outbox.next().unwrap(), Some(queued));

@@ -31,7 +31,7 @@ fn history_refusal_withdraws_live_status_receipts_and_resume() {
             "receipt" => {
                 settle(|complete| channel.send(chain[1].canonical_bytes(), complete));
                 service
-                    .step(&mut session, 3000, verify_fixture_signature)
+                    .step(&mut session, 3000, None, verify_fixture_signature)
                     .map(|_| ())
             }
             _ => {
