@@ -97,6 +97,8 @@ pub struct GrantRequest {
     pub commands: Option<ApprovedCommands>,
     /// Explicit permission to request Skill Admission, never to approve it.
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
+    /// Explicit bounded canonical-comment permission; absence denies mutations.
+    pub beads_comments: Option<crate::beads_mutation::ApprovedBeadsComments>,
 }
 
 /// One durable single-use authorization awaiting its supervisor.
@@ -119,6 +121,10 @@ pub struct PendingAuthorization {
     pub session_id: String,
     /// Authorized Run.
     pub run_id: String,
+    /// Registered Agent this Session launched, for broker-derived attribution
+    /// (e.g. canonical Beads mutation actor). Not part of the signed
+    /// [`LaunchAuthorization`]; the supervisor never needs it.
+    pub agent_id: String,
     /// Authorized capability-envelope revision.
     pub envelope_revision: u64,
     /// Host identity leased from the installed pool for this Session.
@@ -131,6 +137,8 @@ pub struct PendingAuthorization {
     pub commands: Option<ApprovedCommands>,
     /// Exact request permission bound to this Session and envelope revision.
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
+    /// Exact comment scope and budget retained across retries and restarts.
+    pub beads_comments: Option<crate::beads_mutation::ApprovedBeadsComments>,
 }
 
 /// Durable evidence that one authorization was spent.
@@ -206,6 +214,7 @@ impl AuthorizationStore {
                 || prior.controller_uid != grant.controller_uid
                 || prior.commands != grant.commands
                 || prior.skill_requests != grant.skill_requests
+                || prior.beads_comments != grant.beads_comments
                 || prior.expires_at_ms != grant.expires_at_ms
                 || prior.require_cold_recovery != grant.require_cold_recovery
                 || prior.broker_loss_grace_ms != grant.broker_loss_grace_ms
@@ -289,6 +298,13 @@ impl AuthorizationStore {
         {
             return Err(BrokerError::InvalidGrant);
         }
+        if grant
+            .beads_comments
+            .as_ref()
+            .is_some_and(|permission| !permission.valid(now_ms))
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
         let record_name = record_name(&grant.request.authorization_id)?;
 
         let assignment = lock(&self.assignment);
@@ -305,12 +321,14 @@ impl AuthorizationStore {
             controller_uid: grant.controller_uid,
             session_id: grant.request.session_id.clone(),
             run_id: grant.request.run_id.clone(),
+            agent_id: grant.request.agent_id.clone(),
             envelope_revision: grant.request.envelope_revision,
             identity,
             expires_at_ms: grant.expires_at_ms,
             broker_loss_grace_ms: grant.broker_loss_grace_ms,
             commands: grant.commands.clone(),
             skill_requests: grant.skill_requests.clone(),
+            beads_comments: grant.beads_comments.clone(),
         };
         write_new_record(&self.pending_path(&record_name), &pending)?;
         drop(assignment);

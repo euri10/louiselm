@@ -1,4 +1,4 @@
-//! Agent status and Skill Admission requests on the authenticated command relay.
+//! Agent status, Skill Admission and Beads requests on the authenticated relay.
 
 use super::{
     BrokerConnection, ChannelState, CommandMessage, CommandOperation, Duration, ErrorCode,
@@ -80,6 +80,8 @@ impl SessionOwner {
                 | CommandOperation::StatusRefused { .. }
                 | CommandOperation::SkillRequestResult { .. }
                 | CommandOperation::SkillRequestRefused { .. }
+                | CommandOperation::BeadsMutationResult { .. }
+                | CommandOperation::BeadsMutationRefused { .. }
         ) {
             return false;
         }
@@ -99,7 +101,7 @@ impl SessionOwner {
         let mut reply = message.clone();
         reply.request_id.clone_from(&query.request_id);
         self.commands.status = None;
-        // Park, loss and revocation can overtake this read. A late result must
+        // Park, loss and revocation can overtake this request. A late result must
         // never reach a revoked channel or a later Resume receive generation.
         if !self.commands.closed
             && self.channel_state == ChannelState::Enabled
@@ -136,6 +138,8 @@ impl SessionOwner {
 fn refusal(query: &CommandMessage, error: ErrorCode) -> CommandOperation {
     if matches!(query.operation, CommandOperation::SkillRequest { .. }) {
         CommandOperation::SkillRequestRefused { error }
+    } else if matches!(query.operation, CommandOperation::BeadsMutation { .. }) {
+        CommandOperation::BeadsMutationRefused { error }
     } else {
         CommandOperation::StatusRefused { error }
     }
@@ -147,12 +151,17 @@ fn matching_reply(query: &CommandMessage, reply: &CommandMessage) -> bool {
             CommandOperation::StatusRequest {},
             CommandOperation::StatusResult { .. } | CommandOperation::StatusRefused { .. },
         )
-        | (CommandOperation::SkillRequest { .. }, CommandOperation::SkillRequestRefused { .. }) => {
+        | (CommandOperation::SkillRequest { .. }, CommandOperation::SkillRequestRefused { .. })
+        | (CommandOperation::BeadsMutation { .. }, CommandOperation::BeadsMutationRefused { .. }) => {
             true
         }
         (
             CommandOperation::SkillRequest { request },
             CommandOperation::SkillRequestResult { status },
+        ) => request.request_id == status.request_id,
+        (
+            CommandOperation::BeadsMutation { request },
+            CommandOperation::BeadsMutationResult { status },
         ) => request.request_id == status.request_id,
         _ => false,
     }

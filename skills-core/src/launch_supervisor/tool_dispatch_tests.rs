@@ -770,6 +770,57 @@ fn agent_packet_round_trips_through_policy_and_isolated_mechanics() {
 }
 
 #[test]
+fn beads_relay_correlates_results_and_refuses_after_deadline() {
+    use crate::beads_mutation::{
+        BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest, BeadsMutationStatus,
+    };
+    let mut harness = Harness::new("true", false);
+    let query = harness.owner.command_message(
+        "outer-comment",
+        CommandOperation::BeadsMutation {
+            request: BeadsMutationRequest {
+                request_id: "stable-comment".into(),
+                kind: BeadsMutationKind::CommentAdd {
+                    issue_id: "test-1".into(),
+                    text: "hello".into(),
+                },
+            },
+        },
+    );
+    settle(|complete| harness.agent.send(query.canonical_bytes(), complete));
+    harness.tick();
+    assert!(harness.owner.commands.status.is_some());
+    let mut forwarded = receive(&harness.broker);
+    assert_eq!(forwarded.operation, query.operation);
+    forwarded.operation = CommandOperation::BeadsMutationResult {
+        status: BeadsMutationStatus {
+            request_id: "wrong-comment".into(),
+            operation_id: "12345678-1234-4234-8234-123456789abc".into(),
+            outcome: BeadsMutationOutcome::Completed,
+        },
+    };
+    assert!(harness.owner.handle_status_reply(&forwarded));
+    assert!(harness.owner.commands.status.is_some());
+    if let CommandOperation::BeadsMutationResult { status } = &mut forwarded.operation {
+        status.request_id = "stable-comment".into();
+    }
+    assert!(harness.owner.handle_status_reply(&forwarded));
+    assert_eq!(receive(&harness.agent).request_id, query.request_id);
+    harness.owner.forward_agent_status(query);
+    let next = receive(&harness.broker);
+    harness.owner.expire_agent_status(&next.request_id);
+    assert!(matches!(
+        receive(&harness.agent).operation,
+        CommandOperation::BeadsMutationRefused {
+            error: ErrorCode::BrokerUnavailable
+        }
+    ));
+    assert!(harness.owner.handle_status_reply(&forwarded));
+    assert!(harness.owner.commands.status.is_none());
+    assert!(harness.audit.entries().unwrap().is_empty());
+}
+
+#[test]
 fn lost_authorization_reply_stays_spent_and_late_reply_cannot_start() {
     let mut harness = Harness::new("touch forbidden", false);
     let request = harness.request("touch forbidden");

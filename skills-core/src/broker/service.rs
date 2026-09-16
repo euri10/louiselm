@@ -155,6 +155,8 @@ pub struct BrokerService {
     pub(super) lifecycle: super::lifecycle::LifecycleStore,
     pub(super) attention: super::attention::Outbox,
     pub(super) skill_requests: super::skill_requests::SkillRequests,
+    pub(super) beads_mutations: super::beads_mutation::BeadsMutations,
+    pub(super) tracker: Option<super::beads_mutation::TrackerConfig>,
     pub(super) verification_inputs: std::path::PathBuf,
 }
 
@@ -212,6 +214,9 @@ impl BrokerService {
             &authorizations.root.join("skill-requests"),
         )?;
         skill_requests.reconcile(&attention)?;
+        let beads_mutations = super::beads_mutation::BeadsMutations::open(
+            &authorizations.root.join("beads-mutations"),
+        )?;
         Ok(Self {
             listener,
             authorizations,
@@ -221,6 +226,8 @@ impl BrokerService {
             lifecycle,
             attention,
             skill_requests,
+            beads_mutations,
+            tracker: None,
             verification_inputs: socket_path
                 .parent()
                 .ok_or(BrokerError::InvalidGrant)?

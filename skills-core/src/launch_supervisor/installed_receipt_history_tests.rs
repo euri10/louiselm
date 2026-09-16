@@ -31,6 +31,7 @@ fn authorization(root: &Path, config: &LauncherConfig, session: &str) -> LaunchA
             &GrantRequest {
                 conformance: crate::launch_protocol::ConformanceAuthorization::default(),
                 skill_requests: None,
+                beads_comments: None,
                 request: request.clone(),
                 controller_uid: config.operator_uid,
                 expires_at_ms: 30000,

@@ -87,6 +87,12 @@ impl BrokerService {
                 return Ok(false);
             }
             if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
+                && matches!(query.operation, CommandOperation::BeadsMutation { .. })
+            {
+                self.answer_beads_mutation(session, query, elapsed_ms(now_ms, clock), &mut verify)?;
+                return Ok(false);
+            }
+            if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
                 && matches!(query.operation, CommandOperation::StatusRequest {})
             {
                 return match self.answer_agent_status(
@@ -164,7 +170,9 @@ impl BrokerService {
             LauncherPacket::Request(ProtocolMessage::Command(query))
                 if matches!(
                     query.operation,
-                    CommandOperation::StatusRequest {} | CommandOperation::SkillRequest { .. }
+                    CommandOperation::StatusRequest {}
+                        | CommandOperation::SkillRequest { .. }
+                        | CommandOperation::BeadsMutation { .. }
                 ) =>
             {
                 super::lifecycle_service::refuse_nested_status(session, query)?;

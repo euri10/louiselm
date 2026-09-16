@@ -112,6 +112,21 @@ pub enum CommandOperation {
         /// Stable refusal without external prose.
         error: ErrorCode,
     },
+    /// Agent asks the broker to mediate one canonical Beads mutation.
+    BeadsMutation {
+        /// Immutable content and stable retry identity, not tracker authority.
+        request: crate::beads_mutation::BeadsMutationRequest,
+    },
+    /// Broker durably recorded the request and its `br` outcome.
+    BeadsMutationResult {
+        /// Stable operation and durable outcome.
+        status: crate::beads_mutation::BeadsMutationStatus,
+    },
+    /// No successful mutation acknowledgement; retry with the same identity.
+    BeadsMutationRefused {
+        /// Stable refusal without external prose.
+        error: ErrorCode,
+    },
     /// Authenticated Agent asks for its own read-only canonical Session status.
     StatusRequest {},
     /// Broker-derived self status; never carries lifecycle authority.
@@ -262,6 +277,17 @@ impl CommandMessage {
                     return Err(invalid());
                 }
             }
+            CommandOperation::BeadsMutation { request } => {
+                if !request.valid() {
+                    return Err(invalid());
+                }
+            }
+            CommandOperation::BeadsMutationResult { status } => {
+                validate_identifier(&status.request_id)?;
+                if !status.valid() {
+                    return Err(invalid());
+                }
+            }
             CommandOperation::StatusResult { status } => {
                 status.validate()?;
                 if status.session_id != self.session_id
@@ -363,6 +389,7 @@ impl CommandMessage {
             | CommandOperation::StatusRequest {}
             | CommandOperation::StatusRefused { .. }
             | CommandOperation::SkillRequestRefused { .. }
+            | CommandOperation::BeadsMutationRefused { .. }
             | CommandOperation::Reject { .. }
             | CommandOperation::OutcomeAcknowledged { .. }
             | CommandOperation::Revoke

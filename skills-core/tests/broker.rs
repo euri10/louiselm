@@ -57,6 +57,8 @@ mod support;
 #[path = "broker/launch_gates.rs"]
 mod launch_gates;
 
+#[path = "broker/beads_mutations.rs"]
+mod beads_mutations;
 #[path = "broker/lifecycle.rs"]
 mod lifecycle;
 #[path = "broker/skill_requests.rs"]
@@ -133,6 +135,7 @@ fn grant(request: &LaunchRequest) -> GrantRequest {
     GrantRequest {
         conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
         skill_requests: None,
+        beads_comments: None,
         require_cold_recovery: false,
         request: request.clone(),
         controller_uid: CONTROLLER_UID,

@@ -7,6 +7,7 @@
 
 pub mod admission;
 pub mod assessment;
+pub mod beads_mutation;
 pub mod broker;
 pub mod cache;
 pub mod canonical;

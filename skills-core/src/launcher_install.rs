@@ -633,7 +633,7 @@ fn command_output_worker(
     })
 }
 
-fn wait_until_exit(child: rustix::process::Pid, deadline: Instant) -> io::Result<bool> {
+pub(crate) fn wait_until_exit(child: rustix::process::Pid, deadline: Instant) -> io::Result<bool> {
     loop {
         let status = match rustix::process::waitid(
             rustix::process::WaitId::Pid(child),
@@ -675,7 +675,7 @@ fn wait_for_command_io(
     }
 }
 
-fn terminate_child(
+pub(crate) fn terminate_child(
     child: &mut Child,
     process_group: Option<rustix::process::Pid>,
     deadline: Instant,

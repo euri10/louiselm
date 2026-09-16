@@ -19,6 +19,8 @@ pub mod attention;
 mod attention_config;
 pub mod audit;
 pub mod authorization;
+mod beads_mutation;
+mod beads_mutation_service;
 pub mod cold_resume;
 pub mod commands;
 mod current_conformance;
@@ -35,6 +37,7 @@ pub mod service;
 mod skill_request_service;
 mod skill_requests;
 mod state_identity;
+mod tracker_runner;
 pub mod verification;
 
 #[cfg(test)]
@@ -160,6 +163,9 @@ pub enum BrokerError {
     /// The authenticated rendezvous could not carry the transaction.
     #[error("broker rendezvous is unavailable")]
     Transport(#[source] TransportError),
+    /// The pinned `br` binary could not be run, or did not exit within its deadline.
+    #[error("canonical Beads tracker invocation is unavailable")]
+    TrackerInvocation(#[source] io::Error),
 }
 
 /// Reads one bounded durable record, or `None` when it is absent.

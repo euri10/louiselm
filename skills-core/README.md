@@ -355,6 +355,37 @@ never supplies current isolation proof, renews approval or grants authority.
 See [canonical status composition](../docs/broker-lifecycle.md#canonical-status-composition)
 for the launch-based freshness meaning and remaining integration scope.
 
+### Broker-mediated Beads comments
+
+The authenticated Agent command relay accepts `BeadsMutation` comment-add
+requests. A trusted caller must configure the `BrokerService` with
+`configure_beads_tracker(workspace, program, expected_digest)` and supply an
+`ApprovedBeadsComments` launch permission with exact issue IDs, a non-refundable
+attempt budget and an expiry. Without either, mutations are refused. The broker
+derives the actor from its retained Agent/Session binding and checks the current
+Session, Run, envelope revision, lifecycle state and quarantine status.
+
+The runner uses the configured `.beads/beads.db`, checks the executable digest,
+clears its environment and bounds execution with process-group cleanup. Durable
+receipts retain a request digest, not the comment body or subprocess output.
+Identical retries return the same operation. A crash or process-observation
+failure can leave `Unknown`: the comment may already exist, so the broker never
+automatically invokes `br` again for that request ID. Reconcile against canonical
+Beads before deciding whether to submit a new request.
+
+Installed provisioning is not connected yet (`louiselm-qbr.5.1.5.3`); the shipped
+daemon leaves this capability disabled. Other Beads effects and replica/canonical
+access cutover remain `louiselm-qbr.5.1.5.4` and `louiselm-qbr.5.1.5.5`. This slice
+does not yet enforce exclusive broker access to canonical Beads.
+
+The regular suite covers the authenticated service and relay. To exercise an
+existing upstream `br` against a disposable project, from `skills-core/` run:
+
+```sh
+LOUISELM_TEST_BR=/absolute/path/to/br cargo test --all-features --locked \
+  --test broker real_br_comment -- --ignored --nocapture
+```
+
 ### Prospective artifact preflight
 
 `preflight --request request.json --manifest inputs.json --robot-json` reads
