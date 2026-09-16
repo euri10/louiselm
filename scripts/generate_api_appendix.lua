@@ -53,8 +53,10 @@ local function write(path, value)
 end
 
 if check then
-  if read(doc_path) ~= output then
+  local committed = read(doc_path)
+  if committed ~= output then
     io.stderr:write("doc/api.md is stale; run ./scripts/generate-api-appendix\n")
+    io.stderr:write(nvim.text.diff(committed or "", output, { ctxlen = 3 }))
     os.exit(1)
   end
   os.exit(0)
