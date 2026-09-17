@@ -556,16 +556,17 @@ jobs:
       - name: Test measured Bubblewrap rejection in the production launch path
         run: |
           set -eu
-          launcher_install_test="$(
-            cargo test --test launcher_install --all-features --locked --no-run --message-format=json |
-              jq -r 'select(.reason == "compiler-artifact" and .target.name == "launcher_install" and .profile.test) | .executable // empty' |
+          cargo build --bins --all-features --locked
+          library_test="$(
+            cargo test --lib --all-features --locked --no-run --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty' |
               tail -n 1
           )"
-          test -n "$launcher_install_test"
+          test -n "$library_test"
           sudo env \
             LOUISELM_TEST_ROOT_LAUNCHER=1 \
             LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY=1 \
-            /bin/bash -c 'umask 077; exec "$1" production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn --exact --nocapture' bash "$launcher_install_test"
+            /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::failures::production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn --exact --nocapture' bash "$library_test"
 
       - name: Test root-owned installed release boundary
         run: |

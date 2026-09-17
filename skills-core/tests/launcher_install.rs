@@ -15,24 +15,20 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
     sync::{Arc, Barrier},
-    time::Duration,
 };
 
 use louiselm_skills::{
     Digest,
     install::{InstalledState, STATE_SCHEMA as RELEASE_STATE_SCHEMA},
-    launch_supervisor::{LaunchPlatform, SupervisorError, SystemLaunchPlatform},
     launcher_install::{
         CommandInvocation, CommandOutput, CommandRunner, IdentityPool, InstallRequest,
-        LauncherPaths, RotationRequest, acquire_identity, install, public_keyring, rotate,
-        runtime_config, status, sudo_invocation,
+        LauncherPaths, RotationRequest, acquire_identity, install, public_keyring, rotate, status,
+        sudo_invocation,
     },
-    registry::NetworkPolicy,
     release::{
         Component, MANIFEST_SCHEMA, PolicyIdentity, ReleaseManifest, SourceIdentity,
         ToolchainIdentity,
     },
-    sandbox::{ConfinementPlan, IdentityPlan},
 };
 use tempfile::TempDir;
 
@@ -570,81 +566,6 @@ fn measured_bubblewrap_and_dedicated_broker_identity_are_required() {
             .expect_err("root, operator, and Session-pool identities cannot be the broker");
         assert!(error.to_string().contains("broker"), "{error}");
     }
-}
-
-#[test]
-fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn() {
-    if std::env::var_os("LOUISELM_TEST_ROOT_LAUNCHER").is_none() {
-        eprintln!("skipping: set LOUISELM_TEST_ROOT_LAUNCHER in the root fixture");
-        return;
-    }
-    assert!(
-        rustix::process::geteuid().is_root(),
-        "the production platform requires root"
-    );
-    if std::env::var_os("LOUISELM_REQUIRE_INITIAL_HOST_IDENTITY").is_some() {
-        assert_eq!(
-            fs::read_to_string("/proc/self/uid_map").unwrap(),
-            format!("{:>10} {:>10} {:>10}\n", 0, 0, u32::MAX),
-            "CI must exercise the initial user namespace"
-        );
-    }
-
-    let fixture = Fixture::new();
-    install(
-        &fixture.paths,
-        &FakeRunner::default(),
-        &Fixture::request(),
-        10,
-    )
-    .expect("launcher authority installs");
-    let config = runtime_config(&fixture.paths).expect("runtime authority validates");
-    let platform = SystemLaunchPlatform::new(fixture.paths.clone(), config, Duration::from_secs(5))
-        .expect("production platform opens the measured backend");
-
-    let marker = fixture.root().join("mutated-bwrap-spawned");
-    fs::write(
-        &fixture.paths.bwrap,
-        format!(
-            "#!/bin/sh\nprintf spawned > '{}'\nexit 97\n",
-            marker.display()
-        ),
-    )
-    .expect("measured bwrap is replaced after runtime configuration");
-    let launch_request = serde_json::from_value(serde_json::json!({
-        "schema": louiselm_skills::launch::REQUEST_SCHEMA,
-        "protocol_version": louiselm_skills::launch::PROTOCOL_VERSION,
-        "request_id": "launch", "authorization_id": "authorization",
-        "session_id": "changed-bwrap", "run_id": "run", "agent_id": "agent",
-        "envelope_id": "empty", "envelope_revision": 1,
-        "skill_generation_id": Digest::of(b"generation").to_string(),
-        "session_input_manifest_id": Digest::of(b"input").to_string(),
-    }))
-    .unwrap();
-    let result = platform.prepare(
-        &launch_request,
-        ConfinementPlan {
-            session_id: "changed-bwrap".to_owned(),
-            runtime_root: fixture.root().join("runtime"),
-            executable: PathBuf::from("/bin/true"),
-            arguments: Vec::new(),
-            environment: std::collections::BTreeMap::default(),
-            home: fixture.root().join("sessions/changed-bwrap/home"),
-            workspace: fixture.root().join("sessions/changed-bwrap/workspace"),
-            cache: None,
-            beads_replica: None,
-            system_roots: Vec::new(),
-            network: NetworkPolicy::Denied,
-            identity: IdentityPlan::NamespaceOnly,
-            channels: Vec::new(),
-        },
-    );
-
-    assert!(matches!(result, Err(SupervisorError::SpawnFailed)));
-    assert!(
-        !marker.exists(),
-        "a changed measured backend must be rejected before execution"
-    );
 }
 
 #[test]

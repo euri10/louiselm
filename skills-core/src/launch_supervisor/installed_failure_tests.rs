@@ -3,6 +3,77 @@
 use super::*;
 use crate::launch_receipt::{ReceiptOutcome, ReceiptPayload};
 
+#[test]
+fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn() {
+    if std::env::var_os("LOUISELM_TEST_ROOT_LAUNCHER").is_none() {
+        eprintln!("skipping: measured backend rejection requires the disposable launcher VM");
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root());
+    assert!(
+        fs::read_to_string("/proc/self/uid_map")
+            .unwrap()
+            .split_whitespace()
+            .eq(["0", "0", "4294967295"])
+    );
+    let _account = BrokerAccount::create();
+    let root = tempfile::Builder::new()
+        .prefix("louiselm-bwrap-change-")
+        .tempdir_in("/var/lib")
+        .unwrap();
+    let mut fixture_paths = paths(root.path());
+    fixture_paths.bwrap = root.path().join("bwrap");
+    fs::copy("/usr/bin/bwrap", &fixture_paths.bwrap).unwrap();
+    fs::set_permissions(&fixture_paths.bwrap, fs::Permissions::from_mode(0o755)).unwrap();
+    let (paths, config, registry_root) = install_fixture_at(root.path(), 1, fixture_paths);
+    let mut platform =
+        SystemLaunchPlatform::new(paths.clone(), config, Duration::from_secs(5)).unwrap();
+    platform.registry_root = registry_root.clone();
+    let sessions = root.path().join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
+    let request = request();
+    let plan = crate::launch::resolve(
+        &request,
+        &Registry::open_trusted(&registry_root).unwrap(),
+        &sessions,
+        crate::sandbox::IdentityPlan::HostIdentity {
+            uid: AGENT_UID,
+            gid: AGENT_UID,
+        },
+    )
+    .unwrap()
+    .plan;
+    let marker_directory = root.path().join("mutation-marker");
+    fs::create_dir(&marker_directory).unwrap();
+    chown(&marker_directory, Some(AGENT_UID), Some(AGENT_UID)).unwrap();
+    let marker = marker_directory.join("spawned");
+    fs::write(
+        &paths.bwrap,
+        format!(
+            "#!/bin/sh\nprintf spawned > '{}'\nexit 97\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+
+    // Valid staged inputs must reach the measured-backend check, not fail
+    // earlier during workspace resolution (louiselm-8f2wa).
+    let result = platform.prepare(&request, plan);
+    assert!(
+        !marker.exists(),
+        "a changed measured backend must be rejected before execution"
+    );
+    assert_eq!(result.err(), Some(SupervisorError::SpawnFailed));
+    let session_root = sessions.join(&request.session_id);
+    assert!(session_root.join("workspace").is_dir());
+    assert_eq!(
+        fs::metadata(session_root).unwrap().mode() & 0o7777,
+        0o700,
+        "failed preparation seals the materialized workspace"
+    );
+}
+
 struct FaultSigner {
     signer: InstalledLaunchSigner,
     scenario: &'static str,
