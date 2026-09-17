@@ -632,6 +632,7 @@ fn production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spa
             home: fixture.root().join("sessions/changed-bwrap/home"),
             workspace: fixture.root().join("sessions/changed-bwrap/workspace"),
             cache: None,
+            beads_replica: None,
             system_roots: Vec::new(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::NamespaceOnly,

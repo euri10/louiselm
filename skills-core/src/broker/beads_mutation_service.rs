@@ -101,6 +101,9 @@ impl BrokerService {
             Err(BrokerError::TrackerInvocation(error)) => {
                 return Err(BrokerError::TrackerInvocation(error));
             }
+            Err(error @ (BrokerError::Workspace(_) | BrokerError::TrackerConfiguration(_))) => {
+                return Err(error);
+            }
             Err(_) => CommandOperation::BeadsMutationRefused {
                 error: ErrorCode::InvalidRequest,
                 escalation: None,
@@ -181,7 +184,10 @@ impl BrokerService {
             &super::tracker_runner::SystemTrackerRunner::new(std::time::Duration::from_secs(30)),
             tracker,
         ) {
-            Ok(status) => Ok(CommandOperation::BeadsMutationResult { status }),
+            Ok(status) => {
+                self.refresh_beads_replica(session.authorization(), &status)?;
+                Ok(CommandOperation::BeadsMutationResult { status })
+            }
             Err(BrokerError::BeadsBudgetExhausted | BrokerError::Expired) => {
                 self.missing_beads_capability(&binding, request, tracker, now_ms)
             }

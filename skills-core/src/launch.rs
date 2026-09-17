@@ -248,6 +248,7 @@ pub fn resolve(
         home: session_directory.join("home"),
         workspace: session_directory.join("workspace"),
         cache: None,
+        beads_replica: None,
         system_roots: default_system_roots(),
         network: envelope.network,
         identity,

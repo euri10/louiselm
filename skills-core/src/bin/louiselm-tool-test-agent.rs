@@ -4,6 +4,8 @@
 //! JSON capability request terminated by newline. Only this native process opens
 //! its own capability socket; it never executes commands or loads workspace code.
 
+#[path = "tool_fixture/beads.rs"]
+mod beads;
 #[path = "tool_fixture/channel.rs"]
 mod channel;
 #[path = "tool_fixture/recovery.rs"]
@@ -34,6 +36,10 @@ fn run() -> io::Result<()> {
         }
         if byte[0] == 0x1d {
             recovery::handle(&mut input, &mut output, &mut counter)?;
+            continue;
+        }
+        if byte[0] == 0x1c {
+            beads::inspect(&mut output)?;
             continue;
         }
         if byte[0] != 0x1e {

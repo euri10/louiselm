@@ -91,6 +91,16 @@ fn validate(tracker: &Tracker, installed: &LauncherConfig) -> Result<(), BrokerE
         check(ancestor, true, &[0, installed.operator_uid], &[])?;
     }
     let beads = tracker.workspace.join(".beads");
+    if fs::symlink_metadata(&beads)
+        .map_err(|_| invalid("tracker unavailable"))?
+        .mode()
+        & 0o007
+        != 0
+    {
+        return Err(invalid(
+            "canonical tracker must deny other identities all access",
+        ));
+    }
     let owners = [0, installed.operator_uid, installed.broker_uid];
     let groups = [installed.broker_gid];
     let mut remaining = 65536;

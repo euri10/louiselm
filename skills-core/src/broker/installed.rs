@@ -378,6 +378,11 @@ impl InstalledBroker {
             CredentialPin::Identity { uid: 0, gid: 0 },
         )?;
         beads::configure(&mut service, config)?;
+        service.enable_beads_replicas(
+            Path::new(crate::launch_supervisor::SYSTEM_SESSIONS_ROOT),
+            config.broker_uid,
+            config.broker_gid,
+        )?;
         Ok(Self {
             _state_lock: state_lock,
             service,

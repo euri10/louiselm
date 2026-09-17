@@ -127,6 +127,7 @@ impl Fixture {
             home: self.path(&format!("sessions/{name}/home")),
             workspace: self.path(&format!("sessions/{name}/workspace")),
             cache: None,
+            beads_replica: None,
             system_roots: default_system_roots(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity { uid, gid: uid },

@@ -143,7 +143,9 @@ impl SessionWorkspace {
     }
 
     pub(super) fn seal(&self) -> Result<(), SupervisorError> {
-        seal(&self.root)
+        seal(&self.root)?;
+        crate::beads_replica::discard(&self.directory.join(crate::beads_replica::DIRECTORY))
+            .map_err(|_| SupervisorError::CleanupUnproven)
     }
 
     pub(super) fn disposed(&mut self) -> Result<(), SupervisorError> {

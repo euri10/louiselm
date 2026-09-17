@@ -75,6 +75,7 @@ impl ToolExecutor {
             home,
             workspace: agent.workspace.clone(),
             cache: agent.cache.clone(),
+            beads_replica: agent.beads_replica.clone(),
             system_roots,
             network: NetworkPolicy::Denied,
             identity: agent.identity,
@@ -83,6 +84,12 @@ impl ToolExecutor {
         if let Some(cache) = &plan.cache {
             plan.environment
                 .insert("XDG_CACHE_HOME".into(), cache.display().to_string());
+        }
+        if let Some(replica) = &plan.beads_replica {
+            plan.environment.insert(
+                "BEADS_DIR".into(),
+                replica.join("current/.beads").display().to_string(),
+            );
         }
         Ok(Self {
             backend,

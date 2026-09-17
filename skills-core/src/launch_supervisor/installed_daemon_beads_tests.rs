@@ -61,14 +61,34 @@ fn upstream(program: &Path, workspace: &Path, arguments: &[&str]) -> Vec<u8> {
     output.stdout
 }
 
-fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
+fn provision_program(root: &Path) -> PathBuf {
     let program = root.join("br");
     fs::copy(
         std::env::var_os("LOUISELM_TEST_BR").unwrap_or_else(|| "/usr/bin/true".into()),
         &program,
     )
     .unwrap();
+    if std::env::var_os("LOUISELM_TEST_BR").is_none() {
+        // Installed wiring gate; real upstream semantics use LOUISELM_TEST_BR.
+        fs::write(
+            &program,
+            br"#!/usr/bin/python3
+import os
+from pathlib import Path
+if 'BEADS_JSONL' in os.environ:
+    Path(os.environ['BEADS_JSONL']).write_bytes(b'{}\n')
+elif 'BEADS_DIR' in os.environ:
+    Path(os.environ['BEADS_DIR'], 'beads.db').write_bytes(b'fixture')
+",
+        )
+        .unwrap();
+    }
     fs::set_permissions(&program, fs::Permissions::from_mode(0o555)).unwrap();
+    program
+}
+
+fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
+    let program = provision_program(root);
     // Private tmpfs supplied by mounts(): broker writes must not depend on the
     // disposable VM disk retaining non-root reserved space.
     let workspace = PathBuf::from("/var/lib/louiselm/beads-project");
@@ -111,6 +131,7 @@ fn provision(root: &Path) -> (PathBuf, PathBuf, String) {
         "fixture-comment".into()
     };
     fs::write(workspace.join("fixture-issue"), &issue).unwrap();
+    fs::set_permissions(workspace.join(".beads"), fs::Permissions::from_mode(0o700)).unwrap();
     chown(&workspace, Some(0), Some(0)).unwrap();
     let installer = std::env::var_os("LOUISELM_TEST_BEADS_INSTALLER").expect("explicit installer");
     let digest = Digest::of(&fs::read(&program).unwrap()).to_string();
@@ -176,11 +197,15 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
         )
     });
     let mut output = BufReader::new(output);
+    probe(&mut input, &mut output, allowed);
+    if allowed {
+        replica_comments(issue, 0);
+    }
     let mut query = CommandMessage {
         schema: COMMAND_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
         request_id: "relay-comment".into(),
-        session_id: id,
+        session_id: id.clone(),
         run_id: "run".into(),
         envelope_revision: 1,
         operation: CommandOperation::BeadsMutation {
@@ -238,6 +263,8 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
                     assert_eq!(first, &status);
                 }
                 first = Some(status);
+                probe(&mut input, &mut output, true);
+                replica_comments(issue, 1);
             } else {
                 assert!(matches!(
                     reply.operation,
@@ -248,6 +275,49 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
     }
     drop(input);
     worker.join().unwrap().unwrap();
+    assert!(
+        !Path::new(SYSTEM_SESSIONS_ROOT)
+            .join(id)
+            .join("beads-replica")
+            .exists()
+    );
+}
+
+fn probe(input: &mut impl Write, output: &mut impl BufRead, replica: bool) {
+    input.write_all(&[0x1c]).unwrap();
+    input.flush().unwrap();
+    let mut reply = Vec::new();
+    output.read_until(b'\n', &mut reply).unwrap();
+    assert_eq!(reply.first(), Some(&0x1c));
+    let report: serde_json::Value = serde_json::from_slice(&reply[1..]).unwrap();
+    assert_eq!(report["canonical_read"], serde_json::json!([false, false]));
+    assert_eq!(report["canonical_write"], serde_json::json!([false, false]));
+    assert_eq!(
+        report["replica_read"],
+        serde_json::json!([replica, replica])
+    );
+}
+
+fn replica_comments(issue: &str, count: usize) {
+    if std::env::var_os("LOUISELM_TEST_BR").is_none() {
+        return;
+    }
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(TRACKER_CONFIG).unwrap()).unwrap();
+    let publisher = Path::new(SYSTEM_SESSIONS_ROOT).join("tracker/beads-replica");
+    let assigned = fs::metadata(&publisher).unwrap().gid().to_string();
+    let output = Command::new("/usr/bin/setpriv")
+        .args(["--reuid", &assigned, "--regid", &assigned, "--clear-groups"])
+        .arg(config["program"].as_str().unwrap())
+        .args(["comments", "list", issue, "--json"])
+        .env_clear()
+        .env("BEADS_DIR", publisher.join("current/.beads"))
+        .current_dir("/")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "native replica read: {output:?}");
+    let comments: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(comments.as_array().unwrap().len(), count);
 }
 
 fn refuse_bad_configuration(manager: &OwnedFd) {
@@ -307,6 +377,16 @@ fn privileged_installed_tracker_routes_only_approved_mutations() {
             }
         })
         .unwrap();
+    fs::create_dir_all(SYSTEM_SESSIONS_ROOT).unwrap();
+    assert!(
+        Command::new("/usr/bin/mount")
+            .arg("--bind")
+            .arg(root.path().join("sessions"))
+            .arg(SYSTEM_SESSIONS_ROOT)
+            .status()
+            .unwrap()
+            .success()
+    );
     let manager = socket_with(
         AddressFamily::UNIX,
         SocketType::SEQPACKET,
@@ -365,6 +445,24 @@ fn privileged_installed_tracker_routes_only_approved_mutations() {
         3
     );
     verify_mutations(&program, &workspace, &issue);
+    terminate(&mut daemon);
+    restart_discards_abandoned_inputs(&manager, &config);
+}
+
+fn restart_discards_abandoned_inputs(manager: &OwnedFd, config: &LauncherConfig) {
+    let inputs = config
+        .broker_socket_path
+        .parent()
+        .unwrap()
+        .join("beads-inputs");
+    assert_eq!(fs::read_dir(&inputs).unwrap().count(), 0);
+    let abandoned = inputs.join("abandoned");
+    fs::create_dir(&abandoned).unwrap();
+    chown(&abandoned, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
+    fs::set_permissions(&abandoned, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut daemon = process(manager, BROKER_UID, false);
+    ready(config);
+    assert!(!abandoned.exists());
     terminate(&mut daemon);
 }
 

@@ -827,6 +827,23 @@ pub struct SystemLaunchPlatform {
 }
 
 impl SystemLaunchPlatform {
+    fn prepare_tracker(
+        &self,
+        request: &LaunchRequest,
+        plan: &mut ConfinementPlan,
+    ) -> Result<(), SupervisorError> {
+        super::beads_replica::prepare(
+            &self
+                .config
+                .broker_socket_path
+                .parent()
+                .ok_or(SupervisorError::ResolutionFailed)?
+                .join("beads-inputs"),
+            (self.config.broker_uid, self.config.broker_gid),
+            request,
+            plan,
+        )
+    }
     fn prepare_workspace(
         &self,
         request: &LaunchRequest,
@@ -1047,6 +1064,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 workspace.cache_path().display().to_string(),
             );
             plan.cache = Some(workspace.cache_path().to_owned());
+            self.prepare_tracker(request, &mut plan)?;
             let mut tools = super::tool_execution::ToolExecutor::new(
                 self.backend
                     .within_session(&plan.session_id)

@@ -157,6 +157,7 @@ pub struct BrokerService {
     pub(super) skill_requests: super::skill_requests::SkillRequests,
     pub(super) beads_mutations: super::beads_mutation::BeadsMutations,
     pub(super) tracker: Option<super::beads_mutation::TrackerConfig>,
+    pub(super) beads_replicas: Option<super::beads_replica::Paths>,
     pub(super) verification_inputs: std::path::PathBuf,
 }
 
@@ -228,6 +229,7 @@ impl BrokerService {
             skill_requests,
             beads_mutations,
             tracker: None,
+            beads_replicas: None,
             verification_inputs: socket_path
                 .parent()
                 .ok_or(BrokerError::InvalidGrant)?
@@ -532,6 +534,7 @@ impl BrokerService {
         };
         self.record_for(&authorization, now_ms, AuditDecision::AuthorizationConsumed)?;
         self.retain_workspace_inputs(request)?;
+        let _replica_input = self.stage_beads_replica(&authorization)?;
         send(
             channel,
             response(

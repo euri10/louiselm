@@ -82,6 +82,7 @@ fn measured_integration_rejects_missing_evidence_and_runtime_overrides() {
         home: root.path().join("home"),
         workspace: root.path().join("workspace"),
         cache: None,
+        beads_replica: None,
         system_roots: vec![],
         identity: IdentityPlan::NamespaceOnly,
         network: NetworkPolicy::Denied,

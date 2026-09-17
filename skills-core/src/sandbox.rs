@@ -133,6 +133,9 @@ pub struct ConfinementPlan {
     /// The launcher supplies only cache-home/cache-Session-id beneath its
     /// protected Session root, with a root-owned immutable parent.
     pub cache: Option<PathBuf>,
+    /// Optional publisher-owned directory of disposable local tracker generations.
+    /// The launcher supplies exactly beads-replica beneath the protected Session root.
+    pub beads_replica: Option<PathBuf>,
     /// System directories mounted read-only.
     pub system_roots: Vec<PathBuf>,
     /// Whether the Session may reach the network.
@@ -1616,6 +1619,13 @@ impl BubblewrapBackend {
                 cache.display().to_string(),
             ]);
         }
+        if let Some(replica) = &plan.beads_replica {
+            arguments.extend([
+                "--bind".to_owned(),
+                replica.display().to_string(),
+                replica.display().to_string(),
+            ]);
+        }
         for channel in &plan.channels {
             if let Channel::UnixSocket {
                 host_path,
@@ -1725,6 +1735,28 @@ impl BubblewrapBackend {
             materialize_writable(cache, host_identity)?;
         }
 
+        if let Some(replica) = &plan.beads_replica {
+            let valid = plan.workspace.parent().is_some_and(|root| {
+                *replica == root.join(crate::beads_replica::DIRECTORY)
+                    && fs::symlink_metadata(root)
+                        .is_ok_and(|m| m.is_dir() && m.uid() == 0 && m.mode() & 0o7777 == 0o711)
+            }) && match plan.identity {
+                IdentityPlan::HostIdentity { uid, gid } => {
+                    fs::symlink_metadata(replica).is_ok_and(|m| {
+                        m.is_dir()
+                            && m.uid() != uid
+                            && m.gid() == gid
+                            && m.mode() & 0o7777 == 0o2750
+                    })
+                }
+                IdentityPlan::NamespaceOnly => false,
+            };
+            if !valid {
+                return Err(SandboxError::Refused(
+                    "tracker replica lacks a protected Session publisher".into(),
+                ));
+            }
+        }
         let mut startup_gate = HostIdentityGate::new().map_err(|source| SandboxError::Io {
             path: "startup gate".to_owned(),
             source,
@@ -1947,13 +1979,13 @@ impl BubblewrapBackend {
                 dimension: Dimension::FilesystemVisibility,
                 satisfied: true,
                 mechanism: "mount namespace".to_owned(),
-                detail: "Only the measured runtime, private home, workspace, optional private cache overlay, and declared system roots are bound.".to_owned(),
+                detail: "Only the measured runtime, private home, workspace, optional private cache and tracker replicas, and declared system roots are bound.".to_owned(),
             },
             DimensionEvidence {
                 dimension: Dimension::FilesystemMutation,
                 satisfied: true,
                 mechanism: "read-only bind mounts".to_owned(),
-                detail: "Everything but the private home, workspace and optional private cache overlay is bound read-only.".to_owned(),
+                detail: "Everything but the private home, workspace and optional private cache and tracker replicas is bound read-only.".to_owned(),
             },
             DimensionEvidence {
                 dimension: Dimension::ProcessSeparation,
@@ -2880,6 +2912,7 @@ mod tests {
             home: sessions_root.join(&session_id).join("home"),
             workspace: sessions_root.join(&session_id).join("workspace"),
             cache: None,
+            beads_replica: None,
             system_roots: default_system_roots(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity {

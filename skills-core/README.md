@@ -414,7 +414,7 @@ be considered. The same request ID always retains its original outcome.
 For an escalation, `dismiss` clears its Attention item without approving anything;
 retry or restart cannot reopen that condition. New authority remains an explicit
 trusted-controller decision. Agent requests cannot inspect or settle operator
-records. CLI/UI presentation and private-replica cutover remain separate work.
+records. CLI/UI presentation remains separate work.
 
 Installed startup reads `/etc/louiselm-broker-beads.json`, selected explicitly by
 the administrator. Absence leaves ordinary broker startup usable and all tracker
@@ -453,8 +453,13 @@ IDs, exact `effects`, `role`, `max_mutations` (1–64), and `expires_at_ms`. Pro
 by itself. Restart the updated installed broker to load it; the trusted controller
 must still pass the explicit grant through `InstalledBroker::authorize`.
 
-Replica/canonical access cutover remains `louiselm-qbr.5.1.5.5`. This primitive
-does not yet enforce exclusive broker access to canonical Beads.
+Project-bound launches receive disposable [Session Beads replicas](../docs/beads-replicas.md).
+Native `br`/`bvr` reads use `BEADS_DIR`; completed canonical mutations refresh
+the local copy before returning their receipt. Provisioning denies Session
+identities direct canonical database/JSONL access. Local replica edits never
+flow back into canonical storage. Unconfigured or ungranted launches have no
+replica; broker restart and Disposal preserve the documented publication and
+cleanup boundaries.
 
 The regular suite covers the authenticated service and relay. To exercise an
 existing upstream `br` against a disposable project, from `skills-core/` run:

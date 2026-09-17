@@ -62,6 +62,8 @@ def configuration(workspace, program, digest, installed):
     for parent in (workspace, *workspace.parents):
         check(parent, True, (0, operator))
     beads = workspace / ".beads"
+    if beads.lstat().st_mode & 0o007:
+        raise ValueError("canonical tracker must deny other identities all access")
     remaining = 65536
     pending = [beads]
     while pending:

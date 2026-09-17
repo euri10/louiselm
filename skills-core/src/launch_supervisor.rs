@@ -46,6 +46,7 @@ use crate::{
     sandbox::{Channel, ConfinementPlan},
 };
 
+mod beads_replica;
 pub mod command;
 mod conformance;
 pub use conformance::ConformanceAdmission;

@@ -44,6 +44,7 @@ fn fixture() -> (tempfile::TempDir, ToolExecutor) {
         home: root.path().join("home"),
         workspace: root.path().join("workspace"),
         cache: None,
+        beads_replica: None,
         system_roots: default_system_roots(),
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,
@@ -68,6 +69,26 @@ fn command(
         || Ok(true),
         |prepared| prepared.start().map_err(super::super::system::map_sandbox),
     )
+}
+
+#[test]
+fn tool_tracker_environment_comes_only_from_the_launcher_replica() {
+    let (root, executor) = fixture();
+    assert!(!executor.plan.environment.contains_key("BEADS_DIR"));
+    let mut agent = executor.plan.clone();
+    agent.runtime_root = root.path().join("runtime");
+    agent.home = root.path().join("home");
+    let replica = root.path().join("beads-replica");
+    agent.beads_replica = Some(replica.clone());
+    agent
+        .environment
+        .insert("BEADS_DIR".into(), "/untrusted".into());
+    let tool = ToolExecutor::new(executor.backend.clone(), &agent).unwrap();
+    assert_eq!(tool.plan.beads_replica, Some(replica.clone()));
+    assert_eq!(
+        tool.plan.environment["BEADS_DIR"],
+        replica.join("current/.beads").display().to_string()
+    );
 }
 
 #[test]

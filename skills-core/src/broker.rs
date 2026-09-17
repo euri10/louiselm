@@ -21,6 +21,7 @@ pub mod audit;
 pub mod authorization;
 mod beads_mutation;
 mod beads_mutation_service;
+mod beads_replica;
 pub mod cold_resume;
 pub mod commands;
 pub mod conformance_inspection;
