@@ -255,6 +255,8 @@ pub enum ErrorCode {
     SessionIdentityExhausted,
     /// The broker assigned a slot that the installed launcher cannot safely use.
     IdentityAssignmentInvalid,
+    /// A configured Provider credential is missing, unreadable, or unusable.
+    CredentialUnavailable,
 }
 
 /// Stable recovery direction for a protocol failure.
@@ -2282,6 +2284,11 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
         }
         ErrorCode::IdentityAssignmentInvalid => (
             "broker-assigned session identity is invalid",
+            false,
+            NextAction::ContactOperator,
+        ),
+        ErrorCode::CredentialUnavailable => (
+            "configured Provider credential is unavailable",
             false,
             NextAction::ContactOperator,
         ),

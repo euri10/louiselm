@@ -31,6 +31,7 @@ pub mod lifecycle;
 pub mod operator;
 mod posture;
 pub mod promotion;
+pub mod provider_credentials;
 pub mod receipts;
 pub mod recovery;
 pub mod service;
