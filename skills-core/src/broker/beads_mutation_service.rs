@@ -3,13 +3,34 @@
 use super::service::send;
 use super::{BrokerError, BrokerService, BrokerSession, beads_mutation::Binding};
 use crate::{
-    beads_mutation::{BeadsMutationRequest, BeadsMutationStatus},
+    beads_mutation::BeadsMutationRequest,
     launch_protocol::{ChannelState, CommandMessage, CommandOperation, ErrorCode},
     launch_receipt::SessionState,
 };
 
 impl BrokerService {
-    /// Enables comment mediation for one trusted canonical project and exact `br` bytes.
+    /// Inspects one durable Beads operation or records its operator decision.
+    /// This blocking API neither invokes `br` nor grants or refunds capability.
+    /// Reconciliation is an attributed attestation beside the original outcome.
+    /// # Errors
+    /// Refuses foreign operators, malformed/unknown operations, contradictory
+    /// decisions, reconciliation of completed writes, or unavailable durable storage.
+    pub fn beads_mutation_control(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        decision: Option<&crate::beads_mutation::BeadsControlDecision>,
+    ) -> Result<crate::beads_mutation::BeadsInspection, BrokerError> {
+        self.beads_mutations.control(
+            operator_uid,
+            operation_id,
+            decision,
+            super::now_ms()?,
+            &self.attention,
+        )
+    }
+
+    /// Enables mutation mediation for one trusted canonical project and exact `br` bytes.
     ///
     /// Call before sharing the service. The operator must protect the canonical
     /// project and executable from Session writes. Installed startup validates
@@ -71,16 +92,18 @@ impl BrokerService {
         };
         let accepted = self.accept_beads_mutation(session, query, request, now_ms, verify);
         let operation = match accepted {
-            Ok(status) => CommandOperation::BeadsMutationResult { status },
-            Err(BrokerError::Policy(error)) => {
-                CommandOperation::BeadsMutationRefused { error: error.code }
-            }
+            Ok(operation) => operation,
+            Err(BrokerError::Policy(error)) => CommandOperation::BeadsMutationRefused {
+                error: error.code,
+                escalation: None,
+            },
             Err(BrokerError::Storage(error)) => return Err(BrokerError::Storage(error)),
             Err(BrokerError::TrackerInvocation(error)) => {
                 return Err(BrokerError::TrackerInvocation(error));
             }
             Err(_) => CommandOperation::BeadsMutationRefused {
                 error: ErrorCode::InvalidRequest,
+                escalation: None,
             },
         };
         let reply = CommandMessage {
@@ -100,7 +123,7 @@ impl BrokerService {
         request: &BeadsMutationRequest,
         now_ms: u64,
         verify: &mut F,
-    ) -> Result<BeadsMutationStatus, BrokerError>
+    ) -> Result<CommandOperation, BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -122,14 +145,15 @@ impl BrokerService {
             .authorizations()
             .consumed_for_session(&auth.session_id)?
             .ok_or(BrokerError::UnknownAuthorization)?;
-        let permission = approved
-            .beads_comments
-            .as_ref()
-            .ok_or(BrokerError::InvalidGrant)?;
-        if !permission.permits(request, now_ms)
-            || permission.project_digest != tracker.project_digest()
-        {
-            return Err(BrokerError::InvalidGrant);
+        let permission = approved.beads_mutations.as_ref().filter(|permission| {
+            permission.permits(request, now_ms)
+                && permission.project_digest == tracker.project_digest()
+        });
+        if permission.is_none() && !request.required {
+            return Ok(CommandOperation::BeadsMutationRefused {
+                error: ErrorCode::CapabilityDenied,
+                escalation: None,
+            });
         }
         let status = self.supervisor_status(session, &mut *verify)?;
         if status.state != SessionState::Running
@@ -146,13 +170,46 @@ impl BrokerService {
             envelope_revision: approved.envelope_revision,
             controller_uid: approved.controller_uid,
         };
-        self.beads_mutations.accept(
+        let Some(permission) = permission else {
+            return self.missing_beads_capability(&binding, request, tracker, now_ms);
+        };
+        match self.beads_mutations.accept(
             &binding,
             request,
             permission,
             now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX)),
             &super::tracker_runner::SystemTrackerRunner::new(std::time::Duration::from_secs(30)),
             tracker,
-        )
+        ) {
+            Ok(status) => Ok(CommandOperation::BeadsMutationResult { status }),
+            Err(BrokerError::BeadsBudgetExhausted | BrokerError::Expired) => {
+                self.missing_beads_capability(&binding, request, tracker, now_ms)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn missing_beads_capability(
+        &self,
+        binding: &Binding,
+        request: &BeadsMutationRequest,
+        tracker: &super::beads_mutation::TrackerConfig,
+        now_ms: u64,
+    ) -> Result<CommandOperation, BrokerError> {
+        let escalation = if request.required {
+            Some(Box::new(self.beads_mutations.escalate(
+                binding,
+                request,
+                tracker.project_digest(),
+                now_ms,
+                &self.attention,
+            )?))
+        } else {
+            None
+        };
+        Ok(CommandOperation::BeadsMutationRefused {
+            error: ErrorCode::CapabilityDenied,
+            escalation,
+        })
     }
 }

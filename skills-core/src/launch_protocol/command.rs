@@ -126,6 +126,8 @@ pub enum CommandOperation {
     BeadsMutationRefused {
         /// Stable refusal without external prose.
         error: ErrorCode,
+        /// Durable missing-capability condition for required work; never authority.
+        escalation: Option<Box<crate::beads_mutation::BeadsEscalation>>,
     },
     /// Authenticated Agent asks for its own read-only canonical Session status.
     StatusRequest {},
@@ -389,11 +391,18 @@ impl CommandMessage {
             | CommandOperation::StatusRequest {}
             | CommandOperation::StatusRefused { .. }
             | CommandOperation::SkillRequestRefused { .. }
-            | CommandOperation::BeadsMutationRefused { .. }
             | CommandOperation::Reject { .. }
             | CommandOperation::OutcomeAcknowledged { .. }
             | CommandOperation::Revoke
             | CommandOperation::Revoked { .. } => {}
+            CommandOperation::BeadsMutationRefused { error, escalation } => {
+                if escalation
+                    .as_ref()
+                    .is_some_and(|value| !value.valid() || *error != ErrorCode::CapabilityDenied)
+                {
+                    return Err(invalid());
+                }
+            }
         }
         if self.canonical_bytes().len() > super::MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));

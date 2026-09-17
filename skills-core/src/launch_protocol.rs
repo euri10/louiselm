@@ -257,6 +257,8 @@ pub enum ErrorCode {
     IdentityAssignmentInvalid,
     /// A configured Provider credential is missing, unreadable, or unusable.
     CredentialUnavailable,
+    /// An exact broker effect is outside its explicit grant, role, lifetime or budget.
+    CapabilityDenied,
 }
 
 /// Stable recovery direction for a protocol failure.
@@ -2194,6 +2196,10 @@ fn invalid_status(state: SessionState, receipt_head: Option<&ReceiptHead>) -> Pr
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One exhaustive table keeps each error's safe message and recovery metadata together."
+)]
 fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
     match code {
         ErrorCode::MessageTooLarge => ("protocol message is too large", false, NextAction::None),
@@ -2289,6 +2295,11 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
         ),
         ErrorCode::CredentialUnavailable => (
             "configured Provider credential is unavailable",
+            false,
+            NextAction::ContactOperator,
+        ),
+        ErrorCode::CapabilityDenied => (
+            "Beads capability is unavailable",
             false,
             NextAction::ContactOperator,
         ),

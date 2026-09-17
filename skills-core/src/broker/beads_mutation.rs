@@ -1,5 +1,5 @@
-//! Durable at-most-once comment attempts. Interrupted effects stay unknown.
-//! Only request digests are retained; comment bodies belong in canonical Beads.
+//! Durable at-most-once mutation attempts. Interrupted effects stay unknown.
+//! Only request digests are retained; payloads belong in canonical Beads.
 
 use std::{
     ffi::OsString,
@@ -17,10 +17,13 @@ use super::{
 use crate::{
     Digest,
     beads_mutation::{
-        ApprovedBeadsComments, BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest,
+        ApprovedBeadsMutations, BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest,
         BeadsMutationStatus,
     },
 };
+
+mod control;
+mod escalation;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +33,15 @@ pub(super) struct Binding {
     pub(super) agent_id: String,
     pub(super) envelope_revision: u64,
     pub(super) controller_uid: u32,
+}
+
+impl Binding {
+    fn valid(&self) -> bool {
+        self.controller_uid != 0
+            && is_record_identifier(&self.session_id)
+            && is_record_identifier(&self.run_id)
+            && is_record_identifier(&self.agent_id)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -51,10 +63,7 @@ impl Record {
             && Digest::parse(&self.project_digest)
                 .is_ok_and(|digest| digest.to_string() == self.project_digest)
             && self.created_at_ms > 0
-            && self.binding.controller_uid != 0
-            && is_record_identifier(&self.binding.session_id)
-            && is_record_identifier(&self.binding.run_id)
-            && is_record_identifier(&self.binding.agent_id)
+            && self.binding.valid()
             && super::attention::canonical_uuid(&self.operation_id)
     }
 
@@ -88,7 +97,13 @@ pub(super) struct BeadsMutations {
 
 impl BeadsMutations {
     pub(super) fn open(root: &Path) -> Result<Self, BrokerError> {
-        for directory in ["requests", "outcomes", "scratch"] {
+        for directory in [
+            "requests",
+            "outcomes",
+            "scratch",
+            "escalations",
+            "decisions",
+        ] {
             fs::create_dir_all(root.join(directory)).map_err(BrokerError::Storage)?;
         }
         sync_directory(root)?;
@@ -111,7 +126,7 @@ impl BeadsMutations {
         &self,
         binding: &Binding,
         request: &BeadsMutationRequest,
-        permission: &ApprovedBeadsComments,
+        permission: &ApprovedBeadsMutations,
         now_ms: u64,
         runner: &dyn TrackerRunner,
         tracker: &TrackerConfig,
@@ -140,7 +155,7 @@ impl BeadsMutations {
                 .unwrap_or(BeadsMutationOutcome::Unknown);
             return Ok(record.status(outcome));
         }
-        self.check_budget(binding, permission.max_comments)?;
+        self.check_budget(binding, permission.max_mutations)?;
         let record = Record {
             binding: binding.clone(),
             request_id: request.request_id.clone(),
@@ -178,7 +193,13 @@ impl BeadsMutations {
     fn check_budget(&self, binding: &Binding, limit: u32) -> Result<(), BrokerError> {
         // ponytail: serialized scan; add an index only if retained history makes this costly.
         let mut used = 0_u32;
-        for entry in fs::read_dir(self.root.join("requests")).map_err(BrokerError::Storage)? {
+        for (total, entry) in fs::read_dir(self.root.join("requests"))
+            .map_err(BrokerError::Storage)?
+            .enumerate()
+        {
+            if total >= 4095 {
+                return Err(BrokerError::InvalidGrant);
+            }
             let path = entry.map_err(BrokerError::Storage)?.path();
             let record: Record = read_record(&path)?.ok_or(BrokerError::InvalidGrant)?;
             if !record.valid() {
@@ -187,7 +208,7 @@ impl BeadsMutations {
             if record.binding.session_id == binding.session_id {
                 used = used.checked_add(1).ok_or(BrokerError::InvalidGrant)?;
                 if used >= limit {
-                    return Err(BrokerError::InvalidGrant);
+                    return Err(BrokerError::BeadsBudgetExhausted);
                 }
             }
         }
@@ -206,31 +227,108 @@ impl BeadsMutations {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionRecord {
+    decision: crate::beads_mutation::BeadsControlDecision,
+    operator_uid: u32,
+    decided_at_ms: u64,
+}
+
+impl BeadsMutations {
+    fn decision_path(&self, operation: &str) -> PathBuf {
+        self.root
+            .join("decisions")
+            .join(format!("{operation}.json"))
+    }
+
+    fn decision(&self, operation: &str) -> Result<Option<DecisionRecord>, BrokerError> {
+        let record: Option<DecisionRecord> = read_record(&self.decision_path(operation))?;
+        if record.as_ref().is_some_and(|value| {
+            !value.decision.valid() || value.operator_uid == 0 || value.decided_at_ms == 0
+        }) {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok(record)
+    }
+}
+
 fn build_invocation(
     kind: &BeadsMutationKind,
     binding: &Binding,
     tracker: &TrackerConfig,
     scratch: &Path,
 ) -> TrackerInvocation {
-    let BeadsMutationKind::CommentAdd { issue_id, text } = kind;
     let actor = format!("{}/{}", binding.agent_id, binding.session_id);
+    let issue: OsString = kind.issue_id().into();
+    let mut arguments = match kind {
+        BeadsMutationKind::CommentAdd { text, .. } => vec![
+            "comments".into(),
+            "add".into(),
+            issue,
+            format!("--message={text}").into(),
+        ],
+        BeadsMutationKind::Claim { .. } => vec!["update".into(), issue, "--claim".into()],
+        BeadsMutationKind::StatusUpdate { status, .. } => {
+            vec!["update".into(), issue, format!("--status={status}").into()]
+        }
+        BeadsMutationKind::LabelAdd { label, .. } => {
+            vec!["label".into(), "add".into(), issue, label.into()]
+        }
+        BeadsMutationKind::LabelRemove { label, .. } => {
+            vec!["label".into(), "remove".into(), issue, label.into()]
+        }
+        BeadsMutationKind::DependencyAdd {
+            depends_on_id,
+            dependency_type,
+            ..
+        } => vec![
+            "dep".into(),
+            "add".into(),
+            issue,
+            depends_on_id.into(),
+            format!("--type={}", dependency_type.name()).into(),
+        ],
+        BeadsMutationKind::DependencyRemove {
+            depends_on_id,
+            dependency_type,
+            ..
+        } => {
+            vec![
+                "dep".into(),
+                "remove".into(),
+                issue,
+                depends_on_id.into(),
+                format!("--type={}", dependency_type.name()).into(),
+            ]
+        }
+        BeadsMutationKind::Close {
+            reason, verdict, ..
+        } => vec![
+            "close".into(),
+            issue,
+            format!(
+                "--reason={}:{} {reason}",
+                verdict.kind.name(),
+                verdict.reference
+            )
+            .into(),
+        ],
+    };
+    arguments.extend([
+        "--actor".into(),
+        actor.into(),
+        "--db".into(),
+        tracker
+            .workspace_root
+            .join(".beads/beads.db")
+            .into_os_string(),
+        "--json".into(),
+    ]);
     TrackerInvocation {
         program: tracker.program.clone(),
         program_digest: tracker.program_digest.clone(),
-        arguments: vec![
-            "comments".into(),
-            "add".into(),
-            issue_id.into(),
-            format!("--message={text}").into(),
-            "--actor".into(),
-            actor.into(),
-            "--db".into(),
-            tracker
-                .workspace_root
-                .join(".beads/beads.db")
-                .into_os_string(),
-            "--json".into(),
-        ],
+        arguments,
         environment: vec![(OsString::from("TMPDIR"), scratch.as_os_str().to_owned())],
         current_dir: tracker.workspace_root.clone(),
     }

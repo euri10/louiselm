@@ -61,7 +61,7 @@ fn approval(launch: LaunchRequest, uid: u32, commands: Option<ApprovedCommands>)
     GrantRequest {
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
         skill_requests: None,
-        beads_comments: None,
+        beads_mutations: None,
         require_cold_recovery: false,
         request: launch,
         controller_uid: uid,

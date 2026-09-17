@@ -7,6 +7,9 @@ use super::*;
 use crate::broker::tracker_runner::TrackerOutput;
 use std::cell::Cell;
 
+#[path = "beads_mutation_control_tests.rs"]
+mod control;
+
 struct FakeRunner {
     exit_code: Option<i32>,
     calls: Cell<u32>,
@@ -47,6 +50,7 @@ fn binding() -> Binding {
 fn request(id: &str) -> BeadsMutationRequest {
     BeadsMutationRequest {
         request_id: id.to_owned(),
+        required: false,
         kind: BeadsMutationKind::CommentAdd {
             issue_id: "louiselm-qbr.5.1.5".to_owned(),
             text: "hello".to_owned(),
@@ -260,11 +264,13 @@ fn durability_survives_a_restart() {
     );
 }
 
-fn permission(root: &Path) -> ApprovedBeadsComments {
-    ApprovedBeadsComments {
+fn permission(root: &Path) -> ApprovedBeadsMutations {
+    ApprovedBeadsMutations {
+        role: crate::beads_mutation::BeadsRole::Worker,
+        effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
         project_digest: Digest::of(root.as_os_str().as_encoded_bytes()).to_string(),
         issue_ids: vec!["louiselm-qbr.5.1.5".into()],
-        max_comments: 2,
+        max_mutations: 2,
         expires_at_ms: 100,
     }
 }
@@ -317,7 +323,7 @@ fn comment_budget_survives_restart_and_identical_replays_do_not_spend_it() {
     let store = BeadsMutations::open(root.path()).unwrap();
     let runner = FakeRunner::new(0);
     let mut permission = permission(root.path());
-    permission.max_comments = 1;
+    permission.max_mutations = 1;
     let first = store
         .accept(
             &binding(),

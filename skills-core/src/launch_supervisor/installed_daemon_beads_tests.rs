@@ -1,7 +1,8 @@
 //! Real installed daemon and measured Agent relay against a disposable upstream tracker.
 use super::*;
 use crate::beads_mutation::{
-    ApprovedBeadsComments, BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest,
+    ApprovedBeadsMutations, BeadsEffect, BeadsMutationKind, BeadsMutationOutcome,
+    BeadsMutationRequest, BeadsRole,
 };
 use crate::launch_protocol::COMMAND_SCHEMA;
 
@@ -15,17 +16,25 @@ pub(super) fn subjects() -> &'static [&'static str] {
     }
 }
 
-pub(super) fn permission(name: &str, now: u64) -> Option<ApprovedBeadsComments> {
+pub(super) fn permission(name: &str, now: u64) -> Option<ApprovedBeadsMutations> {
     if name != "tracker" || !Path::new(TRACKER_CONFIG).exists() {
         return None;
     }
     let record: serde_json::Value =
         serde_json::from_slice(&fs::read(TRACKER_CONFIG).unwrap()).unwrap();
     let workspace = Path::new(record["workspace"].as_str().unwrap());
-    Some(ApprovedBeadsComments {
+    Some(ApprovedBeadsMutations {
+        role: BeadsRole::Worker,
+        effects: vec![
+            BeadsEffect::CommentAdd,
+            BeadsEffect::Claim,
+            BeadsEffect::LabelAdd {
+                label: "verified-relay".into(),
+            },
+        ],
         project_digest: Digest::of(workspace.as_os_str().as_encoded_bytes()).to_string(),
         issue_ids: vec![fs::read_to_string(workspace.join("fixture-issue")).unwrap()],
-        max_comments: 1,
+        max_mutations: 3,
         expires_at_ms: now + 180_000,
     })
 }
@@ -167,7 +176,7 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
         )
     });
     let mut output = BufReader::new(output);
-    let query = CommandMessage {
+    let mut query = CommandMessage {
         schema: COMMAND_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
         request_id: "relay-comment".into(),
@@ -177,6 +186,7 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
         operation: CommandOperation::BeadsMutation {
             request: BeadsMutationRequest {
                 request_id: "comment-once".into(),
+                required: false,
                 kind: BeadsMutationKind::CommentAdd {
                     issue_id: issue.into(),
                     text: "--actor=forged\n$(literal)".into(),
@@ -184,34 +194,56 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
             },
         },
     };
-    let mut first = None;
-    for _ in 0..2 {
-        input.write_all(&[0x1e]).unwrap();
-        input.write_all(&query.canonical_bytes()).unwrap();
-        input.write_all(b"\n").unwrap();
-        input.flush().unwrap();
-        let mut reply = Vec::new();
-        output.read_until(b'\n', &mut reply).unwrap();
-        assert_eq!(reply.first(), Some(&0x1e), "{reply:?}");
-        let crate::launch_protocol::ProtocolMessage::Command(reply) =
-            crate::launch_protocol::decode_message(&reply[1..]).unwrap()
-        else {
-            panic!("expected command reply")
+    let effects = [
+        BeadsMutationKind::CommentAdd {
+            issue_id: issue.into(),
+            text: "--actor=forged\n$(literal)".into(),
+        },
+        BeadsMutationKind::Claim {
+            issue_id: issue.into(),
+        },
+        BeadsMutationKind::LabelAdd {
+            issue_id: issue.into(),
+            label: "verified-relay".into(),
+        },
+    ];
+    for (index, kind) in effects.into_iter().enumerate() {
+        query.operation = CommandOperation::BeadsMutation {
+            request: BeadsMutationRequest {
+                request_id: format!("effect-{index}"),
+                required: false,
+                kind,
+            },
         };
-        if allowed {
-            let CommandOperation::BeadsMutationResult { status } = reply.operation else {
-                panic!("expected comment success: {reply:?}")
+        let mut first = None;
+        for _ in 0..2 {
+            input.write_all(&[0x1e]).unwrap();
+            input.write_all(&query.canonical_bytes()).unwrap();
+            input.write_all(b"\n").unwrap();
+            input.flush().unwrap();
+            let mut reply = Vec::new();
+            output.read_until(b'\n', &mut reply).unwrap();
+            assert_eq!(reply.first(), Some(&0x1e), "{reply:?}");
+            let crate::launch_protocol::ProtocolMessage::Command(reply) =
+                crate::launch_protocol::decode_message(&reply[1..]).unwrap()
+            else {
+                panic!("expected command reply")
             };
-            assert_eq!(status.outcome, BeadsMutationOutcome::Completed);
-            if let Some(first) = &first {
-                assert_eq!(first, &status);
+            if allowed {
+                let CommandOperation::BeadsMutationResult { status } = reply.operation else {
+                    panic!("expected comment success: {reply:?}")
+                };
+                assert_eq!(status.outcome, BeadsMutationOutcome::Completed);
+                if let Some(first) = &first {
+                    assert_eq!(first, &status);
+                }
+                first = Some(status);
+            } else {
+                assert!(matches!(
+                    reply.operation,
+                    CommandOperation::BeadsMutationRefused { .. }
+                ));
             }
-            first = Some(status);
-        } else {
-            assert!(matches!(
-                reply.operation,
-                CommandOperation::BeadsMutationRefused { .. }
-            ));
         }
     }
     drop(input);
@@ -243,7 +275,7 @@ fn refuse_bad_configuration(manager: &OwnedFd) {
 }
 
 #[test]
-fn privileged_installed_tracker_routes_only_approved_comments() {
+fn privileged_installed_tracker_routes_only_approved_mutations() {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_BEADS").is_none() {
         eprintln!("skipping: requires disposable VM and private mounts");
         return;
@@ -330,18 +362,33 @@ fn privileged_installed_tracker_routes_only_approved_comments() {
         fs::read_dir(Path::new(STATE).join("authorizations/beads-mutations/outcomes"))
             .unwrap()
             .count(),
-        1
+        3
     );
+    verify_mutations(&program, &workspace, &issue);
+    terminate(&mut daemon);
+}
+
+fn verify_mutations(program: &Path, workspace: &Path, issue: &str) {
     if std::env::var_os("LOUISELM_TEST_BR").is_some() {
         let comments: serde_json::Value = serde_json::from_slice(&upstream(
-            &program,
-            &workspace,
-            &["comments", "list", &issue, "--json"],
+            program,
+            workspace,
+            &["comments", "list", issue, "--json"],
         ))
         .unwrap();
         assert_eq!(comments.as_array().unwrap().len(), 1);
         assert_eq!(comments[0]["author"], "agent/tracker");
         assert_eq!(comments[0]["text"], "--actor=forged\n$(literal)");
+        let updated: serde_json::Value =
+            serde_json::from_slice(&upstream(program, workspace, &["show", issue, "--json"]))
+                .unwrap();
+        assert_eq!(updated[0]["assignee"], "agent/tracker");
+        assert_eq!(updated[0]["status"], "in_progress");
+        assert!(
+            updated[0]["labels"]
+                .as_array()
+                .unwrap()
+                .contains(&"verified-relay".into())
+        );
     }
-    terminate(&mut daemon);
 }

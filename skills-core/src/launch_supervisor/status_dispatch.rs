@@ -139,7 +139,10 @@ fn refusal(query: &CommandMessage, error: ErrorCode) -> CommandOperation {
     if matches!(query.operation, CommandOperation::SkillRequest { .. }) {
         CommandOperation::SkillRequestRefused { error }
     } else if matches!(query.operation, CommandOperation::BeadsMutation { .. }) {
-        CommandOperation::BeadsMutationRefused { error }
+        CommandOperation::BeadsMutationRefused {
+            error,
+            escalation: None,
+        }
     } else {
         CommandOperation::StatusRefused { error }
     }
@@ -151,10 +154,20 @@ fn matching_reply(query: &CommandMessage, reply: &CommandMessage) -> bool {
             CommandOperation::StatusRequest {},
             CommandOperation::StatusResult { .. } | CommandOperation::StatusRefused { .. },
         )
-        | (CommandOperation::SkillRequest { .. }, CommandOperation::SkillRequestRefused { .. })
-        | (CommandOperation::BeadsMutation { .. }, CommandOperation::BeadsMutationRefused { .. }) => {
+        | (CommandOperation::SkillRequest { .. }, CommandOperation::SkillRequestRefused { .. }) => {
             true
         }
+        (
+            CommandOperation::BeadsMutation { request },
+            CommandOperation::BeadsMutationRefused { escalation, .. },
+        ) => escalation.as_ref().is_none_or(|value| {
+            request.required
+                && value.capability
+                    == crate::beads_mutation::BeadsCapability::for_mutation(
+                        value.capability.project_digest.clone(),
+                        &request.kind,
+                    )
+        }),
         (
             CommandOperation::SkillRequest { request },
             CommandOperation::SkillRequestResult { status },

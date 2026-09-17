@@ -216,6 +216,20 @@ impl InstalledBroker {
             .skill_request_control(operator_uid, operation_id, outcome)
     }
 
+    /// Inspects or settles one Beads operation for its authenticated operator.
+    /// The original mutation outcome and spent budget never change.
+    /// # Errors
+    /// Refuses foreign scope, conflicting decisions or unavailable durable state.
+    pub fn beads_mutation_control(
+        &self,
+        operator_uid: u32,
+        operation_id: &str,
+        decision: Option<&crate::beads_mutation::BeadsControlDecision>,
+    ) -> Result<crate::beads_mutation::BeadsInspection, BrokerError> {
+        self.service
+            .beads_mutation_control(operator_uid, operation_id, decision)
+    }
+
     fn reconcile_admissions(
         &self,
         endpoint: Option<&super::attention::AttentionEndpoint>,
@@ -380,7 +394,7 @@ impl InstalledBroker {
         if grant.controller_uid != self.verifier.config().operator_uid {
             return Err(BrokerError::ControllerMismatch);
         }
-        if let Some(permission) = &grant.beads_comments {
+        if let Some(permission) = &grant.beads_mutations {
             let tracker = self
                 .service
                 .tracker

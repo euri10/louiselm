@@ -98,7 +98,7 @@ pub struct GrantRequest {
     /// Explicit permission to request Skill Admission, never to approve it.
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
     /// Explicit bounded canonical-comment permission; absence denies mutations.
-    pub beads_comments: Option<crate::beads_mutation::ApprovedBeadsComments>,
+    pub beads_mutations: Option<crate::beads_mutation::ApprovedBeadsMutations>,
 }
 
 /// One durable single-use authorization awaiting its supervisor.
@@ -138,7 +138,7 @@ pub struct PendingAuthorization {
     /// Exact request permission bound to this Session and envelope revision.
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
     /// Exact comment scope and budget retained across retries and restarts.
-    pub beads_comments: Option<crate::beads_mutation::ApprovedBeadsComments>,
+    pub beads_mutations: Option<crate::beads_mutation::ApprovedBeadsMutations>,
 }
 
 /// Durable evidence that one authorization was spent.
@@ -214,7 +214,7 @@ impl AuthorizationStore {
                 || prior.controller_uid != grant.controller_uid
                 || prior.commands != grant.commands
                 || prior.skill_requests != grant.skill_requests
-                || prior.beads_comments != grant.beads_comments
+                || prior.beads_mutations != grant.beads_mutations
                 || prior.expires_at_ms != grant.expires_at_ms
                 || prior.require_cold_recovery != grant.require_cold_recovery
                 || prior.broker_loss_grace_ms != grant.broker_loss_grace_ms
@@ -300,7 +300,7 @@ impl AuthorizationStore {
             return Err(BrokerError::InvalidGrant);
         }
         if grant
-            .beads_comments
+            .beads_mutations
             .as_ref()
             .is_some_and(|permission| !permission.valid(now_ms))
         {
@@ -329,7 +329,7 @@ impl AuthorizationStore {
             broker_loss_grace_ms: grant.broker_loss_grace_ms,
             commands: grant.commands.clone(),
             skill_requests: grant.skill_requests.clone(),
-            beads_comments: grant.beads_comments.clone(),
+            beads_mutations: grant.beads_mutations.clone(),
         };
         self.retention_store()?.register(&grant.request, now_ms)?;
         write_new_record(&self.pending_path(&record_name), &pending)?;

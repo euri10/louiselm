@@ -15,6 +15,149 @@ fn private_root() -> tempfile::TempDir {
 }
 
 #[test]
+fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
+    use louiselm_skills::{
+        Digest,
+        beads_mutation::{
+            BeadsControlDecision, BeadsInspection, BeadsInspectionDetail, BeadsMutationOutcome,
+            BeadsMutationStatus, BeadsReconciliation, BeadsResolution,
+        },
+        broker::operator::beads_mutation,
+    };
+    for scenario in ["missing", "wrong-evidence", "wrong-conclusion", "confirmed"] {
+        let root = private_root();
+        let path = root.path().join("inspect.sock");
+        let uid = rustix::process::geteuid().as_raw();
+        let server = OperatorServer::bind(&path, uid).unwrap();
+        let operation = "12345678-1234-4234-8234-123456789abc";
+        let decision = BeadsControlDecision::Reconcile {
+            outcome: BeadsReconciliation::NotApplied,
+            evidence_digest: Digest::of(b"requested evidence").to_string(),
+        };
+        let worker = thread::spawn(move || {
+            server
+                .serve_once(
+                    |_, _| panic!("not Session lookup"),
+                    |_| panic!("not conformance lookup"),
+                    |_, _| panic!("not skill control"),
+                    |id, received| {
+                        assert!(received.is_some());
+                        Ok(BeadsInspection {
+                            operation_id: id.into(),
+                            session_id: "session".into(),
+                            run_id: "run".into(),
+                            envelope_revision: 1,
+                            detail: BeadsInspectionDetail::Mutation {
+                                project_digest: Digest::of(b"project").to_string(),
+                                request_digest: Digest::of(b"request").to_string(),
+                                status: BeadsMutationStatus {
+                                    request_id: "request".into(),
+                                    operation_id: id.into(),
+                                    outcome: BeadsMutationOutcome::Unknown,
+                                },
+                                resolution: (scenario != "missing").then(|| BeadsResolution {
+                                    outcome: if scenario == "wrong-conclusion" {
+                                        BeadsReconciliation::Applied
+                                    } else {
+                                        BeadsReconciliation::NotApplied
+                                    },
+                                    evidence_digest: Digest::of(if scenario == "wrong-evidence" {
+                                        b"unrelated"
+                                    } else {
+                                        b"requested evidence"
+                                    })
+                                    .to_string(),
+                                    operator_uid: uid,
+                                    decided_at_ms: 1,
+                                }),
+                            },
+                        })
+                    },
+                    |_, _| panic!("not retention control"),
+                )
+                .unwrap();
+        });
+        let result = beads_mutation(
+            &path,
+            uid,
+            operation,
+            Some(&decision),
+            Duration::from_secs(2),
+        );
+        worker.join().unwrap();
+        assert_eq!(
+            result.is_ok(),
+            scenario == "confirmed",
+            "{scenario}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn beads_operator_request_reaches_authenticated_control() {
+    use std::io::{Read, Write};
+    let root = private_root();
+    let path = root.path().join("inspect.sock");
+    let uid = rustix::process::geteuid().as_raw();
+    let server = OperatorServer::bind(&path, uid).unwrap();
+    let worker = thread::spawn(move || {
+        server
+            .serve_once(
+                |_, _| panic!("not Session lookup"),
+                |_| panic!("not conformance lookup"),
+                |_, _| panic!("not skill control"),
+                |id, decision| {
+                    use louiselm_skills::beads_mutation::{
+                        BeadsInspection, BeadsInspectionDetail, BeadsMutationOutcome,
+                        BeadsMutationStatus,
+                    };
+                    assert!(decision.is_none());
+                    Ok(BeadsInspection {
+                        operation_id: id.into(),
+                        session_id: "session".into(),
+                        run_id: "run".into(),
+                        envelope_revision: 1,
+                        detail: BeadsInspectionDetail::Mutation {
+                            project_digest: louiselm_skills::Digest::of(b"project").to_string(),
+                            request_digest: louiselm_skills::Digest::of(b"request").to_string(),
+                            status: BeadsMutationStatus {
+                                request_id: "request".into(),
+                                operation_id: id.into(),
+                                outcome: BeadsMutationOutcome::Unknown,
+                            },
+                            resolution: None,
+                        },
+                    })
+                },
+                |_, _| panic!("unexpected retention control"),
+            )
+            .unwrap();
+    });
+    let mut client = std::os::unix::net::UnixStream::connect(path).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut size = [0; 4];
+    client.read_exact(&mut size).unwrap();
+    let mut ready = vec![0; u32::from_be_bytes(size) as usize];
+    client.read_exact(&mut ready).unwrap();
+    let request = br#"{"schema":"louiselm.operator-beads/1","operation_id":"12345678-1234-4234-8234-123456789abc","decision":null}"#;
+    client
+        .write_all(&u32::try_from(request.len()).unwrap().to_be_bytes())
+        .unwrap();
+    client.write_all(request).unwrap();
+    client.read_exact(&mut size).unwrap();
+    let mut reply = vec![0; u32::from_be_bytes(size) as usize];
+    client.read_exact(&mut reply).unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    worker.join().unwrap();
+    assert_eq!(
+        reply["operation_id"], "12345678-1234-4234-8234-123456789abc",
+        "{reply}"
+    );
+}
+
+#[test]
 fn wrong_uid_is_refused_before_session_lookup() {
     let root = private_root();
     let path = root.path().join("inspect.sock");
@@ -26,6 +169,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
                 |_, _| panic!("unauthenticated lookup"),
                 |_| panic!("unauthenticated conformance lookup"),
                 |_, _| panic!("unauthenticated skill control"),
+                |_, _| panic!("unauthenticated Beads control"),
                 |_, _| panic!("unexpected retention control"),
             )
             .unwrap();
@@ -52,6 +196,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
                 },
                 |_| panic!("unexpected conformance lookup"),
                 |_, _| panic!("unexpected skill control"),
+                |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
             )
             .unwrap();
@@ -136,6 +281,7 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
                             admission: None,
                         })
                     },
+                    |_, _| panic!("unexpected Beads control"),
                     |_, _| panic!("unexpected retention control"),
                 )
                 .unwrap();
@@ -188,6 +334,7 @@ fn conformance_inspection_distinguishes_an_unknown_session() {
                 |_, _| Err(InspectError::UnknownSession),
                 |_| Err(InspectError::UnknownSession),
                 |_, _| panic!("not a skill decision"),
+                |_, _| panic!("not a Beads decision"),
                 |_, _| panic!("not a retention decision"),
             )
             .unwrap();
@@ -228,6 +375,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                     |_, _| panic!("invalid lookup"),
                     |_| panic!("invalid conformance lookup"),
                     |_, _| panic!("invalid skill control"),
+                    |_, _| panic!("invalid Beads control"),
                     |_, _| panic!("unexpected retention control"),
                 )
                 .unwrap();
@@ -237,6 +385,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                 |_, _| Err(InspectError::UnknownSession),
                 |_| panic!("unexpected conformance lookup"),
                 |_, _| panic!("unexpected skill control"),
+                |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
             )
             .unwrap();

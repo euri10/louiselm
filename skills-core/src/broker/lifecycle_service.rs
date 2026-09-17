@@ -399,6 +399,7 @@ pub(in crate::broker) fn refuse_nested_status(
         } else if matches!(query.operation, CommandOperation::BeadsMutation { .. }) {
             CommandOperation::BeadsMutationRefused {
                 error: ErrorCode::OperationPending,
+                escalation: None,
             }
         } else {
             CommandOperation::StatusRefused {

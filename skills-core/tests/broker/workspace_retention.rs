@@ -42,6 +42,7 @@ fn retention_operator_path_survives_restart_and_reports_quarantine_without_paylo
                 |_, _| panic!("no live Session lookup"),
                 |_| panic!("no conformance query"),
                 |_, _| panic!("no Skill decision"),
+                |_, _| panic!("no Beads decision"),
                 |id, pin| {
                     service
                         .workspace_retention(uid, id, pin)

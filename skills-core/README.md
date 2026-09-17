@@ -355,29 +355,71 @@ never supplies current isolation proof, renews approval or grants authority.
 See [canonical status composition](../docs/broker-lifecycle.md#canonical-status-composition)
 for the launch-based freshness meaning and remaining integration scope.
 
-### Broker-mediated Beads comments
+### Broker-mediated Beads mutations
 
-The authenticated Agent command relay accepts `BeadsMutation` comment-add
-requests. A trusted caller must configure the `BrokerService` with
-`configure_beads_tracker(workspace, program, expected_digest)` and supply an
-`ApprovedBeadsComments` launch permission with the canonical project digest,
-exact issue IDs, a non-refundable attempt budget and an expiry. Without either,
-mutations are refused. The broker
-derives the actor from its retained Agent/Session binding and checks the current
+The authenticated Agent command relay accepts typed comments, atomic claims,
+nonterminal status updates, individual label additions/removals, typed dependency
+edits and closure with one typed verdict. A trusted caller configures `BrokerService` with
+`configure_beads_tracker(workspace, program, expected_digest)` and supplies an
+`ApprovedBeadsMutations` launch permission with the canonical project digest,
+exact issue IDs, sorted exact `effects`, a trusted `role`, a non-refundable
+`max_mutations` budget and an expiry. Without configuration and a grant,
+mutations are refused. The broker derives the actor from its retained
+Agent/Session binding and checks the current
 Session, Run, envelope revision, lifecycle state and quarantine status.
+
+Status and label grants name exact values; statuses use lowercase canonical
+spelling, never claim aliases. Dependency additions and removals name an exact
+edge type and require both issue IDs. Workers cannot close issues, add blocker/parent
+edges, remove dependency edges or change the `integration_verified` gate label,
+even if those effects appear in a supplied grant. Coordinators still need the
+exact effect permission. Claims always use `br update --claim` with the
+derived actor; status updates cannot substitute for claiming, closing or deletion.
+Close requests carry one `consumer`, `gate`, `live`, `inert` or `none` verdict;
+`inert` names its follow-up issue. The broker never supplies `--force` or a policy
+bypass. Upstream `br` remains responsible for graph and workflow validation.
+Parallel-worker dispatch, integration gates and publication remain `louiselm-qbr.6`.
 
 The runner uses the configured `.beads/beads.db`, checks the executable digest,
 clears its environment and bounds execution with process-group cleanup. Durable
 receipts retain a request digest, not the comment body or subprocess output.
 Identical retries return the same operation. A crash or process-observation
-failure can leave `Unknown`: the comment may already exist, so the broker never
-automatically invokes `br` again for that request ID. Reconcile against canonical
-Beads before deciding whether to submit a new request.
+failure can leave `Unknown`: the effect may already have occurred, so the broker
+never automatically invokes `br` again for that request ID. A nonzero exit is
+also not proof of no write; `Failed` preserves that process result only.
+
+Requests explicitly set `required`. Optional denials return `CapabilityDenied`
+without escalation. A denied required action from a live authenticated Session
+returns a durable escalation naming the exact project, effect, issue IDs and
+minimum role for one attempt. Repeated requests for that same missing scope in
+the same Session/envelope revision share one operation UUID and Permission
+Required Attention item, even when their retry IDs or comment bodies differ.
+The record contains no comment/reason text. Escalation never grants authority;
+expiry, exhausted budgets, quarantine and project changes still refuse writes.
+
+The authenticated operator endpoint exposes `operator::beads_mutation` and the
+`louiselm.operator-beads/1` request: `operation_id` plus an optional `decision`.
+Inspection works after Session loss and returns original request/project digests,
+the unchanged outcome, or the exact escalation. To reconcile `Unknown` or `Failed`,
+first inspect canonical Beads state and independently retained request/evidence.
+If that establishes what happened, submit `reconcile` with `applied` or
+`not_applied` and the canonical SHA-256 `evidence_digest`. The broker adds an
+immutable operator-UID/timestamp attestation; it does not claim to verify the
+evidence, overwrite the original outcome, rerun `br`, or refund the attempt.
+Conflicting attestations and reconciliation of `Completed` refuse. If the evidence
+is inconclusive, leave the outcome unresolved; absence alone is not proof.
+Only after establishing non-application may a separately authorized new request
+be considered. The same request ID always retains its original outcome.
+
+For an escalation, `dismiss` clears its Attention item without approving anything;
+retry or restart cannot reopen that condition. New authority remains an explicit
+trusted-controller decision. Agent requests cannot inspect or settle operator
+records. CLI/UI presentation and private-replica cutover remain separate work.
 
 Installed startup reads `/etc/louiselm-broker-beads.json`, selected explicitly by
 the administrator. Absence leaves ordinary broker startup usable and all tracker
 mutations disabled; invalid configuration refuses startup. One canonical project
-is configured per machine-wide daemon. The operator's per-launch comment grant
+is configured per machine-wide daemon. The operator's per-launch mutation grant
 must name its project digest; switching the configured project cannot transfer
 old grants, even where issue IDs coincide. Agent requests contain no project
 path, actor, executable, or routing override.
@@ -406,13 +448,12 @@ Run from the repository root. The command changes only the protected configurati
 it never initializes, moves, or changes ownership of existing tracker data. An
 identical rerun is harmless; a differing existing configuration is refused.
 Its JSON result gives `project_digest` (SHA-256 of the canonical absolute path's
-filesystem bytes) for `GrantRequest.beads_comments`, alongside sorted exact issue
-IDs, `max_comments` (1–64), and `expires_at_ms`. Provisioning grants no comments
+filesystem bytes) for `GrantRequest.beads_mutations`, alongside sorted exact issue
+IDs, exact `effects`, `role`, `max_mutations` (1–64), and `expires_at_ms`. Provisioning grants no mutations
 by itself. Restart the updated installed broker to load it; the trusted controller
 must still pass the explicit grant through `InstalledBroker::authorize`.
 
-Other Beads effects and replica/canonical
-access cutover remain `louiselm-qbr.5.1.5.4` and `louiselm-qbr.5.1.5.5`. This slice
+Replica/canonical access cutover remains `louiselm-qbr.5.1.5.5`. This primitive
 does not yet enforce exclusive broker access to canonical Beads.
 
 The regular suite covers the authenticated service and relay. To exercise an
@@ -420,11 +461,11 @@ existing upstream `br` against a disposable project, from `skills-core/` run:
 
 ```sh
 LOUISELM_TEST_BR=/absolute/path/to/br cargo test --all-features --locked \
-  --test broker real_br_comment -- --ignored --nocapture
+  --test broker real_br_ -- --ignored --nocapture
 ```
 
 The installed acceptance is
-`launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_comments`.
+`launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations`.
 Build the binaries and library test, then run that exact test in the
 [disposable VM](../docs/launcher-vm.md), under root and a private mount namespace,
 with `LOUISELM_REQUIRE_BROKER_BEADS=1` and `LOUISELM_TEST_BEADS_INSTALLER` naming the provisioning script
@@ -432,8 +473,8 @@ with `LOUISELM_REQUIRE_BROKER_BEADS=1` and `LOUISELM_TEST_BEADS_INSTALLER` namin
 startup, protected configuration and digest refusal, distinct-UID denial of direct
 writes, and durable at-most-once outcomes through the measured Agent relay.
 CI runs this composition with `/usr/bin/true` as the process stand-in. Set
-`LOUISELM_TEST_BR` to an existing upstream binary to additionally prove exactly one
-correctly attributed real comment despite Agent retries. This fixture proves
+`LOUISELM_TEST_BR` to an existing upstream binary to additionally prove the real
+claim, exact label and single correctly attributed comment despite Agent retries. This fixture proves
 installed composition, not activation of the maintainer's desktop.
 
 ### Prospective artifact preflight

@@ -1,32 +1,36 @@
 //! Authenticated comment requests, with opt-in real upstream br acceptance.
 use super::*;
+#[path = "beads_effects.rs"]
+mod effects;
 use louiselm_skills::{
     beads_mutation::{
-        ApprovedBeadsComments, BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest,
+        ApprovedBeadsMutations, BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest,
         BeadsMutationStatus,
     },
     broker::{BrokerSession, lifecycle::LifecycleStore},
     launch_protocol::{COMMAND_SCHEMA, CommandMessage, CommandOperation},
 };
 
-fn permission(issue: &str) -> ApprovedBeadsComments {
-    ApprovedBeadsComments {
+fn permission(issue: &str) -> ApprovedBeadsMutations {
+    ApprovedBeadsMutations {
+        role: louiselm_skills::beads_mutation::BeadsRole::Worker,
+        effects: vec![louiselm_skills::beads_mutation::BeadsEffect::CommentAdd],
         project_digest: Digest::of(b"fixture-project").to_string(),
         issue_ids: vec![issue.into()],
-        max_comments: 2,
+        max_mutations: 2,
         expires_at_ms: 60_000,
     }
 }
 
 fn fixture(
     root: &Path,
-    permission: Option<ApprovedBeadsComments>,
+    permission: Option<ApprovedBeadsMutations>,
     program: Option<&Path>,
 ) -> (BrokerService, BrokerSession, SeqpacketChannel) {
     let socket = root.join("broker.sock");
     let request = request("comment-session");
     let mut approval = grant(&request);
-    approval.beads_comments = permission.map(|mut permission| {
+    approval.beads_mutations = permission.map(|mut permission| {
         permission.project_digest =
             Digest::of(root.join("workspace").as_os_str().as_encoded_bytes()).to_string();
         permission
@@ -73,6 +77,7 @@ fn query(auth: &LaunchAuthorization, issue: &str) -> CommandMessage {
         operation: CommandOperation::BeadsMutation {
             request: BeadsMutationRequest {
                 request_id: "stable-comment".into(),
+                required: false,
                 kind: BeadsMutationKind::CommentAdd {
                     issue_id: issue.into(),
                     text: "--actor=forged\n$(no-shell) `literal`".into(),
@@ -176,7 +181,8 @@ fn comment_requires_config_permission_exact_subject_revision_and_live_state() {
             assert!(matches!(
                 result,
                 CommandOperation::BeadsMutationRefused {
-                    error: ErrorCode::EnvelopeRevisionMismatch
+                    error: ErrorCode::EnvelopeRevisionMismatch,
+                    ..
                 }
             ));
         }
@@ -205,8 +211,9 @@ fn completed_comment_replays_and_changed_content_is_refused() {
         accepted(exchange(&service, &mut session, &peer, &query, true)),
         first
     );
-    if let CommandOperation::BeadsMutation { request } = &mut query.operation {
-        let BeadsMutationKind::CommentAdd { text, .. } = &mut request.kind;
+    if let CommandOperation::BeadsMutation { request } = &mut query.operation
+        && let BeadsMutationKind::CommentAdd { text, .. } = &mut request.kind
+    {
         *text = "different".into();
     }
     assert!(matches!(

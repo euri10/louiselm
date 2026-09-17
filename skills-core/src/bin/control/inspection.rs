@@ -181,6 +181,11 @@ impl Queries {
                                 .skill_request_control(owner.operator_uid, id, outcome)
                                 .map_err(|_| InspectError::StatusUnavailable)
                         },
+                        |id, decision| {
+                            broker
+                                .beads_mutation_control(owner.operator_uid, id, decision)
+                                .map_err(|_| InspectError::StatusUnavailable)
+                        },
                         |id, pin| {
                             broker
                                 .workspace_retention(owner.operator_uid, id, pin)

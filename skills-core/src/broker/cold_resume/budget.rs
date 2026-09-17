@@ -88,7 +88,7 @@ mod tests {
         PendingAuthorization {
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
             skill_requests: None,
-            beads_comments: None,
+            beads_mutations: None,
             require_cold_recovery: true,
             authorization_id: "authorization".into(),
             request_id: "request".into(),

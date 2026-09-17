@@ -780,6 +780,7 @@ fn beads_relay_correlates_results_and_refuses_after_deadline() {
         CommandOperation::BeadsMutation {
             request: BeadsMutationRequest {
                 request_id: "stable-comment".into(),
+                required: false,
                 kind: BeadsMutationKind::CommentAdd {
                     issue_id: "test-1".into(),
                     text: "hello".into(),
@@ -812,7 +813,8 @@ fn beads_relay_correlates_results_and_refuses_after_deadline() {
     assert!(matches!(
         receive(&harness.agent).operation,
         CommandOperation::BeadsMutationRefused {
-            error: ErrorCode::BrokerUnavailable
+            error: ErrorCode::BrokerUnavailable,
+            ..
         }
     ));
     assert!(harness.owner.handle_status_reply(&forwarded));

@@ -173,6 +173,9 @@ pub enum BrokerError {
     /// The pinned `br` binary could not be run, or did not exit within its deadline.
     #[error("canonical Beads tracker invocation is unavailable")]
     TrackerInvocation(#[source] io::Error),
+    /// Every approved Beads attempt has already been spent.
+    #[error("Beads mutation budget exhausted")]
+    BeadsBudgetExhausted,
 }
 
 /// Reads one bounded durable record, or `None` when it is absent.

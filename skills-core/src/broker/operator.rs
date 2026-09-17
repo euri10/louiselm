@@ -3,6 +3,7 @@
 mod wire;
 
 use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
+use crate::beads_mutation::{BeadsControlDecision, BeadsInspection, BeadsInspectionDetail};
 use crate::launch_protocol::SessionStatus;
 use crate::skill_request::{SkillRequestOutcome, SkillRequestStatus};
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,11 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-beads/1")]
+    Beads {
+        operation_id: String,
+        decision: Option<BeadsControlDecision>,
+    },
     #[serde(rename = "louiselm.operator-workspace-retention/1")]
     WorkspaceRetention {
         session_id: String,
@@ -130,6 +136,61 @@ pub fn workspace_retention(
         return Err(InspectError::StatusUnavailable);
     }
     Ok(inspection)
+}
+
+/// Inspects or reconciles an existing Beads operation as the authenticated operator.
+/// Blocks for one bounded exchange; no decision invokes `br`, grants authority,
+/// refunds budget or changes the original outcome. Evidence digests identify
+/// independently retained operator evidence, not machine-verified proof of effect.
+/// # Errors
+/// Refuses malformed identity/evidence, foreign peers, unavailable state or conflicting decisions.
+pub fn beads_mutation(
+    path: &Path,
+    broker_uid: u32,
+    operation_id: &str,
+    decision: Option<&BeadsControlDecision>,
+    timeout: Duration,
+) -> Result<BeadsInspection, InspectError> {
+    if !super::attention::canonical_uuid(operation_id)
+        || decision.as_ref().is_some_and(|value| !value.valid())
+    {
+        return Err(InspectError::InvalidRequest);
+    }
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Beads {
+            operation_id: operation_id.into(),
+            decision: decision.cloned(),
+        },
+        timeout,
+    )?;
+    let result: BeadsInspection =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    let confirmed = match (&decision, &result.detail) {
+        (None, _)
+        | (
+            Some(BeadsControlDecision::Dismiss),
+            BeadsInspectionDetail::Escalation {
+                dismissed: true, ..
+            },
+        ) => true,
+        (
+            Some(BeadsControlDecision::Reconcile {
+                outcome,
+                evidence_digest,
+            }),
+            BeadsInspectionDetail::Mutation {
+                resolution: Some(value),
+                ..
+            },
+        ) => value.outcome == *outcome && value.evidence_digest == *evidence_digest,
+        _ => false,
+    };
+    if result.operation_id != operation_id || !result.valid() || !confirmed {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(result)
 }
 
 /// Checks the same bounded Session identifier accepted by durable broker records.
@@ -355,6 +416,7 @@ impl OperatorServer {
             &str,
             Option<SkillRequestOutcome>,
         ) -> Result<SkillRequestStatus, InspectError>,
+        beads: impl FnOnce(&str, Option<&BeadsControlDecision>) -> Result<BeadsInspection, InspectError>,
         retention: impl FnOnce(
             &str,
             Option<bool>,
@@ -376,6 +438,18 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Beads {
+                    operation_id,
+                    decision,
+                } => {
+                    if !super::attention::canonical_uuid(&operation_id)
+                        || decision.as_ref().is_some_and(|value| !value.valid())
+                    {
+                        return Err(InspectError::InvalidRequest);
+                    }
+                    serde_json::to_vec(&beads(&operation_id, decision.as_ref())?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::WorkspaceRetention { session_id, pin } => {
                     validate_subject(&session_id)?;
                     serde_json::to_vec(&retention(&session_id, pin)?)

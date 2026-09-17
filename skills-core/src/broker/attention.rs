@@ -61,6 +61,8 @@ impl AttentionSubject {
     deny_unknown_fields
 )]
 pub enum AttentionReason {
+    /// A required broker effect lacks explicit operator-granted capability.
+    PermissionRequired,
     /// A Run awaits an operator decision.
     RunParked,
     /// A Session ended abnormally or recovery failed.
@@ -74,6 +76,7 @@ pub enum AttentionReason {
 impl AttentionReason {
     fn fields(&self) -> (&str, Option<&str>) {
         match self {
+            Self::PermissionRequired => ("permission_required", None),
             Self::RunParked => ("run_parked", None),
             Self::SessionFailed => ("session_failed", None),
             Self::SkillApprovalPending => ("skill_approval_pending", Some("admission_required")),

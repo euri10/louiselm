@@ -367,6 +367,7 @@ fn installed_linked_admission_server() {
                         .map_err(|_| InspectError::StatusUnavailable)
                 },
                 |_, _| Err(InspectError::StatusUnavailable),
+                |_, _| Err(InspectError::StatusUnavailable),
             )
             .unwrap();
     }

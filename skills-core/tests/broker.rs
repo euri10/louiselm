@@ -138,7 +138,7 @@ fn grant(request: &LaunchRequest) -> GrantRequest {
     GrantRequest {
         conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
         skill_requests: None,
-        beads_comments: None,
+        beads_mutations: None,
         require_cold_recovery: false,
         request: request.clone(),
         controller_uid: CONTROLLER_UID,

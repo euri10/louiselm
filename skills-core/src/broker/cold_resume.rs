@@ -68,7 +68,7 @@ impl ColdResumeAllocation {
             commands: self.commands.clone(),
             // Request permission needs explicit approval for the new Session.
             skill_requests: None,
-            beads_comments: None,
+            beads_mutations: None,
         }
     }
 }
