@@ -173,6 +173,10 @@ messages, but ignore unknown optional fields from newer peers.
 ## Security
 
 - Validate all external input before changing state.
+- Neither LouiseLM nor maintainer-maintained ACP adapters may read another
+  tool's credential store or call a Provider API to obtain Account limits.
+  Limits arrive only via an Agent-advertised ACP extension; unsupported is a
+  correct result (louiselm-opencode-quota-runtime-ownership-blz13).
 - Never log tokens, environments, prompts, tool payloads, or sensitive data by
   default.
 - Do not execute generated Lua or use `load`, `loadstring`, the `debug` library,
