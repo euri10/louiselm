@@ -6,6 +6,7 @@
 )]
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::fs;
 mod common;
 use common::Fixture;
@@ -71,6 +72,46 @@ fn unchanged_refresh_is_idempotent_and_rewrite_replaces_source_facts() {
     fixture.log("codex", "history.jsonl", &events()[..4]);
     fixture.ok(&["index", "--source", &source]);
     assert_eq!(fixture.ok(&["stats", "commands"])["rows"][0]["calls"], 1);
+}
+
+#[test]
+fn normalizer_upgrade_reimports_unchanged_source_once() {
+    let fixture = Fixture::new();
+    let source = fixture.log("codex", "history.jsonl", &events());
+    fixture.ok(&["index", "--source", &source]);
+    // Emulate the pre-upgrade fingerprint and classification on identical history.
+    let content = fs::read(fixture.0.join("history.jsonl")).unwrap();
+    let old_digest = format!(
+        "{:x}",
+        Sha256::digest(format!("4:{:x}", Sha256::digest(content)))
+    );
+    let connection = rusqlite::Connection::open(fixture.0.join("state/index.sqlite3")).unwrap();
+    connection
+        .execute("UPDATE sources SET digest=?1", [&old_digest])
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE calls SET data=json_set(data,'$.family','<unknown executable>')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE call_facts SET data=json_set(data,'$.family','<unknown executable>')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    let refreshed = fixture.ok(&["index", "--source", &source]);
+    assert_eq!(refreshed["indexed_sources"], 1);
+    assert_eq!(
+        fixture.ok(&["stats", "commands"])["rows"][0]["family"],
+        "git status"
+    );
+    assert_eq!(
+        fixture.ok(&["index", "--source", &source])["indexed_sources"],
+        0
+    );
 }
 
 #[test]

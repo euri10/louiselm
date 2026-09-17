@@ -79,7 +79,15 @@ fn refresh(connection: &mut rusqlite::Connection, source: &sources::Source) -> R
         fingerprint(&source.path)?
     };
     let version = if source.format == "claude" { 5 } else { 4 };
-    let versioned = digest(format!("{version}:{before}").as_bytes());
+    // Normalizer edits must invalidate otherwise unchanged source histories too.
+    let normalizer = digest(
+        concat!(
+            include_str!("command.rs"),
+            include_str!("command/prefix.rs")
+        )
+        .as_bytes(),
+    );
+    let versioned = digest(format!("{version}:{normalizer}:{before}").as_bytes());
     if !snapshot && store::unchanged(connection, &source.id, &versioned)? {
         return Ok(false);
     }

@@ -90,6 +90,10 @@ sources are reported; other usable sources can commit. Mutable SQLite sources
 are always read through a consistent read-only transaction. An atomic index
 transaction publishes canonical calls after joining all available observations.
 Unchanged facts are idempotent; missing sources retain disclosed stale snapshots.
+Normalizer source changes invalidate cached JSONL classifications on the next
+`index --all`, even when history contents are unchanged. Subsequent refreshes
+skip them again. Compare identical call IDs and command digests to measure a
+parser change; aggregate counts from growing histories are not a paired sample.
 
 ## Measurement rules
 
@@ -110,9 +114,18 @@ Unchanged facts are idempotent; missing sources retain disclosed stale snapshots
   current settings, or Provider guesses. Reused RPC IDs remain ambiguous.
   `--cohort fixed` excludes incomplete/mixed options. Observational cohorts do
   not control task difficulty or establish causal savings.
-- Simple command signatures redact operands; complex programs preserve only a
-  recognized leading prefix or remain opaque. This does not enumerate shell
-  children. Exact private SHA-256 equality keys are not anonymization.
+- Command families identify the first literal executable or shell builtin,
+  including recognized project scripts. Quoted names, leading assignments and
+  comments are understood. Known `env`, `sudo`, `command`, `exec`, `timeout`
+  and RTK wrappers can compose; `wrapper` records the outermost recognized one.
+  Option operands are consumed; lookup modes and unsupported options retain
+  the wrapper's own family. Dynamic executable expressions remain opaque.
+- Simple signatures redact operands; complex arguments preserve only the known
+  prefix. A pipeline or `cd DIR && git status` is one recorded shell operation:
+  only its leading command (`cd` here) is classified. Later stages are not counted
+  or claimed to have executed. Unlisted executable names remain unknown; paths
+  and arbitrary names are never copied into signatures. Exact private SHA-256
+  equality keys are not anonymization.
 
 The database stores no raw prompts, tool results, patches, or command operands.
 Paths, metadata and settings remain sensitive. Source content is never executed

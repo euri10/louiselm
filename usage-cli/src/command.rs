@@ -1,6 +1,7 @@
 //! Conservative signatures; unparsed shell programs retain exact private equality.
 
 use crate::model::{Call, digest};
+mod prefix;
 
 const EXECUTABLES: &[&str] = &[
     "git",
@@ -50,6 +51,56 @@ const EXECUTABLES: &[&str] = &[
     "tr",
     "uniq",
     "which",
+    "bvr",
+    "cd",
+    "pwd",
+    "printf",
+    "date",
+    "sleep",
+    "timeout",
+    "gh",
+    "stylua",
+    "lua-language-server",
+    "sha256sum",
+    "udisksctl",
+    "lsusb",
+    "true",
+    "false",
+    "exit",
+    "set",
+    "export",
+    "test",
+    "[",
+    "env",
+    "sudo",
+    "command",
+    "exec",
+    "adb",
+    "launcher-vm",
+    "agent-liveness-snapshot",
+    "generate-api-appendix",
+    "generate-luacats",
+    "generate-vimdoc",
+    "test-skills-core",
+    "playwright-cli",
+    "ps",
+    "tar",
+    "tofu",
+    "glab",
+    "systemctl",
+    "python3.13",
+    "louiselm-capture",
+    "print",
+    "ss",
+    "mktemp",
+    "kitty",
+    "generate-plugin-version",
+    "printenv",
+    "check-agent-instructions",
+    "grep",
+    "sync",
+    "dig",
+    "rustc",
 ];
 const SUBCOMMANDS: &[&str] = &[
     "status",
@@ -80,6 +131,9 @@ const SUBCOMMANDS: &[&str] = &[
     "calls",
     "schema",
     "sources",
+    "pr",
+    "issue",
+    "api",
 ];
 
 pub(crate) fn extract(call: &mut Call, command: &str) {
@@ -87,18 +141,13 @@ pub(crate) fn extract(call: &mut Call, command: &str) {
     call.command_key = Some(digest(command.as_bytes()));
     // A known unquoted leading executable is useful even when its arguments are
     // opaque. This identifies the program prefix, never additional shell children.
-    let opaque = command.chars().any(|c| "'\"`$|;&<>\\\n(){}".contains(c));
-    let mut parts = command.split_whitespace().peekable();
-    skip_wrapper(&mut parts, call);
-    let Some(executable) = parts.next() else {
-        return;
-    };
-    if executable.contains('=') {
+    let opaque = command.chars().any(|c| "'\"`$|;&<>\\\n(){}#".contains(c));
+    let Some((executable, mut rest)) = prefix::leading(command, &mut call.wrapper) else {
         call.family = Some("<opaque>".to_owned());
         call.normalization = Some("opaque".to_owned());
         return;
-    }
-    let executable = executable.rsplit('/').next().unwrap_or(executable);
+    };
+    let executable = executable.as_str();
     if !EXECUTABLES.contains(&executable) {
         call.family = Some("<unknown executable>".to_owned());
         call.normalization = Some("opaque".to_owned());
@@ -116,13 +165,18 @@ pub(crate) fn extract(call: &mut Call, command: &str) {
         "kubectl",
         "go",
         "louiselm-usage",
+        "gh",
     ]
     .contains(&executable)
-        && let Some(part) = parts.peek().copied().filter(|p| SUBCOMMANDS.contains(p))
     {
-        family.push(' ');
-        family.push_str(part);
-        parts.next();
+        let mut after = rest;
+        if let Some(part) =
+            prefix::subcommand(&mut after).filter(|p| SUBCOMMANDS.contains(&p.as_str()))
+        {
+            family.push(' ');
+            family.push_str(&part);
+            rest = after;
+        }
     }
     let mut signature = family.clone();
     if opaque {
@@ -132,7 +186,7 @@ pub(crate) fn extract(call: &mut Call, command: &str) {
         return;
     }
     let mut options = true;
-    for part in parts {
+    for part in rest.split_whitespace() {
         signature.push(' ');
         if part == "--" && options {
             options = false;
@@ -157,36 +211,6 @@ pub(crate) fn extract(call: &mut Call, command: &str) {
     call.family = Some(family);
     call.signature = Some(signature);
     call.normalization = Some("simple".to_owned());
-}
-
-fn skip_wrapper<'a, I>(parts: &mut std::iter::Peekable<I>, call: &mut Call)
-where
-    I: Iterator<Item = &'a str>,
-{
-    if parts.peek() == Some(&"rtk") {
-        parts.next();
-        if parts.peek() == Some(&"proxy") {
-            parts.next();
-            call.wrapper = Some("rtk proxy".to_owned());
-        } else {
-            call.wrapper = Some("rtk".to_owned());
-        }
-    } else if parts.peek() == Some(&"env") {
-        parts.next();
-        while parts
-            .peek()
-            .is_some_and(|part| !part.starts_with('-') && part.contains('='))
-        {
-            parts.next();
-        }
-        call.wrapper = Some("env".to_owned());
-    } else if ["command", "exec", "sudo"].contains(parts.peek().unwrap_or(&"")) {
-        let wrapper = parts.next().unwrap_or_default();
-        call.wrapper = Some(wrapper.to_owned());
-        while parts.peek().is_some_and(|part| part.starts_with('-')) {
-            parts.next();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -255,5 +279,103 @@ mod tests {
         extract(&mut call, "command git status");
         assert_eq!(call.family.as_deref(), Some("git status"));
         assert_eq!(call.wrapper.as_deref(), Some("command"));
+    }
+
+    #[test]
+    fn recognizes_observed_builtins_and_development_tools() {
+        // Prefixes sampled from indexed histories on 2026-09-17; operands synthetic.
+        for (command, family) in [
+            ("pwd", "pwd"),
+            ("cd /PRIVATE && git status", "cd"),
+            ("printf '%s' PRIVATE", "printf"),
+            ("bvr --robot-triage", "bvr"),
+            ("gh pr list", "gh pr"),
+            ("stylua --check .", "stylua"),
+            ("date -u", "date"),
+            ("sleep 1", "sleep"),
+            ("sha256sum PRIVATE", "sha256sum"),
+            ("./scripts/launcher-vm status", "launcher-vm"),
+            (
+                "./scripts/agent-liveness-snapshot --status",
+                "agent-liveness-snapshot",
+            ),
+            (
+                "./scripts/generate-api-appendix --check",
+                "generate-api-appendix",
+            ),
+        ] {
+            let mut call = Call::default();
+            extract(&mut call, command);
+            assert_eq!(call.family.as_deref(), Some(family));
+        }
+    }
+
+    #[test]
+    fn literal_prefixes_respect_quotes_assignments_and_shell_boundaries() {
+        for command in [
+            "FOO=PRIVATE /usr/bin/git status",
+            "FOO='PRIVATE VALUE' 'git' status",
+            "# PRIVATE\ngit status; echo PRIVATE",
+            "git status|cat",
+            "git status&&echo PRIVATE",
+        ] {
+            let mut call = Call::default();
+            extract(&mut call, command);
+            assert_eq!(call.family.as_deref(), Some("git status"));
+            assert!(!format!("{call:?}").contains("PRIVATE"));
+        }
+    }
+
+    #[test]
+    fn wrappers_consume_their_own_operands_and_compose() {
+        for command in [
+            "sudo -u git -- rg PRIVATE",
+            "sudo --user=git -n rg PRIVATE",
+            "env -u PRIVATE FOO='PRIVATE VALUE' sudo -n rtk proxy rg PRIVATE",
+            "timeout -k 1s 10s rg PRIVATE",
+            "command -p exec -a PRIVATE rg PRIVATE",
+        ] {
+            let mut call = Call::default();
+            extract(&mut call, command);
+            assert_eq!(call.family.as_deref(), Some("rg"));
+            assert!(!format!("{call:?}").contains("PRIVATE"));
+        }
+    }
+
+    #[test]
+    fn lookup_modes_and_unknown_wrapper_options_keep_wrapper_identity() {
+        for (command, family) in [
+            ("command -v git", "command"),
+            ("sudo -l git", "sudo"),
+            ("sudo --invented git status", "sudo"),
+            ("env --split-string='git status'", "env"),
+            ("timeout --help", "timeout"),
+            ("rtk --help", "rtk"),
+            ("timeout 1ss git status", "timeout"),
+        ] {
+            let mut call = Call::default();
+            extract(&mut call, command);
+            assert_eq!(call.family.as_deref(), Some(family));
+        }
+    }
+
+    #[test]
+    fn dynamic_prefixes_never_promote_a_trailing_known_name() {
+        for command in [
+            "$PRIVATE/git status",
+            "$(echo PRIVATE)/git status",
+            "`echo PRIVATE`/git status",
+            "FOO=$(echo PRIVATE) git status",
+            "sudo -u 'PRIVATE git status",
+            "env FOO=PRIVATE; git status",
+            "rtk proxy FOO=PRIVATE git status",
+            "exec FOO=PRIVATE git status",
+            "[ab]/git status PRIVATE",
+        ] {
+            let mut call = Call::default();
+            extract(&mut call, command);
+            assert_ne!(call.family.as_deref(), Some("git status"));
+            assert!(!format!("{call:?}").contains("PRIVATE"));
+        }
     }
 }
