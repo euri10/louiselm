@@ -57,6 +57,9 @@ mod support;
 #[path = "broker/launch_gates.rs"]
 mod launch_gates;
 
+#[path = "broker/workspace_retention.rs"]
+mod workspace_retention;
+
 #[path = "broker/beads_mutations.rs"]
 mod beads_mutations;
 #[path = "broker/lifecycle.rs"]

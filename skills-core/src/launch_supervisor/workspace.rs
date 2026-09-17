@@ -25,6 +25,8 @@ use std::{
 pub(super) struct SessionWorkspace {
     root: File,
     cache: CacheOverlay,
+    directory: std::path::PathBuf,
+    marker: crate::workspace::retention::cleanup::SealedStorage,
 }
 
 pub(super) fn load(
@@ -72,6 +74,7 @@ impl SessionWorkspace {
     pub(super) fn prepare(
         inputs: &LoadedInputs,
         plan: &ConfinementPlan,
+        request: &LaunchRequest,
     ) -> Result<Self, SupervisorError> {
         let IdentityPlan::HostIdentity { uid, gid } = plan.identity else {
             return Err(SupervisorError::IsolationRejected);
@@ -96,7 +99,11 @@ impl SessionWorkspace {
             .map_err(|_| SupervisorError::DurabilityUnavailable)?;
         let root =
             filesystem::open_directory(directory).map_err(|_| SupervisorError::CleanupUnproven)?;
+        let marker =
+            crate::workspace::retention::cleanup::SealedStorage::new(request, &inputs.manifest)
+                .map_err(|_| SupervisorError::DurabilityUnavailable)?;
         let result = (|| -> Result<CacheOverlay, WorkspaceError> {
+            marker.persist(directory)?;
             inputs.retain_source(&directory.join("inputs"))?;
             inputs.materialize_source(&plan.workspace)?;
             assign_tree(&plan.workspace, uid, gid)?;
@@ -119,7 +126,12 @@ impl SessionWorkspace {
             Ok(cache)
         })();
         if let Ok(cache) = result {
-            Ok(Self { root, cache })
+            Ok(Self {
+                root,
+                cache,
+                directory: directory.into(),
+                marker,
+            })
         } else {
             seal(&root)?;
             Err(SupervisorError::DurabilityUnavailable)
@@ -132,6 +144,14 @@ impl SessionWorkspace {
 
     pub(super) fn seal(&self) -> Result<(), SupervisorError> {
         seal(&self.root)
+    }
+
+    pub(super) fn disposed(&mut self) -> Result<(), SupervisorError> {
+        self.seal()?;
+        self.marker.disposed = true;
+        self.marker
+            .persist(&self.directory)
+            .map_err(|_| SupervisorError::CleanupUnproven)
     }
 }
 

@@ -249,6 +249,7 @@ impl AuthorizationStore {
             fs::create_dir_all(root.join(directory)).map_err(BrokerError::Storage)?;
         }
         sync_directory(root)?;
+        crate::workspace::retention::Store::create(&root.join("workspace-retention"))?;
         Ok(Self {
             root: root.to_owned(),
             pool,
@@ -330,6 +331,7 @@ impl AuthorizationStore {
             skill_requests: grant.skill_requests.clone(),
             beads_comments: grant.beads_comments.clone(),
         };
+        self.retention_store()?.register(&grant.request, now_ms)?;
         write_new_record(&self.pending_path(&record_name), &pending)?;
         drop(assignment);
         Ok(pending)

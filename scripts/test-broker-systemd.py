@@ -40,6 +40,53 @@ def probe():
 @unittest.skipUnless(os.environ.get("LOUISELM_REQUIRE_BROKER_SYSTEMD") == "1",
                      "requires explicit disposable VM systemd gate")
 class BrokerUnits(unittest.TestCase):
+    def test_workspace_expiry_timer_runs_fixed_command_as_root(self):
+        self.assertEqual(os.geteuid(), 0)
+        source = Path(__file__).resolve().parents[1] / "skills-core/contrib/systemd"
+        with tempfile.TemporaryDirectory(prefix="louiselm-expiry-", dir="/run") as temporary:
+            root = Path(temporary)
+            name = root.name
+            sessions, policy = root / "sessions", root / "policy"
+            sessions.mkdir()
+            policy.mkdir()
+            result = sessions / "invocation.json"
+            script = root / "probe.py"
+            shutil.copyfile(__file__, script)
+            units = []
+            try:
+                for kind in ("service", "timer"):
+                    text = (source / f"louiselm-workspace-cleanup.{kind}").read_text()
+                    text = text.replace("louiselm-workspace-cleanup", name)
+                    text = text.replace("/usr/local/lib/louiselm/current/bin/louiselm-launch",
+                                        f"/usr/bin/python3 {script} --cleanup-probe {result}")
+                    text = text.replace("/var/lib/louiselm/sessions", str(sessions))
+                    text = text.replace("/var/lib/louiselm/broker/authorizations/workspace-retention", str(policy))
+                    text = text.replace("OnCalendar=hourly", "OnActiveSec=1s\nAccuracySec=1ms")
+                    text = text.replace("RandomizedDelaySec=5m", "RandomizedDelaySec=0")
+                    unit = Path("/run/systemd/system") / f"{name}.{kind}"
+                    with unit.open("x") as output:
+                        output.write(text)
+                    units.append(unit)
+                run("systemd-analyze", "verify", "--recursive-errors=yes", *map(str, units))
+                run("systemctl", "daemon-reload")
+                run("systemctl", "enable", "--runtime", "--now", f"{name}.timer")
+                deadline = time.monotonic() + 10
+                while not result.exists():
+                    self.assertLess(time.monotonic(), deadline, "cleanup timer did not invoke the fixed command")
+                    time.sleep(0.05)
+                self.assertEqual(json.loads(result.read_text()), {"uid": 0, "gid": 0, "arguments": ["cleanup"]})
+                self.assertEqual(run("systemctl", "show", "--value", "-p", "Persistent", f"{name}.timer"), "yes")
+                self.assertTrue((Path("/run/systemd/system/timers.target.wants") / f"{name}.timer").is_symlink())
+            finally:
+                if units:
+                    if not result.exists():
+                        subprocess.run(["journalctl", "--no-pager", "-n", "20", "-u", f"{name}.service"], check=False)
+                    run("systemctl", "stop", f"{name}.timer", f"{name}.service")
+                    run("systemctl", "disable", "--runtime", f"{name}.timer")
+                    for unit in units:
+                        unit.unlink()
+                    run("systemctl", "daemon-reload")
+
     def test_provision_activation_crash_restart_and_stop(self):
         self.assertEqual(os.geteuid(), 0)
         self.assertEqual(Path("/proc/1/comm").read_text().strip(), "systemd")
@@ -138,7 +185,9 @@ class BrokerUnits(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--probe"]:
+    if len(sys.argv) == 4 and sys.argv[1] == "--cleanup-probe":
+        Path(sys.argv[2]).write_text(json.dumps({"uid": os.getuid(), "gid": os.getgid(), "arguments": sys.argv[3:]}))
+    elif sys.argv[1:] == ["--probe"]:
         probe()
     else:
         unittest.main()

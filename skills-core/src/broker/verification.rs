@@ -138,6 +138,13 @@ impl BrokerService {
             } else {
                 write_new_record(&path, &evidence)?;
             }
+            let digest = evidence.digest()?.to_string();
+            self.retain_workspace_reference(&request.launch.session_id, |references| {
+                references.exports.insert(digest);
+                references
+                    .bundles
+                    .insert(evidence.job.bundle_digest.clone());
+            })?;
             Ok(evidence)
         })();
         if result.is_err() {

@@ -850,7 +850,7 @@ impl SystemLaunchPlatform {
         {
             return Err(SupervisorError::ResolutionFailed);
         }
-        super::workspace::SessionWorkspace::prepare(&inputs, plan)
+        super::workspace::SessionWorkspace::prepare(&inputs, plan, request)
     }
 
     /// Creates the production platform after materializing only fixed roots.
@@ -1198,8 +1198,8 @@ impl PreparedAgent for SystemPreparedAgent {
     fn dispose(&mut self) -> Result<(), SupervisorError> {
         self.prepared.dispose().map_err(map_sandbox)?;
         self.workspace
-            .as_ref()
-            .map_or(Ok(()), super::workspace::SessionWorkspace::seal)
+            .as_mut()
+            .map_or(Ok(()), super::workspace::SessionWorkspace::disposed)
     }
 }
 
@@ -1589,7 +1589,9 @@ impl RunningAgent for SystemRunningAgent {
         {
             Err(SupervisorError::CleanupUnproven)
         } else {
-            Ok(())
+            self.workspace
+                .as_mut()
+                .map_or(Ok(()), super::workspace::SessionWorkspace::disposed)
         }
     }
 }

@@ -1,0 +1,15 @@
+[Unit]
+Description=Expire sealed LouiseLM Session workspace evidence
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/lib/louiselm/current/bin/louiselm-launch cleanup
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/louiselm/sessions /var/lib/louiselm/broker/authorizations/workspace-retention

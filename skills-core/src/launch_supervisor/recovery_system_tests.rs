@@ -105,7 +105,14 @@ pub(super) fn reconstruct(
     for path in [
         original.join("home/recovery.json"),
         original.join("retained-recovery/home/recovery.json"),
+        original.join("workspace/recovery-counter.json"),
+        original.join("inputs/snapshot/snapshot.json"),
+        original.join("cache-home/cache-session/tool-cache"),
     ] {
+        assert!(
+            path.is_file(),
+            "retained evidence must exist before the recycled-identity probe"
+        );
         assert!(
             !std::process::Command::new("/usr/bin/setpriv")
                 .args([

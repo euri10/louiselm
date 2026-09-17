@@ -162,6 +162,14 @@ impl BrokerService {
             fs::create_dir(&directory).map_err(BrokerError::Storage)?;
             sync_directory(parent)?;
             write_new_record(&directory.join("request.json"), &request)?;
+            for id in [
+                &request.verifier_session_id,
+                &record.producer.request.launch.session_id,
+            ] {
+                self.retain_workspace_reference(id, |references| {
+                    references.promotions.insert(request_digest.clone());
+                })?;
+            }
         }
         for index in 0..changes.steps() {
             self.promotion_step(operator, &request, &directory, index, uid, verify)?;

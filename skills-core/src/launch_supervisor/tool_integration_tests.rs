@@ -480,6 +480,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         &sessions,
         &recovery_evidence,
     );
+    retention_after_disposal(&platform, &sessions, &request);
     assert_eq!(
         fs::read_dir(&cgroup_root)
             .unwrap()
@@ -489,4 +490,48 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         0
     );
     fs::remove_dir(cgroup_root).unwrap();
+}
+
+fn retention_after_disposal(
+    platform: &SystemLaunchPlatform,
+    sessions: &Path,
+    request: &LaunchRequest,
+) {
+    use crate::workspace::retention::{PrimaryEvidence, Store, cleanup};
+    let policy = sessions.parent().unwrap().join("retention-policy");
+    Store::create(&policy).unwrap();
+    let owner = (platform.config.broker_uid, platform.config.broker_gid);
+    std::os::unix::fs::chown(&policy, Some(owner.0), Some(owner.1)).unwrap();
+    {
+        let mut store = Store::lock(&policy, owner).unwrap();
+        store.register(request, 100).unwrap();
+        store.pin(&request.session_id, true).unwrap();
+    }
+    assert_eq!(
+        cleanup::sweep(sessions, &policy, owner, 0, u64::MAX)
+            .unwrap()
+            .removed,
+        0
+    );
+    Store::lock(&policy, owner)
+        .unwrap()
+        .pin(&request.session_id, false)
+        .unwrap();
+    assert_eq!(
+        cleanup::sweep(sessions, &policy, owner, 0, u64::MAX)
+            .unwrap()
+            .removed,
+        1
+    );
+    let record = Store::lock(&policy, owner)
+        .unwrap()
+        .read(&request.session_id)
+        .unwrap();
+    assert_eq!(record.primary_evidence, PrimaryEvidence::Removed);
+    assert!(record.evidence.inputs.is_some());
+    assert!(!sessions.join("session/workspace").exists());
+    assert_eq!(
+        fs::metadata(sessions.join("session")).unwrap().mode() & 0o7777,
+        0o700
+    );
 }

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check expired LouiseLM workspace evidence hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=louiselm-workspace-cleanup.service
+
+[Install]
+WantedBy=timers.target

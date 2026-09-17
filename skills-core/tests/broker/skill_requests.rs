@@ -366,6 +366,7 @@ fn installed_linked_admission_server() {
                         .skill_request_control(uid, id, outcome)
                         .map_err(|_| InspectError::StatusUnavailable)
                 },
+                |_, _| Err(InspectError::StatusUnavailable),
             )
             .unwrap();
     }

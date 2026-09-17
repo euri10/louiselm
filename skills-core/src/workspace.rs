@@ -21,6 +21,7 @@ pub(crate) mod filesystem;
 mod git;
 pub mod launch_inputs;
 pub mod promotion;
+pub mod retention;
 mod tree;
 pub mod verification;
 

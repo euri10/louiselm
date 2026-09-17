@@ -4,7 +4,7 @@ The local `louiselm-skills workspace` commands freeze selected source bytes,
 create an independent writable Git repository, and export/apply byte bundles.
 The commands alone do not launch a Session or establish Verified posture.
 The installed launcher consumes exact staged inputs as described below.
-Forensics expiry/pinning remains `louiselm-d6fv.5.5.2`; desktop/vendor cutover
+Forensics retention uses the existing broker and launcher; desktop/vendor cutover
 remains `louiselm-d6fv.9`.
 
 ```sh
@@ -126,10 +126,58 @@ verification exports must use this exact source baseline. Failed preparation and
 successful disposal seal the Session root against recycled host identities.
 Park freezes the existing process tree and preserves source/cache bytes.
 
-Automatic TTL cleanup, explicit pins and durable availability reporting are
-unfinished (`louiselm-d6fv.5.5.2`). Sealed storage currently remains on disk.
 The supported installed runtime is still the measured test Agent; this does not
 claim desktop/vendor Verified cutover.
+
+### Retention and primary-evidence availability
+
+The broker records a seven-day absolute expiry when it authorizes a launch.
+Restart and unpinning preserve that deadline. An approved cold-recovery deadline
+extends retention when necessary; retries never renew that original deadline.
+Live and Parked process trees are never deleted by workspace cleanup. Disposal
+must first prove all owned processes/workers are gone, seal the root against
+recycled Session identities, and durably mark that exact launch as disposed.
+
+The authenticated operator can inspect or pin a Session even after its supervisor
+has exited:
+
+```sh
+louiselm-control session retention SESSION_ID --json
+louiselm-control session pin SESSION_ID --json
+louiselm-control session unpin SESSION_ID --json
+```
+
+A pin retains primary storage until explicitly removed. It grants no execution,
+recovery, verification or promotion authority. Unpinning an expired, disposed
+Session makes it eligible for the next cleanup pass. Pin changes and cleanup
+share one filesystem lock; a busy request fails and can be retried. Once deletion
+has started, a pin is refused because it cannot restore primary evidence.
+
+Install the root-owned `skills-core/contrib/systemd/louiselm-workspace-cleanup.service`
+and `.timer` alongside the broker units and enable the timer with
+`systemctl enable --now louiselm-workspace-cleanup.timer`. Its hourly pass invokes
+only the installed `louiselm-launch cleanup`, with no arguments, environment-selected
+roots, new daemon, or additional operator sudo permission. The timer catches up
+after downtime. Installing source files alone does not activate scheduling.
+
+Cleanup validates broker-owned policy beneath the fixed broker state root and
+root-owned Session storage beneath `/var/lib/louiselm/sessions`. It refuses
+contradictory/missing/corrupt records, symlink roots, nested mounts, unproven
+Disposal, or bounded-walk limits. It does not follow content symlinks. A failed
+pass exits nonzero and reports counts without payloads. Interrupted/partial
+cleanup keeps the root sealed and resumes only under the same expired/unpinned
+policy and launch binding. A tiny sealed marker remains to prevent Session-ID
+reuse; source, private Git, home, cache and retained transfer/recovery bytes expire
+together. Shared broker staging and immutable cache bases are outside this cleanup.
+
+The durable inspection record preserves exact manifest/source/base/cache,
+Generation, runtime, signed launch/start, isolation, bundle/export, verification,
+and promotion references without raw source, prompts, environment or tool payloads.
+`quarantined` reports the current broker state separately from historical pointers.
+`primary_evidence` is `not_checked` before cleanup (not proof of readability),
+`cleanup_incomplete` after deletion begins, and `removed` after successful cleanup.
+Neither durable references nor successful deletion imply secure erasure, restored
+availability, valid promotion evidence, or a cleared quarantine.
 
 ## Export and apply byte bundles
 
@@ -276,7 +324,7 @@ prepares the job under root-owned storage. The export binds the actual producer
 launch, Park receipt, Generation, runtime/isolation receipt chain and job digests.
 An older CLI-prepared job has byte identity only: it cannot be retroactively
 assigned a producing Session. Use this observed export to establish provenance.
-General initial-workspace launch/retention integration remains `louiselm-d6fv.5.5`.
+The launch and retention bindings above preserve these references through expiry.
 
 After selecting that exact job and export digest, the controller launches a
 distinct configured verifier Agent in the same Run and Generation, with a
@@ -352,8 +400,7 @@ its fixed Session directory, root-owned and read-only to the installed broker
 group. It never receives an operator checkout pathname. The broker remeasures the
 transfer and sends bounded normalized inventories and raw bytes to the operator;
 the operator independently validates their sizes, hashes and executable intent.
-Transfer artifacts follow Session storage retention; general retention and expiry
-remain `louiselm-d6fv.5.5`.
+Transfer artifacts follow the Session storage retention and expiry policy above.
 
 `prepare` pins and locks the operator-owned destination and returns an additions,
 modifications and deletions preview without changing checkout bytes. `commit`

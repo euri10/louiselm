@@ -531,6 +531,7 @@ impl BrokerService {
             }
         };
         self.record_for(&authorization, now_ms, AuditDecision::AuthorizationConsumed)?;
+        self.retain_workspace_inputs(request)?;
         send(
             channel,
             response(
@@ -559,11 +560,24 @@ impl BrokerService {
             .transpose()?;
         let (ack, _) =
             self.store_next_receipt(channel, &authorization, 0, now_ms, clock, verify_signature)?;
+        self.retain_workspace_reference(&authorization.session_id, |references| {
+            references
+                .launch_receipts
+                .insert(ack.receipt_digest.clone());
+        })?;
         check_conformance_waiver(&authorization, now_ms, clock)?;
         send(channel, ack.canonical_bytes())?;
         let (ack, evidence) =
             self.store_next_receipt(channel, &authorization, 1, now_ms, clock, verify_signature)?;
         let evidence = evidence.ok_or(BrokerError::ReceiptUnauthorized)?;
+        self.retain_workspace_reference(&authorization.session_id, |references| {
+            references
+                .launch_receipts
+                .insert(ack.receipt_digest.clone());
+            references
+                .isolation
+                .insert(evidence.tool_isolation_digest.clone());
+        })?;
         let commands = approved
             .map(|policy| {
                 super::commands::CommandAuthority::new(

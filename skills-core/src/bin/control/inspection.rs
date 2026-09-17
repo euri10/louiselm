@@ -30,7 +30,11 @@ pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
         let [verb, id, format] = arguments else {
             return Err(InspectError::InvalidRequest);
         };
-        if (verb != "inspect" && verb != "conformance") || format != "--json" {
+        if !matches!(
+            verb.to_str(),
+            Some("inspect" | "conformance" | "retention" | "pin" | "unpin")
+        ) || format != "--json"
+        {
             return Err(InspectError::InvalidRequest);
         }
         let id = id.to_str().ok_or(InspectError::InvalidRequest)?;
@@ -38,7 +42,21 @@ pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
         let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
         let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
             .map_err(|_| InspectError::BrokerUnavailable)?;
-        if verb == "conformance" {
+        if matches!(verb.to_str(), Some("retention" | "pin" | "unpin")) {
+            let pin = match verb.to_str() {
+                Some("pin") => Some(true),
+                Some("unpin") => Some(false),
+                _ => None,
+            };
+            let inspection = operator::workspace_retention(
+                Path::new(operator::SOCKET),
+                config.broker_uid,
+                id,
+                pin,
+                operator::TIMEOUT,
+            )?;
+            serde_json::to_vec(&inspection).map_err(|_| InspectError::StatusUnavailable)
+        } else if verb == "conformance" {
             operator::inspect_conformance(
                 Path::new(operator::SOCKET),
                 config.broker_uid,
@@ -161,6 +179,11 @@ impl Queries {
                         |id, outcome| {
                             broker
                                 .skill_request_control(owner.operator_uid, id, outcome)
+                                .map_err(|_| InspectError::StatusUnavailable)
+                        },
+                        |id, pin| {
+                            broker
+                                .workspace_retention(owner.operator_uid, id, pin)
                                 .map_err(|_| InspectError::StatusUnavailable)
                         },
                     ) {

@@ -72,6 +72,17 @@ impl BrokerService {
                 return Err(BrokerError::Expired);
             }
             write_new_record(&directory.join(format!("result-{name}")), &record)?;
+            let digest =
+                Digest::of(&serde_json::to_vec(&record).map_err(|_| BrokerError::InvalidGrant)?)
+                    .to_string();
+            for id in [
+                &request.launch.session_id,
+                &record.producer.request.launch.session_id,
+            ] {
+                self.retain_workspace_reference(id, |references| {
+                    references.verifications.insert(digest.clone());
+                })?;
+            }
             Ok(record)
         })();
         if result.is_err() {

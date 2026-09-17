@@ -101,6 +101,7 @@ impl BrokerService {
         } else {
             write_new_record(&intent_path, request)?;
         }
+        self.retain_workspace_until(&request.launch.session_id, request.retention.expires_at_ms)?;
         // A failed revalidation must not leave a previous Ready record usable.
         // Keep this marker durable until exact evidence is acknowledged again.
         let pending_path = directory.join(format!(

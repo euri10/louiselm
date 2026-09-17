@@ -43,13 +43,14 @@ fn main() -> ExitCode {
     let result = match verb.as_deref() {
         Some(value) if value == OsStr::new("run") => run(),
         Some(value) if value == OsStr::new("certify") => certification(false),
+        Some(value) if value == OsStr::new("cleanup") => cleanup(),
         Some(value) if value == OsStr::new("__conformance-worker") => certification(true),
         Some(value) if value == OsStr::new("__conformance-probe") => {
             louiselm_skills::conformance::installed::serve_probe()
                 .map(|()| 0)
                 .map_err(|_| "probe failed")
         }
-        _ => Err("expected exactly 'run' or 'certify'"),
+        _ => Err("expected exactly 'run', 'certify' or root-only 'cleanup'"),
     };
     match result {
         Ok(code) => u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from),
@@ -58,6 +59,27 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn cleanup() -> Result<i32, &'static str> {
+    use std::io::Write;
+    let (_, config) = authority(false)?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| elapsed.as_millis().try_into().ok())
+        .ok_or("system clock unavailable")?;
+    let report = louiselm_skills::workspace::retention::cleanup_expired(
+        (config.broker_uid, config.broker_gid),
+        now_ms,
+    )
+    .map_err(|_| "workspace cleanup refused; retained storage requires inspection")?;
+    let bytes = serde_json::to_vec(&report).map_err(|_| "cleanup report unavailable")?;
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|_| "cleanup output unavailable")?;
+    Ok(i32::from(report.failed != 0))
 }
 
 fn authority(operator_required: bool) -> Result<(LauncherPaths, LauncherConfig), &'static str> {

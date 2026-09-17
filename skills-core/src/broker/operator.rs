@@ -80,6 +80,11 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-workspace-retention/1")]
+    WorkspaceRetention {
+        session_id: String,
+        pin: Option<bool>,
+    },
     #[serde(rename = "louiselm.operator-inspect/1")]
     Inspect { session_id: String },
     #[serde(rename = "louiselm.operator-conformance/1")]
@@ -89,6 +94,42 @@ enum Request {
         operation_id: String,
         outcome: Option<SkillRequestOutcome>,
     },
+}
+
+/// Inspects retained workspace evidence or changes its explicit pin. Available
+/// after supervisor exit; blocking and authenticated as the installed operator.
+/// # Errors
+/// Refuses malformed requests, foreign peers, corrupt state or pins after deletion.
+pub fn workspace_retention(
+    path: &Path,
+    broker_uid: u32,
+    session_id: &str,
+    pin: Option<bool>,
+    timeout: Duration,
+) -> Result<crate::workspace::retention::RetentionInspection, InspectError> {
+    validate_subject(session_id)?;
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::WorkspaceRetention {
+            session_id: session_id.into(),
+            pin,
+        },
+        timeout,
+    )?;
+    let inspection: crate::workspace::retention::RetentionInspection =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    inspection
+        .record
+        .validate()
+        .map_err(|_| InspectError::StatusUnavailable)?;
+    if inspection.record.launch.session_id != session_id
+        || pin.is_some_and(|pin| inspection.record.pinned != pin)
+        || serde_json::to_vec(&inspection).map_err(|_| InspectError::StatusUnavailable)? != bytes
+    {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(inspection)
 }
 
 /// Checks the same bounded Session identifier accepted by durable broker records.
@@ -314,6 +355,11 @@ impl OperatorServer {
             &str,
             Option<SkillRequestOutcome>,
         ) -> Result<SkillRequestStatus, InspectError>,
+        retention: impl FnOnce(
+            &str,
+            Option<bool>,
+        )
+            -> Result<crate::workspace::retention::RetentionInspection, InspectError>,
     ) -> io::Result<()> {
         let (mut stream, _) = self.listener.accept()?;
         let deadline = Instant::now() + TIMEOUT;
@@ -330,6 +376,11 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::WorkspaceRetention { session_id, pin } => {
+                    validate_subject(&session_id)?;
+                    serde_json::to_vec(&retention(&session_id, pin)?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::Inspect { session_id } => {
                     validate_subject(&session_id)?;
                     Ok(lookup(&session_id, deadline)?.canonical_bytes())
