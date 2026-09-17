@@ -2,6 +2,7 @@
 
 mod wire;
 
+use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
 use crate::launch_protocol::SessionStatus;
 use crate::skill_request::{SkillRequestOutcome, SkillRequestStatus};
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,8 @@ impl InspectError {
 enum Request {
     #[serde(rename = "louiselm.operator-inspect/1")]
     Inspect { session_id: String },
+    #[serde(rename = "louiselm.operator-conformance/1")]
+    Conformance { session_id: String },
     #[serde(rename = "louiselm.operator-skill-request/1")]
     Skill {
         operation_id: String,
@@ -126,6 +129,33 @@ pub fn inspect(
         return Err(InspectError::StatusUnavailable);
     }
     Ok(status)
+}
+
+/// Read exact historical conformance evidence as the authenticated operator.
+/// This blocking bounded exchange runs no probes and grants no authority.
+/// # Errors
+/// Returns typed authentication, subject, transport or evidence refusal.
+pub fn inspect_conformance(
+    path: &Path,
+    broker_uid: u32,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<ConformanceInspection, InspectError> {
+    validate_subject(session_id)?;
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Conformance {
+            session_id: session_id.into(),
+        },
+        timeout,
+    )?;
+    let evidence = ConformanceInspection::parse_canonical(&bytes)
+        .map_err(|_| InspectError::StatusUnavailable)?;
+    if evidence.session_id != session_id {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(evidence)
 }
 
 /// Inspects, rejects or cancels one durable request through the operator endpoint.
@@ -197,7 +227,13 @@ fn exchange(
     }
     let bytes = serde_json::to_vec(&request).map_err(|_| InspectError::InvalidRequest)?;
     wire::write(&mut stream, &bytes, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
-    let bytes = wire::read(&mut stream, deadline).map_err(|_| InspectError::BrokerUnavailable)?;
+    let max = if matches!(request, Request::Conformance { .. }) {
+        MAX_INSPECTION_BYTES
+    } else {
+        crate::launch_protocol::MAX_PROTOCOL_MESSAGE_BYTES
+    };
+    let bytes = wire::read_bounded(&mut stream, deadline, max)
+        .map_err(|_| InspectError::BrokerUnavailable)?;
     if let Some(error) = InspectError::parse(&bytes) {
         return Err(error);
     }
@@ -273,6 +309,7 @@ impl OperatorServer {
     pub fn serve_once(
         &self,
         lookup: impl FnOnce(&str, Instant) -> Result<SessionStatus, InspectError>,
+        conformance: impl FnOnce(&str) -> Result<ConformanceInspection, InspectError>,
         skill: impl FnOnce(
             &str,
             Option<SkillRequestOutcome>,
@@ -296,6 +333,12 @@ impl OperatorServer {
                 Request::Inspect { session_id } => {
                     validate_subject(&session_id)?;
                     Ok(lookup(&session_id, deadline)?.canonical_bytes())
+                }
+                Request::Conformance { session_id } => {
+                    validate_subject(&session_id)?;
+                    conformance(&session_id)?
+                        .canonical_bytes()
+                        .map_err(|_| InspectError::StatusUnavailable)
                 }
                 Request::Skill {
                     operation_id,

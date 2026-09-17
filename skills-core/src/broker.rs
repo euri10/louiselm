@@ -23,6 +23,7 @@ mod beads_mutation;
 mod beads_mutation_service;
 pub mod cold_resume;
 pub mod commands;
+pub mod conformance_inspection;
 mod current_conformance;
 pub mod delegation;
 mod history;

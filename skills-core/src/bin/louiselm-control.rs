@@ -44,7 +44,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'session inspect ID --json', or 'skill-request inspect|reject|cancel ID --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', or 'skill-request inspect|reject|cancel ID --json'".to_owned(),
         ),
     };
     match result {

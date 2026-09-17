@@ -10,6 +10,7 @@
 //! treats as durability must never outrun the filesystem.
 
 mod conformance;
+pub(super) use conformance::validate_report;
 
 use std::{
     fs,

@@ -28,7 +28,7 @@ fn validates_verbs_confirmation_and_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected 'serve', 'adopt-state --confirm', 'session inspect ID --json', or 'skill-request inspect|reject|cancel ID --json'"
+                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', or 'skill-request inspect|reject|cancel ID --json'"
             }),
             "{error}"
         );
@@ -38,12 +38,14 @@ fn validates_verbs_confirmation_and_socket_activation() {
 #[test]
 fn inspection_refusals_are_typed_and_stdout_stays_empty() {
     use louiselm_skills::broker::operator::InspectError;
-    for (id, error) in [
-        ("../secret", InspectError::InvalidRequest),
-        ("session", InspectError::BrokerUnavailable),
+    for (verb, id, error) in [
+        ("inspect", "../secret", InspectError::InvalidRequest),
+        ("inspect", "session", InspectError::BrokerUnavailable),
+        ("conformance", "../secret", InspectError::InvalidRequest),
+        ("conformance", "session", InspectError::BrokerUnavailable),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
-            .args(["session", "inspect", id, "--json"])
+            .args(["session", verb, id, "--json"])
             .env_clear()
             .output()
             .unwrap();
@@ -62,6 +64,8 @@ fn inspection_argument_errors_use_the_same_typed_contract() {
         vec!["session", "inspect", "session", "--json", "extra"],
         vec!["session", "mutate", "session", "--json"],
         vec!["session", "inspect", "session", "--text"],
+        vec!["session", "conformance", "session", "--text"],
+        vec!["session", "conformance", "session", "--json", "extra"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
             .args(arguments)

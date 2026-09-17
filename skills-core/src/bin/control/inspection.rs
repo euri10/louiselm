@@ -30,7 +30,7 @@ pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
         let [verb, id, format] = arguments else {
             return Err(InspectError::InvalidRequest);
         };
-        if verb != "inspect" || format != "--json" {
+        if (verb != "inspect" && verb != "conformance") || format != "--json" {
             return Err(InspectError::InvalidRequest);
         }
         let id = id.to_str().ok_or(InspectError::InvalidRequest)?;
@@ -38,15 +38,27 @@ pub(super) fn cli(arguments: &[std::ffi::OsString]) -> u8 {
         let paths = super::installed_paths().map_err(|_| InspectError::BrokerUnavailable)?;
         let config = louiselm_skills::launcher_install::public_runtime_config(&paths)
             .map_err(|_| InspectError::BrokerUnavailable)?;
-        operator::inspect(
-            Path::new(operator::SOCKET),
-            config.broker_uid,
-            id,
-            operator::TIMEOUT,
-        )
+        if verb == "conformance" {
+            operator::inspect_conformance(
+                Path::new(operator::SOCKET),
+                config.broker_uid,
+                id,
+                operator::TIMEOUT,
+            )?
+            .canonical_bytes()
+            .map_err(|_| InspectError::StatusUnavailable)
+        } else {
+            operator::inspect(
+                Path::new(operator::SOCKET),
+                config.broker_uid,
+                id,
+                operator::TIMEOUT,
+            )
+            .map(|status| status.canonical_bytes())
+        }
     })();
     match result {
-        Ok(status) => match io::stdout().lock().write_all(&status.canonical_bytes()) {
+        Ok(bytes) => match io::stdout().lock().write_all(&bytes) {
             Ok(()) => 0,
             Err(_) => InspectError::StatusUnavailable.exit_code(),
         },
@@ -140,6 +152,12 @@ impl Queries {
                 loop {
                     if let Err(error) = endpoint.serve_once(
                         |id, deadline| owner.inspect(&broker, id, deadline),
+                        |id| {
+                            broker
+                                .inspect_conformance(id)
+                                .map_err(|_| InspectError::StatusUnavailable)?
+                                .ok_or(InspectError::UnknownSession)
+                        },
                         |id, outcome| {
                             broker
                                 .skill_request_control(owner.operator_uid, id, outcome)

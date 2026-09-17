@@ -487,6 +487,40 @@ Session returns `unknown_session` only after operator authentication.
 
 ## Canonical status composition
 
+The same authenticated endpoint also serves explicit historical conformance
+inspection:
+
+```sh
+/usr/local/lib/louiselm/current/bin/louiselm-control session conformance SESSION_ID --json
+```
+
+Success returns canonical `louiselm.operator-conformance-evidence/1`. It includes
+the exact Session and Run, immutable `admission`, the actual historical `waiver`
+(condition, exclusive expiry and receipt digest), the exact observation `report`
+as a JSON string, and the `last_check` retained from the supervisor. The check
+includes its original sequence, observation and last-success times, suspension
+flag and closed failure condition. Missing report/check/waiver is explicit
+`null`; missing or damaged evidence that a receipt actually binds is an error.
+An unknown Session and unavailable evidence retain the inspection exit codes
+above. Unlike current status, historical inspection works without a connected
+supervisor and after restart; it does not establish present process state.
+
+Only the configured operator can use this request. Raw observations are not
+added to Agent self-status or ordinary Session status. Responses strip operator,
+process, identity-slot and authorization identifiers. The report string preserves
+the admitted bytes exactly, including producer observation text; this explicit
+local evidence inspection is not a redacted Evidence export for sharing.
+Reports remain bounded to 128 KiB; the response permits bounded JSON string
+escaping while ordinary requests and status keep their existing limits. The
+same exchange deadline covers authentication and transfer. Inspection verifies
+retained evidence but runs no probes, renews no timestamp or waiver, and performs
+no lifecycle transition or authority change, including on refused reads.
+
+Read `session inspect` for current posture, actual mechanical state and allowed
+actions. A historical passing check or a newly successful certification never
+means that a suspended Session resumed. The installed conformance acceptance
+recipe is maintained in `docs/launcher-conformance.md`.
+
 `BrokerService::session_status` reads authenticated mechanical state through the
 existing supervisor channel, then adds the broker-owned fields the supervisor
 must not author: detailed Verified posture, conformance admission history,

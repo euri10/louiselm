@@ -18,7 +18,7 @@ use std::{fs, io::Write};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RetainedConformance {
-    update: ConformanceUpdate,
+    pub(super) update: ConformanceUpdate,
     last_verified: Option<(String, u64)>,
 }
 

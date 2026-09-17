@@ -6,7 +6,10 @@ use louiselm_skills::launch_protocol::{
     FreshnessBasis,
 };
 
-fn update(authorization: &LaunchAuthorization, evidence: ConformanceEvidence) -> ConformanceUpdate {
+pub(super) fn update(
+    authorization: &LaunchAuthorization,
+    evidence: ConformanceEvidence,
+) -> ConformanceUpdate {
     ConformanceUpdate {
         schema: CONFORMANCE_UPDATE_SCHEMA.into(),
         session_id: authorization.session_id.clone(),
@@ -32,6 +35,10 @@ fn isolation(status: &SessionStatus) -> &louiselm_skills::launch_protocol::Dimen
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The ordered peer scenario verifies expiry, retained failure inspection and immutable admission in one Session lifetime."
+)]
 fn authenticated_checks_expire_without_reads_renewing_or_rewriting_admission() {
     let root = TempDir::new().unwrap();
     let bytes = observations().canonical_bytes().unwrap();
@@ -86,6 +93,26 @@ fn authenticated_checks_expire_without_reads_renewing_or_rewriting_admission() {
     service
         .step(&mut session, 96_000, None, verify_fixture_signature)
         .unwrap();
+    let inspected = service
+        .inspect_conformance(&authorization.session_id)
+        .unwrap()
+        .unwrap();
+    let observed = inspected.last_check.as_ref().unwrap();
+    assert_eq!(observed.sequence, 2);
+    assert_eq!(observed.observed_at_ms, 96_000);
+    assert_eq!(observed.last_success_at_ms, Some(90_000));
+    assert!(observed.suspended);
+    assert_eq!(
+        observed.check,
+        ConformanceCheck::Invalid {
+            failure: ConformanceFailure::Condition(Condition::ContainmentFailure),
+        }
+    );
+    assert_eq!(inspected.admission, decision);
+    assert_eq!(
+        inspected.report.as_deref().map(str::as_bytes),
+        Some(bytes.as_slice())
+    );
     let failed = service
         .session_status(
             &mut session,
@@ -95,6 +122,12 @@ fn authenticated_checks_expire_without_reads_renewing_or_rewriting_admission() {
         )
         .unwrap();
     peer.join().unwrap();
+    assert_eq!(
+        service
+            .inspect_conformance(&authorization.session_id)
+            .unwrap(),
+        Some(inspected)
+    );
     assert_eq!(isolation(&results[0]).state, DimensionState::Verified);
     assert_eq!(isolation(&results[1]).state, DimensionState::Verified);
     assert_eq!(

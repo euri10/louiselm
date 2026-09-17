@@ -3,6 +3,8 @@
 use super::*;
 #[path = "current_conformance.rs"]
 mod current;
+#[path = "conformance_inspection.rs"]
+mod inspection;
 use louiselm_skills::{
     broker::lifecycle::LifecycleCaller,
     launch_protocol::{COMMAND_SCHEMA, CommandMessage, CommandOperation, SessionStatus},

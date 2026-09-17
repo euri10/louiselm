@@ -241,6 +241,16 @@ admission. Missing, changed, oversized, symlinked or nonregular evidence refuses
 history use; it cannot become a cached verified result. Trusted callers can read
 the exact bytes through `ReceiptStore::conformance_report`.
 
+The installed operator can retrieve this evidence with
+`louiselm-control session conformance SESSION_ID --json`. The existing
+credential-authenticated endpoint returns the exact observation bytes as
+`report`, immutable `admission`, historical `waiver` condition/expiry/receipt,
+and the latest retained `last_check` with its actual condition and suspension
+flag. Absent evidence is `null`, never a fabricated empty report. Bound but
+unreadable evidence refuses inspection. This historical read also works without
+a live supervisor; use `session inspect` separately for current process state,
+posture and permitted recovery actions. Neither command renews conformance.
+
 Canonical posture retains a bounded `conformance_report` reference for isolation.
 This is admission history, not a fresh measurement: it supplies neither current
 host proof nor a successful-check timestamp. Both the evaluator and status schema
@@ -298,9 +308,82 @@ Ordinary pre-cutover launch still records `Unevaluated`, as confirmed in
 path can now supply report-bound admission through the broker ACK transaction;
 that does not enable Verified posture by itself. `louiselm-d6fv.9.1` still needs
 the waiver producer (`.6.3`) and actual installed-release acceptance.
-Currentness monitoring (`.12.4`) and canonical admission-history projection (`.12.6`)
-is present but does not establish currentness. Component and disposable-guest
+Currentness monitoring (`.12.4`) supplies source checks; canonical admission-history
+projection (`.12.6`) separately preserves the launch decision. Component and disposable-guest
 tests do not satisfy that installed cutover.
+
+### Maintained installed acceptance
+
+Record the exact release, host/boot, governing policy, report digest and Session
+IDs with the results. Keep reports local: producer observations are operator
+evidence, not a sanitized export. Successful fixture runs and this checklist do
+not constitute maintainer confirmation or activate the Verified claim.
+
+1. Confirm the reviewed release is installed, the dedicated broker is available,
+   and the chosen policy is deliberate. If `/usr/local/lib/louiselm/current/bin`
+   is absent, stop: there is no installed workflow to accept. Do not silently
+   install, enable enforcement, change upstream Agent approvals, or edit policy
+   to make a probe pass. A change from `pre_cutover` to `enforced` requires its
+   own certification under the new policy.
+2. Run the fixed installed `sudo -n .../louiselm-launch certify` command shown
+   above. Verify owned cleanup and a complete passing report for the current
+   host/boot and exact measured release. Observe an unrelated operator workload
+   throughout. Incomplete/cancelled attempts must never publish a pass or clear
+   existing failure. Exercise interruption and negative boundaries only with
+   the owned disposable fixtures, not by damaging desktop containment controls.
+3. Launch through the installed authorized controller and inspect both records:
+
+   ```sh
+   /usr/local/lib/louiselm/current/bin/louiselm-control session inspect SESSION_ID --json
+   /usr/local/lib/louiselm/current/bin/louiselm-control session conformance SESSION_ID --json
+   ```
+
+   For certified admission, hash the UTF-8 bytes of the decoded `report` string
+   without a trailing newline and compare with `admission.report_digest` and
+   the sequence-zero receipt. `jq -j '.report'` extracts those bytes only when
+   `report` is a string; handle `null` as absence before hashing. Repeat after
+   broker restart/reattachment: exact report, admission and waiver stay unchanged,
+   and timestamps are not renewed by either read. Check unknown-Session refusal
+   and rejection from another UID. All other Verified dimensions must still be
+   established independently.
+4. With disposable owned Sessions, exercise missing, stale and incomplete
+   evidence. Unattended launches refuse; interactive launches require the
+   already-approved exact Session/condition waiver. Verify its recorded expiry
+   and receipt, degraded isolation, refusal for another Session or condition,
+   and non-waivable containment failure. The authenticated waiver producer is
+   still tracked by `louiselm-d6fv.6.3`; until it is installed, record this step
+   as blocked rather than constructing an approval record by hand.
+5. Use the maintained disposable conformance monitor fixtures to invalidate a
+   relevant input and stall a check under load. Inspect the last condition,
+   original last-success time and suspension flag alongside actual process state
+   and disabled capabilities. Check the one-second sampling/five-second freshness
+   rule, confirmed tree freeze, and termination fallback/identity poisoning when
+   cleanup cannot be proved. Preserve the failure evidence. These are scheduling
+   bounds, not instantaneous or hard-real-time containment guarantees.
+6. Recertify and read both records again: the suspended Session must remain
+   suspended. Use the installed broker's explicit operator-authorized Resume
+   path only for evidence-only failure; verify its fresh check, confirmed thaw,
+   durable receipt and capability restoration. For containment failure, preserve
+   bounded diagnostic evidence, Dispose, recertify and create a fresh Session.
+   If the installed controller cannot issue the authorized operation, record
+   recovery as blocked; neither inspection command is an alternative authority.
+7. In the disposable release fixture, install a new release without modifying
+   the prior pin: unaffected Sessions continue, and the new release needs its
+   own certificate. Then invalidate/revoke the old pin and verify suspension.
+   Restart/reboot/expiry and incomplete recertification must not erase recorded
+   containment failure. Complete covering recertification alone can clear that
+   failure; it still cannot resume old processes.
+
+Automated consumers: `tests/broker/conformance_inspection.rs` exercises exact
+large reports, absence, restart, redaction and corruption through the real
+operator socket; `tests/broker/current_conformance.rs` checks retained failure
+causes without rewriting admission. The required activated-daemon fixture
+`privileged_activated_daemon_serves_launches_and_restart` also invokes the actual
+operator binary under configured and foreign identities, including pre-cutover
+absence. Existing installed certification and hostile monitor fixtures own the
+privileged probes, suspension and recovery checks. These gates support this
+recipe; actual installed host/operator acceptance remains required by
+`louiselm-d6fv.12.5` and `louiselm-d6fv.9.1` before any cutover in `.9`.
 
 Recorded 2026-09-06: ten consecutive complete guest rounds passed after fixing
 the Interrupt fixture oracle. Environment: Debian 13, kernel

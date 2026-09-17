@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 
 mod command;
-mod conformance;
+pub(crate) mod conformance;
 mod conformance_update;
 pub use conformance::{
     CONFORMANCE_REPORT_CHUNK_BYTES, CONFORMANCE_REPORT_CHUNK_SCHEMA, ConformanceAuthorization,

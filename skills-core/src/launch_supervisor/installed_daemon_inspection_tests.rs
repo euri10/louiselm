@@ -14,6 +14,10 @@ pub(super) fn provision() {
 }
 
 fn command(uid: u32, id: &str) -> std::process::Output {
+    session_command(uid, "inspect", id)
+}
+
+fn session_command(uid: u32, verb: &str, id: &str) -> std::process::Output {
     Command::new("/usr/bin/setpriv")
         .args([
             "--reuid",
@@ -23,7 +27,7 @@ fn command(uid: u32, id: &str) -> std::process::Output {
             "--clear-groups",
         ])
         .arg("/usr/local/lib/louiselm/current/bin/louiselm-control")
-        .args(["session", "inspect", id, "--json"])
+        .args(["session", verb, id, "--json"])
         .env_clear()
         .output()
         .unwrap()
@@ -38,6 +42,16 @@ pub(super) fn refusal(uid: u32, id: &str, error: InspectError) {
     );
     assert!(output.stdout.is_empty());
     assert_eq!(output.stderr, error.canonical_bytes());
+    if error != InspectError::StatusUnavailable {
+        let evidence = session_command(uid, "conformance", id);
+        assert_eq!(
+            evidence.status.code(),
+            Some(i32::from(error.exit_code())),
+            "{evidence:?}"
+        );
+        assert!(evidence.stdout.is_empty());
+        assert_eq!(evidence.stderr, error.canonical_bytes());
+    }
 }
 
 pub(super) fn status(config: &LauncherConfig, id: &str) -> SessionStatus {
@@ -63,6 +77,18 @@ pub(super) fn status(config: &LauncherConfig, id: &str) -> SessionStatus {
     assert_eq!(status.session_id, id);
     assert_eq!(status.posture.dimensions.len(), 6);
     assert!(!status.allowed_actions.is_empty());
+    let evidence_output = session_command(config.operator_uid, "conformance", id);
+    assert!(evidence_output.status.success(), "{evidence_output:?}");
+    assert!(evidence_output.stderr.is_empty());
+    let evidence = crate::broker::conformance_inspection::ConformanceInspection::parse_canonical(
+        &evidence_output.stdout,
+    )
+    .unwrap();
+    assert_eq!(evidence.session_id, id);
+    assert_eq!(evidence.admission, status.conformance_admission);
+    assert!(evidence.report.is_none());
+    assert!(evidence.waiver.is_none());
+    assert!(evidence.last_check.is_none());
     let text = String::from_utf8(output.stdout).unwrap();
     for forbidden in [
         "assigned_uid",

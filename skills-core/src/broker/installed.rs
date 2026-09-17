@@ -503,6 +503,17 @@ impl InstalledBroker {
         self.service.inspect(session_id)
     }
 
+    /// Read exact retained conformance evidence for an authenticated operator.
+    /// No live supervisor is required; historical evidence grants no authority.
+    /// # Errors
+    /// Refuses unverified, quarantined, corrupt or unavailable history.
+    pub fn inspect_conformance(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<super::conformance_inspection::ConformanceInspection>, BrokerError> {
+        self.service.inspect_conformance(session_id)
+    }
+
     /// Inspects durable evidence together with this worker's acknowledged channel.
     ///
     /// # Errors

@@ -10,7 +10,7 @@ use crate::conformance::{
 use crate::launch_receipt::ConformanceEvidence;
 
 /// Checks bounded historical display facts, never their present applicability.
-pub(super) fn validate_admission_history(
+pub(crate) fn validate_admission_history(
     admission: &ConformanceEvidence,
 ) -> Result<(), ProtocolError> {
     match admission {

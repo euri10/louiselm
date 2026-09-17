@@ -360,6 +360,7 @@ fn installed_linked_admission_server() {
         server
             .serve_once(
                 |_, _| Err(InspectError::UnknownSession),
+                |_| Err(InspectError::UnknownSession),
                 |id, outcome| {
                     service
                         .skill_request_control(uid, id, outcome)

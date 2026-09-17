@@ -71,7 +71,7 @@ impl ReceiptStore {
         sync_directory(&directory)
     }
 
-    pub(super) fn read_conformance_report(
+    pub(in crate::broker) fn read_conformance_report(
         &self,
         receipt: &SignedReceipt,
     ) -> Result<Option<Vec<u8>>, BrokerError> {
@@ -144,19 +144,36 @@ fn digest(receipt: &SignedReceipt) -> Option<&str> {
 }
 
 fn validate(receipt: &SignedReceipt, bytes: Option<&[u8]>) -> Result<(), BrokerError> {
+    let admission = match &receipt.payload.outcome {
+        ReceiptOutcome::Launch { evidence, .. } => &evidence.conformance,
+        _ => &ConformanceEvidence::Unevaluated,
+    };
+    validate_report(admission, bytes)
+}
+
+pub(in crate::broker) fn validate_report(
+    admission: &ConformanceEvidence,
+    bytes: Option<&[u8]>,
+) -> Result<(), BrokerError> {
     let refusal = BrokerError::ConformanceReport;
-    if let ReceiptOutcome::Launch { evidence, .. } = &receipt.payload.outcome
-        && matches!(
-            evidence.conformance,
-            ConformanceEvidence::Waived {
-                condition: Condition::ContainmentFailure,
-                ..
-            }
-        )
-    {
+    if matches!(
+        admission,
+        ConformanceEvidence::Waived {
+            condition: Condition::ContainmentFailure,
+            ..
+        }
+    ) {
         return Err(refusal("containment_failure_cannot_be_waived"));
     }
-    match (digest(receipt), bytes) {
+    let digest = match admission {
+        ConformanceEvidence::Certified { report_digest }
+        | ConformanceEvidence::Waived {
+            report_digest: Some(report_digest),
+            ..
+        } => Some(report_digest.as_str()),
+        _ => None,
+    };
+    match (digest, bytes) {
         (None, None) => Ok(()),
         (None, Some(_)) => Err(refusal("unexpected_report")),
         (Some(_), None) => Err(refusal("missing_report")),
@@ -172,14 +189,11 @@ fn validate(receipt: &SignedReceipt, bytes: Option<&[u8]>) -> Result<(), BrokerE
                 return Err(refusal("report_is_not_installed_host_evidence"));
             }
             let result = report.result().map_err(|_| refusal("invalid_report"))?;
-            let ReceiptOutcome::Launch { evidence, .. } = &receipt.payload.outcome else {
-                return Err(refusal("unexpected_report"));
-            };
             if matches!(result, ReportResult::Failed(_))
-                || (matches!(evidence.conformance, ConformanceEvidence::Certified { .. })
+                || (matches!(admission, ConformanceEvidence::Certified { .. })
                     && result != ReportResult::Passed)
                 || matches!(
-                    evidence.conformance,
+                    admission,
                     ConformanceEvidence::Waived {
                         condition: Condition::Missing,
                         ..

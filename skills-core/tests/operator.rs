@@ -24,6 +24,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
         server
             .serve_once(
                 |_, _| panic!("unauthenticated lookup"),
+                |_| panic!("unauthenticated conformance lookup"),
                 |_, _| panic!("unauthenticated skill control"),
             )
             .unwrap();
@@ -48,6 +49,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
                     assert_eq!(id, "session");
                     Err(InspectError::UnknownSession)
                 },
+                |_| panic!("unexpected conformance lookup"),
                 |_, _| panic!("unexpected skill control"),
             )
             .unwrap();
@@ -119,6 +121,7 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
             server
                 .serve_once(
                     |_, _| panic!("not Session inspection"),
+                    |_| panic!("not conformance inspection"),
                     |operation, outcome| {
                         assert_eq!(operation, id);
                         assert_eq!(outcome, expected);
@@ -170,6 +173,37 @@ fn read_frame(stream: &mut std::os::unix::net::UnixStream) -> Vec<u8> {
 }
 
 #[test]
+fn conformance_inspection_distinguishes_an_unknown_session() {
+    use std::{io::Write, os::unix::net::UnixStream};
+    let root = private_root();
+    let path = root.path().join("inspect.sock");
+    let uid = rustix::process::geteuid().as_raw();
+    let server = OperatorServer::bind(&path, uid).unwrap();
+    let worker = thread::spawn(move || {
+        server
+            .serve_once(
+                |_, _| Err(InspectError::UnknownSession),
+                |_| Err(InspectError::UnknownSession),
+                |_, _| panic!("not a skill decision"),
+            )
+            .unwrap();
+    });
+    let mut stream = UnixStream::connect(&path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    assert_eq!(read_frame(&mut stream), b"louiselm.operator/1");
+    let request = br#"{"schema":"louiselm.operator-conformance/1","session_id":"unknown"}"#;
+    stream
+        .write_all(&u32::try_from(request.len()).unwrap().to_be_bytes())
+        .unwrap();
+    stream.write_all(request).unwrap();
+    let reply = read_frame(&mut stream);
+    worker.join().unwrap();
+    assert_eq!(reply, InspectError::UnknownSession.canonical_bytes());
+}
+
+#[test]
 fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
     use std::{io::Write, net::Shutdown, os::unix::net::UnixStream};
     let root = private_root();
@@ -188,6 +222,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
             server
                 .serve_once(
                     |_, _| panic!("invalid lookup"),
+                    |_| panic!("invalid conformance lookup"),
                     |_, _| panic!("invalid skill control"),
                 )
                 .unwrap();
@@ -195,6 +230,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
         server
             .serve_once(
                 |_, _| Err(InspectError::UnknownSession),
+                |_| panic!("unexpected conformance lookup"),
                 |_, _| panic!("unexpected skill control"),
             )
             .unwrap();

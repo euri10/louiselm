@@ -46,11 +46,19 @@ fn read_exact(stream: &mut UnixStream, mut bytes: &mut [u8], deadline: Instant) 
 }
 
 pub(super) fn read(stream: &mut UnixStream, deadline: Instant) -> io::Result<Vec<u8>> {
+    read_bounded(stream, deadline, MAX)
+}
+
+pub(super) fn read_bounded(
+    stream: &mut UnixStream,
+    deadline: Instant,
+    max: usize,
+) -> io::Result<Vec<u8>> {
     let mut header = [0; 4];
     read_exact(stream, &mut header, deadline)?;
     let size =
         usize::try_from(u32::from_be_bytes(header)).map_err(|_| io::ErrorKind::InvalidData)?;
-    if size == 0 || size > MAX {
+    if size == 0 || size > max {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut bytes = vec![0; size];
@@ -59,7 +67,8 @@ pub(super) fn read(stream: &mut UnixStream, deadline: Instant) -> io::Result<Vec
 }
 
 pub(super) fn write(stream: &mut UnixStream, bytes: &[u8], deadline: Instant) -> io::Result<()> {
-    if bytes.is_empty() || bytes.len() > MAX {
+    if bytes.is_empty() || bytes.len() > crate::broker::conformance_inspection::MAX_INSPECTION_BYTES
+    {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let size = u32::try_from(bytes.len()).map_err(|_| io::ErrorKind::InvalidData)?;
