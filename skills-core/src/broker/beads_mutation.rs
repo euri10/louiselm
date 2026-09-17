@@ -76,7 +76,7 @@ pub(super) struct TrackerConfig {
 }
 
 impl TrackerConfig {
-    fn project_digest(&self) -> String {
+    pub(super) fn project_digest(&self) -> String {
         Digest::of(self.workspace_root.as_os_str().as_encoded_bytes()).to_string()
     }
 }
@@ -117,7 +117,9 @@ impl BeadsMutations {
         tracker: &TrackerConfig,
     ) -> Result<BeadsMutationStatus, BrokerError> {
         let clock = std::time::Instant::now();
-        if !permission.permits(request, now_ms) {
+        if !permission.permits(request, now_ms)
+            || permission.project_digest != tracker.project_digest()
+        {
             return Err(BrokerError::InvalidGrant);
         }
         let request_digest =

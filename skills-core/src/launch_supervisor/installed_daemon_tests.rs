@@ -16,6 +16,9 @@ mod attention;
 #[path = "installed_daemon_inspection_tests.rs"]
 mod inspection;
 
+#[path = "installed_daemon_beads_tests.rs"]
+mod beads;
+
 fn completed<T: Send + 'static>(queue: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -> T {
     let (tx, rx) = mpsc::channel();
     queue(Box::new(move |value| tx.send(value).unwrap()));
@@ -48,12 +51,12 @@ fn seed_authorizations() {
             .as_millis(),
     )
     .unwrap();
-    for name in ["session", "sibling", "failure"] {
+    for name in beads::subjects() {
         broker
             .authorize(&GrantRequest {
                 conformance: crate::launch_protocol::ConformanceAuthorization::default(),
                 skill_requests: None,
-                beads_comments: None,
+                beads_comments: beads::permission(name, now),
                 request: named_request(name),
                 controller_uid: config.operator_uid,
                 require_cold_recovery: false,

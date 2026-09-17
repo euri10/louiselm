@@ -41,6 +41,9 @@ impl BeadsMutationKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovedBeadsComments {
+    /// Digest of the canonical absolute project path, fixed by the operator.
+    /// A grant cannot follow a broker configuration change to another tracker.
+    pub project_digest: String,
     /// Sorted, unique exact issue IDs; prefixes do not confer authority.
     pub issue_ids: Vec<String>,
     /// Non-refundable maximum number of distinct attempts (1..=64).
@@ -53,7 +56,9 @@ impl ApprovedBeadsComments {
     /// Checks bounded scope, budget and lifetime without external effects.
     #[must_use]
     pub fn valid(&self, now_ms: u64) -> bool {
-        !self.issue_ids.is_empty()
+        crate::Digest::parse(&self.project_digest)
+            .is_ok_and(|digest| digest.to_string() == self.project_digest)
+            && !self.issue_ids.is_empty()
             && self.issue_ids.len() <= 64
             && self.issue_ids.iter().all(|id| issue_identifier(id))
             && self.issue_ids.windows(2).all(|pair| pair[0] < pair[1])

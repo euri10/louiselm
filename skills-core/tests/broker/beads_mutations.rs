@@ -11,6 +11,7 @@ use louiselm_skills::{
 
 fn permission(issue: &str) -> ApprovedBeadsComments {
     ApprovedBeadsComments {
+        project_digest: Digest::of(b"fixture-project").to_string(),
         issue_ids: vec![issue.into()],
         max_comments: 2,
         expires_at_ms: 60_000,
@@ -25,7 +26,11 @@ fn fixture(
     let socket = root.join("broker.sock");
     let request = request("comment-session");
     let mut approval = grant(&request);
-    approval.beads_comments = permission;
+    approval.beads_comments = permission.map(|mut permission| {
+        permission.project_digest =
+            Digest::of(root.join("workspace").as_os_str().as_encoded_bytes()).to_string();
+        permission
+    });
     let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
     authorizations.authorize(&approval, 1000).unwrap();
     let mut service = BrokerService::bind(
@@ -227,6 +232,32 @@ fn tracker_configuration_rejects_wrong_digest_and_missing_database() {
             .configure_beads_tracker(root.path(), Path::new("/bin/true"), &Digest::of(b"wrong"))
             .is_err()
     );
+    peer.close();
+}
+
+#[test]
+fn comment_grant_cannot_follow_a_change_of_canonical_project() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut service, mut session, peer) = fixture(
+        root.path(),
+        Some(permission("test-1")),
+        Some(Path::new("/bin/true")),
+    );
+    let other = root.path().join("other");
+    fs::create_dir_all(other.join(".beads")).unwrap();
+    fs::write(other.join(".beads/beads.db"), []).unwrap();
+    service
+        .configure_beads_tracker(
+            &other,
+            Path::new("/bin/true"),
+            &Digest::of(&fs::read("/bin/true").unwrap()),
+        )
+        .unwrap();
+    let query = query(session.authorization(), "test-1");
+    assert!(matches!(
+        exchange(&service, &mut session, &peer, &query, false),
+        CommandOperation::BeadsMutationRefused { .. }
+    ));
     peer.close();
 }
 

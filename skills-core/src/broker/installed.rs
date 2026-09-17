@@ -7,6 +7,8 @@ mod promotion;
 #[path = "verification/installed.rs"]
 mod verification;
 
+mod beads;
+
 use super::{
     AuditLog, AuthorizationStore, BrokerError, BrokerService, BrokerSession, GrantRequest,
     PendingAuthorization, ReceiptStore, SessionInspection, now_ms,
@@ -353,7 +355,7 @@ impl InstalledBroker {
             None => SeqpacketListener::bind(&config.broker_socket_path)
                 .map_err(BrokerError::Transport)?,
         };
-        let service = BrokerService::over(
+        let mut service = BrokerService::over(
             listener,
             &config.broker_socket_path,
             AuthorizationStore::open(&state.join("authorizations"), config.pool.clone())?,
@@ -361,6 +363,7 @@ impl InstalledBroker {
             AuditLog::open(&state.join("audit"))?,
             CredentialPin::Identity { uid: 0, gid: 0 },
         )?;
+        beads::configure(&mut service, config)?;
         Ok(Self {
             _state_lock: state_lock,
             service,
@@ -376,6 +379,16 @@ impl InstalledBroker {
     pub fn authorize(&self, grant: &GrantRequest) -> Result<PendingAuthorization, BrokerError> {
         if grant.controller_uid != self.verifier.config().operator_uid {
             return Err(BrokerError::ControllerMismatch);
+        }
+        if let Some(permission) = &grant.beads_comments {
+            let tracker = self
+                .service
+                .tracker
+                .as_ref()
+                .ok_or(BrokerError::InvalidGrant)?;
+            if permission.project_digest != tracker.project_digest() {
+                return Err(BrokerError::InvalidGrant);
+            }
         }
         self.service.authorizations().authorize(grant, now_ms()?)
     }

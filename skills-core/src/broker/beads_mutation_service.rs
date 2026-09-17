@@ -12,8 +12,8 @@ impl BrokerService {
     /// Enables comment mediation for one trusted canonical project and exact `br` bytes.
     ///
     /// Call before sharing the service. The operator must protect the canonical
-    /// project and executable from Session writes. Installed deployment wiring
-    /// is separate; a newly constructed service denies all Beads mutations.
+    /// project and executable from Session writes. Installed startup validates
+    /// protected provisioning before calling this; an unconfigured service denies mutations.
     /// This blocks while checking the executable digest and existing database.
     ///
     /// # Errors
@@ -126,7 +126,9 @@ impl BrokerService {
             .beads_comments
             .as_ref()
             .ok_or(BrokerError::InvalidGrant)?;
-        if !permission.permits(request, now_ms) {
+        if !permission.permits(request, now_ms)
+            || permission.project_digest != tracker.project_digest()
+        {
             return Err(BrokerError::InvalidGrant);
         }
         let status = self.supervisor_status(session, &mut *verify)?;

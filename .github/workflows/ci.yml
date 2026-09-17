@@ -504,6 +504,9 @@ jobs:
             timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
             timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_BEADS=1 \
+            "LOUISELM_TEST_BEADS_INSTALLER=$PWD/../scripts/install-broker-beads.py" \
+            timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_comments --exact --nocapture' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 \
             timeout 120 python3 ../scripts/test-broker-systemd.py
           # Each full fixture gets its own deadline; keep the shared test account serial.

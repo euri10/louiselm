@@ -360,8 +360,9 @@ for the launch-based freshness meaning and remaining integration scope.
 The authenticated Agent command relay accepts `BeadsMutation` comment-add
 requests. A trusted caller must configure the `BrokerService` with
 `configure_beads_tracker(workspace, program, expected_digest)` and supply an
-`ApprovedBeadsComments` launch permission with exact issue IDs, a non-refundable
-attempt budget and an expiry. Without either, mutations are refused. The broker
+`ApprovedBeadsComments` launch permission with the canonical project digest,
+exact issue IDs, a non-refundable attempt budget and an expiry. Without either,
+mutations are refused. The broker
 derives the actor from its retained Agent/Session binding and checks the current
 Session, Run, envelope revision, lifecycle state and quarantine status.
 
@@ -373,8 +374,44 @@ failure can leave `Unknown`: the comment may already exist, so the broker never
 automatically invokes `br` again for that request ID. Reconcile against canonical
 Beads before deciding whether to submit a new request.
 
-Installed provisioning is not connected yet (`louiselm-qbr.5.1.5.3`); the shipped
-daemon leaves this capability disabled. Other Beads effects and replica/canonical
+Installed startup reads `/etc/louiselm-broker-beads.json`, selected explicitly by
+the administrator. Absence leaves ordinary broker startup usable and all tracker
+mutations disabled; invalid configuration refuses startup. One canonical project
+is configured per machine-wide daemon. The operator's per-launch comment grant
+must name its project digest; switching the configured project cannot transfer
+old grants, even where issue IDs coincide. Agent requests contain no project
+path, actor, executable, or routing override.
+
+Prepare an **existing** canonical project outside Session-writable storage and a
+root-owned, non-writable copy of the reviewed `br` executable. The project and its
+ancestors must belong to root or the installed operator, without group/other
+write permission. `.beads` and all its contents may belong to root, the operator,
+or the broker; only the broker's dedicated group may have group write access.
+The broker needs traversal, database read/write and directory write access.
+An operator-owned `.beads` directory with the broker GID and mode `2770`, and
+database files with that group and mode `0660`, supports shared administration;
+ensure subsequent operator writes preserve these permissions. Symlinks, hard
+links to files, special files and extended ACLs are refused. The pinned executable
+and every ancestor must be root-owned without group/other write permission.
+
+After reviewing those paths and the binary's exact SHA-256, provision with:
+
+```sh
+sudo python3 scripts/install-broker-beads.py \
+  --workspace /srv/louiselm/project --br /usr/local/lib/louiselm-tools/br \
+  --sha256 REVIEWED_64_HEX_DIGEST
+```
+
+Run from the repository root. The command changes only the protected configuration;
+it never initializes, moves, or changes ownership of existing tracker data. An
+identical rerun is harmless; a differing existing configuration is refused.
+Its JSON result gives `project_digest` (SHA-256 of the canonical absolute path's
+filesystem bytes) for `GrantRequest.beads_comments`, alongside sorted exact issue
+IDs, `max_comments` (1–64), and `expires_at_ms`. Provisioning grants no comments
+by itself. Restart the updated installed broker to load it; the trusted controller
+must still pass the explicit grant through `InstalledBroker::authorize`.
+
+Other Beads effects and replica/canonical
 access cutover remain `louiselm-qbr.5.1.5.4` and `louiselm-qbr.5.1.5.5`. This slice
 does not yet enforce exclusive broker access to canonical Beads.
 
@@ -385,6 +422,19 @@ existing upstream `br` against a disposable project, from `skills-core/` run:
 LOUISELM_TEST_BR=/absolute/path/to/br cargo test --all-features --locked \
   --test broker real_br_comment -- --ignored --nocapture
 ```
+
+The installed acceptance is
+`launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_comments`.
+Build the binaries and library test, then run that exact test in the
+[disposable VM](../docs/launcher-vm.md), under root and a private mount namespace,
+with `LOUISELM_REQUIRE_BROKER_BEADS=1` and `LOUISELM_TEST_BEADS_INSTALLER` naming the provisioning script
+(keep its sibling `install-broker-attention.py` beside it). It exercises unset
+startup, protected configuration and digest refusal, distinct-UID denial of direct
+writes, and durable at-most-once outcomes through the measured Agent relay.
+CI runs this composition with `/usr/bin/true` as the process stand-in. Set
+`LOUISELM_TEST_BR` to an existing upstream binary to additionally prove exactly one
+correctly attributed real comment despite Agent retries. This fixture proves
+installed composition, not activation of the maintainer's desktop.
 
 ### Prospective artifact preflight
 

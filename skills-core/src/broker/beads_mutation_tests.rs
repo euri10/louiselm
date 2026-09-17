@@ -72,7 +72,7 @@ fn first_request_invokes_the_runner_once_and_records_success() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             1,
             &runner,
             &tracker(root.path()),
@@ -91,7 +91,7 @@ fn identical_replay_returns_the_same_receipt_without_invoking_again() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             1,
             &runner,
             &tracker(root.path()),
@@ -101,7 +101,7 @@ fn identical_replay_returns_the_same_receipt_without_invoking_again() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             2,
             &runner,
             &tracker(root.path()),
@@ -134,7 +134,7 @@ fn a_durable_intent_with_no_outcome_never_reinvokes_the_tracker() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             2,
             &runner,
             &tracker(root.path()),
@@ -155,7 +155,7 @@ fn durable_receipts_do_not_retain_the_comment_body() {
         .accept(
             &binding(),
             &request,
-            &permission(),
+            &permission(root.path()),
             1,
             &runner,
             &tracker(root.path()),
@@ -178,7 +178,7 @@ fn nonzero_exit_records_failed_not_completed() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             1,
             &runner,
             &tracker(root.path()),
@@ -199,7 +199,7 @@ fn a_conflicting_replay_is_refused() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             1,
             &runner,
             &tracker(root.path()),
@@ -214,7 +214,7 @@ fn a_conflicting_replay_is_refused() {
         .accept(
             &binding(),
             &conflicting,
-            &permission(),
+            &permission(root.path()),
             2,
             &runner,
             &tracker(root.path()),
@@ -233,7 +233,7 @@ fn durability_survives_a_restart() {
             .accept(
                 &binding(),
                 &request("req-1"),
-                &permission(),
+                &permission(root.path()),
                 1,
                 &runner,
                 &tracker(root.path()),
@@ -246,7 +246,7 @@ fn durability_survives_a_restart() {
         .accept(
             &binding(),
             &request("req-1"),
-            &permission(),
+            &permission(root.path()),
             2,
             &runner,
             &tracker(root.path()),
@@ -260,8 +260,9 @@ fn durability_survives_a_restart() {
     );
 }
 
-fn permission() -> ApprovedBeadsComments {
+fn permission(root: &Path) -> ApprovedBeadsComments {
     ApprovedBeadsComments {
+        project_digest: Digest::of(root.as_os_str().as_encoded_bytes()).to_string(),
         issue_ids: vec!["louiselm-qbr.5.1.5".into()],
         max_comments: 2,
         expires_at_ms: 100,
@@ -287,7 +288,7 @@ fn a_runner_error_leaves_an_unknown_nonrepeatable_attempt() {
             .accept(
                 &binding(),
                 &request("uncertain"),
-                &permission(),
+                &permission(root.path()),
                 1,
                 &runner,
                 &tracker(root.path())
@@ -300,7 +301,7 @@ fn a_runner_error_leaves_an_unknown_nonrepeatable_attempt() {
         .accept(
             &binding(),
             &request("uncertain"),
-            &permission(),
+            &permission(root.path()),
             2,
             &runner,
             &tracker(root.path()),
@@ -315,7 +316,7 @@ fn comment_budget_survives_restart_and_identical_replays_do_not_spend_it() {
     let root = tempfile::tempdir().unwrap();
     let store = BeadsMutations::open(root.path()).unwrap();
     let runner = FakeRunner::new(0);
-    let mut permission = permission();
+    let mut permission = permission(root.path());
     permission.max_comments = 1;
     let first = store
         .accept(
@@ -380,7 +381,7 @@ fn replay_cannot_move_to_another_actor_project_or_revision() {
         .accept(
             &binding(),
             &request("one"),
-            &permission(),
+            &permission(root.path()),
             1,
             &runner,
             &tracker(root.path()),
@@ -399,7 +400,7 @@ fn replay_cannot_move_to_another_actor_project_or_revision() {
                 .accept(
                     &binding,
                     &request("one"),
-                    &permission(),
+                    &permission(root.path()),
                     2,
                     &runner,
                     &tracker
@@ -430,11 +431,12 @@ fn simultaneous_sessions_share_the_store_without_sharing_retry_identities() {
             let runner = &runner;
             let tracker = &tracker;
             let barrier = &barrier;
+            let root = &root;
             scope.spawn(move || {
                 let mut binding = binding();
                 binding.session_id = session.into();
                 barrier.wait();
-                let mut permission = permission();
+                let mut permission = permission(root.path());
                 permission.expires_at_ms = 60_000;
                 assert_eq!(
                     store
