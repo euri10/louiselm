@@ -325,6 +325,8 @@ function M.register()
   local inline
   local export_cancel ---@type fun()?
   local disposed = false
+  local restore_mousemove ---@type boolean?
+  local mousemove_observer ---@type integer?
 
   ---@param message string?
   local function report_error(message)
@@ -420,6 +422,16 @@ function M.register()
       workflows = Config.enabled(configured, "workflows"),
       beads = Config.enabled(configured, "beads"),
     }))
+    -- The command registration owns the one interactive UI and its global option.
+    -- Headless APIs and independently constructed Chat objects leave options alone.
+    restore_mousemove = nvim.o.mousemoveevent
+    nvim.o.mousemoveevent = true
+    mousemove_observer = nvim.api.nvim_create_autocmd("OptionSet", {
+      pattern = "mousemoveevent",
+      callback = function()
+        restore_mousemove = nil -- A later user change supersedes our saved value.
+      end,
+    })
     return chat
   end
 
@@ -891,6 +903,12 @@ function M.register()
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
     disposed = true
+    if mousemove_observer ~= nil then
+      nvim.api.nvim_del_autocmd(mousemove_observer)
+    end
+    if restore_mousemove ~= nil then
+      nvim.o.mousemoveevent = restore_mousemove
+    end
     if export_cancel then
       export_cancel()
     end

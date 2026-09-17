@@ -210,6 +210,32 @@ T["command"]["minimal init exposes the canonical chat command"] = function()
   MiniTest.expect.equality(nvim.api.nvim_get_commands({ builtin = false }).LuiseLmChat, nil)
 end
 
+T["command"]["chat owns mouse reporting until disposal or a user option change"] = function()
+  Command.register()
+  local old_move = nvim.o.mousemoveevent
+  local _, original_system = fake_process()
+  MiniTest.finally(function()
+    Command.register()
+    rawset(nvim, "system", original_system)
+    nvim.o.mousemoveevent = old_move
+    Command.configure(nil)
+  end)
+  Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent" } } })
+  for _, initially_enabled in ipairs({ false, true }) do
+    nvim.o.mousemoveevent = initially_enabled
+    nvim.cmd("LouiselmChat")
+    MiniTest.expect.equality(nvim.o.mousemoveevent, true)
+    Command.register()
+    MiniTest.expect.equality(nvim.o.mousemoveevent, initially_enabled)
+  end
+  nvim.o.mousemoveevent = false
+  nvim.cmd("LouiselmChat")
+  -- OptionSet is suppressed during startup (-c), so dispatch the user's change explicitly.
+  nvim.api.nvim_exec_autocmds("OptionSet", { pattern = "mousemoveevent" })
+  Command.register()
+  MiniTest.expect.equality(nvim.o.mousemoveevent, true)
+end
+
 T["command"]["collects Forensics for an explicit Session while no chat is open"] = function()
   Command.configure({ agents = { codex = { provider = "test-service", command = "codex-agent", args = {} } } })
   local original_notify = nvim.notify

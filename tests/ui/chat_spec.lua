@@ -6244,6 +6244,86 @@ T["chat"]["marks a visible limit stale when its reset passes without an update"]
   chat:dispose()
 end
 
+T["chat"]["mouse hover reveals the winbar Session identity without taking focus"] = function()
+  local old_mouse, old_move = nvim.o.mouse, nvim.o.mousemoveevent
+  local listeners = nvim.on_key()
+  local chat = assert(Chat.new(fake_api(), { start_insert_on_switch = false }))
+  MiniTest.finally(function()
+    chat:dispose()
+    nvim.o.mouse, nvim.o.mousemoveevent = old_mouse, old_move
+    nvim.cmd("only!")
+  end)
+  nvim.o.mouse, nvim.o.mousemoveevent = "a", true
+  local first, second = fake_session("first", "codex"), fake_session("second", "codex")
+  first.state.acp_session_id, second.state.acp_session_id = "acp-first", "acp-second"
+  assert(chat:attach(first))
+  local first_win = nvim.api.nvim_get_current_win()
+  nvim.cmd("vsplit")
+  assert(chat:attach(second))
+  local focused = nvim.api.nvim_get_current_win()
+  local function move(window, column, row)
+    nvim.cmd("redraw")
+    local pos = nvim.api.nvim_win_get_position(window)
+    nvim.api.nvim_input_mouse("move", "", "", 0, pos[1] + (row or 0), pos[2] + column - 1)
+    nvim.fn.getchar(0)
+    nvim.wait(30)
+  end
+  local function tooltip()
+    for _, win in ipairs(nvim.api.nvim_list_wins()) do
+      if nvim.api.nvim_win_get_config(win).relative ~= "" then
+        return win, nvim.api.nvim_buf_get_lines(nvim.api.nvim_win_get_buf(win), 0, -1, false)
+      end
+    end
+  end
+  move(first_win, 13)
+  local popup, lines = tooltip()
+  MiniTest.expect.equality(lines, { "codex/acp-first" })
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), focused)
+  move(first_win, 17)
+  MiniTest.expect.equality(tooltip(), popup)
+  move(first_win, 18)
+  MiniTest.expect.equality(tooltip(), nil)
+  move(first_win, 12)
+  MiniTest.expect.equality(tooltip(), nil)
+  move(focused, 13)
+  local _, second_lines = tooltip()
+  MiniTest.expect.equality(second_lines, { "codex/acp-second" })
+  move(focused, 13, 1)
+  MiniTest.expect.equality(tooltip(), nil)
+  nvim.o.mousemoveevent = false
+  move(first_win, 13)
+  MiniTest.expect.equality(tooltip(), nil)
+  nvim.o.mousemoveevent = true
+  move(first_win, 14)
+  MiniTest.expect.equality(select(2, tooltip()), { "codex/acp-first" })
+  nvim.api.nvim_exec_autocmds("WinResized", {})
+  MiniTest.expect.equality(tooltip(), nil)
+  nvim.wait(30)
+  move(first_win, 13)
+  nvim.api.nvim_feedkeys("l", "xt", false)
+  nvim.wait(30)
+  MiniTest.expect.equality(tooltip(), nil)
+  local pending_pos = nvim.api.nvim_win_get_position(first_win)
+  nvim.api.nvim_input_mouse("move", "", "", 0, pending_pos[1], pending_pos[2] + 13)
+  nvim.fn.getchar(0)
+  nvim.api.nvim_feedkeys("l", "xt", false)
+  nvim.wait(30)
+  MiniTest.expect.equality(tooltip(), nil)
+  second.state.acp_session_id = nil
+  assert(chat:switch("second"))
+  move(focused, 13)
+  MiniTest.expect.equality(tooltip(), nil)
+  move(first_win, 13)
+  -- Drain a real mouse event into the observer, then dispose before its scheduled UI work.
+  local pos = nvim.api.nvim_win_get_position(first_win)
+  nvim.api.nvim_input_mouse("move", "", "", 0, pos[1], pos[2] + 13)
+  nvim.fn.getchar(0)
+  chat:dispose()
+  nvim.wait(30)
+  MiniTest.expect.equality(tooltip(), nil)
+  MiniTest.expect.equality(nvim.on_key(), listeners)
+end
+
 T["chat"]["shows every background session in a clickable window bar strip"] = function()
   local first = fake_session("session-1", "one")
   local second = fake_session("session-2", "two")

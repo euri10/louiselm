@@ -64,6 +64,18 @@ Sessions                                                   *louiselm-sessions*
   to start another Session without stopping the current one, and
   |:LouiselmSessionSwitch| to focus an attached Session.
 
+  Hover the Agent name (for example, codex) in a chat window's winbar to
+  display its full Agent-scoped Session ID without changing keyboard focus.
+  The tooltip identifies the hovered window's Session and disappears when the
+  pointer leaves the name or you type. Use |:LouiselmSessionId| to copy the
+  focused Session's ID.
+
+  Hover requires a terminal/GUI that reports mouse movement and enabled
+  'mouse'. Opening the interactive chat enables 'mousemoveevent'; disposing or
+  reconfiguring the UI restores its previous value unless you changed it
+  afterward. Set 'nomousemoveevent' to disable hover. No mouse mappings are
+  replaced. Headless Session APIs do not change these options.
+
   Prompt silence has no time limit. A quiet or reconnecting Agent keeps its
   Session active until it responds, reports an error, or you dispose it. Use
   |:LouiselmCancel| to request cancellation; dispose the Session if the Agent

@@ -10,6 +10,18 @@ local function snapshot(id, agent)
   return { id = id, name = id, agent = agent, status = "ready", current_turn = 0, config_options = {} }
 end
 
+T["Agent hover span uses display columns and disappears when compacted"] = function()
+  local state = snapshot("session-1", "codex")
+  state.name = "界 100%"
+  local bar, _, _, span = Status.session_winbar(state, nil, 200)
+  local rendered = nvim.api.nvim_eval_statusline(bar, { maxwidth = 200 }).str
+  local start = assert(rendered:find("codex", 1, true))
+  local column = nvim.fn.strdisplaywidth(rendered:sub(1, start - 1)) + 1
+  MiniTest.expect.equality(span, { first = column, last = column + 4 })
+  local _, _, _, narrow = Status.session_winbar(state, nil, 10)
+  MiniTest.expect.equality(narrow, nil)
+end
+
 T["compact options count hidden controls and restore after resize"] = function()
   local state = snapshot("session-1", "codex")
   state.name = "Review"

@@ -75,6 +75,11 @@ local nvim = vim
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget>> Click targets by window and minwid.
 ---@field winbar_resize_autocmd? integer Resize observer removed on disposal.
+---@field winbar_hover_targets table<integer, {first: integer, last: integer, buffer: integer, text: string, bar: string}> Session identity spans by window.
+---@field winbar_hover_window? integer Non-focusable Session identity tooltip.
+---@field winbar_hover_source? integer Window whose identity is shown.
+---@field winbar_hover_namespace? integer Mouse observer removed on disposal.
+---@field winbar_hover_autocmd? integer Tooltip dismissal observer.
 ---@field current_id string? Currently displayed session id.
 ---@field overview? louiselm.ui.OverviewState Current-Session sidebar owned by this chat.
 ---@field handoffs louiselm.ui.Handoffs Review buffers and takeover validation.
@@ -370,14 +375,84 @@ local function chat_winbar(self, view, win)
     end
   end
   local width = nvim.api.nvim_win_get_width(win)
-  local base, limits_agent, options_visible =
+  local base, limits_agent, options_visible, agent_span =
     Status.session_winbar(state, limits, width - Status.background_width(backgrounds))
   local available = width
     - nvim.api.nvim_eval_statusline(base, { winid = win, use_winbar = true, maxwidth = 100000 }).width
   local winbar, targets =
     Status.layout_winbar(base, limits_agent, backgrounds, available, options_visible and state.id or nil)
   self.winbar_targets[win] = targets
+  self.winbar_hover_targets[win] = agent_span
+      and state.acp_session_id
+      and {
+        first = agent_span.first,
+        last = agent_span.last,
+        buffer = view.renderer.buffer,
+        text = report_id(state.agent, state.acp_session_id),
+        bar = winbar,
+      }
+    or nil
   return winbar
+end
+
+---@param self louiselm.ui.Chat
+local function close_winbar_hover(self)
+  if self.winbar_hover_window ~= nil and nvim.api.nvim_win_is_valid(self.winbar_hover_window) then
+    nvim.api.nvim_win_close(self.winbar_hover_window, true)
+  end
+  self.winbar_hover_window = nil
+  self.winbar_hover_source = nil
+end
+
+---@param self louiselm.ui.Chat
+local function update_winbar_hover(self)
+  if self.disposed then
+    return
+  end
+  local mouse = nvim.fn.getmousepos()
+  local target = self.winbar_hover_targets[mouse.winid]
+  if
+    not nvim.o.mousemoveevent
+    or target == nil
+    or mouse.winrow ~= 1
+    or mouse.line ~= 0
+    or mouse.wincol < target.first
+    or mouse.wincol > target.last
+    or not nvim.api.nvim_win_is_valid(mouse.winid)
+    or nvim.api.nvim_win_get_buf(mouse.winid) ~= target.buffer
+    or nvim.api.nvim_get_option_value("winbar", { win = mouse.winid }) ~= target.bar
+  then
+    close_winbar_hover(self)
+    return
+  end
+  if
+    self.winbar_hover_source == mouse.winid
+    and self.winbar_hover_window ~= nil
+    and nvim.api.nvim_win_is_valid(self.winbar_hover_window)
+  then
+    return
+  end
+  close_winbar_hover(self)
+  local text = single_line(target.text)
+  local width = math.max(1, math.min(nvim.fn.strdisplaywidth(text), nvim.o.columns - 2))
+  local buffer = nvim.api.nvim_create_buf(false, true)
+  nvim.bo[buffer].bufhidden = "wipe"
+  nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, { text })
+  nvim.bo[buffer].modifiable = false
+  self.winbar_hover_window = nvim.api.nvim_open_win(buffer, false, {
+    relative = "win",
+    win = mouse.winid,
+    row = 0,
+    col = target.first - 1,
+    width = width,
+    height = math.max(1, math.ceil(nvim.fn.strdisplaywidth(text) / width)),
+    style = "minimal",
+    border = "single",
+    focusable = false,
+    noautocmd = true,
+  })
+  nvim.wo[self.winbar_hover_window].wrap = true
+  self.winbar_hover_source = mouse.winid
 end
 
 ---@param self louiselm.ui.Chat
@@ -390,7 +465,22 @@ local function render_winbar(self, view, win)
   if self.winbars[win] == nil then
     self.winbars[win] = nvim.api.nvim_get_option_value("winbar", { win = win })
   end
-  nvim.api.nvim_set_option_value("winbar", chat_winbar(self, view, win), { win = win })
+  local previous = self.winbar_hover_targets[win]
+  local bar = chat_winbar(self, view, win)
+  local target = self.winbar_hover_targets[win]
+  if
+    self.winbar_hover_source == win
+    and (
+      previous == nil
+      or target == nil
+      or previous.text ~= target.text
+      or previous.first ~= target.first
+      or previous.last ~= target.last
+    )
+  then
+    close_winbar_hover(self)
+  end
+  nvim.api.nvim_set_option_value("winbar", bar, { win = win })
 end
 
 ---@param self louiselm.ui.Chat
@@ -504,6 +594,8 @@ end
 
 ---@param self louiselm.ui.Chat
 local function restore_winbars(self)
+  close_winbar_hover(self)
+  self.winbar_hover_targets = {}
   for win, value in pairs(self.winbars) do
     if nvim.api.nvim_win_is_valid(win) then
       nvim.api.nvim_set_option_value("winbar", value, { win = win })
@@ -1365,6 +1457,7 @@ function M.new(api, options)
     limits_unsubscribe = function() end,
     winbars = {},
     winbar_targets = {},
+    winbar_hover_targets = {},
     current_id = nil,
     disposed = false,
   }, Chat)
@@ -1463,6 +1556,32 @@ function M.new(api, options)
       end)
     end,
   })
+  local mouse_move = nvim.api.nvim_replace_termcodes("<MouseMove>", true, false, true)
+  local hover_revision = 0
+  chat.winbar_hover_namespace = nvim.on_key(function(key, typed)
+    hover_revision = hover_revision + 1
+    local revision = hover_revision
+    if key == mouse_move or typed == mouse_move then
+      nvim.schedule(function()
+        -- Typing or a newer mouse event supersedes queued hover work.
+        if revision == hover_revision then
+          update_winbar_hover(chat)
+        end
+      end)
+    elseif chat.winbar_hover_window ~= nil then
+      nvim.schedule(function()
+        close_winbar_hover(chat)
+      end)
+    end
+  end)
+  chat.winbar_hover_autocmd = nvim.api.nvim_create_autocmd(
+    { "BufWinLeave", "WinLeave", "WinClosed", "TabLeave", "VimResized", "WinResized", "FocusLost" },
+    {
+      callback = function()
+        close_winbar_hover(chat)
+      end,
+    }
+  )
   return chat, nil
 end
 
@@ -2679,6 +2798,14 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  if self.winbar_hover_namespace ~= nil then
+    nvim.on_key(nil, self.winbar_hover_namespace)
+    self.winbar_hover_namespace = nil
+  end
+  if self.winbar_hover_autocmd ~= nil then
+    nvim.api.nvim_del_autocmd(self.winbar_hover_autocmd)
+    self.winbar_hover_autocmd = nil
+  end
   local SessionOverview = require("louiselm.ui.session_overview")
   SessionOverview.close(self)
   if self.winbar_resize_autocmd ~= nil then

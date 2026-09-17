@@ -461,6 +461,7 @@ end
 ---@return string winbar
 ---@return string? limits_agent Absent when no Limits summary is supplied.
 ---@return boolean options_visible
+---@return {first: integer, last: integer}? agent_span One-based display columns of the visible Agent name.
 function M.session_winbar(state, limits, available)
   local options = state.config_options or {}
   local model, effort
@@ -484,6 +485,7 @@ function M.session_winbar(state, limits, available)
   -- Remove telemetry, then effort/model, then limits/Agent/name. Critical turn
   -- state is last; native truncation only handles physically impossible widths.
   for stage = 0, 8 do
+    local agent_span
     local fields = { winbar_segment(turn_highlight(state), turn_label(state)) }
     local function add(text, group, target)
       if text ~= nil then
@@ -494,6 +496,9 @@ function M.session_winbar(state, limits, available)
       add(name, "Normal")
     end
     if stage < 6 then
+      local prefix = table.concat(fields, " · ") .. " · "
+      local first = nvim.api.nvim_eval_statusline(prefix, { maxwidth = 100000 }).width + 1
+      agent_span = { first = first, last = first + nvim.fn.strdisplaywidth(single_line(state.agent)) - 1 }
       add(state.agent, "Normal")
     end
     local limits_visible = limits ~= nil and stage < 5
@@ -535,7 +540,7 @@ function M.session_winbar(state, limits, available)
       or nvim.api.nvim_eval_statusline(bar, { maxwidth = 100000 }).width <= available
       or stage == 8
     then
-      return bar, limits_visible and state.agent or nil, options_visible
+      return bar, limits_visible and state.agent or nil, options_visible, agent_span
     end
   end
   error("winbar layout exhausted")
