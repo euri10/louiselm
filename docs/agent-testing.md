@@ -128,6 +128,16 @@ users completion inside `setup({...})`. Run `./scripts/generate-luacats` (no
 this generator reads the schema and writes annotations, the opposite of
 `generate-api-appendix`, which reads annotations and writes `doc/api.md`.
 
+A generator that shells out to an external exporter must validate that
+export before trusting it. `lua-language-server --doc` exits 0 even when it
+dumps its export before the workspace finished loading, and the truncated
+result renders as a well-formed but shorter artifact — so the `--check` gate
+blames the committed file for being stale and a plain run silently overwrites
+it. CI job 104941880259 built its whole export in 2.5s where the passing job
+on a slower runner took 6.0s (louiselm-qbr.9.9.7.1). Check a property the
+export cannot plausibly lose, fail with the exporter named, and leave the
+artifact untouched.
+
 `generate-api-appendix --check` fails whenever a public LuaCATS annotation
 (`---@field`, `---@class`, exported function signature, etc.) changed without
 regenerating `doc/api.md`. Run `./scripts/generate-api-appendix` (no `--check`)

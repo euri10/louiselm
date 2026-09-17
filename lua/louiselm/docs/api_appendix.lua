@@ -93,14 +93,13 @@ local function render_body(entry)
   return string.format("```lua\n%s\n```", view)
 end
 
----Render the curated public API appendix from a `lua-language-server --doc`
----export (decoded doc.json).
+---Group entries by the section owning their primary definition file,
+---discarding anything defined outside the curated files.
 ---@param entries table[] Decoded doc.json top-level entries.
----@param sections? table[] Override for M.SECTIONS; defaults to it.
----@return string markdown
-function M.generate(entries, sections)
-  sections = sections or M.SECTIONS
-
+---@param sections table[] Curated sections, in output order.
+---@return table[][] buckets One bucket per section, parallel to `sections`.
+---@return table<string, integer> file_order Declared position of each curated file.
+local function bucket_entries(entries, sections)
   local file_section = {}
   local file_order = {}
   for section_index, section in ipairs(sections) do
@@ -123,6 +122,54 @@ function M.generate(entries, sections)
       bucket[#bucket + 1] = { entry = entry, file = file, line = line }
     end
   end
+
+  return buckets, file_order
+end
+
+---Check that a doc.json export documents every curated section before it is
+---rendered or compared.
+---
+---`lua-language-server --doc` exits 0 even when it dumped its export before
+---the workspace finished loading. The truncated export still renders as a
+---well-formed appendix, so `--check` blames `doc/api.md` for being stale and
+---a plain run silently overwrites it with a shorter document. CI job
+---104941880259 produced its whole export in 2.5s where the passing job on a
+---slower runner took 6.0s (louiselm-qbr.9.9.7.1). Every section is populated
+---on real source, so an empty one means the export is unusable, never that
+---the public API vanished. This catches a section lost wholesale; a partially
+---loaded section still needs the unified diff `--check` prints.
+---@param entries table[] Decoded doc.json top-level entries.
+---@param sections? table[] Override for M.SECTIONS; defaults to it.
+---@return boolean ok True when every section has at least one entry.
+---@return string? err Which sections the export documents nothing for.
+function M.verify_export(entries, sections)
+  sections = sections or M.SECTIONS
+
+  local buckets = bucket_entries(entries, sections)
+
+  local empty = {}
+  for section_index, section in ipairs(sections) do
+    if #buckets[section_index] == 0 then
+      empty[#empty + 1] = section.title
+    end
+  end
+
+  if #empty == 0 then
+    return true
+  end
+
+  return false, "export documents no entry for section(s): " .. table.concat(empty, ", ")
+end
+
+---Render the curated public API appendix from a `lua-language-server --doc`
+---export (decoded doc.json).
+---@param entries table[] Decoded doc.json top-level entries.
+---@param sections? table[] Override for M.SECTIONS; defaults to it.
+---@return string markdown
+function M.generate(entries, sections)
+  sections = sections or M.SECTIONS
+
+  local buckets, file_order = bucket_entries(entries, sections)
 
   local parts = { HEADER }
   for section_index, section in ipairs(sections) do

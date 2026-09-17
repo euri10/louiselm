@@ -152,4 +152,54 @@ T["api_appendix"]["ends with exactly one trailing newline"] = function()
   MiniTest.expect.equality(output:sub(-2, -2) ~= "\n", true)
 end
 
+T["api_appendix"]["verify_export accepts an export covering every section"] = function()
+  local entries = {
+    {
+      name = "widgets.Widget",
+      type = "type",
+      defines = { { file = "lua/widgets/init.lua", start = { 3 }, type = "doc.class" } },
+      fields = {},
+    },
+    {
+      name = "gadgets.Gadget",
+      type = "type",
+      defines = { { file = "lua/gadgets/init.lua", start = { 1 }, type = "doc.class" } },
+      fields = {},
+    },
+  }
+
+  local ok, err = ApiAppendix.verify_export(entries, SECTIONS)
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(err, nil)
+end
+
+T["api_appendix"]["verify_export rejects an export missing a whole section"] = function()
+  local entries = {
+    {
+      name = "widgets.Widget",
+      type = "type",
+      defines = { { file = "lua/widgets/init.lua", start = { 3 }, type = "doc.class" } },
+      fields = {},
+    },
+  }
+
+  local ok, err = ApiAppendix.verify_export(entries, SECTIONS)
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality(type(err), "string")
+  local message = err or ""
+  MiniTest.expect.equality(message:find("Gadgets", 1, true) ~= nil, true)
+  MiniTest.expect.equality(message:find("Widgets", 1, true), nil)
+end
+
+T["api_appendix"]["verify_export rejects an entirely empty export"] = function()
+  local ok, err = ApiAppendix.verify_export({}, SECTIONS)
+
+  MiniTest.expect.equality(ok, false)
+  local message = err or ""
+  MiniTest.expect.equality(message:find("Widgets", 1, true) ~= nil, true)
+  MiniTest.expect.equality(message:find("Gadgets", 1, true) ~= nil, true)
+end
+
 return T
