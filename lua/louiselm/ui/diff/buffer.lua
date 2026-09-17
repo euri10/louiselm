@@ -8,6 +8,7 @@ local nvim = vim
 ---@class louiselm.ui.DiffBufferOptions
 ---@field focus? boolean Whether to focus the opened buffer; defaults to true.
 ---@field instruction? string Instructions displayed above the diff; defaults to the standalone proposal controls.
+---@field read_only? boolean Show recorded history with close controls only; defaults to false.
 
 local function diff_lines(value)
   local lines = {}
@@ -24,7 +25,7 @@ local function diff_lines(value)
   return lines
 end
 
----@param preview louiselm.ui.DiffPreview
+---@param preview louiselm.ui.DiffPreview|{path: string, diff: string}
 ---@param instruction? string
 ---@return string[] lines
 local function render_lines(preview, instruction)
@@ -44,8 +45,8 @@ local function render_lines(preview, instruction)
   return lines
 end
 
----Open a read-only proposal review. `a` applies an unchanged preview; `d` and `q` discard it.
----@param preview louiselm.ui.DiffPreview Preview returned by `louiselm.ui.diff.apply.preview`.
+---Open a nonmodifiable diff. Proposals support `a` to apply; read-only history supports closing only.
+---@param preview louiselm.ui.DiffPreview|{path: string, diff: string} Writable proposal or recorded history.
 ---@param options? louiselm.ui.DiffBufferOptions Optional buffer options.
 ---@return integer? buffer Buffer handle, or nil when opening fails.
 ---@return string? error_message Validation or Neovim buffer error.
@@ -57,7 +58,11 @@ function M.open(preview, options)
     return nil, "diff buffer options must be a table"
   end
   local previous_buffer = nvim.api.nvim_get_current_buf()
-  local instruction = options and options.instruction or "Review proposed edit:  Esc then a = accept, d/q = reject"
+  local read_only = options ~= nil and options.read_only == true
+  local instruction = options and options.instruction
+    or (
+      read_only and "Recorded Session edit:  d/q = close" or "Review proposed edit:  Esc then a = accept, d/q = reject"
+    )
   local buffer = nvim.api.nvim_create_buf(false, true)
   local ok, error_message = pcall(function()
     nvim.api.nvim_buf_set_name(buffer, "louiselm-diff://" .. preview.path)
@@ -87,18 +92,25 @@ function M.open(preview, options)
       nvim.api.nvim_set_current_buf(previous_buffer)
     end
   end
-  nvim.keymap.set("n", "a", function()
-    local applied, apply_error = Apply.apply(preview)
-    if not applied then
-      nvim.notify("louiselm: " .. (apply_error or "proposed edit could not be applied"), nvim.log.levels.ERROR)
-      return
-    end
-    close_review()
-  end, { buffer = buffer, silent = true, nowait = true, desc = "Apply louiselm proposed edit" })
+  if not read_only then
+    nvim.keymap.set("n", "a", function()
+      local applied, apply_error = Apply.apply(preview)
+      if not applied then
+        nvim.notify("louiselm: " .. (apply_error or "proposed edit could not be applied"), nvim.log.levels.ERROR)
+        return
+      end
+      close_review()
+    end, { buffer = buffer, silent = true, nowait = true, desc = "Apply louiselm proposed edit" })
+  end
   for _, key in ipairs({ "d", "q" }) do
     nvim.keymap.set("n", key, function()
       close_review()
-    end, { buffer = buffer, silent = true, nowait = true, desc = "Discard louiselm proposed edit" })
+    end, {
+      buffer = buffer,
+      silent = true,
+      nowait = true,
+      desc = read_only and "Close louiselm diff" or "Discard louiselm proposed edit",
+    })
   end
   return buffer
 end

@@ -15,6 +15,7 @@ local M = {}
 ---@field new_count integer Line count in modified file
 ---@field added integer Lines added in this hunk
 ---@field deleted integer Lines deleted in this hunk
+---@field diff? string Recorded unified diff for this edition, independent of later edits.
 
 ---@class louiselm.ui.FileEdits
 ---@field path string Full or normalized file path
@@ -25,7 +26,7 @@ local M = {}
 ---@field is_new boolean Whether this file was newly created
 ---@field is_deleted? boolean Whether this file was deleted
 ---@field conflicts? string[] Session IDs of other sessions that modified this file
----@field diff? string Unified diff text if available
+---@field diff? string Latest recorded patch for file-header previews, if available.
 
 ---@class louiselm.ui.SessionSummary
 ---@field session_id string Local session identifier
@@ -68,9 +69,15 @@ function M.parse_diff_hunks(diff_text)
   end
 
   local current_hunk = nil
-  for line in diff_text:gmatch("[^\r\n]+") do
+  local hunk_start = 1
+  local offset = 1
+  for line in diff_text:gmatch("[^\r\n]*[\r\n]?") do
     local old_start, old_count, new_start, new_count = line:match("^@@ %-(%d+),?(%d*) %+([0-9]+),?(%d*) @@")
     if old_start ~= nil then
+      if current_hunk ~= nil then
+        current_hunk.diff = diff_text:sub(hunk_start, offset - 1)
+      end
+      hunk_start = offset
       local ns = tonumber(new_start) or 1
       local nc = (new_count ~= "" and tonumber(new_count)) or 1
       local os = tonumber(old_start) or 1
@@ -96,6 +103,10 @@ function M.parse_diff_hunks(diff_text)
         total_deleted = total_deleted + 1
       end
     end
+    offset = offset + #line
+  end
+  if current_hunk ~= nil then
+    current_hunk.diff = diff_text:sub(hunk_start)
   end
 
   return hunks, total_added, total_deleted
@@ -275,6 +286,7 @@ function M.extract_file_edit(raw, cwd)
       new_count = new_lines,
       added = new_lines,
       deleted = old_lines,
+      diff = nvim.diff(old_text, new_text, { result_type = "unified", ctxlen = 3 }),
     }
     return {
       path = normalized_path,
@@ -283,7 +295,7 @@ function M.extract_file_edit(raw, cwd)
       total_added = new_lines,
       total_deleted = old_lines,
       is_new = false,
-      diff = nvim.diff(old_text, new_text, { result_type = "unified", ctxlen = 3 }),
+      diff = hunk.diff,
     }
   end
 
@@ -545,7 +557,7 @@ function M.render_session_buffer(summary)
             range_desc =
               string.format("    • L%d-%d (+%d -%d)", hunk.start_line, hunk.end_line, hunk.added, hunk.deleted)
           end
-          add_line(range_desc, { path = file.path, line = hunk.start_line, diff = file.diff })
+          add_line(range_desc, { path = file.path, line = hunk.start_line, diff = hunk.diff })
         end
       end
       add_line("")
@@ -776,15 +788,14 @@ function M.open(chat)
     map("d", function()
       local target = cursor_target(sidebar)
       if target ~= nil and target.diff ~= nil and target.diff ~= "" then
-        local preview = Apply.preview({ path = target.path, diff = target.diff })
-        if preview == nil then
-          local original = Apply.read(target.path) or ""
-          preview = { path = target.path, original = original, proposed = original, diff = target.diff }
-        end
         if sidebar.preview_buffer ~= nil then
           DiffBuffer.close(sidebar.preview_buffer)
         end
-        local preview_buffer, err = DiffBuffer.open(preview, { focus = false })
+        -- These edits already happened; preview recorded bytes without rebuilding a proposal from disk.
+        local preview_buffer, err = DiffBuffer.open(
+          { path = target.path, diff = target.diff },
+          { focus = false, read_only = true }
+        )
         if preview_buffer == nil then
           nvim.notify("louiselm: " .. tostring(err), nvim.log.levels.ERROR)
           return
@@ -803,7 +814,7 @@ function M.open(chat)
           title = " Session diff ",
         })
       end
-    end, "Preview file diff")
+    end, "Preview selected recorded diff")
     map("s", function()
       local subject = chat.views[sidebar.session_id]
       if subject ~= nil then

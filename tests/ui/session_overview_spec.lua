@@ -160,6 +160,15 @@ T["diff_parser"]["handles empty or malformed diff cleanly"] = function()
   MiniTest.expect.equality(deleted, 0)
 end
 
+T["diff_parser"]["retains creation deletion and no-newline hunk text"] = function()
+  local created = "@@ -0,0 +1 @@\n+created\n"
+  local deleted = "@@ -8,2 +9,0 @@\n-removed\n-final line\n\\ No newline at end of file"
+  local hunks = SessionOverview.parse_diff_hunks("--- original\n+++ modified\n" .. created .. deleted)
+  MiniTest.expect.equality(#hunks, 2)
+  MiniTest.expect.equality({ hunks[1].diff, hunks[2].diff }, { created, deleted })
+  MiniTest.expect.equality(hunks[2].new_count, 0)
+end
+
 T["extract_file_edit"] = MiniTest.new_set()
 
 T["extract_file_edit"]["extracts from diff payload"] = function()
@@ -275,6 +284,23 @@ T["conflicts"]["identifies when multiple sessions modify the same file"] = funct
 end
 
 T["rendering"] = MiniTest.new_set()
+
+T["rendering"]["line-only editions do not borrow another edit's diff"] = function()
+  local session = fake_session("line-only", "codex")
+  session.edits = {
+    { path = "/workspace/file.lua", diff = "@@ -1 +1 @@\n-before\n+after\n" },
+    { path = "/workspace/file.lua", start_line = 42 },
+  }
+  local rows, targets = SessionOverview.render_session_buffer(SessionOverview.collect_session_summary(session))
+  local found = false
+  for row, target in pairs(targets) do
+    if rows[row]:find("• L42", 1, true) then
+      found = true
+      MiniTest.expect.equality(target.diff, nil)
+    end
+  end
+  MiniTest.expect.equality(found, true)
+end
 
 T["rendering"]["renders buffer lines and line jump targets"] = function()
   local summary = {
@@ -862,6 +888,116 @@ T["sidebar"]["diff preview preserves the sidebar and chat"] = function()
   MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(preview_buffer), false)
 end
 
+T["sidebar"]["each historical hunk previews its own recorded change"] = function()
+  -- Observed in proxy/sessions/01a0ad78-35bc-77a1-b528-8d9d8e1538b9/log.jsonl
+  -- under ~/.local/state/acp-llm-adapter/:931-932 and 1610-1611:
+  -- in-progress diff blocks followed by status-only completion, repeated for one file.
+  -- Text/path are synthetic; multiple hunks and overlapping editions reproduce the UI defect.
+  local chat = new_chat()
+  local session = fake_session("history", "codex")
+  local path = nvim.fn.tempname()
+  MiniTest.finally(function()
+    nvim.fn.delete(path)
+  end)
+  -- The disk has since changed again; historical previews must not depend on these bytes.
+  nvim.fn.writefile({ "current disk content" }, path)
+  assert(chat:attach(session))
+  local host = nvim.api.nvim_get_current_win()
+  local chat_buffer = nvim.api.nvim_get_current_buf()
+  assert(chat:session_overview())
+  local sidebar = chat.overview.window
+  local buffer = chat.overview.buffer
+  local original = "top\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nbottom\n"
+  local first = original:gsub("top", "first top"):gsub("bottom", "first bottom")
+  local second = first:gsub("first top", "second top")
+  for index, change in ipairs({ { original, first }, { first, second } }) do
+    session:emit({
+      type = "tool_call_started",
+      session_id = "history",
+      data = {
+        toolCallId = "edit-" .. index,
+        kind = "edit",
+        status = "in_progress",
+        content = { { type = "diff", path = path, oldText = change[1], newText = change[2] } },
+      },
+    })
+    session:emit({
+      type = "tool_call_finished",
+      session_id = "history",
+      data = { toolCallId = "edit-" .. index, status = "completed" },
+    })
+  end
+  assert(SessionOverview.refresh(chat))
+  local open_diff
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(buffer, "n")) do
+    if mapping.lhs == "d" then
+      open_diff = mapping.callback
+    end
+  end
+  assert(open_diff)
+  local function preview_at(row)
+    nvim.api.nvim_set_current_win(sidebar)
+    nvim.api.nvim_win_set_cursor(sidebar, { row, 0 })
+    open_diff()
+    local preview = nvim.api.nvim_get_current_buf()
+    MiniTest.expect.equality(nvim.api.nvim_win_get_config(0).relative, "editor")
+    return table.concat(nvim.api.nvim_buf_get_lines(preview, 6, -1, false), "\n")
+  end
+  local previews = {}
+  local header
+  for row, line in ipairs(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+    if line:find("•", 1, true) then
+      previews[#previews + 1] = preview_at(row)
+    elseif line:find("▾", 1, true) then
+      header = row
+    end
+  end
+  local latest = "@@ -1,4 +1,4 @@\n-first top\n+second top\n one\n two\n three"
+  local expected = {
+    "@@ -1,4 +1,4 @@\n-top\n+first top\n one\n two\n three",
+    "@@ -7,4 +7,4 @@\n six\n seven\n eight\n-bottom\n+first bottom",
+    latest,
+  }
+  table.sort(previews)
+  table.sort(expected)
+  MiniTest.expect.equality(previews, expected)
+  -- A file header retains the latest whole patch, rather than an arbitrary edition.
+  MiniTest.expect.equality(preview_at(assert(header)), latest)
+  MiniTest.expect.equality(nvim.fn.readfile(path), { "current disk content" })
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_buf(host), chat_buffer)
+end
+
+T["sidebar"]["historical preview has close controls and no apply action"] = function()
+  local chat = new_chat()
+  local session = fake_session("read-only", "codex")
+  session.edits = { { path = nvim.fn.tempname(), diff = "@@ -0,0 +1 @@\n+recorded\n" } }
+  assert(chat:attach(session))
+  assert(chat:session_overview())
+  local sidebar = chat.overview.window
+  local buffer = chat.overview.buffer
+  for row, line in ipairs(nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+    if line:find("•", 1, true) then
+      nvim.api.nvim_win_set_cursor(sidebar, { row, 0 })
+      break
+    end
+  end
+  nvim.api.nvim_feedkeys("d", "mx", false)
+  local preview = nvim.api.nvim_get_current_buf()
+  local mappings = {}
+  for _, mapping in ipairs(nvim.api.nvim_buf_get_keymap(preview, "n")) do
+    mappings[mapping.lhs] = mapping.desc
+  end
+  MiniTest.expect.equality(mappings.a, nil)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(preview, 2, 3, false), {
+    "Recorded Session edit:  d/q = close",
+  })
+  nvim.api.nvim_feedkeys("q", "mx", false)
+  MiniTest.expect.equality(nvim.api.nvim_buf_is_valid(preview), false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_win(), sidebar)
+  MiniTest.expect.equality(SessionOverview.is_open(chat), true)
+end
+
 T["extract_file_edit"]["extracts line range for text replacement"] = function()
   local tmp_file = nvim.fn.tempname() .. ".lua"
   local content = { "line 1", "line 2", "target to replace", "line 4", "line 5" }
@@ -882,6 +1018,7 @@ T["extract_file_edit"]["extracts line range for text replacement"] = function()
   MiniTest.expect.equality(edit.hunks[1].end_line, 4)
   MiniTest.expect.equality(edit.total_added, 2)
   MiniTest.expect.equality(edit.total_deleted, 1)
+  MiniTest.expect.equality(edit.hunks[1].diff, edit.diff)
 
   nvim.fn.delete(tmp_file)
 end
