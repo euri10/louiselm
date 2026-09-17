@@ -21,6 +21,17 @@ pub(crate) struct Store {
     owner: (u32, u32),
 }
 
+impl Drop for Store {
+    // Closing alone can leave the flock held in a concurrently forked child
+    // until it execs, so the next pin or cleanup is refused as busy
+    // (louiselm-xx07b). Releasing the description itself covers every holder.
+    // A failed release only delays the next acquisition: the records it
+    // guarded are already durable and the lock carries no authority.
+    fn drop(&mut self) {
+        let _ = self.root.unlock();
+    }
+}
+
 impl Store {
     pub(crate) fn create(path: &Path) -> Result<(), WorkspaceError> {
         match fs::DirBuilder::new().mode(0o700).create(path) {
@@ -144,3 +155,6 @@ fn name(id: &str) -> Result<String, WorkspaceError> {
     }
     Ok(format!("{id}.json"))
 }
+
+#[cfg(test)]
+mod tests;

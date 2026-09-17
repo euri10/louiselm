@@ -218,3 +218,19 @@ fn failed_effect_receipt_does_not_claim_the_applied_bytes_were_rolled_back() {
     assert!(!journal.join("0.done").is_file());
     assert!(!journal.join("complete.json").exists());
 }
+
+/// Same inherited-descriptor hazard as retention storage: a child forked before
+/// its exec keeps the flock until it execs, so a dropped destination must
+/// release the description rather than only its own descriptor (louiselm-xx07b).
+#[test]
+fn an_inherited_descriptor_cannot_keep_the_destination_locked_after_release() {
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+    let opened = Destination::open(&destination).unwrap();
+    let inherited = opened.root.try_clone().unwrap();
+    drop(opened);
+    Destination::open(&destination).unwrap();
+    drop(inherited);
+}

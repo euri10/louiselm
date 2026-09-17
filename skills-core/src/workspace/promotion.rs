@@ -16,7 +16,7 @@ use std::{
 };
 
 /// Identity of the opened operator destination, never an arbitrary privileged path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DestinationIdentity {
     /// Filesystem device containing the pinned directory.
@@ -114,6 +114,16 @@ pub(crate) enum StepEvent {
 pub(crate) struct Destination {
     root: fs::File,
     pub(crate) identity: DestinationIdentity,
+}
+
+impl Drop for Destination {
+    // As in retention storage, closing alone can leave the flock held in a
+    // concurrently forked child until it execs, refusing the next promotion as
+    // busy (louiselm-xx07b). A failed release only delays the next open; the
+    // applied bytes and their receipt are already durable.
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.root, rustix::fs::FlockOperation::Unlock);
+    }
 }
 
 impl Destination {

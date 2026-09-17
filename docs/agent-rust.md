@@ -82,6 +82,14 @@ but must not silently weaken it.
   process, and network work must stay off async executor threads. Do not hold
   synchronous locks across `.await`; keep lock scopes short and document lock
   ordering when multiple locks are acquired.
+- Release an advisory file lock explicitly; dropping the descriptor is not
+  enough. `flock` belongs to the open file description, so a child forked
+  before its exec inherits it and holds the lock past the parent's close. The
+  failure looks like an unrelated intermittent "would block" in whatever runs
+  next, and it has now bitten three sites: `broker/state_identity.rs`,
+  `workspace/retention/storage.rs` and `workspace/promotion.rs`
+  (louiselm-xx07b). Prove the release with a test that keeps a cloned
+  descriptor open, not with timing.
 - Spawn processes with argument arrays and explicit environment/cwd where
   relevant. Every task and child process has an owner responsible for completion,
   cancellation, and cleanup. Disposal must handle late callbacks and prove that
