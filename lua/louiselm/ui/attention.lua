@@ -21,10 +21,9 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field client louiselm.workflow.AttentionClient?
 ---@field connecting boolean
 ---@field queue table[] Pending socket operations.
----@field pending table<string, table> Unseen turn-ready entries by Session id.
 ---@field entries table<string, table> Unresolved Attention entries by typed key.
----@field activity_generation integer
 ---@field autocmd_group integer
+---@field key_namespace integer Input listener owned by this controller.
 ---@field disposed boolean
 ---@field turn_done fun(self: louiselm.ui.Attention, state: table, seen: boolean)
 ---@field seen fun(self: louiselm.ui.Attention, session_id: string)
@@ -172,16 +171,16 @@ local function notify(self, message)
 end
 
 local function schedule_eligibility(self, entry)
-  local generation = self.activity_generation
+  if entry.eligibility_queued then
+    return
+  end
+  local generation = (entry.timer_generation or 0) + 1
   entry.timer_generation = generation
   self.schedule(IDLE_DELAY_MS, function()
-    if self.disposed or self.entries[entry_id(entry.key)] ~= entry then
+    if self.disposed or self.entries[entry_id(entry.key)] ~= entry or entry.timer_generation ~= generation then
       return
     end
-    if entry.timer_generation ~= generation or self.activity_generation ~= generation then
-      schedule_eligibility(self, entry)
-      return
-    end
+    entry.eligibility_queued = true
     enqueue(self, {
       send = function(client, callback)
         return client:set_eligible(entry.key, true, callback)
@@ -279,9 +278,6 @@ local function forget_entry(self, entry)
     return false
   end
   self.entries[id] = nil
-  if entry.session_id ~= nil and self.pending[entry.session_id] == entry then
-    self.pending[entry.session_id] = nil
-  end
   return true
 end
 
@@ -302,9 +298,6 @@ local function enqueue_entry(self, entry)
     return
   end
   self.entries[id] = entry
-  if entry.kind == "turn_ready" then
-    self.pending[entry.session_id] = entry
-  end
   enqueue(self, {
     send = function(client, callback)
       return client:upsert(entry.draft, callback)
@@ -351,25 +344,23 @@ function M.new(options)
     client = nil,
     connecting = false,
     queue = {},
-    pending = {},
     entries = {},
-    activity_generation = 0,
     autocmd_group = 0,
+    key_namespace = 0,
     disposed = false,
   }, Attention)
   attention.autocmd_group =
     nvim.api.nvim_create_augroup("louiselm.attention." .. tostring(nvim.uv.hrtime()), { clear = true })
-  nvim.api.nvim_create_autocmd({
-    "CmdlineChanged",
-    "CmdlineEnter",
-    "CursorMoved",
-    "CursorMovedI",
-    "FocusGained",
-    "InsertCharPre",
-    "TextChanged",
-    "TextChangedI",
-    "TextChangedP",
-  }, {
+  -- Buffer/cursor changes also come from Agent rendering. Only typed input
+  -- (including mouse input and mapping triggers) restarts the inactivity delay.
+  attention.key_namespace = nvim.on_key(function(_, typed)
+    if typed ~= "" then
+      nvim.schedule(function()
+        attention:activity()
+      end)
+    end
+  end)
+  nvim.api.nvim_create_autocmd("FocusGained", {
     group = attention.autocmd_group,
     callback = function()
       attention:activity()
@@ -714,15 +705,14 @@ function Attention:session_disposed(session_id)
   end)
 end
 
----Record one piece of editor activity and delay all pending eligibility.
+---Record operator input/focus and delay unresolved items not yet queued for delivery.
 ---@param self louiselm.ui.Attention
 function Attention:activity()
   if self.disposed then
     return
   end
-  self.activity_generation = self.activity_generation + 1
   ensure_connection(self)
-  for _, entry in pairs(self.pending) do
+  for _, entry in pairs(self.entries) do
     schedule_eligibility(self, entry)
   end
 end
@@ -736,7 +726,7 @@ function Attention:dispose()
   end
   self.disposed = true
   nvim.api.nvim_del_augroup_by_id(self.autocmd_group)
-  self.pending = {}
+  nvim.on_key(nil, self.key_namespace)
   self.queue = {}
   self.entries = {}
   if self.client ~= nil then

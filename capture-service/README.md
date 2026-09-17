@@ -218,6 +218,13 @@ and authentication details are in `docs/broker-lifecycle.md`.
 
 ## Optional Android push
 
+For Neovim-created Attention items, delivery becomes eligible after 30 seconds
+without keyboard/mouse input or focus returning to Neovim. This delay is shared
+across Sessions: actively using another Session postpones delivery, while Agent
+output and programmatic cursor movement do not. Viewing a completed Session or
+starting its next prompt clears its pending turn alert. Eligibility is distinct
+from FCM submission and eventual phone delivery.
+
 With push explicitly enabled, `serve` submits eligible Attention generations to every active
 paired device with a registered FCM token. The inbox remains available without
 push configuration. Enable the sender with `LOUISELM_PUSH_ENABLED=true` and
