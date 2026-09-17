@@ -30,11 +30,25 @@ use crate::{
 pub struct InstalledBroker {
     pub(in crate::broker) service: BrokerService,
     pub(in crate::broker) verifier: Arc<LauncherVerifier>,
+    pub(in crate::broker) provider_credentials:
+        super::provider_credentials::ProviderCredentialStore,
     // Drop last, keeping adoption out through destruction of the owned service.
     _state_lock: fs::File,
 }
 
 impl InstalledBroker {
+    /// Returns a secret-free reference to a configured Provider, not permission to call it.
+    ///
+    /// # Errors
+    /// Returns the existing typed protocol failure for unknown or invalid Provider ids.
+    pub fn provider_credential(
+        &self,
+        provider: &str,
+    ) -> Result<super::provider_credentials::CredentialHandle, crate::launch_protocol::ProtocolError>
+    {
+        self.provider_credentials.handle(provider)
+    }
+
     /// Inspects or approves an exact dependency batch for the authenticated operator.
     /// Unattended Runs cannot gain approvals after start; this never starts a fetch.
     /// # Errors
@@ -377,6 +391,8 @@ impl InstalledBroker {
             return Err(BrokerError::Installation);
         }
         super::state_identity::check(state, uid, gid)?;
+        let provider_credentials =
+            super::provider_credentials::ProviderCredentialStore::installed(state, uid, gid)?;
         let listener = match listener {
             Some(listener) => listener,
             None => SeqpacketListener::bind(&config.broker_socket_path)
@@ -397,6 +413,7 @@ impl InstalledBroker {
             config.broker_gid,
         )?;
         Ok(Self {
+            provider_credentials,
             _state_lock: state_lock,
             service,
             verifier,

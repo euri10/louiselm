@@ -2,7 +2,7 @@
 //!
 //! Every entry is normalized: bounded identifiers, a slot number, and a stable
 //! typed decision. Prompts, environments, commands, request bytes, receipt
-//! payloads, and signature material never reach this file, so an operator can
+//! payloads, Provider credentials, and signature material never reach this file, so an operator can
 //! read it and a hostile Session cannot write prose into it.
 
 use std::{

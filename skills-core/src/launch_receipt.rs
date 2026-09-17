@@ -5,6 +5,8 @@
 //! replaced without changing every later predecessor. This module owns bytes
 //! and pure verification only; signing, persistence, policy, and transport are
 //! deliberately left to narrow caller-provided boundaries.
+//! Provider credentials are excluded by the closed record schema; custody never
+//! adds authentication bytes to a signed payload or its envelope.
 
 use std::collections::BTreeSet;
 

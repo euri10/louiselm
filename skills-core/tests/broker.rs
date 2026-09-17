@@ -1381,6 +1381,15 @@ fn the_operator_record_stays_normalized_after_a_launch() {
     assert!(!recorded.contains("signature"));
     assert!(!recorded.contains("evidence"));
 
+    // Credential custody extends the same closed-record boundary: no secret
+    // field is admitted, even when attached to an otherwise valid decision.
+    let entry = &service.audit().unwrap()[0];
+    for field in ["credential", "provider_credentials", "authorization_header"] {
+        let mut value = serde_json::to_value(entry).unwrap();
+        value[field] = serde_json::json!("fixture-provider-secret");
+        assert!(serde_json::from_value::<louiselm_skills::broker::AuditEntry>(value).is_err());
+    }
+
     session.close();
     session.close();
     assert!(session.channel().is_closed());

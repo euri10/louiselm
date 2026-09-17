@@ -19,17 +19,22 @@ use std::{
     fmt,
     fs::{self, File},
     io::Read,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{DirBuilderExt, MetadataExt},
+    },
     path::{Path, PathBuf},
 };
 
+use rustix::fs::{Dir, Mode, OFlags};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::launch_protocol::{ErrorCode, ProtocolError};
 
 /// Largest credential file the broker will read, so a wrong path cannot
 /// exhaust memory before the content is rejected as unusable.
-const MAX_CREDENTIAL_BYTES: u64 = 16 * 1024;
+const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
 
 /// Directory under the broker's machine-lifetime state holding credentials.
 const CREDENTIAL_DIRECTORY: &str = "provider-credentials";
@@ -39,7 +44,7 @@ const CREDENTIAL_DIRECTORY: &str = "provider-credentials";
 /// Deliberately not `Serialize`, not `Clone`, and not `Display`. Its [`Debug`]
 /// renders a fixed placeholder, so the secret cannot reach a durable record or
 /// an Agent-visible log through ordinary formatting.
-struct ProviderSecret(String);
+struct ProviderSecret(Zeroizing<String>);
 
 impl fmt::Debug for ProviderSecret {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,9 +54,8 @@ impl fmt::Debug for ProviderSecret {
 
 /// A Session-visible reference to broker-held credential material.
 ///
-/// Naming a Provider is all the authority a Session has here: the handle
-/// carries no secret, and resolving it requires the store that actually holds
-/// the material.
+/// The handle carries no secret and grants no request authority. The broker's
+/// request policy must authorize each use independently of this reference.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialHandle {
@@ -79,20 +83,25 @@ pub struct FileFacts {
     pub mode: u32,
     /// Whether the path is a directory.
     pub is_dir: bool,
+    /// Whether the opened object is a regular file.
+    pub is_file: bool,
+    /// Number of hard links to the object.
+    pub links: u64,
     /// Whether the path itself is a symbolic link.
     pub is_symlink: bool,
 }
 
 impl FileFacts {
-    fn read(path: &Path) -> Result<Self, ProtocolError> {
-        let metadata = fs::symlink_metadata(path).map_err(|_| unavailable())?;
-        Ok(Self {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
             uid: metadata.uid(),
             gid: metadata.gid(),
-            mode: metadata.permissions().mode() & 0o777,
+            mode: metadata.mode() & 0o7777,
             is_dir: metadata.is_dir(),
+            is_file: metadata.is_file(),
+            links: metadata.nlink(),
             is_symlink: metadata.file_type().is_symlink(),
-        })
+        }
     }
 }
 
@@ -104,6 +113,8 @@ impl FileFacts {
 pub fn credential_file_trusted(facts: &FileFacts, uid: u32, gid: u32) -> bool {
     !facts.is_symlink
         && !facts.is_dir
+        && facts.is_file
+        && facts.links == 1
         && facts.uid == uid
         && facts.gid == gid
         && facts.mode == 0o600
@@ -152,16 +163,36 @@ impl fmt::Debug for ProviderCredentialStore {
 }
 
 impl ProviderCredentialStore {
-    /// Builds a store from already-held material, for tests and for callers
-    /// that loaded configuration through their own audited path.
-    #[must_use]
-    pub fn in_memory<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+    #[cfg(test)]
+    fn in_memory<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
         Self {
             secrets: entries
                 .into_iter()
-                .map(|(provider, secret)| (provider.to_owned(), ProviderSecret(secret.to_owned())))
+                .map(|(provider, secret)| {
+                    (
+                        provider.to_owned(),
+                        ProviderSecret(Zeroizing::new(secret.to_owned())),
+                    )
+                })
                 .collect(),
         }
+    }
+
+    /// Called only after the installed broker has checked its identity and state root.
+    pub(super) fn installed(state: &Path, uid: u32, gid: u32) -> Result<Self, ProtocolError> {
+        match fs::DirBuilder::new()
+            .mode(0o700)
+            .create(Self::root_in(state))
+        {
+            Ok(()) => {
+                File::open(state)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|_| unavailable())?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(unavailable()),
+        }
+        Self::open(state, uid, gid)
     }
 
     /// Loads every credential under the broker's private state directory.
@@ -172,24 +203,39 @@ impl ProviderCredentialStore {
     ///
     /// # Errors
     /// Returns [`ErrorCode::CredentialUnavailable`] when the directory or any
-    /// entry is missing, untrusted, oversized, or unreadable, and
-    /// [`ErrorCode::InvalidRequest`] when a filename could not name a
-    /// configured Provider.
+    /// entry is missing, malformed, untrusted, oversized, or unreadable.
+    /// The caller must first validate the state root and its ancestors; installed
+    /// composition also verifies the current process has the dedicated non-root identity.
     pub fn open(state: &Path, uid: u32, gid: u32) -> Result<Self, ProtocolError> {
-        let root = state.join(CREDENTIAL_DIRECTORY);
-        if !credential_root_trusted(&FileFacts::read(&root)?, uid, gid) {
+        let root = File::from(
+            rustix::fs::open(
+                Self::root_in(state),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| unavailable())?,
+        );
+        if uid == 0
+            || !credential_root_trusted(
+                &FileFacts::from_metadata(&root.metadata().map_err(|_| unavailable())?),
+                uid,
+                gid,
+            )
+        {
             return Err(unavailable());
         }
         let mut secrets = BTreeMap::new();
-        for entry in fs::read_dir(&root).map_err(|_| unavailable())? {
+        for entry in Dir::read_from(&root).map_err(|_| unavailable())? {
             let entry = entry.map_err(|_| unavailable())?;
-            let name = entry.file_name().into_string().map_err(|_| invalid())?;
-            let provider = configured_name(&name)?.to_owned();
-            let path = entry.path();
-            if !credential_file_trusted(&FileFacts::read(&path)?, uid, gid) {
-                return Err(unavailable());
+            let name = entry.file_name().to_str().map_err(|_| unavailable())?;
+            if matches!(name, "." | "..") {
+                continue;
             }
-            secrets.insert(provider, ProviderSecret(read_secret(&path)?));
+            let provider = configured_name(name).map_err(|_| unavailable())?.to_owned();
+            secrets.insert(
+                provider,
+                ProviderSecret(read_secret(&root, name, uid, gid)?),
+            );
         }
         Ok(Self { secrets })
     }
@@ -221,8 +267,8 @@ impl ProviderCredentialStore {
     ///
     /// Crate-internal on purpose: this is how the Provider request path
     /// (`louiselm-qbr.5.1.3.2`) authenticates a call the broker itself makes.
-    /// It lends the material for the duration of `use_secret` instead of
-    /// returning it, so no caller can store or forward it.
+    /// Callers must keep the borrowed material and any derived authentication
+    /// bytes inside the broker request path; the callback can still copy it.
     ///
     /// # Errors
     /// Returns [`ErrorCode::InvalidRequest`] when the handle names a Provider
@@ -253,17 +299,40 @@ impl ProviderCredentialStore {
     }
 }
 
-fn read_secret(path: &Path) -> Result<String, ProtocolError> {
-    let mut file = File::open(path).map_err(|_| unavailable())?;
-    let mut content = String::new();
-    file.by_ref()
-        .take(MAX_CREDENTIAL_BYTES + 1)
-        .read_to_string(&mut content)
-        .map_err(|_| unavailable())?;
-    if content.len() as u64 > MAX_CREDENTIAL_BYTES {
+fn read_secret(
+    root: &File,
+    name: &str,
+    uid: u32,
+    gid: u32,
+) -> Result<Zeroizing<String>, ProtocolError> {
+    // Pin without opening devices or blocking on FIFOs. Validate this inode,
+    // then read it via procfs rather than reopening a replaceable pathname.
+    let handle = File::from(
+        rustix::fs::openat(
+            root,
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| unavailable())?,
+    );
+    let metadata = handle.metadata().map_err(|_| unavailable())?;
+    if !credential_file_trusted(&FileFacts::from_metadata(&metadata), uid, gid)
+        || metadata.len() > MAX_CREDENTIAL_BYTES as u64
+    {
         return Err(unavailable());
     }
-    let trimmed = content.trim().to_owned();
+    let mut file =
+        File::open(format!("/proc/self/fd/{}", handle.as_raw_fd())).map_err(|_| unavailable())?;
+    let mut content = Zeroizing::new(String::with_capacity(MAX_CREDENTIAL_BYTES + 1));
+    file.by_ref()
+        .take((MAX_CREDENTIAL_BYTES + 1) as u64)
+        .read_to_string(&mut content)
+        .map_err(|_| unavailable())?;
+    if content.len() > MAX_CREDENTIAL_BYTES {
+        return Err(unavailable());
+    }
+    let trimmed = Zeroizing::new(content.trim().to_owned());
     if trimmed.is_empty() {
         return Err(unavailable());
     }

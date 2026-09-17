@@ -59,6 +59,34 @@ fixed sudo entrypoint and release-signature installation boundary have their
 separate [installed authority acceptance](launcher-authority-acceptance.md).
 Neither fixture result alone establishes the complete desktop/vendor workflow.
 
+## Provider credential custody
+
+`launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side`
+extends the installed launch fixture with a random synthetic credential. CI runs
+it explicitly with `LOUISELM_REQUIRE_BROKER_LAUNCH=1`; the ordinary suite skips
+the privileged body. It first starts the actual installed broker with no
+configured Providers, then checks rejection of unsafe credential ownership and
+permissions, and finally launches a real confined Agent with valid broker-held
+material. The credential never becomes a launch input.
+
+The fixture checks exact broker UID/GID and directory mode, handle-only output,
+denied reads from the assigned Session UID, process environments and arguments,
+Session/registry files, and durable authorization, receipt and audit records.
+Unit tests additionally cover symlinks, hard links, FIFOs, special mode bits,
+missing/unreadable files and malformed or oversized contents. Receipt and audit
+tests reject credential fields through the existing closed schemas. No real
+Provider credential or network request is used. Provider request mediation and
+the Verified-launch gate remain the sibling tasks named in the crate README.
+
+Recorded 2026-09-17: the explicitly enabled custody gate passed in the restricted
+launcher VM, using the host-built library test and four selected binaries.
+The guest disk was full, so the artifacts ran from guest tmpfs with private
+mounts for the fixture's `/etc` and `/var/lib`; no prior guest files were removed.
+The complete `skills-core` suite passed through the documented transient-service
+wrapper, along with formatting, Clippy, Rustdoc and all 13 browser tests. The
+maintainer host has no installed broker authority; this records disposable
+installed-composition acceptance, not desktop deployment or Provider networking.
+
 ## Recorded acceptance — 2026-09-11
 
 The final `skills-core` suite passed **675 tests**, with three existing ignored

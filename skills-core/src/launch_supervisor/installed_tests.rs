@@ -60,6 +60,9 @@ mod receipt_history;
 #[path = "installed_workspace_tests.rs"]
 pub(super) mod workspace;
 
+#[path = "installed_provider_credentials_tests.rs"]
+mod provider_credentials;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -337,6 +340,14 @@ fn installed_broker_worker() {
     };
     let root = PathBuf::from(root);
     let broker = InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap();
+    if root.join("credential-custody").exists() {
+        let handle = broker.provider_credential("acme").unwrap();
+        assert_eq!(handle.provider(), "acme");
+        println!(
+            "PROVIDER_HANDLE {}",
+            serde_json::to_string(&handle).unwrap()
+        );
+    }
     assert!(fs::read(paths(&root).state_root.join("config.json")).is_err());
     assert!(fs::read_dir(paths(&root).state_root.join("private")).is_err());
     let now = u64::try_from(
@@ -480,34 +491,39 @@ fn marker(lines: &mpsc::Receiver<String>, prefix: &str) -> String {
 
 #[test]
 fn privileged_installed_broker_launch_and_effects() {
-    installed_broker_effects(false, None, None);
-    installed_broker_effects(false, Some(false), None);
-    installed_broker_effects(false, Some(true), None);
+    installed_broker_effects(false, None, None, false);
+    installed_broker_effects(false, Some(false), None, false);
+    installed_broker_effects(false, Some(true), None, false);
 }
 
 #[test]
 fn privileged_installed_controller_loss_settlement() {
-    installed_broker_effects(true, None, None);
+    installed_broker_effects(true, None, None, false);
 }
 
 #[test]
 fn privileged_installed_cold_resume_finite() {
-    installed_broker_effects(true, None, Some(cold_resume::ColdCase::Loaded));
+    installed_broker_effects(true, None, Some(cold_resume::ColdCase::Loaded), false);
 }
 
 #[test]
 fn privileged_installed_cold_resume_uncapped() {
-    installed_broker_effects(true, Some(true), Some(cold_resume::ColdCase::Loaded));
+    installed_broker_effects(true, Some(true), Some(cold_resume::ColdCase::Loaded), false);
 }
 
 #[test]
 fn privileged_installed_cold_resume_failed_load() {
-    installed_broker_effects(true, None, Some(cold_resume::ColdCase::FailedLoad));
+    installed_broker_effects(true, None, Some(cold_resume::ColdCase::FailedLoad), false);
 }
 
 #[test]
 fn privileged_installed_cold_resume_unavailable_balance() {
-    installed_broker_effects(true, None, Some(cold_resume::ColdCase::UnavailableBalance));
+    installed_broker_effects(
+        true,
+        None,
+        Some(cold_resume::ColdCase::UnavailableBalance),
+        false,
+    );
 }
 
 #[expect(
@@ -518,6 +534,7 @@ fn installed_broker_effects(
     controller_loss: bool,
     count_test: Option<bool>,
     cold: Option<cold_resume::ColdCase>,
+    credential_custody: bool,
 ) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_LAUNCH").is_none() {
         eprintln!("skipping: installed broker composition requires the disposable launcher VM");
@@ -550,7 +567,16 @@ fn installed_broker_effects(
         InstalledBroker::bind(&paths, &root.path().join("state")),
         Err(crate::broker::BrokerError::Installation)
     ));
+    if credential_custody {
+        provider_credentials::prepare(root.path());
+    }
     let (mut broker_process, lines) = broker_process(root.path(), None);
+    if credential_custody {
+        assert_eq!(
+            marker(&lines, "PROVIDER_HANDLE "),
+            "PROVIDER_HANDLE {\"provider\":\"acme\"}"
+        );
+    }
     marker(&lines, "BROKER_READY");
     let mut platform =
         SystemLaunchPlatform::new(paths.clone(), config.clone(), Duration::from_secs(5)).unwrap();
@@ -615,6 +641,13 @@ fn installed_broker_effects(
     let mut echo = String::new();
     output.read_line(&mut echo).unwrap();
     assert_eq!(echo, "positive-control\n");
+    if credential_custody {
+        provider_credentials::assert_session_surfaces(
+            root.path(),
+            agent_pid,
+            broker_process.0.id(),
+        );
+    }
     let command = ToolExecutionRequest {
         schema: TOOL_EXECUTION_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
@@ -693,6 +726,9 @@ fn installed_broker_effects(
         );
     }
     assert!(broker_process.0.wait().unwrap().success());
+    if credential_custody {
+        provider_credentials::assert_records(root.path());
+    }
     crate::launcher_install::acquire_identity(&paths, 0)
         .unwrap()
         .release()

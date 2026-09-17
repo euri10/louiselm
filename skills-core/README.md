@@ -640,6 +640,36 @@ release or automatically resume a Session. Unknown/unregistered histories fail
 closed rather than acquiring trust from their own signatures or timestamps.
 Unverifiable histories are quarantined per Session.
 
+### Provider credential custody
+
+`InstalledBroker` loads reusable Provider credentials under its dedicated
+non-root UID/GID before accepting connections. After verifying the existing
+state identity marker it provisions `provider-credentials/` inside the private
+broker state directory, with exact mode `0700`. An empty directory configures
+no Providers and leaves ordinary launches available.
+
+Provision each credential through a trusted operator channel as a broker-owned
+mode-`0600` regular file named for its configured Provider id (1–64 lowercase
+ASCII letters, digits or hyphens). The contents are nonempty UTF-8, at most
+16 KiB, with surrounding whitespace removed. Do not put credential bytes in
+command arguments, environment variables, Session files or logs. Restart the
+broker to reload changed files; this API neither imports other tools' stores
+nor performs Provider requests.
+
+Startup refuses foreign ownership, wider or special mode bits, symlinks,
+multiply linked files, special files and malformed contents with the existing
+`CredentialUnavailable` protocol error. Opened inodes are pinned before reading;
+secret buffers are zeroized on drop and never serialized or included in Debug.
+`provider_credential(id)` returns a `CredentialHandle` containing only the id.
+It grants no request authority: Provider calls and their authorization remain
+`louiselm-qbr.5.1.3.2`, and the Verified-launch gate remains
+`louiselm-qbr.5.1.3.3`.
+
+The existing closed receipt/audit schemas exclude credential fields. The
+required installed-custody VM gate checks actual distinct-UID denial, both
+process environments and argument lists, Session files, authorization records,
+receipts and audit records. See [broker launch acceptance](../docs/broker-launch-acceptance.md).
+
 ### Retired launcher private keys
 
 Newly installed keys carry an exhaustive `signing_sessions` ledger in the

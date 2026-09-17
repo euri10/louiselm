@@ -97,6 +97,15 @@ fn signed(payload: ReceiptPayload) -> SignedReceipt {
 }
 
 #[test]
+fn provider_credentials_cannot_extend_receipt_records() {
+    for field in ["credential", "provider_credentials", "authorization_header"] {
+        let mut value = serde_json::to_value(&chain()[0]).unwrap();
+        value["payload"][field] = serde_json::json!("fixture-provider-secret");
+        assert!(serde_json::from_value::<SignedReceipt>(value).is_err());
+    }
+}
+
+#[test]
 fn start_receipt_requires_agent_authority_evidence() {
     let mut document = serde_json::to_value(&chain()[1].payload).unwrap();
     document["outcome"]
