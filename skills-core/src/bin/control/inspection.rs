@@ -169,6 +169,11 @@ impl Queries {
             .spawn(move || {
                 loop {
                     if let Err(error) = endpoint.serve_once(
+                        |id, candidates| {
+                            broker
+                                .dependency_control(owner.operator_uid, id, candidates)
+                                .map_err(|_| InspectError::StatusUnavailable)
+                        },
                         |id, deadline| owner.inspect(&broker, id, deadline),
                         |id| {
                             broker

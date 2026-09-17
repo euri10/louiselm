@@ -27,6 +27,8 @@ pub mod commands;
 pub mod conformance_inspection;
 mod current_conformance;
 pub mod delegation;
+mod dependencies;
+mod dependency_service;
 mod history;
 pub mod installed;
 pub mod lifecycle;
@@ -65,6 +67,7 @@ use crate::{
 
 pub use audit::{AuditDecision, AuditEntry, AuditLog};
 pub use authorization::{ApprovedCommands, AuthorizationStore, GrantRequest, PendingAuthorization};
+pub use dependency_service::{DependencyInspection, PendingDependency};
 pub use installed::InstalledBroker;
 pub use receipts::{ReceiptStore, TrustedRelease};
 pub use service::{BrokerService, BrokerSession, LaunchObservation, SessionInspection};

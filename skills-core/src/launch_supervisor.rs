@@ -47,6 +47,7 @@ use crate::{
 };
 
 mod beads_replica;
+mod cache_download;
 pub mod command;
 mod conformance;
 pub use conformance::ConformanceAdmission;
@@ -489,6 +490,22 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Publishes exact broker-approved archive bytes into this Session's cache asynchronously.
+    /// The owner must join this worker before disposing the Session. Publication
+    /// uses the existing local revocation gate; unsupported adapters refuse.
+    /// # Errors
+    /// Returns worker admission failure; cache/storage failures use the callback.
+    fn store_dependency(
+        &mut self,
+        _digest: Digest,
+        _bytes: Vec<u8>,
+        _enforcer: Arc<command::CommandEnforcer>,
+        _expires_at_ms: u64,
+        complete: SupervisorCompletion<String>,
+    ) -> Result<(), SupervisorError> {
+        complete(Err(SupervisorError::CapabilityUnavailable));
+        Ok(())
+    }
     /// Copies an exact retained point into this fresh frozen Session asynchronously.
     /// Disposal joins the owned worker; this never loads ACP or Resumes the tree.
     /// # Errors

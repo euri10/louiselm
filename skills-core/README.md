@@ -355,6 +355,65 @@ never supplies current isolation proof, renews approval or grants authority.
 See [canonical status composition](../docs/broker-lifecycle.md#canonical-status-composition)
 for the launch-based freshness meaning and remaining integration scope.
 
+### Broker-mediated dependency downloads
+
+`DependencyFetch` is an authenticated Agent operation, not a shell command or
+general HTTP proxy. It proposes a `DependencyRequest` with a stable request ID,
+exact typed `Candidate`, and bounded byte reservation. The broker validates the
+Session, Run, revision, current posture, lifecycle and immutable starting inputs
+before any external disclosure. Tools do not inherit this Agent authority.
+
+The trusted controller stages the existing `SessionInputManifest`, then supplies
+`GrantRequest.dependencies: Some(ApprovedDependencies)` before launch. The grant
+names the manifest digest, selected `Cargo.lock` path, exact lockfile digest,
+registry archive templates, pinned IP addresses, explicit preapproved exceptions,
+attempt/byte budgets and expiry. Omission denies every dependency fetch; no
+existing configuration is automatically opted in. Cargo lockfile versions 3/4
+are supported. The broker parses staged bytes, never an Agent-edited lockfile,
+and automatically admits only exact starting registry coordinates **and** their
+SHA-256 integrity. It does not run Cargo to resolve names.
+
+New coordinates and exceptional sources remain local typed candidates.
+Interactive operators inspect and approve exact batches (up to 32 at a time):
+
+```sh
+louiselm-control dependencies inspect SESSION --json
+louiselm-control dependencies approve SESSION CANDIDATE_ID... --json
+```
+
+The dedicated operator socket authenticates the operator before lookup. Approval
+persists the complete candidate identity, starts no download and cannot extend
+expiry or budgets. The Agent retries its original request after approval. A
+`has_more` response indicates another pending page. Unattended Runs never create
+pending prompts: every Session needing fetch authority must have its grant
+recorded before the Run's first launch is consumed. Already-recorded grants remain
+usable; a later Session with no dependency capability is still allowed.
+
+HTTPS uses fixed approved origins/IP destinations, TLS certificate validation,
+no DNS lookup, no proxy, no redirects, no content decompression and a deadline
+bounded by both the grant and 30 seconds. Arbitrary HTTPS URLs and missing
+integrity require explicit approval; URL origins must also have preconfigured IP
+destinations. Git/non-registry proposals always need explicit approval, but this
+adapter deliberately does not run Git or unknown download helpers: propose and
+approve an exact HTTPS archive instead. These approvals grant neither Provider
+egress nor ambient Session networking.
+
+Downloaded archives remain opaque bytes. The unprivileged broker delivers bounded
+chunks on the existing authenticated supervisor channel. The supervisor verifies
+the digest and publishes only `artifact-<sha256>` in its pinned Session cache,
+mode 0600, without overwriting existing files or following Agent links. Final
+publication shares the local revocation lock. Archive paths, executable bits,
+install scripts and post-install scripts are never interpreted or executed.
+Missing integrity is reported as unverified, never upgraded by a successful fetch.
+
+Durable intent consumes the attempt and byte reservation before I/O. Unknown
+outcomes are not automatically retried or refunded. A success confirms that
+publication, not permanent cache integrity: the owning Session can subsequently
+modify its cache. A fresh relay retry of a previously published request returns
+`Unknown`, never a new integrity claim or another fetch. Local fake-HTTP,
+authenticated-relay and actual-filesystem tests
+are not a claim of an installed distinct-UID or live-registry acceptance run.
+
 ### Broker-mediated Beads mutations
 
 The authenticated Agent command relay accepts typed comments, atomic claims,

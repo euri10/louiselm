@@ -53,6 +53,28 @@ pub struct CommandPermit {
 }
 
 impl CommandEnforcer {
+    pub(crate) fn publish_cache<T>(
+        &self,
+        deadline: Instant,
+        publish: impl FnOnce() -> Result<T, SupervisorError>,
+    ) -> Result<T, SupervisorError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| SupervisorError::AuthorizationRejected)?;
+        if !state.active
+            || Instant::now() >= deadline
+            || !self
+                .agent
+                .valid()
+                .map_err(|_| SupervisorError::AgentIdentityRejected)?
+        {
+            return Err(SupervisorError::AuthorizationRejected);
+        }
+        let result = publish();
+        drop(state);
+        result
+    }
     /// Creates a fresh command generation for the same pinned Agent only after
     /// durable operator Resume. Old permits/grants keep their revoked state;
     /// the dispatch floor carries forward so consumed decisions cannot replay.

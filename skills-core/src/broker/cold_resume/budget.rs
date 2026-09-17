@@ -87,6 +87,7 @@ mod tests {
     fn source() -> PendingAuthorization {
         PendingAuthorization {
             conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+            dependencies: None,
             skill_requests: None,
             beads_mutations: None,
             require_cold_recovery: true,

@@ -359,6 +359,7 @@ fn installed_linked_admission_server() {
     for _ in 0..calls {
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| Err(InspectError::UnknownSession),
                 |_| Err(InspectError::UnknownSession),
                 |id, outcome| {

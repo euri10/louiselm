@@ -6,8 +6,9 @@ use super::{
 };
 
 pub(super) struct PendingStatus {
-    query: CommandMessage,
-    broker_request_id: String,
+    pub(super) query: CommandMessage,
+    pub(super) broker_request_id: String,
+    pub(super) cache: Option<super::dependency::Transfer>,
 }
 
 impl SessionOwner {
@@ -67,6 +68,7 @@ impl SessionOwner {
         let mut forwarded = query.clone();
         forwarded.request_id.clone_from(&id);
         self.commands.status = Some(PendingStatus {
+            cache: None,
             query,
             broker_request_id: id,
         });
@@ -82,6 +84,8 @@ impl SessionOwner {
                 | CommandOperation::SkillRequestRefused { .. }
                 | CommandOperation::BeadsMutationResult { .. }
                 | CommandOperation::BeadsMutationRefused { .. }
+                | CommandOperation::DependencyResult { .. }
+                | CommandOperation::DependencyRefused { .. }
         ) {
             return false;
         }
@@ -94,7 +98,7 @@ impl SessionOwner {
             || message.session_id != query.session_id
             || message.run_id != query.run_id
             || message.envelope_revision != query.envelope_revision
-            || !matching_reply(query, message)
+            || !matching_reply(pending, message)
         {
             return true;
         }
@@ -136,6 +140,9 @@ impl SessionOwner {
 }
 
 fn refusal(query: &CommandMessage, error: ErrorCode) -> CommandOperation {
+    if matches!(query.operation, CommandOperation::DependencyFetch { .. }) {
+        return CommandOperation::DependencyRefused { error };
+    }
     if matches!(query.operation, CommandOperation::SkillRequest { .. }) {
         CommandOperation::SkillRequestRefused { error }
     } else if matches!(query.operation, CommandOperation::BeadsMutation { .. }) {
@@ -148,12 +155,31 @@ fn refusal(query: &CommandMessage, error: ErrorCode) -> CommandOperation {
     }
 }
 
-fn matching_reply(query: &CommandMessage, reply: &CommandMessage) -> bool {
+fn matching_reply(pending: &PendingStatus, reply: &CommandMessage) -> bool {
+    let query = &pending.query;
     match (&query.operation, &reply.operation) {
+        (
+            CommandOperation::DependencyFetch { request },
+            CommandOperation::DependencyResult { status },
+        ) => match status {
+            crate::dependency_fetch::DependencyStatus::Pending { candidate_id } => {
+                request.candidate.id().is_ok_and(|id| id == *candidate_id)
+            }
+            crate::dependency_fetch::DependencyStatus::Complete { artifact } => {
+                pending
+                    .cache
+                    .as_ref()
+                    .and_then(|cache| cache.artifact.as_ref())
+                    == Some(artifact)
+            }
+            crate::dependency_fetch::DependencyStatus::Denied
+            | crate::dependency_fetch::DependencyStatus::Unknown => true,
+        },
         (
             CommandOperation::StatusRequest {},
             CommandOperation::StatusResult { .. } | CommandOperation::StatusRefused { .. },
         )
+        | (CommandOperation::DependencyFetch { .. }, CommandOperation::DependencyRefused { .. })
         | (CommandOperation::SkillRequest { .. }, CommandOperation::SkillRequestRefused { .. }) => {
             true
         }

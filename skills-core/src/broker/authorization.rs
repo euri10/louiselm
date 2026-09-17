@@ -81,6 +81,8 @@ impl ApprovedCommands {
 /// A launch the operator's controller has authorized but not yet started.
 #[derive(Clone, Debug)]
 pub struct GrantRequest {
+    /// Exact dependency scope approved before Run start; omission denies fetching.
+    pub dependencies: Option<crate::dependency_fetch::ApprovedDependencies>,
     /// Attendance and any exact waiver already approved by the trusted controller.
     pub conformance: crate::launch_protocol::ConformanceAuthorization,
     /// Trusted Run policy: no governed work until durable cold recovery is ready.
@@ -105,6 +107,8 @@ pub struct GrantRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingAuthorization {
+    /// Exact immutable lockfile and dependency scope fixed by the trusted controller.
+    pub dependencies: Option<crate::dependency_fetch::ApprovedDependencies>,
     /// Exact approved conformance policy; replay and restart never renew a waiver.
     pub conformance: crate::launch_protocol::ConformanceAuthorization,
     /// Exact recovery requirement fixed by the trusted Run controller.
@@ -214,6 +218,7 @@ impl AuthorizationStore {
                 || prior.controller_uid != grant.controller_uid
                 || prior.commands != grant.commands
                 || prior.skill_requests != grant.skill_requests
+                || prior.dependencies != grant.dependencies
                 || prior.beads_mutations != grant.beads_mutations
                 || prior.expires_at_ms != grant.expires_at_ms
                 || prior.require_cold_recovery != grant.require_cold_recovery
@@ -292,6 +297,12 @@ impl AuthorizationStore {
         if let Some(commands) = &grant.commands {
             commands.policy(&grant.request.authorization_id, now_ms)?;
         }
+        if let Some(dependencies) = &grant.dependencies {
+            dependencies.validate(now_ms)?;
+            if dependencies.input_manifest_digest != grant.request.session_input_manifest_id {
+                return Err(BrokerError::RequestMismatch);
+            }
+        }
         if grant
             .skill_requests
             .as_ref()
@@ -309,11 +320,13 @@ impl AuthorizationStore {
         let record_name = record_name(&grant.request.authorization_id)?;
 
         let assignment = lock(&self.assignment);
+        self.dependencies_before_run_start(grant)?;
         if self.pending_path(&record_name).exists() || self.consumed_path(&record_name).exists() {
             return Err(BrokerError::DuplicateAuthorization);
         }
         let identity = self.assign_identity(now_ms)?;
         let pending = PendingAuthorization {
+            dependencies: grant.dependencies.clone(),
             conformance: grant.conformance.clone(),
             require_cold_recovery: grant.require_cold_recovery,
             authorization_id: grant.request.authorization_id.clone(),
@@ -354,6 +367,9 @@ impl AuthorizationStore {
         controller_uid: u32,
         now_ms: u64,
     ) -> Result<LaunchAuthorization, BrokerError> {
+        // Serialize first Run consumption with pre-start dependency grants.
+        // A launch already approved before this point retains its exact scope.
+        let _assignment = lock(&self.assignment);
         request.validate().map_err(|_| BrokerError::InvalidGrant)?;
         let record_name = record_name(&request.authorization_id)?;
         let path = self.pending_path(&record_name);
@@ -433,6 +449,25 @@ impl AuthorizationStore {
         let pending: PendingAuthorization = read_record(&self.pending_path(&record_name))?
             .ok_or(BrokerError::UnknownAuthorization)?;
         self.consume(request, pending.controller_uid, now_ms)
+    }
+
+    fn dependencies_before_run_start(&self, grant: &GrantRequest) -> Result<(), BrokerError> {
+        if grant.dependencies.is_none()
+            || grant.conformance.attendance != crate::conformance::admission::Attendance::Unattended
+        {
+            return Ok(());
+        }
+        for entry in
+            fs::read_dir(self.root.join(CONSUMED_DIRECTORY)).map_err(BrokerError::Storage)?
+        {
+            let entry = entry.map_err(BrokerError::Storage)?;
+            if read_record::<ConsumedAuthorization>(&entry.path())?
+                .is_some_and(|prior| prior.authorization.run_id == grant.request.run_id)
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
+        }
+        Ok(())
     }
 
     /// Returns the consumed authorization that launched `session_id`.

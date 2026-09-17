@@ -35,6 +35,19 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Inspects or approves an exact dependency batch for the authenticated operator.
+    /// Unattended Runs cannot gain approvals after start; this never starts a fetch.
+    /// # Errors
+    /// Refuses invalid identities, expired scope, unknown candidates or storage failure.
+    pub fn dependency_control(
+        &self,
+        operator_uid: u32,
+        session_id: &str,
+        candidates: Option<&[String]>,
+    ) -> Result<super::DependencyInspection, BrokerError> {
+        self.service
+            .dependency_control(operator_uid, session_id, candidates, now_ms()?)
+    }
     /// Explicitly adopts a valid mismatched marker under the installed broker identity.
     ///
     /// `operator_uid` must come from the trusted sudo invocation, never Agent

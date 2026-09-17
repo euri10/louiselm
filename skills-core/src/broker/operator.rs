@@ -81,15 +81,20 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
-    #[serde(rename = "louiselm.operator-beads/1")]
-    Beads {
-        operation_id: String,
-        decision: Option<BeadsControlDecision>,
+    #[serde(rename = "louiselm.operator-dependencies/1")]
+    Dependencies {
+        session_id: String,
+        approve: Option<Vec<String>>,
     },
     #[serde(rename = "louiselm.operator-workspace-retention/1")]
     WorkspaceRetention {
         session_id: String,
         pin: Option<bool>,
+    },
+    #[serde(rename = "louiselm.operator-beads/1")]
+    Beads {
+        operation_id: String,
+        decision: Option<BeadsControlDecision>,
     },
     #[serde(rename = "louiselm.operator-inspect/1")]
     Inspect { session_id: String },
@@ -203,6 +208,64 @@ pub fn validate_subject(session_id: &str) -> Result<(), InspectError> {
     } else {
         Err(InspectError::InvalidRequest)
     }
+}
+
+fn validate_dependency_approval(
+    session_id: &str,
+    approve: Option<&[String]>,
+) -> Result<(), InspectError> {
+    validate_subject(session_id)?;
+    if approve.is_some_and(|ids| {
+        ids.is_empty()
+            || ids.len() > 32
+            || ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len()
+            || ids
+                .iter()
+                .any(|id| !crate::Digest::parse(id).is_ok_and(|digest| digest.to_string() == *id))
+    }) {
+        return Err(InspectError::InvalidRequest);
+    }
+    Ok(())
+}
+
+/// Inspects or approves a bounded batch of exact dependency candidates locally.
+/// No fetch is started; unattended Runs reject approval requests.
+/// # Errors
+/// Refuses invalid input, unauthenticated peers, unknown subjects or malformed replies.
+pub fn dependencies(
+    path: &Path,
+    broker_uid: u32,
+    session_id: &str,
+    approve: Option<Vec<String>>,
+    timeout: Duration,
+) -> Result<super::DependencyInspection, InspectError> {
+    validate_dependency_approval(session_id, approve.as_deref())?;
+    let expected = approve.clone().unwrap_or_default();
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Dependencies {
+            session_id: session_id.into(),
+            approve,
+        },
+        timeout,
+    )?;
+    let view: super::DependencyInspection =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if view.session_id != session_id
+        || view.envelope_revision == 0
+        || view.pending.len() > 32
+        || view.approved != expected
+        || view.pending.iter().any(|entry| {
+            !entry
+                .candidate
+                .id()
+                .is_ok_and(|id| id == entry.candidate_id)
+        })
+    {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(view)
 }
 
 /// Performs one blocking, bounded read-only query as the current operator.
@@ -410,6 +473,10 @@ impl OperatorServer {
     /// Returns listener failure; refused or disconnected clients are isolated.
     pub fn serve_once(
         &self,
+        dependencies: impl FnOnce(
+            &str,
+            Option<&[String]>,
+        ) -> Result<super::DependencyInspection, InspectError>,
         lookup: impl FnOnce(&str, Instant) -> Result<SessionStatus, InspectError>,
         conformance: impl FnOnce(&str) -> Result<ConformanceInspection, InspectError>,
         skill: impl FnOnce(
@@ -438,6 +505,19 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Dependencies {
+                    session_id,
+                    approve,
+                } => {
+                    validate_dependency_approval(&session_id, approve.as_deref())?;
+                    serde_json::to_vec(&dependencies(&session_id, approve.as_deref())?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
+                Request::WorkspaceRetention { session_id, pin } => {
+                    validate_subject(&session_id)?;
+                    serde_json::to_vec(&retention(&session_id, pin)?)
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::Beads {
                     operation_id,
                     decision,
@@ -448,11 +528,6 @@ impl OperatorServer {
                         return Err(InspectError::InvalidRequest);
                     }
                     serde_json::to_vec(&beads(&operation_id, decision.as_ref())?)
-                        .map_err(|_| InspectError::StatusUnavailable)
-                }
-                Request::WorkspaceRetention { session_id, pin } => {
-                    validate_subject(&session_id)?;
-                    serde_json::to_vec(&retention(&session_id, pin)?)
                         .map_err(|_| InspectError::StatusUnavailable)
                 }
                 Request::Inspect { session_id } => {

@@ -67,6 +67,7 @@ impl ColdResumeAllocation {
             broker_loss_grace_ms: self.broker_loss_grace_ms,
             commands: self.commands.clone(),
             // Request permission needs explicit approval for the new Session.
+            dependencies: None,
             skill_requests: None,
             beads_mutations: None,
         }

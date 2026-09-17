@@ -142,6 +142,12 @@ impl SessionWorkspace {
         self.cache.path()
     }
 
+    pub(super) fn cache_writer(&self) -> Result<crate::cache::DownloadWriter, SupervisorError> {
+        self.cache
+            .download_writer()
+            .map_err(|_| SupervisorError::DurabilityUnavailable)
+    }
+
     pub(super) fn seal(&self) -> Result<(), SupervisorError> {
         seal(&self.root)?;
         crate::beads_replica::discard(&self.directory.join(crate::beads_replica::DIRECTORY))

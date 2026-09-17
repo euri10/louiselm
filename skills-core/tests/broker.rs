@@ -67,6 +67,9 @@ mod lifecycle;
 #[path = "broker/skill_requests.rs"]
 mod skill_requests;
 
+#[path = "broker/dependencies.rs"]
+mod dependencies;
+
 #[path = "broker/posture.rs"]
 mod posture;
 
@@ -137,6 +140,7 @@ const CONTROLLER_UID: u32 = 1501;
 fn grant(request: &LaunchRequest) -> GrantRequest {
     GrantRequest {
         conformance: louiselm_skills::launch_protocol::ConformanceAuthorization::default(),
+        dependencies: None,
         skill_requests: None,
         beads_mutations: None,
         require_cold_recovery: false,

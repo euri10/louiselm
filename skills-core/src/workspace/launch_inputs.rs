@@ -76,6 +76,9 @@ pub(crate) fn retained_binding(
 }
 
 impl LoadedInputs {
+    pub(crate) fn source_bytes(&self, path: &str) -> Option<&[u8]> {
+        self.files.get(path).map(|file| file.bytes.as_slice())
+    }
     fn capture(
         manifest: SessionInputManifest,
         snapshot: &Path,

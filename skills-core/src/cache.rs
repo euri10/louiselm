@@ -9,15 +9,10 @@
 
 use std::{
     fs::{self, File},
-    io::Write as _,
-    os::{
-        fd::AsRawFd as _,
-        unix::fs::{MetadataExt as _, PermissionsExt as _},
-    },
+    os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
 };
 
-use rustix::fs::{AtFlags, Mode, OFlags};
 use thiserror::Error;
 
 use crate::{
@@ -26,7 +21,9 @@ use crate::{
     session_manifest::SessionInputManifest,
 };
 
+mod download;
 mod filesystem;
+pub(crate) use download::DownloadWriter;
 
 /// Maximum captured bytes and maximum size of one broker download.
 pub const MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -155,6 +152,12 @@ pub struct CacheOverlay {
 }
 
 impl CacheOverlay {
+    /// Session whose lifetime owns this pinned private overlay.
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// Path inside the existing private-home mount; never mount the source cache.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -202,39 +205,18 @@ impl CacheOverlay {
         expected: &Digest,
         bytes: &[u8],
     ) -> Result<String, CacheError> {
-        if bytes.len() > MAX_BYTES || Digest::of(bytes) != *expected {
-            return Err(CacheError::Refused("download digest or size mismatch"));
-        }
-        let directory = self
-            .directory
-            .as_ref()
-            .ok_or(CacheError::Refused("overlay disposed"))?;
-        let mut file = File::from(
-            rustix::fs::openat(
-                directory,
-                ".",
-                OFlags::TMPFILE | OFlags::WRONLY | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(std::io::Error::from)?,
-        );
-        file.write_all(bytes)?;
-        filesystem::set_owner(&file, self.identity)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.sync_all()?;
-        let name = format!("artifact-{}", expected.hex());
-        // procfs resolves our still-open anonymous inode. SYMLINK_FOLLOW applies
-        // only to this trusted source; linkat never follows/replaces destination.
-        rustix::fs::linkat(
-            rustix::fs::CWD,
-            format!("/proc/self/fd/{}", file.as_raw_fd()),
-            directory,
-            name.as_str(),
-            AtFlags::SYMLINK_FOLLOW,
-        )
-        .map_err(std::io::Error::from)?;
-        directory.sync_all()?;
-        Ok(name)
+        self.download_writer()?.prepare(expected, bytes)?.publish()
+    }
+
+    pub(crate) fn download_writer(&self) -> Result<DownloadWriter, CacheError> {
+        Ok(DownloadWriter {
+            directory: self
+                .directory
+                .as_ref()
+                .ok_or(CacheError::Refused("overlay disposed"))?
+                .try_clone()?,
+            identity: self.identity,
+        })
     }
 
     /// Disposes the matching process tree before removing its retained cache.

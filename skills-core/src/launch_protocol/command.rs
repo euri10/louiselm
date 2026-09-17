@@ -129,6 +129,33 @@ pub enum CommandOperation {
         /// Durable missing-capability condition for required work; never authority.
         escalation: Option<Box<crate::beads_mutation::BeadsEscalation>>,
     },
+    /// Authenticated Agent proposes an exact dependency and a bounded fetch.
+    DependencyFetch {
+        /// Candidate data, with no approval or destination path.
+        request: crate::dependency_fetch::DependencyRequest,
+    },
+    /// Broker-owned local decision or durable publication outcome.
+    DependencyResult {
+        /// Exact request outcome; no package code has been executed.
+        status: crate::dependency_fetch::DependencyStatus,
+    },
+    /// Dependency policy or delivery refused this request.
+    DependencyRefused {
+        /// Stable failure without external payloads.
+        error: ErrorCode,
+    },
+    /// Approved archive fragment sent only by the authenticated broker.
+    DependencyChunk {
+        /// Bounded contiguous opaque data and original lifecycle binding.
+        chunk: crate::dependency_fetch::CacheChunk,
+    },
+    /// Supervisor acknowledgement, after copying or durably publishing bytes.
+    DependencyChunkResult {
+        /// Total contiguous bytes received so far.
+        received: u64,
+        /// Present only after the final cache write was completed.
+        artifact: Option<crate::dependency_fetch::Artifact>,
+    },
     /// Authenticated Agent asks for its own read-only canonical Session status.
     StatusRequest {},
     /// Broker-derived self status; never carries lifecycle authority.
@@ -268,6 +295,20 @@ impl CommandMessage {
             validate_identifier(id)?;
         }
         match &self.operation {
+            CommandOperation::DependencyFetch { request } => request.validate()?,
+            CommandOperation::DependencyChunk { chunk } => chunk.validate()?,
+            CommandOperation::DependencyResult { status } => status.validate()?,
+            CommandOperation::DependencyChunkResult { received, artifact } => {
+                if *received > crate::cache::MAX_BYTES as u64 {
+                    return Err(invalid());
+                }
+                if let Some(artifact) = artifact {
+                    artifact.validate()?;
+                    if artifact.size != *received {
+                        return Err(invalid());
+                    }
+                }
+            }
             CommandOperation::SkillRequest { request } => {
                 if !request.valid() {
                     return Err(invalid());
@@ -388,6 +429,7 @@ impl CommandMessage {
                 return Err(invalid());
             }
             CommandOperation::Result { .. }
+            | CommandOperation::DependencyRefused { .. }
             | CommandOperation::StatusRequest {}
             | CommandOperation::StatusRefused { .. }
             | CommandOperation::SkillRequestRefused { .. }

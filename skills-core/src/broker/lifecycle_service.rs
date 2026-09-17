@@ -392,7 +392,11 @@ pub(in crate::broker) fn refuse_nested_status(
     send_agent_status_reply(
         session,
         query,
-        if matches!(query.operation, CommandOperation::SkillRequest { .. }) {
+        if matches!(query.operation, CommandOperation::DependencyFetch { .. }) {
+            CommandOperation::DependencyRefused {
+                error: ErrorCode::OperationPending,
+            }
+        } else if matches!(query.operation, CommandOperation::SkillRequest { .. }) {
             CommandOperation::SkillRequestRefused {
                 error: ErrorCode::OperationPending,
             }

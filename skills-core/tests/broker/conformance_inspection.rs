@@ -84,6 +84,7 @@ fn operator_reads_exact_large_report_or_absence_without_a_live_supervisor() {
             for _ in 0..2 {
                 server
                     .serve_once(
+                        |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                         |_, _| panic!("historical inspection requires no supervisor"),
                         |id| {
                             service

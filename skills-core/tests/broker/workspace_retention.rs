@@ -39,6 +39,7 @@ fn retention_operator_path_survives_restart_and_reports_quarantine_without_paylo
     let worker = thread::spawn(move || {
         endpoint
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| panic!("no live Session lookup"),
                 |_| panic!("no conformance query"),
                 |_, _| panic!("no Skill decision"),

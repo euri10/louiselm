@@ -8,6 +8,9 @@
 use louiselm_skills::broker::operator::{InspectError, OperatorServer, inspect};
 use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
 
+#[path = "operator/dependencies.rs"]
+mod dependencies;
+
 fn private_root() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -37,6 +40,7 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
         let worker = thread::spawn(move || {
             server
                 .serve_once(
+                    |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session lookup"),
                     |_| panic!("not conformance lookup"),
                     |_, _| panic!("not skill control"),
@@ -103,6 +107,7 @@ fn beads_operator_request_reaches_authenticated_control() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| panic!("not Session lookup"),
                 |_| panic!("not conformance lookup"),
                 |_, _| panic!("not skill control"),
@@ -166,6 +171,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| panic!("unauthenticated lookup"),
                 |_| panic!("unauthenticated conformance lookup"),
                 |_, _| panic!("unauthenticated skill control"),
@@ -190,6 +196,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |id, _| {
                     assert_eq!(id, "session");
                     Err(InspectError::UnknownSession)
@@ -267,6 +274,7 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
         ] {
             server
                 .serve_once(
+                    |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session inspection"),
                     |_| panic!("not conformance inspection"),
                     |operation, outcome| {
@@ -331,6 +339,7 @@ fn conformance_inspection_distinguishes_an_unknown_session() {
     let worker = thread::spawn(move || {
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| Err(InspectError::UnknownSession),
                 |_| Err(InspectError::UnknownSession),
                 |_, _| panic!("not a skill decision"),
@@ -372,6 +381,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
         for _ in 0..count {
             server
                 .serve_once(
+                    |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("invalid lookup"),
                     |_| panic!("invalid conformance lookup"),
                     |_, _| panic!("invalid skill control"),
@@ -382,6 +392,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
         }
         server
             .serve_once(
+                |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| Err(InspectError::UnknownSession),
                 |_| panic!("unexpected conformance lookup"),
                 |_, _| panic!("unexpected skill control"),

@@ -30,6 +30,7 @@ fn authorization(root: &Path, config: &LauncherConfig, session: &str) -> LaunchA
         .authorize(
             &GrantRequest {
                 conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+                dependencies: None,
                 skill_requests: None,
                 beads_mutations: None,
                 request: request.clone(),

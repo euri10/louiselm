@@ -15,6 +15,7 @@ pub mod canonical;
 pub mod capture;
 pub mod cli;
 pub mod conformance;
+pub mod dependency_fetch;
 pub mod diff;
 pub mod discovery;
 pub mod discovery_source;

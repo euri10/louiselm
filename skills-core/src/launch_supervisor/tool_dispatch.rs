@@ -10,6 +10,9 @@ mod grants;
 #[path = "status_dispatch.rs"]
 mod status;
 
+#[path = "dependency_dispatch.rs"]
+mod dependency;
+
 use super::{OwnerEvent, SessionOwner};
 use crate::launch_protocol::{
     BrokerConnection, COMMAND_SCHEMA, ChannelState, CommandMessage, CommandOperation,
@@ -38,6 +41,7 @@ pub(super) struct CommandDispatch {
     pending: Option<PendingCommand>,
     status: Option<status::PendingStatus>,
     status_sequence: u64,
+    cache_result: Arc<Mutex<dependency::Completion>>,
     request: Arc<Mutex<Option<Result<ProtocolMessage, SupervisorError>>>>,
     result: Arc<Mutex<Option<Result<ToolExecutionResult, SupervisorError>>>>,
     receiving: bool,
@@ -50,6 +54,7 @@ impl SessionOwner {
         // close or inject a command into this new receive generation.
         self.commands.request = Arc::default();
         self.commands.status = None;
+        self.commands.cache_result = Arc::default();
         if let Some(pending) = self.commands.pending.as_mut() {
             pending.abandoned = true;
         }
@@ -263,6 +268,9 @@ impl SessionOwner {
     }
 
     pub(super) fn handle_command(&mut self, message: CommandMessage) {
+        if self.handle_dependency_chunk(&message) {
+            return;
+        }
         if self.handle_status_reply(&message) {
             return;
         }
@@ -422,6 +430,7 @@ impl SessionOwner {
     }
 
     pub(super) fn collect_tool_result(&mut self) {
+        self.collect_dependency_result();
         let request = self
             .commands
             .request
@@ -441,6 +450,7 @@ impl SessionOwner {
                     CommandOperation::StatusRequest {}
                         | CommandOperation::SkillRequest { .. }
                         | CommandOperation::BeadsMutation { .. }
+                        | CommandOperation::DependencyFetch { .. }
                 ) {
                     self.forward_agent_status(request);
                 } else {

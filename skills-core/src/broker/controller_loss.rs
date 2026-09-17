@@ -75,6 +75,17 @@ impl BrokerService {
         let result = (|| {
             let packet = super::receive_next(session.channel())?;
             if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
+                && matches!(query.operation, CommandOperation::DependencyFetch { .. })
+            {
+                if packet.peer_credentials != session.channel().peer_credentials()
+                    || packet.message_credentials != packet.peer_credentials
+                {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                self.answer_dependency(session, query, elapsed_ms(now_ms, clock), &mut verify)?;
+                return Ok(false);
+            }
+            if let LauncherPacket::Request(ProtocolMessage::Command(query)) = &packet.packet
                 && matches!(query.operation, CommandOperation::SkillRequest { .. })
             {
                 self.answer_skill_request(
@@ -171,6 +182,7 @@ impl BrokerService {
                 if matches!(
                     query.operation,
                     CommandOperation::StatusRequest {}
+                        | CommandOperation::DependencyFetch { .. }
                         | CommandOperation::SkillRequest { .. }
                         | CommandOperation::BeadsMutation { .. }
                 ) =>

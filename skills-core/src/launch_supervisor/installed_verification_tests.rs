@@ -60,6 +60,7 @@ fn lifecycle(
 fn approval(launch: LaunchRequest, uid: u32, commands: Option<ApprovedCommands>) -> GrantRequest {
     GrantRequest {
         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+        dependencies: None,
         skill_requests: None,
         beads_mutations: None,
         require_cold_recovery: false,

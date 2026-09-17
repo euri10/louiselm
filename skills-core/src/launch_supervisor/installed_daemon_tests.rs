@@ -55,6 +55,7 @@ fn seed_authorizations() {
         broker
             .authorize(&GrantRequest {
                 conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+                dependencies: None,
                 skill_requests: None,
                 beads_mutations: beads::permission(name, now),
                 request: named_request(name),

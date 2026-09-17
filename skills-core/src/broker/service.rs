@@ -71,6 +71,21 @@ pub struct BrokerSession {
 }
 
 impl BrokerSession {
+    pub(in crate::broker) fn require_dependency_posture(
+        &self,
+        now_ms: u64,
+    ) -> Result<(), BrokerError> {
+        if !self.posture_evidence.permits_commands(now_ms)
+            || (self.require_cold_recovery
+                && self
+                    .recovery_admitted_until
+                    .is_none_or(|expiry| Instant::now() >= expiry))
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
+        Ok(())
+    }
+
     /// Exact single-use authorization consumed for this launch.
     #[must_use]
     pub const fn authorization(&self) -> &LaunchAuthorization {
@@ -147,6 +162,7 @@ pub enum LaunchObservation {
 
 /// The Control broker's local-only rendezvous service.
 pub struct BrokerService {
+    pub(super) dependencies: super::dependencies::Dependencies,
     listener: SeqpacketListener,
     authorizations: AuthorizationStore,
     receipts: ReceiptStore,
@@ -219,6 +235,9 @@ impl BrokerService {
             &authorizations.root.join("beads-mutations"),
         )?;
         Ok(Self {
+            dependencies: super::dependencies::Dependencies::open(
+                &authorizations.root.join("dependency-requests"),
+            )?,
             listener,
             authorizations,
             receipts,

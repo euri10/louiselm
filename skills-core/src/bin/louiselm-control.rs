@@ -18,11 +18,16 @@ use louiselm_skills::{
 
 #[path = "control/attention.rs"]
 mod attention;
+#[path = "control/dependencies.rs"]
+mod dependencies;
 #[path = "control/inspection.rs"]
 mod inspection;
 
 fn main() -> ExitCode {
     let collected: Vec<_> = std::env::args_os().skip(1).collect();
+    if collected.first().is_some_and(|verb| verb == "dependencies") {
+        return ExitCode::from(dependencies::cli(&collected[1..]));
+    }
     if collected.first().is_some_and(|verb| verb == "session") {
         return ExitCode::from(inspection::cli(&collected[1..]));
     }
@@ -44,7 +49,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', or 'skill-request inspect|reject|cancel ID --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', or 'dependencies inspect|approve SESSION [CANDIDATE...] --json'".to_owned(),
         ),
     };
     match result {

@@ -39,6 +39,9 @@ mod grant_tests;
 #[path = "recovery_dispatch_tests.rs"]
 mod recovery_tests;
 
+#[path = "dependency_dispatch_tests.rs"]
+mod dependency_tests;
+
 type HeldRecovery = Arc<
     Mutex<
         Option<(
@@ -67,6 +70,8 @@ type HeldCompletion = Arc<
 >;
 
 struct TestProcess {
+    cache: crate::cache::CacheOverlay,
+    cache_worker: Option<crate::launch_supervisor::cache_download::Worker>,
     restore: HeldRestore,
     recovery: HeldRecovery,
     tools: ToolExecutor,
@@ -75,6 +80,29 @@ struct TestProcess {
     fail_cleanup: Arc<AtomicBool>,
 }
 impl RunningAgent for TestProcess {
+    fn store_dependency(
+        &mut self,
+        digest: Digest,
+        bytes: Vec<u8>,
+        enforcer: Arc<crate::launch_supervisor::command::CommandEnforcer>,
+        expires_at_ms: u64,
+        complete: SupervisorCompletion<String>,
+    ) -> Result<(), SupervisorError> {
+        if let Some(mut worker) = self.cache_worker.take() {
+            worker.join()?;
+        }
+        self.cache_worker = Some(crate::launch_supervisor::cache_download::spawn(
+            self.cache
+                .download_writer()
+                .map_err(|_| SupervisorError::DurabilityUnavailable)?,
+            digest,
+            bytes,
+            enforcer,
+            expires_at_ms,
+            complete,
+        )?);
+        Ok(())
+    }
     fn restore_recovery(
         &mut self,
         request: crate::launch_protocol::RecoveryRestoreRequest,
@@ -154,6 +182,9 @@ impl RunningAgent for TestProcess {
         Err(MechanicFailure::Ambiguous)
     }
     fn dispose(&mut self) -> Result<(), SupervisorError> {
+        if let Some(mut worker) = self.cache_worker.take() {
+            worker.join()?;
+        }
         self.tools.dispose()?;
         self.cancel_tool()
     }
@@ -253,14 +284,32 @@ struct Harness {
 }
 
 impl Harness {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One fixture owns the real sockets, pinned Agent, cache worker and test lifecycle resources."
+    )]
     fn new(command: &str, delay_delivery: bool) -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().unwrap();
         let parts = fixture(root.path());
         let binding = parts.binding;
         let held: HeldCompletion = Arc::default();
         let fail_cleanup = Arc::new(AtomicBool::new(false));
         let identity_disposition = Arc::new(AtomicU8::new(0));
+        let base = root.path().join("empty-cache");
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir(&base).unwrap();
+        let cache = crate::cache::CacheBase::capture(&base)
+            .unwrap()
+            .materialize(
+                root.path(),
+                &binding.session_id,
+                crate::sandbox::IdentityPlan::NamespaceOnly,
+            )
+            .unwrap();
         let process = TestProcess {
+            cache,
+            cache_worker: None,
             restore: Arc::default(),
             recovery: Arc::default(),
             tools: parts.tools,

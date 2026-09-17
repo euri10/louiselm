@@ -46,6 +46,7 @@ fn installed_history_inspector() {
                 .authorize(
                     &GrantRequest {
                         conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+                        dependencies: None,
                         skill_requests: None,
                         beads_mutations: None,
                         request: request.clone(),

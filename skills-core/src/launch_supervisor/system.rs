@@ -1237,6 +1237,7 @@ impl ProcessMembership for SystemProcessMembership {
 
 /// Production lifecycle/relay adapter for an already-confined running Session.
 pub struct SystemRunningAgent {
+    cache_worker: Option<super::cache_download::Worker>,
     workspace: Option<super::workspace::SessionWorkspace>,
     tools: Option<super::tool_execution::ToolExecutor>,
     tool_isolation: Option<super::ToolIsolationEvidence>,
@@ -1256,6 +1257,7 @@ impl SystemRunningAgent {
     #[must_use]
     pub fn new(session: SandboxedSession) -> Self {
         Self {
+            cache_worker: None,
             workspace: None,
             session: Arc::new(Mutex::new(session)),
             relay: None,
@@ -1317,6 +1319,32 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn store_dependency(
+        &mut self,
+        digest: Digest,
+        bytes: Vec<u8>,
+        enforcer: Arc<super::command::CommandEnforcer>,
+        expires_at_ms: u64,
+        complete: SupervisorCompletion<String>,
+    ) -> Result<(), SupervisorError> {
+        self.cache_worker
+            .as_mut()
+            .map_or(Ok(()), super::cache_download::Worker::join)?;
+        let writer = self
+            .workspace
+            .as_ref()
+            .ok_or(SupervisorError::CapabilityUnavailable)?
+            .cache_writer()?;
+        self.cache_worker = Some(super::cache_download::spawn(
+            writer,
+            digest,
+            bytes,
+            enforcer,
+            expires_at_ms,
+            complete,
+        )?);
+        Ok(())
+    }
     fn restore_recovery(
         &mut self,
         request: crate::launch_protocol::RecoveryRestoreRequest,
@@ -1546,6 +1574,10 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn park(&mut self) -> Result<(), MechanicFailure> {
+        self.cache_worker
+            .as_mut()
+            .map_or(Ok(()), super::cache_download::Worker::join)
+            .map_err(|_| MechanicFailure::Ambiguous)?;
         self.cancel_verification()
             .map_err(|_| MechanicFailure::Ambiguous)?;
         apply_mechanic(
@@ -1580,6 +1612,10 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
+        let cache = self
+            .cache_worker
+            .as_mut()
+            .map_or(Ok(()), super::cache_download::Worker::join);
         let recovery = self.join_recovery();
         let verification = self.cancel_verification();
         let relay = self.relay.as_mut().map_or(Ok(()), RelayWorker::stop);
@@ -1598,7 +1634,8 @@ impl RunningAgent for SystemRunningAgent {
         } else {
             Err(super::recovery::RecoveryError::NotParked)
         };
-        if verification.is_err()
+        if cache.is_err()
+            || verification.is_err()
             || recovery.is_err()
             || relay.is_err()
             || tools.is_err()
