@@ -30,6 +30,26 @@ const EXECUTABLES: &[&str] = &[
     "go",
     "pytest",
     "louiselm-usage",
+    "awk",
+    "chmod",
+    "cp",
+    "curl",
+    "diff",
+    "echo",
+    "lua",
+    "luarocks",
+    "make",
+    "mkdir",
+    "mv",
+    "rm",
+    "rustup",
+    "sort",
+    "sqlite3",
+    "ssh",
+    "systemd-run",
+    "tr",
+    "uniq",
+    "which",
 ];
 const SUBCOMMANDS: &[&str] = &[
     "status",
@@ -69,15 +89,7 @@ pub(crate) fn extract(call: &mut Call, command: &str) {
     // opaque. This identifies the program prefix, never additional shell children.
     let opaque = command.chars().any(|c| "'\"`$|;&<>\\\n(){}".contains(c));
     let mut parts = command.split_whitespace().peekable();
-    if parts.peek() == Some(&"rtk") {
-        parts.next();
-        if parts.peek() == Some(&"proxy") {
-            parts.next();
-            call.wrapper = Some("rtk proxy".to_owned());
-        } else {
-            call.wrapper = Some("rtk".to_owned());
-        }
-    }
+    skip_wrapper(&mut parts, call);
     let Some(executable) = parts.next() else {
         return;
     };
@@ -147,6 +159,36 @@ pub(crate) fn extract(call: &mut Call, command: &str) {
     call.normalization = Some("simple".to_owned());
 }
 
+fn skip_wrapper<'a, I>(parts: &mut std::iter::Peekable<I>, call: &mut Call)
+where
+    I: Iterator<Item = &'a str>,
+{
+    if parts.peek() == Some(&"rtk") {
+        parts.next();
+        if parts.peek() == Some(&"proxy") {
+            parts.next();
+            call.wrapper = Some("rtk proxy".to_owned());
+        } else {
+            call.wrapper = Some("rtk".to_owned());
+        }
+    } else if parts.peek() == Some(&"env") {
+        parts.next();
+        while parts
+            .peek()
+            .is_some_and(|part| !part.starts_with('-') && part.contains('='))
+        {
+            parts.next();
+        }
+        call.wrapper = Some("env".to_owned());
+    } else if ["command", "exec", "sudo"].contains(parts.peek().unwrap_or(&"")) {
+        let wrapper = parts.next().unwrap_or_default();
+        call.wrapper = Some(wrapper.to_owned());
+        while parts.peek().is_some_and(|part| part.starts_with('-')) {
+            parts.next();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +232,28 @@ mod tests {
         assert_eq!(call.family.as_deref(), Some("rg"));
         assert_eq!(call.normalization.as_deref(), Some("prefix_only"));
         assert_eq!(call.signature.as_deref(), Some("rg <opaque arguments>"));
+    }
+
+    #[test]
+    fn recognizes_common_executables_and_wrappers_without_persisting_values() {
+        let mut call = Call::default();
+        extract(
+            &mut call,
+            "env SECRET=PRIVATE_CREDENTIAL awk 'BEGIN { print 1 }'",
+        );
+        assert_eq!(call.family.as_deref(), Some("awk"));
+        assert_eq!(call.wrapper.as_deref(), Some("env"));
+        assert_eq!(call.normalization.as_deref(), Some("prefix_only"));
+        assert!(!call.signature.as_deref().unwrap_or("").contains("SECRET"));
+
+        let mut call = Call::default();
+        extract(&mut call, "sudo -n git status");
+        assert_eq!(call.family.as_deref(), Some("git status"));
+        assert_eq!(call.wrapper.as_deref(), Some("sudo"));
+
+        let mut call = Call::default();
+        extract(&mut call, "command git status");
+        assert_eq!(call.family.as_deref(), Some("git status"));
+        assert_eq!(call.wrapper.as_deref(), Some("command"));
     }
 }
