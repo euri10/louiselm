@@ -99,7 +99,7 @@ pub struct GrantRequest {
     pub commands: Option<ApprovedCommands>,
     /// Explicit permission to request Skill Admission, never to approve it.
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
-    /// Explicit bounded canonical-comment permission; absence denies mutations.
+    /// Explicit bounded canonical mutation permission; absence denies all effects.
     pub beads_mutations: Option<crate::beads_mutation::ApprovedBeadsMutations>,
 }
 
@@ -141,7 +141,7 @@ pub struct PendingAuthorization {
     pub commands: Option<ApprovedCommands>,
     /// Exact request permission bound to this Session and envelope revision.
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
-    /// Exact comment scope and budget retained across retries and restarts.
+    /// Exact mutation effects, role, issue scope and budget retained across retries and restarts.
     pub beads_mutations: Option<crate::beads_mutation::ApprovedBeadsMutations>,
 }
 
