@@ -88,18 +88,22 @@ hold the accepted socket. This is a credential-boundary test. The separate
 gate executes the actual installed binary in a disposable VM's private mount
 namespace. It covers simultaneous launches beside a silent peer, storage
 failure without an ACK, SIGTERM, retained-supervisor restart, and startup
-identity/directory/marker refusals. Attention coverage includes absent endpoint
+caller-identity refusals. Attention coverage includes absent endpoint
 configuration, receiver outage during launches, pre-start and running enqueue,
 wrong-ACK retry, and interrupted delivery retried after restart without a new
 Session connection. It requires `LOUISELM_REQUIRE_CONTROL_DAEMON=1`
 and `unshare --mount --propagation private`; ordinary Cargo skips it.
 
-The independent `daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection`
+The independent `daemon::state::privileged_activated_daemon_upgrades_and_adopts_state`
+gate creates real retired-key Session history, upgrades the installation, and
+checks public verification, startup directory/marker refusals and explicit
+state adoption without changing the receipt bytes. The
+`daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection`
 gate checks both operator CLI verbs against the unknown Session and foreign
-identity matrix. CI runs the two daemon gates serially, each with a 240-second
-deadline and elapsed timing. Repeated measured CLI startup must not consume
-the lifecycle/restart test's budget (`louiselm-w841i`); all refusal assertions
-remain required.
+identity matrix. CI runs all three daemon gates serially, each with a
+240-second deadline and elapsed timing. Offline upgrade/adoption and repeated
+measured CLI startup must not consume the live lifecycle/restart test's budget
+(`louiselm-w841i`); all authority, history and refusal assertions remain required.
 
 ## System service installation
 
