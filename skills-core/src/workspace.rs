@@ -19,6 +19,7 @@ use crate::{CanonicalPath, Digest, Manifest, ManifestEntry};
 pub mod bundle;
 pub(crate) mod filesystem;
 mod git;
+pub mod launch_inputs;
 pub mod promotion;
 mod tree;
 pub mod verification;
@@ -47,6 +48,12 @@ pub enum WorkspaceError {
     /// A record could not be serialized or parsed.
     #[error("invalid workspace record")]
     Record(#[from] serde_json::Error),
+    /// Cache capture or private overlay validation failed.
+    #[error("workspace cache input refused")]
+    Cache(#[from] crate::cache::CacheError),
+    /// A required Session input binding is invalid.
+    #[error("workspace Session input manifest refused")]
+    Input(#[from] crate::session_manifest::SessionManifestError),
 }
 
 /// A working-copy difference from the captured commit.

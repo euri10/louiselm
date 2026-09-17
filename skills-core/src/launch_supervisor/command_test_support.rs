@@ -136,6 +136,7 @@ pub(in crate::launch_supervisor) fn fixture(root: &Path) -> Fixture {
         environment: std::collections::BTreeMap::new(),
         home: root.join("home"),
         workspace: root.join("workspace"),
+        cache: None,
         system_roots: default_system_roots(),
         network: crate::registry::NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,

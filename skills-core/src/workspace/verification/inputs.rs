@@ -57,6 +57,7 @@ pub(crate) fn export_job(
     expected: &Digest,
     workspace: &Path,
     output: &Path,
+    source_snapshot: &Digest,
 ) -> Result<JobPreview, WorkspaceError> {
     let root = filesystem::open_directory(input)?;
     let bytes = read(&root, "inputs.json", MAX_PLAN_BYTES)?;
@@ -71,6 +72,11 @@ pub(crate) fn export_job(
     }
     let snapshot_digest = Digest::parse(&inputs.snapshot_digest)
         .map_err(|_| WorkspaceError::Invalid("invalid snapshot digest"))?;
+    if snapshot_digest != *source_snapshot {
+        return Err(WorkspaceError::Invalid(
+            "export baseline differs from the launched source",
+        ));
+    }
     let plan_digest = Digest::parse(&inputs.plan_digest)
         .map_err(|_| WorkspaceError::Invalid("invalid plan digest"))?;
     filesystem::validate_output(output, input)?;

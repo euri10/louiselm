@@ -827,6 +827,32 @@ pub struct SystemLaunchPlatform {
 }
 
 impl SystemLaunchPlatform {
+    fn prepare_workspace(
+        &self,
+        request: &LaunchRequest,
+        plan: &ConfinementPlan,
+    ) -> Result<super::workspace::SessionWorkspace, SupervisorError> {
+        let registry = crate::registry::Registry::open_trusted(&self.registry_root)
+            .map_err(|_| SupervisorError::ResolutionFailed)?;
+        let inputs = super::workspace::load(
+            &self
+                .config
+                .broker_socket_path
+                .parent()
+                .ok_or(SupervisorError::ResolutionFailed)?
+                .join("workspace-inputs"),
+            (self.config.broker_uid, self.config.broker_gid),
+            request,
+            &registry,
+        )?;
+        if plan.arguments != inputs.manifest.agent.arguments
+            || plan.environment != inputs.manifest.agent.environment
+        {
+            return Err(SupervisorError::ResolutionFailed);
+        }
+        super::workspace::SessionWorkspace::prepare(&inputs, plan)
+    }
+
     /// Creates the production platform after materializing only fixed roots.
     ///
     /// # Errors
@@ -992,7 +1018,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
     fn prepare(
         &self,
         request: &LaunchRequest,
-        plan: ConfinementPlan,
+        mut plan: ConfinementPlan,
     ) -> Result<Box<dyn PreparedAgent>, SupervisorError> {
         request
             .validate()
@@ -1000,77 +1026,98 @@ impl LaunchPlatform for SystemLaunchPlatform {
         if request.session_id != plan.session_id || plan.home.parent() != plan.workspace.parent() {
             return Err(SupervisorError::ResolutionFailed);
         }
-        require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
-        let release_root = self
-            .paths
-            .release_prefix
-            .join("releases")
-            .join(&self.config.release_id);
-        let tool_isolation = super::ToolIsolationEvidence::measure(
-            &plan,
-            &release_root,
-            &self.config.release_id,
-            &self.config.bwrap_digest,
-        )?;
-        let mut tools = super::tool_execution::ToolExecutor::new(
-            self.backend
-                .within_session(&plan.session_id)
-                .map_err(map_sandbox)?,
-            &plan,
-        )?;
-        tools.measured_helper = match super::tool_helper::MeasuredHelper::measure(
-            &release_root,
-            &self.config.release_id,
-        ) {
-            Ok(helper) => Some(helper),
-            Err(SupervisorError::ToolIsolationUnproven) => None,
-            Err(error) => return Err(error),
-        };
-        let mut prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
-        let directory = plan
-            .home
-            .parent()
-            .ok_or(SupervisorError::ResolutionFailed)?;
-        let recovery = if let Ok(storage) =
-            super::recovery::SessionStorage::open(directory, request, &tool_isolation)
-        {
-            Arc::new(storage)
-        } else {
-            prepared
-                .dispose()
-                .map_err(|_| SupervisorError::CleanupUnproven)?;
-            return Err(SupervisorError::DurabilityUnavailable);
-        };
-        let (verification_backend, verification_plan) = tools.verification_context();
-        let verification = match super::verification::Storage::new(
-            directory,
-            request,
-            crate::Digest::of(&tool_isolation.canonical_bytes()).to_string(),
-            self.config
-                .broker_socket_path
+        let workspace = self.prepare_workspace(request, &plan)?;
+        let result = (|| {
+            require_measured_bwrap(&self.config).map_err(|_| SupervisorError::SpawnFailed)?;
+            let release_root = self
+                .paths
+                .release_prefix
+                .join("releases")
+                .join(&self.config.release_id);
+            let tool_isolation = super::ToolIsolationEvidence::measure(
+                &plan,
+                &release_root,
+                &self.config.release_id,
+                &self.config.bwrap_digest,
+            )?;
+            // Registration is validated first; this derived private path is a
+            // launcher-owned environment addition, shared with confined tools.
+            plan.environment.insert(
+                "XDG_CACHE_HOME".into(),
+                workspace.cache_path().display().to_string(),
+            );
+            plan.cache = Some(workspace.cache_path().to_owned());
+            let mut tools = super::tool_execution::ToolExecutor::new(
+                self.backend
+                    .within_session(&plan.session_id)
+                    .map_err(map_sandbox)?,
+                &plan,
+            )?;
+            tools.measured_helper = match super::tool_helper::MeasuredHelper::measure(
+                &release_root,
+                &self.config.release_id,
+            ) {
+                Ok(helper) => Some(helper),
+                Err(SupervisorError::ToolIsolationUnproven) => None,
+                Err(error) => return Err(error),
+            };
+            let mut prepared = self.backend.prepare(&plan).map_err(map_sandbox)?;
+            let directory = plan
+                .home
                 .parent()
-                .ok_or(SupervisorError::ResolutionFailed)?
-                .join("verification-inputs"),
-            (self.config.broker_uid, self.config.broker_gid),
-            verification_backend,
-            verification_plan,
-        ) {
-            Ok(storage) => Arc::new(storage),
-            Err(error) => {
+                .ok_or(SupervisorError::ResolutionFailed)?;
+            let recovery = if let Ok(storage) =
+                super::recovery::SessionStorage::open(directory, request, &tool_isolation)
+            {
+                Arc::new(storage)
+            } else {
                 prepared
                     .dispose()
                     .map_err(|_| SupervisorError::CleanupUnproven)?;
-                return Err(error);
+                return Err(SupervisorError::DurabilityUnavailable);
+            };
+            let (verification_backend, verification_plan) = tools.verification_context();
+            let verification = match super::verification::Storage::new(
+                directory,
+                request,
+                crate::Digest::of(&tool_isolation.canonical_bytes()).to_string(),
+                self.config
+                    .broker_socket_path
+                    .parent()
+                    .ok_or(SupervisorError::ResolutionFailed)?
+                    .join("verification-inputs"),
+                (self.config.broker_uid, self.config.broker_gid),
+                verification_backend,
+                verification_plan,
+            ) {
+                Ok(storage) => Arc::new(storage),
+                Err(error) => {
+                    prepared
+                        .dispose()
+                        .map_err(|_| SupervisorError::CleanupUnproven)?;
+                    return Err(error);
+                }
+            };
+            Ok(Box::new(SystemPreparedAgent {
+                prepared,
+                backend_id: self.config.bwrap_digest.clone(),
+                tool_isolation: Some(tool_isolation),
+                tools: Some(tools),
+                recovery,
+                verification,
+                workspace: None,
+            }))
+        })();
+        match result {
+            Ok(mut prepared) => {
+                prepared.workspace = Some(workspace);
+                Ok(prepared)
             }
-        };
-        Ok(Box::new(SystemPreparedAgent {
-            prepared,
-            backend_id: self.config.bwrap_digest.clone(),
-            tool_isolation: Some(tool_isolation),
-            tools: Some(tools),
-            recovery,
-            verification,
-        }))
+            Err(error) => {
+                workspace.seal()?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -1103,6 +1150,7 @@ struct SystemPreparedAgent {
     tools: Option<super::tool_execution::ToolExecutor>,
     recovery: Arc<super::recovery::SessionStorage>,
     verification: Arc<super::verification::Storage>,
+    workspace: Option<super::workspace::SessionWorkspace>,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -1129,17 +1177,29 @@ impl PreparedAgent for SystemPreparedAgent {
     }
 
     fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
-        let session = self.prepared.start().map_err(map_sandbox)?;
+        let session = match self.prepared.start() {
+            Ok(session) => session,
+            Err(error) => {
+                if let Some(workspace) = &self.workspace {
+                    workspace.seal()?;
+                }
+                return Err(map_sandbox(error));
+            }
+        };
         let mut running = SystemRunningAgent::new(session);
         running.tools = self.tools;
         running.tool_isolation = self.tool_isolation;
         running.recovery = Some(self.recovery);
         running.verification_storage = Some(self.verification);
+        running.workspace = self.workspace;
         Ok(Box::new(running))
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
-        self.prepared.dispose().map(|_| ()).map_err(map_sandbox)
+        self.prepared.dispose().map_err(map_sandbox)?;
+        self.workspace
+            .as_ref()
+            .map_or(Ok(()), super::workspace::SessionWorkspace::seal)
     }
 }
 
@@ -1159,6 +1219,7 @@ impl ProcessMembership for SystemProcessMembership {
 
 /// Production lifecycle/relay adapter for an already-confined running Session.
 pub struct SystemRunningAgent {
+    workspace: Option<super::workspace::SessionWorkspace>,
     tools: Option<super::tool_execution::ToolExecutor>,
     tool_isolation: Option<super::ToolIsolationEvidence>,
     session: Arc<Mutex<SandboxedSession>>,
@@ -1177,6 +1238,7 @@ impl SystemRunningAgent {
     #[must_use]
     pub fn new(session: SandboxedSession) -> Self {
         Self {
+            workspace: None,
             session: Arc::new(Mutex::new(session)),
             relay: None,
             tools: None,

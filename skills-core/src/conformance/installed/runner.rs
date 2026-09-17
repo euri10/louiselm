@@ -266,6 +266,7 @@ impl Fixture {
             environment: BTreeMap::new(),
             home: self.path(&format!("sessions/{name}/home")),
             workspace: self.path(&format!("sessions/{name}/workspace")),
+            cache: None,
             system_roots: default_system_roots(),
             network: crate::registry::NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity {

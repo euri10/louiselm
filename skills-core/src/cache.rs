@@ -60,6 +60,29 @@ pub struct CacheBase {
 }
 
 impl CacheBase {
+    pub(crate) fn write_snapshot(
+        &self,
+        root: &Path,
+    ) -> Result<(), crate::workspace::WorkspaceError> {
+        fs::create_dir(root)?;
+        for cached in &self.files {
+            let path = root.join(&cached.entry.path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            crate::workspace::filesystem::write_file(
+                &path,
+                &cached.bytes,
+                if cached.entry.executable {
+                    0o500
+                } else {
+                    0o400
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// Captures a complete bounded tree using descriptor-relative reads.
     ///
     /// # Errors

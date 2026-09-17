@@ -133,7 +133,8 @@ pub struct AgentRegistration {
     pub runtime_id: String,
     /// Arguments after the runtime executable, fixed at registration.
     pub arguments: Vec<String>,
-    /// Environment the Session starts with; the launcher adds nothing else.
+    /// Registered environment; no ambient variables are inherited. The installed
+    /// launcher adds the derived private cache path as `XDG_CACHE_HOME`.
     pub environment: BTreeMap<String, String>,
     /// Explicit measured tool integration. Unset or unsupported values deny
     /// Verified launch; ordinary unverified Sessions need not opt in.

@@ -70,6 +70,8 @@ fn complete_inputs() -> SessionInputs {
             measured("plugin/extra.json", "extra"),
         ]),
         cache_base_digest: Some(Digest::of(b"cache").to_string()),
+        source_snapshot_digest: Some(Digest::of(b"source snapshot").to_string()),
+        source_base_digest: Some(Digest::of(b"source base").to_string()),
         policy_digest: Some(POLICY.to_owned()),
         isolation_receipt: Some("isolation-contract-1".to_owned()),
         envelope_id: Some("envelope-7".to_owned()),
@@ -142,6 +144,36 @@ fn identical_inputs_yield_identical_digests() {
         .digest();
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn source_binding_cannot_be_omitted_from_a_launch_manifest() {
+    let manifest = SessionInputManifest::build(complete_inputs()).unwrap();
+    for field in ["source_snapshot_digest", "source_base_digest"] {
+        let mut json = serde_json::to_value(&manifest).unwrap();
+        json.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<SessionInputManifest>(json).is_err(),
+            "missing {field} must refuse launch input"
+        );
+    }
+}
+
+#[test]
+fn source_binding_is_canonical_and_changes_launch_identity() {
+    let manifest = SessionInputManifest::build(complete_inputs()).unwrap();
+    for field in ["source_snapshot_digest", "source_base_digest"] {
+        let mut json = serde_json::to_value(&manifest).unwrap();
+        json[field] = Digest::of(b"different source").to_string().into();
+        let changed: SessionInputManifest = serde_json::from_value(json.clone()).unwrap();
+        assert!(SessionInputManifest::parse(&changed.canonical_bytes()).is_ok());
+        assert_ne!(changed.digest(), manifest.digest());
+        for invalid in ["", "unknown", "sha256:ABC", Digest::of(b"bare").hex()] {
+            json[field] = invalid.into();
+            let changed: SessionInputManifest = serde_json::from_value(json.clone()).unwrap();
+            assert!(SessionInputManifest::parse(&changed.canonical_bytes()).is_err());
+        }
+    }
 }
 
 #[test]
@@ -244,6 +276,20 @@ fn every_changed_input_changes_the_digest() {
 fn missing_required_inputs_are_refused_without_defaults() {
     type RemoveInput = fn(&mut SessionInputs);
     let cases: Vec<(&str, RemoveInput, SessionManifestError)> = vec![
+        (
+            "source snapshot",
+            |inputs| inputs.source_snapshot_digest = None,
+            SessionManifestError::Missing {
+                field: "source_snapshot_digest",
+            },
+        ),
+        (
+            "source base",
+            |inputs| inputs.source_base_digest = None,
+            SessionManifestError::Missing {
+                field: "source_base_digest",
+            },
+        ),
         (
             "cache base",
             |inputs| inputs.cache_base_digest = None,

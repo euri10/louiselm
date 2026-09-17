@@ -70,6 +70,13 @@ impl Storage {
         else {
             return Err(SupervisorError::AuthorizationRejected);
         };
+        let retained = self.directory.join("inputs");
+        protected(&retained, 0, true)?;
+        let binding = crate::workspace::launch_inputs::retained_binding(
+            &retained,
+            &self.launch.session_input_manifest_id,
+        )
+        .map_err(|_| SupervisorError::ResolutionFailed)?;
         protected(&self.input_root, self.broker_uid, true)?;
         let input = self.input_root.join(input_id);
         protected(&input, self.broker_uid, true)?;
@@ -81,6 +88,11 @@ impl Storage {
             if evidence.request != *request {
                 return Err(SupervisorError::AuthorizationRejected);
             }
+            if evidence.job.snapshot_digest != binding.snapshot_digest
+                || evidence.job.base_digest != binding.base_digest
+            {
+                return Err(SupervisorError::ResolutionFailed);
+            }
             verification::inspect(&output.join("job"), &digest(&evidence.job.job_digest)?)
                 .map_err(|_| SupervisorError::ResolutionFailed)?;
             return Ok(evidence);
@@ -90,6 +102,7 @@ impl Storage {
             &digest(input_digest)?,
             &self.directory.join("workspace"),
             &output,
+            &digest(&binding.snapshot_digest)?,
         )
         .map_err(|_| SupervisorError::ResolutionFailed)?;
         let evidence = VerificationExport {

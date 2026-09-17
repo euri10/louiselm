@@ -43,6 +43,7 @@ fn fixture() -> (tempfile::TempDir, ToolExecutor) {
         environment: BTreeMap::new(),
         home: root.path().join("home"),
         workspace: root.path().join("workspace"),
+        cache: None,
         system_roots: default_system_roots(),
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,

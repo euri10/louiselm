@@ -59,6 +59,7 @@ fn running_agent() -> Option<(tempfile::TempDir, SystemRunningAgent)> {
             environment: BTreeMap::new(),
             home: fixture.path().join("home"),
             workspace: fixture.path().join("workspace"),
+            cache: None,
             system_roots: default_system_roots(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::NamespaceOnly,

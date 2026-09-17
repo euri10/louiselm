@@ -79,8 +79,8 @@ pub struct LaunchRequest {
     pub skill_generation_id: String,
     /// Digest of the Session-input manifest this Session is bound to.
     ///
-    /// Same boundary as `skill_generation_id`: this crate validates the
-    /// shape, not the manifest's contents or provenance.
+    /// Request validation checks the shape. The installed supervisor remeasures
+    /// staged source/cache bytes and checks the exact manifest's launch bindings.
     pub session_input_manifest_id: String,
 }
 
@@ -247,6 +247,7 @@ pub fn resolve(
         environment: agent.environment.clone(),
         home: session_directory.join("home"),
         workspace: session_directory.join("workspace"),
+        cache: None,
         system_roots: default_system_roots(),
         network: envelope.network,
         identity,

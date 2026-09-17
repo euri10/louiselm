@@ -18,6 +18,9 @@ use tempfile::TempDir;
 #[path = "workspace_cli/verification.rs"]
 mod verification;
 
+#[path = "workspace_cli/launch_inputs.rs"]
+mod launch_inputs;
+
 fn git(root: &Path, args: &[&str]) -> Output {
     let output = Command::new("/usr/bin/git")
         .args([

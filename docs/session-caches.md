@@ -56,9 +56,19 @@ requires the matching Session, successfully disposes its process tree first,
 then removes only the owned overlay. A replaced path or cleanup failure retains
 the handle for investigation/retry. It does not promise physical-media erasure.
 
-Final installed launch/broker wiring, restart ownership, Forensics TTL/pinning,
-and retention decisions remain `louiselm-d6fv.5.5`. These APIs and their component
-tests do not establish end-to-end Verified posture. The ordinary cache and
+Installed launch staging now requires the exact cache and source digests. The
+supervisor remeasures broker-owned staged bytes, constructs the private overlay
+before startup, and sets `XDG_CACHE_HOME` for the Agent and its confined tools.
+The installed overlay lives beneath a dedicated root-owned `cache-home/`
+parent, made immutable before startup; a running Agent cannot replace a later
+tool's mount source. The tools retain a separate home and bind only this
+Session's cache overlay.
+The operator warm directory and other Sessions' overlays are never mounted.
+
+Forensics TTL/pinning and restart cleanup remain `louiselm-d6fv.5.5.2`:
+disposal currently seals retained storage against recycled UIDs without deleting
+it. These APIs and their component tests do not establish desktop/vendor
+Verified posture. The ordinary cache and
 Session-manifest suites exercise poisoning and binding; sandbox tests exercise
 real private mounts, two Sessions, broker publication, Park/Resume, and Disposal.
 The required guest `host_identity` gate additionally runs

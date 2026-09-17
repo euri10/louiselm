@@ -1,7 +1,7 @@
 {
   "schema": "louiselm.launch.preflight/1",
   "notice": "Prospective artifact snapshot only; not authorization or live Session state. Launch must recheck and bind this exact request digest. Proposed identities do not prove enforcement.",
-  "request_digest": "sha256:eb57bc156a0399bd03c753db2e178fd9094b9603d013fcf46c8acdf52d698f59",
+  "request_digest": "sha256:c4ac4bfc5c34c47d967172ccd0ec19015b35206577f7458d692a1368b2aa16c9",
   "manifest_state": "matched",
   "proposed": [
     {
@@ -22,7 +22,7 @@
     },
     {
       "field": "input_manifest",
-      "value": "sha256:6d0e3578683807d30993aecfd25dc9266494d3555d3033e3e50532d3ad8ec3c4"
+      "value": "sha256:3a93f8825e767df82f5395f724d575f91e6e971e934dc360d4f89f957015dbac"
     },
     {
       "field": "project_instructions",
@@ -67,12 +67,12 @@
   ],
   "comparison": {
     "state": "compared",
-    "previous_request_digest": "sha256:7a42c52cef08739c3abd789d5b24398bf79e22f5608687bd83376d37f4ec5f12",
+    "previous_request_digest": "sha256:1f042dbc0ca235d3f526f39e2f95128166643e304cfcc122e50a597216881e8a",
     "changes": [
       {
         "field": "input_manifest",
-        "before": "sha256:8c71ea0b831d22c52922aaba040e6c2317c8416b0481998a466a64a0fc6dcf63",
-        "after": "sha256:6d0e3578683807d30993aecfd25dc9266494d3555d3033e3e50532d3ad8ec3c4"
+        "before": "sha256:8ec95894ec429186c0ce410c0396b89a00459fae450c211df829913844421db2",
+        "after": "sha256:3a93f8825e767df82f5395f724d575f91e6e971e934dc360d4f89f957015dbac"
       },
       {
         "field": "envelope_revision",

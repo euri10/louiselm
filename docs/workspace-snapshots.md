@@ -2,10 +2,10 @@
 
 The local `louiselm-skills workspace` commands freeze selected source bytes,
 create an independent writable Git repository, and export/apply byte bundles.
-They do not launch a Session or
-establish Verified posture. Launcher consumption and lifecycle retention are
-tracked in `louiselm-d6fv.5.5`; independent verification/promotion is
-`louiselm-d6fv.5.4`.
+The commands alone do not launch a Session or establish Verified posture.
+The installed launcher consumes exact staged inputs as described below.
+Forensics expiry/pinning remains `louiselm-d6fv.5.5.2`; desktop/vendor cutover
+remains `louiselm-d6fv.9`.
 
 ```sh
 louiselm-skills workspace prepare \
@@ -22,7 +22,7 @@ louiselm-skills workspace materialize \
 
 Both output directories must be new, with an existing parent outside the input
 tree. Keep snapshot storage and output parents under the operator's control and
-inaccessible to Session writers. The future launcher must establish that boundary;
+inaccessible to Session writers. The installed launcher establishes that boundary;
 ordinary user-owned files alone cannot isolate processes sharing the same UID.
 Neither command alters the source checkout, its index, or its Git configuration.
 
@@ -80,6 +80,57 @@ The public blocking Rust APIs are `workspace::prepare` and
 regressions run through the shipped CLI in `skills-core/tests/workspace_cli.rs`;
 deterministic mutation and failed-publication checks live beside filesystem I/O.
 
+## Installed launch inputs
+
+`SessionInputs` and the canonical Session manifest require both
+`source_snapshot_digest` and `source_base_digest`, alongside `cache_base_digest`.
+Unresolved inputs have no default; an intentionally empty source/cache still
+needs its exact measured digest. Project-instruction discovery remains a
+separate binding, and workspace instructions remain editable.
+
+```sh
+louiselm-skills workspace launch-inputs stage \
+  --manifest /private/manifest.json --snapshot /private/snapshots/proposal \
+  --cache /private/warm-cache --output /private/staged-input --robot-json
+
+louiselm-skills workspace launch-inputs inspect \
+  --input /private/staged-input --digest sha256:MANIFEST_DIGEST --robot-json
+```
+
+The preview includes the source selection record, snapshot/base digests and cache
+digest. Staging remeasures every input, copies independent bytes, refuses an
+existing output, and executes no candidate code. Its manifest can contain private
+Agent configuration: protect the artifact and use the payload-free preview for
+review. Staging grants no launch authority.
+
+The trusted controller calls `InstalledBroker::stage_launch_inputs` on its broker
+worker before authorizing the exact launch request. Broker staging lives under
+`workspace-inputs/<manifest digest hex>` beside its rendezvous socket. The
+installed supervisor accepts only the authorized manifest identity, private
+broker-owned staging, matching Agent/runtime/Generation/envelope bindings and
+remeasured source/cache bytes. Missing inputs refuse startup before allocation
+of a Session directory. The operator checkout is never a launch mount or Git store.
+
+Before any Agent starts, the supervisor creates a fresh root-owned barrier,
+independent source/Git metadata and a writable cache overlay. It assigns only
+the private workspace, home and cache contents to the allocated Session identity.
+Agent and confined tools receive `XDG_CACHE_HOME` naming this overlay beneath a root-owned
+`cache-home/` parent. That parent prevents source replacement during later tool
+mounts. Tools mount just that cache, with their separate home. Private source
+and Git files remain writable.
+
+The protected `inputs/` subtree retains the original source snapshot and a closed
+`binding.json` containing only manifest/source/base/cache digests. It retains no
+Agent environment or prompt. Signed launch receipts bind the manifest identity;
+verification exports must use this exact source baseline. Failed preparation and
+successful disposal seal the Session root against recycled host identities.
+Park freezes the existing process tree and preserves source/cache bytes.
+
+Automatic TTL cleanup, explicit pins and durable availability reporting are
+unfinished (`louiselm-d6fv.5.5.2`). Sealed storage currently remains on disk.
+The supported installed runtime is still the measured test Agent; this does not
+claim desktop/vendor Verified cutover.
+
 ## Export and apply byte bundles
 
 After editing the private workspace, stop its writers before export:
@@ -118,7 +169,8 @@ including directory identities, to reject observed concurrent mutation or
 replacement. It opens no device/FIFO payload and requires Linux procfs for
 reopening pinned regular files. This is race detection, not a freeze primitive:
 the caller must stop workspace writers and protect the workspace parent, input
-stores and output parents. Future launcher integration owns that lifecycle.
+stores and output parents. Broker-driven verification export holds the actual
+producer frozen and requires its original launched source snapshot.
 
 The snapshot's file/content/record limits also apply to bundles. Traversal
 additionally permits at most 20,000 total files/directories and 64 directory

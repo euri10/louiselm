@@ -41,6 +41,7 @@ mod skill_requests;
 mod state_identity;
 mod tracker_runner;
 pub mod verification;
+mod workspace;
 
 #[cfg(test)]
 mod delegation_tests;

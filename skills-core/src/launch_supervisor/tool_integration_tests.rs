@@ -81,6 +81,7 @@ fn measured_integration_rejects_missing_evidence_and_runtime_overrides() {
         environment: BTreeMap::new(),
         home: root.path().join("home"),
         workspace: root.path().join("workspace"),
+        cache: None,
         system_roots: vec![],
         identity: IdentityPlan::NamespaceOnly,
         network: NetworkPolicy::Denied,
@@ -227,7 +228,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         ),
         timeout: Duration::from_secs(5),
     };
-    let request = LaunchRequest {
+    let mut request = LaunchRequest {
         schema: REQUEST_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
         request_id: "launch".to_owned(),
@@ -251,6 +252,29 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     )
     .unwrap()
     .plan;
+    assert!(matches!(
+        platform.prepare(&request, plan.clone()),
+        Err(SupervisorError::ResolutionFailed)
+    ));
+    assert!(
+        !sessions.join("session").exists(),
+        "missing source binding must fail before preparation"
+    );
+    let registry = Registry::open_trusted(&registry_root).unwrap();
+    let mut inputs = super::installed_tests::workspace::fixture_manifest();
+    inputs.agent = registry.agent(&request.agent_id).unwrap();
+    inputs.runtime = registry
+        .runtime(&inputs.agent.runtime_id)
+        .unwrap()
+        .measure()
+        .unwrap();
+    inputs
+        .skill_generation
+        .generation_digest
+        .clone_from(&request.skill_generation_id);
+    inputs.envelope.id.clone_from(&request.envelope_id);
+    request.session_input_manifest_id = inputs.digest().to_string();
+    super::installed_tests::workspace::stage_manifest(&platform.config, &inputs);
     let workspace = plan.workspace.clone();
     let prepared = platform.prepare(&request, plan).unwrap();
     let mut running = prepared.start().unwrap();
@@ -373,7 +397,7 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     };
     let (tx, rx) = mpsc::channel();
     let hostile = format!(
-        "test ! -e /proc/{}/mem && ! kill -0 {} 2>/dev/null && test ! -e ../home/authority && printf confined > result; printf output",
+        "test ! -e /proc/{}/mem && ! kill -0 {} 2>/dev/null && test ! -e ../home/authority && test -d .git && test -d \"$XDG_CACHE_HOME\" && printf cache-proof > \"$XDG_CACHE_HOME/tool-cache\" && printf confined > result; printf output",
         authentication.credentials.pid, authentication.credentials.pid,
     );
     fs::write(sessions.join("session/home/authority"), b"private").unwrap();
@@ -391,6 +415,22 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
         fs::read_to_string(workspace.join("result")).unwrap(),
         "confined"
     );
+    assert_eq!(
+        fs::read(sessions.join("session/cache-home/cache-session/tool-cache")).unwrap(),
+        b"cache-proof"
+    );
+    let cache_parent = fs::metadata(sessions.join("session/cache-home")).unwrap();
+    assert_eq!(
+        cache_parent.uid(),
+        0,
+        "a live Agent must not replace a cache mount source"
+    );
+    assert_eq!(cache_parent.mode() & 0o7777, 0o711);
+    assert!(
+        sessions
+            .join("session/inputs/snapshot/snapshot.json")
+            .exists()
+    );
     let (tx, rx) = mpsc::channel();
     running
         .execute_tool(
@@ -406,6 +446,10 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
     }
     assert!(workspace.join("ready").exists());
     running.park().unwrap();
+    assert_eq!(
+        fs::read(sessions.join("session/cache-home/cache-session/tool-cache")).unwrap(),
+        b"cache-proof"
+    );
     fs::write(workspace.join("resume"), b"resume").unwrap();
     thread::sleep(Duration::from_millis(100));
     assert!(

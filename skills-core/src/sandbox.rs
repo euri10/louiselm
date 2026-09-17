@@ -129,6 +129,10 @@ pub struct ConfinementPlan {
     pub home: PathBuf,
     /// Private, writable workspace, and the working directory.
     pub workspace: PathBuf,
+    /// Optional private cache overlay shared with this Session's confined tools.
+    /// The launcher supplies only cache-home/cache-Session-id beneath its
+    /// protected Session root, with a root-owned immutable parent.
+    pub cache: Option<PathBuf>,
     /// System directories mounted read-only.
     pub system_roots: Vec<PathBuf>,
     /// Whether the Session may reach the network.
@@ -1605,6 +1609,13 @@ impl BubblewrapBackend {
             arguments.push(writable.display().to_string());
             arguments.push(writable.display().to_string());
         }
+        if let Some(cache) = &plan.cache {
+            arguments.extend([
+                "--bind".to_owned(),
+                cache.display().to_string(),
+                cache.display().to_string(),
+            ]);
+        }
         for channel in &plan.channels {
             if let Channel::UnixSocket {
                 host_path,
@@ -1678,6 +1689,40 @@ impl BubblewrapBackend {
         }
         for writable in [&plan.home, &plan.workspace] {
             materialize_writable(writable, host_identity)?;
+        }
+        if let Some(cache) = &plan.cache {
+            let root = cache.parent().and_then(Path::parent).ok_or_else(|| {
+                SandboxError::Refused("cache needs one private Session root".into())
+            })?;
+            let id = root
+                .file_name()
+                .and_then(|id| id.to_str())
+                .ok_or_else(|| SandboxError::Refused("cache needs a Session identity".into()))?;
+            if *cache != root.join("cache-home").join(format!("cache-{id}"))
+                || !plan.workspace.starts_with(root)
+                || !plan.home.starts_with(root)
+                || [&plan.workspace, &plan.home, cache].iter().any(|path| {
+                    path.components().any(|part| {
+                        !matches!(
+                            part,
+                            std::path::Component::RootDir | std::path::Component::Normal(_)
+                        )
+                    })
+                })
+                || !fs::symlink_metadata(cache).is_ok_and(|meta| meta.is_dir())
+                || [root.to_path_buf(), root.join("cache-home")]
+                    .iter()
+                    .any(|path| {
+                        !fs::symlink_metadata(path).is_ok_and(|meta| {
+                            meta.is_dir() && meta.uid() == 0 && meta.mode() & 0o7777 == 0o711
+                        })
+                    })
+            {
+                return Err(SandboxError::Refused(
+                    "cache must be the existing private Session overlay".into(),
+                ));
+            }
+            materialize_writable(cache, host_identity)?;
         }
 
         let mut startup_gate = HostIdentityGate::new().map_err(|source| SandboxError::Io {
@@ -1902,13 +1947,13 @@ impl BubblewrapBackend {
                 dimension: Dimension::FilesystemVisibility,
                 satisfied: true,
                 mechanism: "mount namespace".to_owned(),
-                detail: "Only the measured runtime, private home, workspace, and declared system roots are bound.".to_owned(),
+                detail: "Only the measured runtime, private home, workspace, optional private cache overlay, and declared system roots are bound.".to_owned(),
             },
             DimensionEvidence {
                 dimension: Dimension::FilesystemMutation,
                 satisfied: true,
                 mechanism: "read-only bind mounts".to_owned(),
-                detail: "Everything but the private home and workspace is bound read-only.".to_owned(),
+                detail: "Everything but the private home, workspace and optional private cache overlay is bound read-only.".to_owned(),
             },
             DimensionEvidence {
                 dimension: Dimension::ProcessSeparation,
@@ -2834,6 +2879,7 @@ mod tests {
             environment: BTreeMap::new(),
             home: sessions_root.join(&session_id).join("home"),
             workspace: sessions_root.join(&session_id).join("workspace"),
+            cache: None,
             system_roots: default_system_roots(),
             network: NetworkPolicy::Denied,
             identity: IdentityPlan::HostIdentity {

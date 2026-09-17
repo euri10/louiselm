@@ -57,6 +57,9 @@ mod daemon;
 #[path = "installed_receipt_history_tests.rs"]
 mod receipt_history;
 
+#[path = "installed_workspace_tests.rs"]
+pub(super) mod workspace;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -167,7 +170,7 @@ fn request() -> LaunchRequest {
         envelope_id: "envelope".into(),
         envelope_revision: 1,
         skill_generation_id: Digest::of(b"fixture-generation").to_string(),
-        session_input_manifest_id: Digest::of(b"fixture-input").to_string(),
+        session_input_manifest_id: workspace::fixture_manifest().digest().to_string(),
     }
 }
 
@@ -323,6 +326,7 @@ fn install_fixture_at(
             "id":"envelope","network":"denied","description":"exact fixture command"
         }]),
     );
+    workspace::stage_fixture(&config);
     (fixture_paths, config, registry)
 }
 

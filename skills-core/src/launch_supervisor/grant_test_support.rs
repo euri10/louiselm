@@ -75,6 +75,7 @@ pub(in crate::launch_supervisor) fn fixture(root: &Path) -> MeasuredFixture {
         environment: std::collections::BTreeMap::new(),
         home: base.join("home"),
         workspace: base.join("workspace"),
+        cache: None,
         system_roots: default_system_roots(),
         network: crate::registry::NetworkPolicy::Denied,
         identity: IdentityPlan::HostIdentity { uid, gid: uid },

@@ -62,6 +62,10 @@ fn session_inputs_resolve_the_measured_runtime_and_current_agent_view() {
     inputs.tool_schemas = Some(vec![]);
     inputs.plugin_schemas = Some(vec![]);
     assert!(inputs.cache_base_digest.is_none());
+    assert!(inputs.source_snapshot_digest.is_none());
+    assert!(inputs.source_base_digest.is_none());
+    inputs.source_snapshot_digest = Some(Digest::of(b"source snapshot").to_string());
+    inputs.source_base_digest = Some(Digest::of(b"source base").to_string());
     let empty_cache = tempfile::tempdir().unwrap();
     inputs.cache_base_digest = Some(
         louiselm_skills::cache::CacheBase::capture(empty_cache.path())

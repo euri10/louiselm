@@ -56,6 +56,7 @@ mod tool_execution;
 mod tool_helper;
 mod tool_integration;
 mod verification;
+mod workspace;
 pub use tool_helper::HelperPrincipal;
 pub use tool_integration::ToolIsolationEvidence;
 mod relay;

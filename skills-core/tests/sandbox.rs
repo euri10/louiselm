@@ -109,6 +109,7 @@ fn plan(fixture: &Fixture, id: &str, script: &str) -> ConfinementPlan {
         environment: BTreeMap::new(),
         home: sessions_root.join(id).join("home"),
         workspace: sessions_root.join(id).join("workspace"),
+        cache: None,
         system_roots: default_system_roots(),
         network: NetworkPolicy::Denied,
         identity: IdentityPlan::NamespaceOnly,

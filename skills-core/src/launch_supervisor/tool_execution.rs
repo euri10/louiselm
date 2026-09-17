@@ -63,7 +63,7 @@ impl ToolExecutor {
         if home == agent.home || home == agent.workspace {
             return Err(SupervisorError::ToolIsolationUnproven);
         }
-        let plan = ConfinementPlan {
+        let mut plan = ConfinementPlan {
             session_id: String::new(),
             runtime_root: PathBuf::from("/usr"),
             executable: PathBuf::from("/bin/sh"),
@@ -74,11 +74,16 @@ impl ToolExecutor {
             ]),
             home,
             workspace: agent.workspace.clone(),
+            cache: agent.cache.clone(),
             system_roots,
             network: NetworkPolicy::Denied,
             identity: agent.identity,
             channels: Vec::new(),
         };
+        if let Some(cache) = &plan.cache {
+            plan.environment
+                .insert("XDG_CACHE_HOME".into(), cache.display().to_string());
+        }
         Ok(Self {
             backend,
             plan,

@@ -84,6 +84,10 @@ pub struct SessionInputs {
     pub tool_schemas: Option<Vec<MeasuredInput>>,
     /// Complete measured plugin-schema snapshot.
     pub plugin_schemas: Option<Vec<MeasuredInput>>,
+    /// Exact approved source snapshot, including the explicit selection record.
+    pub source_snapshot_digest: Option<String>,
+    /// Normalized source inventory from that snapshot.
+    pub source_base_digest: Option<String>,
     /// Measured immutable cache base; an empty cache still has an explicit digest.
     pub cache_base_digest: Option<String>,
     /// Governing supply policy identity.
@@ -146,6 +150,10 @@ pub struct SessionInputManifest {
     pub tool_schemas: Vec<MeasuredInput>,
     /// Measured plugin schemas.
     pub plugin_schemas: Vec<MeasuredInput>,
+    /// Exact source snapshot used to construct private source and Git metadata.
+    pub source_snapshot_digest: String,
+    /// Normalized baseline used by the trusted byte exporter.
+    pub source_base_digest: String,
     /// Exact immutable cache base used to seed the private Session overlay.
     pub cache_base_digest: String,
     /// Governing policy identity.
@@ -311,6 +319,11 @@ impl SessionInputManifest {
             project_instructions: required(inputs.project_instructions, "project_instructions")?,
             tool_schemas: required(inputs.tool_schemas, "tool_schemas")?,
             plugin_schemas: required(inputs.plugin_schemas, "plugin_schemas")?,
+            source_snapshot_digest: required(
+                inputs.source_snapshot_digest,
+                "source_snapshot_digest",
+            )?,
+            source_base_digest: required(inputs.source_base_digest, "source_base_digest")?,
             cache_base_digest: required(inputs.cache_base_digest, "cache_base_digest")?,
             policy_digest: required(inputs.policy_digest, "policy_digest")?,
             isolation_receipt: required(inputs.isolation_receipt, "isolation_receipt")?,

@@ -45,7 +45,7 @@ fn stages_exact_inputs_and_exports_the_observed_workspace_without_execution() {
     fs::create_dir_all(workspace.join("src")).unwrap();
     fs::write(workspace.join("src/main.rs"), b"proposed").unwrap();
     let output = temp.path().join("export");
-    let preview = export_job(&staged, &input, &workspace, &output).unwrap();
+    let preview = export_job(&staged, &input, &workspace, &output, &Digest::of(&bytes)).unwrap();
     assert_eq!(preview.plan_digest, Digest::of(plan_bytes).to_string());
     assert_eq!(preview.command_count, 1);
     assert!(!workspace.join("SHOULD_NOT_EXECUTE").exists());
@@ -68,9 +68,21 @@ fn stages_exact_inputs_and_exports_the_observed_workspace_without_execution() {
             &staged,
             &Digest::of(b"wrong"),
             &workspace,
-            &temp.path().join("refused")
+            &temp.path().join("refused"),
+            &Digest::of(&bytes)
         )
         .is_err()
     );
     assert!(!temp.path().join("refused").exists());
+    assert!(
+        export_job(
+            &staged,
+            &input,
+            &workspace,
+            &temp.path().join("substituted-base"),
+            &Digest::of(b"different launch source")
+        )
+        .is_err()
+    );
+    assert!(!temp.path().join("substituted-base").exists());
 }
