@@ -209,6 +209,14 @@ For all tests:
   consumer: for a type file that means running `lua-language-server --check`
   against a scratch workspace that requires the plugin the way a user does, not
   asserting on the generator's return value.
+- Never pump input with `getchar()` in a test that observes `vim.on_key()`.
+  Neovim 0.13 stopped invoking `on_key` callbacks for keys `getchar()` consumes,
+  so the observer silently never runs and the feature looks broken on nightly
+  while stable stays green (louiselm-dhqgv). Feed the key instead, and use
+  `nvim_feedkeys(key, "nx!", false)`: plain `"x"` completes the pending command
+  with a trailing `<Esc>`, which arrives after your key and supersedes whatever
+  work it queued. `nvim_input_mouse` still sets the position `getmousepos()`
+  reports, so it stays the way to place the cursor.
 - Async tests must model the production callback context, not only invoke the
   callback synchronously. Directly calling a process or transport callback is
   insufficient coverage for fast-event behavior.

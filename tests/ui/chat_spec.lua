@@ -6261,11 +6261,21 @@ T["chat"]["mouse hover reveals the winbar Session identity without taking focus"
   nvim.cmd("vsplit")
   assert(chat:attach(second))
   local focused = nvim.api.nvim_get_current_win()
+  -- Neovim 0.13 stopped invoking vim.on_key() for keys consumed by getchar(),
+  -- which is how this test used to pump the queued move, so the hover observer
+  -- never ran. Feed the key instead; nvim_input_mouse still sets the position
+  -- getmousepos() reports. "x" completes the pending command with a trailing
+  -- ESC, and that ESC supersedes the hover work the move just queued, so "!"
+  -- is required to leave the move last (louiselm-dhqgv).
+  local mouse_move = nvim.api.nvim_replace_termcodes("<MouseMove>", true, false, true)
+  local function deliver_move()
+    nvim.api.nvim_feedkeys(mouse_move, "nx!", false)
+  end
   local function move(window, column, row)
     nvim.cmd("redraw")
     local pos = nvim.api.nvim_win_get_position(window)
     nvim.api.nvim_input_mouse("move", "", "", 0, pos[1] + (row or 0), pos[2] + column - 1)
-    nvim.fn.getchar(0)
+    deliver_move()
     nvim.wait(30)
   end
   local function tooltip()
@@ -6305,7 +6315,7 @@ T["chat"]["mouse hover reveals the winbar Session identity without taking focus"
   MiniTest.expect.equality(tooltip(), nil)
   local pending_pos = nvim.api.nvim_win_get_position(first_win)
   nvim.api.nvim_input_mouse("move", "", "", 0, pending_pos[1], pending_pos[2] + 13)
-  nvim.fn.getchar(0)
+  deliver_move()
   nvim.api.nvim_feedkeys("l", "xt", false)
   nvim.wait(30)
   MiniTest.expect.equality(tooltip(), nil)
@@ -6317,7 +6327,7 @@ T["chat"]["mouse hover reveals the winbar Session identity without taking focus"
   -- Drain a real mouse event into the observer, then dispose before its scheduled UI work.
   local pos = nvim.api.nvim_win_get_position(first_win)
   nvim.api.nvim_input_mouse("move", "", "", 0, pos[1], pos[2] + 13)
-  nvim.fn.getchar(0)
+  deliver_move()
   chat:dispose()
   nvim.wait(30)
   MiniTest.expect.equality(tooltip(), nil)
