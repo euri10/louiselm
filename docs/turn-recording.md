@@ -76,6 +76,19 @@ Disposal explicitly record that no terminal response was observed. Prompt silenc
 alone never ends a turn or produces a failed outcome; it remains active until
 the peer responds, an explicit error occurs, or the operator disposes it.
 
+Agent-reported terminal failures (AIR `sessionFailure` metadata on the prompt
+response) record `failed` with `peer_response=true`, including any reported
+usage. The prompt callback receives `nil, message`; an `error` event replaces
+`turn_done`. The ACP connection stays available, and the Session returns to
+`ready` once the Agent is idle and permission requests are settled. Chat keeps
+the diagnostic visible and clears queued follow-up work. The operator can
+retry or select another advertised Model; neither happens automatically.
+
+Codex's preceding `systemError` notification marks the turn as failed but does
+not terminate its process before the detailed response arrives. A response
+without detailed failure metadata still reports the generic Codex turn error.
+Actual protocol and process failures continue to terminate the Session.
+
 Recording failures publish `recording_changed` with a typed, sanitized error and
 pending-write state. `Session:inspect()` exposes the same fields. Active work
 continues; subsequent prompt admission must first flush the failed queue.

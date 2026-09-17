@@ -136,6 +136,7 @@ string|table
 - `attribution_error: (louiselm.session.RecordingError)?` -- Unresolved current Provider; cleared only by a confirmed correction.
 - `cancel: fun(self: louiselm.session.Session):boolean, string?`
 - `client: (louiselm.acp.Client)?` -- ACP client.
+- `codex_turn_failed: boolean?` -- Active prompt received systemError before its terminal response.
 - `definition: louiselm.agent.Definition` -- Agent process definition.
 - `dispose: fun(self: louiselm.session.Session):boolean, string?`
 - `emitter: louiselm.session.EventEmitter` -- Event subscribers.

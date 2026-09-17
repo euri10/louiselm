@@ -91,6 +91,9 @@
 ---the raw ACP `agent_message_chunk`/`user_message_chunk`/`agent_thought_chunk` update;
 ---"user_chunk" only arrives while replaying a resumed session's history via session/load, never
 ---for a live turn, while "thought_chunk" carries the agent's reasoning text (live or replayed).
+---"error" carries { message: string }. Agent-reported turn failures emit it before settling
+---back to ready/running/waiting_permission and do not emit "turn_done"; transport/protocol
+---failures instead leave the Session in error. The prompt callback reports either failure.
 
 ---@alias louiselm.session.Event louiselm.session.StateChangedEvent|louiselm.session.ConfigOptionsChangedEvent|louiselm.session.CommandsChangedEvent|louiselm.session.UsageUpdatedEvent|louiselm.session.CompactionUpdatedEvent|louiselm.session.RecordingChangedEvent|louiselm.session.PromptRejectedEvent|louiselm.session.PermissionEvent|louiselm.session.PermissionCancelledEvent|louiselm.session.GenericEvent
 

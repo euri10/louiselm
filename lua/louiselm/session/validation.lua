@@ -307,10 +307,9 @@ function M.available_commands(value)
   return commands, diagnostics
 end
 
----Whether Codex's ACP thread-status extension reports a fatal error for the current turn.
----Codex's own `session/prompt` response still claims `stopReason = "end_turn"` when this fires
----(observed for a revoked auth token), with no error text anywhere in the ACP stream, so this
----flag is the only signal available that the turn actually failed.
+---Whether Codex's ACP thread-status extension reports an error for the current turn.
+---Wait for the prompt response's typed diagnostic. If it supplies only end_turn,
+---this flag still prevents the failed turn from being reported as successful.
 ---@param value unknown ACP session update `_meta` value.
 ---@return boolean
 function M.codex_system_error(value)
@@ -326,6 +325,7 @@ end
 ---Unknown extension fields are deliberately ignored.
 ---@param value unknown ACP session update `_meta` value.
 ---@return louiselm.session.SessionFailure? failure
+---@return string? error_message Malformed supported metadata; absent/unsupported extensions are ignored.
 function M.session_failure(value)
   if type(value) ~= "table" then
     return nil
@@ -333,10 +333,11 @@ function M.session_failure(value)
   local jetbrains = value.jetbrains
   local air = type(jetbrains) == "table" and jetbrains.air or nil
   local failure = type(air) == "table" and air.sessionFailure or nil
+  if type(air) ~= "table" or air.version ~= 1 or failure == nil then
+    return nil
+  end
   if
-    type(air) ~= "table"
-    or air.version ~= 1
-    or type(failure) ~= "table"
+    type(failure) ~= "table"
     or not non_empty_string(failure.id)
     or type(failure.revision) ~= "number"
     or failure.revision < 1
@@ -344,7 +345,7 @@ function M.session_failure(value)
     or (failure.severity ~= "warning" and failure.severity ~= "error")
     or not non_empty_string(failure.title)
   then
-    return nil
+    return nil, "malformed Session failure metadata"
   end
   return {
     id = failure.id,

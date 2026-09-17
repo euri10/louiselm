@@ -187,14 +187,11 @@ local function turn_label(state)
   if state.status == "preparing" then
     return "Preparing turn"
   end
-  if state.status == "ready" then
-    return "Your turn"
-  end
-  if state.status == "prompting" or state.status == "running" then
+  if state.status == "ready" or state.status == "prompting" or state.status == "running" then
     if state.session_failure ~= nil then
       return single_line(state.session_failure.title)
     end
-    return "Model responding"
+    return state.status == "ready" and "Your turn" or "Model responding"
   end
   if state.status == "waiting_permission" then
     return "Waiting for permission"
@@ -214,7 +211,10 @@ end
 ---@param state louiselm.session.State
 ---@return string group
 local function turn_highlight(state)
-  if (state.status == "prompting" or state.status == "running") and state.session_failure ~= nil then
+  if
+    (state.status == "ready" or state.status == "prompting" or state.status == "running")
+    and state.session_failure ~= nil
+  then
     return state.session_failure.severity == "error" and "LouiselmStatusError" or "LouiselmStatusWarning"
   end
   return STATUS_HIGHLIGHTS[state.status] or "LouiselmStatusWarning"

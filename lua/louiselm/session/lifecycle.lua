@@ -77,6 +77,7 @@ local nvim = vim
 ---@field ready_callback? fun(session: louiselm.session.Session?, error?: string) Session startup callback.
 ---@field ready_callback_called boolean Whether startup callback ran.
 ---@field turn_done_turn integer? Turn for which the completion event was emitted.
+---@field codex_turn_failed? boolean Active prompt received systemError before its terminal response.
 ---@field agent_running? boolean Agent-reported processing, independent of the client prompt response; nil until observed.
 ---@field owner louiselm.session.Registry Registry that owns this session.
 ---@field owner_run? louiselm.workflow.Run Run that supervised construction of this Session.
@@ -301,24 +302,36 @@ end
 
 ---@param self louiselm.session.Session
 ---@param result unknown
-local function complete_turn(self, result)
+---@param turn_error? string Failed turn diagnostic; the ACP connection remains usable.
+local function complete_turn(self, result, turn_error)
   if self.state.status == "disposed" or self.state.status == "error" then
     return
   end
+  local callback = self.prompt_callback
+  self.prompt_callback = nil
   if self.turn_done_turn ~= self.state.current_turn then
     self.turn_done_turn = self.state.current_turn
-    clear_session_failure(self)
+    if turn_error ~= nil then
+      -- Clear queued UI work before ready can release it. This is a failed
+      -- turn, not a broken transport; keep its diagnostic for an explicit retry.
+      emit(self, "error", { message = turn_error })
+      if self.state.status == "disposed" or self.state.status == "error" then
+        return
+      end
+    else
+      clear_session_failure(self)
+    end
     if self.permission_active == nil and #self.permission_queue == 0 then
       set_status(self, settled_status(self))
     else
       set_status(self, "waiting_permission")
     end
-    emit(self, "turn_done", result)
+    if turn_error == nil then
+      emit(self, "turn_done", result)
+    end
   end
-  local callback = self.prompt_callback
-  self.prompt_callback = nil
-  if callback ~= nil then
-    callback(result)
+  if callback ~= nil and self.state.status ~= "disposed" then
+    callback(turn_error == nil and result or nil, turn_error)
   end
 end
 
@@ -531,13 +544,10 @@ local function handle_notification(self, message)
         end
       end
     end
-    if Validation.codex_system_error(update._meta) then
-      -- The agent still resolves this turn's session/prompt with a normal
-      -- end_turn stopReason; failing now (instead of waiting for that response)
-      -- pre-empts handle_prompt_result's early "disposed"/"error" guard so the
-      -- bogus success never overwrites this failure.
-      fail(self, "Codex agent reported a system error for this turn")
-      return
+    if prompt_active(self) and Validation.codex_system_error(update._meta) then
+      -- The typed terminal diagnostic follows this status in the prompt
+      -- response. Closing now kills the peer before that response can arrive.
+      self.codex_turn_failed = true
     end
     local failure = Validation.session_failure(update._meta)
     if failure == nil then
@@ -871,18 +881,32 @@ local function handle_prompt_result(self, result, rpc_error)
     fail(self, "ACP session/prompt returned a malformed result", true)
     return
   end
+  local failure, failure_error = Validation.session_failure(result._meta)
+  if failure_error ~= nil then
+    fail(self, "ACP session/prompt returned " .. failure_error, true)
+    return
+  end
   local usage, usage_valid = Validation.turn_usage(result.usage)
   if not usage_valid then
     fail(self, "ACP session/prompt returned malformed usage", true)
     return
   end
+  local turn_error
+  if failure ~= nil and failure.severity == "error" then
+    self.state.session_failure = failure
+    turn_error = failure.title
+  elseif self.codex_turn_failed then
+    -- Some peers report only systemError plus a normal-looking end_turn.
+    -- Preserve the failed outcome even when no detailed diagnostic is sent.
+    turn_error = "Codex agent reported a system error for this turn"
+  end
   self.state.usage = usage
   record_observation(self, "outcome", {
-    outcome = result.stopReason == "cancelled" and "cancelled" or "completed",
+    outcome = turn_error ~= nil and "failed" or (result.stopReason == "cancelled" and "cancelled" or "completed"),
     peer_response = true,
     usage = usage,
   })
-  complete_turn(self, result)
+  complete_turn(self, result, turn_error)
 end
 
 ---@param owner louiselm.session.Registry
@@ -1127,7 +1151,7 @@ end
 ---or Disposal. Cancellation requests a peer response; quiet work may outlast minutes.
 ---@param self louiselm.session.Session
 ---@param prompt louiselm.session.Prompt Text or ACP prompt content table.
----@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal. Admission errors leave the Session ready to retry.
+---@param callback? fun(result: unknown, error?: string) Called once on completion or failure; suppressed after Disposal. Admission and Agent-reported turn failures leave the connection available to retry; transport/protocol failures terminate the Session.
 ---@return string? turn_id Stable local turn ID, NOT an ACP request ID or proof of peer receipt.
 ---@return string? error_message Immediate validation, state, Provider, or random identity error; no prompt is sent.
 function Session:prompt(prompt, callback)
@@ -1154,6 +1178,7 @@ function Session:prompt(prompt, callback)
   end
   prompt = nvim.deepcopy(prompt)
   clear_session_failure(self)
+  self.codex_turn_failed = nil
   self.state.current_turn = self.state.current_turn + 1
   self.state.turn_id = turn_id
   self.state.turn_options_changed = false

@@ -3457,6 +3457,47 @@ T["chat"]["shows a prompting session failure instead of the generic turn label"]
   chat:dispose()
 end
 
+T["chat"]["shows a recoverable turn failure and drops queued follow-up work"] = function()
+  local first = fake_session("session-1", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  local timer = assert(nvim.uv.new_timer())
+  MiniTest.finally(function()
+    timer:stop()
+    timer:close()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  first.state.status = "prompting"
+  assert(chat:submit("queued follow-up"))
+  local title = "Selected model is at capacity. Please try a different model."
+  local was_fast = false
+  timer:start(0, 0, function()
+    was_fast = nvim.in_fast_event()
+    first.state.session_failure = { id = "turn:error", revision = 1, severity = "error", title = title }
+    first:emit({ type = "error", session_id = first.state.id, data = { message = title } })
+    first.state.status = "ready"
+    first:emit({
+      type = "state_changed",
+      session_id = first.state.id,
+      data = { status = "ready", previous_status = "prompting" },
+    })
+  end)
+  local expected = "%#LouiselmStatusError#" .. title .. "%* · %<%#Normal#codex%*"
+  assert(nvim.wait(1000, function()
+    return nvim.api.nvim_get_option_value("winbar", { win = 0 }) == expected
+  end, 10))
+  MiniTest.expect.equality(was_fast, true)
+  MiniTest.expect.equality(first.prompts, {})
+  MiniTest.expect.equality(virtual_text(chat:buffer()), {})
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[2], "Session: status=ready · display=" .. title)
+  local errors = nvim.tbl_filter(function(line)
+    return line == "Error: " .. title
+  end, buffer_lines(chat:buffer()))
+  MiniTest.expect.equality(#errors, 1)
+  assert(chat:submit("retry explicitly"))
+  MiniTest.expect.equality(first.prompts, { "retry explicitly" })
+end
+
 T["chat"]["queues one prompt in every active turn state and releases it only on turn completion"] = function()
   for _, status in ipairs({ "prompting", "waiting_permission", "cancelling" }) do
     local first = fake_session("session-" .. status, "claude")

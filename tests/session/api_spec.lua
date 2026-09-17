@@ -2180,9 +2180,13 @@ T["new"]["tracks AIR session failure revisions and clears the warning on progres
   restore_processes(original_system)
 end
 
-T["new"]["treats a Codex systemError thread status as a fatal turn failure"] = function()
+T["new"]["keeps a bare Codex systemError from becoming a successful turn"] = function()
   local processes, original_system = fake_processes()
   local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+  end)
   local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
   local events = {}
   session:on(function(event)
@@ -2202,20 +2206,236 @@ T["new"]["treats a Codex systemError thread status as a fatal turn failure"] = f
     },
   })
 
-  MiniTest.expect.equality(session:inspect().status, "error")
-  MiniTest.expect.equality(completed.result, nil)
-  MiniTest.expect.equality(type(completed.error), "string")
+  MiniTest.expect.equality(session:inspect().status, "prompting")
+  MiniTest.expect.equality(completed, nil)
+  MiniTest.expect.equality(process.closed, false)
 
-  -- Codex still resolves the prompt with a normal-looking stopReason; that
-  -- bogus success must not resurrect a turn that already failed.
+  -- Preserve the revoked-auth false-success protection from b60706a, even
+  -- when the peer supplies no typed diagnostic with its end_turn response.
   respond(process, request_id, { stopReason = "end_turn" })
-  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(session:inspect().status, "ready")
+  MiniTest.expect.equality(completed.result, nil)
+  MiniTest.expect.equality(completed.error, "Codex agent reported a system error for this turn")
+  MiniTest.expect.equality(process.closed, false)
   for _, event in ipairs(events) do
     MiniTest.expect.equality(event.type ~= "turn_done", true)
   end
+end
 
-  api:dispose()
-  restore_processes(original_system)
+for _, with_status in ipairs({ true, false }) do
+  T["new"]["retains a typed failed turn and permits recovery; systemError=" .. tostring(with_status)] = function()
+    -- systemError before completion: codex/01a0ae17-2bfd-7562-8afb-cc965aedc72b,
+    -- ~/.local/state/acp-llm-adapter/proxy/sessions/<id>/log.jsonl:1571.
+    -- LouiseLM killed that peer before its response. The following terminal
+    -- metadata comes from the installed codex-acp build 46b2f984f61a887c,
+    -- CodexAcpServer.ts:3287 and auth-error-events.test.ts:79, not a captured
+    -- post-systemError response. Also exercise peers without that extension.
+    local processes, original_system = fake_processes()
+    local directory = nvim.fn.tempname()
+    local api = assert(
+      Session.new(
+        { agent = { provider = "test-service", command = "agent", args = {} } },
+        nil,
+        { usage_directory = directory }
+      )
+    )
+    local timer = assert(nvim.uv.new_timer())
+    MiniTest.finally(function()
+      timer:stop()
+      timer:close()
+      api:dispose()
+      restore_processes(original_system)
+    end)
+    local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+    local completions, errors, turns = {}, {}, {}
+    session:on(function(event)
+      if event.type == "error" then
+        errors[#errors + 1] = event.data.message
+      elseif event.type == "turn_done" then
+        turns[#turns + 1] = event.data.stopReason
+      end
+    end)
+    local turn_id = assert(submit(session, "hello", function(result, err)
+      completions[#completions + 1] = { result = result, error = err }
+    end))
+    local title = "Selected model is at capacity. Please try a different model."
+    local failure = { id = "turn:error", revision = 1, severity = "error", title = title }
+    local result = {
+      stopReason = "end_turn",
+      usage = { totalTokens = 17 },
+      _meta = { jetbrains = { air = { version = 1, sessionFailure = failure } } },
+    }
+    local response_was_fast = false
+    timer:start(0, 0, function()
+      response_was_fast = nvim.in_fast_event()
+      if with_status then
+        notification(process, "session/update", {
+          sessionId = "agent-acp",
+          update = {
+            sessionUpdate = "session_info_update",
+            _meta = { codex = { threadStatus = { type = "systemError" } } },
+          },
+        })
+      end
+      respond(process, turn_id, result)
+    end)
+    assert(nvim.wait(1000, function()
+      return #completions > 0
+    end, 10))
+    MiniTest.expect.equality(response_was_fast, true)
+    MiniTest.expect.equality(completions, { { error = title } })
+    MiniTest.expect.equality(errors, { title })
+    MiniTest.expect.equality(turns, {})
+    MiniTest.expect.equality(process.closed, false)
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality(session:inspect().session_failure, failure)
+    MiniTest.expect.equality(session:inspect().usage, { total_tokens = 17 })
+
+    -- Duplicate wire responses must neither call back nor record twice.
+    respond(process, turn_id, result)
+    local flushed = false
+    api:flush_recording(function(err)
+      assert(err == nil)
+      flushed = true
+    end)
+    assert(nvim.wait(6000, function()
+      return flushed
+    end, 10))
+    local recorded = nvim
+      .system({
+        "sqlite3",
+        "-json",
+        directory .. "/turns.sqlite3",
+        "SELECT data FROM turn_events WHERE kind='outcome'",
+      }, { text = true })
+      :wait()
+    assert(recorded.code == 0, recorded.stderr)
+    local rows = nvim.json.decode(recorded.stdout)
+    MiniTest.expect.equality(#rows, 1)
+    MiniTest.expect.equality(nvim.json.decode(rows[1].data), {
+      outcome = "failed",
+      peer_response = true,
+      usage = { total_tokens = 17 },
+    })
+    MiniTest.expect.equality(#completions, 1)
+
+    local options = {
+      {
+        id = "model",
+        name = "Model",
+        type = "select",
+        currentValue = "busy",
+        options = { { value = "busy", name = "Busy" }, { value = "available", name = "Available" } },
+      },
+    }
+    notification(process, "session/update", {
+      sessionId = "agent-acp",
+      update = { sessionUpdate = "config_option_update", configOptions = options },
+    })
+    local config_id = assert(session:set_config_option("model", "available"))
+    options[1].currentValue = "available"
+    respond(process, config_id, { configOptions = options })
+    local next_id = assert(submit(session, "retry", function(next_result, err)
+      completions[#completions + 1] = { result = next_result, error = err }
+    end))
+    MiniTest.expect.equality(session:inspect().session_failure, nil)
+    respond(process, next_id, { stopReason = "end_turn" })
+    MiniTest.expect.equality(completions[2], { result = { stopReason = "end_turn" } })
+    MiniTest.expect.equality(turns, { "end_turn" })
+    MiniTest.expect.equality(errors, { title })
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality(session:inspect().acp_session_id, "agent-acp")
+    MiniTest.expect.equality(process.closed, false)
+  end
+end
+
+T["new"]["rejects malformed terminal failure metadata instead of reporting success"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local completed
+  local id = assert(submit(session, "hello", function(result, err)
+    completed = { result = result, error = err }
+  end))
+  respond(process, id, {
+    stopReason = "end_turn",
+    _meta = { jetbrains = { air = { version = 1, sessionFailure = { title = 7 } } } },
+  })
+  MiniTest.expect.equality(completed.result, nil)
+  MiniTest.expect.equality(completed.error, "ACP session/prompt returned malformed Session failure metadata")
+  MiniTest.expect.equality(session:inspect().status, "error")
+  MiniTest.expect.equality(process.closed, true)
+end
+
+T["new"]["suppresses a failed turn callback when its error observer disposes the Session"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  local callbacks, errors = 0, 0
+  session:on(function(event)
+    if event.type == "error" then
+      errors = errors + 1
+      assert(session:dispose())
+    end
+  end)
+  local id = assert(submit(session, "hello", function()
+    callbacks = callbacks + 1
+  end))
+  local response = {
+    stopReason = "end_turn",
+    _meta = {
+      jetbrains = {
+        air = {
+          version = 1,
+          sessionFailure = { id = "failure", revision = 1, severity = "error", title = "Capacity unavailable" },
+        },
+      },
+    },
+  }
+  respond(process, id, response)
+  respond(process, id, response)
+  MiniTest.expect.equality(callbacks, 0)
+  MiniTest.expect.equality(errors, 1)
+  MiniTest.expect.equality(session:inspect().status, "disposed")
+  MiniTest.expect.equality(process.closed, true)
+end
+
+T["new"]["does not mistake terminal warnings or unsupported failure extensions for turn failure"] = function()
+  local processes, original_system = fake_processes()
+  local api = assert(Session.new({ agent = { provider = "test-service", command = "agent", args = {} } }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+  end)
+  local session, process = start_ready_session(api, processes, "agent", "/tmp/project")
+  -- Idle/historical thread status must not poison the next accepted prompt.
+  notification(process, "session/update", {
+    sessionId = "agent-acp",
+    update = { sessionUpdate = "session_info_update", _meta = { codex = { threadStatus = { type = "systemError" } } } },
+  })
+  for _, air in ipairs({
+    { version = 1, sessionFailure = { id = "warning", revision = 1, severity = "warning", title = "Recovered" } },
+    { version = 2, sessionFailure = "unsupported shape" },
+  }) do
+    local completion
+    local id = assert(submit(session, "hello", function(result, err)
+      completion = { result = result, error = err }
+    end))
+    local result = { stopReason = "end_turn", _meta = { jetbrains = { air = air } } }
+    respond(process, id, result)
+    MiniTest.expect.equality(completion, { result = result })
+    MiniTest.expect.equality(session:inspect().status, "ready")
+    MiniTest.expect.equality(session:inspect().session_failure, nil)
+    MiniTest.expect.equality(process.closed, false)
+  end
 end
 
 T["new"]["does not emit live user message echoes as replay events"] = function()
