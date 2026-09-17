@@ -31,7 +31,7 @@ missing/truncated sections, and re-read when the file changes.
 | --- | --- |
 | Any tracker mutation, claim/liveness decision, or live-instance diagnosis | [Agent workflow](docs/agent-workflow.md) |
 | Lua/Neovim implementation, design, review, dependencies, types, or public API docs | [Lua policy](docs/agent-lua.md) |
-| Rust code, manifests, API docs, design, or review in either crate | [Rust policy](docs/agent-rust.md) |
+| Rust code, manifests, API docs, design, or review in any crate | [Rust policy](docs/agent-rust.md) |
 | Executable changes, test/reliability design or review, gates, or CI monitoring | [Testing and acceptance](docs/agent-testing.md) |
 | Android work | [Android contract](android/AGENTS.md) |
 

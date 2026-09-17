@@ -33,7 +33,7 @@ fixtures in `scripts/test-release-please.cjs` (temporary tool setup is in the
 `plugin-release-contract` CI job). See [releases](releases.md) for activation
 and hosted bot-PR acceptance; local fixtures cannot certify GitHub event delivery.
 
-`capture-service/` and `skills-core/` are Rust crates, not Lua, and each carries
+`capture-service/`, `skills-core/`, and `usage-cli/` are Rust crates, not Lua, and each carries
 its own gates. Run them from the crate directory you touched:
 
 ```bash
@@ -44,7 +44,9 @@ RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
 ```
 
 They are separate crates with separate lockfiles, not a workspace, so a gate run
-in one says nothing about the other. CI runs both as separate jobs.
+in one says nothing about the others. CI runs each as a separate job.
+`usage-cli` links the system SQLite library (development headers and pkg-config
+are required to build it); its offline tests never read the operator's histories.
 
 The `skills-core` browser client also has a Node.js built-in test gate (no npm
 dependencies), run from the repository root:
@@ -108,7 +110,7 @@ hazard as `git add -A`, one step earlier. For the same reason, a `cargo fmt
 --check` or full-suite failure in a file you did not touch is someone else's
 work in progress: report it, do not fix it.
 
-Both manifests enforce the strict [Rust policy](agent-rust.md). New Rust packages
+All manifests enforce the strict [Rust policy](agent-rust.md). New Rust packages
 must configure the same lints and CI gates from their first implementation.
 
 These went unenforced for `capture-service`'s whole life until

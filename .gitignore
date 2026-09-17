@@ -1,6 +1,7 @@
 .deps/
 capture-service/target/
 skills-core/target/
+usage-cli/target/
 blog/_build/
 /_build/
 /node_modules/

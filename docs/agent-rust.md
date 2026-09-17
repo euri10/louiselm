@@ -1,11 +1,11 @@
 # Rust policy
 
-Required by [AGENTS.md](../AGENTS.md) for either Rust crate. Read once before
+Required by [AGENTS.md](../AGENTS.md) for every Rust crate. Read once before
 applicable work, together with [testing](agent-testing.md).
 
 ### Rust
 
-These rules apply to both Rust crates, including their binaries and tests.
+These rules apply to every Rust crate, including their binaries and tests.
 Keep shared policy here; crate-local instructions may add concrete constraints
 but must not silently weaken it.
 
@@ -33,7 +33,7 @@ but must not silently weaken it.
 
 #### Unsafe and failure handling
 
-- Forbid `unsafe_code` in capture-service. Deny it by default in skills-core;
+- Forbid `unsafe_code` in capture-service and usage-cli. Deny it by default in skills-core;
   exceptions are limited to reviewed platform operations. Before adding or
   expanding one, record why safe stdlib/existing-dependency APIs do not suffice,
   the alternatives considered, and the evidence supporting the chosen boundary.
