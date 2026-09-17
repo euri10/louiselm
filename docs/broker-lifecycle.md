@@ -94,6 +94,13 @@ wrong-ACK retry, and interrupted delivery retried after restart without a new
 Session connection. It requires `LOUISELM_REQUIRE_CONTROL_DAEMON=1`
 and `unshare --mount --propagation private`; ordinary Cargo skips it.
 
+The independent `daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection`
+gate checks both operator CLI verbs against the unknown Session and foreign
+identity matrix. CI runs the two daemon gates serially, each with a 240-second
+deadline and elapsed timing. Repeated measured CLI startup must not consume
+the lifecycle/restart test's budget (`louiselm-w841i`); all refusal assertions
+remain required.
+
 ## System service installation
 
 `skills-core/contrib/systemd/louiselm-broker.socket` and

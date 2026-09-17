@@ -13,6 +13,32 @@ pub(super) fn provision() {
     fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+#[test]
+fn privileged_activated_daemon_refuses_foreign_inspection() {
+    if std::env::var_os("LOUISELM_REQUIRE_CONTROL_DAEMON").is_none() {
+        eprintln!("skipping: requires disposable VM and private mount namespace");
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root());
+    let started = Instant::now();
+    let root = tempfile::Builder::new()
+        .prefix("louiselm-daemon-inspection-")
+        .tempdir_in("/var/lib")
+        .unwrap();
+    mounts(root.path());
+    let _account = BrokerAccount::create();
+    let (_, config, manager) = install_daemon(root.path());
+    let mut daemon = process(&manager, BROKER_UID, false);
+    ready(&config);
+    refusal(config.operator_uid, "unknown", InspectError::UnknownSession);
+    for uid in [0, AGENT_UID, BROKER_UID] {
+        refusal(uid, "session", InspectError::AuthenticationRefused);
+        refusal(uid, "unknown", InspectError::AuthenticationRefused);
+    }
+    terminate(&mut daemon);
+    eprintln!("daemon: inspection refusals at {:?}", started.elapsed());
+}
+
 fn command(uid: u32, id: &str) -> std::process::Output {
     session_command(uid, "inspect", id)
 }

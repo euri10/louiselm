@@ -502,8 +502,14 @@ jobs:
             timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::cleanup --nocapture --test-threads=1' bash "$library_test"
           sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
             timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart --exact --nocapture' bash "$library_test"
-          sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
-            timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart --exact --nocapture' bash "$library_test"
+          # Give the independent CLI refusal matrix its own installed-fixture budget.
+          TIMEFORMAT='Activated daemon scenario elapsed: %3R seconds'
+          for scenario in privileged_activated_daemon_serves_launches_and_restart inspection::privileged_activated_daemon_refuses_foreign_inspection; do
+            test_name="launch_supervisor::system::installed_tests::daemon::$scenario"
+            printf 'Activated daemon scenario: %s\n' "$scenario"
+            time sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
+              timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
+          done
           sudo env LOUISELM_REQUIRE_BROKER_BEADS=1 \
             "LOUISELM_TEST_BEADS_INSTALLER=$PWD/../scripts/install-broker-beads.py" \
             timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations --exact --nocapture' bash "$library_test"

@@ -228,34 +228,14 @@ fn launch(
     })
 }
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "One process lifecycle checks startup refusals, concurrent launches, storage failure, SIGTERM and exact-socket restart under one isolated installation."
-)]
-fn privileged_activated_daemon_serves_launches_and_restart() {
-    if std::env::var_os("LOUISELM_REQUIRE_CONTROL_DAEMON").is_none() {
-        eprintln!("skipping: requires disposable VM and private mount namespace");
-        return;
-    }
-    assert!(rustix::process::geteuid().is_root());
-    let root = tempfile::Builder::new()
-        .prefix("louiselm-daemon-")
-        .tempdir_in("/var/lib")
-        .unwrap();
-    mounts(root.path());
-    let _account = BrokerAccount::create();
-    let (paths, config, _) = install_fixture_at(root.path(), 3, LauncherPaths::system());
+fn install_daemon(root: &Path) -> (LauncherPaths, LauncherConfig, OwnedFd) {
+    let (paths, config, _) = install_fixture_at(root, 3, LauncherPaths::system());
     inspection::provision();
     fs::create_dir(STATE).unwrap();
     chown(STATE, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
     fs::set_permissions(STATE, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::create_dir(root.path().join("sessions")).unwrap();
-    fs::set_permissions(
-        root.path().join("sessions"),
-        fs::Permissions::from_mode(0o711),
-    )
-    .unwrap();
+    fs::create_dir(root.join("sessions")).unwrap();
+    fs::set_permissions(root.join("sessions"), fs::Permissions::from_mode(0o711)).unwrap();
     let manager = socket_with(
         AddressFamily::UNIX,
         SocketType::SEQPACKET,
@@ -277,6 +257,28 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
             .unwrap()
             .success()
     );
+    (paths, config, manager)
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One process lifecycle checks startup refusals, concurrent launches, storage failure, SIGTERM and exact-socket restart under one isolated installation."
+)]
+fn privileged_activated_daemon_serves_launches_and_restart() {
+    if std::env::var_os("LOUISELM_REQUIRE_CONTROL_DAEMON").is_none() {
+        eprintln!("skipping: requires disposable VM and private mount namespace");
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root());
+    let started = Instant::now();
+    let root = tempfile::Builder::new()
+        .prefix("louiselm-daemon-")
+        .tempdir_in("/var/lib")
+        .unwrap();
+    mounts(root.path());
+    let _account = BrokerAccount::create();
+    let (paths, config, manager) = install_daemon(root.path());
     assert!(
         !process(&manager, 0, false).0.wait().unwrap().success(),
         "root is not the installed broker"
@@ -294,30 +296,16 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     // Missing endpoint configuration must not prevent startup. Provision it
     // after startup, without restarting the daemon or connecting a Session.
     attention::configure();
-    eprintln!("daemon: ready");
-    inspection::refusal(
-        config.operator_uid,
-        "unknown",
-        crate::broker::operator::InspectError::UnknownSession,
-    );
-    for uid in [0, AGENT_UID, BROKER_UID] {
-        inspection::refusal(
-            uid,
-            "session",
-            crate::broker::operator::InspectError::AuthenticationRefused,
-        );
-        inspection::refusal(
-            uid,
-            "unknown",
-            crate::broker::operator::InspectError::AuthenticationRefused,
-        );
-    }
+    eprintln!("daemon: ready at {:?}", started.elapsed());
     let silent = connect(&config);
     let session = launch(&paths, &config, root.path(), "session").unwrap();
-    eprintln!("daemon: first launch");
+    eprintln!("daemon: first launch at {:?}", started.elapsed());
     assert_eq!(session.receipt().payload.sequence, 1);
     let sibling = launch(&paths, &config, root.path(), "sibling").unwrap();
-    eprintln!("daemon: concurrent sibling launch");
+    eprintln!(
+        "daemon: concurrent sibling launch at {:?}",
+        started.elapsed()
+    );
     assert_eq!(sibling.receipt().payload.sequence, 1);
     let inspected = inspection::status(&config, "session");
     assert_eq!(
@@ -346,6 +334,7 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     )
     .unwrap();
     inspection::agent(sibling, &config);
+    eprintln!("daemon: Agent inspection at {:?}", started.elapsed());
     assert!(
         retired_private.is_file(),
         "the other live Session still needs its key"
@@ -432,6 +421,7 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
     crate::launcher_install::LauncherSigner::open(&paths).unwrap();
     assert!(restarted.0.try_wait().unwrap().is_none());
     terminate(&mut restarted);
+    eprintln!("daemon: restart and disposal at {:?}", started.elapsed());
     // Upgrade and restart validate exact old history using only public authority.
     super::receipt_history::upgrade(&paths, &config);
     let verifier =
@@ -493,6 +483,7 @@ fn privileged_activated_daemon_serves_launches_and_restart() {
             .success()
     );
     adoption(&manager, &config, &original, &marker);
+    eprintln!("daemon: adoption complete at {:?}", started.elapsed());
 }
 
 fn adopt_command(operator_uid: Option<u32>, arguments: &[&str]) -> std::process::Output {
