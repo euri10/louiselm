@@ -79,4 +79,11 @@ Free space became 4.1 GiB. Checks restarted without code changes.
   build-cache cleanup.
 - Three complete parallel suites: passed. Each includes 335 passing library
   tests (3 existing ignored), all integration/binary targets and doc tests.
-- Privileged and hosted baseline validation: pending.
+- All 21 privileged invocations pass after the fix; `workspace-privileged.json`
+  records each result. Guest source hashes match the committed files. No fixture
+  IDs, units or processes remain; VM stopped (`not-found/inactive/dead`).
+- Complete hosted baselines at `a127d9c` are still in progress: `35328351435`,
+  `35328353675`, `35328356265`. Performance acceptance waits for those results.
+
+Fix commit: `4c31b8173b04ed35f1cad73f6402f10906682551`. Repaired skills-core tree:
+`cb21e42b65614d728f0fb046bba6c2ef04388aeb`. No optimization has been reapplied.

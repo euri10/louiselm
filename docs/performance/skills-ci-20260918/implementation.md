@@ -4,8 +4,9 @@ Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
 Maximum candidate passes: **3**. Consumed: **1**. **Validating repaired baseline.**
-Latest blocker `louiselm-tf62f` is implemented with three passing local full
-suites; privileged/hosted validation remains. See `workspace-capture-fix.md`.
+All three correctness blockers are closed with three passing local full suites
+and all 21 privileged invocations. Hosted characterization remains in progress;
+see `workspace-capture-fix.md`.
 Neither optimization candidate has been reapplied.
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated

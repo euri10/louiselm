@@ -123,7 +123,13 @@ stamps, not the contents of both scans; timestamp resolution is a hypothesis,
 not yet an established cause. The optimization baseline is failing, so neither
 candidate can be resumed. The separate defect is filed before any fix.
 
-Handoff: the two fixes are implemented, but their issues remain open for the
+Initial handoff: the two fixes were implemented, but their issues remained open for the
 filed full-suite acceptance. Claims are released with `louiselm-tf62f` as the
 blocker. Fixing workspace capture requires the maintainer's separate go-ahead;
 no expansion of scope, test weakening or optimization retry was inferred.
+
+Resolution after separate authorization: `4c31b81` fixes `louiselm-tf62f`.
+Three complete parallel suites and all 21 privileged invocations now pass with
+all three fixes together; `workspace-capture-fix.md` and
+`workspace-privileged.json` retain that acceptance. All three defects are closed.
+Hosted characterization still precedes any optimization retry.
