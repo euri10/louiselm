@@ -100,11 +100,23 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   assert.deepEqual(workflow.on.workflow_run.workflows, ['CI']);
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
   const steps = workflow.jobs.release.steps;
+  const token = steps.find(step => step.id === 'release-token');
+  assert.equal(token?.uses, 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1');
+  assert.deepEqual(token.with, {
+    'app-id': '${{ secrets.RELEASE_PLEASE_APP_ID }}',
+    'private-key': '${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}',
+    'permission-contents': 'write',
+    'permission-issues': 'write',
+    'permission-pull-requests': 'write',
+  }); // Default token scope is this repository; default cleanup revokes it.
+  assert.match(workflow.jobs.release.if, /vars\.PLUGIN_RELEASES_ENABLED == 'true'/);
+  assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main');
   const actions = steps.filter(step => step.uses?.startsWith('googleapis/release-please-action@'));
   assert.equal(actions.length, 2);
   for (const action of actions) {
     assert.equal(action.uses, pin);
-    assert.equal(action.with.token, '${{ secrets.RELEASE_PLEASE_TOKEN }}');
+    assert.equal(action.with.token, '${{ steps.release-token.outputs.token }}');
+    assert.ok(steps.indexOf(token) < steps.indexOf(action));
     assert.equal(action.with['target-branch'], 'main');
   }
   assert.equal(actions[0].with['skip-github-pull-request'], true);

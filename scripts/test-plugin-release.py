@@ -3,7 +3,9 @@
 
 import base64
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 
@@ -47,6 +50,7 @@ class Publication(unittest.TestCase):
         self.version = "0.1.0"
 
     def api(self, path, data=None):
+        if path == "repos/euri10/louiselm": return {"private": False}
         path = path.removeprefix("repos/euri10/louiselm/")
         if data is not None:
             self.writes.append((path, data))
@@ -75,6 +79,17 @@ class Publication(unittest.TestCase):
 
     def publish(self):
         return release.publish(self.api, "euri10/louiselm", 10)
+
+    def test_public_repository_cli_preserves_release_authority(self):
+        with patch.object(release, "github_api", self.api), contextlib.redirect_stdout(io.StringIO()) as output:
+            with patch.object(sys, "argv", ["publish", "--repository", "euri10/louiselm", "--run-id", "10"]):
+                release.main()
+            self.assertEqual(json.loads(output.getvalue())[0]["tag"], TAG)
+            self.assertEqual(len(self.writes), 1)
+            with patch.object(sys, "argv", ["publish", "--repository", "other/repository", "--run-id", "10"]):
+                with self.assertRaisesRegex(ValueError, "release authority"):
+                    release.main()
+            self.assertEqual(len(self.writes), 1)
 
     def test_publish_then_retry_never_changes_published_bytes_or_tag(self):
         self.publish()

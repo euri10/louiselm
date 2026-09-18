@@ -1,9 +1,9 @@
-# Plugin releases (private GitHub)
+# Plugin releases (GitHub)
 
 The core Lua plugin is independently installable. Capture, trusted tools and
 Android are optional companions; core chat requires none of them. Their release
 automation belongs to separate implementation slices. GitHub
-[`euri10/louiselm`](https://github.com/euri10/louiselm) remains private and is the
+[`euri10/louiselm`](https://github.com/euri10/louiselm) is public and is the
 release authority. GitLab synchronization is tracked in
 `louiselm-component-releases-oa0d.5`; it is not implemented by this slice.
 
@@ -62,14 +62,23 @@ must deliberately change the policy and gate. A breaking commit cannot infer 1.0
 The maintainer must review/configure these repository settings. This change does
 not provision credentials, change visibility, merge release PRs, or publish one.
 
-1. Create a dedicated bot fine-grained PAT scoped only to `euri10/louiselm` with
+1. Register a dedicated GitHub App and install it only on `euri10/louiselm` with
    Contents and Pull requests read/write, plus Issues read/write for Release
-   Please labels/comments. Store it as the repository secret
-   `RELEASE_PLEASE_TOKEN`. Do not reuse personal CLI credentials, protected
-   bundle-signing keys, or a signing environment. The token does not need Actions
-   write or Workflows write. If GitHub refuses preparation for an older commit
+   Please labels/comments. Disable webhooks and user authorization; the App
+   only authenticates automation. Generate a private key and store the complete
+   PEM as repository Actions secret `RELEASE_PLEASE_APP_PRIVATE_KEY`. Store its
+   numeric App ID as repository Actions secret `RELEASE_PLEASE_APP_ID` too.
+   Neither value belongs in a commit or chat. The pinned
+   `actions/create-github-app-token` v3.2.0 action creates a short-lived token
+   scoped to this repository and those three permissions, and revokes it when
+   the job ends. `RELEASE_PLEASE_TOKEN` is not used. Do not reuse personal CLI
+   credentials, protected bundle-signing keys, or a signing environment.
+   The App does not need Actions write or Workflows write.
+   If GitHub refuses preparation for an older commit
    whose workflow files differ from main, retry after reviewing that restriction;
    do not silently broaden the token. Ordinary PR CI uses read-only `GITHUB_TOKEN`.
+   Release PRs are authored by the App, so the maintainer can approve them.
+   A personal token would author PRs as its owner, who cannot self-approve.
 2. Enable GitHub **immutable releases**. The publisher refuses to proceed while
    the repository's immutable-releases API reports disabled. This locks published
    tags/assets through GitHub, including against accidental manual replacement.
@@ -88,7 +97,7 @@ not provision credentials, change visibility, merge release PRs, or publish one.
    and tag. The implementation Agent must not perform this first merge/publication.
 
 The default `GITHUB_TOKEN` suppresses ordinary downstream PR workflows; the
-dedicated token concretely avoids that suppression. Publication independently
+App installation token avoids that suppression. Publication independently
 checks that a successful CI `pull_request` run exists on the release PR head.
 Enabling Actions' ability to approve PRs is not a substitute for that token.
 
@@ -123,15 +132,15 @@ The publisher also emits JSON `{component, version, tag, sha, release_id}` recor
 Reserve distinct prefixes for companions; do not publish a global `v0.1.0` tag
 or rely on GitHub's repository-wide “latest” release for plugin selection.
 
-## Private installation and pinning
+## Installation and pinning
 
-Until the first release exists, use an authenticated SSH clone and an exact
+Until the first release exists, use the public HTTPS repository and an exact
 existing commit, for example this reviewed baseline:
 
 ```lua
--- lazy.nvim example; SSH access to the private repository is required.
+-- lazy.nvim example; no GitHub credential is required to clone public source.
 {
-  url = "git@github.com:euri10/louiselm.git",
+  url = "https://github.com/euri10/louiselm.git",
   commit = "c905fdafa60370d1a07e6853bba741cce9da9870",
   config = function()
     require("louiselm").setup({
@@ -146,7 +155,7 @@ After verifying the first published release, replace `commit` with
 selector may not understand component prefixes. The tag does not exist yet.
 An authenticated GitHub CLI can download the source after publication:
 `gh release download plugin-v0.1.0 --repo euri10/louiselm --archive tar.gz`.
-Public browsing/downloading cannot access this private source. Never put a PAT
+Public browsing and source downloads require no repository access grant. Never put a PAT
 in plugin configuration or a repository URL. Core chat still needs the documented
 Neovim, SQLite and configured ACP Agent prerequisites, but no companion binary.
 
@@ -163,6 +172,7 @@ or a new application dependency. Run the full Lua/generator gates as documented
 in [testing](agent-testing.md).
 
 Upstream contracts: [Release Please configuration](https://github.com/googleapis/release-please/blob/v17.3.0/docs/manifest-releaser.md),
+[App token action](https://github.com/actions/create-github-app-token/tree/bcd2ba49218906704ab6c1aa796996da409d3eb1),
 [directory exclusion implementation](https://github.com/googleapis/release-please/blob/v17.3.0/src/util/commit-exclude.ts),
 [action credentials](https://github.com/googleapis/release-please-action/tree/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071#github-credentials),
 [workflow triggering](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow),
