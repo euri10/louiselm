@@ -3,13 +3,15 @@
 Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
-Maximum candidate passes: **3**. Consumed: **1**. **Stopped: correctness blockers.**
-Latest blocker: `louiselm-tf62f`, discovered during validation of the authorized
-fixture fixes; see `fixture-fixes.md`. Neither candidate has been reapplied.
+Maximum candidate passes: **3**. Consumed: **1**. **Validating repaired baseline.**
+Latest blocker `louiselm-tf62f` is implemented with three passing local full
+suites; privileged/hosted validation remains. See `workspace-capture-fix.md`.
+Neither optimization candidate has been reapplied.
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated
-matrix VM. Candidate 2 will evaluate source-sensitive cache reuse separately.
-No candidate was accepted. Candidate 2 was not applied.
+matrix VM. Retrying that withdrawn split will consume pass 2; the cache
+experiment can use pass 3 only if the remaining stop rules permit it.
+No candidate was accepted. No second candidate has been applied.
 
 Baseline: `37dd6ba4b78ab802f8e2fdc8923e5daafb62029b`, clean implementation
 worktree; skills-core tree `419bb0bb9d40639b133ca1cbe0e870602cc13c01` matches the
@@ -118,3 +120,33 @@ Cargo 1.97.1's fingerprint diagnostics explicitly mark that input stale.
 This is a narrow timestamp probe, not a full fresh-checkout benchmark: a
 source-key cache hit will not guarantee no compilation, though newer incremental
 state may still reduce it. The hosted cache experiment must measure actual work.
+
+## Resumption after correctness fixes
+
+The maintainer authorized both fixture fixes, then the newly observed workspace
+capture defect. Commits `82d5484`, `41afe0d` and `4c31b81` contain those separate
+fixes. The last fixes a demonstrated tmpfs metadata collision by comparing
+second-scan bytes, one file at a time; it is required correctness work, not a
+performance candidate. All three complete parallel local suites pass after it.
+Full privileged validation and hosted characterization precede any retry.
+
+Fresh baseline protocol: three complete executions of the original sequential
+workflow on the same repaired source revision, same profile, original immutable
+cache and all original gates. Separate temporary refs avoid cancellation of
+same-ref runs; runner VMs are independent. Record queue/start times and hardware.
+The sole workflow addition is read-only kernel/CPU/RAM logging, identical to the
+already proposed candidate's observation step. No workload, timeout, cache,
+permission or required-status change is made for baseline collection.
+
+Before collecting this baseline, the existing collector was extended to accept
+one unsplit job as well as the previously handled split/aggregate shapes.
+Red: collecting archived unsplit run `35315696761` failed `AssertionError: []`.
+Green: that same run yields the archived 1582s wall/runner total; split probe
+`35320209429` still yields 894s wall/1696 runner-seconds and all 12+9 scenarios.
+The original assertions for split scenario coverage remain intact. This is
+measurement-harness validation, not evidence of a new speedup.
+
+Branch protection was reread: `cargo (skills-core)` remains required with strict
+up-to-date checks. No repository setting changed. If resumed, retain the corrected
+aggregate and the predeclared gain/cost thresholds; compare with both fresh and
+archived baselines, never count incomplete/failed workloads as fast samples.

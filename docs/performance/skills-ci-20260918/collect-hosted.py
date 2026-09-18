@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print bounded public CI evidence for completed runs of the split workflow."""
+"""Print bounded public CI evidence for completed unsplit or split workflows."""
 
 import datetime as dt
 import json
@@ -26,9 +26,10 @@ def collect(run_id):
     assert run["status"] == "completed", (run_id, run["status"])
     jobs = api("actions/runs/" + run_id + "/jobs?per_page=100")["jobs"]
     skills = [job for job in jobs if job["name"].startswith("cargo (skills-core")]
-    # The initial probe predates the required-status aggregate repair.
-    selected = [job for job in skills if len(skills) == 2 or job["name"] != "cargo (skills-core)"]
-    assert len(selected) == 2, [job["name"] for job in selected]
+    # One baseline job, two initial probe jobs, or two jobs plus the aggregate.
+    assert len(skills) in (1, 2, 3), [job["name"] for job in skills]
+    selected = [job for job in skills if len(skills) <= 2 or job["name"] != "cargo (skills-core)"]
+    assert len(selected) in (1, 2), [job["name"] for job in selected]
     result = {
         "run": int(run_id), "url": run["html_url"], "head_sha": run["head_sha"],
         "event": run["event"], "conclusion": run["conclusion"],
@@ -77,7 +78,8 @@ def collect(run_id):
                 scenario = None
         assert scenario is None, scenario
         if job["conclusion"] == "success":
-            assert len(evidence["scenarios"]) == (9 if "lifecycle" in job["name"] else 12)
+            if len(selected) == 2:
+                assert len(evidence["scenarios"]) == (9 if "lifecycle" in job["name"] else 12)
             assert len(evidence["cargo"]) >= 2, job["name"]
         steps = [{key: step[key] for key in ["name", "conclusion", "started_at", "completed_at"]}
                  | {"seconds": elapsed(step["started_at"], step["completed_at"])}
