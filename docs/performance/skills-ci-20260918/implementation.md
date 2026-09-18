@@ -3,19 +3,23 @@
 Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
-Maximum candidate passes: **3**. Consumed: **2**. **Applying corrected split retry.**
-All three correctness blockers are closed; all three complete repaired-baseline
-hosted runs pass. Pass 2 restores the corrected split, with cache unchanged.
+Maximum candidate passes: **3**. Consumed: **2**. **Stopped; split withdrawn.**
+The three authorized correctness fixes are closed; three complete repaired-
+baseline hosted runs pass. Pass 2 hit the separate unchanged reconciliation
+fixture failure `louiselm-qq1y1`. Both candidates ended without an accepted gain;
+the correctness and two-consecutive-no-gain stop rules now apply.
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated
 matrix VM. Retrying that withdrawn split consumes pass 2; the cache
-experiment can use pass 3 only if the remaining stop rules permit it.
-No candidate has yet been accepted.
+experiment was never applied. The unused third pass does not override those
+stop rules; do not automatically resume or reset this budget.
+No candidate was accepted.
 
 Baseline: `37dd6ba4b78ab802f8e2fdc8923e5daafb62029b`, clean implementation
 worktree; skills-core tree `419bb0bb9d40639b133ca1cbe0e870602cc13c01` matches the
 archived investigation. The original workspace's unrelated Beads edits remain
-there. No Rust implementation or dependency change is in this campaign.
+there. Neither performance candidate changes Rust or dependencies; separately
+authorized correctness fixes establish the repaired baseline recorded below.
 
 Metrics: skills-core completion wall time, sum of its two runner durations,
 setup/cache/build/test timings and queue delay. Hosted samples must use the
@@ -34,7 +38,7 @@ baseline before its candidate is applied.
 | Pass | Lever | Correctness | Timing | Decision |
 | --- | --- | --- | --- | --- |
 | 1 | Two matrix VMs, serial `core` / `lifecycle` groups | Local 5/5 + publication 8/8; all 21 guest invocations pass. Repaired hosted runs hit existing fixture defects h157 and 0s97h | Guest 730.100s versus baseline 728.720s; initial hosted probe 894s wall / 1696 runner-seconds | Withdrawn: correctness unresolved; no accepted speedup |
-| 2 | Restore corrected matrix split after three defect fixes | Local dispatcher/status 5/5, publication 8/8; exact runner already passed all 21 guest invocations on repaired Rust tree | Pending three complete hosted runs | Applied; no cache change, no gain claimed |
+| 2 | Restore corrected matrix split after three defect fixes | Local dispatcher/status 5/5, publication 8/8; all 21 guest invocations pass. Hosted core hits unchanged reconciliation fixture qq1y1; aggregate refuses failure/cancellation | No complete candidate sample; remaining warm/cold probes cancelled | Withdrawn: unresolved correctness; second consecutive candidate without accepted gain |
 
 The dispatch regression preserves the 21 original external invocations and their
 gate flags, namespaces, masks, filters, timeouts and serial group selectors.
@@ -176,3 +180,66 @@ runs; median gain above 10% and the historical 514s range (also above the fresh
 time at most three minutes against both archived and fresh medians. Include
 aggregate overhead and report rounded minutes/queue delay. Candidate local
 repairs start at 0 of 2; total campaign passes remain maximum 3, consumed 2.
+
+Cold-cache observation uses two separate probe refs/worktrees at the unsplit
+`a127d9c` and split `77533b8` revisions. Each overrides only the existing cache
+key prefix with a unique `cold-probe-20260918-` key, verified absent before
+dispatch; no restore prefix is added. This conditions an empty-cache input to
+the already validated complete workflow, not a source-sensitive cache candidate.
+Both retain the exact Rust tree and every gate. Archive misses, full compilation,
+save size/time and total runner cost must be recorded; these single cold
+observations do not replace the three exact-candidate warm acceptance samples
+or establish a statistically significant cold speedup. Probe changes are not
+merged into the implementation branch. No shared cache is deleted to force a
+miss. Candidate cache optimization remains unapplied.
+
+## Pass 2 stop and final restoration
+
+Candidate: `77533b86b2af9acd7ccea13324faf55216ca0c3e`. Core job
+`105555865674` in run `35331251883` fails the complete library suite:
+`operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt`
+unwraps `TrackerInvocation(... "lost result after mutation")` at
+`beads_mutation_control_tests.rs:55:14`. Result: 334 passed, 1 failed, 3 ignored;
+Cargo exit 101. The workspace regressions pass in that same run. Exact excerpt:
+`reconciliation-failure.log`; separate open defect: `louiselm-qq1y1`.
+
+The Rust tree is identical to the three passing repaired hosted baselines.
+The fixture's first call accepts any error, so it does not prove the runner
+was invoked before the retry. Its 100ms permission and the real elapsed-time
+recheck suggest an earlier expiry, but the first error was not captured:
+**root cause is unknown**, and no duplicate real mutation has been established.
+No repair or deadline/assertion change was made for this newly discovered bug.
+
+The failed run's remaining work and warm samples `35331254648` / `35331257262`
+were cancelled, as were cold probes `35331542815` (unsplit `66bc267`) and
+`35331544420` (split `b037978`). All five runs are completed/cancelled;
+`pass-2-stopped.json` retains job-level failure/cancellation and other gate
+results. Each split aggregate fails on its non-successful dependency, including
+the cancelled probes. This verifies refusal, not full positive acceptance.
+No partial workload or cold probe is accepted as a timing/cache result.
+Probe-only branches remain separate; no shared cache was deleted.
+
+Per the profiling stop rule, only the four proposal paths were restored to
+`efe1c68702338428417eb50d2c357b4f1b745dd5`: sequential `ci.yml`, its testing
+contract, and removal of the two proposed dispatcher files. The original inline
+privileged invocations replace those dispatcher tests; no original gate was
+removed. The read-only runner-resource logging remains. The corrected split
+is recoverable from `77533b8`, `60aa9e8` and `candidate-1.patch`.
+
+Restoration checks: exact base diff empty for workflow/contract and Rust;
+publication fixtures 8/8; instruction-budget gate 11918/12000 bytes;
+`git diff --check`. The restored executable source is the same as the three
+fully passing repaired baselines, but the separate intermittent fixture defect
+remains unresolved; those prior green runs do not negate it. All three verified
+correctness fixes, their regression coverage and evidence remain. The disposable
+VM remains stopped. Main and repository settings were not changed.
+
+Final budget: maximum **3**, consumed **2**, pass 2 local repairs **0 of 2**.
+Final stop: unresolved out-of-scope correctness failure, and two consecutive
+candidates without a measurable accepted gain. Retained performance changes:
+**none**; original-to-final accepted optimization delta: **0** (no speedup claim
+for the separately changed correctness workload). Cache optimization: **not
+applied**. Optimization/required-status tasks remain open behind `louiselm-qq1y1`,
+with the active claim released. Any further reliability work needs separate
+authorization; any future optimization must explicitly revisit this stopped
+campaign's bounds rather than silently resetting them.

@@ -383,24 +383,7 @@ jobs:
         run: cargo doc --no-deps --all-features --locked
 
   skills-core:
-    # Preserve the branch-required context across both parallel groups.
     name: cargo (skills-core)
-    needs: skills-core-checks
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - run: test "${{ needs.skills-core-checks.result }}" = success
-
-  skills-core-checks:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - group: core
-            name: cargo (skills-core checks)
-          - group: lifecycle
-            name: cargo (skills-core lifecycle)
     runs-on: ubuntu-latest
     env:
       # The bootstrap executes as UID 60000, which cannot traverse the runner's
@@ -447,35 +430,25 @@ jobs:
           lscpu --json | jq '.lscpu | map(select(.field == "Model name:" or .field == "CPU(s):" or .field == "Architecture:"))'
           free -m
 
-      - name: Test privileged scenario runner contract
-        if: matrix.group == 'core'
-        run: python3 ../scripts/test-skills-privileged.py
-
       - name: Format
-        if: matrix.group == 'core'
         run: cargo fmt --check
 
       - name: Lint
-        if: matrix.group == 'core'
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        if: matrix.group == 'core'
         # Inject runner authority and synthetic signing config on clean CI too.
         # The launcher must isolate both without changing production behavior.
         run: bash ../scripts/test-skills-core-git-isolation 142</dev/null
 
       - uses: actions/setup-node@v4
-        if: matrix.group == 'core'
         with:
           node-version: '22'
 
       - name: Recovery browser deadline regressions
-        if: matrix.group == 'core'
         run: node --test --test-timeout=5000 tests/recovery_browser.test.cjs
 
       - name: Linked Admission across operator and read-only broker identities
-        if: matrix.group == 'core'
         run: |
           broker_test=$(cargo test --locked --test broker --no-run --message-format=json |
             jq -r 'select(.reason == "compiler-artifact" and .target.name == "broker" and .executable != null) | .executable')
@@ -486,17 +459,14 @@ jobs:
             python3 ../scripts/test-broker-admission.py
 
       - name: Documentation
-        if: matrix.group == 'core'
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --all-features --locked
 
       - name: Required hostile launcher conformance
-        if: matrix.group == 'core'
         run: ../scripts/launcher-conformance --disposable-guest
 
       - name: Test root-owned Session cgroup containment
-        if: matrix.group == 'core'
         run: |
           set -eu
           test_identity=60000
@@ -528,7 +498,6 @@ jobs:
             /bin/bash -c 'umask 077; exec "$1" sandbox::tests::pinned_root_cgroup_prevents_operator_migration_of_a_session_process --exact --nocapture' bash "$library_test"
 
       - name: Test production relay cleanup with an open controller
-        if: matrix.group == 'core'
         run: |
           set -eu
           library_test="$(
@@ -542,10 +511,67 @@ jobs:
             /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::relay_tests --nocapture' bash "$library_test"
 
       - name: Test measured Agent and isolated tool grants
-        run: bash ../scripts/test-skills-privileged --disposable-guest "${{ matrix.group }}"
+        run: |
+          set -eu
+          cargo build --bins --all-features --locked
+          library_test="$(
+            cargo test --lib --all-features --locked --no-run --message-format=json |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty' |
+              tail -n 1
+          )"
+          test -n "$library_test"
+          sudo env LOUISELM_REQUIRE_TOOL_ISOLATION=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_TOOL_GRANTS=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 120 /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::revocation --nocapture --test-threads=1' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::cleanup --nocapture --test-threads=1' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart --exact --nocapture' bash "$library_test"
+          # Bound live lifecycle, offline state maintenance and CLI refusals independently.
+          TIMEFORMAT='Activated daemon scenario elapsed: %3R seconds'
+          for scenario in \
+            privileged_activated_daemon_serves_launches_and_restart \
+            state::privileged_activated_daemon_upgrades_and_adopts_state \
+            inspection::privileged_activated_daemon_refuses_foreign_inspection; do
+            test_name="launch_supervisor::system::installed_tests::daemon::$scenario"
+            printf 'Activated daemon scenario: %s\n' "$scenario"
+            time sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
+              timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
+          done
+          sudo env LOUISELM_REQUIRE_BROKER_BEADS=1 \
+            "LOUISELM_TEST_BEADS_INSTALLER=$PWD/../scripts/install-broker-beads.py" \
+            timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 \
+            timeout 120 python3 ../scripts/test-broker-systemd.py
+          # Each full fixture gets its own deadline; keep the shared test account serial.
+          TIMEFORMAT='Cold resume scenario elapsed: %3R seconds'
+          for scenario in finite uncapped failed_load unavailable_balance; do
+            test_name="launch_supervisor::system::installed_tests::privileged_installed_cold_resume_$scenario"
+            printf 'Cold resume scenario: %s\n' "$scenario"
+            time sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+              timeout 240 /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
+          done
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success --exact --nocapture' bash "$library_test"
+          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+            timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture' bash "$library_test"
+          # Debian 13 exercises the full installed certifier. Other runner
+          # profiles must explicitly refuse it, never issue a guest-derived pass.
+          sudo env LOUISELM_REQUIRE_CERTIFICATION=1 \
+            timeout 200 unshare --net -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture' bash "$library_test"
 
       - name: Test privileged launch supervisor composition
-        if: matrix.group == 'core'
         run: |
           set -eu
           test_identity=60000
@@ -567,7 +593,6 @@ jobs:
             /bin/bash -c 'umask 077; exec "$1" privileged_supervisor_launches_agent_under_the_assigned_outer_identity --exact --nocapture' bash "$supervisor_test"
 
       - name: Test measured Bubblewrap rejection in the production launch path
-        if: matrix.group == 'core'
         run: |
           set -eu
           cargo build --bins --all-features --locked
@@ -583,7 +608,6 @@ jobs:
             /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::failures::production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn --exact --nocapture' bash "$library_test"
 
       - name: Test root-owned installed release boundary
-        if: matrix.group == 'core'
         run: |
           set -eu
           release_test="$(
@@ -596,7 +620,6 @@ jobs:
             /bin/bash -c 'umask 022; exec "$1" installed_release_ --nocapture' bash "$release_test"
 
       - name: Test root-owned launch registry boundary
-        if: matrix.group == 'core'
         run: |
           set -eu
           registry_test="$(

@@ -1,0 +1,23 @@
+2026-09-18T09:48:22.7490258Z test workspace::tree::tests::same_size_mutation_with_equal_metadata_is_refused ... ok
+2026-09-18T09:48:22.7495008Z test workspace::retention::tests::policy_and_pin_survive_restart_without_renewing_deadline ... ok
+2026-09-18T09:48:22.7507947Z test workspace::retention::cleanup::tests::partial_cleanup_is_durable_unavailable_and_retries_under_same_barrier ... ok
+2026-09-18T09:48:22.9252035Z test workspace::verification::tests::stages_exact_inputs_and_exports_the_observed_workspace_without_execution ... ok
+2026-09-18T09:48:23.0299956Z test sandbox::tests::interrupt_reports_unconfirmed_restoration ... ok
+2026-09-18T09:48:23.0300327Z
+2026-09-18T09:48:23.0300463Z failures:
+2026-09-18T09:48:23.0300611Z
+2026-09-18T09:48:23.0300965Z ---- broker::beads_mutation::tests::control::operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt stdout ----
+2026-09-18T09:48:23.0301413Z
+2026-09-18T09:48:23.0302014Z thread 'broker::beads_mutation::tests::control::operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt' (8430) panicked at src/broker/beads_mutation_control_tests.rs:55:14:
+2026-09-18T09:48:23.0303136Z called `Result::unwrap()` on an `Err` value: TrackerInvocation(Custom { kind: Other, error: "lost result after mutation" })
+2026-09-18T09:48:23.0303832Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-09-18T09:48:23.0304199Z
+2026-09-18T09:48:23.0304203Z
+2026-09-18T09:48:23.0304328Z failures:
+2026-09-18T09:48:23.0305006Z     broker::beads_mutation::tests::control::operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt
+2026-09-18T09:48:23.0305460Z
+2026-09-18T09:48:23.0305727Z test result: FAILED. 334 passed; 1 failed; 3 ignored; 0 measured; 0 filtered out; finished in 13.73s
+2026-09-18T09:48:23.0306098Z
+2026-09-18T09:48:23.0313326Z error: test failed, to rerun pass `--lib`
+2026-09-18T09:48:23.0541199Z ##[error]Process completed with exit code 101.
+2026-09-18T09:48:23.0685973Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
