@@ -1,7 +1,10 @@
 // Uses the action's exact locked Release Please library with in-memory GitHub
 // history/content fixtures. No network, credentials, PRs, or tags are created.
 const assert = require('node:assert/strict');
-const {readFileSync} = require('node:fs');
+const {readFileSync, mkdtempSync, rmSync, existsSync} = require('node:fs');
+const {tmpdir} = require('node:os');
+const {join} = require('node:path');
+const {spawnSync} = require('node:child_process');
 const {test} = require('node:test');
 const {Manifest} = require('release-please');
 const {setLogger} = require('release-please/build/src/util/logger');
@@ -127,4 +130,35 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   assert.ok(steps.indexOf(publicationSteps[0]) < steps.indexOf(actions[0]));
   assert.ok(steps.indexOf(publicationSteps[1]) < steps.indexOf(actions[1]));
   for (const step of publicationSteps) assert.equal(step.env.GH_TOKEN, '${{ github.token }}');
+});
+
+test('draft gate executes pagination filtering and fails closed on API errors', () => {
+  const yaml = require('js-yaml');
+  const workflow = yaml.load(readFileSync('.github/workflows/release-please.yml', 'utf8'));
+  const script = workflow.jobs.release.steps.find(step => step.id === 'pending').run;
+  const directory = mkdtempSync(join(tmpdir(), 'release-drafts-'));
+  try {
+    for (const [pages, expected] of [
+      [[[]], 'true'],
+      [[[{draft: false, tag_name: 'plugin-v0.1.0'}, {draft: true, tag_name: 'capture-v0.1.0'}]], 'true'],
+      [[[], [{draft: true, tag_name: 'plugin-v0.1.0'}]], 'false'],
+    ]) {
+      const output = join(directory, expected + '.output');
+      const run = spawnSync('bash', ['-e', '-c', 'gh() { printf "%s\\n" "$RELEASE_PAGES"; }\n' + script], {
+        encoding: 'utf8',
+        env: {...process.env, REPOSITORY: 'fixture/plugin', RELEASE_PAGES: JSON.stringify(pages), GITHUB_OUTPUT: output},
+      });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(readFileSync(output, 'utf8').trim().split('\n').at(-1), `ready=${expected}`);
+    }
+    for (const api of ['gh() { return 1; }', 'gh() { printf "invalid JSON"; }']) {
+      const run = spawnSync('bash', ['-e', '-c', api + '\n' + script], {
+        encoding: 'utf8', env: {...process.env, REPOSITORY: 'fixture/plugin', GITHUB_OUTPUT: join(directory, 'failure.output')},
+      });
+      assert.notEqual(run.status, 0);
+      assert.equal(existsSync(join(directory, 'failure.output')), false);
+    }
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
 });
