@@ -65,6 +65,62 @@ T["mock agent"] = MiniTest.new_set({
   },
 })
 
+T["mock agent"]["ignores unknown notifications, rejects unknown requests, and still cancels"] = function()
+  local definition = mock_definition("permission")
+  local command = { definition.command }
+  nvim.list_extend(command, definition.args)
+  nvim.list_extend(command, { "-c", "qa!" })
+  -- EOF ends the mock's input loop, so stdout proves silence without a timed
+  -- absence check. Exercise notifications before initialization and with and
+  -- without params; cancellation must still complete the pending prompt.
+  local result = nvim
+    .system(command, {
+      cwd = project_root,
+      env = definition.env,
+      text = true,
+      stdin = table.concat({
+        '{"jsonrpc":"2.0","method":"unknown"}',
+        '{"jsonrpc":"2.0","id":1,"method":"initialize"}',
+        '{"jsonrpc":"2.0","method":"unknown"}',
+        '{"jsonrpc":"2.0","method":"unknown","params":{}}',
+        '{"jsonrpc":"2.0","id":2,"method":"unknown","params":{}}',
+        '{"jsonrpc":"2.0","id":3,"method":"session/new","params":{}}',
+        '{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"mock-session-1","prompt":[]}}',
+        '{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"mock-session-1"}}',
+        "",
+      }, "\n"),
+    })
+    :wait(3000)
+  MiniTest.expect.equality(result.code, 0)
+  local messages = {}
+  for line in result.stdout:gmatch("[^\n]+") do
+    messages[#messages + 1] = nvim.json.decode(line)
+  end
+  MiniTest.expect.equality(#messages, 6)
+  MiniTest.expect.equality(messages[1].id, 1)
+  MiniTest.expect.equality(messages[1].result.protocolVersion, 1)
+  MiniTest.expect.equality(messages[2], {
+    jsonrpc = "2.0",
+    id = 2,
+    error = { code = -32601, message = "method not found" },
+  })
+  MiniTest.expect.equality(messages[3], {
+    jsonrpc = "2.0",
+    id = 3,
+    result = { sessionId = "mock-session-1" },
+  })
+  MiniTest.expect.equality(messages[4].method, "session/request_permission")
+  MiniTest.expect.equality(messages[5], {
+    jsonrpc = "2.0",
+    method = "session/update",
+    params = {
+      sessionId = "mock-session-1",
+      update = { sessionUpdate = "turn_done", stopReason = "cancelled" },
+    },
+  })
+  MiniTest.expect.equality(messages[6], { jsonrpc = "2.0", id = 4, result = { stopReason = "cancelled" } })
+end
+
 T["mock agent"]["Chat refuses an unresolved Provider before the mock receives a prompt"] = function()
   local definition = mock_definition("echo")
   definition.provider = { { provider = "service", options = { route = "direct" } } }

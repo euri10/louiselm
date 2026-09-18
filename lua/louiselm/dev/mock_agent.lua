@@ -171,6 +171,11 @@ local function handle_message(message, state, options)
     write_error(message.id, -32600, "method must be a non-empty string")
     return true
   end
+  -- Cancellation is the only supported notification; other notifications
+  -- must not enter request validation or generate a response.
+  if message.id == nil and method ~= "session/cancel" then
+    return true
+  end
   if should_crash(options, method) then
     os.exit(23)
   end
