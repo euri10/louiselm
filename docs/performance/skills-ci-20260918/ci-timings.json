@@ -1,0 +1,1879 @@
+[
+  {
+    "run": 34958590297,
+    "url": "https://github.com/euri10/louiselm/actions/runs/34958590297",
+    "event": "push",
+    "head_sha": "586e08c2557ea3cdae615adfe0b8ee8546b97f69",
+    "job": 104346492180,
+    "conclusion": "success",
+    "runner_name": "GitHub Actions 1000003440",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "job_seconds": 839.0,
+    "other_longest_job_seconds": 269.0,
+    "steps": [
+      {
+        "name": "Set up job",
+        "started_at": "2026-09-15T10:33:40Z",
+        "completed_at": "2026-09-15T10:33:41Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "started_at": "2026-09-15T10:33:41Z",
+        "completed_at": "2026-09-15T10:33:43Z",
+        "conclusion": "success",
+        "seconds": 2.0
+      },
+      {
+        "name": "Install Linux sandbox test tools",
+        "started_at": "2026-09-15T10:33:43Z",
+        "completed_at": "2026-09-15T10:34:03Z",
+        "conclusion": "success",
+        "seconds": 20.0
+      },
+      {
+        "name": "Install Rust",
+        "started_at": "2026-09-15T10:34:03Z",
+        "completed_at": "2026-09-15T10:34:12Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Cache cargo",
+        "started_at": "2026-09-15T10:34:12Z",
+        "completed_at": "2026-09-15T10:34:13Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Format",
+        "started_at": "2026-09-15T10:34:13Z",
+        "completed_at": "2026-09-15T10:34:14Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Lint",
+        "started_at": "2026-09-15T10:34:14Z",
+        "completed_at": "2026-09-15T10:35:20Z",
+        "conclusion": "success",
+        "seconds": 66.0
+      },
+      {
+        "name": "Test",
+        "started_at": "2026-09-15T10:35:20Z",
+        "completed_at": "2026-09-15T10:37:52Z",
+        "conclusion": "success",
+        "seconds": 152.0
+      },
+      {
+        "name": "Run actions/setup-node@v4",
+        "started_at": "2026-09-15T10:37:52Z",
+        "completed_at": "2026-09-15T10:37:53Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Recovery browser deadline regressions",
+        "started_at": "2026-09-15T10:37:53Z",
+        "completed_at": "2026-09-15T10:37:53Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Documentation",
+        "started_at": "2026-09-15T10:37:53Z",
+        "completed_at": "2026-09-15T10:38:05Z",
+        "conclusion": "success",
+        "seconds": 12.0
+      },
+      {
+        "name": "Required hostile launcher conformance",
+        "started_at": "2026-09-15T10:38:05Z",
+        "completed_at": "2026-09-15T10:38:12Z",
+        "conclusion": "success",
+        "seconds": 7.0
+      },
+      {
+        "name": "Test root-owned Session cgroup containment",
+        "started_at": "2026-09-15T10:38:12Z",
+        "completed_at": "2026-09-15T10:38:13Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Test production relay cleanup with an open controller",
+        "started_at": "2026-09-15T10:38:13Z",
+        "completed_at": "2026-09-15T10:38:13Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test measured Agent and isolated tool grants",
+        "started_at": "2026-09-15T10:38:13Z",
+        "completed_at": "2026-09-15T10:47:17Z",
+        "conclusion": "success",
+        "seconds": 544.0
+      },
+      {
+        "name": "Test privileged launch supervisor composition",
+        "started_at": "2026-09-15T10:47:17Z",
+        "completed_at": "2026-09-15T10:47:17Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test measured Bubblewrap rejection in the production launch path",
+        "started_at": "2026-09-15T10:47:17Z",
+        "completed_at": "2026-09-15T10:47:17Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test root-owned installed release boundary",
+        "started_at": "2026-09-15T10:47:17Z",
+        "completed_at": "2026-09-15T10:47:17Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test root-owned launch registry boundary",
+        "started_at": "2026-09-15T10:47:17Z",
+        "completed_at": "2026-09-15T10:47:18Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Post Run actions/setup-node@v4",
+        "started_at": "2026-09-15T10:47:18Z",
+        "completed_at": "2026-09-15T10:47:18Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Cache cargo",
+        "started_at": "2026-09-15T10:47:18Z",
+        "completed_at": "2026-09-15T10:47:36Z",
+        "conclusion": "success",
+        "seconds": 18.0
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "started_at": "2026-09-15T10:47:36Z",
+        "completed_at": "2026-09-15T10:47:36Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Complete job",
+        "started_at": "2026-09-15T10:47:36Z",
+        "completed_at": "2026-09-15T10:47:36Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      }
+    ],
+    "measured_suites": [
+      {
+        "tests": [
+          "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle"
+        ],
+        "start": "2026-09-15T10:38:13.6221906Z",
+        "end": "2026-09-15T10:38:19.6826108Z",
+        "seconds": 6.06,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 6.06s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation"
+        ],
+        "start": "2026-09-15T10:38:19.6937783Z",
+        "end": "2026-09-15T10:38:59.7026165Z",
+        "seconds": 40.01,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 40.01s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects"
+        ],
+        "start": "2026-09-15T10:38:59.7152857Z",
+        "end": "2026-09-15T10:39:57.0869816Z",
+        "seconds": 57.37,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 57.37s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade"
+        ],
+        "start": "2026-09-15T10:39:57.1036579Z",
+        "end": "2026-09-15T10:40:20.3757652Z",
+        "seconds": 23.27,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 23.27s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart"
+        ],
+        "start": "2026-09-15T10:40:20.3880785Z",
+        "end": "2026-09-15T10:40:27.5433479Z",
+        "seconds": 7.15,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 7.15s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart"
+        ],
+        "start": "2026-09-15T10:40:27.5569059Z",
+        "end": "2026-09-15T10:42:48.8790748Z",
+        "seconds": 141.32,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 141.32s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite"
+        ],
+        "start": "2026-09-15T10:42:50.9674029Z",
+        "end": "2026-09-15T10:43:20.8988774Z",
+        "seconds": 29.93,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 29.93s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped"
+        ],
+        "start": "2026-09-15T10:43:20.9133310Z",
+        "end": "2026-09-15T10:43:50.1806325Z",
+        "seconds": 29.27,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 29.27s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load"
+        ],
+        "start": "2026-09-15T10:43:50.1942289Z",
+        "end": "2026-09-15T10:44:19.1597297Z",
+        "seconds": 28.96,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 28.96s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance"
+        ],
+        "start": "2026-09-15T10:44:19.1731851Z",
+        "end": "2026-09-15T10:44:49.0122712Z",
+        "seconds": 29.84,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 29.84s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success"
+        ],
+        "start": "2026-09-15T10:44:49.0262100Z",
+        "end": "2026-09-15T10:46:10.4012552Z",
+        "seconds": 81.37,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 81.37s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification"
+        ],
+        "start": "2026-09-15T10:46:10.4153371Z",
+        "end": "2026-09-15T10:47:08.8349217Z",
+        "seconds": 58.42,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 58.42s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence"
+        ],
+        "start": "2026-09-15T10:47:08.8505995Z",
+        "end": "2026-09-15T10:47:17.1301094Z",
+        "seconds": 8.28,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 233 filtered out; finished in 8.28s"
+      }
+    ],
+    "cargo_evidence": [
+      "2026-09-15T10:35:20.5187378Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 05s",
+      "2026-09-15T10:36:57.4900884Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 36s",
+      "2026-09-15T10:38:05.7577079Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.42s",
+      "2026-09-15T10:38:05.8808810Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-15T10:38:12.8939861Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s",
+      "2026-09-15T10:38:13.0210722Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s",
+      "2026-09-15T10:38:13.1990749Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-15T10:38:13.2956106Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-15T10:38:13.5043185Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-15T10:38:13.6030523Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-15T10:47:17.2609950Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-15T10:47:17.6434511Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-15T10:47:17.8087784Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-15T10:47:17.9963297Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s"
+    ],
+    "cache_evidence": []
+  },
+  {
+    "run": 35299188724,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35299188724",
+    "event": "push",
+    "head_sha": "0c728a54a2fa65b05e56eba3f76c1170d35b03b8",
+    "job": 105458020872,
+    "conclusion": "success",
+    "runner_name": "GitHub Actions 1000004011",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "job_seconds": 1566.0,
+    "other_longest_job_seconds": 252.0,
+    "steps": [
+      {
+        "name": "Set up job",
+        "started_at": "2026-09-18T02:24:35Z",
+        "completed_at": "2026-09-18T02:24:36Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "started_at": "2026-09-18T02:24:36Z",
+        "completed_at": "2026-09-18T02:24:38Z",
+        "conclusion": "success",
+        "seconds": 2.0
+      },
+      {
+        "name": "Install Linux sandbox test tools",
+        "started_at": "2026-09-18T02:24:38Z",
+        "completed_at": "2026-09-18T02:24:52Z",
+        "conclusion": "success",
+        "seconds": 14.0
+      },
+      {
+        "name": "Install Rust",
+        "started_at": "2026-09-18T02:24:52Z",
+        "completed_at": "2026-09-18T02:25:01Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Cache cargo",
+        "started_at": "2026-09-18T02:25:01Z",
+        "completed_at": "2026-09-18T02:25:16Z",
+        "conclusion": "success",
+        "seconds": 15.0
+      },
+      {
+        "name": "Format",
+        "started_at": "2026-09-18T02:25:16Z",
+        "completed_at": "2026-09-18T02:25:17Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Lint",
+        "started_at": "2026-09-18T02:25:17Z",
+        "completed_at": "2026-09-18T02:25:40Z",
+        "conclusion": "success",
+        "seconds": 23.0
+      },
+      {
+        "name": "Test",
+        "started_at": "2026-09-18T02:25:40Z",
+        "completed_at": "2026-09-18T02:27:15Z",
+        "conclusion": "success",
+        "seconds": 95.0
+      },
+      {
+        "name": "Run actions/setup-node@v4",
+        "started_at": "2026-09-18T02:27:15Z",
+        "completed_at": "2026-09-18T02:27:18Z",
+        "conclusion": "success",
+        "seconds": 3.0
+      },
+      {
+        "name": "Recovery browser deadline regressions",
+        "started_at": "2026-09-18T02:27:18Z",
+        "completed_at": "2026-09-18T02:27:18Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Linked Admission across operator and read-only broker identities",
+        "started_at": "2026-09-18T02:27:18Z",
+        "completed_at": "2026-09-18T02:27:51Z",
+        "conclusion": "success",
+        "seconds": 33.0
+      },
+      {
+        "name": "Documentation",
+        "started_at": "2026-09-18T02:27:51Z",
+        "completed_at": "2026-09-18T02:28:01Z",
+        "conclusion": "success",
+        "seconds": 10.0
+      },
+      {
+        "name": "Required hostile launcher conformance",
+        "started_at": "2026-09-18T02:28:01Z",
+        "completed_at": "2026-09-18T02:28:14Z",
+        "conclusion": "success",
+        "seconds": 13.0
+      },
+      {
+        "name": "Test root-owned Session cgroup containment",
+        "started_at": "2026-09-18T02:28:14Z",
+        "completed_at": "2026-09-18T02:28:14Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test production relay cleanup with an open controller",
+        "started_at": "2026-09-18T02:28:14Z",
+        "completed_at": "2026-09-18T02:28:14Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test measured Agent and isolated tool grants",
+        "started_at": "2026-09-18T02:28:14Z",
+        "completed_at": "2026-09-18T02:50:18Z",
+        "conclusion": "success",
+        "seconds": 1324.0
+      },
+      {
+        "name": "Test privileged launch supervisor composition",
+        "started_at": "2026-09-18T02:50:18Z",
+        "completed_at": "2026-09-18T02:50:24Z",
+        "conclusion": "success",
+        "seconds": 6.0
+      },
+      {
+        "name": "Test measured Bubblewrap rejection in the production launch path",
+        "started_at": "2026-09-18T02:50:24Z",
+        "completed_at": "2026-09-18T02:50:39Z",
+        "conclusion": "success",
+        "seconds": 15.0
+      },
+      {
+        "name": "Test root-owned installed release boundary",
+        "started_at": "2026-09-18T02:50:39Z",
+        "completed_at": "2026-09-18T02:50:39Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test root-owned launch registry boundary",
+        "started_at": "2026-09-18T02:50:39Z",
+        "completed_at": "2026-09-18T02:50:39Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Run actions/setup-node@v4",
+        "started_at": "2026-09-18T02:50:39Z",
+        "completed_at": "2026-09-18T02:50:39Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Cache cargo",
+        "started_at": "2026-09-18T02:50:39Z",
+        "completed_at": "2026-09-18T02:50:40Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "started_at": "2026-09-18T02:50:40Z",
+        "completed_at": "2026-09-18T02:50:40Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Complete job",
+        "started_at": "2026-09-18T02:50:40Z",
+        "completed_at": "2026-09-18T02:50:40Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      }
+    ],
+    "measured_suites": [
+      {
+        "tests": [
+          "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle"
+        ],
+        "start": "2026-09-18T02:28:15.2150537Z",
+        "end": "2026-09-18T02:28:27.4177434Z",
+        "seconds": 12.2,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 12.20s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation"
+        ],
+        "start": "2026-09-18T02:28:27.4297378Z",
+        "end": "2026-09-18T02:29:19.8067141Z",
+        "seconds": 52.38,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 52.38s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects"
+        ],
+        "start": "2026-09-18T02:29:19.8186363Z",
+        "end": "2026-09-18T02:30:59.6746825Z",
+        "seconds": 99.86,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 99.86s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side"
+        ],
+        "start": "2026-09-18T02:30:59.6875588Z",
+        "end": "2026-09-18T02:31:39.4103601Z",
+        "seconds": 39.72,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 39.72s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade"
+        ],
+        "start": "2026-09-18T02:31:39.4240290Z",
+        "end": "2026-09-18T02:32:15.8701076Z",
+        "seconds": 36.45,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 36.45s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local"
+        ],
+        "start": "2026-09-18T02:32:15.8823910Z",
+        "end": "2026-09-18T02:32:50.8220469Z",
+        "seconds": 34.94,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 34.94s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority",
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_revocation_freezes_with_or_without_broker"
+        ],
+        "start": "2026-09-18T02:32:50.8351315Z",
+        "end": "2026-09-18T02:34:50.6240877Z",
+        "seconds": 119.79,
+        "result": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 332 filtered out; finished in 119.79s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history"
+        ],
+        "start": "2026-09-18T02:34:50.6368174Z",
+        "end": "2026-09-18T02:35:20.8607548Z",
+        "seconds": 30.22,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.22s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart"
+        ],
+        "start": "2026-09-18T02:35:20.8725061Z",
+        "end": "2026-09-18T02:35:31.8830832Z",
+        "seconds": 11.01,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 11.01s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart"
+        ],
+        "start": "2026-09-18T02:35:31.8962766Z",
+        "end": "2026-09-18T02:37:53.3079277Z",
+        "seconds": 141.41,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 141.41s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state"
+        ],
+        "start": "2026-09-18T02:37:53.3502401Z",
+        "end": "2026-09-18T02:39:28.2122993Z",
+        "seconds": 94.86,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 94.86s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection"
+        ],
+        "start": "2026-09-18T02:39:28.2777867Z",
+        "end": "2026-09-18T02:40:56.2784618Z",
+        "seconds": 88.0,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 88.00s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations"
+        ],
+        "start": "2026-09-18T02:40:56.3202833Z",
+        "end": "2026-09-18T02:42:23.7520541Z",
+        "seconds": 87.43,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 87.43s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite"
+        ],
+        "start": "2026-09-18T02:42:27.7277209Z",
+        "end": "2026-09-18T02:43:23.4341542Z",
+        "seconds": 55.71,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.71s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped"
+        ],
+        "start": "2026-09-18T02:43:23.4485790Z",
+        "end": "2026-09-18T02:44:18.3617486Z",
+        "seconds": 54.91,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 54.91s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load"
+        ],
+        "start": "2026-09-18T02:44:18.3757885Z",
+        "end": "2026-09-18T02:45:11.4808229Z",
+        "seconds": 53.1,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 53.10s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance"
+        ],
+        "start": "2026-09-18T02:45:11.4953332Z",
+        "end": "2026-09-18T02:46:07.0666796Z",
+        "seconds": 55.57,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.57s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success"
+        ],
+        "start": "2026-09-18T02:46:07.0801780Z",
+        "end": "2026-09-18T02:48:19.0827000Z",
+        "seconds": 132.0,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 132.00s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification"
+        ],
+        "start": "2026-09-18T02:48:19.0944872Z",
+        "end": "2026-09-18T02:50:06.0736462Z",
+        "seconds": 106.98,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 106.98s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence"
+        ],
+        "start": "2026-09-18T02:50:06.0881410Z",
+        "end": "2026-09-18T02:50:18.4725577Z",
+        "seconds": 12.38,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 12.38s"
+      }
+    ],
+    "cargo_evidence": [
+      "2026-09-18T02:25:40.6766396Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.61s",
+      "2026-09-18T02:26:26.7631308Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 46.02s",
+      "2026-09-18T02:27:18.9046550Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s",
+      "2026-09-18T02:28:01.3610636Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.23s",
+      "2026-09-18T02:28:01.5000114Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:28:14.4695882Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:28:14.5849810Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:28:14.7731250Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:28:14.8914094Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:28:15.0786042Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:28:15.1944681Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:50:18.5966528Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:50:25.0275477Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:50:25.1402203Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:50:39.5363881Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T02:50:39.7079420Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s"
+    ],
+    "cache_evidence": [
+      "2026-09-18T02:25:06.4977610Z Cache Size: ~1186 MB (1243187453 B)",
+      "2026-09-18T02:25:16.2643342Z Cache restored successfully",
+      "2026-09-18T02:25:16.3260545Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+      "2026-09-18T02:50:40.0554038Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+    ]
+  },
+  {
+    "run": 35308123019,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35308123019",
+    "event": "pull_request",
+    "head_sha": "e6198caf81387d77e18fa4d290de8e9d85b62de0",
+    "job": 105484407192,
+    "conclusion": "success",
+    "runner_name": "GitHub Actions 1000004031",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "job_seconds": 1618.0,
+    "other_longest_job_seconds": 209.0,
+    "steps": [
+      {
+        "name": "Set up job",
+        "started_at": "2026-09-18T04:44:41Z",
+        "completed_at": "2026-09-18T04:44:42Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "started_at": "2026-09-18T04:44:42Z",
+        "completed_at": "2026-09-18T04:44:43Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Install Linux sandbox test tools",
+        "started_at": "2026-09-18T04:44:43Z",
+        "completed_at": "2026-09-18T04:44:54Z",
+        "conclusion": "success",
+        "seconds": 11.0
+      },
+      {
+        "name": "Install Rust",
+        "started_at": "2026-09-18T04:44:54Z",
+        "completed_at": "2026-09-18T04:45:03Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Cache cargo",
+        "started_at": "2026-09-18T04:45:03Z",
+        "completed_at": "2026-09-18T04:45:28Z",
+        "conclusion": "success",
+        "seconds": 25.0
+      },
+      {
+        "name": "Format",
+        "started_at": "2026-09-18T04:45:28Z",
+        "completed_at": "2026-09-18T04:45:29Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Lint",
+        "started_at": "2026-09-18T04:45:29Z",
+        "completed_at": "2026-09-18T04:45:47Z",
+        "conclusion": "success",
+        "seconds": 18.0
+      },
+      {
+        "name": "Test",
+        "started_at": "2026-09-18T04:45:47Z",
+        "completed_at": "2026-09-18T04:47:16Z",
+        "conclusion": "success",
+        "seconds": 89.0
+      },
+      {
+        "name": "Run actions/setup-node@v4",
+        "started_at": "2026-09-18T04:47:16Z",
+        "completed_at": "2026-09-18T04:47:17Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Recovery browser deadline regressions",
+        "started_at": "2026-09-18T04:47:17Z",
+        "completed_at": "2026-09-18T04:47:17Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Linked Admission across operator and read-only broker identities",
+        "started_at": "2026-09-18T04:47:17Z",
+        "completed_at": "2026-09-18T04:47:58Z",
+        "conclusion": "success",
+        "seconds": 41.0
+      },
+      {
+        "name": "Documentation",
+        "started_at": "2026-09-18T04:47:58Z",
+        "completed_at": "2026-09-18T04:48:07Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Required hostile launcher conformance",
+        "started_at": "2026-09-18T04:48:07Z",
+        "completed_at": "2026-09-18T04:48:20Z",
+        "conclusion": "success",
+        "seconds": 13.0
+      },
+      {
+        "name": "Test root-owned Session cgroup containment",
+        "started_at": "2026-09-18T04:48:20Z",
+        "completed_at": "2026-09-18T04:48:20Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test production relay cleanup with an open controller",
+        "started_at": "2026-09-18T04:48:20Z",
+        "completed_at": "2026-09-18T04:48:20Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test measured Agent and isolated tool grants",
+        "started_at": "2026-09-18T04:48:20Z",
+        "completed_at": "2026-09-18T05:11:15Z",
+        "conclusion": "success",
+        "seconds": 1375.0
+      },
+      {
+        "name": "Test privileged launch supervisor composition",
+        "started_at": "2026-09-18T05:11:15Z",
+        "completed_at": "2026-09-18T05:11:21Z",
+        "conclusion": "success",
+        "seconds": 6.0
+      },
+      {
+        "name": "Test measured Bubblewrap rejection in the production launch path",
+        "started_at": "2026-09-18T05:11:21Z",
+        "completed_at": "2026-09-18T05:11:37Z",
+        "conclusion": "success",
+        "seconds": 16.0
+      },
+      {
+        "name": "Test root-owned installed release boundary",
+        "started_at": "2026-09-18T05:11:37Z",
+        "completed_at": "2026-09-18T05:11:37Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test root-owned launch registry boundary",
+        "started_at": "2026-09-18T05:11:37Z",
+        "completed_at": "2026-09-18T05:11:37Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Run actions/setup-node@v4",
+        "started_at": "2026-09-18T05:11:37Z",
+        "completed_at": "2026-09-18T05:11:37Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Cache cargo",
+        "started_at": "2026-09-18T05:11:37Z",
+        "completed_at": "2026-09-18T05:11:38Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "started_at": "2026-09-18T05:11:38Z",
+        "completed_at": "2026-09-18T05:11:38Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Complete job",
+        "started_at": "2026-09-18T05:11:38Z",
+        "completed_at": "2026-09-18T05:11:38Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      }
+    ],
+    "measured_suites": [
+      {
+        "tests": [
+          "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle"
+        ],
+        "start": "2026-09-18T04:48:20.8559647Z",
+        "end": "2026-09-18T04:48:33.5500817Z",
+        "seconds": 12.69,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 12.69s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation"
+        ],
+        "start": "2026-09-18T04:48:33.5601561Z",
+        "end": "2026-09-18T04:49:27.8794056Z",
+        "seconds": 54.32,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 54.32s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects"
+        ],
+        "start": "2026-09-18T04:49:27.8900120Z",
+        "end": "2026-09-18T04:51:12.1732353Z",
+        "seconds": 104.28,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 104.28s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side"
+        ],
+        "start": "2026-09-18T04:51:12.1853466Z",
+        "end": "2026-09-18T04:51:53.6444871Z",
+        "seconds": 41.46,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 41.46s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade"
+        ],
+        "start": "2026-09-18T04:51:53.6559125Z",
+        "end": "2026-09-18T04:52:31.2738472Z",
+        "seconds": 37.62,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 37.62s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local"
+        ],
+        "start": "2026-09-18T04:52:31.2844791Z",
+        "end": "2026-09-18T04:53:08.0373533Z",
+        "seconds": 36.75,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 36.75s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority",
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_revocation_freezes_with_or_without_broker"
+        ],
+        "start": "2026-09-18T04:53:08.0479226Z",
+        "end": "2026-09-18T04:55:13.6762086Z",
+        "seconds": 125.63,
+        "result": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 332 filtered out; finished in 125.63s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history"
+        ],
+        "start": "2026-09-18T04:55:13.6870841Z",
+        "end": "2026-09-18T04:55:44.6908105Z",
+        "seconds": 31.0,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 31.00s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart"
+        ],
+        "start": "2026-09-18T04:55:44.7015019Z",
+        "end": "2026-09-18T04:55:55.9937290Z",
+        "seconds": 11.29,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 11.29s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart"
+        ],
+        "start": "2026-09-18T04:55:56.0051818Z",
+        "end": "2026-09-18T04:58:18.9806601Z",
+        "seconds": 142.98,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 142.98s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state"
+        ],
+        "start": "2026-09-18T04:58:19.0151223Z",
+        "end": "2026-09-18T04:59:57.8837660Z",
+        "seconds": 98.87,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 98.87s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection"
+        ],
+        "start": "2026-09-18T04:59:57.9374832Z",
+        "end": "2026-09-18T05:01:28.6061256Z",
+        "seconds": 90.67,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 90.67s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations"
+        ],
+        "start": "2026-09-18T05:01:28.6383116Z",
+        "end": "2026-09-18T05:02:59.1943951Z",
+        "seconds": 90.56,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 90.56s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite"
+        ],
+        "start": "2026-09-18T05:03:02.7069795Z",
+        "end": "2026-09-18T05:04:02.0894175Z",
+        "seconds": 59.38,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 59.38s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped"
+        ],
+        "start": "2026-09-18T05:04:02.1002767Z",
+        "end": "2026-09-18T05:04:59.8236747Z",
+        "seconds": 57.72,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 57.72s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load"
+        ],
+        "start": "2026-09-18T05:04:59.8358152Z",
+        "end": "2026-09-18T05:05:55.4874688Z",
+        "seconds": 55.65,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.65s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance"
+        ],
+        "start": "2026-09-18T05:05:55.4992866Z",
+        "end": "2026-09-18T05:06:53.7641582Z",
+        "seconds": 58.26,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 58.26s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success"
+        ],
+        "start": "2026-09-18T05:06:53.7752416Z",
+        "end": "2026-09-18T05:09:10.0344589Z",
+        "seconds": 136.26,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 136.26s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification"
+        ],
+        "start": "2026-09-18T05:09:10.0450717Z",
+        "end": "2026-09-18T05:11:02.3853449Z",
+        "seconds": 112.34,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 112.34s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence"
+        ],
+        "start": "2026-09-18T05:11:02.3983036Z",
+        "end": "2026-09-18T05:11:15.1708816Z",
+        "seconds": 12.77,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 12.77s"
+      }
+    ],
+    "cargo_evidence": [
+      "2026-09-18T04:45:46.9902318Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.56s",
+      "2026-09-18T04:46:25.0632835Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 38.01s",
+      "2026-09-18T04:47:17.7199868Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T04:48:07.0952852Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.06s",
+      "2026-09-18T04:48:07.2107410Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T04:48:20.2175076Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T04:48:20.3108037Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T04:48:20.4879134Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T04:48:20.5782672Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T04:48:20.7408275Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T04:48:20.8384503Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T05:11:15.2766845Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T05:11:21.9059973Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T05:11:21.9962954Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T05:11:37.4347473Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T05:11:37.6026444Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s"
+    ],
+    "cache_evidence": [
+      "2026-09-18T04:45:07.2582958Z Cache Size: ~1186 MB (1243187453 B)",
+      "2026-09-18T04:45:28.0981121Z Cache restored successfully",
+      "2026-09-18T04:45:28.1520385Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+      "2026-09-18T05:11:38.0033235Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+    ]
+  },
+  {
+    "run": 35313980920,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35313980920",
+    "event": "push",
+    "head_sha": "9d34532ef4c7e934e743242d5cda1b17356d5cd3",
+    "job": 105505787994,
+    "conclusion": "success",
+    "runner_name": "GitHub Actions 1000004033",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "job_seconds": 1104.0,
+    "other_longest_job_seconds": 194.0,
+    "steps": [
+      {
+        "name": "Set up job",
+        "started_at": "2026-09-18T06:13:44Z",
+        "completed_at": "2026-09-18T06:13:45Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "started_at": "2026-09-18T06:13:45Z",
+        "completed_at": "2026-09-18T06:13:47Z",
+        "conclusion": "success",
+        "seconds": 2.0
+      },
+      {
+        "name": "Install Linux sandbox test tools",
+        "started_at": "2026-09-18T06:13:47Z",
+        "completed_at": "2026-09-18T06:14:05Z",
+        "conclusion": "success",
+        "seconds": 18.0
+      },
+      {
+        "name": "Install Rust",
+        "started_at": "2026-09-18T06:14:05Z",
+        "completed_at": "2026-09-18T06:14:15Z",
+        "conclusion": "success",
+        "seconds": 10.0
+      },
+      {
+        "name": "Cache cargo",
+        "started_at": "2026-09-18T06:14:15Z",
+        "completed_at": "2026-09-18T06:14:35Z",
+        "conclusion": "success",
+        "seconds": 20.0
+      },
+      {
+        "name": "Format",
+        "started_at": "2026-09-18T06:14:35Z",
+        "completed_at": "2026-09-18T06:14:36Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Lint",
+        "started_at": "2026-09-18T06:14:36Z",
+        "completed_at": "2026-09-18T06:14:56Z",
+        "conclusion": "success",
+        "seconds": 20.0
+      },
+      {
+        "name": "Test",
+        "started_at": "2026-09-18T06:14:56Z",
+        "completed_at": "2026-09-18T06:16:24Z",
+        "conclusion": "success",
+        "seconds": 88.0
+      },
+      {
+        "name": "Run actions/setup-node@v4",
+        "started_at": "2026-09-18T06:16:24Z",
+        "completed_at": "2026-09-18T06:16:27Z",
+        "conclusion": "success",
+        "seconds": 3.0
+      },
+      {
+        "name": "Recovery browser deadline regressions",
+        "started_at": "2026-09-18T06:16:27Z",
+        "completed_at": "2026-09-18T06:16:27Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Linked Admission across operator and read-only broker identities",
+        "started_at": "2026-09-18T06:16:27Z",
+        "completed_at": "2026-09-18T06:17:09Z",
+        "conclusion": "success",
+        "seconds": 42.0
+      },
+      {
+        "name": "Documentation",
+        "started_at": "2026-09-18T06:17:09Z",
+        "completed_at": "2026-09-18T06:17:18Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Required hostile launcher conformance",
+        "started_at": "2026-09-18T06:17:18Z",
+        "completed_at": "2026-09-18T06:17:31Z",
+        "conclusion": "success",
+        "seconds": 13.0
+      },
+      {
+        "name": "Test root-owned Session cgroup containment",
+        "started_at": "2026-09-18T06:17:31Z",
+        "completed_at": "2026-09-18T06:17:32Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Test production relay cleanup with an open controller",
+        "started_at": "2026-09-18T06:17:32Z",
+        "completed_at": "2026-09-18T06:17:32Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test measured Agent and isolated tool grants",
+        "started_at": "2026-09-18T06:17:32Z",
+        "completed_at": "2026-09-18T06:31:48Z",
+        "conclusion": "success",
+        "seconds": 856.0
+      },
+      {
+        "name": "Test privileged launch supervisor composition",
+        "started_at": "2026-09-18T06:31:48Z",
+        "completed_at": "2026-09-18T06:31:55Z",
+        "conclusion": "success",
+        "seconds": 7.0
+      },
+      {
+        "name": "Test measured Bubblewrap rejection in the production launch path",
+        "started_at": "2026-09-18T06:31:55Z",
+        "completed_at": "2026-09-18T06:32:04Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Test root-owned installed release boundary",
+        "started_at": "2026-09-18T06:32:04Z",
+        "completed_at": "2026-09-18T06:32:04Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test root-owned launch registry boundary",
+        "started_at": "2026-09-18T06:32:04Z",
+        "completed_at": "2026-09-18T06:32:04Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Run actions/setup-node@v4",
+        "started_at": "2026-09-18T06:32:04Z",
+        "completed_at": "2026-09-18T06:32:04Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Cache cargo",
+        "started_at": "2026-09-18T06:32:04Z",
+        "completed_at": "2026-09-18T06:32:04Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "started_at": "2026-09-18T06:32:04Z",
+        "completed_at": "2026-09-18T06:32:05Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Complete job",
+        "started_at": "2026-09-18T06:32:05Z",
+        "completed_at": "2026-09-18T06:32:05Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      }
+    ],
+    "measured_suites": [
+      {
+        "tests": [
+          "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle"
+        ],
+        "start": "2026-09-18T06:17:32.5243440Z",
+        "end": "2026-09-18T06:17:40.5367330Z",
+        "seconds": 8.01,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 8.01s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation"
+        ],
+        "start": "2026-09-18T06:17:40.5453900Z",
+        "end": "2026-09-18T06:18:14.5124790Z",
+        "seconds": 33.97,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 33.97s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects"
+        ],
+        "start": "2026-09-18T06:18:14.5218806Z",
+        "end": "2026-09-18T06:19:16.6311570Z",
+        "seconds": 62.11,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 62.11s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side"
+        ],
+        "start": "2026-09-18T06:19:16.6413351Z",
+        "end": "2026-09-18T06:19:41.2153959Z",
+        "seconds": 24.57,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 24.57s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade"
+        ],
+        "start": "2026-09-18T06:19:41.2253171Z",
+        "end": "2026-09-18T06:20:03.5002268Z",
+        "seconds": 22.27,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 22.27s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local"
+        ],
+        "start": "2026-09-18T06:20:03.5092504Z",
+        "end": "2026-09-18T06:20:24.7962027Z",
+        "seconds": 21.29,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 21.29s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority",
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_revocation_freezes_with_or_without_broker"
+        ],
+        "start": "2026-09-18T06:20:24.8053721Z",
+        "end": "2026-09-18T06:21:38.2443706Z",
+        "seconds": 73.44,
+        "result": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 332 filtered out; finished in 73.44s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history"
+        ],
+        "start": "2026-09-18T06:21:38.2541742Z",
+        "end": "2026-09-18T06:21:56.8291667Z",
+        "seconds": 18.58,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 18.58s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart"
+        ],
+        "start": "2026-09-18T06:21:56.8383202Z",
+        "end": "2026-09-18T06:22:03.6883534Z",
+        "seconds": 6.85,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 6.85s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart"
+        ],
+        "start": "2026-09-18T06:22:03.6981273Z",
+        "end": "2026-09-18T06:24:05.8420764Z",
+        "seconds": 122.14,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 122.14s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state"
+        ],
+        "start": "2026-09-18T06:24:05.8671619Z",
+        "end": "2026-09-18T06:25:04.3371413Z",
+        "seconds": 58.47,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 58.47s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection"
+        ],
+        "start": "2026-09-18T06:25:04.3731015Z",
+        "end": "2026-09-18T06:25:58.4216640Z",
+        "seconds": 54.05,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 54.05s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations"
+        ],
+        "start": "2026-09-18T06:25:58.4447722Z",
+        "end": "2026-09-18T06:26:52.9653462Z",
+        "seconds": 54.52,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 54.52s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite"
+        ],
+        "start": "2026-09-18T06:26:56.4459401Z",
+        "end": "2026-09-18T06:27:31.3666322Z",
+        "seconds": 34.93,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 34.93s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped"
+        ],
+        "start": "2026-09-18T06:27:31.3770028Z",
+        "end": "2026-09-18T06:28:05.8528386Z",
+        "seconds": 34.47,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 34.47s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load"
+        ],
+        "start": "2026-09-18T06:28:05.8616228Z",
+        "end": "2026-09-18T06:28:39.0593323Z",
+        "seconds": 33.2,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 33.20s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance"
+        ],
+        "start": "2026-09-18T06:28:39.0694888Z",
+        "end": "2026-09-18T06:29:13.8266481Z",
+        "seconds": 34.76,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 34.76s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success"
+        ],
+        "start": "2026-09-18T06:29:13.8350087Z",
+        "end": "2026-09-18T06:30:34.7713688Z",
+        "seconds": 80.94,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 80.94s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification"
+        ],
+        "start": "2026-09-18T06:30:34.7807243Z",
+        "end": "2026-09-18T06:31:41.3490128Z",
+        "seconds": 66.57,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 66.57s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence"
+        ],
+        "start": "2026-09-18T06:31:41.3598297Z",
+        "end": "2026-09-18T06:31:48.9557171Z",
+        "seconds": 7.6,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 7.60s"
+      }
+    ],
+    "cargo_evidence": [
+      "2026-09-18T06:14:56.2369101Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.51s",
+      "2026-09-18T06:15:37.5534353Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 41.26s",
+      "2026-09-18T06:16:27.9535522Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:17:18.8867375Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.30s",
+      "2026-09-18T06:17:19.0012512Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:17:31.9117907Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:17:32.0052565Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T06:17:32.1668758Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:17:32.2600546Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T06:17:32.4115974Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T06:17:32.5091434Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:31:49.0629840Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:31:55.5155612Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s",
+      "2026-09-18T06:31:55.6137981Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:32:04.4782950Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+      "2026-09-18T06:32:04.6243466Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s"
+    ],
+    "cache_evidence": [
+      "2026-09-18T06:14:25.0425360Z Cache Size: ~1186 MB (1243187453 B)",
+      "2026-09-18T06:14:34.7347399Z Cache restored successfully",
+      "2026-09-18T06:14:35.2576818Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+      "2026-09-18T06:32:04.9518218Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+    ]
+  },
+  {
+    "run": 35315696761,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35315696761",
+    "event": "pull_request",
+    "head_sha": "41bc2f779e453d528e446de889032837f5be2700",
+    "job": 105506744245,
+    "conclusion": "success",
+    "runner_name": "GitHub Actions 1000004055",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "job_seconds": 1582.0,
+    "other_longest_job_seconds": 201.0,
+    "steps": [
+      {
+        "name": "Set up job",
+        "started_at": "2026-09-18T06:37:44Z",
+        "completed_at": "2026-09-18T06:37:45Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "started_at": "2026-09-18T06:37:45Z",
+        "completed_at": "2026-09-18T06:37:46Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Install Linux sandbox test tools",
+        "started_at": "2026-09-18T06:37:46Z",
+        "completed_at": "2026-09-18T06:37:57Z",
+        "conclusion": "success",
+        "seconds": 11.0
+      },
+      {
+        "name": "Install Rust",
+        "started_at": "2026-09-18T06:37:57Z",
+        "completed_at": "2026-09-18T06:38:06Z",
+        "conclusion": "success",
+        "seconds": 9.0
+      },
+      {
+        "name": "Cache cargo",
+        "started_at": "2026-09-18T06:38:06Z",
+        "completed_at": "2026-09-18T06:38:26Z",
+        "conclusion": "success",
+        "seconds": 20.0
+      },
+      {
+        "name": "Format",
+        "started_at": "2026-09-18T06:38:26Z",
+        "completed_at": "2026-09-18T06:38:28Z",
+        "conclusion": "success",
+        "seconds": 2.0
+      },
+      {
+        "name": "Lint",
+        "started_at": "2026-09-18T06:38:28Z",
+        "completed_at": "2026-09-18T06:38:51Z",
+        "conclusion": "success",
+        "seconds": 23.0
+      },
+      {
+        "name": "Test",
+        "started_at": "2026-09-18T06:38:51Z",
+        "completed_at": "2026-09-18T06:40:28Z",
+        "conclusion": "success",
+        "seconds": 97.0
+      },
+      {
+        "name": "Run actions/setup-node@v4",
+        "started_at": "2026-09-18T06:40:28Z",
+        "completed_at": "2026-09-18T06:40:28Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Recovery browser deadline regressions",
+        "started_at": "2026-09-18T06:40:28Z",
+        "completed_at": "2026-09-18T06:40:28Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Linked Admission across operator and read-only broker identities",
+        "started_at": "2026-09-18T06:40:28Z",
+        "completed_at": "2026-09-18T06:41:07Z",
+        "conclusion": "success",
+        "seconds": 39.0
+      },
+      {
+        "name": "Documentation",
+        "started_at": "2026-09-18T06:41:07Z",
+        "completed_at": "2026-09-18T06:41:18Z",
+        "conclusion": "success",
+        "seconds": 11.0
+      },
+      {
+        "name": "Required hostile launcher conformance",
+        "started_at": "2026-09-18T06:41:18Z",
+        "completed_at": "2026-09-18T06:41:31Z",
+        "conclusion": "success",
+        "seconds": 13.0
+      },
+      {
+        "name": "Test root-owned Session cgroup containment",
+        "started_at": "2026-09-18T06:41:31Z",
+        "completed_at": "2026-09-18T06:41:31Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test production relay cleanup with an open controller",
+        "started_at": "2026-09-18T06:41:31Z",
+        "completed_at": "2026-09-18T06:41:31Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test measured Agent and isolated tool grants",
+        "started_at": "2026-09-18T06:41:31Z",
+        "completed_at": "2026-09-18T07:03:40Z",
+        "conclusion": "success",
+        "seconds": 1329.0
+      },
+      {
+        "name": "Test privileged launch supervisor composition",
+        "started_at": "2026-09-18T07:03:40Z",
+        "completed_at": "2026-09-18T07:03:46Z",
+        "conclusion": "success",
+        "seconds": 6.0
+      },
+      {
+        "name": "Test measured Bubblewrap rejection in the production launch path",
+        "started_at": "2026-09-18T07:03:46Z",
+        "completed_at": "2026-09-18T07:04:01Z",
+        "conclusion": "success",
+        "seconds": 15.0
+      },
+      {
+        "name": "Test root-owned installed release boundary",
+        "started_at": "2026-09-18T07:04:01Z",
+        "completed_at": "2026-09-18T07:04:01Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Test root-owned launch registry boundary",
+        "started_at": "2026-09-18T07:04:01Z",
+        "completed_at": "2026-09-18T07:04:01Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Run actions/setup-node@v4",
+        "started_at": "2026-09-18T07:04:01Z",
+        "completed_at": "2026-09-18T07:04:01Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Post Cache cargo",
+        "started_at": "2026-09-18T07:04:01Z",
+        "completed_at": "2026-09-18T07:04:02Z",
+        "conclusion": "success",
+        "seconds": 1.0
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "started_at": "2026-09-18T07:04:02Z",
+        "completed_at": "2026-09-18T07:04:02Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      },
+      {
+        "name": "Complete job",
+        "started_at": "2026-09-18T07:04:02Z",
+        "completed_at": "2026-09-18T07:04:02Z",
+        "conclusion": "success",
+        "seconds": 0.0
+      }
+    ],
+    "measured_suites": [
+      {
+        "tests": [
+          "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle"
+        ],
+        "start": "2026-09-18T06:41:32.1307567Z",
+        "end": "2026-09-18T06:41:44.3127929Z",
+        "seconds": 12.18,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 12.18s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation"
+        ],
+        "start": "2026-09-18T06:41:44.3245848Z",
+        "end": "2026-09-18T06:42:37.0191690Z",
+        "seconds": 52.69,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 52.69s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects"
+        ],
+        "start": "2026-09-18T06:42:37.0317634Z",
+        "end": "2026-09-18T06:44:16.9437620Z",
+        "seconds": 99.91,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 99.91s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side"
+        ],
+        "start": "2026-09-18T06:44:16.9578318Z",
+        "end": "2026-09-18T06:44:56.6751581Z",
+        "seconds": 39.72,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 39.72s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade"
+        ],
+        "start": "2026-09-18T06:44:56.6881675Z",
+        "end": "2026-09-18T06:45:33.1336700Z",
+        "seconds": 36.45,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 36.45s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local"
+        ],
+        "start": "2026-09-18T06:45:33.1466623Z",
+        "end": "2026-09-18T06:46:08.0539437Z",
+        "seconds": 34.91,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 34.91s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority",
+          "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_revocation_freezes_with_or_without_broker"
+        ],
+        "start": "2026-09-18T06:46:08.0675769Z",
+        "end": "2026-09-18T06:48:08.2989621Z",
+        "seconds": 120.23,
+        "result": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 332 filtered out; finished in 120.23s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history"
+        ],
+        "start": "2026-09-18T06:48:08.3118055Z",
+        "end": "2026-09-18T06:48:38.5832951Z",
+        "seconds": 30.27,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.27s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart"
+        ],
+        "start": "2026-09-18T06:48:38.5952960Z",
+        "end": "2026-09-18T06:48:49.6582214Z",
+        "seconds": 11.06,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 11.06s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart"
+        ],
+        "start": "2026-09-18T06:48:49.6716969Z",
+        "end": "2026-09-18T06:51:11.3361268Z",
+        "seconds": 141.66,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 141.66s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state"
+        ],
+        "start": "2026-09-18T06:51:11.3773476Z",
+        "end": "2026-09-18T06:52:47.0584637Z",
+        "seconds": 95.68,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 95.68s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection"
+        ],
+        "start": "2026-09-18T06:52:47.1240550Z",
+        "end": "2026-09-18T06:54:16.2122509Z",
+        "seconds": 89.09,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 89.09s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations"
+        ],
+        "start": "2026-09-18T06:54:16.2596185Z",
+        "end": "2026-09-18T06:55:44.0484305Z",
+        "seconds": 87.79,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 87.79s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite"
+        ],
+        "start": "2026-09-18T06:55:48.2115198Z",
+        "end": "2026-09-18T06:56:44.0558859Z",
+        "seconds": 55.84,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.84s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped"
+        ],
+        "start": "2026-09-18T06:56:44.0697815Z",
+        "end": "2026-09-18T06:57:39.1273780Z",
+        "seconds": 55.06,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.06s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load"
+        ],
+        "start": "2026-09-18T06:57:39.1413391Z",
+        "end": "2026-09-18T06:58:32.4385203Z",
+        "seconds": 53.3,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 53.30s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance"
+        ],
+        "start": "2026-09-18T06:58:32.4516064Z",
+        "end": "2026-09-18T06:59:28.0883624Z",
+        "seconds": 55.64,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.64s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success"
+        ],
+        "start": "2026-09-18T06:59:28.1019131Z",
+        "end": "2026-09-18T07:01:40.2624891Z",
+        "seconds": 132.16,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 132.16s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification"
+        ],
+        "start": "2026-09-18T07:01:40.2755609Z",
+        "end": "2026-09-18T07:03:27.8927922Z",
+        "seconds": 107.62,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 107.62s"
+      },
+      {
+        "tests": [
+          "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence"
+        ],
+        "start": "2026-09-18T07:03:27.9078176Z",
+        "end": "2026-09-18T07:03:40.3027831Z",
+        "seconds": 12.39,
+        "result": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 12.39s"
+      }
+    ],
+    "cargo_evidence": [
+      "2026-09-18T06:38:51.4085373Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.11s",
+      "2026-09-18T06:39:37.7585720Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 46.28s",
+      "2026-09-18T06:40:28.8838373Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:18.0910153Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.65s",
+      "2026-09-18T06:41:18.2299622Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:31.3899713Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:31.5018633Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:31.6920108Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:31.8046484Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:31.9945971Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T06:41:32.1098113Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T07:03:40.4356753Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T07:03:46.8948461Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T07:03:47.0121784Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T07:04:01.4529009Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+      "2026-09-18T07:04:01.6356641Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s"
+    ],
+    "cache_evidence": [
+      "2026-09-18T06:38:16.6272553Z Cache Size: ~1186 MB (1243187453 B)",
+      "2026-09-18T06:38:26.5133086Z Cache restored successfully",
+      "2026-09-18T06:38:26.5855394Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+      "2026-09-18T07:04:02.0015315Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+    ]
+  }
+]

@@ -44,7 +44,7 @@ RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
 ```
 
 They are separate crates with separate lockfiles, not a workspace, so a gate run
-in one says nothing about the others. CI runs each as a separate job.
+in one says nothing about the others. CI keeps the crates in separate jobs.
 `usage-cli` links the system SQLite library (development headers and pkg-config
 are required to build it); its offline tests never read the operator's histories.
 
@@ -92,6 +92,14 @@ its measured-binary gates. Full debug metadata bloats the repeatedly hashed
 executables and can exhaust fixture deadlines on slow runners
 (louiselm-cjpep). Line tables retain backtrace locations; optimization, debug
 assertions, overflow checks, and security verification stay unchanged.
+
+The enabled measured fixtures run in two separate CI VMs: `core` and
+`lifecycle`. Inside a disposable guest, use
+`bash scripts/test-skills-privileged --disposable-guest <group>` with that same
+debug profile. Each group is serial; never background both in one guest because
+they share fixture accounts, systemd and cgroup paths. Changes to this runner
+also require `python3 scripts/test-skills-privileged.py`, its nonprivileged
+dispatch/failure contract gate, and the complete affected hosted CI workflow.
 
 Run that suite from outside your own ACP Session. `acp-proxy` is a child
 subreaper that never reaps adopted orphans, so a killed descendant lingers as a
