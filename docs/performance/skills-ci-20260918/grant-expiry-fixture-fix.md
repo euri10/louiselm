@@ -71,6 +71,14 @@ approval/landing blocker. No required check or approval was bypassed, no policy
 changed. Acceptance records stay on a separate branch to preserve the tested
 PR head. The disposable VM is stopped (`not-found/inactive/dead`).
 
+Subsequently, the maintainer explicitly authorized a solo-maintainer policy:
+required approvals 1 to 0, every other protection unchanged. Normal merge
+completed at `2026-09-18T13:09:57Z` as
+`fd87239922197b3973e0a9cce2fe5b555235e83b`, with the same tree as accepted head
+`19290e8`; `louiselm-e4fzw` is closed. Before/after protection snapshots and
+merge evidence are appended to `grant-expiry-hosted.json`. The automatic
+main-push CI run `35348623996` is in progress at recording.
+
 This run took 1080s overall in skills-core and 858s in the measured privileged
 step on Intel Xeon Platinum 8370C, 4 vCPU and 15988 MiB RAM. This is a third
 hardware cohort, distinct from both earlier AMD runners, not a measured code

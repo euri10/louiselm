@@ -8,10 +8,10 @@ application; split still withdrawn.** On 2026-09-18 the maintainer
 said "ok do that" after the explicit request for a renewed bounded attempt.
 This overrides the prior two-unsuccessful-candidate stop only for pass 3; it
 does not reset the count or authorize a cache candidate beyond the cap.
-Latest: all five reliability fixes pass their gates; PR #10 awaits one required
-approval (`louiselm-e4fzw`). No third candidate or new comparable baseline has
-been applied/collected after that fix. Acceptance records are separate from the
-unchanged green PR head.
+Latest: all five reliability fixes pass their gates; PR #10 is merged as
+`fd872399` after the explicitly authorized solo-maintainer approval policy
+change (`louiselm-e4fzw`, closed). No third candidate or new comparable baseline
+has been applied/collected after that fix. Acceptance records remain separate.
 The three authorized correctness fixes are closed; three complete repaired-
 baseline hosted runs pass. Pass 2 hit the separate unchanged reconciliation
 fixture failure `louiselm-qq1y1`. Both candidates ended without an accepted gain;
@@ -362,3 +362,22 @@ application or cache change followed this blocker. Maximum/consumed remains
 tracker exports are committed on `codex/skills-ci-grant-acceptance`, leaving
 the green PR head unchanged. The disposable VM is stopped; unrelated root
 workspace changes are preserved.
+
+### Solo-maintainer policy and landing
+
+The maintainer confirmed solo ownership and explicitly authorized removing only
+mandatory review approval while keeping all required CI checks, then merging.
+The review-specific PATCH changed `required_approving_review_count` from 1 to 0.
+Canonical full-snapshot comparison proved every other protection unchanged:
+all 12 required CI contexts and their app bindings, strict up-to-date checks,
+admin enforcement, and disabled force pushes/deletions. No admin bypass or
+branch deletion was used. Raw before/after snapshots are appended to
+`grant-expiry-hosted.json`.
+
+PR #10 merged normally at `2026-09-18T13:09:57Z` as
+`fd87239922197b3973e0a9cce2fe5b555235e83b` after all 13 PR CI jobs passed.
+Its tree is identical to the accepted head `19290e8`:
+`47b930894e1bee465d61b68f0c7bc00049c724de`. Landing task `louiselm-e4fzw`
+is closed. The automatic main-push CI run `35348623996` is in progress at
+recording; no result from it is claimed. The separate split/cache work remains
+pending, unchanged budget **3/2**, with no retained performance optimization.
