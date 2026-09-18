@@ -325,3 +325,14 @@ the active claim was released. Stop evidence is committed separately on
 failure does not trigger another CI attempt. Further repair of `louiselm-ia4pw`
 needs separate authorization. Retained speed optimization: none; cache candidate
 unapplied. The verified reliability fixes remain intact.
+
+### Authorized grant-expiry fixture repair
+
+The maintainer authorized fixing `louiselm-ia4pw`, then continuing normal PR
+landing and the remaining bounded split attempt. `grant-expiry-fixture-fix.md`
+records the controlled failing/passing reproduction. Only the grant integration
+test changes: production lifetimes and the original 40ms/60ms timing remain
+unchanged, while durable reservation and exact refusal assertions replace the
+assumption that audit always finishes before expiry. Focused tests, full local
+Rust suite, Clippy, Rustdoc and browser gates pass. Hosted PR acceptance remains
+pending; the issue stays open. The split is still unapplied, budget still 3/2.
