@@ -4,6 +4,8 @@ Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
 Maximum candidate passes: **3**. Consumed: **1**. **Stopped: correctness blockers.**
+Latest blocker: `louiselm-tf62f`, discovered during validation of the authorized
+fixture fixes; see `fixture-fixes.md`. Neither candidate has been reapplied.
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated
 matrix VM. Candidate 2 will evaluate source-sensitive cache reuse separately.
