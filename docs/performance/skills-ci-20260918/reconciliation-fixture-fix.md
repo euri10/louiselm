@@ -85,8 +85,14 @@ regressions pass 13/13 on the host (Node v24.16.0); Node is absent in the guest,
 so the browser gate was moved to the existing host runtime, not skipped.
 Three complete parallel Rust suites pass: each has 336 passing library tests
 (3 existing ignored), all integration/binary targets and doc tests. The new
-finite-expiry regression adds one library test. Full hosted CI is pending at
-this checkpoint; the issue remains open until recorded below.
+finite-expiry regression adds one library test.
+
+Full hosted CI run `35335645097` passes all 13 jobs on fix commit
+`84524b441d39c44b6f4c641baa0d91ad820d66a3`. The original sequential skills-core
+job passes its full suite, browser, distinct-identity, conformance, all enabled
+privileged and installed-boundary gates. `reconciliation-hosted.json` retains
+job/step results and the exact passing regression lines. This completes the
+reliability acceptance; no performance claim or optimization resumption follows.
 
 Guest and host source hashes agree. No fixture accounts/groups for 60000,
 4019000 or 4020000, or loaded LouiseLM units remained. The VM is stopped

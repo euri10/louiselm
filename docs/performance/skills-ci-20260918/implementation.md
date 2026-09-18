@@ -243,3 +243,13 @@ applied**. Optimization/required-status tasks remain open behind `louiselm-qq1y1
 with the active claim released. Any further reliability work needs separate
 authorization; any future optimization must explicitly revisit this stopped
 campaign's bounds rather than silently resetting them.
+
+## Subsequent reliability acceptance (no optimization restart)
+
+The separately authorized reconciliation fixture fix is `84524b4`:
+`reconciliation-fixture-fix.md` records controlled red/green evidence and three
+complete local suites; `reconciliation-hosted.json` records all 13 hosted CI jobs
+passing in run `35335645097`. Issue `louiselm-qq1y1` is resolved. The split remains
+withdrawn, cache optimization remains unapplied, and the campaign remains stopped
+after two candidates without an accepted measured gain. Budget remains 3/2;
+this correctness fix does not automatically authorize a third candidate.
