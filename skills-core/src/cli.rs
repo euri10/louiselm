@@ -1012,7 +1012,7 @@ fn quarantine_command(options: &Options) -> Result<i32, CliError> {
 }
 
 fn release_component_inputs(source: &Path) -> Vec<ComponentInput> {
-    ["louiselm-skills", "louiselm-launch"]
+    ["louiselm-skills", "louiselm-launch", "louiselm-control"]
         .into_iter()
         .map(|name| ComponentInput {
             name: name.to_owned(),
@@ -1429,19 +1429,63 @@ mod tests {
     }
 
     #[test]
-    fn release_build_declares_both_installed_executables() {
-        let source = Path::new("/reviewed/source");
-        let components = release_component_inputs(source);
-        assert_eq!(
-            components
-                .iter()
-                .map(|component| component.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["louiselm-skills", "louiselm-launch"]
-        );
-        assert_eq!(
-            components[1].path,
-            source.join("target/release/louiselm-launch")
-        );
+    fn release_build_binds_all_binaries_and_refuses_missing_outputs() {
+        let executables = ["louiselm-skills", "louiselm-launch", "louiselm-control"];
+        for missing in [
+            None,
+            Some(executables[0]),
+            Some(executables[1]),
+            Some(executables[2]),
+        ] {
+            let source = tempfile::tempdir().unwrap();
+            let built = source.path().join("target/release");
+            std::fs::create_dir_all(&built).unwrap();
+            for name in executables {
+                if Some(name) != missing {
+                    std::fs::write(built.join(name), name).unwrap();
+                }
+            }
+            let bundle = source.path().join("bundle");
+            let result = release::assemble(
+                &AssembleRequest {
+                    source: SourceIdentity {
+                        commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+                        clean: true,
+                        describe: "test".to_owned(),
+                        dependencies_digest: Digest::of(b"lock").to_string(),
+                    },
+                    toolchain: ToolchainIdentity {
+                        rustc: "test".to_owned(),
+                        cargo: "test".to_owned(),
+                        target: "test".to_owned(),
+                    },
+                    policy: &Policy::embedded(),
+                    components: release_component_inputs(source.path()),
+                    built_at_ms: 1,
+                },
+                &bundle,
+            );
+            if let Some(missing) = missing {
+                let error = result.expect_err("a missing binary must refuse the release");
+                assert!(
+                    matches!(&error, ReleaseError::Io { path, source }
+                        if path.ends_with(missing) && source.kind() == std::io::ErrorKind::NotFound),
+                    "unexpected refusal: {error}"
+                );
+                assert!(!bundle.join("manifest.json").exists());
+            } else {
+                let manifest = result.expect("all binaries are available");
+                for name in executables {
+                    let component = manifest.component(name).expect("binary is bound");
+                    assert!(component.executable);
+                    assert_eq!(component.path, format!("bin/{name}"));
+                    assert_eq!(component.sha256, Digest::of(name.as_bytes()).hex());
+                    assert_eq!(
+                        std::fs::read(bundle.join(&component.path)).unwrap(),
+                        name.as_bytes()
+                    );
+                }
+            }
+        }
     }
 }

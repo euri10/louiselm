@@ -162,9 +162,9 @@ and source locations also live in the bugs, so the cache is not the sole record.
   (`1mac`), relay-failure terminal receipts (`w1ez`) and hostile conformance
   (`d6fv.4.8`) are implemented. Installed authority passed in `d6fv.4.9`, so the
   parent closed as a component; conformance-admission design (`ucj1`) still
-  blocks Verified cutover, and `louiselm-xkxf` still keeps the trusted release
-  from bundling `louiselm-launch`. The duplicate lifecycle-history allocation issue
-  `louiselm-bound-lifecycle-replay-history-wg2v` remains separately tracked;
+  blocks Verified cutover. The trusted release now bundles both `louiselm-launch`
+  and `louiselm-control` (`louiselm-xkxf`). The duplicate lifecycle-history
+  allocation issue `louiselm-bound-lifecycle-replay-history-wg2v` remains separately tracked;
   this audit does not claim a bounded-memory production lifecycle.
 - Do not add reverse dependencies on `louiselm-qbr.5.1` or `louiselm-d6fv.9`:
   those aggregates already depend on the launcher. They own integrated broker
