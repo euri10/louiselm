@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Each group needs its own disposable VM: accounts, systemd and cgroups are shared.
+set -euo pipefail
+[[ $# == 2 && ${1:-} == --disposable-guest && $2 =~ ^(core|lifecycle)$ ]] || {
+  echo 'Usage: test-skills-privileged --disposable-guest {core|lifecycle} (never on the desktop)' >&2
+  exit 64
+}
+(( UID != 0 )) || { echo 'build as the guest operator, not root' >&2; exit 1; }
+group=$2
+repo_root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+cd -- "$repo_root/skills-core"
+cargo build --bins --all-features --locked
+library_test=$(
+  cargo test --lib --all-features --locked --no-run --message-format=json |
+    jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'
+)
+[[ -x $library_test ]] || { echo 'library test executable missing' >&2; exit 1; }
+TIMEFORMAT='Privileged scenario elapsed: %3R seconds (user %3U, sys %3S)'
+system=launch_supervisor::system
+installed=$system::installed_tests
+
+# Filter, required gate, umask, selection flag, then optional timeout/namespace argv.
+run_rust() {
+  local filter=$1 gate=$2 mask=$3 selection=$4 listing
+  shift 4
+  listing=$("$library_test" "$filter" "$selection" --list)
+  [[ $listing == *': test'* ]] || { echo "no tests selected: $filter" >&2; return 1; }
+  printf 'Privileged scenario: %s\n' "$filter"
+  time sudo env "LOUISELM_REQUIRE_$gate=1" "$@" \
+    /bin/bash -c 'umask "$1"; shift; exec "$@"' bash "$mask" \
+    "$library_test" "$filter" "$selection" --nocapture
+}
+
+if [[ $group == core ]]; then
+  run_rust "$system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle" TOOL_ISOLATION 022 --exact
+  run_rust launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation TOOL_GRANTS 022 --exact
+  run_rust "$installed::privileged_installed_broker_launch_and_effects" BROKER_LAUNCH 022 --exact
+  run_rust "$installed::provider_credentials::privileged_installed_provider_credentials_stay_broker_side" BROKER_LAUNCH 022 --exact timeout 120
+  run_rust "$installed::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade" BROKER_LAUNCH 077 --exact timeout 120
+  run_rust "$installed::receipt_history::isolation::privileged_installed_history_failure_is_session_local" BROKER_LAUNCH 022 --exact timeout 120
+  run_rust "$installed::receipt_history::revocation" BROKER_LAUNCH 022 --test-threads=1 timeout 180
+  run_rust "$installed::receipt_history::cleanup" BROKER_LAUNCH 022 --test-threads=1 timeout 180
+  run_rust "$installed::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart" BROKER_LAUNCH 022 --exact timeout 120
+  printf 'Privileged scenario: broker systemd\n'
+  time sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 timeout 120 python3 "$repo_root/scripts/test-broker-systemd.py"
+  run_rust "$installed::verification::privileged_installed_exact_job_verification" BROKER_LAUNCH 022 --exact timeout 180
+  # Debian 13 certifies; other profiles must explicitly refuse unsupported hosts.
+  run_rust "$installed::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence" CERTIFICATION 022 --exact timeout 200 unshare --net --
+else
+  for scenario in \
+    privileged_activated_daemon_serves_launches_and_restart \
+    state::privileged_activated_daemon_upgrades_and_adopts_state \
+    inspection::privileged_activated_daemon_refuses_foreign_inspection; do
+    run_rust "$installed::daemon::$scenario" CONTROL_DAEMON 022 --exact timeout 240 unshare --mount --propagation private --
+  done
+  run_rust "$installed::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations" BROKER_BEADS 022 --exact \
+    env "LOUISELM_TEST_BEADS_INSTALLER=$repo_root/scripts/install-broker-beads.py" \
+    timeout 240 unshare --mount --propagation private --
+  for scenario in finite uncapped failed_load unavailable_balance; do
+    run_rust "$installed::privileged_installed_cold_resume_$scenario" BROKER_LAUNCH 022 --exact timeout 240
+  done
+  run_rust "$installed::failures::privileged_installed_launch_failures_never_acknowledge_success" BROKER_LAUNCH 022 --exact
+fi

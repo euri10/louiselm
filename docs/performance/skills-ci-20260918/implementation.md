@@ -3,16 +3,14 @@
 Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
-Maximum candidate passes: **3**. Consumed: **1**. **Validating repaired baseline.**
-All three correctness blockers are closed with three passing local full suites
-and all 21 privileged invocations. Hosted characterization remains in progress;
-see `workspace-capture-fix.md`.
-Neither optimization candidate has been reapplied.
+Maximum candidate passes: **3**. Consumed: **2**. **Applying corrected split retry.**
+All three correctness blockers are closed; all three complete repaired-baseline
+hosted runs pass. Pass 2 restores the corrected split, with cache unchanged.
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated
-matrix VM. Retrying that withdrawn split will consume pass 2; the cache
+matrix VM. Retrying that withdrawn split consumes pass 2; the cache
 experiment can use pass 3 only if the remaining stop rules permit it.
-No candidate was accepted. No second candidate has been applied.
+No candidate has yet been accepted.
 
 Baseline: `37dd6ba4b78ab802f8e2fdc8923e5daafb62029b`, clean implementation
 worktree; skills-core tree `419bb0bb9d40639b133ca1cbe0e870602cc13c01` matches the
@@ -36,6 +34,7 @@ baseline before its candidate is applied.
 | Pass | Lever | Correctness | Timing | Decision |
 | --- | --- | --- | --- | --- |
 | 1 | Two matrix VMs, serial `core` / `lifecycle` groups | Local 5/5 + publication 8/8; all 21 guest invocations pass. Repaired hosted runs hit existing fixture defects h157 and 0s97h | Guest 730.100s versus baseline 728.720s; initial hosted probe 894s wall / 1696 runner-seconds | Withdrawn: correctness unresolved; no accepted speedup |
+| 2 | Restore corrected matrix split after three defect fixes | Local dispatcher/status 5/5, publication 8/8; exact runner already passed all 21 guest invocations on repaired Rust tree | Pending three complete hosted runs | Applied; no cache change, no gain claimed |
 
 The dispatch regression preserves the 21 original external invocations and their
 gate flags, namespaces, masks, filters, timeouts and serial group selectors.
@@ -151,3 +150,29 @@ Branch protection was reread: `cargo (skills-core)` remains required with strict
 up-to-date checks. No repository setting changed. If resumed, retain the corrected
 aggregate and the predeclared gain/cost thresholds; compare with both fresh and
 archived baselines, never count incomplete/failed workloads as fast samples.
+
+## Pass 2: corrected split retry
+
+Repaired baseline: `a127d9c4a530a87ec15e5cd0bf030fb37a292607`, all 13 jobs pass
+in each of runs `35328351435`, `35328353675`, `35328356265`. Raw evidence:
+`repaired-baseline.json`. Skills-core durations: 1648, 1536, 1555s; median
+**1555s**, range **1536–1648s**, spread **112s**. Privileged group: 1324, 1304,
+1323s; median **1323s**, spread **20s**. Queue delays: 40, 39, 34s. All runners
+report AMD EPYC 7763, 4 vCPU and 15989 MiB RAM. Each restores the original
+1,243,187,453-byte immutable cache, then recompiles the crate. No cold-cache
+measurement is claimed by these three warm samples.
+
+Candidate base: `efe1c68702338428417eb50d2c357b4f1b745dd5` (acceptance records
+only after the baseline); Rust tree remains
+`cb21e42b65614d728f0fb046bba6c2ef04388aeb`. One causal lever: split the same
+serial privileged groups across two independent VMs, preserving the branch-
+required aggregate. Restore only the four archived proposal files from
+`60aa9e8`; do not alter Rust, profiles, caches, deadlines or repository settings.
+Rollback is limited to those four files relative to this candidate base.
+
+Retain the conservative original acceptance: at least three complete candidate
+runs; median gain above 10% and the historical 514s range (also above the fresh
+112s range), candidate range below historical 1104s minimum, added raw runner
+time at most three minutes against both archived and fresh medians. Include
+aggregate overhead and report rounded minutes/queue delay. Candidate local
+repairs start at 0 of 2; total campaign passes remain maximum 3, consumed 2.

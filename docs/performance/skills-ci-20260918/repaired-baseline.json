@@ -1,0 +1,899 @@
+[
+  {
+    "run": 35328351435,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35328351435",
+    "head_sha": "a127d9c4a530a87ec15e5cd0bf030fb37a292607",
+    "event": "workflow_dispatch",
+    "conclusion": "success",
+    "all_gates": [
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "success"
+      }
+    ],
+    "queue_seconds": 40,
+    "skills_start_skew_seconds": 0,
+    "skills_wall_seconds": 1648,
+    "skills_runner_seconds": 1648,
+    "skills_rounded_runner_minutes": 28,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 105546633917,
+        "name": "cargo (skills-core)",
+        "conclusion": "success",
+        "seconds": 1648,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:26Z",
+            "completed_at": "2026-09-18T09:13:27Z",
+            "seconds": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:27Z",
+            "completed_at": "2026-09-18T09:13:28Z",
+            "seconds": 1
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:28Z",
+            "completed_at": "2026-09-18T09:13:46Z",
+            "seconds": 18
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:46Z",
+            "completed_at": "2026-09-18T09:13:55Z",
+            "seconds": 9
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:55Z",
+            "completed_at": "2026-09-18T09:14:15Z",
+            "seconds": 20
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:15Z",
+            "completed_at": "2026-09-18T09:14:15Z",
+            "seconds": 0
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:15Z",
+            "completed_at": "2026-09-18T09:14:17Z",
+            "seconds": 2
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:17Z",
+            "completed_at": "2026-09-18T09:14:38Z",
+            "seconds": 21
+          },
+          {
+            "name": "Test",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:38Z",
+            "completed_at": "2026-09-18T09:16:13Z",
+            "seconds": 95
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:13Z",
+            "completed_at": "2026-09-18T09:16:16Z",
+            "seconds": 3
+          },
+          {
+            "name": "Recovery browser deadline regressions",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:16Z",
+            "completed_at": "2026-09-18T09:16:16Z",
+            "seconds": 0
+          },
+          {
+            "name": "Linked Admission across operator and read-only broker identities",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:16Z",
+            "completed_at": "2026-09-18T09:18:00Z",
+            "seconds": 104
+          },
+          {
+            "name": "Documentation",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:18:00Z",
+            "completed_at": "2026-09-18T09:18:10Z",
+            "seconds": 10
+          },
+          {
+            "name": "Required hostile launcher conformance",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:18:10Z",
+            "completed_at": "2026-09-18T09:18:23Z",
+            "seconds": 13
+          },
+          {
+            "name": "Test root-owned Session cgroup containment",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:18:23Z",
+            "completed_at": "2026-09-18T09:18:23Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test production relay cleanup with an open controller",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:18:23Z",
+            "completed_at": "2026-09-18T09:18:24Z",
+            "seconds": 1
+          },
+          {
+            "name": "Test measured Agent and isolated tool grants",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:18:24Z",
+            "completed_at": "2026-09-18T09:40:28Z",
+            "seconds": 1324
+          },
+          {
+            "name": "Test privileged launch supervisor composition",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:28Z",
+            "completed_at": "2026-09-18T09:40:35Z",
+            "seconds": 7
+          },
+          {
+            "name": "Test measured Bubblewrap rejection in the production launch path",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:35Z",
+            "completed_at": "2026-09-18T09:40:49Z",
+            "seconds": 14
+          },
+          {
+            "name": "Test root-owned installed release boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:49Z",
+            "completed_at": "2026-09-18T09:40:49Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test root-owned launch registry boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:49Z",
+            "completed_at": "2026-09-18T09:40:50Z",
+            "seconds": 1
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:50Z",
+            "completed_at": "2026-09-18T09:40:50Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:50Z",
+            "completed_at": "2026-09-18T09:40:50Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:50Z",
+            "completed_at": "2026-09-18T09:40:50Z",
+            "seconds": 0
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:40:50Z",
+            "completed_at": "2026-09-18T09:40:50Z",
+            "seconds": 0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-18T09:14:38.5429719Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.02s",
+            "2026-09-18T09:15:23.2137394Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 44.60s",
+            "2026-09-18T09:16:16.8102759Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:10.2484556Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.16s",
+            "2026-09-18T09:18:10.3827723Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:23.5119983Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:23.6288426Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:23.8332974Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:23.9454667Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:24.1243533Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:18:24.2356056Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:40:28.8882548Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:40:35.3255115Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:40:35.4342407Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:40:49.7975262Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:40:49.9750687Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s"
+          ],
+          "cache": [
+            "2026-09-18T09:14:05.7662630Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-18T09:14:15.6003684Z Cache restored successfully",
+            "2026-09-18T09:14:15.6603602Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+            "2026-09-18T09:40:50.3207984Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"AMD EPYC 7763 64-Core Processor\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15989        2039        5955          44        8386       13950",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ]
+  },
+  {
+    "run": 35328353675,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35328353675",
+    "head_sha": "a127d9c4a530a87ec15e5cd0bf030fb37a292607",
+    "event": "workflow_dispatch",
+    "conclusion": "success",
+    "all_gates": [
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      },
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "success"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      }
+    ],
+    "queue_seconds": 39,
+    "skills_start_skew_seconds": 0,
+    "skills_wall_seconds": 1536,
+    "skills_runner_seconds": 1536,
+    "skills_rounded_runner_minutes": 26,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 105546640807,
+        "name": "cargo (skills-core)",
+        "conclusion": "success",
+        "seconds": 1536,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:27Z",
+            "completed_at": "2026-09-18T09:13:27Z",
+            "seconds": 0
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:27Z",
+            "completed_at": "2026-09-18T09:13:28Z",
+            "seconds": 1
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:28Z",
+            "completed_at": "2026-09-18T09:13:38Z",
+            "seconds": 10
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:38Z",
+            "completed_at": "2026-09-18T09:13:46Z",
+            "seconds": 8
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:46Z",
+            "completed_at": "2026-09-18T09:14:01Z",
+            "seconds": 15
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:01Z",
+            "completed_at": "2026-09-18T09:14:01Z",
+            "seconds": 0
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:01Z",
+            "completed_at": "2026-09-18T09:14:03Z",
+            "seconds": 2
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:03Z",
+            "completed_at": "2026-09-18T09:14:24Z",
+            "seconds": 21
+          },
+          {
+            "name": "Test",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:24Z",
+            "completed_at": "2026-09-18T09:15:56Z",
+            "seconds": 92
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:15:56Z",
+            "completed_at": "2026-09-18T09:15:57Z",
+            "seconds": 1
+          },
+          {
+            "name": "Recovery browser deadline regressions",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:15:57Z",
+            "completed_at": "2026-09-18T09:15:57Z",
+            "seconds": 0
+          },
+          {
+            "name": "Linked Admission across operator and read-only broker identities",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:15:57Z",
+            "completed_at": "2026-09-18T09:16:32Z",
+            "seconds": 35
+          },
+          {
+            "name": "Documentation",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:32Z",
+            "completed_at": "2026-09-18T09:16:41Z",
+            "seconds": 9
+          },
+          {
+            "name": "Required hostile launcher conformance",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:41Z",
+            "completed_at": "2026-09-18T09:16:54Z",
+            "seconds": 13
+          },
+          {
+            "name": "Test root-owned Session cgroup containment",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:54Z",
+            "completed_at": "2026-09-18T09:16:55Z",
+            "seconds": 1
+          },
+          {
+            "name": "Test production relay cleanup with an open controller",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:55Z",
+            "completed_at": "2026-09-18T09:16:55Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test measured Agent and isolated tool grants",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:55Z",
+            "completed_at": "2026-09-18T09:38:39Z",
+            "seconds": 1304
+          },
+          {
+            "name": "Test privileged launch supervisor composition",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:38:39Z",
+            "completed_at": "2026-09-18T09:38:45Z",
+            "seconds": 6
+          },
+          {
+            "name": "Test measured Bubblewrap rejection in the production launch path",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:38:45Z",
+            "completed_at": "2026-09-18T09:38:59Z",
+            "seconds": 14
+          },
+          {
+            "name": "Test root-owned installed release boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:38:59Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 1
+          },
+          {
+            "name": "Test root-owned launch registry boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:00Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:00Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:00Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:00Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 0
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:00Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-18T09:14:24.5094135Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.32s",
+            "2026-09-18T09:15:08.5500558Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 43.97s",
+            "2026-09-18T09:15:57.8214718Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:41.9410446Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.78s",
+            "2026-09-18T09:16:42.0801965Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:55.0377677Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:55.1442032Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:55.3304559Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:55.4347695Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:16:55.6102488Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:55.7226823Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:38:39.3331994Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:38:45.8205690Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:38:45.9288331Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:38:59.9603048Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:39:00.1335238Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s"
+          ],
+          "cache": [
+            "2026-09-18T09:13:51.0768325Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-18T09:14:01.0672306Z Cache restored successfully",
+            "2026-09-18T09:14:01.1280015Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+            "2026-09-18T09:39:00.4839167Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"AMD EPYC 7763 64-Core Processor\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15989        1876        6125          44        8377       14112",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ]
+  },
+  {
+    "run": 35328356265,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35328356265",
+    "head_sha": "a127d9c4a530a87ec15e5cd0bf030fb37a292607",
+    "event": "workflow_dispatch",
+    "conclusion": "success",
+    "all_gates": [
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "success"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      }
+    ],
+    "queue_seconds": 34,
+    "skills_start_skew_seconds": 0,
+    "skills_wall_seconds": 1555,
+    "skills_runner_seconds": 1555,
+    "skills_rounded_runner_minutes": 26,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 105546648697,
+        "name": "cargo (skills-core)",
+        "conclusion": "success",
+        "seconds": 1555,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:23Z",
+            "completed_at": "2026-09-18T09:13:24Z",
+            "seconds": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:24Z",
+            "completed_at": "2026-09-18T09:13:25Z",
+            "seconds": 1
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:25Z",
+            "completed_at": "2026-09-18T09:13:34Z",
+            "seconds": 9
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:34Z",
+            "completed_at": "2026-09-18T09:13:43Z",
+            "seconds": 9
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:13:43Z",
+            "completed_at": "2026-09-18T09:14:00Z",
+            "seconds": 17
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:00Z",
+            "completed_at": "2026-09-18T09:14:00Z",
+            "seconds": 0
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:00Z",
+            "completed_at": "2026-09-18T09:14:01Z",
+            "seconds": 1
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:01Z",
+            "completed_at": "2026-09-18T09:14:23Z",
+            "seconds": 22
+          },
+          {
+            "name": "Test",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:14:23Z",
+            "completed_at": "2026-09-18T09:15:55Z",
+            "seconds": 92
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:15:55Z",
+            "completed_at": "2026-09-18T09:15:55Z",
+            "seconds": 0
+          },
+          {
+            "name": "Recovery browser deadline regressions",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:15:55Z",
+            "completed_at": "2026-09-18T09:15:55Z",
+            "seconds": 0
+          },
+          {
+            "name": "Linked Admission across operator and read-only broker identities",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:15:55Z",
+            "completed_at": "2026-09-18T09:16:28Z",
+            "seconds": 33
+          },
+          {
+            "name": "Documentation",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:28Z",
+            "completed_at": "2026-09-18T09:16:37Z",
+            "seconds": 9
+          },
+          {
+            "name": "Required hostile launcher conformance",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:37Z",
+            "completed_at": "2026-09-18T09:16:50Z",
+            "seconds": 13
+          },
+          {
+            "name": "Test root-owned Session cgroup containment",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:50Z",
+            "completed_at": "2026-09-18T09:16:51Z",
+            "seconds": 1
+          },
+          {
+            "name": "Test production relay cleanup with an open controller",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:51Z",
+            "completed_at": "2026-09-18T09:16:51Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test measured Agent and isolated tool grants",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:16:51Z",
+            "completed_at": "2026-09-18T09:38:54Z",
+            "seconds": 1323
+          },
+          {
+            "name": "Test privileged launch supervisor composition",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:38:54Z",
+            "completed_at": "2026-09-18T09:39:00Z",
+            "seconds": 6
+          },
+          {
+            "name": "Test measured Bubblewrap rejection in the production launch path",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:00Z",
+            "completed_at": "2026-09-18T09:39:15Z",
+            "seconds": 15
+          },
+          {
+            "name": "Test root-owned installed release boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:15Z",
+            "completed_at": "2026-09-18T09:39:15Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test root-owned launch registry boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:15Z",
+            "completed_at": "2026-09-18T09:39:15Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:15Z",
+            "completed_at": "2026-09-18T09:39:15Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:15Z",
+            "completed_at": "2026-09-18T09:39:15Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:15Z",
+            "completed_at": "2026-09-18T09:39:16Z",
+            "seconds": 1
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T09:39:16Z",
+            "completed_at": "2026-09-18T09:39:16Z",
+            "seconds": 0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-18T09:14:23.0554490Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.19s",
+            "2026-09-18T09:15:06.1521328Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 43.03s",
+            "2026-09-18T09:15:55.8919735Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:37.9785605Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.56s",
+            "2026-09-18T09:16:38.1172900Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:51.0384330Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:51.1455991Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:51.3334297Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:16:51.4387563Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:16:51.6114830Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:16:51.7211145Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T09:38:54.4222887Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:39:00.8720220Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:39:00.9899301Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:39:15.3575226Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T09:39:15.5305657Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s"
+          ],
+          "cache": [
+            "2026-09-18T09:13:49.8186540Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-18T09:13:59.5845316Z Cache restored successfully",
+            "2026-09-18T09:14:00.0761069Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+            "2026-09-18T09:39:15.8784880Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"AMD EPYC 7763 64-Core Processor\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15989        1911        6082          43        8386       14078",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ]
+  }
+]
