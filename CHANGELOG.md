@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1](https://github.com/euri10/louiselm/compare/plugin-v0.1.0...plugin-v0.1.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **release:** scope immutability read credentials ([b25dfb4](https://github.com/euri10/louiselm/commit/b25dfb4e6c48d758e91333f3c1543776a5664215))
+* **release:** scope immutability read credentials ([3fbd505](https://github.com/euri10/louiselm/commit/3fbd5051ee6d8fbbafb99899bb4a3fa49494f379))
+* stabilize skills CI and workspace capture ([fd87239](https://github.com/euri10/louiselm/commit/fd87239922197b3973e0a9cce2fe5b555235e83b))
+
 ## 0.1.0 (2026-09-18)
 
 
