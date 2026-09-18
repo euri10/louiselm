@@ -12,11 +12,16 @@ release authority. GitLab synchronization is tracked in
 This workflow is prepared for review, **not operationally accepted**. No release
 has been published. The checked-in `VERSION` and manifest initially contain
 `0.0.0`, meaning unreleased. The previous ACP `0.1.0` literal was not a release.
-Release Please proposes the explicit initial version `0.1.0`, considering commits
-after `c905fdafa60370d1a07e6853bba741cce9da9870` (exclusive). Review the version
-and baseline in `release-please-config.json` before activation. There is no fake
-historical tag or release. The baseline remains the commit-policy audit boundary;
-Release Please itself switches to the last real release after publication.
+Release Please proposes the explicit initial version `0.1.0`, considering the
+entire history, including the root commit, subject to the component and commit
+type filters below. No `bootstrap-sha` is set. `commit-search-depth` is JavaScript's
+maximum safe integer (9007199254740991), avoiding the upstream 500-commit cutoff;
+the scan ends at repository inception or the previous real plugin release.
+There is no fake historical tag or release. The separate commit-policy audit
+boundary does not restrict release notes or the complete source tree shipped.
+The full first-release history can exceed GitHub's PR-description limit: the
+pinned tool clips that preview at 65,536 characters. Review the generated
+`CHANGELOG.md` for the complete notes, not just the PR description.
 
 `VERSION` is the plugin version source. Release Please updates it, the plugin's
 entry in `.release-please-manifest.json`, `CHANGELOG.md`, and the marked line in
@@ -46,7 +51,10 @@ separate component PRs on `main`. Only the plugin is configured here.
 The last convention is necessary because the pinned tool's `exclude-paths`
 matches directories, **not individual files**. `scripts/check-release-commits.py`
 lists the exceptions, including site npm metadata and companion installers,
-and checks the history after the bootstrap baseline before proposals run. Keep
+and checks commits after its `AUDIT_BASELINE`
+(`c905fdafa60370d1a07e6853bba741cce9da9870`, exclusive) before proposals run.
+That is when the convention took effect; older commits are not retroactively
+rejected and remain eligible for the first release notes. Keep
 such changes in separate non-release commits; fix their commit message before
 merging. Do not squash them under a release-driving title. Directory exclusions
 and the exception list must be reviewed when adding a new component or tooling
@@ -64,14 +72,20 @@ not provision credentials, change visibility, merge release PRs, or publish one.
 
 1. Register a dedicated GitHub App and install it only on `euri10/louiselm` with
    Contents and Pull requests read/write, plus Issues read/write for Release
-   Please labels/comments. Disable webhooks and user authorization; the App
+   Please labels/comments, and Administration **read-only** for the immutable
+   releases settings check. Approve permission changes on the App installation
+   as well as saving them on the App. Disable webhooks and user authorization; the App
    only authenticates automation. Generate a private key and store the complete
    PEM as repository Actions secret `RELEASE_PLEASE_APP_PRIVATE_KEY`. Store its
    numeric App ID as repository Actions secret `RELEASE_PLEASE_APP_ID` too.
    Neither value belongs in a commit or chat. The pinned
    `actions/create-github-app-token` v3.2.0 action creates a short-lived token
-   scoped to this repository and those three permissions, and revokes it when
-   the job ends. `RELEASE_PLEASE_TOKEN` is not used. Do not reuse personal CLI
+   scoped to this repository and the three release-writing permissions, plus
+   a separate token with only Administration read. Both are revoked when the
+   job ends. The publisher receives the latter as `GH_IMMUTABILITY_TOKEN` and
+   uses it only for the immutable-releases settings GET; all other reads and
+   publication retain the job's `GITHUB_TOKEN`. No Administration write is
+   needed. `RELEASE_PLEASE_TOKEN` is not used. Do not reuse personal CLI
    credentials, protected bundle-signing keys, or a signing environment.
    The App does not need Actions write or Workflows write.
    If GitHub refuses preparation for an older commit
@@ -84,7 +98,7 @@ not provision credentials, change visibility, merge release PRs, or publish one.
    tags/assets through GitHub, including against accidental manual replacement.
 3. Protect `main` with maintainer review, no automatic bot merging, and required
    CI checks (including Plugin release contract and stable Lua gates). Retain
-   existing checks for the other components. Review the first baseline/version.
+   existing checks for the other components. Review the first release history/version.
 4. Set repository variable `PLUGIN_RELEASES_ENABLED=true`, then allow a normal
    main-push CI run to finish. The release workflow is disabled without this opt-in.
 5. Inspect the resulting plugin-only bot PR. Confirm **pull_request** CI ran on

@@ -11,18 +11,25 @@ const {setLogger} = require('release-please/build/src/util/logger');
 setLogger({debug() {}, info() {}, warn() {}, error() {}});
 
 const config = JSON.parse(readFileSync('release-please-config.json'));
-const baseline = config['bootstrap-sha'];
-async function proposal(message, files, previous = '0.4.2') {
+const releaseSha = 'b'.repeat(40);
+async function proposal(message, files, previous = '0.4.2', history = []) {
   const github = {
     repository: {owner: 'fixture', repo: 'plugin'},
     async getFileJson(path) {
       return path === 'release-please-config.json' ? config : {'.': previous};
     },
-    async *releaseIterator() {},
+    async *releaseIterator() {
+      if (previous !== '0.0.0') yield {tagName: `plugin-v${previous}`, sha: releaseSha};
+    },
     async *tagIterator() {},
-    async *mergeCommitIterator() {
-      yield {sha: 'a'.repeat(40), message, files};
-      yield {sha: baseline, message: 'feat: excluded history', files: ['lua/old.lua']};
+    async *mergeCommitIterator(branch, {maxResults}) {
+      assert.equal(branch, 'main');
+      const commits = [{sha: 'a'.repeat(40), message, files}, ...history];
+      if (previous !== '0.0.0') commits.push(
+        {sha: releaseSha, message: 'chore: release plugin', files: ['VERSION']},
+        {sha: 'c'.repeat(40), message: 'feat: already released', files: ['lua/old.lua']},
+      );
+      yield* commits.slice(0, maxResults);
     },
   };
   const manifest = await Manifest.fromManifest(github, 'main');
@@ -63,8 +70,31 @@ test('first release is explicit and projection survives the real updaters', asyn
   assert.equal(JSON.parse(updated['.release-please-manifest.json'])['.'], '0.1.0');
   assert.equal(updated['lua/louiselm/version.lua'], readFileSync('lua/louiselm/version.lua', 'utf8').replace(/version = "[^"]+"/, 'version = "0.1.0"'));
   assert.match(updated['CHANGELOG.md'], /0\.1\.0/);
-  assert.doesNotMatch(updated['CHANGELOG.md'], /excluded history/);
   assert.match(candidate.body.toString(), /release plugin/);
+});
+
+test('first release reaches root beyond 1000 commits and the former audit cutoff', async () => {
+  const history = Array.from({length: 1100}, (_, i) => ({
+    sha: i.toString(16).padStart(40, '0'), message: 'chore: record work', files: ['README.md'],
+  }));
+  history.splice(50, 0, {
+    sha: 'c905fdafa60370d1a07e6853bba741cce9da9870',
+    message: 'fix: change at former cutoff', files: ['lua/old.lua'],
+  });
+  history.push({sha: 'd'.repeat(40), message: 'feat: earliest plugin feature', files: ['lua/first.lua']});
+  const [candidate] = await proposal('fix: recent change', ['lua/x.lua'], '0.0.0', history);
+  assert.equal(candidate.version.toString(), '0.1.0');
+  const changelog = candidate.updates.find(update => update.path === 'CHANGELOG.md').updater.updateContent('');
+  assert.match(changelog, /recent change/);
+  assert.match(changelog, /change at former cutoff/);
+  assert.match(changelog, /earliest plugin feature/);
+});
+
+test('subsequent releases stop at the last real plugin release', async () => {
+  const [candidate] = await proposal('fix: recent change', ['lua/x.lua']);
+  assert.equal(candidate.version.toString(), '0.4.3');
+  assert.match(candidate.body.toString(), /recent change/);
+  assert.doesNotMatch(candidate.body.toString(), /already released/);
 });
 
 test('merged PR prepares a draft at the exact approved SHA without an early tag', async () => {
@@ -112,6 +142,13 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
     'permission-issues': 'write',
     'permission-pull-requests': 'write',
   }); // Default token scope is this repository; default cleanup revokes it.
+  const settingsToken = steps.find(step => step.id === 'immutability-token');
+  assert.equal(settingsToken?.uses, token.uses);
+  assert.deepEqual(settingsToken.with, {
+    'app-id': '${{ secrets.RELEASE_PLEASE_APP_ID }}',
+    'private-key': '${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}',
+    'permission-administration': 'read',
+  });
   assert.match(workflow.jobs.release.if, /vars\.PLUGIN_RELEASES_ENABLED == 'true'/);
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main');
   const actions = steps.filter(step => step.uses?.startsWith('googleapis/release-please-action@'));
@@ -129,7 +166,11 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   assert.equal(publicationSteps.length, 2);
   assert.ok(steps.indexOf(publicationSteps[0]) < steps.indexOf(actions[0]));
   assert.ok(steps.indexOf(publicationSteps[1]) < steps.indexOf(actions[1]));
-  for (const step of publicationSteps) assert.equal(step.env.GH_TOKEN, '${{ github.token }}');
+  for (const step of publicationSteps) {
+    assert.ok(steps.indexOf(settingsToken) < steps.indexOf(step));
+    assert.equal(step.env.GH_TOKEN, '${{ github.token }}');
+    assert.equal(step.env.GH_IMMUTABILITY_TOKEN, '${{ steps.immutability-token.outputs.token }}');
+  }
 });
 
 test('draft gate executes pagination filtering and fails closed on API errors', () => {

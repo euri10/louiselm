@@ -23,6 +23,9 @@ NON_PLUGIN_FILES = {
     "scripts/agent-liveness-snapshot", "scripts/test-agent-liveness-snapshot.sh",
 }
 
+# This convention applies prospectively, independently of release-note history.
+AUDIT_BASELINE = "c905fdafa60370d1a07e6853bba741cce9da9870"
+
 
 def validate(message, files, excluded):
     def excluded_directory(path):
@@ -36,10 +39,9 @@ def validate(message, files, excluded):
             raise ValueError("non-plugin-only tooling changes must use build/chore/ci/docs/style/test without breaking or Release-As trailers")
 
 
-def main():
+def main(baseline=AUDIT_BASELINE):
     config = json.loads(Path("release-please-config.json").read_text())
     excluded = config["packages"]["."]["exclude-paths"]
-    baseline = config["bootstrap-sha"]
     commits = subprocess.check_output(["git", "rev-list", f"{baseline}..HEAD"], text=True).splitlines()
     for sha in commits:
         message = subprocess.check_output(["git", "show", "-s", "--format=%B", sha], text=True)

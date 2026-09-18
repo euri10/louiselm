@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,6 +30,43 @@ policy = load("check-release-commits")
 SHA = "a" * 40
 HEAD = "b" * 40
 TAG = "plugin-v0.1.0"
+
+
+class ApiCredentials(unittest.TestCase):
+    def test_administration_token_is_used_only_for_settings_read(self):
+        settings = "repos/euri10/louiselm/immutable-releases"
+        with patch.dict(os.environ, {"GH_TOKEN": "publication-fixture", "GH_IMMUTABILITY_TOKEN": "settings-fixture"}):
+            for path, data, token in [
+                (settings, None, "settings-fixture"),
+                ("repos/euri10/louiselm/actions/runs/10", None, "publication-fixture"),
+                ("repos/euri10/louiselm/releases/7", {"draft": False}, "publication-fixture"),
+                (settings, {"enabled": False}, "publication-fixture"),
+                ("repos/other/repo/immutable-releases", None, "publication-fixture"),
+            ]:
+                with self.subTest(path=path, data=data), patch.object(release.subprocess, "run") as run:
+                    run.return_value.stdout = '{"ok":true}'
+                    self.assertEqual(release.github_api(path, data), {"ok": True})
+                    effective_env = run.call_args.kwargs.get("env") or os.environ
+                    self.assertEqual(effective_env["GH_TOKEN"], token)
+                    self.assertNotIn("GH_IMMUTABILITY_TOKEN", effective_env)
+                    self.assertNotIn(token, run.call_args.args[0])
+            self.assertEqual(os.environ["GH_TOKEN"], "publication-fixture")
+
+    def test_missing_settings_token_fails_before_request(self):
+        with patch.dict(os.environ, {"GH_TOKEN": "publication-fixture"}, clear=True):
+            with patch.object(release.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, "GH_IMMUTABILITY_TOKEN.*Administration.*read"):
+                    release.github_api("repos/euri10/louiselm/immutable-releases")
+                run.assert_not_called()
+
+    def test_api_failure_names_boundary_without_exposing_response(self):
+        with patch.dict(os.environ, {"GH_IMMUTABILITY_TOKEN": "settings-fixture"}):
+            failure = subprocess.CalledProcessError(1, ["gh", "api"], stderr="private response fixture")
+            with patch.object(release.subprocess, "run", side_effect=failure):
+                with self.assertRaisesRegex(RuntimeError, "Administration.*read") as error:
+                    release.github_api("repos/euri10/louiselm/immutable-releases")
+                self.assertNotIn("private response fixture", str(error.exception))
+                self.assertNotIn("settings-fixture", str(error.exception))
 
 
 class Publication(unittest.TestCase):
@@ -153,20 +191,29 @@ class CommitPolicy(unittest.TestCase):
                 ], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
 
             git("init", "--quiet")
-            git("commit", "--quiet", "--allow-empty", "-m", "baseline")
+            (root / "package.json").write_text('{"legacy":true}')
+            git("add", "package.json")
+            git("commit", "--quiet", "-m", "feat: legacy tooling before policy")
             baseline = git("rev-parse", "HEAD")
             (root / "release-please-config.json").write_text(json.dumps({
-                "bootstrap-sha": baseline, "packages": {".": {"exclude-paths": ["site"]}},
+                "packages": {".": {"exclude-paths": ["site"]}},
             }))
             (root / "package.json").write_text("{}")
             git("add", "package.json")
             git("commit", "--quiet", "-m", "build: site tooling")
             script = str(Path(policy.__file__).resolve())
-            self.assertEqual(subprocess.run([sys.executable, script], cwd=root, capture_output=True).returncode, 0)
+            command = [
+                sys.executable, "-c",
+                "import runpy, sys; runpy.run_path(sys.argv[1])['main'](sys.argv[2])",
+                script, baseline,
+            ]
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("1 commits checked", result.stdout)
             (root / "package.json").write_text('{"private":true}')
             git("add", "package.json")
             git("commit", "--quiet", "-m", "feat: site tooling")
-            result = subprocess.run([sys.executable, script], cwd=root, capture_output=True, text=True)
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(git("rev-parse", "HEAD"), result.stderr)
 
