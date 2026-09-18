@@ -74,6 +74,47 @@ nor acceptance of a synthetic JWT proves entitlement or billing. The adapter's
 cannot prove where a ChatGPT-authenticated stock Codex request actually goes.
 No Provider limits endpoint was called.
 
+### Supported-alternative review, 2026-09-18
+
+The bounded official-documentation review found no qualifying production
+bridge. The following conclusions concern this broker contract, not whether
+Codex itself supports subscription automation:
+
+| Documented option | Why it does not establish this bridge |
+| --- | --- |
+| [GitHub Action Responses proxy](https://learn.chatgpt.com/docs/github-action) | The documented proxy starts when an API key is supplied; that does not preserve subscription billing. |
+| [Codex access tokens](https://learn.chatgpt.com/docs/enterprise/access-tokens) | Business/Enterprise workspace credentials support trusted CLI and app-server automation. The page distinguishes them from Platform keys for general API calls; it does not document broker-originated subscription Responses requests. Workspace eligibility was not inspected. |
+| [Workload identity](https://learn.chatgpt.com/docs/enterprise/workload-identity) | Opt-in beta for managed workspaces, requiring an administrator and identity issuer. Codex reads the protected assertion and obtains access material. This is not the agreed fresh operator sign-in or a documented credential-free confined Codex bridge. |
+| [Command-backed provider authentication](https://learn.chatgpt.com/docs/config-file/config-advanced) | The helper returns a bearer to Codex. Using it in the confined runtime violates broker-only custody; it supplies no upstream subscription transport contract. |
+| [SDK automation](https://learn.chatgpt.com/docs/codex-sdk) and [remote app-server](https://learn.chatgpt.com/docs/app-server) | These run Codex threads/turns, not a documented transparent model-request endpoint. Moving the whole Agent outside its Session would change the approved architecture, not resolve authentication alone. |
+
+The app-server page also warns, in its remote Code Mode host section, that
+the app-server command and WebSocket transport are experimental and unsupported
+for production. Its protocol section separately flags WebSocket as unsupported.
+Do not interpret stdio availability or the legacy method's measured behavior
+as a production-support commitment; support scope needs explicit clarification.
+
+**Stop condition:** local discovery is complete for this pass. No qualifying
+supported bridge was established in these sources as of the review date; that
+is not proof that no future or separately documented interface can exist.
+Do not repeat synthetic probes, ask for a login, or implement a relay merely to
+work around missing support. Ordinary Codex remains unchanged and Verified
+Codex must remain unavailable under the confirmed fallback.
+
+External prerequisite `louiselm-qbr.5.1.3.11` tracks the missing support evidence
+and blocks `.3.4`; it is deferred until new evidence arrives. This prevents the
+completed discovery pass from being mistaken for ready implementation work.
+
+**Re-entry evidence:** a new primary-source contract or explicit upstream
+support statement must identify the supported login/refresh interface and exact
+subscription operation, applicable account/workspace entitlement and billing,
+and whether a broker may originate requests while the confined Codex receives
+no reusable credential. It must also clarify lifecycle ownership and production
+support for the chosen executable/API. Only then resume the offline lifecycle
+proof and the separately authorized operator acceptance below. No upstream
+support request has been sent; contacting a vendor or changing account/billing
+arrangements requires the maintainer's direction.
+
 ## Reproduce the installed-runtime experiment
 
 ```sh
