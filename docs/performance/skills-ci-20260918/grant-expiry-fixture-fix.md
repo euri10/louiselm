@@ -58,9 +58,23 @@ the same seven pass in 0.12s. `command_grants.rs` is byte-identical to the base.
 Format, all-target/all-feature warnings-denied Clippy and Rustdoc pass in the
 guest. Browser regressions pass 13/13 using the existing host Node runtime.
 The complete local Rust suite passes, including all integration/binary targets
-and three Rustdoc tests. Renewed hosted PR acceptance is pending; no required
-check is bypassed. Privileged installed-boundary gates will run in that hosted
-workflow, not on the desktop.
+and three Rustdoc tests. Hosted PR run `35345987608` passes all 13 jobs on head
+`19290e8f213f34c3cb8cac752d8143913d1a918a`, checked out as test merge
+`fd63d5219a29ccb1e7d45eed59ec9583b18b0fc6` against main `b25dfb4`.
+Skills job `105602562882` passes the grant target 7/7, the exact expiry
+regression and all privileged/installed-boundary gates. Raw acceptance evidence:
+`grant-expiry-hosted.json`. Issue `louiselm-ia4pw` is closed with this gate verdict.
+
+Normal exact-head merge was refused because main requires one approving review.
+The PR remains open/unmerged with all checks green; `louiselm-e4fzw` tracks the
+approval/landing blocker. No required check or approval was bypassed, no policy
+changed. Acceptance records stay on a separate branch to preserve the tested
+PR head. The disposable VM is stopped (`not-found/inactive/dead`).
+
+This run took 1080s overall in skills-core and 858s in the measured privileged
+step on Intel Xeon Platinum 8370C, 4 vCPU and 15988 MiB RAM. This is a third
+hardware cohort, distinct from both earlier AMD runners, not a measured code
+speedup. Fresh comparable baseline/candidate collection remains pending.
 
 Host and guest SHA-256 match:
 

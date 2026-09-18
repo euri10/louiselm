@@ -8,6 +8,10 @@ application; split still withdrawn.** On 2026-09-18 the maintainer
 said "ok do that" after the explicit request for a renewed bounded attempt.
 This overrides the prior two-unsuccessful-candidate stop only for pass 3; it
 does not reset the count or authorize a cache candidate beyond the cap.
+Latest: all five reliability fixes pass their gates; PR #10 awaits one required
+approval (`louiselm-e4fzw`). No third candidate or new comparable baseline has
+been applied/collected after that fix. Acceptance records are separate from the
+unchanged green PR head.
 The three authorized correctness fixes are closed; three complete repaired-
 baseline hosted runs pass. Pass 2 hit the separate unchanged reconciliation
 fixture failure `louiselm-qq1y1`. Both candidates ended without an accepted gain;
@@ -336,3 +340,25 @@ unchanged, while durable reservation and exact refusal assertions replace the
 assumption that audit always finishes before expiry. Focused tests, full local
 Rust suite, Clippy, Rustdoc and browser gates pass. Hosted PR acceptance remains
 pending; the issue stays open. The split is still unapplied, budget still 3/2.
+
+### Grant fix accepted; landing blocked by required review
+
+Fix `19290e8` passes every job in PR run `35345987608`; exact grant regression
+and all privileged boundaries pass. `grant-expiry-hosted.json` retains the
+13-job acceptance and merge-policy snapshot. `louiselm-ia4pw` is closed.
+Skills-core took 1080s (858s measured privileged step) on Intel Xeon Platinum
+8370C, 4 vCPU/15988 MiB RAM. Do not compare this third hardware cohort with the
+AMD samples as an optimization gain.
+
+Normal merge of exact head `19290e8f213f34c3cb8cac752d8143913d1a918a` was refused:
+`REVIEW_REQUIRED`, one approving review, enforced for admins. Main remains
+`b25dfb4`; all required checks pass. Copilot's review is `COMMENTED`, not an
+approval; there are no inline findings. The maintainer must arrange an eligible
+review. `louiselm-e4fzw` tracks landing and blocks optimization resumption.
+
+PR #10 is **unmerged**. No bypass, policy change, baseline dispatch, candidate
+application or cache change followed this blocker. Maximum/consumed remains
+**3/2**; retained speed optimization remains **none**. Acceptance evidence and
+tracker exports are committed on `codex/skills-ci-grant-acceptance`, leaving
+the green PR head unchanged. The disposable VM is stopped; unrelated root
+workspace changes are preserved.
