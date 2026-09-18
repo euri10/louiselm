@@ -53,12 +53,21 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      - name: Create a read-only token for the immutability settings check
+        id: immutability-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-administration: read
+
       - name: Check commit classification before making proposals
         run: python3 scripts/check-release-commits.py
 
       - name: Recover an already prepared draft before retrying Release Please
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_IMMUTABILITY_TOKEN: ${{ steps.immutability-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
         run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
@@ -73,6 +82,7 @@ jobs:
       - name: Publish only the checked approved commit
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_IMMUTABILITY_TOKEN: ${{ steps.immutability-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
         run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"

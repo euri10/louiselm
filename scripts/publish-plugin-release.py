@@ -4,6 +4,7 @@
 import argparse
 import base64
 import json
+import os
 import re
 import subprocess
 
@@ -101,11 +102,23 @@ def publish(api, repository, run_id):
 
 
 def github_api(path, data=None):
-    command = ["gh", "api", path, "--method", "PATCH" if data is not None else "GET"]
+    method = "PATCH" if data is not None else "GET"
+    command = ["gh", "api", path, "--method", method]
+    env = os.environ.copy()
+    settings_token = env.pop("GH_IMMUTABILITY_TOKEN", None)
+    settings_read = path == "repos/euri10/louiselm/immutable-releases" and data is None
+    if settings_read:
+        require(settings_token, "GH_IMMUTABILITY_TOKEN requires an App token with Administration read")
+        env["GH_TOKEN"] = settings_token
     if data is not None:
         command += ["--input", "-"]
-    result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
-                            text=True, capture_output=True, check=True)
+    try:
+        result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
+                                text=True, capture_output=True, check=True, env=env)
+    except subprocess.CalledProcessError as error:
+        hint = "check the installed App has Administration read" if settings_read else "check token permissions and GitHub availability"
+        # Do not print API response bodies or credential-bearing environments.
+        raise RuntimeError(f"GitHub API {method} {path} failed (exit {error.returncode}); {hint}") from None
     return json.loads(result.stdout)
 
 

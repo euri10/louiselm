@@ -142,6 +142,13 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
     'permission-issues': 'write',
     'permission-pull-requests': 'write',
   }); // Default token scope is this repository; default cleanup revokes it.
+  const settingsToken = steps.find(step => step.id === 'immutability-token');
+  assert.equal(settingsToken?.uses, token.uses);
+  assert.deepEqual(settingsToken.with, {
+    'app-id': '${{ secrets.RELEASE_PLEASE_APP_ID }}',
+    'private-key': '${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}',
+    'permission-administration': 'read',
+  });
   assert.match(workflow.jobs.release.if, /vars\.PLUGIN_RELEASES_ENABLED == 'true'/);
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main');
   const actions = steps.filter(step => step.uses?.startsWith('googleapis/release-please-action@'));
@@ -159,7 +166,11 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   assert.equal(publicationSteps.length, 2);
   assert.ok(steps.indexOf(publicationSteps[0]) < steps.indexOf(actions[0]));
   assert.ok(steps.indexOf(publicationSteps[1]) < steps.indexOf(actions[1]));
-  for (const step of publicationSteps) assert.equal(step.env.GH_TOKEN, '${{ github.token }}');
+  for (const step of publicationSteps) {
+    assert.ok(steps.indexOf(settingsToken) < steps.indexOf(step));
+    assert.equal(step.env.GH_TOKEN, '${{ github.token }}');
+    assert.equal(step.env.GH_IMMUTABILITY_TOKEN, '${{ steps.immutability-token.outputs.token }}');
+  }
 });
 
 test('draft gate executes pagination filtering and fails closed on API errors', () => {
