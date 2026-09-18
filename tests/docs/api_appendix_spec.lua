@@ -152,6 +152,32 @@ T["api_appendix"]["ends with exactly one trailing newline"] = function()
   MiniTest.expect.equality(output:sub(-2, -2) ~= "\n", true)
 end
 
+local COVERAGE_SECTIONS = {
+  {
+    title = "Widgets",
+    files = { "lua/widgets/init.lua", "lua/widgets/spin.lua" },
+  },
+  {
+    title = "Gadgets",
+    files = { "lua/gadgets/init.lua", "lua/gadgets/facade.lua" },
+    -- The facade declares no LuaCATS type of its own, so a complete export
+    -- documents nothing for it.
+    expect_no_entries = { "lua/gadgets/facade.lua" },
+  },
+}
+
+---@param name string
+---@param file string
+---@return table
+local function class_entry(name, file)
+  return {
+    name = name,
+    type = "type",
+    defines = { { file = file, start = { 1 }, type = "doc.class" } },
+    fields = {},
+  }
+end
+
 T["api_appendix"]["verify_export accepts an export covering every section"] = function()
   local entries = {
     {
@@ -200,6 +226,54 @@ T["api_appendix"]["verify_export rejects an entirely empty export"] = function()
   local message = err or ""
   MiniTest.expect.equality(message:find("Widgets", 1, true) ~= nil, true)
   MiniTest.expect.equality(message:find("Gadgets", 1, true) ~= nil, true)
+end
+
+T["api_appendix"]["verify_export rejects an export that covers every section but loses a file"] = function()
+  -- `lua-language-server --doc` truncates per file, so an export can populate
+  -- every section while dropping the files that loaded last.
+  local entries = {
+    class_entry("widgets.Widget", "lua/widgets/init.lua"),
+    class_entry("gadgets.Gadget", "lua/gadgets/init.lua"),
+  }
+
+  local ok, err = ApiAppendix.verify_export(entries, COVERAGE_SECTIONS)
+
+  MiniTest.expect.equality(ok, false)
+  local message = err or ""
+  MiniTest.expect.equality(message:find("lua/widgets/spin.lua", 1, true) ~= nil, true)
+  MiniTest.expect.equality(message:find("lua/widgets/init.lua", 1, true), nil)
+  MiniTest.expect.equality(message:find("lua/gadgets/facade.lua", 1, true), nil)
+end
+
+T["api_appendix"]["verify_export accepts a curated file declared to export no entries"] = function()
+  local entries = {
+    class_entry("widgets.Widget", "lua/widgets/init.lua"),
+    class_entry("widgets.Spin", "lua/widgets/spin.lua"),
+    class_entry("gadgets.Gadget", "lua/gadgets/init.lua"),
+  }
+
+  local ok, err = ApiAppendix.verify_export(entries, COVERAGE_SECTIONS)
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(err, nil)
+end
+
+T["api_appendix"]["verify_export rejects a stale expect_no_entries declaration"] = function()
+  -- An exempt file that starts exporting is no longer covered by the gate;
+  -- fail until its exemption is removed rather than leave it unguarded.
+  local entries = {
+    class_entry("widgets.Widget", "lua/widgets/init.lua"),
+    class_entry("widgets.Spin", "lua/widgets/spin.lua"),
+    class_entry("gadgets.Gadget", "lua/gadgets/init.lua"),
+    class_entry("gadgets.Facade", "lua/gadgets/facade.lua"),
+  }
+
+  local ok, err = ApiAppendix.verify_export(entries, COVERAGE_SECTIONS)
+
+  MiniTest.expect.equality(ok, false)
+  local message = err or ""
+  MiniTest.expect.equality(message:find("lua/gadgets/facade.lua", 1, true) ~= nil, true)
+  MiniTest.expect.equality(message:find("expect_no_entries", 1, true) ~= nil, true)
 end
 
 return T

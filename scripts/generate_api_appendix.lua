@@ -40,7 +40,7 @@ local entries = nvim.json.decode(raw)
 -- reads downstream as a stale doc/api.md rather than as a broken export.
 local sound, export_error = ApiAppendix.verify_export(entries)
 if not sound then
-  io.stderr:write("lua-language-server --doc export is incomplete: " .. (export_error or "") .. "\n")
+  io.stderr:write("lua-language-server --doc export rejected: " .. (export_error or "") .. "\n")
   io.stderr:write("doc/api.md was not compared or rewritten; re-run the generator.\n")
   os.exit(1)
 end

@@ -4,6 +4,14 @@ local M = {}
 ---is an explicit opt-in; a type is included only when one of its `defines`
 ---entries points at a listed file. Do not widen this list to a whole
 ---directory without checking every class it would newly expose.
+---
+---`expect_no_entries` names curated files a complete export documents nothing
+---for, exempting them from the coverage check in `verify_export`. Both entries
+---are module facades that declare no LuaCATS type of their own: they re-export
+---functions whose `---@class` declarations live in the siblings listed beside
+---them, and `lua-language-server --doc` emits a top-level entry per declared
+---type. Removing a facade's last re-export does not change that; declaring a
+---type in one does, and `verify_export` then rejects the stale exemption.
 M.SECTIONS = {
   {
     title = "Headless Session API",
@@ -27,6 +35,7 @@ M.SECTIONS = {
       "lua/louiselm/permission/store.lua",
       "lua/louiselm/permission/human-prompt.lua",
     },
+    expect_no_entries = { "lua/louiselm/permission/init.lua" },
   },
   {
     title = "Agent Configuration",
@@ -36,6 +45,7 @@ M.SECTIONS = {
       "lua/louiselm/agent/health.lua",
       "lua/louiselm/agent/spawn.lua",
     },
+    expect_no_entries = { "lua/louiselm/agent/init.lua" },
   },
 }
 
@@ -126,7 +136,7 @@ local function bucket_entries(entries, sections)
   return buckets, file_order
 end
 
----Check that a doc.json export documents every curated section before it is
+---Check that a doc.json export documents every curated file before it is
 ---rendered or compared.
 ---
 ---`lua-language-server --doc` exits 0 even when it dumped its export before
@@ -134,31 +144,56 @@ end
 ---well-formed appendix, so `--check` blames `doc/api.md` for being stale and
 ---a plain run silently overwrites it with a shorter document. CI job
 ---104941880259 produced its whole export in 2.5s where the passing job on a
----slower runner took 6.0s (louiselm-qbr.9.9.7.1). Every section is populated
----on real source, so an empty one means the export is unusable, never that
----the public API vanished. This catches a section lost wholesale; a partially
----loaded section still needs the unified diff `--check` prints.
+---slower runner took 6.0s (louiselm-qbr.9.9.7.1).
+---
+---The check is per file because that is the granularity the exporter
+---truncates at: LuaLS either reached a file and emitted all of its types or
+---never reached it, so a partial load drops whole files while leaving every
+---section populated (louiselm-809u1). Every curated file exports at least one
+---type on real source unless `expect_no_entries` says otherwise, so a gap
+---means the export is unusable, never that the public API vanished. What this
+---still cannot see is entries lost from inside a file LuaLS did parse; that
+---residue relies on the unified diff `--check` prints.
 ---@param entries table[] Decoded doc.json top-level entries.
 ---@param sections? table[] Override for M.SECTIONS; defaults to it.
----@return boolean ok True when every section has at least one entry.
----@return string? err Which sections the export documents nothing for.
+---@return boolean ok True when the export matches every curated file's expectation.
+---@return string? err Which curated files the export contradicts, and how.
 function M.verify_export(entries, sections)
   sections = sections or M.SECTIONS
 
   local buckets = bucket_entries(entries, sections)
 
-  local empty = {}
-  for section_index, section in ipairs(sections) do
-    if #buckets[section_index] == 0 then
-      empty[#empty + 1] = section.title
+  local counts = {}
+  for section_index in ipairs(sections) do
+    for _, item in ipairs(buckets[section_index]) do
+      counts[item.file] = (counts[item.file] or 0) + 1
     end
   end
 
-  if #empty == 0 then
+  local faults = {}
+  for _, section in ipairs(sections) do
+    local exempt = {}
+    for _, file in ipairs(section.expect_no_entries or {}) do
+      exempt[file] = true
+    end
+    for _, file in ipairs(section.files) do
+      local count = counts[file] or 0
+      if exempt[file] then
+        if count > 0 then
+          faults[#faults + 1] =
+            string.format("%s (%s) now exports types, so its expect_no_entries is stale", file, section.title)
+        end
+      elseif count == 0 then
+        faults[#faults + 1] = string.format("%s (%s) is documented by no entry", file, section.title)
+      end
+    end
+  end
+
+  if #faults == 0 then
     return true
   end
 
-  return false, "export documents no entry for section(s): " .. table.concat(empty, ", ")
+  return false, table.concat(faults, "; ")
 end
 
 ---Render the curated public API appendix from a `lua-language-server --doc`

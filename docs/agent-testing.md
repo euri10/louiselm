@@ -138,6 +138,13 @@ on a slower runner took 6.0s (louiselm-qbr.9.9.7.1). Check a property the
 export cannot plausibly lose, fail with the exporter named, and leave the
 artifact untouched.
 
+Check it at the granularity the exporter truncates at. This gate first asked
+only that each curated *section* hold an entry, but LuaLS truncates per file:
+an export missing whole files still populated every section, exited 0, and
+deleted 133 lines from `doc/api.md` (louiselm-809u1). Where a unit legitimately
+exports nothing, name it in data the check reads and reject that exemption once
+it stops being true — an allowlist nobody rechecks is a hole in the gate.
+
 `generate-api-appendix --check` fails whenever a public LuaCATS annotation
 (`---@field`, `---@class`, exported function signature, etc.) changed without
 regenerating `doc/api.md`. Run `./scripts/generate-api-appendix` (no `--check`)
