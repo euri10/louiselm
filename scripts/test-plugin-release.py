@@ -153,20 +153,29 @@ class CommitPolicy(unittest.TestCase):
                 ], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
 
             git("init", "--quiet")
-            git("commit", "--quiet", "--allow-empty", "-m", "baseline")
+            (root / "package.json").write_text('{"legacy":true}')
+            git("add", "package.json")
+            git("commit", "--quiet", "-m", "feat: legacy tooling before policy")
             baseline = git("rev-parse", "HEAD")
             (root / "release-please-config.json").write_text(json.dumps({
-                "bootstrap-sha": baseline, "packages": {".": {"exclude-paths": ["site"]}},
+                "packages": {".": {"exclude-paths": ["site"]}},
             }))
             (root / "package.json").write_text("{}")
             git("add", "package.json")
             git("commit", "--quiet", "-m", "build: site tooling")
             script = str(Path(policy.__file__).resolve())
-            self.assertEqual(subprocess.run([sys.executable, script], cwd=root, capture_output=True).returncode, 0)
+            command = [
+                sys.executable, "-c",
+                "import runpy, sys; runpy.run_path(sys.argv[1])['main'](sys.argv[2])",
+                script, baseline,
+            ]
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("1 commits checked", result.stdout)
             (root / "package.json").write_text('{"private":true}')
             git("add", "package.json")
             git("commit", "--quiet", "-m", "feat: site tooling")
-            result = subprocess.run([sys.executable, script], cwd=root, capture_output=True, text=True)
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(git("rev-parse", "HEAD"), result.stderr)
 

@@ -11,18 +11,25 @@ const {setLogger} = require('release-please/build/src/util/logger');
 setLogger({debug() {}, info() {}, warn() {}, error() {}});
 
 const config = JSON.parse(readFileSync('release-please-config.json'));
-const baseline = config['bootstrap-sha'];
-async function proposal(message, files, previous = '0.4.2') {
+const releaseSha = 'b'.repeat(40);
+async function proposal(message, files, previous = '0.4.2', history = []) {
   const github = {
     repository: {owner: 'fixture', repo: 'plugin'},
     async getFileJson(path) {
       return path === 'release-please-config.json' ? config : {'.': previous};
     },
-    async *releaseIterator() {},
+    async *releaseIterator() {
+      if (previous !== '0.0.0') yield {tagName: `plugin-v${previous}`, sha: releaseSha};
+    },
     async *tagIterator() {},
-    async *mergeCommitIterator() {
-      yield {sha: 'a'.repeat(40), message, files};
-      yield {sha: baseline, message: 'feat: excluded history', files: ['lua/old.lua']};
+    async *mergeCommitIterator(branch, {maxResults}) {
+      assert.equal(branch, 'main');
+      const commits = [{sha: 'a'.repeat(40), message, files}, ...history];
+      if (previous !== '0.0.0') commits.push(
+        {sha: releaseSha, message: 'chore: release plugin', files: ['VERSION']},
+        {sha: 'c'.repeat(40), message: 'feat: already released', files: ['lua/old.lua']},
+      );
+      yield* commits.slice(0, maxResults);
     },
   };
   const manifest = await Manifest.fromManifest(github, 'main');
@@ -63,8 +70,31 @@ test('first release is explicit and projection survives the real updaters', asyn
   assert.equal(JSON.parse(updated['.release-please-manifest.json'])['.'], '0.1.0');
   assert.equal(updated['lua/louiselm/version.lua'], readFileSync('lua/louiselm/version.lua', 'utf8').replace(/version = "[^"]+"/, 'version = "0.1.0"'));
   assert.match(updated['CHANGELOG.md'], /0\.1\.0/);
-  assert.doesNotMatch(updated['CHANGELOG.md'], /excluded history/);
   assert.match(candidate.body.toString(), /release plugin/);
+});
+
+test('first release reaches root beyond 1000 commits and the former audit cutoff', async () => {
+  const history = Array.from({length: 1100}, (_, i) => ({
+    sha: i.toString(16).padStart(40, '0'), message: 'chore: record work', files: ['README.md'],
+  }));
+  history.splice(50, 0, {
+    sha: 'c905fdafa60370d1a07e6853bba741cce9da9870',
+    message: 'fix: change at former cutoff', files: ['lua/old.lua'],
+  });
+  history.push({sha: 'd'.repeat(40), message: 'feat: earliest plugin feature', files: ['lua/first.lua']});
+  const [candidate] = await proposal('fix: recent change', ['lua/x.lua'], '0.0.0', history);
+  assert.equal(candidate.version.toString(), '0.1.0');
+  const changelog = candidate.updates.find(update => update.path === 'CHANGELOG.md').updater.updateContent('');
+  assert.match(changelog, /recent change/);
+  assert.match(changelog, /change at former cutoff/);
+  assert.match(changelog, /earliest plugin feature/);
+});
+
+test('subsequent releases stop at the last real plugin release', async () => {
+  const [candidate] = await proposal('fix: recent change', ['lua/x.lua']);
+  assert.equal(candidate.version.toString(), '0.4.3');
+  assert.match(candidate.body.toString(), /recent change/);
+  assert.doesNotMatch(candidate.body.toString(), /already released/);
 });
 
 test('merged PR prepares a draft at the exact approved SHA without an early tag', async () => {
