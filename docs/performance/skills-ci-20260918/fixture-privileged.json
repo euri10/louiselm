@@ -1,0 +1,164 @@
+{
+  "purpose": "Correctness validation only, not a performance candidate",
+  "date": "2026-09-18",
+  "source_commits": [
+    "82d5484",
+    "41afe0d"
+  ],
+  "guest": "Debian 13, 2 vCPU, 4 GiB; restricted disposable launcher VM",
+  "rust": "1.97.1",
+  "profile": "CARGO_PROFILE_DEV_DEBUG=line-tables-only",
+  "runner_commit": "60aa9e806c4cd494792bdb01cc0e5d3a9b73a818",
+  "runner_sha256": "26f37db41787a4566a34fe3e3d2c7fc05ef222a515e2ba72b65b083d182441bf",
+  "command": "bash scripts/test-skills-privileged --disposable-guest core && bash scripts/test-skills-privileged --disposable-guest lifecycle",
+  "exit_code": 0,
+  "scenarios": [
+    {
+      "name": "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle",
+      "wall_seconds": 7.404,
+      "user_seconds": 5.538,
+      "sys_seconds": 0.159,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation",
+      "wall_seconds": 28.25,
+      "user_seconds": 23.046,
+      "sys_seconds": 0.998,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects",
+      "wall_seconds": 53.06,
+      "user_seconds": 48.238,
+      "sys_seconds": 1.889,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side",
+      "wall_seconds": 20.694,
+      "user_seconds": 19.035,
+      "sys_seconds": 0.802,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade",
+      "wall_seconds": 18.221,
+      "user_seconds": 17.155,
+      "sys_seconds": 0.64,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local",
+      "wall_seconds": 17.467,
+      "user_seconds": 16.421,
+      "sys_seconds": 0.59,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::receipt_history::revocation",
+      "wall_seconds": 60.084,
+      "user_seconds": 56.419,
+      "sys_seconds": 1.707,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::receipt_history::cleanup",
+      "wall_seconds": 15.188,
+      "user_seconds": 14.203,
+      "sys_seconds": 0.541,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart",
+      "wall_seconds": 5.511,
+      "user_seconds": 5.145,
+      "sys_seconds": 0.216,
+      "exit_code": 0
+    },
+    {
+      "name": "broker systemd",
+      "wall_seconds": 2.844,
+      "user_seconds": 0.202,
+      "sys_seconds": 0.068,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification",
+      "wall_seconds": 56.366,
+      "user_seconds": 51.61,
+      "sys_seconds": 1.768,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence",
+      "wall_seconds": 40.144,
+      "user_seconds": 35.537,
+      "sys_seconds": 1.243,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart",
+      "wall_seconds": 86.241,
+      "user_seconds": 50.973,
+      "sys_seconds": 2.164,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state",
+      "wall_seconds": 46.258,
+      "user_seconds": 46.218,
+      "sys_seconds": 1.237,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection",
+      "wall_seconds": 42.78,
+      "user_seconds": 42.395,
+      "sys_seconds": 0.886,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations",
+      "wall_seconds": 44.242,
+      "user_seconds": 43.172,
+      "sys_seconds": 1.145,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite",
+      "wall_seconds": 31.093,
+      "user_seconds": 28.028,
+      "sys_seconds": 1.089,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped",
+      "wall_seconds": 30.792,
+      "user_seconds": 27.561,
+      "sys_seconds": 1.14,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load",
+      "wall_seconds": 28.759,
+      "user_seconds": 26.087,
+      "sys_seconds": 1.004,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance",
+      "wall_seconds": 30.67,
+      "user_seconds": 27.646,
+      "sys_seconds": 1.096,
+      "exit_code": 0
+    },
+    {
+      "name": "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success",
+      "wall_seconds": 65.305,
+      "user_seconds": 61.862,
+      "sys_seconds": 1.715,
+      "exit_code": 0
+    }
+  ]
+}

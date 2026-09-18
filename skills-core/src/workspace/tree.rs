@@ -54,18 +54,18 @@ struct Scan {
 }
 
 pub(super) fn capture(root: &File) -> Result<SourceFiles, WorkspaceError> {
-    capture_with_probe(root, || {})
+    capture_with_probe(root, |_| {})
 }
 
 fn capture_with_probe(
     root: &File,
-    between_scans: impl FnOnce(),
+    between_scans: impl FnOnce(&mut Scan),
 ) -> Result<SourceFiles, WorkspaceError> {
     let mut captured = Scan::default();
-    captured.walk(root, "", 0, true)?;
-    between_scans();
+    captured.walk(root, "", 0, None)?;
+    between_scans(&mut captured);
     let mut checked = Scan::default();
-    checked.walk(root, "", 0, false)?;
+    checked.walk(root, "", 0, Some(&captured.files))?;
     if captured.stamps != checked.stamps {
         return Err(CHANGED);
     }
@@ -78,7 +78,7 @@ impl Scan {
         directory: &File,
         prefix: &str,
         depth: usize,
-        capture: bool,
+        expected: Option<&SourceFiles>,
     ) -> Result<(), WorkspaceError> {
         if depth > MAX_DEPTH {
             return Err(WorkspaceError::Invalid(
@@ -129,9 +129,9 @@ impl Scan {
                     )
                     .map_err(std::io::Error::from)?,
                 );
-                self.walk(&child, &path, depth + 1, capture)?;
+                self.walk(&child, &path, depth + 1, expected)?;
             } else {
-                self.file(&handle, &metadata, &path, capture)?;
+                self.file(&handle, &metadata, &path, expected)?;
             }
         }
         if before != Stamp::from(&directory.metadata()?) {
@@ -146,7 +146,7 @@ impl Scan {
         handle: &File,
         metadata: &Metadata,
         path: &str,
-        capture: bool,
+        expected: Option<&SourceFiles>,
     ) -> Result<(), WorkspaceError> {
         if !metadata.is_file() || metadata.nlink() != 1 {
             return Err(WorkspaceError::Invalid(
@@ -167,16 +167,22 @@ impl Scan {
             ));
         }
         let before = Stamp::from(metadata);
-        if capture {
-            // Linux procfs reopens this pinned, already-validated regular inode;
-            // a concurrent rename cannot redirect the read to another object.
-            let file = File::open(format!("/proc/self/fd/{}", handle.as_raw_fd()))?;
-            let mut bytes = Vec::new();
-            file.take(MAX_FILE_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 != metadata.len() || before != Stamp::from(&handle.metadata()?) {
+        // Linux procfs reopens this pinned, already-validated regular inode;
+        // a concurrent rename cannot redirect the read to another object.
+        let file = File::open(format!("/proc/self/fd/{}", handle.as_raw_fd()))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_FILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != metadata.len() || before != Stamp::from(&handle.metadata()?) {
+            return Err(CHANGED);
+        }
+        if let Some(expected) = expected {
+            // Same-size writes can share mtime/ctime; compare bytes as well.
+            // Check one file at a time rather than retaining a second tree.
+            if expected.get(path).is_none_or(|file| file.bytes != bytes) {
                 return Err(CHANGED);
             }
+        } else {
             self.files.insert(
                 path.to_owned(),
                 SourceFile {
@@ -200,13 +206,34 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn same_size_mutation_with_equal_metadata_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file");
+        fs::write(&file, b"before").unwrap();
+        let root = super::super::filesystem::open_directory(temp.path()).unwrap();
+        assert_eq!(capture(&root).unwrap()["file"].bytes, b"before");
+        let result = capture_with_probe(&root, |captured| {
+            fs::write(&file, b"after!").unwrap();
+            // louiselm-tf62f: tmpfs produced equal stamps across this overwrite.
+            // Model that observation independent of the test host's clock resolution.
+            captured
+                .stamps
+                .insert("file".into(), Stamp::from(&file.metadata().unwrap()));
+        });
+        assert!(
+            matches!(result, Err(WorkspaceError::Invalid(message)) if message == "workspace changed during export; freeze writers and retry"),
+            "equal metadata must not hide changed bytes"
+        );
+    }
+
+    #[test]
     fn mutation_replacement_addition_and_removal_between_scans_are_refused() {
         for operation in 0..4 {
             let temp = tempfile::tempdir().unwrap();
             let file = temp.path().join("file");
             fs::write(&file, b"before").unwrap();
             let root = super::super::filesystem::open_directory(temp.path()).unwrap();
-            let result = capture_with_probe(&root, || match operation {
+            let result = capture_with_probe(&root, |_| match operation {
                 0 => fs::write(&file, b"after!").unwrap(),
                 1 => {
                     fs::rename(&file, temp.path().join("old")).unwrap();

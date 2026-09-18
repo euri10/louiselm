@@ -1,0 +1,4 @@
+2026-09-18T08:07:41.2203814Z thread 'a_held_trust_lock_refuses_activation_readers_and_other_writers' (10011) panicked at tests/admission.rs:645:43:
+2026-09-18T08:07:41.2205103Z called `Result::unwrap()` on an `Err` value: Trust(Busy("/tmp/.tmpHKY2Du/store/trust"))
+2026-09-18T08:07:41.2206014Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-09-18T08:07:41.2206501Z 

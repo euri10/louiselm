@@ -363,6 +363,8 @@ fn grant_revocation_preserves_agent_authority_and_late_actual_outcomes() {
 
 #[test]
 fn expiry_and_audit_failure_never_reopen_reserved_authority() {
+    use louiselm_skills::broker::{AuditDecision, delegation::DelegationError};
+
     for uses in [Some(3), None] {
         let root = tempfile::tempdir().unwrap();
         let mut owner = authority_with_limit(root.path(), true, uses);
@@ -373,16 +375,50 @@ fn expiry_and_audit_failure_never_reopen_reserved_authority() {
                 grant.uses = None;
             }
         }
-        owner.handle(&request).unwrap();
+        // Durability may outlast the short grant. Either reply still reserves
+        // the same authority; expiry must never refund it.
+        let reply = owner.handle(&request).map(|reply| reply.operation);
+        assert!(
+            matches!(
+                &reply,
+                Ok(CommandOperation::Granted { grant: 1, .. }) | Err(DelegationError::Expired)
+            ),
+            "{reply:?}"
+        );
+        let audit = AuditLog::open(root.path()).unwrap().entries().unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(
+            audit[0].decision,
+            AuditDecision::ToolGranted {
+                grant: 1,
+                pid: 456,
+                revision: 1,
+                uses: uses.map(|_| 2),
+            }
+        );
         std::thread::sleep(Duration::from_millis(60));
-        assert!(owner.handle(&command(true, 1)).is_err());
+        assert!(matches!(
+            owner.handle(&command(true, 1)),
+            Err(DelegationError::Expired)
+        ));
         assert!(owner.handle(&command(false, 1)).is_ok());
-        assert_eq!(owner.handle(&command(false, 2)).is_ok(), uses.is_none());
+        let second = owner.handle(&command(false, 2));
+        if uses.is_none() {
+            assert!(second.is_ok());
+        } else {
+            assert!(matches!(second, Err(DelegationError::BudgetExhausted)));
+        }
         let broken = tempfile::tempdir().unwrap();
         let mut owner = authority_with_limit(broken.path(), true, uses);
         std::fs::create_dir(broken.path().join("decisions.jsonl")).unwrap();
-        assert!(owner.handle(&grant()).is_err());
+        assert!(matches!(
+            owner.handle(&grant()),
+            Err(DelegationError::Audit(_))
+        ));
         std::fs::remove_dir(broken.path().join("decisions.jsonl")).unwrap();
-        assert!(owner.handle(&command(false, 1)).is_err());
+        assert!(matches!(
+            owner.handle(&command(false, 1)),
+            Err(DelegationError::Revoked)
+        ));
     }
 }

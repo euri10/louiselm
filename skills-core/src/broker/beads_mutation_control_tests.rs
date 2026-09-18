@@ -20,9 +20,11 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
             )))
         }
     }
-    for conclusion in [
-        BeadsReconciliation::Applied,
-        BeadsReconciliation::NotApplied,
+    for (conclusion, now_ms) in [
+        (BeadsReconciliation::Applied, 1),
+        (BeadsReconciliation::NotApplied, 1),
+        (BeadsReconciliation::Applied, 1000),
+        (BeadsReconciliation::NotApplied, 1000),
     ] {
         let root = tempfile::tempdir().unwrap();
         let store = BeadsMutations::open(root.path()).unwrap();
@@ -31,24 +33,27 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
         let mut approved = permission(root.path());
         approved.max_mutations = 1;
         let query = request("uncertain");
-        assert!(
-            store
-                .accept(
-                    &binding(),
-                    &query,
-                    &approved,
-                    1,
-                    &runner,
-                    &tracker(root.path())
-                )
-                .is_err()
+        let first = store.accept(
+            &binding(),
+            &query,
+            &approved,
+            now_ms,
+            &runner,
+            &tracker(root.path()),
         );
+        assert!(
+            matches!(&first, Err(BrokerError::TrackerInvocation(error))
+                if error.to_string() == "lost result after mutation"),
+            "unexpected first result: {first:?}; calls={}",
+            runner.0.get()
+        );
+        assert_eq!(runner.0.get(), 1);
         let original = store
             .accept(
                 &binding(),
                 &query,
                 &approved,
-                2,
+                now_ms + 1,
                 &runner,
                 &tracker(root.path()),
             )
@@ -61,7 +66,13 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
         };
         assert!(
             store
-                .control(1001, &original.operation_id, Some(&decision), 3, &outbox)
+                .control(
+                    1001,
+                    &original.operation_id,
+                    Some(&decision),
+                    now_ms + 2,
+                    &outbox
+                )
                 .is_err()
         );
         assert_eq!(
@@ -69,7 +80,13 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
             0
         );
         let resolved = store
-            .control(1000, &original.operation_id, Some(&decision), 3, &outbox)
+            .control(
+                1000,
+                &original.operation_id,
+                Some(&decision),
+                now_ms + 2,
+                &outbox,
+            )
             .unwrap();
         let BeadsInspectionDetail::Mutation {
             ref status,
@@ -83,7 +100,7 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
         let resolution = resolution.as_ref().unwrap();
         assert_eq!(resolution.outcome, conclusion);
         assert_eq!(resolution.operator_uid, 1000);
-        assert_eq!(resolution.decided_at_ms, 3);
+        assert_eq!(resolution.decided_at_ms, now_ms + 2);
         assert_eq!(
             fs::read(store.request_path(&binding().session_id, &query.request_id)).unwrap(),
             bytes
@@ -93,13 +110,19 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
         let store = BeadsMutations::open(root.path()).unwrap();
         assert_eq!(
             store
-                .control(1000, &original.operation_id, None, 4, &outbox)
+                .control(1000, &original.operation_id, None, now_ms + 3, &outbox)
                 .unwrap(),
             resolved
         );
         assert_eq!(
             store
-                .control(1000, &original.operation_id, Some(&decision), 5, &outbox)
+                .control(
+                    1000,
+                    &original.operation_id,
+                    Some(&decision),
+                    now_ms + 4,
+                    &outbox
+                )
                 .unwrap(),
             resolved
         );
@@ -109,7 +132,13 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
         };
         assert!(
             store
-                .control(1000, &original.operation_id, Some(&conflicting), 6, &outbox)
+                .control(
+                    1000,
+                    &original.operation_id,
+                    Some(&conflicting),
+                    now_ms + 5,
+                    &outbox
+                )
                 .is_err()
         );
         assert_eq!(
@@ -118,25 +147,24 @@ fn operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt() {
                     &binding(),
                     &query,
                     &approved,
-                    7,
+                    now_ms + 6,
                     &runner,
                     &tracker(root.path())
                 )
                 .unwrap(),
             original
         );
-        assert!(
-            store
-                .accept(
-                    &binding(),
-                    &request("new-attempt"),
-                    &approved,
-                    8,
-                    &runner,
-                    &tracker(root.path())
-                )
-                .is_err()
-        );
+        assert!(matches!(
+            store.accept(
+                &binding(),
+                &request("new-attempt"),
+                &approved,
+                now_ms + 7,
+                &runner,
+                &tracker(root.path())
+            ),
+            Err(BrokerError::BeadsBudgetExhausted)
+        ));
         assert_eq!(runner.0.get(), 1);
     }
 }

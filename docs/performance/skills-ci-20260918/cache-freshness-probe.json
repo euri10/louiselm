@@ -1,0 +1,23 @@
+[
+  "Warm sample: 1",
+  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s",
+  "Cache freshness probe elapsed: 0.150 seconds",
+  "Fresh checkout sample: 1",
+  "   0.099868505s  INFO prepare_target{force=false package_id=louiselm-skills v0.1.0 (/home/vm/ci-8nblj.jpyc2k/skills-core) target=\"louiselm_skills\"}: cargo::core::compiler::fingerprint: stale: changed \"/home/vm/ci-8nblj.jpyc2k/skills-core/src/lib.rs\"",
+  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.97s",
+  "Cache freshness probe elapsed: 8.997 seconds",
+  "Warm sample: 2",
+  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s",
+  "Cache freshness probe elapsed: 0.145 seconds",
+  "Fresh checkout sample: 2",
+  "   0.105584475s  INFO prepare_target{force=false package_id=louiselm-skills v0.1.0 (/home/vm/ci-8nblj.jpyc2k/skills-core) target=\"louiselm_skills\"}: cargo::core::compiler::fingerprint: stale: changed \"/home/vm/ci-8nblj.jpyc2k/skills-core/src/lib.rs\"",
+  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.05s",
+  "Cache freshness probe elapsed: 4.074 seconds",
+  "Warm sample: 3",
+  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s",
+  "Cache freshness probe elapsed: 0.085 seconds",
+  "Fresh checkout sample: 3",
+  "   0.070086922s  INFO prepare_target{force=false package_id=louiselm-skills v0.1.0 (/home/vm/ci-8nblj.jpyc2k/skills-core) target=\"louiselm_skills\"}: cargo::core::compiler::fingerprint: stale: changed \"/home/vm/ci-8nblj.jpyc2k/skills-core/src/lib.rs\"",
+  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.32s",
+  "Cache freshness probe elapsed: 3.348 seconds"
+]

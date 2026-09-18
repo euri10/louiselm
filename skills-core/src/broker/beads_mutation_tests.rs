@@ -271,7 +271,9 @@ fn permission(root: &Path) -> ApprovedBeadsMutations {
         project_digest: Digest::of(root.as_os_str().as_encoded_bytes()).to_string(),
         issue_ids: vec!["louiselm-qbr.5.1.5".into()],
         max_mutations: 2,
-        expires_at_ms: 100,
+        // Non-expiry scenarios must reach the tracker regardless of host scheduling.
+        // Tests of expiry set a finite boundary explicitly.
+        expires_at_ms: u64::MAX,
     }
 }
 
@@ -289,18 +291,21 @@ fn a_runner_error_leaves_an_unknown_nonrepeatable_attempt() {
     let root = tempfile::tempdir().unwrap();
     let store = BeadsMutations::open(root.path()).unwrap();
     let runner = Uncertain(Cell::new(0));
-    assert!(
-        store
-            .accept(
-                &binding(),
-                &request("uncertain"),
-                &permission(root.path()),
-                1,
-                &runner,
-                &tracker(root.path())
-            )
-            .is_err()
+    let first = store.accept(
+        &binding(),
+        &request("uncertain"),
+        &permission(root.path()),
+        1,
+        &runner,
+        &tracker(root.path()),
     );
+    assert!(
+        matches!(&first, Err(BrokerError::TrackerInvocation(error))
+            if error.to_string() == "lost exit status"),
+        "unexpected first result: {first:?}; calls={}",
+        runner.0.get()
+    );
+    assert_eq!(runner.0.get(), 1);
     drop(store);
     let store = BeadsMutations::open(root.path()).unwrap();
     let status = store
@@ -315,6 +320,36 @@ fn a_runner_error_leaves_an_unknown_nonrepeatable_attempt() {
         .unwrap();
     assert_eq!(status.outcome, BeadsMutationOutcome::Unknown);
     assert_eq!(runner.0.get(), 1);
+}
+
+#[test]
+fn expired_permission_never_records_or_invokes_a_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let store = BeadsMutations::open(root.path()).unwrap();
+    let runner = FakeRunner::new(0);
+    let mut approved = permission(root.path());
+    approved.expires_at_ms = 100;
+    let query = request("expired");
+    assert!(approved.permits(&query, 99));
+    for now_ms in [100, 101] {
+        assert!(matches!(
+            store.accept(
+                &binding(),
+                &query,
+                &approved,
+                now_ms,
+                &runner,
+                &tracker(root.path()),
+            ),
+            Err(BrokerError::InvalidGrant)
+        ));
+        assert_eq!(runner.calls(), 0);
+        assert!(
+            !store
+                .request_path(&binding().session_id, &query.request_id)
+                .exists()
+        );
+    }
 }
 
 #[test]
@@ -442,8 +477,7 @@ fn simultaneous_sessions_share_the_store_without_sharing_retry_identities() {
                 let mut binding = binding();
                 binding.session_id = session.into();
                 barrier.wait();
-                let mut permission = permission(root.path());
-                permission.expires_at_ms = 60_000;
+                let permission = permission(root.path());
                 assert_eq!(
                     store
                         .accept(

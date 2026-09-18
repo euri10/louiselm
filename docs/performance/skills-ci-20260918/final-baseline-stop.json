@@ -1,0 +1,454 @@
+{
+  "purpose": "Pre-candidate correctness stop. All incomplete/cancelled samples excluded from timing acceptance; final split pass was never applied.",
+  "maximum_passes": 3,
+  "consumed_passes": 2,
+  "blocker": "louiselm-ia4pw",
+  "pr": 10,
+  "runs": [
+    {
+      "branch": "codex/skills-ci-parallel",
+      "conclusion": "failure",
+      "event": "pull_request",
+      "head_sha": "f5f31b972ee0f6569fb909c33da0fcb8606525f3",
+      "id": 35337850521,
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 105576738180,
+          "name": "Android tests, lint, and build",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738295,
+          "name": "cargo (usage-cli)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738329,
+          "name": "Plugin release contract",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738363,
+          "name": "cargo (capture-service)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738424,
+          "name": "mini.test (nvim nightly)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738434,
+          "name": "stylua",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738438,
+          "name": "lua-language-server",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738441,
+          "name": "Agent liveness snapshot",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "id": 105576738444,
+          "name": "cargo (skills-core)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738457,
+          "name": "Agent instruction budget",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738459,
+          "name": "mini.test (nvim stable)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738477,
+          "name": "ACP backup, copy and retention (synthetic data)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105576738500,
+          "name": "Launcher VM safety contract (no VM)",
+          "status": "completed"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/euri10/louiselm/actions/runs/35337850521"
+    },
+    {
+      "branch": "codex/skills-ci-final-base-1",
+      "conclusion": "cancelled",
+      "event": "workflow_dispatch",
+      "head_sha": "f5f31b972ee0f6569fb909c33da0fcb8606525f3",
+      "id": 35337950924,
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 105577061230,
+          "name": "stylua",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061418,
+          "name": "Agent liveness snapshot",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061426,
+          "name": "cargo (usage-cli)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061464,
+          "name": "mini.test (nvim stable)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061479,
+          "name": "Agent instruction budget",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061481,
+          "name": "Launcher VM safety contract (no VM)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061492,
+          "name": "Plugin release contract",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061508,
+          "name": "Android tests, lint, and build",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061677,
+          "name": "lua-language-server",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061729,
+          "name": "cargo (capture-service)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577061742,
+          "name": "cargo (skills-core)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061748,
+          "name": "mini.test (nvim nightly)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577061752,
+          "name": "ACP backup, copy and retention (synthetic data)",
+          "status": "completed"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/euri10/louiselm/actions/runs/35337950924"
+    },
+    {
+      "branch": "codex/skills-ci-final-base-2",
+      "conclusion": "cancelled",
+      "event": "workflow_dispatch",
+      "head_sha": "f5f31b972ee0f6569fb909c33da0fcb8606525f3",
+      "id": 35337953186,
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 105577068673,
+          "name": "lua-language-server",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068862,
+          "name": "Agent instruction budget",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068883,
+          "name": "cargo (usage-cli)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068903,
+          "name": "cargo (capture-service)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068919,
+          "name": "Launcher VM safety contract (no VM)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068944,
+          "name": "mini.test (nvim stable)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577068949,
+          "name": "cargo (skills-core)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068952,
+          "name": "Plugin release contract",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068954,
+          "name": "Agent liveness snapshot",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068961,
+          "name": "ACP backup, copy and retention (synthetic data)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068963,
+          "name": "mini.test (nvim nightly)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577068967,
+          "name": "Android tests, lint, and build",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577069023,
+          "name": "stylua",
+          "status": "completed"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/euri10/louiselm/actions/runs/35337953186"
+    },
+    {
+      "branch": "codex/skills-ci-final-base-3",
+      "conclusion": "cancelled",
+      "event": "workflow_dispatch",
+      "head_sha": "f5f31b972ee0f6569fb909c33da0fcb8606525f3",
+      "id": 35337955505,
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 105577077602,
+          "name": "lua-language-server",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077610,
+          "name": "Android tests, lint, and build",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077663,
+          "name": "Agent liveness snapshot",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077673,
+          "name": "mini.test (nvim nightly)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077675,
+          "name": "mini.test (nvim stable)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077700,
+          "name": "Agent instruction budget",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077705,
+          "name": "Plugin release contract",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077730,
+          "name": "stylua",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077738,
+          "name": "Launcher VM safety contract (no VM)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577077739,
+          "name": "cargo (skills-core)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577077779,
+          "name": "cargo (usage-cli)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577077839,
+          "name": "ACP backup, copy and retention (synthetic data)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577077851,
+          "name": "cargo (capture-service)",
+          "status": "completed"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/euri10/louiselm/actions/runs/35337955505"
+    },
+    {
+      "branch": "codex/skills-ci-final-cold-base",
+      "conclusion": "cancelled",
+      "event": "workflow_dispatch",
+      "head_sha": "dfc6c293679feb373f019e7f7f8047bc948e73bc",
+      "id": 35338098313,
+      "jobs": [
+        {
+          "conclusion": "success",
+          "id": 105577525765,
+          "name": "cargo (usage-cli)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577525887,
+          "name": "lua-language-server",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577525954,
+          "name": "mini.test (nvim stable)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577525978,
+          "name": "Android tests, lint, and build",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577525987,
+          "name": "Agent liveness snapshot",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577526027,
+          "name": "stylua",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577526067,
+          "name": "Plugin release contract",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577526096,
+          "name": "cargo (capture-service)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577526098,
+          "name": "ACP backup, copy and retention (synthetic data)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577526100,
+          "name": "mini.test (nvim nightly)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577526110,
+          "name": "Agent instruction budget",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "id": 105577526118,
+          "name": "cargo (skills-core)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "id": 105577526137,
+          "name": "Launcher VM safety contract (no VM)",
+          "status": "completed"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/euri10/louiselm/actions/runs/35338098313"
+    }
+  ]
+}

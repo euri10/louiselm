@@ -610,6 +610,9 @@ fn a_held_trust_lock_refuses_activation_readers_and_other_writers() {
     admission::witness(&store, &record.digest(), &ceremony.witness(), 1).unwrap();
     let lock = std::fs::File::open(store.root().join("trust/roles.lock")).unwrap();
     flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+    // dup retains the same open-file description as a concurrent fork before exec.
+    // Keep it alive past release to make louiselm-h157 deterministic.
+    let inherited = lock.try_clone().unwrap();
     let operations = [
         admission::activate(&store, &record.digest(), 2).map(|_| ()),
         admission::current(&store).map(|_| ()),
@@ -641,9 +644,11 @@ fn a_held_trust_lock_refuses_activation_readers_and_other_writers() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("busy"));
+    flock(&lock, FlockOperation::Unlock).unwrap();
     drop(lock);
     assert_eq!(admission::current(&store).unwrap(), None);
     admission::activate(&store, &record.digest(), 3).expect("released lock permits activation");
+    drop(inherited);
 }
 
 #[test]

@@ -424,6 +424,12 @@ jobs:
             ${{ env.CARGO_TARGET_DIR }}
           key: cargo-skills-line-tables-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
 
+      - name: Record runner resources
+        run: |
+          uname -r
+          lscpu --json | jq '.lscpu | map(select(.field == "Model name:" or .field == "CPU(s):" or .field == "Architecture:"))'
+          free -m
+
       - name: Format
         run: cargo fmt --check
 

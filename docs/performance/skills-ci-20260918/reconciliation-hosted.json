@@ -1,0 +1,225 @@
+{
+  "branch": "codex/skills-ci-parallel",
+  "conclusion": "success",
+  "created_at": "2026-09-18T10:37:50Z",
+  "event": "workflow_dispatch",
+  "head_sha": "84524b441d39c44b6f4c641baa0d91ad820d66a3",
+  "id": 35335645097,
+  "jobs": [
+    {
+      "conclusion": "success",
+      "id": 105569739576,
+      "name": "Agent instruction budget",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739625,
+      "name": "cargo (usage-cli)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739628,
+      "name": "mini.test (nvim stable)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739636,
+      "name": "lua-language-server",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739649,
+      "name": "ACP backup, copy and retention (synthetic data)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739658,
+      "name": "Launcher VM safety contract (no VM)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739673,
+      "name": "stylua",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739733,
+      "name": "Agent liveness snapshot",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739735,
+      "name": "cargo (skills-core)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739789,
+      "name": "cargo (capture-service)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739790,
+      "name": "Plugin release contract",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739835,
+      "name": "mini.test (nvim nightly)",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "id": 105569739865,
+      "name": "Android tests, lint, and build",
+      "status": "completed"
+    }
+  ],
+  "skills_steps": [
+    {
+      "conclusion": "success",
+      "name": "Set up job",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Run actions/checkout@v4",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Install Linux sandbox test tools",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Install Rust",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Cache cargo",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Record runner resources",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Format",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Lint",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Run actions/setup-node@v4",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Recovery browser deadline regressions",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Linked Admission across operator and read-only broker identities",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Documentation",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Required hostile launcher conformance",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test root-owned Session cgroup containment",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test production relay cleanup with an open controller",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test measured Agent and isolated tool grants",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test privileged launch supervisor composition",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test measured Bubblewrap rejection in the production launch path",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test root-owned installed release boundary",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Test root-owned launch registry boundary",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Post Run actions/setup-node@v4",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Post Cache cargo",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Post Run actions/checkout@v4",
+      "status": "completed"
+    },
+    {
+      "conclusion": "success",
+      "name": "Complete job",
+      "status": "completed"
+    }
+  ],
+  "status": "completed",
+  "updated_at": "2026-09-18T10:53:41Z",
+  "url": "https://github.com/euri10/louiselm/actions/runs/35335645097",
+  "regression_log": [
+    "cargo (skills-core)\tTest\t2026-09-18T10:39:31.6668339Z test broker::beads_mutation::tests::a_runner_error_leaves_an_unknown_nonrepeatable_attempt ... ok",
+    "cargo (skills-core)\tTest\t2026-09-18T10:39:31.6847192Z test broker::beads_mutation::tests::expired_permission_never_records_or_invokes_a_mutation ... ok",
+    "cargo (skills-core)\tTest\t2026-09-18T10:39:31.7832342Z test broker::beads_mutation::tests::control::operator_attestation_never_replays_unknown_writes_or_refunds_the_attempt ... ok",
+    "cargo (skills-core)\tTest\t2026-09-18T10:39:37.0383260Z test result: ok. 336 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 8.54s"
+  ],
+  "purpose": "Reliability acceptance only; not an optimization measurement."
+}

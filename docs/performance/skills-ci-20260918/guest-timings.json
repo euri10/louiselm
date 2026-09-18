@@ -1,0 +1,415 @@
+{
+  "revision": "c55c092657a4dffe6d1441eb452d31ca299c11f4",
+  "guest_source": "/home/vm/ci-8nblj.jpyc2k",
+  "rust": "1.97.1 (8bab26f4f 2026-07-14)",
+  "profile": "dev/test, opt-level=0, CARGO_PROFILE_DEV_DEBUG=line-tables-only",
+  "guest": {
+    "os": "Debian 13",
+    "kernel": "6.12.107+deb13-amd64",
+    "cpu": "AMD Ryzen AI 7 PRO 350",
+    "vcpus": 2,
+    "memory_mib": 3915,
+    "swap": 0,
+    "qemu_cpu_quota_percent": 200,
+    "qemu_nice": 10,
+    "network": "restricted",
+    "usb": false
+  },
+  "preparation_seconds": {
+    "build_bins": 24.2,
+    "build_library_test": 21.31
+  },
+  "library_test": "/var/tmp/louiselm-skills-target/debug/deps/louiselm_skills-30d700aec22bdf5f",
+  "library_test_bytes": 82566864,
+  "commands": [
+    {
+      "command": "launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle",
+      "wall_seconds": 7.27,
+      "user_seconds": 5.344,
+      "system_seconds": 0.174
+    },
+    {
+      "command": "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation",
+      "wall_seconds": 28.119,
+      "user_seconds": 22.978,
+      "system_seconds": 0.914
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects",
+      "wall_seconds": 52.991,
+      "user_seconds": 47.942,
+      "system_seconds": 1.983
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side",
+      "wall_seconds": 21.266,
+      "user_seconds": 19.234,
+      "system_seconds": 0.747
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade",
+      "wall_seconds": 18.135,
+      "user_seconds": 17.106,
+      "system_seconds": 0.607
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local",
+      "wall_seconds": 17.425,
+      "user_seconds": 16.514,
+      "system_seconds": 0.482
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority",
+      "wall_seconds": 59.912,
+      "user_seconds": 56.638,
+      "system_seconds": 1.797
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history",
+      "wall_seconds": 15.621,
+      "user_seconds": 14.444,
+      "system_seconds": 0.571
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart",
+      "wall_seconds": 5.755,
+      "user_seconds": 5.196,
+      "system_seconds": 0.238
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart",
+      "wall_seconds": 86.634,
+      "user_seconds": 52.523,
+      "system_seconds": 2.104
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state",
+      "wall_seconds": 46.165,
+      "user_seconds": 46.311,
+      "system_seconds": 1.064
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection",
+      "wall_seconds": 43.36,
+      "user_seconds": 43.361,
+      "system_seconds": 0.867
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations",
+      "wall_seconds": 44.714,
+      "user_seconds": 43.501,
+      "system_seconds": 1.25
+    },
+    {
+      "command": "python3 scripts/test-broker-systemd.py",
+      "wall_seconds": 2.956,
+      "user_seconds": 0.17,
+      "system_seconds": 0.095
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite",
+      "wall_seconds": 30.5,
+      "user_seconds": 27.462,
+      "system_seconds": 1.137
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped",
+      "wall_seconds": 30.016,
+      "user_seconds": 26.941,
+      "system_seconds": 1.14
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load",
+      "wall_seconds": 28.754,
+      "user_seconds": 25.825,
+      "system_seconds": 0.817
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance",
+      "wall_seconds": 30.263,
+      "user_seconds": 27.406,
+      "system_seconds": 0.972
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success",
+      "wall_seconds": 63.878,
+      "user_seconds": 60.432,
+      "system_seconds": 1.807
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification",
+      "wall_seconds": 55.348,
+      "user_seconds": 50.845,
+      "system_seconds": 1.647
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence",
+      "wall_seconds": 39.638,
+      "user_seconds": 35.12,
+      "system_seconds": 1.194
+    }
+  ],
+  "sum_seconds": {
+    "wall_seconds": 728.72,
+    "user_seconds": 645.293,
+    "system_seconds": 21.607
+  },
+  "cold_finite_samples": [
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite",
+      "wall_seconds": 30.5,
+      "user_seconds": 27.462,
+      "system_seconds": 1.137
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite",
+      "wall_seconds": 30.367,
+      "user_seconds": 27.282,
+      "system_seconds": 1.192
+    },
+    {
+      "command": "launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite",
+      "wall_seconds": 30.027,
+      "user_seconds": 27.046,
+      "system_seconds": 1.075
+    }
+  ],
+  "cold_finite_median_wall_seconds": 30.367,
+  "cold_finite_range_wall_seconds": [
+    30.027,
+    30.5
+  ],
+  "digest_samples": [
+    {
+      "binary": "louiselm-launch",
+      "bytes": 50609864,
+      "sample": 1,
+      "seconds": 0.657234
+    },
+    {
+      "binary": "louiselm-launch",
+      "bytes": 50609864,
+      "sample": 2,
+      "seconds": 0.657321
+    },
+    {
+      "binary": "louiselm-launch",
+      "bytes": 50609864,
+      "sample": 3,
+      "seconds": 0.657521
+    },
+    {
+      "binary": "louiselm-launch",
+      "bytes": 50609864,
+      "sample": 4,
+      "seconds": 0.65735
+    },
+    {
+      "binary": "louiselm-launch",
+      "bytes": 50609864,
+      "sample": 5,
+      "seconds": 0.65739
+    },
+    {
+      "binary": "louiselm-control",
+      "bytes": 60016608,
+      "sample": 1,
+      "seconds": 0.779514
+    },
+    {
+      "binary": "louiselm-control",
+      "bytes": 60016608,
+      "sample": 2,
+      "seconds": 0.779275
+    },
+    {
+      "binary": "louiselm-control",
+      "bytes": 60016608,
+      "sample": 3,
+      "seconds": 0.779269
+    },
+    {
+      "binary": "louiselm-control",
+      "bytes": 60016608,
+      "sample": 4,
+      "seconds": 0.778912
+    },
+    {
+      "binary": "louiselm-control",
+      "bytes": 60016608,
+      "sample": 5,
+      "seconds": 0.779342
+    },
+    {
+      "binary": "louiselm-tool-test-agent",
+      "bytes": 37598032,
+      "sample": 1,
+      "seconds": 0.488091
+    },
+    {
+      "binary": "louiselm-tool-test-agent",
+      "bytes": 37598032,
+      "sample": 2,
+      "seconds": 0.491486
+    },
+    {
+      "binary": "louiselm-tool-test-agent",
+      "bytes": 37598032,
+      "sample": 3,
+      "seconds": 0.487655
+    },
+    {
+      "binary": "louiselm-tool-test-agent",
+      "bytes": 37598032,
+      "sample": 4,
+      "seconds": 0.487976
+    },
+    {
+      "binary": "louiselm-tool-test-agent",
+      "bytes": 37598032,
+      "sample": 5,
+      "seconds": 0.488134
+    },
+    {
+      "binary": "louiselm-tool-test-helper",
+      "bytes": 37530008,
+      "sample": 1,
+      "seconds": 0.486857
+    },
+    {
+      "binary": "louiselm-tool-test-helper",
+      "bytes": 37530008,
+      "sample": 2,
+      "seconds": 0.487691
+    },
+    {
+      "binary": "louiselm-tool-test-helper",
+      "bytes": 37530008,
+      "sample": 3,
+      "seconds": 0.487148
+    },
+    {
+      "binary": "louiselm-tool-test-helper",
+      "bytes": 37530008,
+      "sample": 4,
+      "seconds": 0.487044
+    },
+    {
+      "binary": "louiselm-tool-test-helper",
+      "bytes": 37530008,
+      "sample": 5,
+      "seconds": 0.487262
+    }
+  ],
+  "raw_timing_evidence": [
+    "test launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 7.23s",
+    "CI_TIMING wall=7.270 user=5.344 sys=0.174",
+    "test launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 28.11s",
+    "CI_TIMING wall=28.119 user=22.978 sys=0.914",
+    "test launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 52.97s",
+    "CI_TIMING wall=52.991 user=47.942 sys=1.983",
+    "test launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 21.24s",
+    "CI_TIMING wall=21.266 user=19.234 sys=0.747",
+    "test launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 18.12s",
+    "CI_TIMING wall=18.135 user=17.106 sys=0.607",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 3.78s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.85s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.80s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.70s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 17.41s",
+    "CI_TIMING wall=17.425 user=16.514 sys=0.482",
+    "test launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_broker_revocation_survives_restart ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 3.76s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.78s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.76s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.98s",
+    "test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.95s",
+    "test launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.",
+    "test launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_revocation_freezes_with_or_without_broker ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 332 filtered out; finished in 59.90s",
+    "CI_TIMING wall=59.912 user=56.638 sys=1.797",
+    "test launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 15.61s",
+    "CI_TIMING wall=15.621 user=14.444 sys=0.571",
+    "test launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 5.74s",
+    "CI_TIMING wall=5.755 user=5.196 sys=0.238",
+    "daemon: ready at 16.312268738s",
+    "daemon: first launch at 21.931408964s",
+    "daemon: concurrent sibling launch at 27.598451197s",
+    "daemon: Agent inspection at 38.627985847s",
+    "test launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart has been running for over 60 seconds",
+    "daemon: restart and disposal at 86.560344377s",
+    "test launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 86.61s",
+    "CI_TIMING wall=86.634 user=52.523 sys=2.104",
+    "daemon: retired history at 18.047035047s",
+    "daemon: upgrade and refusals at 34.26364434s",
+    "daemon: adoption complete at 46.090547332s",
+    "test launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 46.14s",
+    "CI_TIMING wall=46.165 user=46.311 sys=1.064",
+    "daemon: inspection refusals at 43.277100745s",
+    "test launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 43.33s",
+    "CI_TIMING wall=43.360 user=43.361 sys=0.867",
+    "test launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 44.69s",
+    "CI_TIMING wall=44.714 user=43.501 sys=1.250",
+    "Ran 2 tests in 2.896s",
+    "OK",
+    "CI_TIMING wall=2.956 user=0.170 sys=0.095",
+    "test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.49s",
+    "CI_TIMING wall=30.500 user=27.462 sys=1.137",
+    "test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.01s",
+    "CI_TIMING wall=30.016 user=26.941 sys=1.140",
+    "test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 28.74s",
+    "CI_TIMING wall=28.754 user=25.825 sys=0.817",
+    "test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.25s",
+    "CI_TIMING wall=30.263 user=27.406 sys=0.972",
+    "test launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success has been running for over 60 seconds",
+    "test launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 63.87s",
+    "CI_TIMING wall=63.878 user=60.432 sys=1.807",
+    "test launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.93s",
+    "test launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.00s",
+    "test launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 0.00s",
+    "test launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 55.33s",
+    "CI_TIMING wall=55.348 user=50.845 sys=1.647",
+    "test launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 39.63s",
+    "CI_TIMING wall=39.638 user=35.120 sys=1.194"
+  ],
+  "repeat_timing_evidence": [
+    "test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.35s",
+    "CI_TIMING wall=30.367 user=27.282 sys=1.192",
+    "test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 334 filtered out; finished in 30.01s",
+    "CI_TIMING wall=30.027 user=27.046 sys=1.075"
+  ],
+  "cleanup": "No fixture passwd/group IDs 60000/4019000/4020000; no louiselm systemd units or processes remained."
+}

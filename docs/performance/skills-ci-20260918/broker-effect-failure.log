@@ -1,0 +1,8 @@
+2026-09-18T08:09:35.8834230Z thread 'launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects' (23860) panicked at src/launch_supervisor/installed_tests.rs:823:5:
+2026-09-18T08:09:35.8836688Z assertion `left == right` failed
+2026-09-18T08:09:35.8837578Z   left: []
+2026-09-18T08:09:35.8838369Z  right: [97, 117, 116, 104, 111, 114, 105, 122, 101, 100]
+2026-09-18T08:09:35.8839477Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-09-18T08:09:35.9181040Z test launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects ... FAILED
+2026-09-18T08:09:35.9182141Z 
+2026-09-18T08:09:35.9182324Z failures:

@@ -1,0 +1,448 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 454cab1..605a782 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -383,7 +383,24 @@ jobs:
+         run: cargo doc --no-deps --all-features --locked
+ 
+   skills-core:
++    # Preserve the branch-required context across both parallel groups.
+     name: cargo (skills-core)
++    needs: skills-core-checks
++    if: always()
++    runs-on: ubuntu-latest
++    steps:
++      - run: test "${{ needs.skills-core-checks.result }}" = success
++
++  skills-core-checks:
++    name: ${{ matrix.name }}
++    strategy:
++      fail-fast: false
++      matrix:
++        include:
++          - group: core
++            name: cargo (skills-core checks)
++          - group: lifecycle
++            name: cargo (skills-core lifecycle)
+     runs-on: ubuntu-latest
+     env:
+       # The bootstrap executes as UID 60000, which cannot traverse the runner's
+@@ -424,25 +441,41 @@ jobs:
+             ${{ env.CARGO_TARGET_DIR }}
+           key: cargo-skills-line-tables-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('skills-core/Cargo.lock') }}
+ 
++      - name: Record runner resources
++        run: |
++          uname -r
++          lscpu --json | jq '.lscpu | map(select(.field == "Model name:" or .field == "CPU(s):" or .field == "Architecture:"))'
++          free -m
++
++      - name: Test privileged scenario runner contract
++        if: matrix.group == 'core'
++        run: python3 ../scripts/test-skills-privileged.py
++
+       - name: Format
++        if: matrix.group == 'core'
+         run: cargo fmt --check
+ 
+       - name: Lint
++        if: matrix.group == 'core'
+         run: cargo clippy --all-targets --all-features --locked -- -D warnings
+ 
+       - name: Test
++        if: matrix.group == 'core'
+         # Inject runner authority and synthetic signing config on clean CI too.
+         # The launcher must isolate both without changing production behavior.
+         run: bash ../scripts/test-skills-core-git-isolation 142</dev/null
+ 
+       - uses: actions/setup-node@v4
++        if: matrix.group == 'core'
+         with:
+           node-version: '22'
+ 
+       - name: Recovery browser deadline regressions
++        if: matrix.group == 'core'
+         run: node --test --test-timeout=5000 tests/recovery_browser.test.cjs
+ 
+       - name: Linked Admission across operator and read-only broker identities
++        if: matrix.group == 'core'
+         run: |
+           broker_test=$(cargo test --locked --test broker --no-run --message-format=json |
+             jq -r 'select(.reason == "compiler-artifact" and .target.name == "broker" and .executable != null) | .executable')
+@@ -453,14 +486,17 @@ jobs:
+             python3 ../scripts/test-broker-admission.py
+ 
+       - name: Documentation
++        if: matrix.group == 'core'
+         env:
+           RUSTDOCFLAGS: -D warnings
+         run: cargo doc --no-deps --all-features --locked
+ 
+       - name: Required hostile launcher conformance
++        if: matrix.group == 'core'
+         run: ../scripts/launcher-conformance --disposable-guest
+ 
+       - name: Test root-owned Session cgroup containment
++        if: matrix.group == 'core'
+         run: |
+           set -eu
+           test_identity=60000
+@@ -492,6 +528,7 @@ jobs:
+             /bin/bash -c 'umask 077; exec "$1" sandbox::tests::pinned_root_cgroup_prevents_operator_migration_of_a_session_process --exact --nocapture' bash "$library_test"
+ 
+       - name: Test production relay cleanup with an open controller
++        if: matrix.group == 'core'
+         run: |
+           set -eu
+           library_test="$(
+@@ -505,67 +542,10 @@ jobs:
+             /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::relay_tests --nocapture' bash "$library_test"
+ 
+       - name: Test measured Agent and isolated tool grants
+-        run: |
+-          set -eu
+-          cargo build --bins --all-features --locked
+-          library_test="$(
+-            cargo test --lib --all-features --locked --no-run --message-format=json |
+-              jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty' |
+-              tail -n 1
+-          )"
+-          test -n "$library_test"
+-          sudo env LOUISELM_REQUIRE_TOOL_ISOLATION=1 \
+-            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_TOOL_GRANTS=1 \
+-            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 120 /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::revocation --nocapture --test-threads=1' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::receipt_history::cleanup --nocapture --test-threads=1' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 120 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart --exact --nocapture' bash "$library_test"
+-          # Bound live lifecycle, offline state maintenance and CLI refusals independently.
+-          TIMEFORMAT='Activated daemon scenario elapsed: %3R seconds'
+-          for scenario in \
+-            privileged_activated_daemon_serves_launches_and_restart \
+-            state::privileged_activated_daemon_upgrades_and_adopts_state \
+-            inspection::privileged_activated_daemon_refuses_foreign_inspection; do
+-            test_name="launch_supervisor::system::installed_tests::daemon::$scenario"
+-            printf 'Activated daemon scenario: %s\n' "$scenario"
+-            time sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \
+-              timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
+-          done
+-          sudo env LOUISELM_REQUIRE_BROKER_BEADS=1 \
+-            "LOUISELM_TEST_BEADS_INSTALLER=$PWD/../scripts/install-broker-beads.py" \
+-            timeout 240 unshare --mount --propagation private -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 \
+-            timeout 120 python3 ../scripts/test-broker-systemd.py
+-          # Each full fixture gets its own deadline; keep the shared test account serial.
+-          TIMEFORMAT='Cold resume scenario elapsed: %3R seconds'
+-          for scenario in finite uncapped failed_load unavailable_balance; do
+-            test_name="launch_supervisor::system::installed_tests::privileged_installed_cold_resume_$scenario"
+-            printf 'Cold resume scenario: %s\n' "$scenario"
+-            time sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-              timeout 240 /bin/bash -c 'umask 022; exec "$1" "$2" --exact --nocapture' bash "$library_test" "$test_name"
+-          done
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success --exact --nocapture' bash "$library_test"
+-          sudo env LOUISELM_REQUIRE_BROKER_LAUNCH=1 \
+-            timeout 180 /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification --exact --nocapture' bash "$library_test"
+-          # Debian 13 exercises the full installed certifier. Other runner
+-          # profiles must explicitly refuse it, never issue a guest-derived pass.
+-          sudo env LOUISELM_REQUIRE_CERTIFICATION=1 \
+-            timeout 200 unshare --net -- /bin/bash -c 'umask 022; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture' bash "$library_test"
++        run: bash ../scripts/test-skills-privileged --disposable-guest "${{ matrix.group }}"
+ 
+       - name: Test privileged launch supervisor composition
++        if: matrix.group == 'core'
+         run: |
+           set -eu
+           test_identity=60000
+@@ -587,6 +567,7 @@ jobs:
+             /bin/bash -c 'umask 077; exec "$1" privileged_supervisor_launches_agent_under_the_assigned_outer_identity --exact --nocapture' bash "$supervisor_test"
+ 
+       - name: Test measured Bubblewrap rejection in the production launch path
++        if: matrix.group == 'core'
+         run: |
+           set -eu
+           cargo build --bins --all-features --locked
+@@ -602,6 +583,7 @@ jobs:
+             /bin/bash -c 'umask 077; exec "$1" launch_supervisor::system::installed_tests::failures::production_prepare_rejects_bubblewrap_changed_after_runtime_config_before_spawn --exact --nocapture' bash "$library_test"
+ 
+       - name: Test root-owned installed release boundary
++        if: matrix.group == 'core'
+         run: |
+           set -eu
+           release_test="$(
+@@ -614,6 +596,7 @@ jobs:
+             /bin/bash -c 'umask 022; exec "$1" installed_release_ --nocapture' bash "$release_test"
+ 
+       - name: Test root-owned launch registry boundary
++        if: matrix.group == 'core'
+         run: |
+           set -eu
+           registry_test="$(
+diff --git a/docs/agent-testing.md b/docs/agent-testing.md
+index 3bbe51d..42eaf92 100644
+--- a/docs/agent-testing.md
++++ b/docs/agent-testing.md
+@@ -44,7 +44,7 @@ RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked
+ ```
+ 
+ They are separate crates with separate lockfiles, not a workspace, so a gate run
+-in one says nothing about the others. CI runs each as a separate job.
++in one says nothing about the others. CI keeps the crates in separate jobs.
+ `usage-cli` links the system SQLite library (development headers and pkg-config
+ are required to build it); its offline tests never read the operator's histories.
+ 
+@@ -93,6 +93,17 @@ executables and can exhaust fixture deadlines on slow runners
+ (louiselm-cjpep). Line tables retain backtrace locations; optimization, debug
+ assertions, overflow checks, and security verification stay unchanged.
+ 
++The enabled measured fixtures run in two separate CI VMs: `core` and
++`lifecycle`. Inside a disposable guest, use
++`bash scripts/test-skills-privileged --disposable-guest <group>` with that same
++debug profile. Each group is serial; never background both in one guest because
++they share fixture accounts, systemd and cgroup paths. Changes to this runner
++also require `python3 scripts/test-skills-privileged.py`, its nonprivileged
++dispatch/failure contract gate, and the complete affected hosted CI workflow.
++The branch-required `cargo (skills-core)` status aggregates both groups and
++must refuse failure, cancellation or skip; preserve that context when changing
++the matrix, not just the overall workflow conclusion (`louiselm-oi9d6`).
++
+ Run that suite from outside your own ACP Session. `acp-proxy` is a child
+ subreaper that never reaps adopted orphans, so a killed descendant lingers as a
+ zombie, keeps its process group probeable, and fails three `bounded_system_runner`
+diff --git a/scripts/test-skills-privileged b/scripts/test-skills-privileged
+new file mode 100644
+index 0000000..28f6e78
+--- /dev/null
++++ b/scripts/test-skills-privileged
+@@ -0,0 +1,63 @@
++#!/usr/bin/env bash
++# Each group needs its own disposable VM: accounts, systemd and cgroups are shared.
++set -euo pipefail
++[[ $# == 2 && ${1:-} == --disposable-guest && $2 =~ ^(core|lifecycle)$ ]] || {
++  echo 'Usage: test-skills-privileged --disposable-guest {core|lifecycle} (never on the desktop)' >&2
++  exit 64
++}
++(( UID != 0 )) || { echo 'build as the guest operator, not root' >&2; exit 1; }
++group=$2
++repo_root=$(cd -- "$(dirname -- "$0")/.." && pwd)
++cd -- "$repo_root/skills-core"
++cargo build --bins --all-features --locked
++library_test=$(
++  cargo test --lib --all-features --locked --no-run --message-format=json |
++    jq -r 'select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'
++)
++[[ -x $library_test ]] || { echo 'library test executable missing' >&2; exit 1; }
++TIMEFORMAT='Privileged scenario elapsed: %3R seconds (user %3U, sys %3S)'
++system=launch_supervisor::system
++installed=$system::installed_tests
++
++# Filter, required gate, umask, selection flag, then optional timeout/namespace argv.
++run_rust() {
++  local filter=$1 gate=$2 mask=$3 selection=$4 listing
++  shift 4
++  listing=$("$library_test" "$filter" "$selection" --list)
++  [[ $listing == *': test'* ]] || { echo "no tests selected: $filter" >&2; return 1; }
++  printf 'Privileged scenario: %s\n' "$filter"
++  time sudo env "LOUISELM_REQUIRE_$gate=1" "$@" \
++    /bin/bash -c 'umask "$1"; shift; exec "$@"' bash "$mask" \
++    "$library_test" "$filter" "$selection" --nocapture
++}
++
++if [[ $group == core ]]; then
++  run_rust "$system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle" TOOL_ISOLATION 022 --exact
++  run_rust launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation TOOL_GRANTS 022 --exact
++  run_rust "$installed::privileged_installed_broker_launch_and_effects" BROKER_LAUNCH 022 --exact
++  run_rust "$installed::provider_credentials::privileged_installed_provider_credentials_stay_broker_side" BROKER_LAUNCH 022 --exact timeout 120
++  run_rust "$installed::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade" BROKER_LAUNCH 077 --exact timeout 120
++  run_rust "$installed::receipt_history::isolation::privileged_installed_history_failure_is_session_local" BROKER_LAUNCH 022 --exact timeout 120
++  run_rust "$installed::receipt_history::revocation" BROKER_LAUNCH 022 --test-threads=1 timeout 180
++  run_rust "$installed::receipt_history::cleanup" BROKER_LAUNCH 022 --test-threads=1 timeout 180
++  run_rust "$installed::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart" BROKER_LAUNCH 022 --exact timeout 120
++  printf 'Privileged scenario: broker systemd\n'
++  time sudo env LOUISELM_REQUIRE_BROKER_SYSTEMD=1 timeout 120 python3 "$repo_root/scripts/test-broker-systemd.py"
++  run_rust "$installed::verification::privileged_installed_exact_job_verification" BROKER_LAUNCH 022 --exact timeout 180
++  # Debian 13 certifies; other profiles must explicitly refuse unsupported hosts.
++  run_rust "$installed::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence" CERTIFICATION 022 --exact timeout 200 unshare --net --
++else
++  for scenario in \
++    privileged_activated_daemon_serves_launches_and_restart \
++    state::privileged_activated_daemon_upgrades_and_adopts_state \
++    inspection::privileged_activated_daemon_refuses_foreign_inspection; do
++    run_rust "$installed::daemon::$scenario" CONTROL_DAEMON 022 --exact timeout 240 unshare --mount --propagation private --
++  done
++  run_rust "$installed::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations" BROKER_BEADS 022 --exact \
++    env "LOUISELM_TEST_BEADS_INSTALLER=$repo_root/scripts/install-broker-beads.py" \
++    timeout 240 unshare --mount --propagation private --
++  for scenario in finite uncapped failed_load unavailable_balance; do
++    run_rust "$installed::privileged_installed_cold_resume_$scenario" BROKER_LAUNCH 022 --exact timeout 240
++  done
++  run_rust "$installed::failures::privileged_installed_launch_failures_never_acknowledge_success" BROKER_LAUNCH 022 --exact
++fi
+diff --git a/scripts/test-skills-privileged.py b/scripts/test-skills-privileged.py
+new file mode 100644
+index 0000000..801337b
+--- /dev/null
++++ b/scripts/test-skills-privileged.py
+@@ -0,0 +1,151 @@
++#!/usr/bin/env python3
++"""Check privileged CI dispatch without executing Cargo or host sudo."""
++
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import tempfile
++import unittest
++
++
++ROOT = Path(__file__).resolve().parent.parent
++RUNNER = ROOT / "scripts/test-skills-privileged"
++SYSTEM = "launch_supervisor::system::"
++INSTALLED = SYSTEM + "installed_tests::"
++
++# The pre-split CI contract: gate, mask, filter, selection, execution prefix.
++CORE = [
++    ("TOOL_ISOLATION", "022", SYSTEM + "tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle", "--exact", []),
++    ("TOOL_GRANTS", "022", "launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation", "--exact", []),
++    ("BROKER_LAUNCH", "022", INSTALLED + "privileged_installed_broker_launch_and_effects", "--exact", []),
++    ("BROKER_LAUNCH", "022", INSTALLED + "provider_credentials::privileged_installed_provider_credentials_stay_broker_side", "--exact", ["timeout", "120"]),
++    ("BROKER_LAUNCH", "077", INSTALLED + "receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade", "--exact", ["timeout", "120"]),
++    ("BROKER_LAUNCH", "022", INSTALLED + "receipt_history::isolation::privileged_installed_history_failure_is_session_local", "--exact", ["timeout", "120"]),
++    ("BROKER_LAUNCH", "022", INSTALLED + "receipt_history::revocation", "--test-threads=1", ["timeout", "180"]),
++    ("BROKER_LAUNCH", "022", INSTALLED + "receipt_history::cleanup", "--test-threads=1", ["timeout", "180"]),
++    ("BROKER_LAUNCH", "022", INSTALLED + "socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart", "--exact", ["timeout", "120"]),
++    ("BROKER_LAUNCH", "022", INSTALLED + "verification::privileged_installed_exact_job_verification", "--exact", ["timeout", "180"]),
++    ("CERTIFICATION", "022", INSTALLED + "certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence", "--exact", ["timeout", "200", "unshare", "--net", "--"]),
++]
++MOUNT = ["timeout", "240", "unshare", "--mount", "--propagation", "private", "--"]
++LIFECYCLE = [
++    ("CONTROL_DAEMON", "022", INSTALLED + "daemon::" + scenario, "--exact", MOUNT)
++    for scenario in ["privileged_activated_daemon_serves_launches_and_restart",
++                     "state::privileged_activated_daemon_upgrades_and_adopts_state",
++                     "inspection::privileged_activated_daemon_refuses_foreign_inspection"]
++] + [
++    ("BROKER_BEADS", "022", INSTALLED + "daemon::beads::privileged_installed_tracker_routes_only_approved_mutations", "--exact", ["env", "LOUISELM_TEST_BEADS_INSTALLER=" + str(ROOT / "scripts/install-broker-beads.py"), *MOUNT]),
++] + [
++    ("BROKER_LAUNCH", "022", INSTALLED + "privileged_installed_cold_resume_" + scenario, "--exact", ["timeout", "240"])
++    for scenario in ["finite", "uncapped", "failed_load", "unavailable_balance"]
++] + [
++    ("BROKER_LAUNCH", "022", INSTALLED + "failures::privileged_installed_launch_failures_never_acknowledge_success", "--exact", []),
++]
++
++STUB = '''#!/usr/bin/env python3
++import json, os, pathlib, sys
++name = pathlib.Path(sys.argv[0]).name
++if name == "cargo":
++    if "--message-format=json" in sys.argv:
++        print(json.dumps({"reason":"compiler-artifact", "target":{"name":"louiselm_skills"}, "profile":{"test":True}, "executable":os.environ["FIXTURE_LIBRARY"]}))
++elif name == "library":
++    assert "--list" in sys.argv
++    if not os.environ.get("EMPTY_TEST_LIST"):
++        print(sys.argv[1] + ": test")
++elif name == "sudo":
++    with open(os.environ["FIXTURE_CALLS"], "a") as stream:
++        stream.write(json.dumps(sys.argv[1:]) + "\\n")
++    if os.environ.get("FAIL_SCENARIO") in sys.argv:
++        sys.exit(23)
++else:
++    raise AssertionError(name)
++'''
++
++
++class Dispatch(unittest.TestCase):
++    def setUp(self):
++        self.temporary = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temporary.cleanup)
++        self.root = Path(self.temporary.name)
++        for name in ["cargo", "library", "sudo"]:
++            target = self.root / name
++            target.write_text(STUB)
++            target.chmod(0o755)
++        self.calls = self.root / "calls.jsonl"
++        self.env = dict(os.environ, PATH=str(self.root) + os.pathsep + os.environ["PATH"],
++                        FIXTURE_LIBRARY=str(self.root / "library"), FIXTURE_CALLS=str(self.calls))
++
++    def run_group(self, *arguments, **env):
++        return subprocess.run(["bash", str(RUNNER), *arguments], env=self.env | env,
++                              text=True, capture_output=True)
++
++    def recorded(self):
++        return [json.loads(line) for line in self.calls.read_text().splitlines()] if self.calls.exists() else []
++
++    def test_every_original_invocation_runs_once_with_its_authority_boundaries(self):
++        for group in ["core", "lifecycle"]:
++            result = self.run_group("--disposable-guest", group)
++            self.assertEqual(result.returncode, 0, result.stderr)
++        calls = self.recorded()
++        self.assertEqual(len(calls), 21)
++        rust_calls = [call for call in calls if str(self.root / "library") in call]
++        self.assertEqual(len(rust_calls), 20)
++        for gate, mask, name, selection, prefix in CORE + LIFECYCLE:
++            matches = [call for call in rust_calls if name in call]
++            self.assertEqual(len(matches), 1, name)
++            self.assertEqual(matches[0], ["env", "LOUISELM_REQUIRE_" + gate + "=1", *prefix,
++                             "/bin/bash", "-c", 'umask "$1"; shift; exec "$@"', "bash", mask,
++                             str(self.root / "library"), name, selection, "--nocapture"])
++        python_calls = [call for call in calls if "python3" in call]
++        self.assertEqual(python_calls, [["env", "LOUISELM_REQUIRE_BROKER_SYSTEMD=1", "timeout", "120",
++                                       "python3", str(ROOT / "scripts/test-broker-systemd.py")]])
++
++    def test_unknown_group_or_missing_disposable_acknowledgement_never_runs_sudo(self):
++        for args in [(), ("core",), ("--disposable-guest", "typo"), ("--disposable-guest", "core", "extra")]:
++            result = self.run_group(*args)
++            self.assertEqual(result.returncode, 64, result.stderr)
++        self.assertEqual(self.recorded(), [])
++
++    def test_zero_selected_tests_fail_before_privileged_execution(self):
++        result = self.run_group("--disposable-guest", "core", EMPTY_TEST_LIST="1")
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("no tests selected", result.stderr)
++        self.assertEqual(self.recorded(), [])
++
++    def test_fixture_failure_is_not_hidden_and_stops_the_group(self):
++        result = self.run_group("--disposable-guest", "lifecycle", FAIL_SCENARIO=LIFECYCLE[0][2])
++        self.assertEqual(result.returncode, 23, result.stderr)
++        self.assertEqual(len(self.recorded()), 1)
++
++
++class RequiredStatus(unittest.TestCase):
++    def test_branch_required_status_aggregates_both_groups_and_refuses_non_success(self):
++        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
++        def job(name):
++            match = re.search(r"^  " + name + r":\n(.*?)(?=^  [a-z0-9_-]+:|\Z)", workflow, re.M | re.S)
++            self.assertIsNotNone(match, name)
++            return match[1]
++
++        aggregate = job("skills-core")
++        self.assertIn("    name: cargo (skills-core)", aggregate.splitlines())
++        self.assertIn("    needs: skills-core-checks\n", aggregate)
++        self.assertIn("    if: always()\n", aggregate)
++        self.assertNotIn("continue-on-error", aggregate)
++        matrix = job("skills-core-checks")
++        self.assertIn("      fail-fast: false\n", matrix)
++        self.assertIn("          - group: core\n", matrix)
++        self.assertIn("          - group: lifecycle\n", matrix)
++        self.assertNotIn("            name: cargo (skills-core)", matrix.splitlines())
++        self.assertNotIn("continue-on-error", matrix)
++        command = re.search(r"^      - run: (.+)$", aggregate, re.M)[1]
++        expression = "${{ needs.skills-core-checks.result }}"
++        self.assertIn(expression, command)
++        for result in ["success", "failure", "cancelled", "skipped", ""]:
++            probe = subprocess.run(["bash", "-c", command.replace(expression, result)])
++            self.assertEqual(probe.returncode == 0, result == "success", result)
++
++
++if __name__ == "__main__":
++    unittest.main()
