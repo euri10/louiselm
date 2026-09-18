@@ -9,6 +9,21 @@ The authentication decision now lives in `louiselm-qbr.5.1.3.10`, split from
 `louiselm-qbr.5.1.3.2` remain blocked. This result does not establish that every
 stock-Codex integration is impossible.
 
+## Confirmed production contract
+
+The maintainer confirmed `louiselm-qbr.5.1.3.10` on 2026-09-18:
+production requires documented support for login, refresh and broker-originated
+subscription requests. Legacy token export remains research-only, even with
+an executable pin and passing regression tests. Reusable credentials remain
+broker-owned and outside every confined Session; ordinary Codex login and the
+existing subscription stay untouched.
+
+If no supported bridge can be established, Verified Codex remains unavailable
+while ordinary Codex continues working. Closing the design question establishes
+that requirement and fallback, not a supported bridge. Authentication proof
+`louiselm-qbr.5.1.3.4` and guarded-composition proof `louiselm-qbr.5.1.3.9`
+remain prerequisites for production requests. Vocabulary delta: No change.
+
 ## Measured boundary
 
 The opt-in experiment uses the installed standalone `codex-cli 0.153.4`:
@@ -117,18 +132,21 @@ types are `src/app-server/GetAuthStatusParams.ts` and
 managed-cache mode. Current primary auth documentation does not specify this
 as a supported broker subscription interface or establish its future stability.
 
-A concrete candidate for `louiselm-qbr.5.1.3.10` is one pinned app-server owned by the
+A research-only candidate is one pinned app-server owned by the
 broker, outside all Sessions, used solely for fresh managed sign-in and refresh.
 The broker could obtain access material on its private pipe through the legacy
 method. The confined Codex would remain unauthenticated and address a narrow
 local operation endpoint. This is an architectural proposal, not implemented
-or approved here. It still needs a supported upstream request contract and the
-independent caller-isolation solution from `louiselm-qbr.5.1.3.5`.
+or approved for production by `louiselm-qbr.5.1.3.10`. It still needs a documented
+supported authentication and upstream request contract, and the
+independent guarded-composition proof in `louiselm-qbr.5.1.3.9` following
+`louiselm-qbr.5.1.3.5`'s negative isolation result.
 
-Questions for the decision: is that helper and legacy API an acceptable supported
-boundary; what subscription service/operation is supported for broker-originated
-requests; and what enforces one refresh owner across restart and overlapping
-brokers? A raw-HTTP relay, reading ordinary Codex credentials, or passing exported
+Remaining proof: establish documented support for the authentication boundary
+and the subscription service/operation used by broker-originated requests, and
+enforce one refresh owner across restart and overlapping brokers. Legacy API
+availability alone no longer qualifies as a production option. A raw-HTTP relay,
+reading ordinary Codex credentials, or passing exported
 tokens into the confined Codex is not an implicit alternative.
 
 `CodexJsonRpcConnection.ts:44` can log entire app-server frames when
@@ -138,8 +156,9 @@ No real authentication frame was sent through it in this investigation.
 
 ## Operator acceptance after a candidate is reviewable
 
-Do not sign in merely to test the blocked design. Once `louiselm-qbr.5.1.3.10` selects
-a candidate and its offline lifecycle/caller-isolation checks pass, the candidate
+Do not sign in merely to test the blocked design. Once a candidate meets the
+documented-support requirement in `louiselm-qbr.5.1.3.10` and its offline
+lifecycle/caller-isolation checks pass, the candidate
 must provide an operator-only command with these concrete steps:
 
 1. Validate a dedicated non-root broker UID and a new, empty private auth home.
