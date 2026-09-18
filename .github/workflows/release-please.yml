@@ -83,9 +83,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          set -eu
-          ready=$(gh api --paginate --slurp "repos/$REPOSITORY/releases?per_page=100" \
-            --jq '[.[][] | select(.draft and (.tag_name | startswith("plugin-v")))] | length == 0')
+          set -euo pipefail
+          ready=$(gh api --paginate --slurp "repos/$REPOSITORY/releases?per_page=100" |
+            jq '[.[][] | select(.draft and (.tag_name | startswith("plugin-v")))] | length == 0')
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
 
       - name: Propose the next plugin release
