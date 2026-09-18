@@ -1,0 +1,552 @@
+[
+  {
+    "run": 35345987608,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35345987608",
+    "head_sha": "19290e8f213f34c3cb8cac752d8143913d1a918a",
+    "event": "pull_request",
+    "conclusion": "success",
+    "all_gates": [
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "success"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      }
+    ],
+    "queue_seconds": 2,
+    "skills_start_skew_seconds": 0,
+    "skills_wall_seconds": 1080,
+    "skills_runner_seconds": 1080,
+    "skills_rounded_runner_minutes": 18,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 105602562882,
+        "name": "cargo (skills-core)",
+        "conclusion": "success",
+        "seconds": 1080,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:41:18Z",
+            "completed_at": "2026-09-18T12:41:19Z",
+            "seconds": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:41:19Z",
+            "completed_at": "2026-09-18T12:41:21Z",
+            "seconds": 2
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:41:21Z",
+            "completed_at": "2026-09-18T12:41:35Z",
+            "seconds": 14
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:41:35Z",
+            "completed_at": "2026-09-18T12:41:44Z",
+            "seconds": 9
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:41:44Z",
+            "completed_at": "2026-09-18T12:42:05Z",
+            "seconds": 21
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:42:05Z",
+            "completed_at": "2026-09-18T12:42:06Z",
+            "seconds": 1
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:42:06Z",
+            "completed_at": "2026-09-18T12:42:07Z",
+            "seconds": 1
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:42:07Z",
+            "completed_at": "2026-09-18T12:42:28Z",
+            "seconds": 21
+          },
+          {
+            "name": "Test",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:42:28Z",
+            "completed_at": "2026-09-18T12:43:58Z",
+            "seconds": 90
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:43:58Z",
+            "completed_at": "2026-09-18T12:43:59Z",
+            "seconds": 1
+          },
+          {
+            "name": "Recovery browser deadline regressions",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:43:59Z",
+            "completed_at": "2026-09-18T12:43:59Z",
+            "seconds": 0
+          },
+          {
+            "name": "Linked Admission across operator and read-only broker identities",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:43:59Z",
+            "completed_at": "2026-09-18T12:44:17Z",
+            "seconds": 18
+          },
+          {
+            "name": "Documentation",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:44:17Z",
+            "completed_at": "2026-09-18T12:44:27Z",
+            "seconds": 10
+          },
+          {
+            "name": "Required hostile launcher conformance",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:44:27Z",
+            "completed_at": "2026-09-18T12:44:40Z",
+            "seconds": 13
+          },
+          {
+            "name": "Test root-owned Session cgroup containment",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:44:40Z",
+            "completed_at": "2026-09-18T12:44:40Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test production relay cleanup with an open controller",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:44:40Z",
+            "completed_at": "2026-09-18T12:44:40Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test measured Agent and isolated tool grants",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:44:40Z",
+            "completed_at": "2026-09-18T12:58:58Z",
+            "seconds": 858
+          },
+          {
+            "name": "Test privileged launch supervisor composition",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:58:58Z",
+            "completed_at": "2026-09-18T12:59:05Z",
+            "seconds": 7
+          },
+          {
+            "name": "Test measured Bubblewrap rejection in the production launch path",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:05Z",
+            "completed_at": "2026-09-18T12:59:14Z",
+            "seconds": 9
+          },
+          {
+            "name": "Test root-owned installed release boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:14Z",
+            "completed_at": "2026-09-18T12:59:14Z",
+            "seconds": 0
+          },
+          {
+            "name": "Test root-owned launch registry boundary",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:14Z",
+            "completed_at": "2026-09-18T12:59:14Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:14Z",
+            "completed_at": "2026-09-18T12:59:14Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:14Z",
+            "completed_at": "2026-09-18T12:59:14Z",
+            "seconds": 0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:14Z",
+            "completed_at": "2026-09-18T12:59:15Z",
+            "seconds": 1
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-18T12:59:15Z",
+            "completed_at": "2026-09-18T12:59:15Z",
+            "seconds": 0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-18T12:42:28.5842062Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.88s",
+            "2026-09-18T12:43:11.8644441Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 43.22s",
+            "2026-09-18T12:43:59.5387649Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:27.0428859Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.01s",
+            "2026-09-18T12:44:27.1651188Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:40.1610771Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:40.2598201Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:40.4263854Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:40.5267262Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:40.6906433Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:44:40.7970343Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T12:58:58.9958836Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s",
+            "2026-09-18T12:59:05.4374851Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:59:05.5388575Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:59:14.4244409Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s",
+            "2026-09-18T12:59:14.5781663Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s"
+          ],
+          "cache": [
+            "2026-09-18T12:41:56.1237635Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-18T12:42:05.8260095Z Cache restored successfully",
+            "2026-09-18T12:42:05.8822760Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181",
+            "2026-09-18T12:59:14.9185044Z Cache hit occurred on the primary key cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181, not saving cache."
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15988        1981        6011          44        8387       14007",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ],
+    "checkout_sha": "fd63d5219a29ccb1e7d45eed59ec9583b18b0fc6",
+    "regression_evidence": [
+      "2026-09-18T12:43:51.6710210Z Running tests/grant_authority.rs",
+      "2026-09-18T12:43:51.8001095Z test expiry_and_audit_failure_never_reopen_reserved_authority ... ok",
+      "2026-09-18T12:43:51.8001810Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s"
+    ],
+    "merge_blocker": {
+      "issue": "louiselm-e4fzw",
+      "pr": "https://github.com/euri10/louiselm/pull/10",
+      "head": "19290e8f213f34c3cb8cac752d8143913d1a918a",
+      "base": "b25dfb4e6c48d758e91333f3c1543776a5664215",
+      "state": "OPEN",
+      "merge_state": "BLOCKED",
+      "review_decision": "REVIEW_REQUIRED",
+      "required_approving_review_count": 1,
+      "dismiss_stale_reviews": true,
+      "enforce_admins": true,
+      "policy_changed": false,
+      "bypass_used": false
+    },
+    "landing": {
+      "authorized_basis": "Maintainer confirmed solo ownership and explicitly authorized removing only mandatory approvals, preserving required CI, then merging PR #10.",
+      "changed_field": "required_pull_request_reviews.required_approving_review_count",
+      "before": {
+        "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection",
+        "required_status_checks": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_status_checks",
+          "strict": true,
+          "contexts": [
+            "ACP backup, copy and retention (synthetic data)",
+            "Agent instruction budget",
+            "Agent liveness snapshot",
+            "Android tests, lint, and build",
+            "Launcher VM safety contract (no VM)",
+            "Plugin release contract",
+            "cargo (capture-service)",
+            "cargo (skills-core)",
+            "cargo (usage-cli)",
+            "lua-language-server",
+            "mini.test (nvim stable)",
+            "stylua"
+          ],
+          "contexts_url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_status_checks/contexts",
+          "checks": [
+            {
+              "context": "ACP backup, copy and retention (synthetic data)",
+              "app_id": 15368
+            },
+            {
+              "context": "Agent instruction budget",
+              "app_id": 15368
+            },
+            {
+              "context": "Agent liveness snapshot",
+              "app_id": 15368
+            },
+            {
+              "context": "Android tests, lint, and build",
+              "app_id": 15368
+            },
+            {
+              "context": "Launcher VM safety contract (no VM)",
+              "app_id": 15368
+            },
+            {
+              "context": "Plugin release contract",
+              "app_id": 15368
+            },
+            {
+              "context": "cargo (capture-service)",
+              "app_id": 15368
+            },
+            {
+              "context": "cargo (skills-core)",
+              "app_id": 15368
+            },
+            {
+              "context": "cargo (usage-cli)",
+              "app_id": 15368
+            },
+            {
+              "context": "lua-language-server",
+              "app_id": 15368
+            },
+            {
+              "context": "mini.test (nvim stable)",
+              "app_id": 15368
+            },
+            {
+              "context": "stylua",
+              "app_id": 15368
+            }
+          ]
+        },
+        "required_pull_request_reviews": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_pull_request_reviews",
+          "dismiss_stale_reviews": true,
+          "require_code_owner_reviews": false,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 1
+        },
+        "required_signatures": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_signatures",
+          "enabled": false
+        },
+        "enforce_admins": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/enforce_admins",
+          "enabled": true
+        },
+        "required_linear_history": {
+          "enabled": false
+        },
+        "allow_force_pushes": {
+          "enabled": false
+        },
+        "allow_deletions": {
+          "enabled": false
+        },
+        "block_creations": {
+          "enabled": false
+        },
+        "required_conversation_resolution": {
+          "enabled": false
+        },
+        "lock_branch": {
+          "enabled": false
+        },
+        "allow_fork_syncing": {
+          "enabled": false
+        }
+      },
+      "after": {
+        "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection",
+        "required_status_checks": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_status_checks",
+          "strict": true,
+          "contexts": [
+            "ACP backup, copy and retention (synthetic data)",
+            "Agent instruction budget",
+            "Agent liveness snapshot",
+            "Android tests, lint, and build",
+            "Launcher VM safety contract (no VM)",
+            "Plugin release contract",
+            "cargo (capture-service)",
+            "cargo (skills-core)",
+            "cargo (usage-cli)",
+            "lua-language-server",
+            "mini.test (nvim stable)",
+            "stylua"
+          ],
+          "contexts_url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_status_checks/contexts",
+          "checks": [
+            {
+              "context": "ACP backup, copy and retention (synthetic data)",
+              "app_id": 15368
+            },
+            {
+              "context": "Agent instruction budget",
+              "app_id": 15368
+            },
+            {
+              "context": "Agent liveness snapshot",
+              "app_id": 15368
+            },
+            {
+              "context": "Android tests, lint, and build",
+              "app_id": 15368
+            },
+            {
+              "context": "Launcher VM safety contract (no VM)",
+              "app_id": 15368
+            },
+            {
+              "context": "Plugin release contract",
+              "app_id": 15368
+            },
+            {
+              "context": "cargo (capture-service)",
+              "app_id": 15368
+            },
+            {
+              "context": "cargo (skills-core)",
+              "app_id": 15368
+            },
+            {
+              "context": "cargo (usage-cli)",
+              "app_id": 15368
+            },
+            {
+              "context": "lua-language-server",
+              "app_id": 15368
+            },
+            {
+              "context": "mini.test (nvim stable)",
+              "app_id": 15368
+            },
+            {
+              "context": "stylua",
+              "app_id": 15368
+            }
+          ]
+        },
+        "required_pull_request_reviews": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_pull_request_reviews",
+          "dismiss_stale_reviews": true,
+          "require_code_owner_reviews": false,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0
+        },
+        "required_signatures": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/required_signatures",
+          "enabled": false
+        },
+        "enforce_admins": {
+          "url": "https://api.github.com/repos/euri10/louiselm/branches/main/protection/enforce_admins",
+          "enabled": true
+        },
+        "required_linear_history": {
+          "enabled": false
+        },
+        "allow_force_pushes": {
+          "enabled": false
+        },
+        "allow_deletions": {
+          "enabled": false
+        },
+        "block_creations": {
+          "enabled": false
+        },
+        "required_conversation_resolution": {
+          "enabled": false
+        },
+        "lock_branch": {
+          "enabled": false
+        },
+        "allow_fork_syncing": {
+          "enabled": false
+        }
+      },
+      "verified_no_other_protection_changes": true,
+      "merged_at": "2026-09-18T13:09:57Z",
+      "merge_sha": "fd87239922197b3973e0a9cce2fe5b555235e83b",
+      "head_sha": "19290e8f213f34c3cb8cac752d8143913d1a918a",
+      "identical_head_and_merge_tree": "47b930894e1bee465d61b68f0c7bc00049c724de",
+      "all_13_pr_checks_passed": true,
+      "admin_bypass_used": false,
+      "branch_deleted": false,
+      "post_merge_ci_run": 35348623996,
+      "post_merge_ci_status_at_recording": "in_progress",
+      "issue": "louiselm-e4fzw"
+    }
+  }
+]
