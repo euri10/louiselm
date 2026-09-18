@@ -114,8 +114,7 @@ def main():
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run-id", required=True, type=int)
     args = parser.parse_args()
-    require(args.repository == "euri10/louiselm", "only the private release authority may publish")
-    require(github_api(f"repos/{args.repository}")["private"], "release authority must stay private")
+    require(args.repository == "euri10/louiselm", "only the release authority may publish")
     print(json.dumps(publish(github_api, args.repository, args.run_id)))
 
 
