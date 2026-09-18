@@ -816,9 +816,42 @@ fn assert_denial_and_helper(
         matches!(reply.operation, CommandOperation::Granted { grant: 1, .. }),
         "{reply:?}"
     );
+    // Granted is not completion; the helper receives its result on its own channel.
+    // Observe the whole effect, not the empty file created by shell redirection.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !workspace.join("effect").exists() && Instant::now() < deadline {
+    while !helper_effect_is_complete(&workspace.join("effect")) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(fs::read(workspace.join("effect")).unwrap(), b"authorized");
+}
+
+fn helper_effect_is_complete(path: &Path) -> bool {
+    match fs::read(path) {
+        Ok(bytes) => bytes == b"authorized",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("reading delegated effect: {error}"),
+    }
+}
+
+#[test]
+fn helper_effect_waits_for_complete_contents_after_creation() {
+    let root = tempfile::tempdir().unwrap();
+    let effect = root.path().join("effect");
+    assert!(!helper_effect_is_complete(&effect));
+    // Shell redirection creates the file before printf writes its bytes.
+    let mut writer = fs::File::create(&effect).unwrap();
+    assert!(!helper_effect_is_complete(&effect));
+    writer.write_all(b"auth").unwrap();
+    assert!(!helper_effect_is_complete(&effect));
+    writer.write_all(b"orized").unwrap();
+    assert!(helper_effect_is_complete(&effect));
+    fs::write(&effect, b"wrong bytes").unwrap();
+    assert!(!helper_effect_is_complete(&effect));
+}
+
+#[test]
+#[should_panic(expected = "reading delegated effect:")]
+fn helper_effect_read_errors_are_not_treated_as_pending() {
+    let root = tempfile::tempdir().unwrap();
+    helper_effect_is_complete(root.path());
 }
