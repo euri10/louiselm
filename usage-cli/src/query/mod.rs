@@ -5,11 +5,12 @@ use crate::error::{Failure, Result};
 mod inspect;
 mod metrics;
 mod page;
-pub(crate) use inspect::{options, show, sources};
+pub(crate) use inspect::{show, sources};
+mod schema;
 mod select;
-pub(crate) use metrics::schema;
 use page::rows;
 use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
+pub(crate) use schema::{describe as schema, options};
 use select::Selection;
 use serde_json::{Value, json};
 
@@ -42,20 +43,8 @@ pub(crate) fn stats(
         ));
     }
     let metrics = metrics::metrics(subject);
-    let table = if is_turn {
-        "turn_facts"
-    } else if is_request {
-        "request_facts"
-    } else {
-        "call_facts"
-    };
-    let default_group = match subject {
-        Subject::Commands => "family",
-        Subject::Tools => "tool",
-        Subject::Sessions => "session_id",
-        Subject::Turns => "provider,model",
-        Subject::Requests => "adapter,model,scope,basis",
-    };
+    let table = subject.table();
+    let default_group = subject.default_group();
     let mut groups: Vec<_> = group.unwrap_or(default_group).split(',').collect();
     if call_fields && query.level == "all" && !groups.contains(&"level") {
         groups.push("level");
@@ -78,7 +67,8 @@ pub(crate) fn stats(
     if groups.len() > 8 {
         return Err(Failure::query("Group by at most eight dimensions"));
     }
-    let mut selection = Selection::new();
+    let discovery = format!("stats {}", subject.name());
+    let mut selection = Selection::new(&discovery);
     selection.filters(query, call_fields)?;
     if is_turn {
         selection
@@ -96,7 +86,7 @@ pub(crate) fn stats(
         columns.push(format!("{} AS g{i}", selection.dimension(group)?));
     }
     columns.extend(metrics.iter().map(|(name, sql)| format!("{sql} AS {name}")));
-    let order = sort(query, &groups, &metrics)?;
+    let order = sort(query, &groups, &metrics, &discovery)?;
     let grouping = (1..=groups.len())
         .map(|i| i.to_string())
         .collect::<Vec<_>>()
@@ -111,7 +101,15 @@ pub(crate) fn stats(
         .copied()
         .chain(metrics.iter().map(|(name, _)| *name))
         .collect();
-    let mut response = rows(connection, query, &sql, selection.parameters, &names, false)?;
+    let mut response = rows(
+        connection,
+        query,
+        &sql,
+        selection.parameters,
+        &names,
+        false,
+        &discovery,
+    )?;
     response["coverage"]["mixed_turns_excluded"] = json!(mixed_excluded);
     Ok(response)
 }
@@ -135,7 +133,12 @@ fn mixed_excluded(
     Ok(connection.query_row(&format!("SELECT count(*) FROM turn_facts WHERE {predicate} AND json_extract(data,'$.mixed_options')=1"),params_from_iter(&selection.parameters),|r|r.get(0))?)
 }
 
-fn sort(query: &Query, groups: &[&str], metrics: &[(&str, &str)]) -> Result<String> {
+fn sort(
+    query: &Query,
+    groups: &[&str],
+    metrics: &[(&str, &str)],
+    discovery: &str,
+) -> Result<String> {
     let default = format!("{}:desc", metrics[0].0);
     let requested = query.sort.as_deref().unwrap_or(&default);
     let (key, direction) = requested.split_once(':').unwrap_or((requested, "desc"));
@@ -148,13 +151,13 @@ fn sort(query: &Query, groups: &[&str], metrics: &[(&str, &str)]) -> Result<Stri
     if let Some(i) = groups.iter().position(|g| *g == key) {
         return Ok(format!("g{i} {direction} NULLS LAST"));
     }
-    Err(Failure::query(
-        "Unknown sort field; use a metric or selected group dimension",
-    ))
+    Err(Failure::query(format!(
+        "Unknown sort field {key:?}; inspect louiselm-usage schema {discovery}; use a metric or selected group dimension"
+    )))
 }
 
 pub(crate) fn calls(connection: &Connection, query: &Query) -> Result<Value> {
-    let mut selection = Selection::new();
+    let mut selection = Selection::new("calls");
     selection.filters(query, true)?;
     let order = if query.sort.is_none() {
         "id ASC".to_owned()
@@ -170,5 +173,13 @@ pub(crate) fn calls(connection: &Connection, query: &Query) -> Result<Value> {
         "SELECT data FROM call_facts WHERE {} ORDER BY {order}",
         selection.predicate()
     );
-    rows(connection, query, &sql, selection.parameters, &[], true)
+    rows(
+        connection,
+        query,
+        &sql,
+        selection.parameters,
+        &[],
+        true,
+        "calls",
+    )
 }

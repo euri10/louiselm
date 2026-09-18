@@ -18,18 +18,12 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 fn execute(cli: Cli) -> Result<(Value, u8)> {
-    if let Command::Schema { command, .. } = &cli.command
+    if let Command::Schema {
+        command, subject, ..
+    } = &cli.command
         && command.as_deref() != Some("options")
     {
-        if command
-            .as_ref()
-            .is_some_and(|s| !["stats", "calls", "sources", "index", "show"].contains(&s.as_str()))
-        {
-            return Err(Failure::query(
-                "Unknown schema subject; use schema or schema options",
-            ));
-        }
-        return Ok((query::schema(command.as_deref()), 0));
+        return Ok((query::schema(command.as_deref(), subject.as_deref())?, 0));
     }
     let db = cli.db.map_or_else(
         || sources::state_root().map(|p| p.join("index.sqlite3")),
@@ -67,7 +61,12 @@ fn execute(cli: Cli) -> Result<(Value, u8)> {
             cursor.as_deref(),
         )?,
         Command::Sources(options) => query::sources(&connection, &options)?,
-        Command::Schema { limit, cursor, .. } => query::options(&connection, limit, cursor)?,
+        Command::Schema {
+            subject,
+            limit,
+            cursor,
+            ..
+        } => query::options(&connection, subject.as_deref(), limit, cursor)?,
         Command::Index { .. } => {
             return Err(Failure::query("Invalid command state"));
         }

@@ -59,6 +59,8 @@ pub(crate) enum Command {
     /// Discover query fields, metrics, semantics, and supported source formats.
     Schema {
         command: Option<String>,
+        /// Stats/options subject or show record kind; inspect schema for choices.
+        subject: Option<String>,
         #[arg(long, default_value_t=20, value_parser=clap::value_parser!(u32).range(1..=1000))]
         limit: u32,
         #[arg(long)]
@@ -73,6 +75,36 @@ pub(crate) enum Subject {
     Turns,
     Sessions,
     Requests,
+}
+
+impl Subject {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Tools => "tools",
+            Self::Commands => "commands",
+            Self::Turns => "turns",
+            Self::Sessions => "sessions",
+            Self::Requests => "requests",
+        }
+    }
+
+    pub fn table(self) -> &'static str {
+        match self {
+            Self::Turns => "turn_facts",
+            Self::Requests => "request_facts",
+            _ => "call_facts",
+        }
+    }
+
+    pub fn default_group(self) -> &'static str {
+        match self {
+            Self::Commands => "family",
+            Self::Tools => "tool",
+            Self::Sessions => "session_id",
+            Self::Turns => "provider,model",
+            Self::Requests => "adapter,model,scope,basis",
+        }
+    }
 }
 
 #[derive(Args, Default, Serialize)]

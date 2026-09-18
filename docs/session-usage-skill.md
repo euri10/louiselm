@@ -250,7 +250,8 @@ louiselm-usage stats turns --group-by 'provider,model,option:<OPTION_ID>' \
 louiselm-usage calls --command-key <key> \
   --fields id,session_id,turn_id,provider,model,options,evidence --limit 10
 louiselm-usage show call <id>
-louiselm-usage schema stats
+louiselm-usage schema stats turns
+louiselm-usage schema options turns --limit 5
 ```
 
 `sources` reports discovered, indexed, inaccessible, missing and unsupported
@@ -275,7 +276,8 @@ Agent and Provider identifiers remain distinct even when their spelling matches.
 Native setting names remain namespaced; expose a shared dimension only when its
 meaning is established. An unobserved Git branch/commit or requested option is
 unavailable, not reconstructed from today's checkout/configuration.
-Replace `<OPTION_ID>` with an option identifier returned by `schema`. Repeated
+Replace `<OPTION_ID>` with an option identifier returned by `schema options`
+for the same query subject (for example, `schema options turns`). Repeated
 values for one ordinary filter are ORed; different filters are ANDed. Distinct
 `--option` keys are ANDed; contradictory repetitions of one key are invalid.
 
@@ -285,8 +287,12 @@ coverage, diagnostics and `next_cursor`. Paginate on stable IDs within an index
 generation; reject a cursor for a replaced generation. No silently truncated JSON
 or undocumented sample. Project/group predicates run in SQLite before rendering.
 
-`schema` returns valid subjects, fields, metric units, filters and operators for
-one command, so an Agent need not load a manual. Unknown flags, fields or typed
+`schema stats SUBJECT`, `schema calls`, and `schema show KIND` describe the
+corresponding fields; `schema options SUBJECT` reports observed IDs/types and
+coverage for that subject's default selection. Call-native and durable-turn
+options remain distinct; request usage has no proved historical-option join.
+`schema` lists the discovery commands and shared measurement semantics.
+Unknown flags, fields or typed
 values are errors with a small allowed-value hint. No arbitrary writable SQL or
 general query language in the initial CLI.
 
@@ -395,11 +401,13 @@ transcripts into the conversation or recreate its parsers in ad hoc scripts.
 1. Inspect `sources` for coverage and freshness. If needed for the requested
    analysis, run `index --all` or the user's selected sources; report gaps.
 2. Query `stats tools` and `stats commands`, bounded to the requested scope.
-   Inspect `schema stats` only when the required fields/operators are unclear.
+   Inspect `schema stats commands` or `schema stats tools` when fields are unclear.
 3. Follow leading groups with `calls` and `show` to cite stable call, Session,
    turn and source IDs. Expand evidence only where it changes the conclusion.
 4. For configuration comparisons or token estimates, read
    `references/measurements.md`; report cohort definitions and metric coverage.
+   Discover durable comparison fields with `schema stats turns` and option IDs
+   with `schema options turns`; do not substitute call-native option names.
 5. Present observed rankings first, then a small set of local improvements with
    their evidence and verification method. Label estimates and hypotheses.
 

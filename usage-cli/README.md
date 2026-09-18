@@ -33,7 +33,11 @@ not an automatic migration or destructive rebuild.
 
 ```sh
 louiselm-usage schema
-louiselm-usage schema options
+louiselm-usage schema stats commands
+louiselm-usage schema calls
+louiselm-usage schema show call
+louiselm-usage schema stats turns
+louiselm-usage schema options turns --limit 5
 louiselm-usage stats commands --project-tree /home/lotso/code/louiselm --group-by family,model --limit 10
 louiselm-usage calls --family 'git status' --limit 3 --fields id,session_id,turn_id,provider,model,options,command_key
 louiselm-usage show call CALL_ID
@@ -41,8 +45,26 @@ louiselm-usage stats turns --cohort fixed --group-by provider,model,option:OPTIO
 louiselm-usage stats requests --group-by adapter,model
 ```
 
-Replace `CALL_ID` and `OPTION_ID` with observed IDs. `schema options` discovers
-native option names and JSON types without reading raw history into context.
+Replace `CALL_ID` and `OPTION_ID` with observed IDs. `schema stats SUBJECT`
+lists that subject's default fields, metrics and group dimensions; `schema calls`
+and `schema show KIND` describe their own projections. Schema descriptions work
+without an index. Stats projections contain metrics plus selected group dimensions.
+
+`schema options SUBJECT` discovers option IDs and JSON types from the existing
+index for exactly one query subject: `calls`, `tools`, `commands`, `sessions`,
+`turns` or `requests`. It follows that subject's default selection (leaf calls,
+possible mirrors excluded; dispatched durable turns). `observations` counts
+records with that ID/type; `missing_records` counts selected records without it.
+Coverage adds `subject_records`, `options_complete_records` and
+`mixed_option_records`; the other coverage fields still describe the whole index.
+Discovery is unfiltered; narrower queries can have less coverage.
+
+For `stats turns`, discover with `schema options turns`, then use the returned
+ID in `--group-by option:OPTION_ID`. Call-native keys such as `codex.effort`
+are not aliases for durable keys such as `reasoning_effort`. Native requests have
+no proved historical-option join: discovery returns no options and explicitly
+reports `options_supported=false`. Never reuse another subject's keys to fill
+that gap. An all-null cohort remains unknown.
 `--option 'KEY="high"'` and `--option 'KEY=true'` are distinct typed filters.
 
 Filters cover project/tree, Session, adapter, configured Agent, Provider, Model,

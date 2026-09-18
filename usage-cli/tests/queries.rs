@@ -23,12 +23,87 @@ fn populated() -> Fixture {
 #[test]
 fn unknown_projection_fails_even_when_selection_is_empty() {
     let f = populated();
-    assert_eq!(
-        f.run(&["calls", "--project", "/absent", "--fields", "invented"])
-            .status
-            .code(),
-        Some(2)
+    for (args, discovery) in [
+        (vec!["calls", "--sort", "invented"], "schema calls"),
+        (
+            vec!["stats", "turns", "--sort", "invented"],
+            "schema stats turns",
+        ),
+        (
+            vec!["stats", "requests", "--group-by", "invented"],
+            "schema stats requests",
+        ),
+        (
+            vec!["calls", "--project", "/absent", "--fields", "invented"],
+            "schema calls",
+        ),
+        (
+            vec!["stats", "turns", "--fields", "invented"],
+            "schema stats turns",
+        ),
+        (
+            vec!["show", "call", "codex:s:call:c00", "--fields", "invented"],
+            "schema show call",
+        ),
+    ] {
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(2));
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains("invented"), "{message}");
+        assert!(message.contains(discovery), "{message}");
+    }
+}
+
+#[test]
+fn schema_describes_each_query_subject_without_an_index() {
+    let f = Fixture::new();
+    for (subject, metric, dimension) in [
+        ("tools", "calls", "tool"),
+        ("commands", "calls", "family"),
+        ("sessions", "calls", "session_id"),
+        ("turns", "turns", "provider"),
+        ("requests", "requests", "scope"),
+    ] {
+        let schema = f.ok(&["schema", "stats", subject]);
+        assert!(
+            schema["fields"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(metric))
+        );
+        assert!(
+            schema["dimensions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(dimension))
+        );
+        if ["turns", "requests"].contains(&subject) {
+            assert!(
+                !schema["fields"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("calls"))
+            );
+            assert!(
+                !schema["dimensions"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("tool"))
+            );
+        }
+    }
+    for kind in ["call", "session", "turn", "request"] {
+        let schema = f.ok(&["schema", "show", kind]);
+        assert!(schema["fields"].as_array().unwrap().contains(&json!("id")));
+    }
+    assert!(
+        f.ok(&["schema", "calls"])["fields"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("evidence"))
     );
+    assert!(!f.0.join("state").exists());
 }
 
 #[test]
@@ -96,6 +171,16 @@ fn sources_and_show_are_bounded_and_inspectable() {
     assert_eq!(sources["rows"][0]["state"], "indexed");
     let show = f.ok(&["show", "call", "codex:s:call:c00"]);
     assert!(show["record"]["evidence"][0]["path"].is_string());
+    let schema = f.ok(&["schema", "show", "call"]);
+    let fields = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join(",");
+    let projected = f.ok(&["show", "call", "codex:s:call:c00", "--fields", &fields]);
+    assert!(projected["record"]["native_turn_id"].is_null());
     assert!(serde_json::to_vec(&show).unwrap().len() <= 32768);
     let result = f.run(&["stats", "commands", "--level", "all"]);
     let json: Value = serde_json::from_slice(&result.stdout).unwrap();

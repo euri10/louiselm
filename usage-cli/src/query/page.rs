@@ -14,13 +14,14 @@ pub(super) fn rows(
     mut parameters: Vec<SqlValue>,
     names: &[&str],
     documents: bool,
+    discovery: &str,
 ) -> Result<Value> {
     let allowed = if documents && names.is_empty() {
         metrics::call_fields()
     } else {
         names.iter().map(|s| (*s).to_owned()).collect()
     };
-    validate_fields(query.fields.as_deref(), &allowed)?;
+    validate_fields(query.fields.as_deref(), &allowed, discovery)?;
     let generation = store::generation(connection)?;
     let signature = model::digest(format!("{sql}:{parameters:?}:{:?}", query.fields).as_bytes());
     let offset = cursor(query.cursor.as_deref(), generation, &signature)?;
@@ -77,11 +78,17 @@ pub(super) fn rows(
     }
 }
 
-pub(super) fn validate_fields(fields: Option<&str>, allowed: &[String]) -> Result<()> {
+pub(super) fn validate_fields(
+    fields: Option<&str>,
+    allowed: &[String],
+    discovery: &str,
+) -> Result<()> {
     if let Some(fields) = fields {
         for field in fields.split(',') {
             if !allowed.iter().any(|name| name == field) {
-                return Err(Failure::query("Unknown projected field; inspect schema"));
+                return Err(Failure::query(format!(
+                    "Unknown projected field {field:?}; inspect louiselm-usage schema {discovery}. For stats, project only metrics and selected group dimensions."
+                )));
             }
         }
     }

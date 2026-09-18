@@ -10,13 +10,15 @@ use serde_json::Value;
 pub(super) struct Selection {
     pub(super) conditions: Vec<String>,
     pub(super) parameters: Vec<SqlValue>,
+    discovery: String,
 }
 
 impl Selection {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(discovery: &str) -> Self {
         Self {
             conditions: Vec::new(),
             parameters: Vec::new(),
+            discovery: discovery.into(),
         }
     }
 
@@ -47,9 +49,10 @@ impl Selection {
                 "json_object('type',json_type(data,{parameter}),'value',json_extract(data,{parameter}))"
             ));
         }
-        Err(Failure::query(
-            "Unknown field; inspect louiselm-usage schema stats",
-        ))
+        Err(Failure::query(format!(
+            "Unknown field {name:?}; inspect louiselm-usage schema {}",
+            self.discovery
+        )))
     }
 
     fn equal(&mut self, name: &str, values: &[String]) -> Result<()> {

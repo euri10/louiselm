@@ -1,28 +1,6 @@
 //! Source coverage and bounded evidence inspection; never opens source payloads.
 use super::page;
 
-pub(crate) fn options(
-    connection: &Connection,
-    limit: u32,
-    cursor: Option<String>,
-) -> Result<Value> {
-    let sql = "SELECT option.key,option.type,count(*) FROM (SELECT data FROM call_facts UNION ALL SELECT data FROM turn_facts) AS fact,json_each(fact.data,'$.options') AS option GROUP BY option.key,option.type ORDER BY option.key,option.type";
-    let query = Query {
-        limit,
-        cursor,
-        ..Query::default()
-    };
-    let mut result = page::rows(
-        connection,
-        &query,
-        sql,
-        vec![],
-        &["option_id", "type", "observations"],
-        false,
-    )?;
-    result["scope"] = json!({"mode":"observed option IDs and JSON types; call/turn observations overlap and are not usage totals"});
-    Ok(result)
-}
 use crate::{
     cli::{Query, SourceQuery},
     error::{Failure, Result},
@@ -68,6 +46,7 @@ pub(crate) fn sources(connection: &Connection, options: &SourceQuery) -> Result<
             "digest",
         ],
         true,
+        "sources",
     )?;
     result["scope"] = json!({"state":options.state,"adapter":options.adapter,"mode":"indexed metadata; --discover reads directory entries only"});
     Ok(result)
@@ -139,11 +118,8 @@ pub(crate) fn show(
             item["source_generation_digest"] = json!(digest);
         }
     }
-    let allowed: Vec<String> = record
-        .as_object()
-        .map(|o| o.keys().cloned().collect())
-        .unwrap_or_default();
-    page::validate_fields(fields, &allowed)?;
+    let allowed = super::schema::record_fields(kind)?;
+    page::validate_fields(fields, &allowed, &format!("show {kind}"))?;
     loop {
         record["evidence"] = json!(selected);
         let next = (offset + selected.len() < all.len())

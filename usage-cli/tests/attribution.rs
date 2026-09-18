@@ -8,7 +8,7 @@
 mod common;
 use common::Fixture;
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn turns(fixture: &Fixture) -> String {
     let path = fixture.0.join("turns.sqlite3");
@@ -41,6 +41,85 @@ fn fixed_cohorts_preserve_reported_usage_missing_values_and_mixed_exclusions() {
     let changed = fixture.ok(&["show", "turn", "louiselm:durable-b"]);
     assert_eq!(changed["record"]["mixed_options"], true);
     assert!(changed["record"]["usage"]["input_tokens"].is_null());
+}
+
+#[test]
+fn discovered_options_lead_to_a_non_null_durable_cohort_without_guessing() {
+    let fixture = Fixture::new();
+    let source = turns(&fixture);
+    let db = Connection::open(fixture.0.join("turns.sqlite3")).unwrap();
+    db.execute_batch("INSERT INTO turns SELECT 'undispatched',agent,provider,acp_session_id,prepared_at,'{\"unstarted_option\":true}',model,cost_baseline FROM turns WHERE id='durable-a';
+      INSERT INTO turns SELECT 'missing',agent,provider,acp_session_id,prepared_at,'{}',model,cost_baseline FROM turns WHERE id='durable-a';
+      INSERT INTO turn_events VALUES('missing',1,'2026-09-17T09:00:00Z','dispatch','{\"request_id\":10}');").unwrap();
+    let native = fixture.log("codex", "native.jsonl", &[
+        json!({"type":"session_meta","payload":{"id":"native"}}),
+        json!({"type":"turn_context","payload":{"effort":"high","summary":"concise"}}),
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"call","name":"shell","arguments":"{\"command\":\"git status\"}"}}),
+        json!({"type":"event_msg","payload":{"type":"token_usage_record","response_id":"response","usage":{"input_tokens":10}}}),
+    ]);
+    fixture.ok(&["index", "--source", &source, "--source", &native]);
+    let options = fixture.ok(&["schema", "options", "turns", "--limit", "1"]);
+    assert_eq!(options["scope"]["subject"], "turns");
+    assert_eq!(options["coverage"]["subject_records"], 3);
+    assert_eq!(options["coverage"]["mixed_option_records"], 1);
+    assert_eq!(
+        options["rows"],
+        json!([{"option_id":"effort","type":"text","observations":2,"missing_records":1}])
+    );
+    assert!(options["next_cursor"].is_null());
+    let key = options["rows"][0]["option_id"].as_str().unwrap();
+    let dimension = format!("option:{key}");
+    let fields = format!("{dimension},turns,input_measured_records");
+    let stats = fixture.ok(&[
+        "stats",
+        "turns",
+        "--cohort",
+        "fixed",
+        "--group-by",
+        &dimension,
+        "--fields",
+        &fields,
+        "--limit",
+        "2",
+    ]);
+    assert!(
+        stats["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row[&dimension]["value"] == "high" && row["turns"] == 1)
+    );
+    assert_eq!(stats["coverage"]["mixed_turns_excluded"], 1);
+    let calls = fixture.ok(&["schema", "options", "calls", "--limit", "1"]);
+    assert_eq!(calls["rows"][0]["option_id"], "codex.effort");
+    assert_eq!(calls["coverage"]["subject_records"], 1);
+    let cursor = calls["next_cursor"].as_str().unwrap();
+    assert_eq!(
+        fixture.ok(&[
+            "schema", "options", "calls", "--limit", "1", "--cursor", cursor
+        ])["rows"][0]["option_id"],
+        "codex.summary"
+    );
+    assert_eq!(
+        fixture
+            .run(&["schema", "options", "turns", "--cursor", cursor])
+            .status
+            .code(),
+        Some(2)
+    );
+    let requests = fixture.ok(&["schema", "options", "requests"]);
+    assert_eq!(requests["rows"], json!([]));
+    assert_eq!(requests["coverage"]["subject_records"], 1);
+    assert_eq!(requests["scope"]["options_supported"], false);
+    let unscoped = fixture.run(&["schema", "options"]);
+    assert_eq!(unscoped.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&unscoped.stderr).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("schema options turns")
+    );
 }
 
 #[test]
