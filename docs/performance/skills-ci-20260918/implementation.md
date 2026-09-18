@@ -3,8 +3,8 @@
 Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
-Maximum candidate passes: **3**. Consumed: **2**. **Final retry authorized;
-baseline collection pending, split still withdrawn.** On 2026-09-18 the maintainer
+Maximum candidate passes: **3**. Consumed: **2**. **Final retry blocked before
+application; split still withdrawn.** On 2026-09-18 the maintainer
 said "ok do that" after the explicit request for a renewed bounded attempt.
 This overrides the prior two-unsuccessful-candidate stop only for pass 3; it
 does not reset the count or authorize a cache candidate beyond the cap.
@@ -281,3 +281,47 @@ against archived and repaired baselines. Include aggregate overhead, cache-cold
 observations and queue/rounded-runner costs. Permit at most two same-lever local
 repairs. A new correctness failure, failed gain/cost acceptance or consumed cap
 ends the attempt. Caching remains an unapplied, separately bounded follow-up.
+
+### Baseline stop: existing grant-expiry fixture
+
+Reliability PR: <https://github.com/euri10/louiselm/pull/10>, head
+`f5f31b972ee0f6569fb909c33da0fcb8606525f3`, after clean integration of GitHub main
+`b25dfb4`. Rust tree: `116ce934f952bde5b2d982f12a25d735540839f8`.
+Updated release fixtures pass 11/11, commit-policy checks cover 151 commits,
+generated-version/instruction/diff checks pass. The PR remains **unmerged**.
+
+PR run `35337850521`, skills job `105576738444`, fails
+`expiry_and_audit_failure_never_reopen_reserved_authority` at
+`tests/grant_authority.rs:376:32`: `Result::unwrap()` receives `Expired` during
+admission, before the intended expiry assertion. Result: 6 passed, 1 failed,
+0.12s, Cargo 101. This exactly matches existing open defect `louiselm-ia4pw`.
+The test blob `c6230bf348bdd8055b7c039185aa2a378a250e08` is identical to both the
+original `37dd6ba` report and current GitHub main. No test/production fix was
+attempted. Exact excerpt: `final-baseline-grant-failure.log`.
+
+The three exact-head sequential dispatches `35337950924`, `35337953186` and
+`35337955505` and cold baseline probe `35338098313` were cancelled. All four are
+completed/cancelled; PR CI completed/failure. `final-baseline-stop.json` retains
+their job results. Failed/incomplete workloads are excluded from timing
+acceptance. No candidate was applied, so consumed passes stay **2**, not 3.
+The failing-baseline stop rule applies even though the maintainer authorized a
+final retry. Required checks were not bypassed or rerun until green.
+
+The cold probe is isolated on `codex/skills-ci-final-cold-base` (`dfc6c29`) and
+changes only the skills cache prefix plus its issue export. The prefix was
+verified absent before dispatch and has no restore key. This probe is never
+merged; no cache strategy change was applied to the reliability PR.
+
+The previous green repaired run `35335645097` took 946s (privileged step 725s)
+on AMD EPYC 9V45, 4 vCPU, 15989 MiB RAM, not the archived EPYC 7763. That hardware
+change invalidates an unqualified timing comparison with the older baselines;
+it is not a measured improvement from the reliability fix. A future resumed
+comparison must use comparable hardware/cache cohorts and disclose remaining
+noise before accepting any gain.
+
+The existing issue now blocks all three optimization/required-status tasks;
+the active claim was released. Stop evidence is committed separately on
+`codex/skills-ci-final-evidence`, leaving the PR head unchanged so recording a
+failure does not trigger another CI attempt. Further repair of `louiselm-ia4pw`
+needs separate authorization. Retained speed optimization: none; cache candidate
+unapplied. The verified reliability fixes remain intact.

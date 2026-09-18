@@ -1,0 +1,33 @@
+1091-2026-09-18T11:07:20.7848926Z
+1092-2026-09-18T11:07:20.7851729Z      Running tests/grant_authority.rs (/var/tmp/louiselm-skills-target/debug/deps/grant_authority-83cf4c5b9efcf19c)
+1093-2026-09-18T11:07:20.7862912Z
+1094-2026-09-18T11:07:20.7880303Z running 7 tests
+1095-2026-09-18T11:07:20.7880611Z test grants_reject_unbounded_fields_and_peer_selected_execution_authority ... ok
+1096:2026-09-18T11:07:20.8618542Z test expiry_and_audit_failure_never_reopen_reserved_authority ... FAILED
+1097-2026-09-18T11:07:20.8646263Z test only_existing_delegation_approval_can_reserve_a_tool_grant ... ok
+1098-2026-09-18T11:07:20.8676714Z test grant_revocation_preserves_agent_authority_and_late_actual_outcomes ... ok
+1099-2026-09-18T11:07:20.8704370Z test reserved_budget_and_sequences_are_separate_and_never_refunded ... ok
+1100-2026-09-18T11:07:20.8716097Z test helper_cannot_redelegate_widen_rebind_or_use_stale_subjects ... ok
+1101-2026-09-18T11:07:20.9093267Z test uncapped_grants_require_uncapped_parents_and_explicit_delegation ... ok
+1102-2026-09-18T11:07:20.9093701Z
+1103-2026-09-18T11:07:20.9093802Z failures:
+1104-2026-09-18T11:07:20.9093936Z
+1105-2026-09-18T11:07:20.9094164Z ---- expiry_and_audit_failure_never_reopen_reserved_authority stdout ----
+1106-2026-09-18T11:07:20.9094585Z
+1107:2026-09-18T11:07:20.9094990Z thread 'expiry_and_audit_failure_never_reopen_reserved_authority' (13288) panicked at tests/grant_authority.rs:376:32:
+1108-2026-09-18T11:07:20.9095526Z called `Result::unwrap()` on an `Err` value: Expired
+1109-2026-09-18T11:07:20.9096419Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1110-2026-09-18T11:07:20.9096791Z
+1111-2026-09-18T11:07:20.9096796Z
+1112-2026-09-18T11:07:20.9096889Z failures:
+1113-2026-09-18T11:07:20.9097181Z     expiry_and_audit_failure_never_reopen_reserved_authority
+1114-2026-09-18T11:07:20.9097373Z
+1115:2026-09-18T11:07:20.9097585Z test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+1116-2026-09-18T11:07:20.9097872Z
+1117:2026-09-18T11:07:20.9098011Z error: test failed, to rerun pass `--test grant_authority`
+1118:2026-09-18T11:07:20.9184094Z ##[error]Process completed with exit code 101.
+1119-2026-09-18T11:07:20.9319786Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+1120-2026-09-18T11:07:20.9320720Z Post job cleanup.
+1121-2026-09-18T11:07:21.0007247Z [command]/usr/bin/git version
+1122-2026-09-18T11:07:21.0046378Z git version 2.55.0
+1123-2026-09-18T11:07:21.0074021Z Temporarily overriding HOME='/home/runner/work/_temp/db2bbc27-16b4-4455-b5d3-312b6258cb9a' before making global git config changes
