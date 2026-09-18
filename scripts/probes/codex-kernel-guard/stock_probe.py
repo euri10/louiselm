@@ -33,7 +33,8 @@ def replay(port):
     print(json.dumps(result), flush=True)
 
 
-def main():
+def main(guard_factory=lambda path, _server: Guard(path),
+         verdict="STOCK_CODEX_PRIMITIVE_PASS_NOT_VERIFIED"):
     assert sys.argv[1] == "--disposable-vm"
     assert os.geteuid() == 0
     assert subprocess.check_output(["systemd-detect-virt", "--vm"], text=True).strip() == "kvm"
@@ -82,7 +83,7 @@ def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    guard = Guard(sys.argv[2])
+    guard = guard_factory(sys.argv[2], server)
     process = None
     selector = selectors.DefaultSelector()
     try:
@@ -161,7 +162,7 @@ def main():
             assert after_exit == tool
             os.close(pin)
             assert len(requests) == 2 and not any(row["authorization"] for row in requests), requests
-            print(json.dumps({"verdict": "STOCK_CODEX_PRIMITIVE_PASS_NOT_VERIFIED", "binary_sha256": digest,
+            print(json.dumps({"verdict": verdict, "binary_sha256": digest,
                               "kernel": os.uname().release, "streaming_turn_completed": completed,
                               "actual_tool": tool, "sibling": sibling, "after_exit": after_exit,
                               "requests": requests}, indent=2))
