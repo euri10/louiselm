@@ -371,6 +371,7 @@ jobs:
 
       - name: Test installed broker Attention provisioning across identities
         run: |
+          python3 ../scripts/test-broker-attention-diagnostics.py
           cargo build --all-features --locked
           sudo env LOUISELM_REQUIRE_BROKER_ATTENTION=1 \
             "LOUISELM_TEST_CAPTURE=$PWD/target/debug/louiselm-capture" \

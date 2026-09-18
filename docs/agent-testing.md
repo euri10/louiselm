@@ -60,6 +60,14 @@ capture-service processes over disposable authenticated sockets. The fixture
 tests are ignored by standalone Cargo runs; this explicit cross-crate gate,
 also enforced in CI, runs them with their required peer.
 
+The installed Attention gate (`scripts/test-broker-attention.py`) runs only in
+a disposable VM/private mount namespace. It emits flushed phase timings and
+one payload-free Python stack dump at 90s, before CI's unchanged 120s watchdog
+(`louiselm-2ar2u`). The timer is cancelled during test cleanup. Run its
+unprivileged diagnostic regression with
+`python3 scripts/test-broker-attention-diagnostics.py`; the capture CI job runs
+this too. Passing diagnostics do not resolve the intermittent hosted timeout.
+
 Linked Admission additionally runs `scripts/test-broker-admission.py` inside a
 disposable VM/private mount namespace with `LOUISELM_REQUIRE_BROKER_ADMISSION=1`,
 `LOUISELM_TEST_SKILLS` naming the built skills CLI and

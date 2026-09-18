@@ -1,0 +1,17 @@
+Run: https://github.com/euri10/louiselm/actions/runs/35359785939
+Job: https://github.com/euri10/louiselm/actions/runs/35359785939/job/105647936369
+Candidate: eacdcc894b860c0f0285e275982d9cd6a3cd76cb
+Failed step: Test installed broker Attention provisioning across identities
+No test progress or traceback was emitted between build completion and timeout.
+2026-09-18T15:03:23.5710524Z test cross_crate_requests_survive_restart_park_and_disposal ... ok
+2026-09-18T15:03:23.5710837Z
+2026-09-18T15:03:23.5711116Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.16s
+2026-09-18T15:03:23.5711372Z
+2026-09-18T15:03:23.5787586Z ##[group]Run cargo build --all-features --locked
+2026-09-18T15:03:23.5787937Z cargo build --all-features --locked
+2026-09-18T15:03:23.5788221Z sudo env LOUISELM_REQUIRE_BROKER_ATTENTION=1 \
+2026-09-18T15:03:23.5788624Z   "LOUISELM_TEST_CAPTURE=$PWD/target/debug/louiselm-capture" \
+2026-09-18T15:03:23.5788991Z   timeout 120 unshare --mount --propagation private -- \
+2026-09-18T15:03:23.5789515Z   python3 ../scripts/test-broker-attention.py
+2026-09-18T15:03:30.1171509Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.52s
+2026-09-18T15:05:30.7239432Z ##[error]Process completed with exit code 124.
