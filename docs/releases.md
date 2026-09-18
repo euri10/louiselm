@@ -72,14 +72,20 @@ not provision credentials, change visibility, merge release PRs, or publish one.
 
 1. Register a dedicated GitHub App and install it only on `euri10/louiselm` with
    Contents and Pull requests read/write, plus Issues read/write for Release
-   Please labels/comments. Disable webhooks and user authorization; the App
+   Please labels/comments, and Administration **read-only** for the immutable
+   releases settings check. Approve permission changes on the App installation
+   as well as saving them on the App. Disable webhooks and user authorization; the App
    only authenticates automation. Generate a private key and store the complete
    PEM as repository Actions secret `RELEASE_PLEASE_APP_PRIVATE_KEY`. Store its
    numeric App ID as repository Actions secret `RELEASE_PLEASE_APP_ID` too.
    Neither value belongs in a commit or chat. The pinned
    `actions/create-github-app-token` v3.2.0 action creates a short-lived token
-   scoped to this repository and those three permissions, and revokes it when
-   the job ends. `RELEASE_PLEASE_TOKEN` is not used. Do not reuse personal CLI
+   scoped to this repository and the three release-writing permissions, plus
+   a separate token with only Administration read. Both are revoked when the
+   job ends. The publisher receives the latter as `GH_IMMUTABILITY_TOKEN` and
+   uses it only for the immutable-releases settings GET; all other reads and
+   publication retain the job's `GITHUB_TOKEN`. No Administration write is
+   needed. `RELEASE_PLEASE_TOKEN` is not used. Do not reuse personal CLI
    credentials, protected bundle-signing keys, or a signing environment.
    The App does not need Actions write or Workflows write.
    If GitHub refuses preparation for an older commit
