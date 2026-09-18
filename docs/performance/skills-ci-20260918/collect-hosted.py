@@ -3,6 +3,7 @@
 
 import datetime as dt
 import json
+import math
 import re
 import subprocess
 import sys
@@ -33,9 +34,13 @@ def collect(run_id):
         "event": run["event"], "conclusion": run["conclusion"],
         "all_gates": [{"name": job["name"], "conclusion": job["conclusion"]} for job in jobs],
         "queue_seconds": elapsed(run["created_at"], min(job["started_at"] for job in selected)),
+        "skills_start_skew_seconds": elapsed(min(job["started_at"] for job in selected),
+                                            max(job["started_at"] for job in selected)),
         "skills_wall_seconds": elapsed(min(job["started_at"] for job in selected),
                                        max(job["completed_at"] for job in skills)),
         "skills_runner_seconds": sum(elapsed(job["started_at"], job["completed_at"]) for job in skills),
+        "skills_rounded_runner_minutes": sum(math.ceil(elapsed(job["started_at"], job["completed_at"]) / 60)
+                                             for job in skills),
         "required_status": [{"name": job["name"], "conclusion": job["conclusion"],
                              "seconds": elapsed(job["started_at"], job["completed_at"])}
                             for job in skills if job not in selected],

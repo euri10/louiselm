@@ -3,11 +3,11 @@
 Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
-Maximum candidate passes: **3**. Consumed: **1**, evaluation in progress.
+Maximum candidate passes: **3**. Consumed: **1**. **Stopped: correctness blockers.**
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated
 matrix VM. Candidate 2 will evaluate source-sensitive cache reuse separately.
-No candidate is accepted merely because it passes correctness gates.
+No candidate was accepted. Candidate 2 was not applied.
 
 Baseline: `37dd6ba4b78ab802f8e2fdc8923e5daafb62029b`, clean implementation
 worktree; skills-core tree `419bb0bb9d40639b133ca1cbe0e870602cc13c01` matches the
@@ -30,7 +30,7 @@ baseline before its candidate is applied.
 
 | Pass | Lever | Correctness | Timing | Decision |
 | --- | --- | --- | --- | --- |
-| 1 | Two matrix VMs, serial `core` / `lifecycle` groups | Dispatch/required-status contracts red before implementation, 5 cases green after; existing publication refusals 8 cases green; all 21 guest invocations pass; repaired hosted gates pending | Guest 730.100s versus baseline 728.720s; initial hosted probe 894s wall / 1696 runner-seconds | Pending |
+| 1 | Two matrix VMs, serial `core` / `lifecycle` groups | Local 5/5 + publication 8/8; all 21 guest invocations pass. Repaired hosted runs hit existing fixture defects h157 and 0s97h | Guest 730.100s versus baseline 728.720s; initial hosted probe 894s wall / 1696 runner-seconds | Withdrawn: correctness unresolved; no accepted speedup |
 
 The dispatch regression preserves the 21 original external invocations and their
 gate flags, namespaces, masks, filters, timeouts and serial group selectors.
@@ -60,6 +60,45 @@ Repaired samples may overlap on distinct temporary benchmark refs at the same
 commit, with independently provisioned hosted VMs. This avoids same-ref
 concurrency cancellation; record queue delay and each group's actual start.
 
+## Stop and restoration
+
+Repaired executable revision: `60aa9e806c4cd494792bdb01cc0e5d3a9b73a818`.
+The first two runs failed; no third repaired sample was dispatched:
+
+- `35322512571`, core job `105527976117`: installed broker fixture reads an
+  empty effect file where it expects `authorized`, at
+  `skills-core/src/launch_supervisor/installed_tests.rs:823`. This is the exact
+  existing create-before-write race in `louiselm-0s97h`.
+- `35322622132`, core job `105528326146`: admission lock-release fixture gets
+  `Trust::Busy` at `skills-core/tests/admission.rs:645`, matching `louiselm-h157`
+  (also previously reported in `louiselm-18m2`). The inherited-descriptor
+  mechanism remains a hypothesis; this campaign did not prove or fix it.
+
+Both failures are in unchanged Rust code; their exact excerpts are retained in
+`broker-effect-failure.log` and `admission-lock-failure.log`. Prior issue records
+describe the same failures before this campaign. No test was weakened or rerun
+until green. Both optimization tasks now depend on the existing defects.
+`repaired-failures.json` retains both completed runs: lifecycle passed all nine
+scenarios in each, core failed, and the branch-required `cargo (skills-core)`
+aggregate correctly failed in both. Failed partial workloads are excluded from
+performance acceptance. The proposal's failure propagation is verified, but its
+full-workflow acceptance is not. Claims were released with blockers recorded.
+
+Per the profiling stop rule, the proposed executable changes were withdrawn:
+`ci.yml` and `docs/agent-testing.md` match base `37dd6ba` byte-for-byte, and only
+the two newly proposed dispatcher scripts were removed. No original test was
+removed. Their replacement is the original inline, sequential workflow contract.
+The complete corrected proposal is recoverable as `candidate-1.patch` and from
+commit `60aa9e8`; `git apply --check` validates it against the restored files.
+Evidence and tracker records remain. Main and repository settings were never
+changed. The disposable VM is stopped (`not-found/inactive/dead`).
+
+Restoration checks: exact base diff empty for both restored files, publication
+fixtures 8/8, instruction-budget gate 11918/12000 bytes, `git diff --check`.
+The full-suite limitations above remain; restoration is not a claim they pass.
+Retained production optimization: **none**. Original-to-final accepted delta:
+**0**. Maximum/consumed remain **3/1** if resumed after the blockers are fixed.
+
 Guest evidence: `split-guest.json`, same Debian VM, Rust/profile/source tree and
 serial workload as the investigation. All 20 Rust invocations and the two-test
 Python invocation passed, including positive Debian certification. Sum:
@@ -67,7 +106,7 @@ Python invocation passed, including positive Debian certification. Sum:
 for 60000, 4019000 or 4020000, loaded LouiseLM units or matching processes
 remained. This checks preservation, not the hosted parallel speedup.
 
-Read-only cache-design investigation, not another optimization candidate:
+Cache-design diagnostic, not another optimization candidate:
 `cache-freshness-probe.json` records three pairs of warm library-test builds
 versus the same build after touching only `skills-core/src/lib.rs` in our guest
 copy. The file's SHA-256 stayed
