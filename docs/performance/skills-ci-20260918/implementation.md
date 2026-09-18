@@ -3,16 +3,20 @@
 Issues: `louiselm-ljf7w` (job split), `louiselm-edon3` (cache experiment).
 The maintainer authorized both after the investigation in `ledger.md`.
 
-Maximum candidate passes: **3**. Consumed: **2**. **Stopped; split withdrawn.**
+Maximum candidate passes: **3**. Consumed: **2**. **Final retry authorized;
+baseline collection pending, split still withdrawn.** On 2026-09-18 the maintainer
+said "ok do that" after the explicit request for a renewed bounded attempt.
+This overrides the prior two-unsuccessful-candidate stop only for pass 3; it
+does not reset the count or authorize a cache candidate beyond the cap.
 The three authorized correctness fixes are closed; three complete repaired-
 baseline hosted runs pass. Pass 2 hit the separate unchanged reconciliation
 fixture failure `louiselm-qq1y1`. Both candidates ended without an accepted gain;
-the correctness and two-consecutive-no-gain stop rules now apply.
+the correctness and two-consecutive-no-gain stop rules stopped that attempt.
 Candidate 1 local repairs: **1 of 2**, preserving the branch-required status.
 Candidate 1 moves the measured daemon/cold-resume/failure group to an isolated
 matrix VM. Retrying that withdrawn split consumes pass 2; the cache
 experiment was never applied. The unused third pass does not override those
-stop rules; do not automatically resume or reset this budget.
+stop rules; this resumption uses the explicit authorization above, not a reset.
 No candidate was accepted.
 
 Baseline: `37dd6ba4b78ab802f8e2fdc8923e5daafb62029b`, clean implementation
@@ -253,3 +257,27 @@ passing in run `35335645097`. Issue `louiselm-qq1y1` is resolved. The split rema
 withdrawn, cache optimization remains unapplied, and the campaign remains stopped
 after two candidates without an accepted measured gain. Budget remains 3/2;
 this correctness fix does not automatically authorize a third candidate.
+
+## Authorized final attempt: baseline and integration
+
+The maintainer subsequently authorized landing the tested fixes and a renewed
+bounded attempt. First integrate current GitHub main (release fixes only) and
+open the reliability PR. Keep its executable source stable while its full PR
+gates run. No force merge, required-check bypass or repository-setting change.
+The original main worktree and its unrelated changes remain untouched.
+
+Collect three complete sequential baselines on the reconciled repaired source,
+recording exact revisions/events, cache scope, resources, queue delay and the
+existing privileged-step attribution. PR acceptance is separate from benchmark
+samples if the checked-out merge revision differs. Run samples on separate refs
+to avoid concurrency cancellation. Cache/profile/gates remain unchanged.
+
+Pass 3 will restore only the four corrected proposal paths already retained
+in `60aa9e8`/`77533b8`; rollback targets only those paths against the new baseline.
+Keep the existing thresholds: at least three complete split runs, median wall
+gain above 10% and the historical 514s range (and any larger new baseline spread),
+range below the historical 1104s minimum, and at most 180s added raw runner time
+against archived and repaired baselines. Include aggregate overhead, cache-cold
+observations and queue/rounded-runner costs. Permit at most two same-lever local
+repairs. A new correctness failure, failed gain/cost acceptance or consumed cap
+ends the attempt. Caching remains an unapplied, separately bounded follow-up.
