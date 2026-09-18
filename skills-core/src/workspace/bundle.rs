@@ -104,7 +104,8 @@ impl BundleRecord {
 /// Inventory binds regular paths, executable bits, lengths and content digests;
 /// empty directories and all other permission bits are normalized away.
 /// `output` must be new and outside both inputs with an operator-owned parent.
-/// Callers freeze writers; two metadata scans additionally reject observed races.
+/// Callers freeze writers; two content/metadata scans additionally reject observed
+/// races. These checks do not create an atomic filesystem snapshot.
 ///
 /// # Errors
 /// Refuses snapshot substitution, unsafe/colliding/oversized or changing trees,
