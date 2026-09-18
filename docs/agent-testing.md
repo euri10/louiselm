@@ -100,6 +100,9 @@ debug profile. Each group is serial; never background both in one guest because
 they share fixture accounts, systemd and cgroup paths. Changes to this runner
 also require `python3 scripts/test-skills-privileged.py`, its nonprivileged
 dispatch/failure contract gate, and the complete affected hosted CI workflow.
+The branch-required `cargo (skills-core)` status aggregates both groups and
+must refuse failure, cancellation or skip; preserve that context when changing
+the matrix, not just the overall workflow conclusion (`louiselm-oi9d6`).
 
 Run that suite from outside your own ACP Session. `acp-proxy` is a child
 subreaper that never reaps adopted orphans, so a killed descendant lingers as a

@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -117,6 +118,33 @@ class Dispatch(unittest.TestCase):
         result = self.run_group("--disposable-guest", "lifecycle", FAIL_SCENARIO=LIFECYCLE[0][2])
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertEqual(len(self.recorded()), 1)
+
+
+class RequiredStatus(unittest.TestCase):
+    def test_branch_required_status_aggregates_both_groups_and_refuses_non_success(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        def job(name):
+            match = re.search(r"^  " + name + r":\n(.*?)(?=^  [a-z0-9_-]+:|\Z)", workflow, re.M | re.S)
+            self.assertIsNotNone(match, name)
+            return match[1]
+
+        aggregate = job("skills-core")
+        self.assertIn("    name: cargo (skills-core)", aggregate.splitlines())
+        self.assertIn("    needs: skills-core-checks\n", aggregate)
+        self.assertIn("    if: always()\n", aggregate)
+        self.assertNotIn("continue-on-error", aggregate)
+        matrix = job("skills-core-checks")
+        self.assertIn("      fail-fast: false\n", matrix)
+        self.assertIn("          - group: core\n", matrix)
+        self.assertIn("          - group: lifecycle\n", matrix)
+        self.assertNotIn("            name: cargo (skills-core)", matrix.splitlines())
+        self.assertNotIn("continue-on-error", matrix)
+        command = re.search(r"^      - run: (.+)$", aggregate, re.M)[1]
+        expression = "${{ needs.skills-core-checks.result }}"
+        self.assertIn(expression, command)
+        for result in ["success", "failure", "cancelled", "skipped", ""]:
+            probe = subprocess.run(["bash", "-c", command.replace(expression, result)])
+            self.assertEqual(probe.returncode == 0, result == "success", result)
 
 
 if __name__ == "__main__":

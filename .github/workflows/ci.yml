@@ -383,13 +383,22 @@ jobs:
         run: cargo doc --no-deps --all-features --locked
 
   skills-core:
+    # Preserve the branch-required context across both parallel groups.
+    name: cargo (skills-core)
+    needs: skills-core-checks
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.skills-core-checks.result }}" = success
+
+  skills-core-checks:
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - group: core
-            name: cargo (skills-core)
+            name: cargo (skills-core checks)
           - group: lifecycle
             name: cargo (skills-core lifecycle)
     runs-on: ubuntu-latest
