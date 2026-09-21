@@ -216,6 +216,14 @@ For all tests:
 - Test observable behavior through public APIs, not implementation details.
 - Cover non-trivial branches, parsers, state transitions, cancellation, and
   error paths without requiring a test per function or coverage percentage.
+- Assert which refusal a test got, not only that it failed. An `is_err()` or
+  `is_ok()` check on a policy lets an unrelated guard — an expired deadline, a
+  revoked capability — satisfy the assertion and report the wrong defect. Where
+  the case crosses a real deadline, size that deadline so load cannot close it,
+  and keep expiry its own case. `grant_authority.rs` asserted only `is_ok()`
+  while executing 65 durably audited operations against a 1000ms grant, so a
+  loaded runner failed count policy with `Expired` and read as a budget bug
+  (louiselm-6bnxq).
 - A feature gated on optional configuration needs a test for the **unset**
   case, and you must check what the maintainer's real configuration actually
   does before reporting the feature as working. Testing both branches of a gate

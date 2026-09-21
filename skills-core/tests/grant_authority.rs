@@ -9,7 +9,7 @@ use louiselm_skills::{
     broker::{
         AuditLog,
         commands::CommandAuthority,
-        delegation::{CommandScope, DelegationPolicy},
+        delegation::{CommandScope, DelegationError, DelegationPolicy},
     },
     launch_protocol::{CommandMessage, CommandOperation},
     launch_supervisor::CapabilityBinding,
@@ -27,6 +27,15 @@ fn authority_with_limit(
     root: &std::path::Path,
     allow_delegation: bool,
     uses: Option<u32>,
+) -> CommandAuthority {
+    authority_with_deadline(root, allow_delegation, uses, Duration::from_secs(30))
+}
+
+fn authority_with_deadline(
+    root: &std::path::Path,
+    allow_delegation: bool,
+    uses: Option<u32>,
+    lifetime: Duration,
 ) -> CommandAuthority {
     CommandAuthority::new(
         CapabilityBinding {
@@ -47,7 +56,7 @@ fn authority_with_limit(
                 uses,
             },
             allow_delegation,
-            expires_at: Instant::now() + Duration::from_secs(30),
+            expires_at: Instant::now() + lifetime,
         },
         Arc::new(AuditLog::open(root).unwrap()),
     )
@@ -66,14 +75,22 @@ fn grant() -> CommandMessage {
     })).unwrap()
 }
 
+/// Grant validity for count-policy coverage. The uncapped case executes and
+/// durably audits 65 operations, so a shorter window lets a loaded runner
+/// expire the grant mid-loop and refuse a command the count policy permits
+/// (louiselm-6bnxq). Expiry keeps its own coverage below.
+const COUNT_VALIDITY_MS: u32 = 30_000;
+
 #[test]
 fn uncapped_grants_require_uncapped_parents_and_explicit_delegation() {
     for parent in [Some(3), None] {
         for child in [Some(2), None] {
             for allow in [false, true] {
                 let root = tempfile::tempdir().unwrap();
-                let mut owner = authority_with_limit(root.path(), allow, parent);
+                let mut owner =
+                    authority_with_deadline(root.path(), allow, parent, Duration::from_mins(2));
                 let mut wire = serde_json::to_value(grant()).unwrap();
+                wire["operation"]["grant"]["valid_for_ms"] = COUNT_VALIDITY_MS.into();
                 if let Some(uses) = child {
                     wire["operation"]["grant"]["uses"] = uses.into();
                 } else {
@@ -91,13 +108,18 @@ fn uncapped_grants_require_uncapped_parents_and_explicit_delegation() {
                 }
                 granted.unwrap();
                 for sequence in 1..=65 {
-                    let result = owner.handle(&command(true, sequence));
-                    assert_eq!(
-                        result.is_ok(),
-                        child.is_none_or(|uses| sequence <= u64::from(uses))
-                    );
-                    if result.is_err() {
-                        break;
+                    let permitted = child.is_none_or(|uses| sequence <= u64::from(uses));
+                    match owner.handle(&command(true, sequence)) {
+                        Ok(_) => assert!(permitted, "sequence {sequence} was not refused"),
+                        Err(error) => {
+                            // Name the refusal. An Expired here means wall clock,
+                            // not count policy, decided the assertion.
+                            assert!(
+                                !permitted && matches!(error, DelegationError::BudgetExhausted),
+                                "sequence {sequence} refused with {error:?}"
+                            );
+                            break;
+                        }
                     }
                 }
                 assert!(owner.handle(&command(false, 1)).is_ok());
@@ -363,7 +385,7 @@ fn grant_revocation_preserves_agent_authority_and_late_actual_outcomes() {
 
 #[test]
 fn expiry_and_audit_failure_never_reopen_reserved_authority() {
-    use louiselm_skills::broker::{AuditDecision, delegation::DelegationError};
+    use louiselm_skills::broker::AuditDecision;
 
     for uses in [Some(3), None] {
         let root = tempfile::tempdir().unwrap();
