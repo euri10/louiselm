@@ -26,6 +26,7 @@ RUNTIME = Path("/run/louiselm-attention")
 STATE = Path("/var/lib/louiselm-attention")
 AUTHORITY = Path("/usr/local/lib/louiselm/launcher/public-config.json")
 TOKEN = STATE / "producer-capability"
+UNIT = Path("/etc/systemd/system/louiselm-capture.service")
 
 
 @contextmanager
@@ -128,7 +129,7 @@ class InstalledAttention(unittest.TestCase):
             self.phase("mount private /etc")
             mount_private_etc(root)
             self.phase("hide existing provisioning")
-            for path in (RECEIVER, SENDER, TMPFILES):
+            for path in (RECEIVER, SENDER, TMPFILES, UNIT):
                 path.unlink(missing_ok=True)
             for target in ("/usr/local/lib", "/run", "/var/lib"):
                 self.phase(f"mount private {target}")
@@ -190,7 +191,8 @@ class InstalledAttention(unittest.TestCase):
                 installer = REPO / "scripts/install-broker-attention.py"
                 self.phase("provision Attention")
                 command(sys.executable, str(installer))
-                original = {path: (path.read_bytes(), path.stat().st_ino) for path in (TOKEN, RECEIVER, SENDER, TMPFILES)}
+                original = {path: (path.read_bytes(), path.stat().st_ino)
+                            for path in (TOKEN, RECEIVER, SENDER, TMPFILES, UNIT)}
                 self.phase("verify idempotent provisioning")
                 command(sys.executable, str(installer))
                 self.assertEqual(original, {path: (path.read_bytes(), path.stat().st_ino) for path in original})
@@ -241,7 +243,7 @@ class InstalledAttention(unittest.TestCase):
                     process.terminate()
                     process.wait(timeout=5)
                 self.phase("remove fixture provisioning")
-                for path in (RECEIVER, SENDER, TMPFILES, AUTHORITY):
+                for path in (RECEIVER, SENDER, TMPFILES, AUTHORITY, UNIT):
                     path.unlink(missing_ok=True)
                 for path in (RUNTIME, STATE):
                     if path.exists():

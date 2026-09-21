@@ -393,6 +393,12 @@ jobs:
             timeout 120 unshare --mount --propagation private -- \
             python3 ../scripts/test-broker-attention.py
 
+      - name: Test hardened capture system service across identities
+        run: |
+          sudo env LOUISELM_REQUIRE_CAPTURE_SYSTEMD=1 \
+            "LOUISELM_TEST_CAPTURE=$PWD/target/debug/louiselm-capture" \
+            timeout 120 python3 ../scripts/test-capture-systemd.py
+
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings

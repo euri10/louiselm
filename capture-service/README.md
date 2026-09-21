@@ -199,19 +199,36 @@ does not dispose Runs, release claims, or delete their retained records.
 Broker projections use the separate `/run/louiselm-attention/project.sock`
 endpoint, authenticated by kernel UID and a dedicated producer credential.
 It exposes only `project`; the operator socket rejects that verb. From the
-repository root, after installing the launcher identities and updated
-capture-service user unit:
+repository root, after installing the launcher identities and capture binary:
 
 ```sh
 sudo python3 scripts/install-broker-attention.py
-systemctl --user daemon-reload
-systemctl --user restart louiselm-capture.service
+# Switch only after retained Runs and active recordings are safe.
+systemctl --user disable --now louiselm-capture.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now louiselm-capture.service
 ```
 
 The command derives the capture identity from the installed operator, creates
 the private broker credential and root-owned policies, and provisions a boot
-runtime directory through systemd-tmpfiles. It preserves existing credentials
-and refuses unexpected ownership or configuration. Without
+runtime directory through systemd-tmpfiles. It also installs a system unit using
+the shipped hardening and the installed operator's numeric UID/GID, home, binary
+and `capture.env`. The process stays unprivileged. System-manager filesystem
+hardening preserves actual root and broker UIDs; a hardened user unit can map
+them to overflow UID 65534 and cannot authenticate this deployment. No UID is
+reinterpreted as root or as the broker.
+
+Provisioning never starts, stops or restarts a service. Do not run both units
+against the same state. After switching, manage the service with
+`sudo systemctl … louiselm-capture.service`, without `--user`, including binary
+updates from `scripts/install-capture-service`. Verify the enabled endpoint is
+ready after starting; `Type=simple` startup alone is not readiness. The operator's
+home must be an absolute path containing only letters, digits, `/`, `-`, `_` and
+`.`; custom service paths or write allowances need explicit administrator review.
+
+The provisioner preserves existing credentials
+and refuses unexpected ownership or configuration, including an existing system
+unit whose bytes differ. Without
 `/etc/louiselm-capture-broker.json`, the projection endpoint stays disabled and
 ordinary Attention/Run/observer behavior remains available. Full provisioning
 and authentication details are in `docs/broker-lifecycle.md`.

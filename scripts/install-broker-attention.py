@@ -23,6 +23,20 @@ RUNTIME = Path("/run/louiselm-attention")
 RECEIVER = Path("/etc/louiselm-capture-broker.json")
 SENDER = Path("/etc/louiselm-broker-attention.json")
 TMPFILES = Path("/etc/tmpfiles.d/louiselm-broker-attention.conf")
+UNIT = Path("/etc/systemd/system/louiselm-capture.service")
+
+
+def capture_system_unit(account):
+    """Preserve the shipped hardening without remapping root or broker UIDs."""
+    home = account.pw_dir
+    if (not Path(home).is_absolute() or home == "/" or ".." in Path(home).parts
+            or any(not (character.isalnum() or character in "/-_.") for character in home)):
+        raise ValueError("operator home must be an absolute systemd-safe path")
+    source = Path(__file__).resolve().parents[1] / "capture-service/contrib/systemd/louiselm-capture.service"
+    unit = source.read_text().replace("%h", home)
+    unit = unit.replace("[Service]\n", f"[Service]\nUser={account.pw_uid}\nGroup={account.pw_gid}\n"
+                        f"Environment=HOME={home}\nPrivateUsers=no\n")
+    return unit.replace("WantedBy=default.target", "WantedBy=multi-user.target").encode()
 
 
 def secure_parents(path):
@@ -98,8 +112,10 @@ def install():
     broker_uid, broker_gid, receiver_uid, receiver_gid = identities
     if broker_uid == receiver_uid or broker_gid == receiver_gid:
         raise ValueError("broker and capture operator must have separate identities")
-    if pwd.getpwuid(broker_uid).pw_gid != broker_gid or pwd.getpwuid(receiver_uid).pw_gid != receiver_gid:
+    receiver = pwd.getpwuid(receiver_uid)
+    if pwd.getpwuid(broker_uid).pw_gid != broker_gid or receiver.pw_gid != receiver_gid:
         raise ValueError("installed identities do not match the account database")
+    unit = capture_system_unit(receiver)
     directory(STATE, 0, 0, 0o711)
     try:
         token = read_file(TOKEN, broker_uid, broker_gid, 0o400)
@@ -114,10 +130,16 @@ def install():
     # Validate before tmpfiles, which would otherwise repair an unexpected owner.
     directory(RUNTIME, receiver_uid, receiver_gid, 0o711)
     subprocess.run(["systemd-tmpfiles", "--create", str(TMPFILES)], check=True)
+    publish(UNIT, unit)
     # Publish the receiver policy last: its presence enables the new listener.
     record(RECEIVER, {"socket": str(RUNTIME / "project.sock"), "broker_uid": broker_uid,
                       "capability_sha256": hashlib.sha256(token).hexdigest()})
-    print("Broker Attention provisioned; restart the updated capture-service user unit.")
+    print("Broker Attention provisioned with an operator-owned process in a hardened system unit.\n"
+          "At a safe recording/Run boundary, as the operator:\n"
+          "  systemctl --user disable --now louiselm-capture.service\n"
+          "  sudo systemctl daemon-reload\n"
+          "  sudo systemctl enable --now louiselm-capture.service\n"
+          "Verify the configured endpoint is ready; provisioning does not start or restart services.")
 
 
 if __name__ == "__main__":

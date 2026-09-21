@@ -16,6 +16,12 @@ if [ ! -e "$config_root/louiselm/capture.env" ]; then
     install -m 0600 "$project_root/capture-service/contrib/systemd/capture.env.example" "$config_root/louiselm/capture.env"
 fi
 
+if [ -e /etc/louiselm-capture-broker.json ]; then
+    printf '%s\n' 'Installed LouiseLM capture binary; broker projection uses the system service.' \
+        'At a safe recording/Run boundary, restart with:' \
+        '  sudo systemctl restart louiselm-capture.service'
+    exit 0
+fi
 systemctl --user daemon-reload
 printf '%s\n' 'Installed LouiseLM capture service.' \
     "Choose explicit capabilities in $config_root/louiselm/capture.env (see capture-service/README.md)." \

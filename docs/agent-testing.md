@@ -78,6 +78,14 @@ markers and one 90s stack dump identify stalls without recording payloads;
 `python3 scripts/test-broker-attention-diagnostics.py` tests these diagnostics
 without privileges. A skipped installed gate is not privileged acceptance.
 
+Configured capture/broker deployment also requires `scripts/test-capture-systemd.py`
+with `LOUISELM_REQUIRE_CAPTURE_SYSTEMD=1` and `LOUISELM_TEST_CAPTURE` in a disposable
+VM with systemd PID 1. Run as root outside a private mount namespace: the real
+system manager must see the provisioned unit and policy. The gate refuses existing
+deployment files and exercises the shipped hardening with distinct kernel UIDs;
+the setpriv/private-mount gate alone cannot verify this identity view
+(louiselm-y2j3o). Neither gate certifies the maintainer's installed deployment.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is

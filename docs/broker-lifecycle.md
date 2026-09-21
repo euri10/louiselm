@@ -795,13 +795,15 @@ There is no producer token in the receiver's state or configuration.
 
 The root provisioner derives both identities from the installed launcher's
 `public-config.json`: the dedicated broker UID/GID and the operator UID/GID
-running capture-service. After updating capture-service and its user unit, run
+running capture-service. After updating the capture binary, run
 from the repository root:
 
 ```sh
 sudo python3 scripts/install-broker-attention.py
-systemctl --user daemon-reload
-systemctl --user restart louiselm-capture.service
+# At a safe recording/Run boundary, switch service managers as the operator.
+systemctl --user disable --now louiselm-capture.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now louiselm-capture.service
 ```
 
 Provisioning creates a 256-bit credential at the broker-owned mode-0400 path
@@ -813,8 +815,21 @@ files refuse automatic repair. Preserve those files and inspect the installed
 identities before explicitly replacing configuration.
 
 The provisioner also installs a tmpfiles rule recreating the mode-0711,
-capture-owned `/run/louiselm-attention` on boot. The user unit grants write
-access to this directory through `ProtectSystem=strict`. The projection socket
+capture-owned `/run/louiselm-attention` on boot. It installs
+`/etc/systemd/system/louiselm-capture.service` from the shipped capture unit,
+with the operator's numeric UID/GID and literal home paths. The process remains
+unprivileged, uses the operator's binary and `capture.env`, and retains
+`ProtectSystem=strict`, `ProtectHome=read-only` and the same write allowances.
+`PrivateUsers=no` under the system manager preserves real root and broker
+identities. The hardened per-user manager remaps foreign identities to an
+overflow UID on supported hosts; that view cannot authenticate this policy.
+Overflow UID 65534 is never substituted for root or a configured broker UID.
+Provisioning does not restart services or change explicit capability selections.
+Do not run the user and system services concurrently against one store; after
+switching, use `sudo systemctl` for service management and verify endpoint
+readiness. Existing system-unit bytes must match on repeated provisioning.
+
+The unit grants write access to the runtime directory. The projection socket
 is mode 0666 to permit cross-user connection without shared groups or ACL tools;
 capture-service checks the peer's kernel UID before reading or sending data,
 then checks the distinct producer credential before accepting `project`.
@@ -938,6 +953,13 @@ disposable VM with `LOUISELM_REQUIRE_BROKER_ATTENTION=1` and
 with root solely inside that isolated fixture. It exercises the actual CLI and
 provisioner across distinct UIDs, unset policy, credential and identity denial,
 idempotent provisioning and delivery, receiver restart and permission drift.
+`scripts/test-capture-systemd.py` separately runs the provisioned service through
+the VM's real system manager, with `LOUISELM_REQUIRE_CAPTURE_SYSTEMD=1` and the
+same capture binary variable. Run it as root in an explicitly disposable VM,
+outside a private mount namespace so PID 1 sees provisioning. It refuses existing
+authority, policy and service files. CI requires it to prove root/peer identity,
+read-only filesystem hardening, cross-UID credential checks, operator-socket
+isolation, restart, absent policy and rejection of malformed/untrusted policy.
 The daemon VM gate still uses a synthetic receiver for its independent lifecycle
 checks; these gates do not claim installed desktop or phone acceptance.
 
