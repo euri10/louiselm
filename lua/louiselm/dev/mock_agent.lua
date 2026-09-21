@@ -22,7 +22,7 @@
 ---@field next_session integer
 ---@field next_permission integer
 ---@field sessions table<string, { cwd: string }>
----@field pending_prompt? { id: string|number, session_id: string, text: string }
+---@field pending_prompt? { id: louiselm.acp.JsonRpcId, session_id: string, text: string }
 ---@field pending_permission? string|number
 
 local M = {}
@@ -35,16 +35,19 @@ local function write_message(message)
   io.stdout:flush()
 end
 
----@param id string|number|nil
+---@param id louiselm.acp.JsonRpcId
 ---@param result unknown
 local function write_response(id, result)
   write_message({ jsonrpc = "2.0", id = id, result = result })
 end
 
----@param id string|number|nil
+---@param id louiselm.acp.JsonRpcId|nil
 ---@param code integer
 ---@param message string
 local function write_error(id, code, message)
+  if id == nil then
+    id = nvim.NIL
+  end
   write_message({ jsonrpc = "2.0", id = id, error = { code = code, message = message } })
 end
 
@@ -71,7 +74,7 @@ local function prompt_text(prompt)
 end
 
 ---@param state louiselm.dev.MockAgentState
----@param prompt { id: string|number, session_id: string, text: string }
+---@param prompt { id: louiselm.acp.JsonRpcId, session_id: string, text: string }
 ---@param response string
 local function finish_prompt(state, prompt, response, usage)
   write_notification("session/update", {

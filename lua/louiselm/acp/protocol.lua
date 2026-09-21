@@ -1,3 +1,6 @@
+---A wire identifier; userdata must be vim.NIL for explicit JSON null.
+---@alias louiselm.acp.JsonRpcId string|number|userdata
+
 ---@class louiselm.acp.JsonRpcError
 ---@field code integer JSON-RPC error code.
 ---@field message string JSON-RPC error message.
@@ -5,7 +8,7 @@
 
 ---@class louiselm.acp.JsonRpcRequest
 ---@field jsonrpc "2.0"
----@field id string|number
+---@field id louiselm.acp.JsonRpcId
 ---@field method string
 ---@field params? unknown
 
@@ -16,7 +19,7 @@
 
 ---@class louiselm.acp.JsonRpcResponse
 ---@field jsonrpc "2.0"
----@field id string|number|nil
+---@field id louiselm.acp.JsonRpcId
 ---@field result? unknown
 ---@field error? louiselm.acp.JsonRpcError
 
@@ -30,13 +33,7 @@ local nvim = vim
 ---@param value unknown
 ---@return boolean
 local function is_request_id(value)
-  return type(value) == "string" or type(value) == "number"
-end
-
----@param value unknown
----@return boolean
-local function is_null(value)
-  return value == nvim.NIL
+  return type(value) == "string" or type(value) == "number" or value == nvim.NIL
 end
 
 ---@param value unknown
@@ -67,7 +64,7 @@ function M.validate(message)
       return nil, "request or notification cannot contain result or error"
     end
     if message.id ~= nil and not is_request_id(message.id) then
-      return nil, "request id must be a string or number"
+      return nil, "request id must be a string, number, or null"
     end
     if message.id == nil then
       if message.params ~= nil and type(message.params) ~= "table" then
@@ -81,8 +78,8 @@ function M.validate(message)
     return true
   end
 
-  if message.id ~= nil and not is_null(message.id) and not is_request_id(message.id) then
-    return nil, "response id must be a string or number"
+  if not is_request_id(message.id) then
+    return nil, "response id must be a string, number, or null"
   end
   if has_result == has_error then
     return nil, "response must contain exactly one of result or error"
@@ -102,14 +99,14 @@ function M.validate(message)
 end
 
 ---Build a JSON-RPC request.
----@param id string|number Request identifier.
+---@param id louiselm.acp.JsonRpcId Request identifier; vim.NIL preserves explicit JSON null.
 ---@param method string Method name.
 ---@param params? unknown Method parameters.
 ---@return louiselm.acp.JsonRpcRequest? request
 ---@return string? error_message
 function M.request(id, method, params)
   if not is_request_id(id) then
-    return nil, "request id must be a string or number"
+    return nil, "request id must be a string, number, or null"
   end
   if type(method) ~= "string" or method == "" then
     return nil, "method must be a non-empty string"
@@ -131,10 +128,13 @@ function M.notification(method, params)
 end
 
 ---Build a successful JSON-RPC response.
----@param id string|number|nil Request identifier.
+---@param id louiselm.acp.JsonRpcId|nil Request identifier; nil encodes as JSON null.
 ---@param result unknown Result value.
 ---@return louiselm.acp.JsonRpcResponse response
 function M.response(id, result)
+  if id == nil then
+    id = nvim.NIL
+  end
   if result == nil then
     result = nvim.NIL
   end
@@ -142,12 +142,15 @@ function M.response(id, result)
 end
 
 ---Build a JSON-RPC error response.
----@param id string|number|nil Request identifier.
+---@param id louiselm.acp.JsonRpcId|nil Request identifier; nil means unknown and encodes as JSON null.
 ---@param code integer Error code.
 ---@param message string Error message.
 ---@param data? unknown Additional error data.
 ---@return louiselm.acp.JsonRpcResponse response
 function M.error_response(id, code, message, data)
+  if id == nil then
+    id = nvim.NIL
+  end
   local rpc_error = { code = code, message = message, data = data }
   return { jsonrpc = "2.0", id = id, error = rpc_error }
 end

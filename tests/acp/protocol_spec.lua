@@ -3,6 +3,9 @@ local Protocol = require("louiselm.acp.protocol")
 
 local T = MiniTest.new_set()
 
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 T["request"] = MiniTest.new_set()
 
 T["request"]["encodes and decodes a request"] = function()
@@ -13,11 +16,21 @@ T["request"]["encodes and decodes a request"] = function()
   MiniTest.expect.equality(decoded, request)
 end
 
+T["request"]["preserves explicit null ids and omitted notification ids"] = function()
+  local request = assert(Protocol.decode('{"jsonrpc":"2.0","id":null,"method":"initialize"}'))
+  MiniTest.expect.equality(request.id, nvim.NIL)
+  MiniTest.expect.equality(assert(Protocol.request(nvim.NIL, "initialize")), request)
+  MiniTest.expect.equality(assert(Protocol.decode(assert(Protocol.encode(request)))).id, nvim.NIL)
+
+  local notification = assert(Protocol.notification("initialize"))
+  MiniTest.expect.equality(assert(Protocol.decode(assert(Protocol.encode(notification)))).id, nil)
+end
+
 T["request"]["rejects invalid ids and methods"] = function()
   ---@diagnostic disable-next-line: param-type-mismatch -- Deliberately exercise invalid external input.
   local request, request_error = Protocol.request(true, "initialize", {})
   MiniTest.expect.equality(request, nil)
-  MiniTest.expect.equality(request_error, "request id must be a string or number")
+  MiniTest.expect.equality(request_error, "request id must be a string, number, or null")
 
   local notification, notification_error = Protocol.notification("", {})
   MiniTest.expect.equality(notification, nil)
@@ -27,6 +40,30 @@ end
 T["response"] = MiniTest.new_set()
 
 T["decode"] = MiniTest.new_set()
+
+T["response"]["encodes null ids for explicit null and unknown request ids"] = function()
+  for _, response in ipairs({
+    Protocol.response(nvim.NIL, {}),
+    Protocol.error_response(nvim.NIL, -32601, "Method not found"),
+    Protocol.response(nil, {}),
+    Protocol.error_response(nil, -32700, "Parse error"),
+  }) do
+    local encoded = assert(Protocol.encode(response))
+    MiniTest.expect.equality(encoded:find('"id":null', 1, true) ~= nil, true)
+    MiniTest.expect.equality(assert(Protocol.decode(encoded)).id, nvim.NIL)
+  end
+end
+
+T["response"]["rejects omitted ids"] = function()
+  for _, line in ipairs({
+    '{"jsonrpc":"2.0","result":{}}',
+    '{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}',
+  }) do
+    local response, err = Protocol.decode(line)
+    MiniTest.expect.equality(response, nil)
+    MiniTest.expect.equality(err, "response id must be a string, number, or null")
+  end
+end
 
 T["response"]["accepts a result or error but not both"] = function()
   local response = Protocol.response(3, { ok = true })

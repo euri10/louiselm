@@ -121,6 +121,44 @@ T["mock agent"]["ignores unknown notifications, rejects unknown requests, and st
   MiniTest.expect.equality(messages[6], { jsonrpc = "2.0", id = 4, result = { stopReason = "cancelled" } })
 end
 
+T["mock agent"]["preserves null request ids and emits null ids for parse errors"] = function()
+  local definition = mock_definition("echo")
+  local command = { definition.command }
+  nvim.list_extend(command, definition.args)
+  nvim.list_extend(command, { "-c", "qa!" })
+  local result = nvim
+    .system(command, {
+      cwd = project_root,
+      text = true,
+      stdin = table.concat({
+        "{",
+        '{"jsonrpc":"2.0","id":null,"method":"initialize"}',
+        '{"jsonrpc":"2.0","method":"unknown"}',
+        '{"jsonrpc":"2.0","id":null,"method":"unknown","params":{}}',
+        "",
+      }, "\n"),
+    })
+    :wait(3000)
+  MiniTest.expect.equality(result.code, 0)
+  local messages = {}
+  for line in result.stdout:gmatch("[^\n]+") do
+    messages[#messages + 1] = nvim.json.decode(line)
+  end
+  MiniTest.expect.equality(#messages, 3)
+  MiniTest.expect.equality(messages[1], {
+    jsonrpc = "2.0",
+    id = nvim.NIL,
+    error = { code = -32700, message = "invalid JSON" },
+  })
+  MiniTest.expect.equality(messages[2].id, nvim.NIL)
+  MiniTest.expect.equality(messages[2].result.protocolVersion, 1)
+  MiniTest.expect.equality(messages[3], {
+    jsonrpc = "2.0",
+    id = nvim.NIL,
+    error = { code = -32601, message = "method not found" },
+  })
+end
+
 T["mock agent"]["Chat refuses an unresolved Provider before the mock receives a prompt"] = function()
   local definition = mock_definition("echo")
   definition.provider = { { provider = "service", options = { route = "direct" } } }

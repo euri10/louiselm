@@ -30,7 +30,7 @@ local nvim = vim
 ---@field prompt fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field set_config_option fun(self: louiselm.acp.Client, params: table, callback?: fun(result: unknown, error?: louiselm.acp.JsonRpcError)): string|number?, string?
 ---@field cancel fun(self: louiselm.acp.Client, params: table): boolean, string?
----@field respond fun(self: louiselm.acp.Client, id: string|number, result: unknown, rpc_error?: louiselm.acp.JsonRpcError): boolean, string?
+---@field respond fun(self: louiselm.acp.Client, id: louiselm.acp.JsonRpcId, result: unknown, rpc_error?: louiselm.acp.JsonRpcError): boolean, string?
 ---@field close fun(self: louiselm.acp.Client): boolean, string?
 ---@field is_open fun(self: louiselm.acp.Client): boolean
 
@@ -326,7 +326,7 @@ end
 
 ---Respond to an ACP request sent by the agent.
 ---@param self louiselm.acp.Client
----@param id string|number Request identifier.
+---@param id louiselm.acp.JsonRpcId Request identifier; vim.NIL preserves explicit JSON null.
 ---@param result unknown Result value, ignored when error is supplied.
 ---@param rpc_error? louiselm.acp.JsonRpcError Error response instead of a result.
 ---@return boolean sent
