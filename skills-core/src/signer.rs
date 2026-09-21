@@ -62,7 +62,9 @@ impl Signer for SshKeygenSigner {
 
 impl SshKeygenSigner {
     /// Signs before one absolute deadline, cleaning up the child process group
-    /// and restoring foreground terminal ownership before returning.
+    /// and restoring foreground terminal ownership before returning. Interactive
+    /// prompts and diagnostics go directly to the private terminal, never into
+    /// captured errors; noninteractive diagnostics are captured and escaped.
     ///
     /// # Errors
     /// Refuses expired deadlines, lost terminal ownership, process/cleanup
@@ -122,6 +124,10 @@ impl SshKeygenSigner {
 
             if output.success {
                 fs::read_to_string(scratch.path().join("payload.sig")).map_err(SignerError::Io)
+            } else if terminal.is_some() {
+                Err(SignerError::Failed(
+                    "ssh-keygen refused signing; see private terminal for diagnostics".to_owned(),
+                ))
             } else {
                 Err(SignerError::Failed(crate::scan::escape(
                     String::from_utf8_lossy(&output.stderr).trim(),

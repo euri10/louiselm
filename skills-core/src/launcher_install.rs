@@ -372,7 +372,7 @@ pub struct CommandOutput {
     pub exit_code: Option<i32>,
     /// Captured standard output.
     pub stdout: Vec<u8>,
-    /// Captured standard error.
+    /// Captured standard error; empty when interactive signing sends it to the private TTY.
     pub stderr: Vec<u8>,
 }
 
@@ -450,7 +450,7 @@ fn run_system_command(
 )]
 #[expect(
     clippy::expect_used,
-    reason = "Command always pipes stdout/stderr; a deadline configures the process group."
+    reason = "Command always pipes stdout; a deadline configures the process group."
 )]
 fn run_system_command_with_terminal(
     invocation: &CommandInvocation,
@@ -462,7 +462,12 @@ fn run_system_command_with_terminal(
         .args(&invocation.arguments)
         .env_clear()
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        // Touch prompts must arrive before the helper finishes. Direct TTY I/O
+        // stays private and is bounded by killing the child at its deadline.
+        .stderr(match terminal {
+            Some(terminal) => Stdio::from(terminal.try_clone()?),
+            None => Stdio::piped(),
+        });
     if let Some(current_dir) = &invocation.current_dir {
         command.current_dir(current_dir);
     }
@@ -508,7 +513,7 @@ fn run_system_command_with_terminal(
         };
         let stdout_worker = match command_output_worker(
             "louiselm-command-stdout",
-            child.stdout.take().expect("command stdout is piped"),
+            Some(child.stdout.take().expect("command stdout is piped")),
         ) {
             Ok(worker) => worker,
             Err(error) => {
@@ -520,21 +525,19 @@ fn run_system_command_with_terminal(
                 return Err(error);
             }
         };
-        let stderr_worker = match command_output_worker(
-            "louiselm-command-stderr",
-            child.stderr.take().expect("command stderr is piped"),
-        ) {
-            Ok(worker) => worker,
-            Err(error) => {
-                let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
-                cleanup?;
-                if let Some(worker) = stdin_worker {
-                    drain_worker(worker, cleanup_deadline)?;
+        let stderr_worker =
+            match command_output_worker("louiselm-command-stderr", child.stderr.take()) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    let cleanup = terminate_child(&mut child, process_group, cleanup_deadline);
+                    cleanup?;
+                    if let Some(worker) = stdin_worker {
+                        drain_worker(worker, cleanup_deadline)?;
+                    }
+                    drain_worker(stdout_worker, cleanup_deadline)?;
+                    return Err(error);
                 }
-                drain_worker(stdout_worker, cleanup_deadline)?;
-                return Err(error);
-            }
-        };
+            };
 
         let status = match execution_deadline {
             Some(execution_deadline) => {
@@ -624,11 +627,13 @@ fn run_system_command_with_terminal(
 
 fn command_output_worker(
     name: &str,
-    mut pipe: impl Read + Send + 'static,
+    pipe: Option<impl Read + Send + 'static>,
 ) -> io::Result<BytesWorker> {
     thread::Builder::new().name(name.to_owned()).spawn(move || {
         let mut bytes = Vec::new();
-        pipe.read_to_end(&mut bytes)?;
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut bytes)?;
+        }
         Ok(bytes)
     })
 }

@@ -25,6 +25,8 @@ fn foreground_signer_fixture_child() {
     rustix::process::ioctl_tiocsctty(&terminal).unwrap();
     let group = rustix::process::getpgrp();
     assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
+    assert_prompt_before_input(&master, &terminal);
+    assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
     let mut input = master.try_clone().unwrap();
     input.write_all(b"public-fixture-pin\n").unwrap();
     let invocation = CommandInvocation {
@@ -44,23 +46,121 @@ fn foreground_signer_fixture_child() {
     .expect("foreground read completes before deadline");
     assert!(result.success);
     assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
-    let invocation = CommandInvocation {
-        program: "/bin/sh".into(),
-        arguments: vec!["-c".into(), "read pin </dev/tty".into()],
-        stdin: vec![],
-        current_dir: None,
-    };
-    let error = run_signing_command(
-        &invocation,
-        Instant::now() + Duration::from_millis(250),
-        Some(&terminal),
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+    let fixture = tempfile::tempdir().unwrap();
+    let error = crate::signer::SshKeygenSigner::new(&fixture.path().join("absent-key"))
+        .sign_until(
+            "test/isolated",
+            b"fixture",
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "signing failed: ssh-keygen refused signing; see private terminal for diagnostics"
+    );
     assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
+
+    for script in [
+        "read pin </dev/tty",
+        // An unread TTY eventually blocks writes too; no relay worker may
+        // survive the deadline or prevent foreground restoration.
+        "while :; do printf 'fixture output filling the terminal' >&2; done",
+    ] {
+        let invocation = CommandInvocation {
+            program: "/bin/sh".into(),
+            arguments: vec!["-c".into(), script.into()],
+            stdin: vec![],
+            current_dir: None,
+        };
+        let error = run_signing_command(
+            &invocation,
+            Instant::now() + Duration::from_millis(250),
+            Some(&terminal),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(termios::tcgetpgrp(&terminal).unwrap(), group);
+    }
     // The master must stay alive through all assertions; closing it delivers HUP
     // to this disposable session, never to the maintainer's real terminal.
     std::mem::forget(master);
+}
+
+fn assert_prompt_before_input(master: &File, terminal: &File) {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+    let mut operator = master.try_clone().unwrap();
+    let reader = thread::spawn(move || {
+        let prompt = b"fixture touch needed";
+        let mut received = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while received.len() < prompt.len() {
+            let timeout =
+                Timespec::try_from(deadline.saturating_duration_since(Instant::now())).unwrap();
+            let mut descriptors = [PollFd::new(&operator, PollFlags::IN)];
+            if poll(&mut descriptors, Some(&timeout)).unwrap() == 0 {
+                return false;
+            }
+            let mut bytes = [0; 64];
+            let count = operator.read(&mut bytes).unwrap();
+            assert_ne!(count, 0);
+            received.extend_from_slice(&bytes[..count]);
+        }
+        assert_eq!(received, prompt);
+        // The helper cannot finish until its prompt reaches the private PTY.
+        operator.write_all(b"public-fixture-touch\n").unwrap();
+        true
+    });
+    let invocation = CommandInvocation {
+        program: "/bin/sh".into(),
+        arguments: vec![
+            "-c".into(),
+            "printf 'fixture touch needed' >&2; read pin </dev/tty; \
+             test \"$pin\" = public-fixture-touch || exit 1; printf captured-stdout"
+                .into(),
+        ],
+        stdin: vec![],
+        current_dir: None,
+    };
+    let result = run_signing_command(
+        &invocation,
+        Instant::now() + Duration::from_secs(2),
+        Some(terminal),
+    );
+    assert!(
+        reader.join().unwrap(),
+        "touch prompt was withheld until exit"
+    );
+    let output = result.unwrap();
+    assert!(output.success);
+    assert_eq!(output.stdout, b"captured-stdout");
+    assert!(
+        output.stderr.is_empty(),
+        "private prompts must not be captured"
+    );
+}
+
+#[test]
+fn noninteractive_signing_captures_both_output_streams() {
+    let output = run_signing_command(
+        &CommandInvocation {
+            program: "/bin/sh".into(),
+            arguments: vec![
+                "-c".into(),
+                "printf captured-stdout; printf captured-stderr >&2; exit 7".into(),
+            ],
+            stdin: vec![],
+            current_dir: None,
+        },
+        Instant::now() + Duration::from_secs(2),
+        None,
+    )
+    .unwrap();
+    assert!(!output.success);
+    assert_eq!(output.exit_code, Some(7));
+    assert_eq!(output.stdout, b"captured-stdout");
+    assert_eq!(output.stderr, b"captured-stderr");
 }
 
 #[test]

@@ -165,6 +165,12 @@ replacement, readiness and last-resort reset. Production setup requires both
 recovery methods and strict hardware presence/verification on both signing
 roles. Development stores cannot be promoted to production authority.
 
+Interactive signing displays `ssh-keygen` touch prompts and diagnostics directly
+on the private operator terminal while the helper is running. They are not copied
+into captured errors or Agent logs. Noninteractive calls retain escaped failure
+diagnostics. Signing deadlines, process cleanup and foreground restoration still
+apply; a signing refusal does not trigger an automatic retry.
+
 Normal Admission and `release sign` record exact approved payload digests under
 the trust mutation lock. Retired keys verify only that recorded history, never
 new or backdated approvals. Signing outside `release sign` does not register a
