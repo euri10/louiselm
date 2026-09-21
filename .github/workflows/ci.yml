@@ -179,6 +179,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Reuse downloaded artifacts, not build outputs or machine configuration.
+      # Cold misses still fail normally if the dependency repository is unavailable.
+      - name: Cache Android dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            !~/.gradle/caches/modules-2/**/*.lock
+            !~/.gradle/caches/modules-2/gc.properties
+            ~/.gradle/wrapper/dists
+          key: android-deps-v1-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle.properties') }}
+          restore-keys: |
+            android-deps-v1-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}-
+
       # Use the runner's installed JDK/SDK, not another setup dependency.
       - name: Test, lint, and assemble
         run: |
