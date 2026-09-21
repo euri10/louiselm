@@ -1,0 +1,121 @@
+Running as unit: run-p333782-i330707.service; invocation ID: 86e843b13c054c7d8557f81445c7d82e
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/louiselm_skills-ee72c59e53ea8c90)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.00s
+test result: ok. 336 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 2.89s
+     Running unittests src/bin/louiselm-control.rs (target/debug/deps/louiselm_control-12cf9e5f2a788ffc)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+     Running unittests src/bin/louiselm-launch.rs (target/debug/deps/louiselm_launch-2942ad271e817f9e)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/debug/deps/louiselm_skills-7afdcb005c092923)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/louiselm-tool-test-agent.rs (target/debug/deps/louiselm_tool_test_agent-2ce01e53016039b9)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/bin/louiselm-tool-test-helper.rs (target/debug/deps/louiselm_tool_test_helper-733101e8e7484d39)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/admission.rs (target/debug/deps/admission-164338033123b9d2)
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+     Running tests/assessment.rs (target/debug/deps/assessment-964efe4b9940ec95)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/bootstrap.rs (target/debug/deps/bootstrap-8fb1fde2ef87bf41)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/broker.rs (target/debug/deps/broker-ad991ed0d3f8c439)
+test result: ok. 140 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 31.51s
+     Running tests/cache.rs (target/debug/deps/cache-e3db61887024fd5b)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/canonical.rs (target/debug/deps/canonical-89ec1c2ccb7ef883)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/capture.rs (target/debug/deps/capture-50644d2eb52053ff)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/cli.rs (target/debug/deps/cli-716465f8c2c90f0d)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/cli_admission.rs (target/debug/deps/cli_admission-2deca6c535e28a93)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+     Running tests/command_authority.rs (target/debug/deps/command_authority-8c78135af84c1aa9)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/command_protocol.rs (target/debug/deps/command_protocol-1c9bb9a3086d8e35)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/conformance.rs (target/debug/deps/conformance-37a1d4b6d1eac14e)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/control_binary.rs (target/debug/deps/control_binary-e0465d047cda9ac1)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/dependency_fetch.rs (target/debug/deps/dependency_fetch-cb9829478e29f75e)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/diff.rs (target/debug/deps/diff-72cf6b84298c6ac0)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/discovery.rs (target/debug/deps/discovery-d2e1da944b12cc0e)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+     Running tests/dossier.rs (target/debug/deps/dossier-ec8a45e3637fd222)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/fuzz.rs (target/debug/deps/fuzz-6ce1abf489e241ae)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/grant_authority.rs (target/debug/deps/grant_authority-d6cb02ff021bcce3)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+     Running tests/hostile_isolation.rs (target/debug/deps/hostile_isolation-84b00bc851cc84ea)
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/inspect.rs (target/debug/deps/inspect-a6218b637b509e33)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/instruction_view.rs (target/debug/deps/instruction_view-6004507410d0c588)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+     Running tests/isolation.rs (target/debug/deps/isolation-d326a5ef81393b09)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/launch.rs (target/debug/deps/launch-537bab84f3595adb)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/launch_binary.rs (target/debug/deps/launch_binary-0e361aea9f6ee238)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/launch_protocol.rs (target/debug/deps/launch_protocol-40ce0501beae7e1e)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/launch_receipt.rs (target/debug/deps/launch_receipt-15d2e6199edbe385)
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/launch_supervisor.rs (target/debug/deps/launch_supervisor-478bc11e092b6528)
+test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+     Running tests/launch_transport.rs (target/debug/deps/launch_transport-36a9d4a543161df8)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/launcher_install.rs (target/debug/deps/launcher_install-ce53b4f723d0b011)
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/onboarding.rs (target/debug/deps/onboarding-016f8cb8b714642e)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/operator.rs (target/debug/deps/operator-03f78e0bbcec124f)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests/paper_recovery.rs (target/debug/deps/paper_recovery-77d36e14f9daf6df)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/passkey_recovery.rs (target/debug/deps/passkey_recovery-78d26067fe8b5bde)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/posture.rs (target/debug/deps/posture-ce5fd7a23f48354e)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/preflight_cli.rs (target/debug/deps/preflight_cli-4611acee51ec001d)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/registry.rs (target/debug/deps/registry-2249422090a2628d)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/relay_stdio.rs (target/debug/deps/relay_stdio-54b7eb627f009926)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/release.rs (target/debug/deps/release-46fb3c787402aa70)
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+     Running tests/sandbox.rs (target/debug/deps/sandbox-5e388fd8619e59a6)
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+     Running tests/session_manifest.rs (target/debug/deps/session_manifest-052951cadde24bb4)
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/signature.rs (target/debug/deps/signature-304aeb5177518e1a)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/store.rs (target/debug/deps/store-7f89f098a87970a9)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/supply_posture.rs (target/debug/deps/supply_posture-76c33e8feec36594)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+     Running tests/tool_execution.rs (target/debug/deps/tool_execution-31161292270ddf77)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/trust.rs (target/debug/deps/trust-75fa9e6a1a609df7)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/verification_protocol.rs (target/debug/deps/verification_protocol-002987d35e3ab6eb)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/witness.rs (target/debug/deps/witness-da56244b1cb672af)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/workspace_cli.rs (target/debug/deps/workspace_cli-9d656ff8d96198dc)
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+Service runtime: 40.786s
+CPU time consumed: 24.123s
+Memory peak: 399.3M (swap: 0B)

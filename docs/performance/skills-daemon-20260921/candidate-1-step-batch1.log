@@ -1,0 +1,134 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+
+running 1 test
+test launch_supervisor::system::tool_integration_tests::privileged_measured_agent_owns_isolated_tool_lifecycle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.02s
+
+
+running 1 test
+grant scenario: complete
+grant scenario: queued_revoke
+grant scenario: running_revoke
+grant scenario: expiry
+grant scenario: agent_exit
+grant scenario: lost_grant
+grant scenario: transferred_descriptor
+grant scenario: failed_cleanup
+grant scenario: late_actual
+test launch_supervisor::lifecycle::tool_dispatch::tests::grant_tests::privileged_measured_helper_grant_execution_and_revocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 6.32s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::privileged_installed_broker_launch_and_effects ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 9.84s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::provider_credentials::privileged_installed_provider_credentials_stay_broker_side ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.49s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::receipt_history::privileged_installed_receipt_history_survives_rotation_and_upgrade ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 1.52s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.30s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.08s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.05s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.03s
+
+test launch_supervisor::system::installed_tests::receipt_history::isolation::privileged_installed_history_failure_is_session_local ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 1.35s
+
+
+running 3 tests
+test launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_broker_revocation_survives_restart ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.30s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.06s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.05s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.08s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::isolation::installed_history_inspector ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.07s
+
+ok
+test launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_key_revocation_preserves_bytes_and_unaffected_authority ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+ok
+test launch_supervisor::system::installed_tests::receipt_history::revocation::privileged_installed_revocation_freezes_with_or_without_broker ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 336 filtered out; finished in 5.32s
+
+
+running 1 test
+test launch_supervisor::system::installed_tests::receipt_history::cleanup::privileged_installed_key_cleanup_preserves_live_references_and_history ... useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 1.48s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::socket_activation::privileged_manager_listener_authenticates_only_broker_senders_across_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.48s
+
+batch1 wall_seconds=0.001
+batch1 wall_seconds=31.367

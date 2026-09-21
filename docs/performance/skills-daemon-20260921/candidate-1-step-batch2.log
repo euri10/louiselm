@@ -1,0 +1,88 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+Activated daemon scenario: privileged_activated_daemon_serves_launches_and_restart
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: installed broker authority is invalid
+louiselm-control: installed broker authority is invalid
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: ready at 856.058577ms
+louiselm-control: Session worker: authorization is unknown or already consumed
+daemon: first launch at 1.285602791s
+daemon: concurrent sibling launch at 1.718871079s
+daemon: Agent inspection at 2.519857151s
+louiselm-control: Attention delivery available
+daemon: restart and disposal at 8.573045718s
+test launch_supervisor::system::installed_tests::daemon::privileged_activated_daemon_serves_launches_and_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 8.61s
+
+Activated daemon scenario: state::privileged_activated_daemon_upgrades_and_adopts_state
+Activated daemon scenario elapsed: 8.632 seconds
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+daemon: retired history at 1.337972071s
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: installed broker authority is invalid
+louiselm-control: broker state identity changed; preserve state and explicitly run louiselm-control adopt-state
+daemon: upgrade and refusals at 2.181586038s
+/etc/sudoers.d/adoption-fixture: parsed OK
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: adoption complete at 2.742424462s
+test launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.78s
+
+Activated daemon scenario: inspection::privileged_activated_daemon_refuses_foreign_inspection
+Activated daemon scenario elapsed: 2.807 seconds
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: inspection refusals at 2.018091486s
+test launch_supervisor::system::installed_tests::daemon::inspection::privileged_activated_daemon_refuses_foreign_inspection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.06s
+
+Activated daemon scenario elapsed: 2.076 seconds
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+louiselm-control: broker tracker configuration: cannot read protected configuration
+louiselm-control: broker tracker configuration: configured executable digest does not match
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+test launch_supervisor::system::installed_tests::daemon::beads::privileged_installed_tracker_routes_only_approved_mutations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 4.47s
+
+Sep 21 04:22:09 louiselm-launcher-vm systemd[1]: /run/systemd/system/louiselm-systemd-9gx_o1np.service:8: Special user nobody configured, this is not safe!
+Sep 21 04:22:09 louiselm-launcher-vm systemd[1]: Starting louiselm-systemd-9gx_o1np.service - LouiseLM Control broker...
+Sep 21 04:22:09 louiselm-launcher-vm systemd[1]: Started louiselm-systemd-9gx_o1np.service - LouiseLM Control broker.
+Sep 21 04:22:09 louiselm-launcher-vm systemd[1]: louiselm-systemd-9gx_o1np.service: Sent signal SIGKILL to main process 29802 (python3) on client request.
+Sep 21 04:22:09 louiselm-launcher-vm systemd[1]: louiselm-systemd-9gx_o1np.service: Main process exited, code=killed, status=9/KILL
+Sep 21 04:22:09 louiselm-launcher-vm systemd[1]: louiselm-systemd-9gx_o1np.service: Failed with result 'signal'.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: louiselm-systemd-9gx_o1np.service: Scheduled restart job, restart counter is at 1.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Starting louiselm-systemd-9gx_o1np.service - LouiseLM Control broker...
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Started louiselm-systemd-9gx_o1np.service - LouiseLM Control broker.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Stopping louiselm-systemd-9gx_o1np.service - LouiseLM Control broker...
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: louiselm-systemd-9gx_o1np.service: Deactivated successfully.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Stopped louiselm-systemd-9gx_o1np.service - LouiseLM Control broker.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Starting louiselm-systemd-9gx_o1np.service - LouiseLM Control broker...
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Started louiselm-systemd-9gx_o1np.service - LouiseLM Control broker.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Stopping louiselm-systemd-9gx_o1np.service - LouiseLM Control broker...
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: louiselm-systemd-9gx_o1np.service: Deactivated successfully.
+Sep 21 04:22:10 louiselm-launcher-vm systemd[1]: Stopped louiselm-systemd-9gx_o1np.service - LouiseLM Control broker.
+..
+----------------------------------------------------------------------
+Ran 2 tests in 2.761s
+
+OK
+batch2 wall_seconds=21.162

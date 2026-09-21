@@ -1,0 +1,88 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+Cold resume scenario: finite
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_finite ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 4.93s
+
+Cold resume scenario elapsed: 4.938 seconds
+Cold resume scenario: uncapped
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_uncapped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 5.06s
+
+Cold resume scenario elapsed: 5.075 seconds
+Cold resume scenario: failed_load
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_failed_load ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 4.23s
+
+Cold resume scenario elapsed: 4.239 seconds
+Cold resume scenario: unavailable_balance
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::privileged_installed_cold_resume_unavailable_balance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 7.30s
+
+Cold resume scenario elapsed: 7.312 seconds
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+installed launch fault: signer0 passed
+installed launch fault: signer1 passed
+installed launch fault: storage0 passed
+installed launch fault: storage1 passed
+installed launch fault: signature0 passed
+test launch_supervisor::system::installed_tests::failures::privileged_installed_launch_failures_never_acknowledge_success ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 4.99s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+
+running 1 test
+test launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.48s
+
+verification fixture case 0: durable outcome checked
+
+running 1 test
+test launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.01s
+
+verification fixture case 1: durable outcome checked
+
+running 1 test
+test launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.00s
+
+verification fixture case 2: durable outcome checked
+verification fixture case 3: durable outcome checked
+verification fixture case 4: durable outcome checked
+test launch_supervisor::system::installed_tests::verification::privileged_installed_exact_job_verification ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 7.46s
+
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+test launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 5.77s
+
+batch3 wall_seconds=40.196

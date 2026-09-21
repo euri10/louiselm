@@ -1,0 +1,29 @@
+    Checking sha2 v0.10.9
+    Checking louiselm-skills v0.1.0 (/home/lotso/code/louiselm/skills-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.46s
+    Blocking waiting for file lock on build directory
+ Documenting louiselm-skills v0.1.0 (/home/lotso/code/louiselm/skills-core)
+    Checking louiselm-skills v0.1.0 (/home/lotso/code/louiselm/skills-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 38.39s
+   Generated /home/lotso/code/louiselm/skills-core/target/doc/louiselm_skills/index.html and 4 other files
+✔ register: late entry and review do not restart the server budget (4.107056ms)
+✔ authenticate: late entry and review do not restart the server budget (1.266083ms)
+✔ expired or malformed lifetime never enables approval (2.792561ms)
+✔ fractional transit time cannot lose the expiry timer (0.612954ms)
+✔ suspended timers cannot permit a late click or late credential submission (1.078868ms)
+✔ a shorter WebAuthn timeout is preserved (0.703325ms)
+✔ register: option parsing errors never open an authenticator or leak details (1.107322ms)
+✔ register: pre-submit errors are bounded diagnostics, not explicit cancellation (3.539178ms)
+✔ authenticate: option parsing errors never open an authenticator or leak details (0.838913ms)
+✔ authenticate: pre-submit errors are bounded diagnostics, not explicit cancellation (3.985234ms)
+✔ cancellation aborts the prompt and ignores its later result (0.718855ms)
+✔ expiry after submission preserves commit (0.680963ms)
+✔ expiry after submission preserves unknown result (0.538983ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 60.497614
