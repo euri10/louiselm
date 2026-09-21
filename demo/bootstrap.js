@@ -306,6 +306,7 @@
 	function setPhase(phase) {
 		state.phase = phase;
 		elements.demoStatus.textContent = statusText();
+		renderStep();
 		document.dispatchEvent(new CustomEvent('louiselm-demo-state', { detail: { ...state } }));
 	}
 
@@ -351,6 +352,13 @@
 	}
 
 	function renderStep() {
+		if (state.phase !== 'ready') {
+			elements.step.hidden = true;
+			elements.completion.hidden = true;
+			elements.typeAction.hidden = true;
+			elements.skipStep.hidden = true;
+			return;
+		}
 		if (state.step >= stepDefinitions.length) {
 			elements.step.hidden = true;
 			elements.completion.hidden = false;

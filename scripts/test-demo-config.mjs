@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 const firebase = JSON.parse(readFileSync('firebase.json', 'utf8'));
 const lock = JSON.parse(readFileSync('demo/assets.lock.json', 'utf8'));
@@ -92,6 +93,43 @@ for (const name of ['neovim', 'snacks', 'which_key']) {
 }
 for (const check of ['credentials', 'persistence', 'client analytics', 'prompt egress', 'host filesystem']) {
 	assert.match(promotion, new RegExp(check, 'i'));
+}
+
+// Exercise the shipped bootstrap while its first runtime script is loading,
+// then fail that request. Neither state has a chat in which visitors can type.
+const nodes = new Map();
+for (const id of ['guide-step', 'type-action', 'skip-step']) {
+	assert.match(html, new RegExp(`id="${id}"[^>]*\\bhidden\\b`), `${id} must be hidden before JavaScript runs`);
+}
+const node = (id) => {
+	if (!nodes.has(id)) nodes.set(id, {
+		hidden: false, dataset: {}, textContent: '',
+		addEventListener() {}, setAttribute() {}, replaceChildren() {},
+		classList: { add() {} },
+	});
+	return nodes.get(id);
+};
+let pendingScript;
+const browser = {
+	document: {
+		querySelector: node, getElementById: node, querySelectorAll: () => [],
+		documentElement: {}, dispatchEvent() {}, createElement: () => ({}),
+		body: { append(script) { pendingScript = script; } },
+	},
+	window: { innerWidth: 1440 }, location: { search: '' },
+	crossOriginIsolated: true, URLSearchParams,
+	CustomEvent: class {}, console: { error() {} }, clearTimeout,
+};
+runInNewContext(bootstrap, browser);
+for (const id of ['guide-step', 'type-action', 'skip-step']) {
+	assert.equal(node(id).hidden, true, `${id} must be hidden before chat is ready`);
+}
+pendingScript.onerror();
+await new Promise(setImmediate);
+assert.equal(browser.__louiselmDemo.phase, 'failed');
+assert.match(node('demo-status').textContent, /Could not start the demo/);
+for (const id of ['guide-step', 'type-action', 'skip-step']) {
+	assert.equal(node(id).hidden, true, `${id} must remain hidden after startup fails`);
 }
 
 console.log('demo configuration tests passed');

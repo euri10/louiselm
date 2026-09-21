@@ -37,6 +37,38 @@ end
 
 T["demo API"] = MiniTest.new_set()
 
+T["demo API"]["startup opens an idle chat before any prompt or diff"] = function()
+  local root = fixture()
+  local cwd = nvim.fn.getcwd()
+  local commands = nvim.api.nvim_get_commands({ builtin = false })
+  local runtime
+  MiniTest.finally(function()
+    if runtime ~= nil then
+      runtime.chat:dispose()
+      runtime.api:dispose()
+    end
+    for name in pairs(nvim.api.nvim_get_commands({ builtin = false })) do
+      if commands[name] == nil then
+        nvim.api.nvim_del_user_command(name)
+      end
+    end
+    -- Demo startup replaces the production commands installed by minimal_init.
+    require("louiselm.ui.chat.command").register()
+    nvim.api.nvim_set_current_dir(cwd)
+    for _, buffer in ipairs(nvim.api.nvim_list_bufs()) do
+      if nvim.api.nvim_buf_get_name(buffer):sub(1, #root) == root then
+        nvim.api.nvim_buf_delete(buffer, { force = true })
+      end
+    end
+    nvim.fn.delete(root, "rf")
+  end)
+  runtime = assert(Demo.start({ project_root = root }))
+  MiniTest.expect.equality(runtime.session:inspect().status, "ready")
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(0):match("^louiselm://demo%-") ~= nil, true)
+  local content = table.concat(nvim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+  MiniTest.expect.equality(content:find("calculator.lua", 1, true) ~= nil, true)
+end
+
 T["demo API"]["accepts any prompt through an asynchronous, explicitly scripted file-edit turn"] = function()
   local root, path = fixture()
   nvim.cmd.edit(nvim.fn.fnameescape(path))

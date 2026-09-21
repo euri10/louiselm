@@ -807,9 +807,6 @@ function M.start(options)
     api:dispose()
     return nil, chat_error
   end
-  -- The browser has no local Attention socket; remove its activity observer before
-  -- attaching the first buffer so ordinary cursor movement never attempts native I/O.
-  chat.attention:dispose()
   local session, session_error =
     chat:new_session("your-codex-here", { cwd = api.project_root, name = "Fix calculator" })
   if session == nil then

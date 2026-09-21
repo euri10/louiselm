@@ -37,7 +37,7 @@
           <p id="profile-note" class="note">Snacks and which-key are pinned, self-hosted demo extras—not LouiseLM dependencies. Changing profile restarts the tour.</p>
         </section>
         <div class="guide-stage">
-          <section id="guide-step" class="guide-step" aria-live="polite" aria-labelledby="step-title">
+          <section id="guide-step" class="guide-step" hidden aria-live="polite" aria-labelledby="step-title">
             <p id="step-progress" class="progress">Step 1 of 10 · about 7 minutes</p>
             <h2 id="step-title" class="title">Ask about the bug</h2>
             <p id="step-body" class="body">A disposable Lua project is already attached to this Session.</p>
@@ -45,8 +45,8 @@
             <p id="step-check" class="check">Waiting for the real diff review…</p>
           </section>
           <div class="guide-actions">
-            <button id="type-action" class="action-button -primary" type="button">Type it for me</button>
-            <button id="skip-step" class="action-button" type="button">Skip</button>
+            <button id="type-action" class="action-button -primary" hidden type="button">Type it for me</button>
+            <button id="skip-step" class="action-button" hidden type="button">Skip</button>
             <button id="reset-demo" class="action-button" type="button">Reset</button>
           </div>
           <section id="completion-panel" class="completion-panel" hidden aria-live="polite">
