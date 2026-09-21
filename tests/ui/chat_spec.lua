@@ -7884,44 +7884,6 @@ T["chat"]["honors counts on navigation motions"] = function()
   chat:dispose()
 end
 
-T["chat"]["returns to the prompt in Insert mode with Normal-mode <CR>"] = function()
-  local chat, _, buffer = navigable_chat()
-  local original_list_uis = nvim.api.nvim_list_uis
-  local original_startinsert = nvim.cmd.startinsert
-  local original_win_set_cursor = nvim.api.nvim_win_set_cursor
-  local startinsert_calls = 0
-  local cursor_positions = {}
-  -- A real headless window clamps a Normal-mode cursor to the last valid
-  -- column, so the command is observed rather than the clamped result.
-  nvim.api.nvim_list_uis = function()
-    return { {} }
-  end
-  nvim.cmd.startinsert = function()
-    startinsert_calls = startinsert_calls + 1
-  end
-  nvim.api.nvim_win_set_cursor = function(_, position)
-    cursor_positions[#cursor_positions + 1] = position
-  end
-  local enter = assert(normal_map(buffer, "<CR>"))
-  local prompt_line = line_of(buffer, "> ")
-  local before = startinsert_calls
-
-  nvim.api.nvim_buf_call(buffer, enter)
-  local calls_after_jump = startinsert_calls
-  nvim.api.nvim_buf_call(buffer, enter)
-  local calls_after_repeat = startinsert_calls
-  local jumps = { cursor_positions[#cursor_positions - 1], cursor_positions[#cursor_positions] }
-
-  nvim.api.nvim_list_uis = original_list_uis
-  nvim.cmd.startinsert = original_startinsert
-  nvim.api.nvim_win_set_cursor = original_win_set_cursor
-
-  MiniTest.expect.equality(jumps, { { prompt_line, 2 }, { prompt_line, 2 } })
-  MiniTest.expect.equality(calls_after_jump, before + 1)
-  MiniTest.expect.equality(calls_after_repeat, before + 2)
-  chat:dispose()
-end
-
 T["chat"]["silently no-ops at the transcript ends"] = function()
   local chat, _, buffer = navigable_chat()
   local next_user = assert(normal_map(buffer, "]u"))

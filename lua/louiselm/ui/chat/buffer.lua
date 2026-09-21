@@ -1109,10 +1109,11 @@ function M.new(state, options)
   end, { buffer = buffer, silent = true, desc = "Previous tool run or thinking block" })
   nvim.keymap.set("n", "<CR>", function()
     local prompt_line = current_prompt_line(view)
-    nvim.api.nvim_win_set_cursor(view.window, { prompt_line + 1, 2 + #options.prompt_prefix() })
     if #nvim.api.nvim_list_uis() > 0 then
       nvim.cmd.startinsert()
     end
+    -- Insert mode permits the position just past an empty prompt's prefix.
+    nvim.api.nvim_win_set_cursor(view.window, { prompt_line + 1, 2 + #options.prompt_prefix() })
   end, { buffer = buffer, silent = true, desc = "Jump to the louiselm prompt" })
   nvim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
     buffer = buffer,

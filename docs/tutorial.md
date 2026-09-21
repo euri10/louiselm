@@ -53,6 +53,9 @@ something small, such as:
 Explain what this project does in three sentences. Do not change any files.
 ```
 
+From Normal mode, `<Enter>` returns to the prompt in Insert mode, after the
+`> ` marker and any context chips. Existing draft text stays intact.
+
 The current Session stays attached to the Agent that started it. LouiseLM
 shows the Agent's response as it arrives and asks you before an Agent performs
 an operation that needs your permission.

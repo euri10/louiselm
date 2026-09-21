@@ -28,6 +28,67 @@ local function new_buffer(options)
   return owner
 end
 
+T["prompt focus preserves the prefix while typing"] = MiniTest.new_set({
+  parametrize = {
+    { "enter", "", "" },
+    { "enter", "", "draft\nsecond line" },
+    { "enter", "[context] ", "" },
+    { "enter", "[context] ", "draft" },
+    { "show", "", "" },
+    { "show", "", "draft" },
+  },
+})
+T["prompt focus preserves the prefix while typing"]["with an attached UI"] = function(action, prefix, draft)
+  local child = MiniTest.new_child_neovim()
+  MiniTest.finally(function()
+    child.stop()
+  end)
+  child.start({ "--noplugin", "-u", "NONE" })
+  child.api.nvim_ui_attach(80, 24, { rgb = true })
+  child.lua("vim.opt.runtimepath:prepend(...)", { nvim.fn.getcwd() })
+  child.lua(
+    [[
+    local prefix, draft = ...
+    local owner = require("louiselm.ui.chat.buffer").new({
+      id = "prompt-focus-test", agent = "test", status = "ready", config_options = {},
+    }, {
+      markdown_highlighting = false,
+      on_prompt_edit = function() end,
+      prompt_prefix = function() return prefix end,
+      on_enter = function() end,
+      submit = function() error("typing must not submit") end,
+    })
+    _G.qa_prompt_owner = owner
+    owner:replace_prompt(prefix .. draft)
+    owner:append({ "previous reply", "" })
+    owner:show(vim.api.nvim_get_current_win(), false)
+  ]],
+    { prefix, draft }
+  )
+  child.type_keys("gg")
+  if action == "enter" then
+    child.type_keys("<CR>")
+  else
+    child.lua([[
+      vim.keymap.set("n", "<F5>", function()
+        qa_prompt_owner:show(vim.api.nvim_get_current_win(), true)
+      end)
+    ]])
+    child.type_keys("<F5>")
+  end
+  MiniTest.expect.equality(child.api.nvim_get_mode().mode, "i")
+  child.type_keys("QA-CURSOR")
+  MiniTest.expect.equality(child.lua_get("qa_prompt_owner:prompt_text()"), prefix .. "QA-CURSOR" .. draft)
+  MiniTest.expect.equality(
+    child.lua_get("vim.api.nvim_buf_get_lines(qa_prompt_owner.buffer, qa_prompt_owner.prompt_line, -1, false)[1]"),
+    "> " .. prefix .. "QA-CURSOR" .. (draft:match("^[^\n]*") or "")
+  )
+  child.type_keys("<Esc>", "gg", "<CR>")
+  MiniTest.expect.equality(child.api.nvim_get_mode().mode, "i")
+  child.type_keys("again-")
+  MiniTest.expect.equality(child.lua_get("qa_prompt_owner:prompt_text()"), prefix .. "again-QA-CURSOR" .. draft)
+end
+
 T["patches compaction rows in place without splitting subsequent prose"] = function()
   local owner = new_buffer()
   owner:compaction({ id = "same", status = "in_progress" })
