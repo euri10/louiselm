@@ -1,0 +1,12 @@
+2026-09-21T05:06:13.1302012Z FAILURE: Build failed with an exception.
+2026-09-21T05:06:13.1303628Z * What went wrong:
+2026-09-21T05:06:13.1304509Z A problem occurred configuring root project 'LouiseLMCapture'.
+2026-09-21T05:06:13.1305601Z > Could not resolve all artifacts for configuration 'classpath'.
+2026-09-21T05:06:13.1314902Z                > Could not GET 'https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.11.0/gson-2.11.0.pom'. Received status code 429 from server: Too Many Requests
+2026-09-21T05:06:13.1333679Z             > Could not GET 'https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.9/asm-9.9.pom'. Received status code 429 from server: Too Many Requests
+2026-09-21T05:06:13.1344679Z             > Could not GET 'https://repo.maven.apache.org/maven2/org/apache/httpcomponents/httpmime/4.5.6/httpmime-4.5.6.pom'. Received status code 429 from server: Too Many Requests
+2026-09-21T05:06:13.1353483Z             > Could not GET 'https://repo.maven.apache.org/maven2/commons-io/commons-io/2.16.1/commons-io-2.16.1.pom'. Received status code 429 from server: Too Many Requests
+2026-09-21T05:06:13.1359105Z             > Could not GET 'https://repo.maven.apache.org/maven2/org/ow2/asm/asm-analysis/9.9/asm-analysis-9.9.pom'. Received status code 429 from server: Too Many Requests
+2026-09-21T05:06:13.1368899Z             > Could not GET 'https://repo.maven.apache.org/maven2/org/ow2/asm/asm-commons/9.9/asm-commons-9.9.pom'. Received status code 429 from server: Too Many Requests
+2026-09-21T05:06:13.2426967Z BUILD FAILED in 20s
+2026-09-21T05:06:13.4800046Z ##[error]Process completed with exit code 1.

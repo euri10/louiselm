@@ -1,0 +1,560 @@
+[
+  {
+    "run": 35563238799,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35563238799",
+    "head_sha": "c4c12245d9b753817549313bc14745e52be88a4f",
+    "event": "workflow_dispatch",
+    "conclusion": "cancelled",
+    "all_gates": [
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      },
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "cancelled"
+      }
+    ],
+    "queue_seconds": 12.0,
+    "skills_start_skew_seconds": 0.0,
+    "skills_wall_seconds": 130.0,
+    "skills_runner_seconds": 130.0,
+    "skills_rounded_runner_minutes": 3,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 106219975656,
+        "name": "cargo (skills-core)",
+        "conclusion": "cancelled",
+        "seconds": 130.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:15Z",
+            "completed_at": "2026-09-21T05:05:16Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:16Z",
+            "completed_at": "2026-09-21T05:05:18Z",
+            "seconds": 2.0
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:18Z",
+            "completed_at": "2026-09-21T05:05:28Z",
+            "seconds": 10.0
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:28Z",
+            "completed_at": "2026-09-21T05:05:36Z",
+            "seconds": 8.0
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:36Z",
+            "completed_at": "2026-09-21T05:05:55Z",
+            "seconds": 19.0
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:55Z",
+            "completed_at": "2026-09-21T05:05:55Z",
+            "seconds": 0.0
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:55Z",
+            "completed_at": "2026-09-21T05:05:56Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:56Z",
+            "completed_at": "2026-09-21T05:06:20Z",
+            "seconds": 24.0
+          },
+          {
+            "name": "Test",
+            "conclusion": "cancelled",
+            "started_at": "2026-09-21T05:06:20Z",
+            "completed_at": "2026-09-21T05:07:22Z",
+            "seconds": 62.0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:07:22Z",
+            "completed_at": "2026-09-21T05:07:22Z",
+            "seconds": 0.0
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:07:22Z",
+            "completed_at": "2026-09-21T05:07:22Z",
+            "seconds": 0.0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-21T05:06:20.8882864Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.06s",
+            "2026-09-21T05:07:10.6702806Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 49.72s"
+          ],
+          "cache": [
+            "2026-09-21T05:05:45.0817646Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-21T05:05:54.9342241Z Cache restored successfully",
+            "2026-09-21T05:05:54.9954468Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181"
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"AMD EPYC 7763 64-Core Processor\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15989        2075        5916          43        8387       13913",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ]
+  },
+  {
+    "run": 35563238692,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35563238692",
+    "head_sha": "c4c12245d9b753817549313bc14745e52be88a4f",
+    "event": "workflow_dispatch",
+    "conclusion": "cancelled",
+    "all_gates": [
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      }
+    ],
+    "queue_seconds": 4.0,
+    "skills_start_skew_seconds": 0.0,
+    "skills_wall_seconds": 139.0,
+    "skills_runner_seconds": 139.0,
+    "skills_rounded_runner_minutes": 3,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 106219973674,
+        "name": "cargo (skills-core)",
+        "conclusion": "cancelled",
+        "seconds": 139.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:07Z",
+            "completed_at": "2026-09-21T05:05:07Z",
+            "seconds": 0.0
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:07Z",
+            "completed_at": "2026-09-21T05:05:10Z",
+            "seconds": 3.0
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:10Z",
+            "completed_at": "2026-09-21T05:05:19Z",
+            "seconds": 9.0
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:19Z",
+            "completed_at": "2026-09-21T05:05:28Z",
+            "seconds": 9.0
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:28Z",
+            "completed_at": "2026-09-21T05:05:58Z",
+            "seconds": 30.0
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:58Z",
+            "completed_at": "2026-09-21T05:05:59Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:59Z",
+            "completed_at": "2026-09-21T05:06:01Z",
+            "seconds": 2.0
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:06:01Z",
+            "completed_at": "2026-09-21T05:06:25Z",
+            "seconds": 24.0
+          },
+          {
+            "name": "Test",
+            "conclusion": "cancelled",
+            "started_at": "2026-09-21T05:06:25Z",
+            "completed_at": "2026-09-21T05:07:22Z",
+            "seconds": 57.0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:07:22Z",
+            "completed_at": "2026-09-21T05:07:23Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:07:23Z",
+            "completed_at": "2026-09-21T05:07:23Z",
+            "seconds": 0.0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-21T05:06:25.0512294Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.88s",
+            "2026-09-21T05:07:16.2840081Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 51.16s"
+          ],
+          "cache": [
+            "2026-09-21T05:05:48.4281852Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-21T05:05:58.2955018Z Cache restored successfully",
+            "2026-09-21T05:05:58.8401452Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181"
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"AMD EPYC 7763 64-Core Processor\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15989        2091        5905          44        8384       13898",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ]
+  },
+  {
+    "run": 35563239473,
+    "url": "https://github.com/euri10/louiselm/actions/runs/35563239473",
+    "head_sha": "c4c12245d9b753817549313bc14745e52be88a4f",
+    "event": "workflow_dispatch",
+    "conclusion": "cancelled",
+    "all_gates": [
+      {
+        "name": "Agent liveness snapshot",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (capture-service)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "cargo (usage-cli)",
+        "conclusion": "success"
+      },
+      {
+        "name": "cargo (skills-core)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "stylua",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim nightly)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Android tests, lint, and build",
+        "conclusion": "failure"
+      },
+      {
+        "name": "Agent instruction budget",
+        "conclusion": "success"
+      },
+      {
+        "name": "lua-language-server",
+        "conclusion": "success"
+      },
+      {
+        "name": "ACP backup, copy and retention (synthetic data)",
+        "conclusion": "cancelled"
+      },
+      {
+        "name": "Plugin release contract",
+        "conclusion": "success"
+      },
+      {
+        "name": "Launcher VM safety contract (no VM)",
+        "conclusion": "success"
+      },
+      {
+        "name": "mini.test (nvim stable)",
+        "conclusion": "success"
+      }
+    ],
+    "queue_seconds": 12.0,
+    "skills_start_skew_seconds": 0.0,
+    "skills_wall_seconds": 131.0,
+    "skills_runner_seconds": 131.0,
+    "skills_rounded_runner_minutes": 3,
+    "required_status": [],
+    "jobs": [
+      {
+        "id": 106219976461,
+        "name": "cargo (skills-core)",
+        "conclusion": "cancelled",
+        "seconds": 131.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:15Z",
+            "completed_at": "2026-09-21T05:05:16Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:16Z",
+            "completed_at": "2026-09-21T05:05:17Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Install Linux sandbox test tools",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:17Z",
+            "completed_at": "2026-09-21T05:05:26Z",
+            "seconds": 9.0
+          },
+          {
+            "name": "Install Rust",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:26Z",
+            "completed_at": "2026-09-21T05:05:34Z",
+            "seconds": 8.0
+          },
+          {
+            "name": "Cache cargo",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:34Z",
+            "completed_at": "2026-09-21T05:05:54Z",
+            "seconds": 20.0
+          },
+          {
+            "name": "Record runner resources",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:54Z",
+            "completed_at": "2026-09-21T05:05:55Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Format",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:55Z",
+            "completed_at": "2026-09-21T05:05:57Z",
+            "seconds": 2.0
+          },
+          {
+            "name": "Lint",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:05:57Z",
+            "completed_at": "2026-09-21T05:06:21Z",
+            "seconds": 24.0
+          },
+          {
+            "name": "Test",
+            "conclusion": "cancelled",
+            "started_at": "2026-09-21T05:06:21Z",
+            "completed_at": "2026-09-21T05:07:22Z",
+            "seconds": 61.0
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:07:22Z",
+            "completed_at": "2026-09-21T05:07:23Z",
+            "seconds": 1.0
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success",
+            "started_at": "2026-09-21T05:07:23Z",
+            "completed_at": "2026-09-21T05:07:23Z",
+            "seconds": 0.0
+          }
+        ],
+        "evidence": {
+          "cargo": [
+            "2026-09-21T05:06:21.0009990Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.90s",
+            "2026-09-21T05:07:12.1093970Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 51.04s"
+          ],
+          "cache": [
+            "2026-09-21T05:05:44.7038036Z Cache Size: ~1186 MB (1243187453 B)",
+            "2026-09-21T05:05:54.6125409Z Cache restored successfully",
+            "2026-09-21T05:05:54.6725144Z Cache restored from key: cargo-skills-line-tables-Linux-1.97.1-9189695eae0c894fe0019982bc826d3e24db30854d1518ddfcbef816e941b181"
+          ],
+          "resources": [
+            "6.17.0-1022-azure",
+            "[",
+            "  {",
+            "    \"field\": \"Architecture:\",",
+            "    \"data\": \"x86_64\"",
+            "  },",
+            "  {",
+            "    \"field\": \"CPU(s):\",",
+            "    \"data\": \"4\"",
+            "  },",
+            "  {",
+            "    \"field\": \"Model name:\",",
+            "    \"data\": \"AMD EPYC 7763 64-Core Processor\"",
+            "  }",
+            "]",
+            "               total        used        free      shared  buff/cache   available",
+            "Mem:           15989        1907        6087          44        8385       14082",
+            "Swap:           3071           0        3071"
+          ],
+          "scenarios": []
+        }
+      }
+    ]
+  }
+]
