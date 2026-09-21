@@ -1,6 +1,9 @@
+---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
+local nvim = vim
+
 local root, port, result_path, enable_path = arg[1], arg[2], arg[3], arg[4]
 
-vim.opt.runtimepath:prepend(root)
+nvim.opt.runtimepath:prepend(root)
 
 local Permission = require("louiselm.permission")
 local Session = require("louiselm.session")
@@ -13,7 +16,7 @@ local result = {
 }
 
 local function finish()
-  vim.fn.writefile({ vim.json.encode(result) }, result_path)
+  nvim.fn.writefile({ nvim.json.encode(result) }, result_path)
 end
 
 local config = {
@@ -43,9 +46,9 @@ local api, errors = Session.new({
       "/var/tmp/integration-fixture/codex-acp.js",
     },
     env = {
-      CODEX_CONFIG = vim.json.encode(config),
+      CODEX_CONFIG = nvim.json.encode(config),
       CODEX_PATH = "/var/tmp/ow3ok-codex",
-      DEFAULT_AUTH_REQUEST = vim.json.encode({
+      DEFAULT_AUTH_REQUEST = nvim.json.encode({
         methodId = "gateway",
         _meta = {
           gateway = {
@@ -112,14 +115,14 @@ session:on(function(event)
   end
 end)
 
-if not vim.wait(30000, function()
+if not nvim.wait(30000, function()
   return ready or #result.errors > 0
 end, 10) or not ready then
   result.errors[#result.errors + 1] = "session did not become ready"
 else
-  vim.fn.writefile({ "ready" }, "/var/tmp/integration/driver-ready")
-  if not vim.wait(15000, function()
-    return vim.uv.fs_stat(enable_path) ~= nil
+  nvim.fn.writefile({ "ready" }, "/var/tmp/integration/driver-ready")
+  if not nvim.wait(15000, function()
+    return nvim.uv.fs_stat(enable_path) ~= nil
   end, 10) then
     result.errors[#result.errors + 1] = "guard enablement timed out"
   else
@@ -133,7 +136,7 @@ else
     end)
     if prompt_error ~= nil then
       result.errors[#result.errors + 1] = prompt_error
-    elseif not vim.wait(45000, function()
+    elseif not nvim.wait(45000, function()
       return completed
     end, 10) then
       result.errors[#result.errors + 1] = "prompt did not complete"
