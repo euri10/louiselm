@@ -37,7 +37,7 @@ jobs:
     steps:
       # workflow_run is privileged: run reviewed main code, never PR code or
       # artifacts from the triggering workflow. Source identity is fetched by SHA.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -73,7 +73,7 @@ jobs:
         run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
 
       - name: Prepare unpublished release drafts
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.6.0
         with:
           token: ${{ steps.release-token.outputs.token }}
           target-branch: main
@@ -100,7 +100,7 @@ jobs:
 
       - name: Propose the next plugin release
         if: steps.pending.outputs.ready == 'true'
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1; release-please 17.3.0
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.6.0
         with:
           token: ${{ steps.release-token.outputs.token }}
           target-branch: main

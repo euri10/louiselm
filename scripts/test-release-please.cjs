@@ -125,10 +125,13 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   const yaml = require('js-yaml'); // already in the pinned tool's lockfile
   const workflow = yaml.load(readFileSync('.github/workflows/release-please.yml', 'utf8'));
   const ci = yaml.load(readFileSync('.github/workflows/ci.yml', 'utf8'));
-  const pin = 'googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071';
-  assert.equal(require('release-please/package.json').version, '17.3.0');
+  const pin = 'googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7';
+  assert.equal(require('release-please/package.json').version, '17.6.0');
   assert.ok(ci.on.pull_request);
   assert.ok(ci.jobs['plugin-release-contract']);
+  const contractSteps = ci.jobs['plugin-release-contract'].steps;
+  assert.equal(contractSteps.find(step => step.uses?.startsWith('actions/setup-node@')).with['node-version'], '24');
+  assert.ok(contractSteps.some(step => step.run?.includes(`checkout --quiet ${pin.split('@')[1]}`)));
   assert.equal(ci.permissions.contents, 'read');
   assert.deepEqual(workflow.on.workflow_run.workflows, ['CI']);
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
@@ -151,6 +154,7 @@ test('workflow retains ordinary bot-PR CI and guards publication separately', ()
   });
   assert.match(workflow.jobs.release.if, /vars\.PLUGIN_RELEASES_ENABLED == 'true'/);
   assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main');
+  assert.equal(steps.find(step => step.uses?.startsWith('actions/checkout@')).with['persist-credentials'], false);
   const actions = steps.filter(step => step.uses?.startsWith('googleapis/release-please-action@'));
   assert.equal(actions.length, 2);
   for (const action of actions) {

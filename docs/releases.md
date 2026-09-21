@@ -41,8 +41,8 @@ last packaged version, so use a full commit pin when identifying development cod
 
 ## Changes and proposals
 
-One pinned Release Please action (v4.4.1, commit
-`5c625bfb5d1ff62eadeeb3772007f7f66fdcf071`, locked Release Please 17.3.0) prepares
+One pinned Release Please action (v5.0.0, commit
+`45996ed1f6d02564a971a2fa1b5860e934307cf7`, locked Release Please 17.6.0) prepares
 separate component PRs on `main`. Only the plugin is configured here.
 
 | Change | Plugin release effect |
@@ -191,9 +191,9 @@ These are the approved release tool's API fixtures, not another release framewor
 or a new application dependency. Run the full Lua/generator gates as documented
 in [testing](agent-testing.md).
 
-Upstream contracts: [Release Please configuration](https://github.com/googleapis/release-please/blob/v17.3.0/docs/manifest-releaser.md),
+Upstream contracts: [Release Please configuration](https://github.com/googleapis/release-please/blob/v17.6.0/docs/manifest-releaser.md),
 [App token action](https://github.com/actions/create-github-app-token/tree/bcd2ba49218906704ab6c1aa796996da409d3eb1),
-[directory exclusion implementation](https://github.com/googleapis/release-please/blob/v17.3.0/src/util/commit-exclude.ts),
-[action credentials](https://github.com/googleapis/release-please-action/tree/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071#github-credentials),
+[directory exclusion implementation](https://github.com/googleapis/release-please/blob/v17.6.0/src/util/commit-exclude.ts),
+[action credentials](https://github.com/googleapis/release-please-action/tree/45996ed1f6d02564a971a2fa1b5860e934307cf7#github-credentials),
 [workflow triggering](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow),
 and [immutable releases](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases).

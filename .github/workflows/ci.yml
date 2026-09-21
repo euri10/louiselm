@@ -75,12 +75,13 @@ jobs:
     name: Plugin release contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
+          package-manager-cache: false
       - name: Check version, commit policy and publication refusals
         run: |
           ./scripts/generate-plugin-version --check
@@ -91,7 +92,7 @@ jobs:
           set -eu
           release_tool_dir="$(mktemp -d)"
           git clone --quiet https://github.com/googleapis/release-please-action.git "$release_tool_dir"
-          git -C "$release_tool_dir" checkout --quiet 5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
+          git -C "$release_tool_dir" checkout --quiet 45996ed1f6d02564a971a2fa1b5860e934307cf7
           npm ci --prefix "$release_tool_dir" --omit=dev --ignore-scripts --no-audit --no-fund
           NODE_PATH="$release_tool_dir/node_modules" node --test scripts/test-release-please.cjs
 
@@ -99,7 +100,7 @@ jobs:
     name: Agent instruction budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/check-agent-instructions
 
   usage-cli:
@@ -109,7 +110,7 @@ jobs:
       run:
         working-directory: usage-cli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust and SQLite development library
         run: |
           set -eu
@@ -117,7 +118,7 @@ jobs:
           rustup default "${RUST_VERSION}"
           sudo apt-get update
           sudo apt-get install --yes libsqlite3-dev pkg-config
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -134,14 +135,14 @@ jobs:
     name: Launcher VM safety contract (no VM)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash -n scripts/launcher-vm && ./scripts/test-launcher-vm.sh
 
   coordination-snapshot:
     name: Agent liveness snapshot
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash -n scripts/agent-liveness-snapshot && ./scripts/test-agent-liveness-snapshot.sh
 
   acp-local-backup:
@@ -149,7 +150,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify pinned runtime and run isolated backup tests
         run: |
           set -eu
@@ -177,12 +178,12 @@ jobs:
       run:
         working-directory: android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Reuse downloaded artifacts, not build outputs or machine configuration.
       # Cold misses still fail normally if the dependency repository is unavailable.
       - name: Cache Android dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches/modules-2
@@ -209,8 +210,8 @@ jobs:
     name: stylua
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: JohnnyMorganz/stylua-action@v4
+      - uses: actions/checkout@v7
+      - uses: JohnnyMorganz/stylua-action@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: ${{ env.STYLUA_VERSION }}
@@ -220,11 +221,11 @@ jobs:
     name: lua-language-server
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache lua-language-server
         id: cache-luals
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.local/lua-language-server
           key: luals-${{ runner.os }}-${{ env.LUALS_VERSION }}
@@ -271,7 +272,7 @@ jobs:
       matrix:
         neovim: [stable, nightly]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: rhysd/action-setup-vim@v1
         with:
@@ -290,7 +291,7 @@ jobs:
           echo "revision=$rev" >> "$GITHUB_OUTPUT"
 
       - name: Cache mini.nvim
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .deps
           key: mini-nvim-${{ steps.mini.outputs.revision }}
@@ -353,7 +354,7 @@ jobs:
       run:
         working-directory: capture-service
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: |
@@ -363,7 +364,7 @@ jobs:
           rustup default "${RUST_VERSION}"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -410,7 +411,7 @@ jobs:
       run:
         working-directory: skills-core
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux sandbox test tools
         run: |
@@ -430,7 +431,7 @@ jobs:
           rustup default "${RUST_VERSION}"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -455,9 +456,10 @@ jobs:
         # The launcher must isolate both without changing production behavior.
         run: bash ../scripts/test-skills-core-git-isolation 142</dev/null
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
+          package-manager-cache: false
 
       - name: Recovery browser deadline regressions
         run: node --test --test-timeout=5000 tests/recovery_browser.test.cjs
