@@ -288,6 +288,8 @@ configuration gate. Each refresh queries SQLite asynchronously; closing the
 buffer or replacing the query cancels its reader. Pending recorder writes are
 not flushed by exploration. Refresh after a turn finishes to include new facts.
 Pressing `p` while a next page loads returns to the previous page.
+Completed queries select the first result while the explorer is active, so
+Enter inspects that result immediately after paging or returning to a list.
 
 | Key | Action |
 | --- | --- |

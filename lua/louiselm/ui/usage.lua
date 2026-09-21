@@ -114,6 +114,7 @@ local function render(self)
     end
     lines[#lines + 1] = ""
   end
+  local first_result_line
   local page = self.page
   if self.error then
     lines[#lines + 1] = "Query failed: " .. self.error
@@ -139,6 +140,7 @@ local function render(self)
     end
     for index, row in ipairs(page.rows) do
       local first = #lines + 1
+      first_result_line = first_result_line or first
       if query.view == "events" then
         lines[#lines + 1] = string.format(
           "%s | %s | sequence %d | turn %s | observer %s",
@@ -180,6 +182,9 @@ local function render(self)
   nvim.bo[self.buffer].modifiable = true
   nvim.api.nvim_buf_set_lines(self.buffer, 0, -1, false, lines)
   nvim.bo[self.buffer].modifiable = false
+  if first_result_line and nvim.api.nvim_get_current_buf() == self.buffer then
+    nvim.api.nvim_win_set_cursor(0, { first_result_line, 0 })
+  end
 end
 
 ---Recompute this view; older responses cannot overwrite a newer query or revive a closed buffer.

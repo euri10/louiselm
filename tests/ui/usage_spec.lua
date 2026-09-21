@@ -95,6 +95,54 @@ T["previous-page key reverses a pending next-page read"] = function()
   MiniTest.expect.equality(#calls, 4)
 end
 
+T["paging and back navigation select a returned turn for Enter"] = function()
+  local view, calls = open()
+  view:set_query({ view = "turns", limit = 1 })
+  local first = { id = "first-turn", agent = "codex", acp_session_id = "session" }
+  local second = { id = "second-turn", agent = "codex", acp_session_id = "session" }
+  deliver(calls[2], page({ first }, 1))
+  for index, line in ipairs(nvim.api.nvim_buf_get_lines(view.buffer, 0, -1, false)) do
+    if line:find('"first-turn"', 1, true) then
+      nvim.api.nvim_win_set_cursor(0, { index, 0 })
+      break
+    end
+  end
+
+  nvim.api.nvim_feedkeys("n", "mx!", false)
+  deliver(calls[3], page({ second }))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_line():find('"second-turn"', 1, true) ~= nil, true)
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx!", false)
+  MiniTest.expect.equality(calls[4].query.turn_id, "second-turn")
+  deliver(calls[4], page())
+
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<BS>", true, false, true), "mx!", false)
+  deliver(calls[5], page({ second }))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_line():find('"second-turn"', 1, true) ~= nil, true)
+  nvim.api.nvim_feedkeys("p", "mx!", false)
+  deliver(calls[6], page({ first }, 1))
+  MiniTest.expect.equality(nvim.api.nvim_get_current_line():find('"first-turn"', 1, true) ~= nil, true)
+end
+
+T["completed results do not move focus or cursor in another buffer"] = function()
+  local view, calls = open()
+  local other = nvim.api.nvim_create_buf(false, true)
+  local other_window = nvim.api.nvim_open_win(other, true, { split = "right" })
+  MiniTest.finally(function()
+    if nvim.api.nvim_win_is_valid(other_window) and #nvim.api.nvim_list_wins() > 1 then
+      nvim.api.nvim_win_close(other_window, true)
+    end
+    if nvim.api.nvim_buf_is_valid(other) then
+      nvim.api.nvim_buf_delete(other, { force = true })
+    end
+  end)
+  nvim.api.nvim_buf_set_lines(other, 0, -1, false, { "other buffer", "keep cursor here" })
+  nvim.api.nvim_win_set_cursor(0, { 2, 3 })
+  deliver(calls[1], page({ { dimensions = { agent = "codex" } } }))
+  MiniTest.expect.equality(view.disposed, false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_buf(), other)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { 2, 3 })
+end
+
 T["group and turn navigation preserve query and show starting state and source"] = function()
   local view, calls = open()
   local row = {
