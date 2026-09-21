@@ -192,8 +192,8 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
 
 The chat winbar shows turn state, a useful Session name, Agent, and current
 Model and effort while you scroll. The example below includes Account limits
-from an adapter advertising the extension; the stock Codex quickstart does not
-provide the `limits` field:
+from an adapter advertising the extension; Agents without support, including
+the stock Codex quickstart, show `limits n/a`:
 
 ```text
 Your turn · Review · codex · limits 98%/7d ↻7d · GPT-6 e=high +2 · ctx 53%
@@ -209,6 +209,10 @@ with no comparison to defaults or the start of the Session.
 Context percentage (including stale indication) and cost follow those fields.
 Full ACP identity and raw telemetry remain in the transcript header. Redundant
 default quota labels are omitted; distinct quota buckets keep their names.
+The neutral `limits n/a` marker is clickable: it opens the same inspector as
+`:LouiselmLimits`, which explains when an Agent does not advertise support.
+Agents not yet observed have no limits marker; their inspector explains that
+a Session must first be started to check support.
 As windows narrow, cost and context disappear, then effort and model fold,
 then limits, Agent, and name give way. At extreme widths even `opts` yields to
 turn state. Background attention has reserved space before optional detail.

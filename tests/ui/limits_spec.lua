@@ -21,6 +21,30 @@ end
 
 T["summary"] = MiniTest.new_set()
 
+T["summary"]["marks unsupported limits neutrally and explains unobserved Agents"] = function()
+  local unsupported = { agent = "stock", status = "unsupported" }
+  local text, group = Limits.summary(unsupported, NOW)
+  MiniTest.expect.equality(text, "limits n/a")
+  MiniTest.expect.equality(group, "Comment")
+  MiniTest.expect.equality(
+    nvim.tbl_contains(
+      Limits.render(unsupported, NOW),
+      "Account limits are unavailable: this Agent does not advertise support."
+    ),
+    true
+  )
+
+  local unobserved = { agent = "stock", status = "not_observed" }
+  MiniTest.expect.equality({ Limits.summary(unobserved, NOW) }, {})
+  MiniTest.expect.equality(
+    nvim.tbl_contains(
+      Limits.render(unobserved, NOW),
+      "Account limits have not been observed: start a Session with this Agent to check support."
+    ),
+    true
+  )
+end
+
 T["summary"]["sorts and caps default windows with compact remaining capacity"] = function()
   local value = state("fresh", {
     {

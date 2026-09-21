@@ -107,7 +107,10 @@ end
 ---@return string? text
 ---@return string? highlight_group
 function M.summary(state, now)
-  if state.status == "unsupported" or state.status == "not_observed" then
+  if state.status == "unsupported" then
+    return "limits n/a", "Comment"
+  end
+  if state.status == "not_observed" then
     return nil, nil
   end
   if state.snapshot == nil then
@@ -243,6 +246,11 @@ function M.render(state, now)
   end
   if state.error ~= nil then
     lines[#lines + 1] = "Note: " .. state.error
+  end
+  if state.status == "unsupported" then
+    lines[#lines + 1] = "Account limits are unavailable: this Agent does not advertise support."
+  elseif state.status == "not_observed" then
+    lines[#lines + 1] = "Account limits have not been observed: start a Session with this Agent to check support."
   end
 
   local snapshot = state.snapshot

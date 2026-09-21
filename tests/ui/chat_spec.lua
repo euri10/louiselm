@@ -6044,6 +6044,50 @@ T["chat"]["keeps the turn label visible in the window bar"] = function()
   chat:dispose()
 end
 
+T["chat"]["unsupported limits stay inspectable and fold without hiding background attention"] = function()
+  local api = fake_api()
+  api.limits.stock = { agent = "stock", status = "unsupported" }
+  local chat = assert(Chat.new(api))
+  local split
+  MiniTest.finally(function()
+    if split ~= nil and nvim.api.nvim_win_is_valid(split) then
+      nvim.api.nvim_win_close(split, true)
+    end
+    chat:dispose()
+  end)
+  local background = fake_session("background", "other")
+  background.state.status = "waiting_permission"
+  assert(chat:attach(background))
+  assert(chat:attach(fake_session("active", "stock")))
+  local window = nvim.api.nvim_get_current_win()
+  local bar = nvim.api.nvim_get_option_value("winbar", { win = window })
+  MiniTest.expect.equality(bar:find("limits n/a", 1, true) ~= nil, true)
+  assert(chat:winbar_click(99))
+  local buffer = nvim.api.nvim_get_current_buf()
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_name(buffer), "louiselm://limits/stock")
+  MiniTest.expect.equality(
+    nvim.tbl_contains(buffer_lines(buffer), "Account limits are unavailable: this Agent does not advertise support."),
+    true
+  )
+  nvim.api.nvim_buf_delete(buffer, { force = true })
+
+  -- A real window resize must drop the marker and its click target together.
+  nvim.cmd("vsplit")
+  split = nvim.api.nvim_get_current_win()
+  nvim.api.nvim_set_current_win(window)
+  nvim.api.nvim_win_set_width(window, 24)
+  nvim.api.nvim_exec_autocmds("WinResized", {})
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      bar = nvim.api.nvim_get_option_value("winbar", { win = window })
+      return bar:find("limits n/a", 1, true) == nil
+    end, 1),
+    true
+  )
+  MiniTest.expect.equality(bar:find("! other", 1, true) ~= nil, true)
+  MiniTest.expect.equality(chat:winbar_click(99, window), false)
+end
+
 T["chat"]["shows clickable Agent limits in the window bar"] = function()
   local first = fake_session("session-1", "codex")
   -- Identity shape observed in codex/01a07a71-7d3a-75d1-bb0a-697e41ba71f8
