@@ -62,6 +62,8 @@ mod workspace_retention;
 
 #[path = "broker/beads_mutations.rs"]
 mod beads_mutations;
+#[path = "broker/buffered_requests.rs"]
+mod buffered_requests;
 #[path = "broker/lifecycle.rs"]
 mod lifecycle;
 #[path = "broker/skill_requests.rs"]

@@ -64,8 +64,7 @@ class Guard:
         self.lib.bpf_object__close(self.obj)
 
 
-def transmit(connection, method):
-    payload = b"POST /fixture HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+def transmit(connection, method, payload=b"POST /fixture HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"):
     try:
         if method == "send":
             connection.sendall(payload)

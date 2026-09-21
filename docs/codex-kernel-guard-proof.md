@@ -386,3 +386,119 @@ process-memory isolation, and cover asynchronous I/O/`io_uring`. `.3.4` retains
 the independent supported subscription-authentication proof. No production
 cutover, new dependency, real sign-in or installed Verified claim follows from
 these results.
+
+## Buffered request admission proof
+
+`louiselm-qbr.5.1.3.8`, 2026-09-21: **offline request-boundary component passes**.
+`skills-core/tests/broker/buffered_requests.rs` composes the existing real broker
+launch, authenticated status exchange and `BrokerSession` lifetime with a
+bounded HTTP framing fixture and a fake asynchronous upstream. There is no new
+production endpoint, authority service, runtime patch or dependency.
+
+The reviewed operation is deliberately small and synthetic: HTTP/1.1
+`POST /v1/responses`, exactly one `Host: localhost`, `Content-Type:
+application/json`, and decimal `Content-Length`; body
+`{"model":"fixture-model","input":"synthetic","stream":true}`. Header names
+are case insensitive. Unknown/duplicate headers or JSON fields, duplicate
+lengths, transfer encoding, absolute/alternative targets, query parameters,
+unreviewed operations, different Models and redirect requests are refused.
+The fixture bounds headers and bodies to 4 KiB each and buffered bytes to
+16 KiB. It does not claim compatibility with every stock Codex request field,
+compression, chunking, HTTP/2 or WebSockets. The complete ACP task `.3.9` must
+supply observed runtime fixtures before broadening that reviewed operation.
+
+### Ownership and race boundary
+
+The proof worker owns the actual `BrokerSession` exclusively. Each complete
+frame is parsed and validated separately. Its trusted endpoint binding is
+compared with the retained launch authorization (including Session, Run,
+revision and identity). The fixture checks sender enrollment, current
+authority, expiry, the allowed Model and an available reservation before
+appending each fake upstream effect. A real authenticated supervisor status
+exchange checks current channel/lifecycle state; it is one input to the
+decision, never an authorization by itself. Expiry and sender validity are
+checked again after that blocking exchange.
+
+Controls and request admissions run on the same exclusive owner, following the
+existing broker worker's `&mut BrokerSession` boundary. The fake effect begins
+at the ledger append in that owner turn: no cached permit or unchecked work
+closure is handed to another executor. Tests order control-before-admission
+and admission-before-control from separate threads. Another test invalidates
+sender enrollment or advances the clock from the supervisor-reply thread
+during status I/O. Already started effects remain spent; later admissions fail.
+
+The sender-enrollment observation, supervisor mechanics, clock and reservation
+counter are explicit doubles. This does not implement a second durable Run
+budget or prove atomicity of a real Provider write. `.3.2` must substitute its
+shared durable reservation transaction and recheck time/identity after storage
+I/O, at the actual upstream start. `.3.9` must integrate the per-Session endpoint
+binding from `.3.6`, guard/lifecycle ownership from `.3.7`, real control/timer
+delivery and actual transport cancellation. A queued request never gains
+authority merely because its bytes arrived before a control change.
+
+### Observed matrix
+
+| Case | Result |
+| --- | --- |
+| Two requests in one write | Two independent admissions, two spent reservations |
+| Every two-way byte split of a valid request | No effect until the body is complete; one admission |
+| Queued or partial second request after revocation, lost sender, foreign binding, revision change or expiry | Second request denied; only the first reservation spent |
+| Sender loss or expiry during authenticated status I/O | Denied before any fake upstream effect |
+| Malformed/unreviewed framing, operation, Model or destination | No upstream effect; connection cannot resynchronize into authority |
+| Expiry/disposal after a received output prefix | Local cancellation, prefix retained, late output/completion discarded, spent unit retained |
+| Unknown outcome, redirect response or oversized response | No automatic retry, redirect follow or refund |
+| Completed response followed by disposal | Completed output retained; completion is not relabelled unknown |
+| Independent control/admission producers | Both serialized orderings preserve the effect boundary |
+| Actual two-message same-destination `sendmmsg` in KVM | One BPF send-hook check, two Rust broker-fixture admissions, two spent reservations |
+
+Red/green evidence: the initial missing frame/admission implementation failed
+the two-request assertion. A later test exposed admission after expiry during
+status I/O; the final recheck made it pass. An intentional mutation caching the
+first admission allowed the second request after revocation and failed the
+queued-request assertion; restoring per-request checks passed.
+
+### Reproduction and limits
+
+The ordinary crate gate runs the deterministic matrix, without an Agent,
+Provider, credentials or privileged kernel hooks:
+
+```sh
+CARGO_PROFILE_DEV_DEBUG=line-tables-only ./scripts/test-skills-core \
+  --test broker buffered_requests -- --nocapture
+```
+
+The ignored `buffered_requests::kernel_sendmmsg` test runs only through
+`scripts/probes/codex-kernel-guard/request_probe.py` in a disposable KVM guest.
+Build the broker integration-test executable with the same Cargo profile,
+transfer that exact executable, `request_probe.py`, `guard_probe.py` and the
+compiled primitive `guard.bpf.o` into a private restricted guest. Put Python
+files in `/var/tmp` with mode 0644 so the assigned-UID synthetic sender can
+read them. Run inside the guest:
+
+```sh
+sudo -n python3 /var/tmp/request_probe.py --disposable-vm \
+  /home/vm/guard.bpf.o /home/vm/request-broker-tests
+```
+
+The driver obtains the synthetic frame from the Rust fixture, enrolls its own
+UID-65534 sender, and checks both the kernel counter and the Rust admission
+result. It closes the endpoint before releasing the experimental guard,
+including on failure. Expected verdict:
+`REQUEST_BOUNDARY_COMPONENT_PASS_NOT_VERIFIED`.
+
+Evidence cache: `/home/lotso/.cache/louiselm-request-proof.tTNANq`; private unit
+`louiselm-request-proof-vm.service`, loopback SSH port 22558, Debian guest kernel
+`6.12.107+deb13-cloud-amd64`. The private disk copies retained the wrapper's
+restricted networking, resource limits and deadline; no host mounts or desktop
+privileged changes were used. Production transport, durable shared-budget
+recovery, real subscription authentication and full ACP/Verified acceptance
+remain with `.3.2`, `.3.4` and `.3.9`.
+
+Validation: 10 deterministic request-proof cases passed; the opt-in request
+probe and all four existing primitive/binding/stock probes passed in KVM.
+The isolated complete Rust suite passed 1,091 tests (9 opt-in tests ignored
+there); formatting, all-target/all-feature strict Clippy, warning-free Rustdoc,
+13 browser tests, Python compilation, launcher-VM safety and whitespace checks
+passed. Logs and the cached-admission negative control are retained in the
+evidence directory. Afterward the private VM was explicitly stopped:
+`LoadState=not-found`, `ActiveState=inactive`, `SubState=dead`, `MainPID=0`.
