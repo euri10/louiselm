@@ -43,6 +43,7 @@ class BindingGuard(Guard):
         self.lib.bpf_map_delete_elem.argtypes = [C.c_int, C.c_void_p]
         try:
             for name, attach in ((b"invalidate_exec", self.lib.bpf_program__attach_lsm),
+                                 (b"protect_runtime", self.lib.bpf_program__attach_lsm),
                                  (b"invalidate_listener", self.lib.bpf_program__attach_trace)):
                 program = self.lib.bpf_object__find_program_by_name(self.obj, name)
                 assert program, name

@@ -1,11 +1,13 @@
 # Stock Codex kernel-guard feasibility
 
-`louiselm-ow3ok`, 2026-09-18: **primitive passes; integration remains unproven**.
+`louiselm-qbr.5.1.3.9`, 2026-09-21: **the complete stock ACP composition
+passes in a disposable guest; no installed cutover or Verified certification**.
 The maintainer selected stock Codex and authorized a bounded disposable-VM
 investigation. No runtime patch, desktop installation, production request
 implementation, new package, or weaker authority contract was introduced.
 
-An eBPF LSM `socket_sendmsg` hook let the measured Codex app-server complete a
+The original eBPF LSM `socket_sendmsg` experiment let the measured Codex
+app-server complete a
 synthetic streaming turn while denying its actual shell tool access to the same
 endpoint. This improves on the routing-only counterexample in
 `docs/codex-endpoint-proof.md`. It is not Verified acceptance.
@@ -80,7 +82,12 @@ enforcement. Production would need protected attachment/map ownership and a
 proven refusal path when the guard is missing or lost, with no window in which
 the endpoint continues accepting unauthenticated traffic.
 
-## Remaining proof before production
+## Primitive-stage proof gaps
+
+This was the gap list after the first primitive. The `.3.6`, `.3.7`, `.3.8`
+and `.3.9` sections below preserve the evidence that closes the bounded proof
+slices. Production Provider requests, installed-host certification and
+subscription authentication remain separate work.
 
 1. Bind the exact measured runtime lifetime and Session/Run/revision to an
    immutable endpoint identity. The prototype's numeric TGID and port are
@@ -106,8 +113,9 @@ The maintainer confirmed this BPF-LSM candidate and its proof gates on
 2026-09-18 in `codex/01a0b2b8-3e82-7b02-ab50-9b40601ac7da` ("ok i confirm").
 The follow-up tasks are `louiselm-qbr.5.1.3.6` (exact lifetime binding), `.3.7`
 (guard survival), `.3.8` (per-request admission) and `.3.9` (complete ACP proof).
-Production `louiselm-qbr.5.1.3.2` remains blocked on `.3.9` and independent
-authentication `.3.4`. The concurrent unresolved subscription-bridge proposal
+The complete-integration section records the later `.3.9` result; production
+`.3.2` still retains its own work and independent authentication `.3.4`. The
+concurrent unresolved subscription-bridge proposal
 is preserved as the `needs-design` question `louiselm-qbr.5.1.3.10`, blocking
 `.3.4`. This confirmation does not establish Verified protection or approve
 that authentication proposal. Vocabulary delta: No change.
@@ -155,13 +163,163 @@ debug-path differences can change a rebuilt object's hash. The source fixtures
 and this report preserve the experiment if the disposable cache is removed.
 After the experiments, the private VM was explicitly stopped; its unit reported
 `LoadState=not-found`, `ActiveState=inactive`, `SubState=dead`, `MainPID=0`.
+
+## Complete stock Codex ACP integration
+
+`louiselm-qbr.5.1.3.9`, 2026-09-21: **the bounded disposable integration
+passes**. This is an integration result, not installed-host certification,
+subscription authentication or a claim about the maintainer's program/account
+status.
+
+The real LouiseLM headless `Session` API launched this exact process chain:
+
+```text
+Neovim -> acp-proxy -> node codex-acp.js -> stock Codex 0.153.4
+```
+
+The fixture used the adapter's advertised `gpt-5.2` Model with a synthetic
+Responses endpoint. The gateway carried no headers, tokens or account
+credentials. The Session process tree inherited a private network namespace
+containing only `lo`, with no ambient route. It inherited a seccomp filter that
+returns `EPERM` for `io_uring_setup`, `io_uring_enter` and `io_uring_register`;
+stock Codex remained functional under that explicit refusal. The normal proof
+entry point never accepts an unsupported asynchronous-I/O path as a pass.
+
+### Measured identities and boundary
+
+| Input | SHA-256 |
+| --- | --- |
+| stock Codex 0.153.4 | `56ef98ab4032d317ab26e9b5e5a175650717351edb16ed9cde0cb6d1734d62da` |
+| Neovim | `cce0a9494c07dad5eef2fc2b10a81ca7bb447c142829c3a4767452fac74228d3` |
+| `acp-proxy` | `d1885d617c52169c92a124172bc160be413a11fa5478706f9e6e0dbcceff9e0a` |
+| Node | `b2959781cc5a74c357ffa02367efa8a0330cbb1c9cb347732fdfaaaca381cbcd` |
+| `codex-acp.js` | `3f2359fe5584c545eb6c0db688cf9805bde415cf531f986875adbb1060749bd8` |
+| SQLite CLI used by the adapter | `01e2610becea4b6e85b14e905a05ccfaf418f4b715f3c7641fc2fd5fc9df5da9` |
+| binding BPF object | `b95d70ff30f3447fe52f298d049cc1b0d2760e5e8ea88544382502cb72129ea2` |
+| lifecycle BPF object | `8af59fef7ca9e9931f627886f6dc2aaa4c13501fd5b306c03e03e938c899255f` |
+| integration BPF object | `e20efe51231c2205aad198845f300d3050af0adb893d97c4fbffb94f4809a146` |
+
+The guest was Debian 13 on x86-64 KVM, kernel
+`6.12.107+deb13-cloud-amd64`, with BPF LSM and BTF. Exact executable ancestry,
+adapter digest and every listed fixture digest are checked before enrollment.
+The supervisor freezes the measured app-server through its pidfd before adding
+task storage, then publishes the exact loopback listener binding.
+
+The first full-chain run exposed a real same-UID control bypass: a concurrent
+helper could attach to the enrolled app-server with `ptrace` and open
+`/proc/<pid>/mem`, even though its direct endpoint send was denied. That red
+result is recorded in `louiselm-qbr.5.1.3.9.1`. The binding guard now attaches
+an `lsm/ptrace_access_check` hook that preserves prior denials, permits
+same-process access and rejects every other task targeting an enrolled runtime.
+Acquiring lifecycle namespace references was consequently moved before owner
+enrollment. Removing that hook was the observed red case; restoring it produces
+the pass below. This closes cross-process control in the accepted boundary; it
+does not claim resistance to root/kernel compromise.
+
+### Exact composed matrix
+
+| Case | Result |
+| --- | --- |
+| Full measured ACP chain | Session ready; streaming prompt completed; real tool start/finish events observed; Session disposed |
+| Synthetic upstream | Exactly two `POST /v1/responses` requests; neither has `Authorization` |
+| Actual stock-Codex tool | `ptrace`, process-memory access, runtime descriptor access and direct endpoint send all denied |
+| Concurrent same-UID sibling while the runtime connection is live | The same four operations denied; runtime turn still completes |
+| Runtime exit and stale identity | All measured descendants gone; a later same-UID helper has no endpoint authority |
+| Exact sender binding | Updated `.3.6` matrix passes all seven send paths, threads, two Sessions, stale revisions, expiry, SCM_RIGHTS, exec, PID reuse, IPv4/IPv6 and namespace crossings |
+| Guard/lifecycle ownership | Updated `.3.7` normal, before-check, supervisor-exec/orderly-close and broker-crash variants pass with six protected links |
+| Buffered request composition | Ten deterministic `.3.8` cases pass; multiple/partial/queued frames, stale authority, expiry, cancellation and late callbacks never create an unreviewed effect |
+| `io_uring` | All three syscalls refused by inherited seccomp; the stock ACP turn remains functional |
+| Unsupported host/object/hook | Refused before listener construction; disposable component evidence still cannot certify an installed host |
+| ACP logs | 31 real proxy JSONL files retained normal logging; `Bearer ` and `Authorization` are absent |
+| Cleanup | Zero measured descendants remain; endpoint closes before the guard is released; lifecycle runs report no owned maps/processes after disposal |
+
+The actual tool runs as untrusted tool code selected through the stock Agent's
+normal tool-call path. Tool output can still influence a later Agent decision;
+that later request remains an Agent action and spends Agent authority. This is
+not prompt-injection immunity, and code executing inside the measured Agent
+runtime necessarily has that runtime's authority. The proven separation is
+that tools, adapters, helpers and replacement processes cannot acquire or steer
+that authority through descriptors, memory access, process control or inherited
+sockets.
+
+The integration uses LouiseLM's scoped auto-approval policy only for the named
+offline fixture command. It changes no installed Agent configuration,
+permission default, ordinary Session behavior or operator-selected YOLO choice.
+The existing conformance consumer accepted the new six-link lifecycle artifact
+only as incomplete disposable evidence and again refused to certify a host.
+
+### Reproduction, artifacts and limits
+
+Compile the three final objects on the host without loading them:
+
+```sh
+clang -target bpf -g -O2 -Wall -Werror \
+  -I /usr/include/x86_64-linux-gnu \
+  -c scripts/probes/codex-kernel-guard/binding.bpf.c \
+  -o /absolute/private/scratch/binding.bpf.o
+clang -target bpf -g -O2 -Wall -Werror \
+  -I /usr/include/x86_64-linux-gnu \
+  -c scripts/probes/codex-kernel-guard/lifecycle.bpf.c \
+  -o /absolute/private/scratch/lifecycle.bpf.o
+clang -target bpf -g -O2 -Wall -Werror \
+  -I /usr/include/x86_64-linux-gnu \
+  -c scripts/probes/codex-kernel-guard/integration.bpf.c \
+  -o /absolute/private/scratch/integration.bpf.o
+```
+
+Following `docs/launcher-vm.md`, use an independently owned restricted guest.
+Transfer the exact measured executables above, the Neovim runtime and repository
+`lua/` tree. Put `binding_probe.py`, `integration_probe.py`,
+`integration_tool.py`, the existing synthetic SSE fixture as
+`/var/tmp/endpoint_probe.py`, and `integration_driver.lua` in `/var/tmp`.
+Place the repository Lua tree at `/var/tmp/integration-louiselm`, executable
+fixtures under `/var/tmp/integration-fixture`, stock Codex at
+`/var/tmp/ow3ok-codex`, and the compiled object at the explicit path below.
+Then run inside the guest:
+
+```sh
+sudo -n python3 /var/tmp/integration_probe.py --disposable-vm \
+  /home/vm/integration.bpf.o
+```
+
+The only passing verdict is
+`STOCK_CODEX_ACP_GUARD_INTEGRATION_PASS_NOT_VERIFIED`. The structured result's
+SHA-256 is
+`9c19afb7e5d81639dadd71e9bdbcf1aba2271a82ab5e400227cc513e78fe14be`.
+Unexpected denial reasons, missing prerequisites, changed ancestry/digests,
+ambient interfaces/routes, sensitive log headers, leftover descendants or an
+incomplete Session all fail the run.
+
+Evidence cache: `/home/lotso/.cache/louiselm-acp-guard.70DbQS`; independent unit
+`louiselm-acp-guard-vm.service`, loopback SSH port 22560. The cache retains the
+three measured objects, `integration-result.json`, `ownership-result.json` and
+the private overlay; it contains no account credential. After final validation,
+the exact VM was stopped and reported `LoadState=not-found`,
+`ActiveState=inactive`, `SubState=dead`, `MainPID=0`, disposing its in-guest
+processes and loaded guard state while retaining the disk as recoverable
+evidence.
+
+Validation: strict Python compilation, Lua formatting, all three BPF objects
+with `-Wall -Werror`, the launcher-VM safety contract, the ten deterministic
+buffered-request tests, updated primitive/binding/stock/lifetime/ownership KVM
+probes, all four ownership variants, the installed-conformance refusal consumer
+and the complete integration passed. The request-boundary suite retains one
+ignored KVM-only `sendmmsg` driver whose equivalent prior `.3.8` artifact and
+updated seven-path binding matrix pass in this same measured kernel family.
+
+This bounded result does not supply production Provider TLS/pooling,
+destination policy, durable shared Run accounting, real subscription service
+authentication or installed maintainer acceptance. Those remain with `.3.2`,
+`.3.4` and the confirmed authentication design. A synthetic pass cannot satisfy
+them and does not require repeating program/account verification.
 The retained overlay is recoverable evidence, not an installed service.
 
 ## Protected-link lifetime investigation
 
 `louiselm-qbr.5.1.3.7`, 2026-09-21: **partial evidence, not lifecycle acceptance**.
 `scripts/probes/codex-kernel-guard/lifetime_probe.py` reuses the exact binding
-object and fixtures below. A separate loader pins all three links in a fresh,
+object and fixtures below. The final guard adds runtime-control protection, so
+a separate loader now pins all four links in a fresh,
 root-owned `0700` bpffs directory. The controller kills that loader with
 `SIGKILL` while retaining the synthetic endpoint and assigned-UID runtime.
 
@@ -210,7 +368,8 @@ The maintainer resolved `louiselm-mvatk` on 2026-09-21 in Session
 
 This confirms a design requirement, not implementation or lifecycle acceptance.
 The ownership continuation below supplies the bounded crash/teardown component;
-request-level admission remains `.3.8`, full ACP composition `.3.9`.
+request-level admission is supplied by `.3.8`; the complete ACP composition is
+supplied by `.3.9` above.
 
 Reproduce inside the independently owned restricted guest, with the binding
 object compiled as below and `guard_probe.py`, `binding_probe.py` and the new
@@ -254,7 +413,7 @@ counterexample remains runnable and still demonstrates its failure.
 ### Protected ownership and admission
 
 The endpoint owner creates a private mount namespace and private bpffs, loads
-all five hooks, pins them, then remounts that filesystem read-only. It reserves
+all six hooks, pins them, then remounts that filesystem read-only. It reserves
 the endpoint port before listening and publishes no runtime policy until
 explicit enablement. Missing BPF LSM/BTF, an invalid object or a missing required
 hook refuses before constructing that listener. The owner later drops to the
@@ -267,7 +426,7 @@ enrollment, owner-enrollment and loss-latch maps reject userspace deletion or
 rewriting. Freezing the reserved-port map matters: removing that entry would
 otherwise make the original hook treat the endpoint as an unrelated port.
 Policy/listener absence denies instead. Kernel hooks can still revoke frozen
-task storage and set the loss latch. All five explicit link-detach attempts
+task storage and set the loss latch. All six explicit link-detach attempts
 return `EOPNOTSUPP` on this measured kernel; unsupported behavior is not a pass.
 
 The fixture then closes **all** loader link/program descriptors while 200
@@ -321,7 +480,7 @@ requires a fresh launch, not recovery of this grant.
 | Runtime directly addresses synthetic upstream | Denied; only broker has that grant |
 | Revocation and exact-authority recovery | Old sockets closed; fresh listener succeeds; changed scope/deadline rejected |
 | Privileged unlink; frozen map cleanup/reset | `EROFS`; `EPERM` |
-| Explicit detach of each of five links | `EOPNOTSUPP` |
+| Explicit detach of each of six links | `EOPNOTSUPP` |
 | Unprivileged remount; all loader descriptors closed | Remount refused; 200 concurrent helper attempts denied; runtime positive control passes |
 | Supervisor death before request check | Buffered request refused; no upstream effect |
 | Supervisor death/exec after check, before upstream write | Kernel denies final write; no upstream effect or grant restoration |
@@ -351,8 +510,8 @@ consumer gates, not proof that the Python fixture has been installed in them.
 Stock Codex remains unsupported by the installed deterministic-test integration;
 this work changes no Agent permissions or operator-selected auto-approval.
 
-`.3.9` must compose this ownership and final-write boundary with the real
-supervisor, broker and complete ACP chain. In particular it must preserve the
+The `.3.9` integration above composes this ownership and final-write boundary
+with the complete ACP chain. Production `.3.2` must preserve the
 namespace reference for every endpoint/connection owner, freeze enrollment only
 after the exact measured runtime and broker are registered, obtain the
 post-enrollment authenticated owner response before enablement, bind measured
@@ -541,8 +700,8 @@ the lifecycle component above; `.3.8` owns
 per-request admission, queued bytes, revision races and budget. A send authorized
 before policy replacement can already be in flight, and multiple requests can
 share that send. The broker must validate each request again before effects.
-`.3.9` must integrate the real supervisor/broker and full ACP chain, preserve
-process-memory isolation, and cover asynchronous I/O/`io_uring`. `.3.4` retains
+The `.3.9` section above integrates the full ACP chain, preserves
+process-memory isolation, and explicitly refuses `io_uring`. `.3.4` retains
 the independent supported subscription-authentication proof. No production
 cutover, new dependency, real sign-in or installed Verified claim follows from
 these results.
@@ -564,8 +723,9 @@ lengths, transfer encoding, absolute/alternative targets, query parameters,
 unreviewed operations, different Models and redirect requests are refused.
 The fixture bounds headers and bodies to 4 KiB each and buffered bytes to
 16 KiB. It does not claim compatibility with every stock Codex request field,
-compression, chunking, HTTP/2 or WebSockets. The complete ACP task `.3.9` must
-supply observed runtime fixtures before broadening that reviewed operation.
+compression, chunking, HTTP/2 or WebSockets. The complete ACP task `.3.9`
+supplies observed stock-runtime requests above; production must review those
+fields before broadening the accepted operation.
 
 ### Ownership and race boundary
 
@@ -591,9 +751,9 @@ The sender-enrollment observation, supervisor mechanics, clock and reservation
 counter are explicit doubles. This does not implement a second durable Run
 budget or prove atomicity of a real Provider write. `.3.2` must substitute its
 shared durable reservation transaction and recheck time/identity after storage
-I/O, at the actual upstream start. `.3.9` must integrate the per-Session endpoint
-binding from `.3.6`, guard/lifecycle ownership from `.3.7`, real control/timer
-delivery and actual transport cancellation. A queued request never gains
+I/O, at the actual upstream start. The `.3.9` experiment above composes the per-Session
+endpoint binding from `.3.6`, guard/lifecycle ownership from `.3.7`, real ACP
+transport disposal and the request-boundary gates. A queued request never gains
 authority merely because its bytes arrived before a control change.
 
 ### Observed matrix
@@ -651,8 +811,9 @@ Evidence cache: `/home/lotso/.cache/louiselm-request-proof.tTNANq`; private unit
 `6.12.107+deb13-cloud-amd64`. The private disk copies retained the wrapper's
 restricted networking, resource limits and deadline; no host mounts or desktop
 privileged changes were used. Production transport, durable shared-budget
-recovery, real subscription authentication and full ACP/Verified acceptance
-remain with `.3.2`, `.3.4` and `.3.9`.
+recovery, real subscription authentication and installed ACP/Verified
+acceptance remain with `.3.2` and `.3.4`; `.3.9` supplies only the synthetic
+composition recorded above.
 
 Validation: 10 deterministic request-proof cases passed; the opt-in request
 probe and all four existing primitive/binding/stock probes passed in KVM.

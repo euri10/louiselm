@@ -197,6 +197,13 @@ def owner():
     elif fault == "hook":
         object_path = str(Path(object_path).with_name("binding.bpf.o"))
     mount("-t", "bpf", "-o", "mode=0700", "bpf", "/sys/fs/bpf")
+    if fault is None:
+        # Retain the protection namespace before this process enrolls itself.
+        # The runtime-protection hook intentionally rejects new cross-process
+        # /proc handles after enrollment.
+        print(json.dumps({"namespace_ready": os.getpid()}), flush=True)
+        assert json.loads(sys.stdin.readline()) == "namespace-attached"
+        print(json.dumps({"attached": True}), flush=True)
     guard = LifecycleGuard(object_path)
     api(guard.lib)
     endpoint = None
@@ -359,10 +366,13 @@ def main():
         controller = subprocess.Popen(
             [sys.executable, __file__, "--owner", sys.argv[2], str(task_fd), str(supervisor_fd), str(upstream_fd)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, pass_fds=(task_fd, supervisor_fd, upstream_fd))
+        namespace_ready = receive(controller)
+        assert namespace_ready["namespace_ready"] == controller.pid
+        namespace = os.open(f"/proc/{controller.pid}/ns/mnt", os.O_RDONLY)
+        assert request(controller, "namespace-attached")["attached"]
         ready = receive(controller)
         # The synthetic upstream also keeps the protection namespace alive
         # until its own listener/connections stop; no endpoint outlives its pins.
-        namespace = os.open(f"/proc/{controller.pid}/ns/mnt", os.O_RDONLY)
         # An exit before enrollment must not be missed and later authorized.
         # Require an actual owner response AFTER its task-storage registration
         # and hooks exist. Death after this response hits the installed latch.
@@ -396,7 +406,7 @@ def main():
         assert request(controller, "unlink")["errno"] == errno.EROFS
         report["privileged_cleanup"] = "unlink denied EROFS"
         assert request(controller, "map-cleanup")["protected"]
-        report["map_and_link_cleanup"] = "frozen identity/reservation/loss maps reject deletion; all five links reject explicit detach"
+        report["map_and_link_cleanup"] = "frozen identity/reservation/loss maps reject deletion; all six links reject explicit detach"
         assert request(controller, "drop-privileges")["remount_denied"]
         report["unprivileged_owner"] = "cannot remount guard pins writable"
         started = threading.Event()

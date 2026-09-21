@@ -78,6 +78,23 @@ int invalidate_exec(__u64 *ctx)
     return 0;
 }
 
+/* A same-UID adapter/helper must not rewrite the enrolled sender and make the
+ * authorized process perform its effect. Enrollment happens only after the
+ * supervisor's measurement, so no supported lifecycle needs cross-task ptrace
+ * access to a protected runtime. Self inspection remains available. */
+SEC("lsm/ptrace_access_check")
+int protect_runtime(__u64 *ctx)
+{
+    int previous = (int)ctx[2];
+    if (previous)
+        return previous;
+    struct task_struct *target = (void *)ctx[0];
+    struct grant *grant = task_get(&tasks, target->group_leader, 0, 0);
+    if (!grant)
+        return 0;
+    return current()->group_leader == target->group_leader ? 0 : -1;
+}
+
 /* A fresh listener at the same address never resurrects the old cookie. */
 SEC("fentry/inet_csk_listen_stop")
 int invalidate_listener(__u64 *ctx)

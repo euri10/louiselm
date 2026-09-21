@@ -87,7 +87,7 @@ def main():
         assert owner.wait(5) == -signal.SIGKILL
         assert request(sender, {"op": "send"})["accepted"]
         assert not request(sender, {"op": "fork"})["accepted"]
-        report["loader_sigkill"] = "pins retain all three links and their maps; helper EPERM"
+        report["loader_sigkill"] = "pins retain all four links and their maps; helper EPERM"
         report["authority_after_loader_death"] = "existing runtime grant remains valid until its deadline; no automatic revocation"
 
         # A Session cannot traverse the root-owned 0700 pin directory.
