@@ -9,7 +9,7 @@ local nvim = vim
 ---@field cwd? string Working directory for the agent process.
 ---@field env? table<string, string> Per-Session process environment overrides.
 ---@field on_notification? fun(message: louiselm.acp.JsonRpcNotification) Called for agent notifications.
----@field on_request? fun(message: louiselm.acp.JsonRpcRequest, respond: fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?) Called for agent requests.
+---@field on_request? fun(message: louiselm.acp.JsonRpcRequest, respond: fun(result: unknown, error?: louiselm.acp.JsonRpcError): boolean, string?) Owns agent responses when set; otherwise requests receive -32601 and send failures reach on_error.
 ---@field on_error? fun(message: string) Called for transport or protocol errors.
 ---@field on_stderr? fun(message: string) Called for agent stderr chunks.
 ---@field on_exit? fun(result: louiselm.agent.ProcessResult) Called once after process exit.
@@ -54,13 +54,18 @@ local function receive_message(client, message)
     if message.id ~= nil then
       ---@cast message louiselm.acp.JsonRpcRequest
       local on_request = client.options.on_request
-      if on_request ~= nil then
-        dispatch(function()
+      dispatch(function()
+        if on_request ~= nil then
           on_request(message, function(result, rpc_error)
             return client:respond(message.id, result, rpc_error)
           end)
-        end)
-      end
+        else
+          local sent, send_error = client:respond(message.id, nil, { code = -32601, message = "Method not found" })
+          if not sent and client.options.on_error ~= nil then
+            client.options.on_error(send_error or "could not respond to unsupported ACP request")
+          end
+        end
+      end)
       return
     end
     ---@cast message louiselm.acp.JsonRpcNotification

@@ -290,4 +290,71 @@ T["connect"]["defers agent callbacks from fast events"] = function()
   client:close()
 end
 
+T["connect"]["rejects unhandled requests from a real peer outside fast events"] = function()
+  local root = nvim.fn.getcwd()
+  local errors, responses, notifications = {}, {}, {}
+  local client = assert(Acp.connect({
+    provider = "test-service",
+    command = nvim.v.progpath,
+    args = {
+      "--headless",
+      "--noplugin",
+      "-u",
+      root .. "/tests/mock/init.lua",
+      "-c",
+      "lua require('louiselm.dev.mock_agent').run({ mode = 'permission' })",
+    },
+  }, {
+    on_error = function(message)
+      errors[#errors + 1] = message
+    end,
+    on_notification = function(message)
+      notifications[#notifications + 1] = message
+    end,
+  }))
+  MiniTest.finally(function()
+    assert(client:close())
+  end)
+  local respond = client.respond
+  client.respond = function(self, id, result, rpc_error)
+    responses[#responses + 1] = { id = id, error = rpc_error, fast = nvim.in_fast_event() }
+    return respond(self, id, result, rpc_error)
+  end
+
+  assert(client:initialize())
+  assert(
+    nvim.wait(3000, function()
+      return client.initialized
+    end, 10),
+    "mock did not initialize"
+  )
+  local session_id
+  assert(client:new_session({ cwd = root, mcpServers = {} }, function(result)
+    session_id = result.sessionId
+  end))
+  assert(
+    nvim.wait(3000, function()
+      return session_id ~= nil
+    end, 10),
+    "mock did not create a Session"
+  )
+  local completed
+  assert(client:prompt({ sessionId = session_id, prompt = { { type = "text", text = "test" } } }, function(result)
+    completed = result
+  end))
+  assert(
+    nvim.wait(3000, function()
+      return completed ~= nil
+    end, 10),
+    "unhandled reverse request left the mock waiting"
+  )
+
+  MiniTest.expect.equality(responses, {
+    { id = 1001, error = { code = -32601, message = "Method not found" }, fast = false },
+  })
+  MiniTest.expect.equality(completed.stopReason, "end_turn")
+  MiniTest.expect.equality(#notifications > 0, true)
+  MiniTest.expect.equality(errors, {})
+end
+
 return T

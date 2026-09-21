@@ -136,7 +136,9 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
 ## Features
 
 - **Chat in Neovim.** Stream replies, reasoning when supplied, tool activity,
-  context usage, and cost or account limits when the Agent reports them.
+  context usage, and cost when the Agent reports them. Account limits are
+  adapter-dependent: stock adapters generally do not advertise the required
+  extension. See [Account limits support](#agents-and-adapters).
   Agents supporting experimental ACP compaction updates also provide timeline
   status and optional retained summaries; inspect a compaction row with
   `:LouiselmInspectTool`. Support depends on protocol events, not Agent names.
@@ -188,8 +190,10 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   lifecycle, permission policies, and typed events are available without the
   chat buffer.
 
-The chat winbar shows turn state, a useful Session name, Agent, reported account
-limits, and current Model and effort while you scroll:
+The chat winbar shows turn state, a useful Session name, Agent, and current
+Model and effort while you scroll. The example below includes Account limits
+from an adapter advertising the extension; the stock Codex quickstart does not
+provide the `limits` field:
 
 ```text
 Your turn · Review · codex · limits 98%/7d ↻7d · GPT-6 e=high +2 · ctx 53%
@@ -261,6 +265,18 @@ Session. Capabilities and authentication still depend on each Agent.
 The table links to each upstream installation source. LouiseLM gives stdio ACP
 commands the same `command`, `args`, and `env` configuration shape; that does
 not imply identical capabilities across Agents.
+
+Account limits require the [accountLimits v1 ACP extension](docs/account-limits.md).
+The maintainer's patched Codex and Claude adapters emit it; the stock adapters
+linked above do not provide those patches. The
+[Codex fork](https://github.com/euri10/codex-acp/tree/feat/account-limits) and
+[Claude fork](https://github.com/euri10/claude-agent-acp/tree/feat/account-limits)
+are unsupported reference implementations, with no compatibility promise or
+supported distribution. A separate local Copilot adapter also emits the
+extension but is not published; it is not the stock Copilot CLI listed above.
+OpenCode does not emit it, and Account limits support has not been established
+for the listed DeepSeek or Antigravity entrypoints. Without the extension,
+LouiseLM reports Account limits as unsupported; ordinary chat remains available.
 
 ## Optional components
 
