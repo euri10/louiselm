@@ -114,7 +114,7 @@ impl Receiver {
         let router = if self.state.attention.is_some() {
             router
                 .route("/v1/attention", get(attention))
-                .route("/v1/attention/token", put(register_token))
+                .route("/v1/attention/installation", put(register_installation))
         } else {
             router
         };
@@ -156,14 +156,14 @@ async fn attention(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct NotificationTokenRequest {
-    token: String,
+struct NotificationInstallationRequest {
+    fid: String,
 }
 
-async fn register_token(
+async fn register_installation(
     State(state): State<ReceiverState>,
     headers: HeaderMap,
-    request: Result<Json<NotificationTokenRequest>, axum::extract::rejection::JsonRejection>,
+    request: Result<Json<NotificationInstallationRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let credential = required_header(&headers, header::AUTHORIZATION.as_str())?
         .strip_prefix("Bearer ")
@@ -174,7 +174,7 @@ async fn register_token(
     tokio::task::spawn_blocking(move || {
         state
             .pairing
-            .register_notification_token(&credential, &request.token)
+            .register_notification_installation(&credential, &request.fid)
     })
     .await
     .map_err(|_| ApiError::internal("notification registration is unavailable"))?

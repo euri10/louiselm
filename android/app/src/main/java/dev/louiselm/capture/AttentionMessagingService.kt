@@ -1,6 +1,7 @@
 package dev.louiselm.capture
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -17,14 +18,14 @@ internal const val ATTENTION_CHANNEL = "louiselm-attention"
 internal const val ATTENTION_INBOX_ACTION = "dev.louiselm.capture.ATTENTION_INBOX"
 
 /** Firebase callbacks run off the main thread. Network work belongs to WorkManager, not this service. */
+@SuppressLint("MissingFirebaseInstanceTokenRefresh") // FID mode uses onRegistered; lint still requires deprecated onNewToken.
 class AttentionMessagingService : FirebaseMessagingService() {
-    @Suppress("OVERRIDE_DEPRECATION") // Paired receiver still addresses supported FCM tokens, not Installation IDs.
-    override fun onNewToken(token: String) {
-        // The worker obtains the current SDK token; never persist/log a possibly superseded callback token.
+    override fun onRegistered(installationId: String) {
+        if (!validAttentionInstallation(installationId)) return
         try {
-            AttentionWorker.enqueue(applicationContext)
+            AttentionWorker.enqueue(applicationContext, registeredFid = installationId)
         } catch (_: IOException) {
-            // Durable state was not readable; opening the app retries registration. No token is acknowledged.
+            // Durable state was not readable; opening the app retries registration.
         }
     }
 

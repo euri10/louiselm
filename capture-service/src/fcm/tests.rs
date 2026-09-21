@@ -109,7 +109,7 @@ fn exact_oauth_and_fcm_requests_use_verified_assertions_and_short_lived_tokens()
             assert_eq!(
                 body,
                 json!({"message": {
-                    "token": "device-token",
+                    "fid": "c123456789012345678901",
                     "data": {"generation": "42"},
                     "android": {"collapse_key": "louiselm-attention", "priority": "high"}
                 }})
@@ -118,13 +118,18 @@ fn exact_oauth_and_fcm_requests_use_verified_assertions_and_short_lived_tokens()
         }
     };
     sender
-        .send_with("device-token", 42, now, &mut transport)
+        .send_with("c123456789012345678901", 42, now, &mut transport)
         .unwrap();
     sender
-        .send_with("device-token", 42, now + 1_000, &mut transport)
+        .send_with("c123456789012345678901", 42, now + 1_000, &mut transport)
         .unwrap();
     sender
-        .send_with("device-token", 42, now + 3_550_000, &mut transport)
+        .send_with(
+            "c123456789012345678901",
+            42,
+            now + 3_550_000,
+            &mut transport,
+        )
         .unwrap();
     assert_eq!(
         calls.iter().filter(|url| url.as_str() == TOKEN_URL).count(),
@@ -177,7 +182,7 @@ fn failure_classes_use_typed_fcm_details_and_honor_retry_after() {
     );
     assert_eq!(
         check_reply(&invalid, now, false),
-        Err(NotificationFailure::InvalidToken)
+        Err(NotificationFailure::InvalidInstallation)
     );
     assert_eq!(
         check_reply(&reply(StatusCode::NOT_FOUND, &json!({})), now, false),

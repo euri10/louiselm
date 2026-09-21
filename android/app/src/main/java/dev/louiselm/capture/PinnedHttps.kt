@@ -108,11 +108,10 @@ internal object PinnedHttps {
         AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox")
     }
 
-    /** Register only through the paired receiver; the token never carries inbox content. */
-    fun registerAttentionToken(config: PairingConfig, token: String): UploadAttempt = try {
-        require(token.length in 1..4096 && token.all { it.code in 33..126 }) { "invalid notification token" }
-        val body = JSONObject().put("token", token).toString().toByteArray(Charsets.UTF_8)
-        val connection = connection("${config.receiverUrl}/v1/attention/token", config.receiverIdentitySha256).apply {
+    /** Register only through the paired receiver; the FID never carries inbox content. */
+    fun registerAttentionInstallation(config: PairingConfig, fid: String): UploadAttempt = try {
+        val body = attentionInstallationBody(fid)
+        val connection = connection("${config.receiverUrl}/v1/attention/installation", config.receiverIdentitySha256).apply {
             requestMethod = "PUT"
             readTimeout = CONNECT_TIMEOUT_MS
             doOutput = true
@@ -141,7 +140,7 @@ internal object PinnedHttps {
     } catch (_: SecurityException) {
         UploadAttempt.OperatorAction("receiver security configuration is invalid")
     } catch (_: IllegalArgumentException) {
-        UploadAttempt.OperatorAction("notification token is invalid")
+        UploadAttempt.OperatorAction("notification installation ID is invalid")
     }
 
     fun pair(offer: PairingOffer, deviceName: String): PairingConfig {

@@ -8,6 +8,16 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
 
+/** Firebase Installations uses 22 URL-safe base64 characters; reject tokens and malformed IDs. */
+internal fun validAttentionInstallation(fid: String): Boolean =
+    fid.length == 22 && fid.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '_' || it == '-' }
+
+/** Exact authenticated receiver wire body; no callback metadata or inbox content. */
+internal fun attentionInstallationBody(fid: String): ByteArray {
+    require(validAttentionInstallation(fid)) { "invalid notification installation ID" }
+    return JSONObject().put("fid", fid).toString().toByteArray(Charsets.UTF_8)
+}
+
 /** App-private, pairing-scoped push state. Call on a background thread.
  * Shared preferences serialize short state transitions; no network or presentation runs under its lock.
  * A failed durable write throws IOException and must not be acknowledged as delivered/seen.
@@ -49,14 +59,14 @@ internal class AttentionState(
         persist(preferences.edit().putBoolean("blocked", true))
         true
     }
-    fun tokenPrepared(expected: String): Boolean = update(expected) { putBoolean("prepared", true) }
-    fun needsTokenReset(expected: String): Boolean = synchronized(preferences) {
-        owner() == expected && !preferences.getBoolean("prepared", false)
+    fun installationPrepared(expected: String): Boolean = update(expected) { putBoolean("installation_prepared", true) }
+    fun needsInstallationReset(expected: String): Boolean = synchronized(preferences) {
+        owner() == expected && !preferences.getBoolean("installation_prepared", false)
     }
 
-    fun registered(expected: String): Boolean = update(expected) { putBoolean("registered", true) }
+    fun registered(expected: String): Boolean = update(expected) { putBoolean("installation_registered", true) }
     fun readyOwner(): String? = synchronized(preferences) {
-        owner()?.takeIf { preferences.getBoolean("registered", false) }
+        owner()?.takeIf { preferences.getBoolean("installation_registered", false) }
     }
 
     fun seen(expected: String, generation: Long): Boolean = synchronized(preferences) {

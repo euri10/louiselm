@@ -151,13 +151,14 @@ required for registration and inbox details.
    and refresh **Attention inbox** over the existing pinned HTTPS connection.
 
 Firebase auto-registration is initially off. Only a successful in-app opt-in and
-paired token registration enable SDK token maintenance. A token refresh updates
-that paired device via authenticated `PUT /v1/attention/token`; pairing changes
-rotate the token and discard old generation/cache state. WorkManager performs
+paired installation registration enable SDK background maintenance. A registration refresh updates
+that paired device via authenticated `PUT /v1/attention/installation` with `{"fid":"..."}`; pairing changes
+unregister messaging, delete the old Firebase Installation ID (FID), and discard old generation/cache state. WorkManager performs
 network-constrained, backoff-based registration and inbox retries, not polling.
 Revoked or rejected pairing stops background registration/fetch until pairing is
 repaired. Credentials remain Keystore-owned; work requests carry only an opaque
-pairing revision. Cached inbox data and seen/notified generations are app-private
+pairing revision and, for SDK callbacks, the FID to compare with the current installation.
+Cached inbox data and seen/notified generations are app-private
 and scoped to that pairing. Background fetching does not mark anything seen.
 
 The sender uses high-priority, collapsible **data-only** FCM messages with exactly
@@ -167,11 +168,16 @@ app rejects malformed, duplicate, older, and already-seen wake-ups. It never
 puts Session/Run IDs, remote display text, or inbox content into notifications.
 Do not use Firebase Console notification campaigns as this protocol's test.
 
-The pinned SDK still supports the receiver's token-addressed protocol, although
-Google now deprecates those client APIs in favor of Firebase Installation IDs.
-Client and sender must migrate together; the narrow API suppressions document
-this existing wire boundary, not an additional compatibility layer. See the
-[Firebase token API reference](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessaging).
+The manifest enables FID mode. The worker uses `register()`/`unregister()` and
+`onRegistered()`; callback work for the exact current FID skips `register()` to
+avoid a callback/work loop. A stale callback cannot supply the receiver address:
+the worker reads it from Firebase Installations and checks it again after registration.
+See the [Firebase registration API](https://firebase.google.com/docs/reference/android/com/google/firebase/messaging/FirebaseMessaging).
+
+Update receiver and APK together. The receiver retires stored token addresses while
+preserving pairings and confirmed generations. On the first enabled refresh after
+the APK update, Android rotates the old installation and registers the new FID.
+No re-pairing or capture deletion is needed; push pauses until this registration succeeds.
 
 FCM is best-effort: OS battery policy, connectivity, and force-stop can delay or
 prevent delivery. Reopen after force-stop. Neither local gates nor an FCM
@@ -180,10 +186,15 @@ in `louiselm-qbr.9.9`.
 
 ## Physical acceptance checklist
 
+- FID upgrade (`louiselm-qbr.9.23`): record the APK and receiver builds, upgrade
+  both without clearing app data, then reopen/refresh an opted-in pairing.
+  Confirm the pairing and one recorded capture UUID survive, push resumes for
+  a new generation, and an already-confirmed generation produces no reminder.
+  Record actual phone delivery separately from the receiver's submission status.
 - Notifications: record the configured APK/package/build and paired test device.
   Deny notification permission first: capture and manual inbox access must remain
-  usable. Grant it and enable notifications; confirm receiver token registration
-  without logging the token. On API 28 verify the notification channel can also
+  usable. Grant it and enable notifications; confirm receiver installation registration
+  without logging the FID. On API 28 verify the notification channel can also
   be disabled without breaking capture.
 - Trigger a new eligible Attention generation with the app backgrounded. Verify
   only the fixed generic copy; tap to fetch the matching private inbox. Repeat

@@ -14,6 +14,17 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28, 34])
 class AttentionStateTest {
     @Test
+    fun tokenModeStateCannotAuthorizeInstallationModeNotifications() {
+        val context = RuntimeEnvironment.getApplication()
+        context.getSharedPreferences("attention-push", android.content.Context.MODE_PRIVATE).edit()
+            .putString("owner", "pair").putBoolean("enabled", true)
+            .putBoolean("prepared", true).putBoolean("registered", true).commit()
+        val state = AttentionState(context) { "pair" }
+        assertTrue(state.needsInstallationReset("pair"))
+        assertNull(state.readyOwner())
+    }
+
+    @Test
     fun viewingInboxBeforeOptInStillSuppressesAlreadySeenGeneration() {
         val state = AttentionState(RuntimeEnvironment.getApplication()) { "pair" }
         assertTrue(state.seen("pair", 6))
@@ -52,9 +63,9 @@ class AttentionStateTest {
         assertFalse(restarted.deliver("first", 7) { error("old pairing") })
         assertEquals("replacement", restarted.owner())
         assertTrue(restarted.deliver("replacement", 1) { true })
-        assertFalse(restarted.tokenPrepared("first"))
-        assertTrue(restarted.tokenPrepared("replacement"))
-        assertFalse(restarted.needsTokenReset("replacement"))
+        assertFalse(restarted.installationPrepared("first"))
+        assertTrue(restarted.installationPrepared("replacement"))
+        assertFalse(restarted.needsInstallationReset("replacement"))
         assertTrue(restarted.block("replacement"))
         assertNull(restarted.owner())
         assertFalse(restarted.deliver("replacement", 2) { error("revoked pairing") })

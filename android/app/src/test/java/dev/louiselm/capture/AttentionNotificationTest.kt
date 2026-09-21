@@ -23,20 +23,23 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.util.concurrent.PausedExecutorService
 import org.robolectric.annotation.Config
 import org.robolectric.util.ReflectionHelpers
+import java.util.concurrent.Executors
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28, 34, 37], qualifiers = "en")
 class AttentionNotificationTest {
     private lateinit var workExecutor: PausedExecutorService
+    private lateinit var taskExecutor: PausedExecutorService
 
     @Before
     fun setUp() {
         // Configured FCM wakeups enqueue real work. Keep it paused so this
         // notification fixture never performs token lookup or receiver I/O.
         workExecutor = PausedExecutorService()
+        taskExecutor = PausedExecutorService()
         WorkManager.initialize(RuntimeEnvironment.getApplication(), Configuration.Builder()
             .setExecutor(workExecutor)
-            .setTaskExecutor(workExecutor)
+            .setTaskExecutor(taskExecutor)
             .build())
     }
 
@@ -44,11 +47,49 @@ class AttentionNotificationTest {
     @SuppressLint("RestrictedApi") // Fixture owns WorkManager's database and singleton lifetime.
     fun tearDown() {
         if (::workExecutor.isInitialized) workExecutor.shutdownNow()
+        if (::taskExecutor.isInitialized) taskExecutor.shutdownNow()
         if (WorkManagerImpl.isInitialized()) {
             WorkManagerImpl.getInstance(RuntimeEnvironment.getApplication()).closeDatabase()
         }
         WorkManagerImpl.setDelegate(null)
         ReflectionHelpers.setStaticField(WorkManagerImpl::class.java, "sDefaultInstance", null)
+    }
+
+    @Test
+    @SuppressLint("RestrictedApi") // Inspect real queued work without executing Firebase or receiver I/O.
+    fun registeredCallbackQueuesWorkOnlyAfterOptIn() {
+        val context = RuntimeEnvironment.getApplication()
+        val manager = WorkManagerImpl.getInstance(context)
+        val controller = Robolectric.buildService(AttentionMessagingService::class.java).create()
+        val callbacks = Executors.newSingleThreadExecutor()
+        val fid = "c123456789012345678901"
+        fun registered(value: String) = callbacks.submit { controller.get().onRegistered(value) }.get()
+        fun queued(): List<androidx.work.WorkInfo> {
+            val result = manager.getWorkInfosForUniqueWork(AttentionWorker.UNIQUE_WORK)
+            taskExecutor.runAll()
+            return result.get()
+        }
+        try {
+            registered(fid)
+            assertTrue(queued().isEmpty())
+            context.getSharedPreferences("pairing-v2", Context.MODE_PRIVATE).edit().putString("ciphertext", "fixture").commit()
+            registered(fid)
+            assertTrue(queued().isEmpty())
+            val state = AttentionState(context)
+            state.enable()
+            registered("malformed")
+            assertTrue(queued().isEmpty())
+            registered(fid)
+            val work = queued()
+            if (BuildConfig.FIREBASE_ENABLED) {
+                assertEquals(1, work.size)
+            } else {
+                assertTrue(work.isEmpty())
+            }
+        } finally {
+            callbacks.shutdownNow()
+            controller.destroy()
+        }
     }
 
     @Test

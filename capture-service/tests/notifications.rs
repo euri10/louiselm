@@ -46,7 +46,7 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
     .unwrap()
     .router();
     let request = |credential: &str, body: serde_json::Value| {
-        Request::put("/v1/attention/token")
+        Request::put("/v1/attention/installation")
             .header("authorization", format!("Bearer {credential}"))
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
@@ -54,7 +54,10 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
     };
     let response = app
         .clone()
-        .oneshot(request(&device.credential, json!({"token": "phone-token"})))
+        .oneshot(request(
+            &device.credential,
+            json!({"fid": "cphonetoken00000000000"}),
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -65,11 +68,15 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
             .is_empty()
     );
     for body in [
-        json!({"token": ""}),
-        json!({"token": "contains whitespace"}),
-        json!({"token": "x".repeat(4097)}),
-        json!({"token": "x".repeat(9000)}),
-        json!({"token": "phone-token", "device_id": other.device_id}),
+        json!({"token": "old-fcm-token"}),
+        json!({"fid": ""}),
+        json!({"fid": "x".repeat(21)}),
+        json!({"fid": "x".repeat(23)}),
+        json!({"fid": "!".repeat(22)}),
+        json!({"fid": "contains whitespace"}),
+        json!({"fid": "x".repeat(4097)}),
+        json!({"fid": "x".repeat(9000)}),
+        json!({"fid": "cphonetoken00000000000", "device_id": other.device_id}),
     ] {
         let response = app
             .clone()
@@ -78,14 +85,14 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
             .unwrap();
         assert!(response.status().is_client_error());
         let bytes = to_bytes(response.into_body(), 8192).await.unwrap();
-        assert!(!String::from_utf8_lossy(&bytes).contains("phone-token"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("cphonetoken00000000000"));
     }
     registry.revoke(&device.device_id).unwrap();
     let response = app
         .clone()
         .oneshot(request(
             &device.credential,
-            json!({"token": "rotated-token"}),
+            json!({"fid": "crotatedtoken000000000"}),
         ))
         .await
         .unwrap();
@@ -101,8 +108,8 @@ async fn token_registration_is_authenticated_bounded_and_revocable() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let persisted = std::fs::read_to_string(root.path().join("pairing/pairing.json")).unwrap();
-    assert!(!persisted.contains("phone-token"));
-    assert!(!persisted.contains("rotated-token"));
+    assert!(!persisted.contains("cphonetoken00000000000"));
+    assert!(!persisted.contains("crotatedtoken000000000"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -123,7 +130,7 @@ fn interrupted_submission_keeps_a_durable_delay_and_retries_only_latest_state() 
     let registry = PairingRegistry::open(root.path()).unwrap();
     let device = pair(&registry, "phone");
     registry
-        .register_notification_token(&device.credential, "phone-token")
+        .register_notification_installation(&device.credential, "cphonetoken00000000000")
         .unwrap();
     registry
         .configure_notifications(NotificationHealth::Ready)
@@ -162,7 +169,7 @@ fn revocation_waits_for_current_submission_and_removes_all_future_authority() {
     let registry = Arc::new(PairingRegistry::open(root.path()).unwrap());
     let device = pair(&registry, "phone");
     registry
-        .register_notification_token(&device.credential, "phone-token")
+        .register_notification_installation(&device.credential, "cphonetoken00000000000")
         .unwrap();
     registry
         .configure_notifications(NotificationHealth::Ready)
@@ -209,7 +216,7 @@ fn revocation_waits_for_current_submission_and_removes_all_future_authority() {
         .unwrap();
     assert!(
         registry
-            .register_notification_token(&device.credential, "new-token")
+            .register_notification_installation(&device.credential, "cnewtoken0000000000000")
             .is_err()
     );
     assert!(registry.notification_status().unwrap().devices.is_empty());
@@ -221,12 +228,12 @@ fn malformed_persisted_registration_is_rejected_without_exposing_its_token() {
     let registry = PairingRegistry::open(root.path()).unwrap();
     let device = pair(&registry, "phone");
     registry
-        .register_notification_token(&device.credential, "valid-token")
+        .register_notification_installation(&device.credential, "cvalidtoken00000000000")
         .unwrap();
     let path = root.path().join("pairing.json");
     let mut state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    state["devices"][0]["notification"]["token"] = "bad secret token".into();
+    state["devices"][0]["notification"]["fid"] = "bad secret token".into();
     std::fs::write(&path, state.to_string()).unwrap();
     match PairingRegistry::open(root.path()) {
         Ok(_) => panic!("malformed stored token accepted"),
@@ -240,7 +247,7 @@ fn cli_status_and_explicit_retry_expose_only_safe_delivery_state() {
     let registry = PairingRegistry::open(root.path().join("louiselm/capture/pairing")).unwrap();
     let device = pair(&registry, "phone");
     registry
-        .register_notification_token(&device.credential, "private-token")
+        .register_notification_installation(&device.credential, "cprivatetoken000000000")
         .unwrap();
     let command = |argument: &str| {
         std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
@@ -261,7 +268,7 @@ fn cli_status_and_explicit_retry_expose_only_safe_delivery_state() {
     let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["notifications"]["schema_version"], 1);
     assert_eq!(status["notifications"]["health"], "configuration_error");
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("private-token"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("cprivatetoken000000000"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains(&device.credential));
     assert!(command("retry-notifications").status.success());
     assert_eq!(
@@ -278,7 +285,7 @@ fn each_device_refreshes_generation_and_observes_clears_before_submission() {
     for name in ["phone", "tablet"] {
         let device = pair(&registry, name);
         registry
-            .register_notification_token(&device.credential, name)
+            .register_notification_installation(&device.credential, &format!("{name:0<22}"))
             .unwrap();
     }
     registry
@@ -321,10 +328,10 @@ fn delivery_survives_restart_collapses_pending_generations_and_does_not_remind()
     let phone = pair(&registry, "phone");
     let tablet = pair(&registry, "tablet");
     registry
-        .register_notification_token(&phone.credential, "phone-token")
+        .register_notification_installation(&phone.credential, "cphonetoken00000000000")
         .unwrap();
     registry
-        .register_notification_token(&tablet.credential, "tablet-token")
+        .register_notification_installation(&tablet.credential, "ctablettoken0000000000")
         .unwrap();
     assert_eq!(
         registry
@@ -342,7 +349,7 @@ fn delivery_survives_restart_collapses_pending_generations_and_does_not_remind()
             3_000,
             |token, generation| {
                 sent.push((token.to_owned(), generation));
-                if token == "tablet-token" {
+                if token == "ctablettoken0000000000" {
                     Err(NotificationFailure::Transient {
                         retry_after_ms: 120_000,
                     })
@@ -381,7 +388,7 @@ fn delivery_survives_restart_collapses_pending_generations_and_does_not_remind()
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().all(|(_, generation)| *generation == 8));
     restarted
-        .register_notification_token(&phone.credential, "phone-rotated")
+        .register_notification_installation(&phone.credential, "cphonerotated000000000")
         .unwrap();
     restarted
         .deliver_notifications(
@@ -402,28 +409,28 @@ fn delivery_survives_restart_collapses_pending_generations_and_does_not_remind()
             },
         )
         .unwrap();
-    assert_eq!(sent, vec![("phone-rotated".to_owned(), 9)]);
+    assert_eq!(sent, vec![("cphonerotated000000000".to_owned(), 9)]);
     let public = serde_json::to_string(&restarted.notification_status().unwrap()).unwrap();
-    assert!(!public.contains("phone-rotated"));
+    assert!(!public.contains("cphonerotated000000000"));
     assert!(!public.contains(&phone.credential));
 }
 
 #[test]
-fn invalid_tokens_disable_only_their_device_and_permanent_failures_stop_after_restart() {
+fn invalid_installations_disable_only_their_device_and_permanent_failures_stop_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let registry = PairingRegistry::open(root.path()).unwrap();
     let phone = pair(&registry, "phone");
     let tablet = pair(&registry, "tablet");
     registry
-        .register_notification_token(&phone.credential, "phone-token")
+        .register_notification_installation(&phone.credential, "cphonetoken00000000000")
         .unwrap();
     assert!(
         registry
-            .register_notification_token(&tablet.credential, "phone-token")
+            .register_notification_installation(&tablet.credential, "cphonetoken00000000000")
             .is_err()
     );
     registry
-        .register_notification_token(&tablet.credential, "tablet-token")
+        .register_notification_installation(&tablet.credential, "ctablettoken0000000000")
         .unwrap();
     registry
         .configure_notifications(NotificationHealth::Ready)
@@ -434,8 +441,8 @@ fn invalid_tokens_disable_only_their_device_and_permanent_failures_stop_after_re
                 || Ok(Some(2)),
                 3_000,
                 |token, _| {
-                    if token == "phone-token" {
-                        Err(NotificationFailure::InvalidToken)
+                    if token == "cphonetoken00000000000" {
+                        Err(NotificationFailure::InvalidInstallation)
                     } else {
                         Ok(())
                     }
@@ -445,14 +452,11 @@ fn invalid_tokens_disable_only_their_device_and_permanent_failures_stop_after_re
         1
     );
     registry
-        .register_notification_token(&phone.credential, "phone-token")
-        .unwrap();
-    registry
         .deliver_notifications(
             || Ok(Some(3)),
             90_000,
             |token, _| {
-                assert_eq!(token, "tablet-token");
+                assert_eq!(token, "ctablettoken0000000000");
                 Err(NotificationFailure::Authentication)
             },
         )
@@ -474,7 +478,7 @@ fn invalid_tokens_disable_only_their_device_and_permanent_failures_stop_after_re
         .unwrap();
     restarted.retry_notifications().unwrap();
     restarted
-        .register_notification_token(&phone.credential, "new-phone-token")
+        .register_notification_installation(&phone.credential, "cnewphonetoken00000000")
         .unwrap();
     assert_eq!(
         restarted
@@ -482,4 +486,122 @@ fn invalid_tokens_disable_only_their_device_and_permanent_failures_stop_after_re
             .unwrap(),
         2
     );
+}
+
+#[test]
+fn renewed_same_fid_reenables_delivery_without_reminding_confirmed_generations() {
+    let root = tempfile::tempdir().unwrap();
+    let registry = PairingRegistry::open(root.path()).unwrap();
+    let phone = pair(&registry, "phone");
+    let fid = "c123456789012345678901";
+    registry
+        .register_notification_installation(&phone.credential, fid)
+        .unwrap();
+    registry
+        .configure_notifications(NotificationHealth::Ready)
+        .unwrap();
+    registry
+        .deliver_notifications(|| Ok(Some(2)), 3_000, |_, _| Ok(()))
+        .unwrap();
+    registry
+        .deliver_notifications(
+            || Ok(Some(3)),
+            4_000,
+            |_, _| Err(NotificationFailure::InvalidInstallation),
+        )
+        .unwrap();
+    assert!(!registry.notification_status().unwrap().devices[0].enabled);
+    registry
+        .register_notification_installation(&phone.credential, fid)
+        .unwrap();
+    assert!(registry.notification_status().unwrap().devices[0].enabled);
+    assert_eq!(
+        registry
+            .deliver_notifications(|| Ok(Some(2)), 5_000, |_, _| panic!("reminder"))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        registry
+            .deliver_notifications(
+                || Ok(Some(3)),
+                5_000,
+                |target, _| {
+                    assert_eq!(target, fid);
+                    Ok(())
+                }
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn token_registry_upgrade_preserves_pairing_and_progress_but_never_sends_tokens() {
+    let root = tempfile::tempdir().unwrap();
+    let registry = PairingRegistry::open(root.path()).unwrap();
+    let phone = pair(&registry, "phone");
+    let path = root.path().join("pairing.json");
+    let mut old: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    old["schema_version"] = 2.into();
+    old["notifications"]["health"] = "ready".into();
+    old["devices"][0]["notification"] = json!({
+        "token": "old-private-fcm-token", "enabled": true,
+        "submitted_generation": 7, "retry_at_ms": 0, "attempts": 0
+    });
+    std::fs::write(&path, old.to_string()).unwrap();
+    let upgraded = PairingRegistry::open(root.path()).unwrap();
+    assert_eq!(
+        upgraded.authenticate_device(&phone.credential).unwrap(),
+        Some(phone.device_id)
+    );
+    assert_eq!(
+        upgraded
+            .deliver_notifications(|| Ok(Some(8)), 5_000, |_, _| panic!("legacy token sent"))
+            .unwrap(),
+        0
+    );
+    let persisted = std::fs::read_to_string(&path).unwrap();
+    assert!(!persisted.contains("old-private-fcm-token"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&persisted).unwrap()["schema_version"],
+        3
+    );
+    upgraded
+        .register_notification_installation(&phone.credential, "c123456789012345678901")
+        .unwrap();
+    let restarted = PairingRegistry::open(root.path()).unwrap();
+    assert_eq!(
+        restarted
+            .deliver_notifications(|| Ok(Some(7)), 6_000, |_, _| panic!("upgrade reminder"))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        restarted
+            .deliver_notifications(
+                || Ok(Some(8)),
+                6_000,
+                |fid, _| {
+                    assert_eq!(fid, "c123456789012345678901");
+                    Ok(())
+                }
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn malformed_legacy_registry_is_rejected_without_rewrite_or_panic() {
+    for devices in [json!([42]), json!([{"notification": {"token": 42}}])] {
+        let root = tempfile::tempdir().unwrap();
+        PairingRegistry::open(root.path()).unwrap();
+        let path = root.path().join("pairing.json");
+        let bytes = json!({"schema_version": 2, "pending": [], "devices": devices}).to_string();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(PairingRegistry::open(root.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+    }
 }

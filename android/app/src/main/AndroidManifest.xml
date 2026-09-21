@@ -17,9 +17,9 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
-        <!-- Explicit in-app opt-in owns token acquisition; no analytics dependency or startup registration. -->
+        <!-- Explicit in-app opt-in owns registration; no analytics dependency or startup registration. -->
         <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
-        <meta-data android:name="firebase_messaging_installation_id_enabled" android:value="false" />
+        <meta-data android:name="firebase_messaging_installation_id_enabled" android:value="true" />
         <meta-data android:name="firebase_analytics_collection_enabled" android:value="false" />
         <service android:name=".AttentionMessagingService" android:exported="false">
             <intent-filter>

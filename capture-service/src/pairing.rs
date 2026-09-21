@@ -153,7 +153,7 @@ impl PairingRegistry {
                 registry.load()?;
             } else {
                 registry.persist(&RegistryState {
-                    schema_version: 2,
+                    schema_version: 3,
                     ..RegistryState::default()
                 })?;
             }
@@ -380,14 +380,54 @@ impl PairingRegistry {
     }
 
     fn load(&self) -> Result<RegistryState, PairingError> {
-        let state: RegistryState =
+        let mut value: serde_json::Value =
             serde_json::from_reader(BufReader::new(File::open(&self.path)?))?;
-        if state.schema_version != 2 {
+        let upgrading = value["schema_version"] == 2;
+        if upgrading {
+            // Retire token routing without losing pairings or confirmed generations.
+            // Android must register its FID before any further delivery is allowed.
+            if let Some(devices) = value["devices"].as_array_mut() {
+                for device in devices {
+                    if let Some(registration) = device
+                        .get_mut("notification")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        if registration.contains_key("fid")
+                            || !registration
+                                .remove("token")
+                                .as_ref()
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|token| {
+                                    !token.is_empty()
+                                        && token.len() <= 4096
+                                        && token.bytes().all(|byte| byte.is_ascii_graphic())
+                                })
+                            || registration
+                                .get("enabled")
+                                .and_then(serde_json::Value::as_bool)
+                                .is_none()
+                        {
+                            return Err(PairingError::Rejected(
+                                "stored notification state is invalid".to_owned(),
+                            ));
+                        }
+                        registration.insert("fid".into(), serde_json::Value::Null);
+                        registration.insert("enabled".into(), false.into());
+                    }
+                }
+            }
+            value["schema_version"] = 3.into();
+        }
+        let state: RegistryState = serde_json::from_value(value)?;
+        if state.schema_version != 3 {
             return Err(PairingError::Rejected(
                 "pairing registry version is unsupported".to_owned(),
             ));
         }
         notifications::validate_state(&state)?;
+        if upgrading {
+            self.persist(&state)?;
+        }
         Ok(state)
     }
 

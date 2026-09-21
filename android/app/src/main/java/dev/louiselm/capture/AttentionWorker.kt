@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.google.android.gms.tasks.Tasks
+import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import org.json.JSONException
 import java.io.IOException
@@ -18,7 +19,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-/** Durable, network-constrained token registration and private inbox refresh; never displays remote text. */
+/** Durable, network-constrained installation registration and private inbox refresh. */
 class AttentionWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
     override fun doWork(): Result {
         if (!BuildConfig.FIREBASE_ENABLED) return Result.success()
@@ -29,14 +30,14 @@ class AttentionWorker(context: Context, parameters: WorkerParameters) : Worker(c
             if (!hasReceiverNetworkAccess(applicationContext)) return Result.failure()
             val pairing = PairingStore(applicationContext).load() ?: return Result.success()
             val outcome = syncAttention(state, expected, { reset ->
-                currentReceiverToken(reset)
-            }, { token ->
-                if (isStopped) UploadAttempt.Retry("work was cancelled") else PinnedHttps.registerAttentionToken(pairing, token)
+                currentReceiverInstallation(reset, inputData.getString(REGISTERED_FID))
+            }, { fid ->
+                if (isStopped) UploadAttempt.Retry("work was cancelled") else PinnedHttps.registerAttentionInstallation(pairing, fid)
             }, {
                 if (isStopped) AttentionFetch.Retry("work was cancelled") else PinnedHttps.fetchAttention(pairing)
             })
             if (PairingStore(applicationContext).binding() == expected) {
-                // Only a successful paired registration authorizes SDK background token maintenance.
+                // Only a successful paired registration authorizes SDK background maintenance.
                 FirebaseMessaging.getInstance().isAutoInitEnabled = state.readyOwner() == expected
             }
             return when (outcome) {
@@ -48,7 +49,7 @@ class AttentionWorker(context: Context, parameters: WorkerParameters) : Worker(c
             Thread.currentThread().interrupt()
             return Result.retry()
         } catch (_: ExecutionException) {
-            return Result.retry() // Firebase token transport failed; do not log credential-bearing causes.
+            return Result.retry() // Firebase transport failed; do not log credential-bearing causes.
         } catch (_: TimeoutException) {
             return Result.retry()
         } catch (_: IOException) {
@@ -65,51 +66,63 @@ class AttentionWorker(context: Context, parameters: WorkerParameters) : Worker(c
     companion object {
         internal const val UNIQUE_WORK = "attention-refresh"
         private const val OWNER = "pairing-owner"
+        private const val REGISTERED_FID = "registered-fid"
 
         /** Caller is background-threaded; a missing opt-in/pairing/configuration queues nothing. */
         internal fun enqueue(
             context: Context,
             state: AttentionState = AttentionState(context),
             replaceExisting: Boolean = false,
+            registeredFid: String? = null,
         ) {
             if (!BuildConfig.FIREBASE_ENABLED) return
             val owner = state.owner() ?: return
             val request = OneTimeWorkRequestBuilder<AttentionWorker>()
-                .setInputData(Data.Builder().putString(OWNER, owner).build())
+                .setInputData(Data.Builder().putString(OWNER, owner).putString(REGISTERED_FID, registeredFid).build())
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
-            // Append so token refresh during an in-flight fetch cannot cancel/lose its registration.
+            // Append so SDK refresh during an in-flight fetch cannot cancel/lose its registration.
             val policy = if (replaceExisting) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.APPEND_OR_REPLACE
             WorkManager.getInstance(context).enqueueUniqueWork(UNIQUE_WORK, policy, request)
         }
     }
 }
 
-// The existing receiver's HTTP v1 contract addresses FCM tokens, not Firebase Installation IDs.
-// Keep the supported token mode explicit until client and sender migrate together.
-@Suppress("DEPRECATION")
-private fun currentReceiverToken(reset: Boolean): String {
+/** Background SDK boundary. Callback work skips register only for the exact current FID. */
+internal fun currentReceiverInstallation(reset: Boolean, registeredFid: String?): String {
     val messaging = FirebaseMessaging.getInstance()
+    val installations = FirebaseInstallations.getInstance()
     if (reset) {
         messaging.isAutoInitEnabled = false
-        Tasks.await(messaging.deleteToken(), 30, TimeUnit.SECONDS)
+        Tasks.await(messaging.unregister(), 30, TimeUnit.SECONDS)
+        // unregister retains the FID. Delete it so the previous pairing cannot address this one.
+        Tasks.await(installations.delete(), 30, TimeUnit.SECONDS)
     }
-    return Tasks.await(messaging.token, 30, TimeUnit.SECONDS)
+    val fid = Tasks.await(installations.id, 30, TimeUnit.SECONDS)
+    require(validAttentionInstallation(fid)) { "invalid notification installation ID" }
+    if (reset || registeredFid != fid) {
+        // register always invokes onRegistered, including for an unchanged FID.
+        Tasks.await(messaging.register(), 30, TimeUnit.SECONDS)
+    }
+    if (Tasks.await(installations.id, 30, TimeUnit.SECONDS) != fid) {
+        throw IOException("notification installation changed during registration")
+    }
+    return fid
 }
 
 /** Synchronous worker flow with owner checks at each asynchronous external boundary. */
 internal fun syncAttention(
     state: AttentionState,
     expected: String,
-    token: (Boolean) -> String,
+    installation: (Boolean) -> String,
     register: (String) -> UploadAttempt,
     fetch: () -> AttentionFetch,
 ): UploadAttempt {
     if (state.owner() != expected) return UploadAttempt.Success
-    val currentToken = token(state.needsTokenReset(expected))
-    if (!state.tokenPrepared(expected)) return UploadAttempt.Success
-    when (val registration = register(currentToken)) {
+    val fid = installation(state.needsInstallationReset(expected))
+    if (!state.installationPrepared(expected)) return UploadAttempt.Success
+    when (val registration = register(fid)) {
         is UploadAttempt.Retry -> return registration
         is UploadAttempt.OperatorAction -> {
             state.block(expected)

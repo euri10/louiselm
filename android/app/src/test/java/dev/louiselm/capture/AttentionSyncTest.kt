@@ -61,7 +61,7 @@ class AttentionSyncTest {
             "obsolete-token"
         }, { error("obsolete registration") }, { error("obsolete fetch") }))
         assertNull(state.readyOwner())
-        assertTrue(state.needsTokenReset("new"))
+        assertTrue(state.needsInstallationReset("new"))
     }
 
     @Test

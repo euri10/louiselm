@@ -28,20 +28,20 @@ pub enum NotificationFailure {
         /// Minimum delay in milliseconds; zero uses the local backoff alone.
         retry_after_ms: u64,
     },
-    /// This registration token is no longer usable; other devices may continue.
-    InvalidToken,
+    /// This installation is unregistered; other devices may continue.
+    InvalidInstallation,
     /// Sender authorization requires operator intervention.
     Authentication,
     /// Sender configuration or a malformed response requires intervention.
     Configuration,
 }
 
-/// Public per-device progress, excluding the registration token.
+/// Public per-device progress, excluding the installation ID.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NotificationTargetStatus {
     /// Public pairing identifier.
     pub device_id: String,
-    /// Whether this registered token can receive future submissions.
+    /// Whether this registered installation can receive future submissions.
     pub enabled: bool,
     /// Last generation confirmed accepted by FCM, not confirmed read on Android.
     pub submitted_generation: Option<u64>,
@@ -74,26 +74,34 @@ pub(super) struct NotificationState {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct NotificationRegistration {
-    token: String,
+    // None retains delivery progress after retiring a pre-FID registration.
+    fid: Option<String>,
     enabled: bool,
     submitted_generation: Option<u64>,
     retry_at_ms: u64,
     attempts: u32,
 }
 
-fn valid_token(token: &str) -> bool {
-    !token.is_empty() && token.len() <= 4096 && token.bytes().all(|byte| byte.is_ascii_graphic())
+fn valid_fid(fid: &str) -> bool {
+    // Firebase Installations RandomFidGenerator: 22 URL-safe base64 characters.
+    fid.len() == 22
+        && fid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
 }
 
 pub(super) fn validate_state(state: &RegistryState) -> Result<(), PairingError> {
-    let mut tokens = std::collections::BTreeSet::new();
+    let mut installations = std::collections::BTreeSet::new();
     for registration in state
         .devices
         .iter()
         .filter_map(|device| device.notification.as_ref())
     {
-        if !valid_token(&registration.token)
-            || !tokens.insert(&registration.token)
+        if registration
+            .fid
+            .as_deref()
+            .is_some_and(|fid| !valid_fid(fid) || !installations.insert(fid))
+            || (registration.fid.is_none() && registration.enabled)
             || registration.submitted_generation == Some(0)
             || (registration.attempts == 0) != (registration.retry_at_ms == 0)
         {
@@ -109,18 +117,19 @@ impl PairingRegistry {
     /// Register or rotate only the device authenticated by this bearer.
     ///
     /// This blocking transaction rechecks authority under the same lock as revocation.
-    /// Repeating the same token preserves progress and does not enable a disabled token.
+    /// Repeating an enabled FID preserves progress and backoff. An authenticated
+    /// registration after SDK renewal re-enables an unregistered FID without reminders.
     ///
     /// # Errors
-    /// Rejects invalid credentials, duplicate device tokens, malformed input, and storage failures.
-    pub fn register_notification_token(
+    /// Rejects invalid credentials, duplicate device installations, malformed input, and storage failures.
+    pub fn register_notification_installation(
         &self,
         credential: &str,
-        token: &str,
+        fid: &str,
     ) -> Result<(), PairingError> {
-        if !valid_token(token) {
+        if !valid_fid(fid) {
             return Err(PairingError::Rejected(
-                "notification token is invalid".to_owned(),
+                "notification fid is invalid".to_owned(),
             ));
         }
         self.with_state(true, |state| {
@@ -142,26 +151,25 @@ impl PairingRegistry {
                     && device
                         .notification
                         .as_ref()
-                        .is_some_and(|registration| registration.token == token)
+                        .is_some_and(|registration| registration.fid.as_deref() == Some(fid))
             }) {
                 return Err(PairingError::Rejected(
-                    "notification token is unavailable".to_owned(),
+                    "notification fid is unavailable".to_owned(),
                 ));
             }
             let current = &mut state.devices[index].notification;
-            if current
-                .as_ref()
-                .is_some_and(|registration| registration.token == token)
-            {
+            if current.as_ref().is_some_and(|registration| {
+                registration.fid.as_deref() == Some(fid) && registration.enabled
+            }) {
                 return Ok(());
             }
-            // Rotation preserves the device's confirmed generation: a refreshed token
+            // Rotation preserves the device's confirmed generation: a refreshed fid
             // does not turn an unchanged unresolved condition into a reminder.
             let submitted_generation = current
                 .as_ref()
                 .and_then(|registration| registration.submitted_generation);
             *current = Some(NotificationRegistration {
-                token: token.to_owned(),
+                fid: Some(fid.to_owned()),
                 enabled: true,
                 submitted_generation,
                 retry_at_ms: 0,
@@ -290,9 +298,11 @@ impl PairingRegistry {
                 let delay =
                     60_000_u64.saturating_mul(1 << registration.attempts.saturating_sub(1).min(6));
                 registration.retry_at_ms = now_ms.saturating_add(delay);
-                let token = registration.token.clone();
+                let Some(fid) = registration.fid.clone() else {
+                    return Ok(false);
+                };
                 self.persist(state)?;
-                let result = send(&token, generation);
+                let result = send(&fid, generation);
                 let registration = state
                     .devices
                     .iter_mut()
@@ -314,7 +324,7 @@ impl PairingRegistry {
                             .max(now_ms.saturating_add(retry_after_ms));
                         false
                     }
-                    Err(NotificationFailure::InvalidToken) => {
+                    Err(NotificationFailure::InvalidInstallation) => {
                         registration.enabled = false;
                         false
                     }

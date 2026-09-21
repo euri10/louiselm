@@ -226,7 +226,7 @@ starting its next prompt clears its pending turn alert. Eligibility is distinct
 from FCM submission and eventual phone delivery.
 
 With push explicitly enabled, `serve` submits eligible Attention generations to every active
-paired device with a registered FCM token. The inbox remains available without
+paired device with a registered Firebase Installation ID (FID). The inbox remains available without
 push configuration. Enable the sender with `LOUISELM_PUSH_ENABLED=true` and
 `LOUISELM_ATTENTION_ENABLED=true`, and set `GOOGLE_APPLICATION_CREDENTIALS`
 in the service's `capture.env` to an external Google **service-account JSON key
@@ -242,27 +242,27 @@ commands, or URLs supplied in credentials. OAuth access tokens remain in memory
 and expire within an hour. The RSA signing, base64, and HTTP-date parsers reuse
 packages already present in the lockfile; there is no Firebase Admin SDK.
 
-An authenticated phone registers or rotates its own token with:
+An authenticated phone registers or rotates its own installation with:
 
 ```http
-PUT /v1/attention/token
+PUT /v1/attention/installation
 Authorization: Bearer <paired-device-credential>
 Content-Type: application/json
 
-{"token":"<FCM-registration-token>"}
+{"fid":"<Firebase-Installation-ID>"}
 ```
 
-Success returns `204` with no body. The object accepts only `token`, containing
-1–4096 visible ASCII bytes; JSON requests are limited to 8 KiB. There is no
-caller-selected device ID. One token cannot be registered to multiple paired
+Success returns `204` with no body. The object accepts only `fid`, containing
+22 URL-safe base64 characters; JSON requests are limited to 8 KiB. There is no
+caller-selected device ID. One FID cannot be registered to multiple paired
 devices. Registration, rotation, and revocation share the pairing transaction.
-Tokens and submission state are private fields in `pairing/pairing.json`, and
+FIDs and submission state are private fields in `pairing/pairing.json`, and
 `revoke-device` removes them with the device credential. Revocation waits for an
 already-started bounded submission; after it returns, no future submission can
 use that pairing. HTTP pairing/authentication runs off the async executor while
 waiting for this lock.
 
-The data-only FCM message contains only the required routing token, a
+The data-only FCM message contains only the HTTP v1 `message.fid` routing field, a
 decimal-string `generation`, high Android priority, and collapse key
 `louiselm-attention`. It deliberately has no `notification` block: Android's
 background SDK display would bypass local generation validation and deduplication.
@@ -272,17 +272,25 @@ The authenticated private inbox remains the source of work details.
 
 Delivery passes run once per second and refresh eligibility/generation before
 each device's attempt. A confirmed generation is not submitted
-again, including after restart or token rotation. Unchanged unresolved state
+again, including after restart or installation rotation. Unchanged unresolved state
 does not produce reminders. Pending retries use the latest eligible snapshot;
 an empty or wholly ineligible inbox causes no submission. Transient failures
 use durable exponential backoff starting at 60 seconds, capped at 64 minutes,
-and honor a longer numeric or HTTP-date `Retry-After`. Invalid tokens disable
-only their registration; a different token re-enables that device. Repeating
-the same invalid token does not reset its state.
+and honor a longer numeric or HTTP-date `Retry-After`. An unregistered FID disables
+only its registration. After SDK registration succeeds, an authenticated phone
+may register that same FID again to re-enable delivery; confirmed generations
+remain suppressed. Repeating an enabled registration preserves its backoff.
+
+Registry schema 3 retires schema-2 token addresses on first open, under the pairing
+lock and with atomic persistence. It preserves pairing credentials, sender health
+and confirmed generations but disables old targets until Android registers a FID.
+Update the receiver and APK together; the old token endpoint is removed. Capture
+storage and pairing QR formats are unchanged. The upstream contract is documented
+in [FCM HTTP v1 Message](https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages#Message).
 
 `status.notifications` is a versioned record containing sender health, a fixed
 next action, and each registered device's enabled flag, confirmed generation,
-attempt count, and retry deadline. It never contains tokens or raw provider
+attempt count, and retry deadline. It never contains FIDs or raw provider
 errors. Authentication/configuration failures persist across restart and stop
 automatic attempts. Correct the key or permissions, restart `serve`, then run
 `retry-notifications` to clear the stop. No configured key means health is

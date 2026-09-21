@@ -76,20 +76,18 @@ impl FcmSender {
 
     pub fn send(
         &mut self,
-        token: &str,
+        fid: &str,
         generation: u64,
         now_ms: u64,
     ) -> Result<(), NotificationFailure> {
         let client = self.client.clone();
-        self.send_with(token, generation, now_ms, |request| {
-            execute(&client, request)
-        })
+        self.send_with(fid, generation, now_ms, |request| execute(&client, request))
     }
 
     // The fake transport receives the exact production requests, including OAuth.
     fn send_with(
         &mut self,
-        token: &str,
+        fid: &str,
         generation: u64,
         now_ms: u64,
         mut transport: impl FnMut(Request) -> Result<Reply, NotificationFailure>,
@@ -107,7 +105,7 @@ impl FcmSender {
             .client
             .post(url)
             .bearer_auth(&access.value)
-            .json(&payload(token, generation))
+            .json(&payload(fid, generation))
             .build()
             .map_err(|_| NotificationFailure::Configuration)?;
         let reply = transport(request)?;
@@ -171,11 +169,12 @@ impl FcmSender {
     }
 }
 
-fn payload(token: &str, generation: u64) -> Value {
+fn payload(fid: &str, generation: u64) -> Value {
     // Explicit allowlist: neither Attention items nor caller-authored display fields
-    // can enter this boundary. The token is required FCM routing metadata.
+    // can enter this boundary. The FID is required FCM routing metadata.
+    // https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages#Message
     json!({"message": {
-        "token": token,
+        "fid": fid,
         "data": {"generation": generation.to_string()},
         "android": {"collapse_key": COLLAPSE_KEY, "priority": "high"}
     }})
@@ -239,7 +238,7 @@ fn check_reply(reply: &Reply, now_ms: u64, oauth: bool) -> Result<(), Notificati
             StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
         ) && invalid_token
         {
-            return Err(NotificationFailure::InvalidToken);
+            return Err(NotificationFailure::InvalidInstallation);
         }
     }
     if matches!(
