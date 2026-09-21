@@ -325,6 +325,27 @@ local SECTIONS = {
         "Configure an Agent, start or resume a Session, queue optional context, then submit a prompt. Respond deliberately to permission requests and cancel a current turn when the intent changes.",
         context
       )
+      append_prose(
+        lines,
+        "Session buffers always install these buffer-local Normal-mode motions, independently of the global keymaps option:",
+        context
+      )
+      lines[#lines + 1] = ""
+      for _, mapping in ipairs({
+        "]u / [u    Next / previous submitted prompt",
+        "]r / [r    Next / previous assistant reply",
+        "]e / [e    Next / previous [usage] row",
+        "]E / [E    Next / previous Error: or Warning: row",
+        "]x / [x    Next / previous tool run or thinking header",
+        "<CR>       Return to the editable prompt in Insert mode",
+      }) do
+        lines[#lines + 1] = "  " .. mapping
+      end
+      append_prose(
+        lines,
+        "Motions accept counts (for example 2]e), land at the first non-blank column, preserve folds and stay in Normal mode. If the requested target does not exist, the cursor stays put silently; motions never wrap. Usage and diagnostic targets exclude submitted prompts, context and thinking content. Activity motions visit the first row of each contiguous tool run, including single-line tools, and thinking headers even while reasoning is streaming. Use za to toggle a completed fold.",
+        context
+      )
     end,
   },
   {

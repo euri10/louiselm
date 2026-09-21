@@ -499,8 +499,11 @@ end
 ---excluded via the recorded thought-fold runs (text alone cannot distinguish
 ---it from prose), and so are blank lines, `[…` marker lines, and
 ---`Error:`/`Warning:` lines. A tool-only turn contributes no reply target.
+---Usage/diagnostic rows exclude submitted context, prompts and thinking.
+---Activity targets are thinking headers and the first row of each tool run,
+---including single tools and reasoning that has not become a fold yet.
 ---@param view louiselm.ui.ChatBuffer
----@param kind string "prompt" or "reply"
+---@param kind string "prompt", "reply", "usage", "diagnostic" or "activity"
 ---@return integer[] targets Zero-based lines in document order.
 local function navigation_targets(view, kind)
   local lines = nvim.api.nvim_buf_get_lines(view.buffer, 0, current_prompt_line(view), false)
@@ -516,13 +519,16 @@ local function navigation_targets(view, kind)
     end
   end
   local thinking_lines = {}
+  local thinking_starts = {}
   for _, fold in ipairs(view.thought_folds) do
+    thinking_starts[fold.first] = true
     for line = fold.first, fold.last do
       thinking_lines[line] = true
     end
   end
   local run = view.thought_run
   if run ~= nil then
+    thinking_starts[run.first] = true
     for line = run.first, run.last do
       thinking_lines[line] = true
     end
@@ -543,6 +549,23 @@ local function navigation_targets(view, kind)
       after_prompt = true
       seen_reply = false
     else
+      local text = line:match("^%s*(.*)$")
+      if not in_context_block then
+        if
+          kind == "activity"
+          and (thinking_starts[zero_based] or (view.tool_ids[zero_based] and not view.tool_ids[zero_based - 1]))
+        then
+          targets[#targets + 1] = zero_based
+        elseif
+          not thinking_lines[zero_based]
+          and (
+            (kind == "usage" and text:sub(1, 8) == "[usage] ")
+            or (kind == "diagnostic" and (text:sub(1, 6) == "Error:" or text:sub(1, 8) == "Warning:"))
+          )
+        then
+          targets[#targets + 1] = zero_based
+        end
+      end
       if
         kind == "reply"
         and after_prompt
@@ -566,7 +589,7 @@ end
 ---cursor. A motion with no further target is a silent no-op; landing is on
 ---the target's first non-blank column.
 ---@param view louiselm.ui.ChatBuffer
----@param kind string "prompt" or "reply"
+---@param kind string "prompt", "reply", "usage", "diagnostic" or "activity"
 ---@param direction integer 1 forward, -1 backward
 ---@param count integer
 local function navigate_transcript(view, kind, direction, count)
@@ -1066,6 +1089,24 @@ function M.new(state, options)
   nvim.keymap.set("n", "[r", function()
     navigate_transcript(view, "reply", -1, nvim.v.count1)
   end, { buffer = buffer, silent = true, desc = "Previous assistant reply" })
+  nvim.keymap.set("n", "]e", function()
+    navigate_transcript(view, "usage", 1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Next usage entry" })
+  nvim.keymap.set("n", "[e", function()
+    navigate_transcript(view, "usage", -1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Previous usage entry" })
+  nvim.keymap.set("n", "]E", function()
+    navigate_transcript(view, "diagnostic", 1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Next error or warning" })
+  nvim.keymap.set("n", "[E", function()
+    navigate_transcript(view, "diagnostic", -1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Previous error or warning" })
+  nvim.keymap.set("n", "]x", function()
+    navigate_transcript(view, "activity", 1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Next tool run or thinking block" })
+  nvim.keymap.set("n", "[x", function()
+    navigate_transcript(view, "activity", -1, nvim.v.count1)
+  end, { buffer = buffer, silent = true, desc = "Previous tool run or thinking block" })
   nvim.keymap.set("n", "<CR>", function()
     local prompt_line = current_prompt_line(view)
     nvim.api.nvim_win_set_cursor(view.window, { prompt_line + 1, 2 + #options.prompt_prefix() })

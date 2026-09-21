@@ -7569,9 +7569,149 @@ end
 T["chat"]["maps Normal-mode navigation in session buffers"] = function()
   local _, _, buffer = navigable_chat()
 
-  for _, lhs in ipairs({ "]u", "[u", "]r", "[r", "<CR>" }) do
+  for _, lhs in ipairs({ "]u", "[u", "]r", "[r", "]e", "[e", "]E", "[E", "]x", "[x", "<CR>" }) do
     MiniTest.expect.equality(type(normal_map(buffer, lhs)), "function")
   end
+end
+
+T["chat"]["navigates usage and diagnostics outside prompts, contexts and thinking"] = function()
+  local session = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(session))
+  local buffer = assert(chat:buffer())
+  assert(chat:queue_context({ label = "notes", text = "[usage] context\nError: context" }))
+  assert(chat:submit("Question\n[usage] prompt\nWarning: prompt"))
+  session:emit({
+    type = "thought_chunk",
+    session_id = session.state.id,
+    data = { content = { type = "text", text = "[usage] thinking\nError: thinking" } },
+  })
+  session:emit({
+    type = "chunk",
+    session_id = session.state.id,
+    data = { content = { type = "text", text = "Answer\n  Warning: first diagnostic" } },
+  })
+  session.state.usage = { total_tokens = 100, input_tokens = 40, output_tokens = 60 }
+  session:emit({ type = "turn_done", session_id = session.state.id, data = { stopReason = "end_turn" } })
+  session:emit({ type = "error", session_id = session.state.id, data = { message = "second diagnostic" } })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(buffer), "Error: second diagnostic")
+  end, 1)
+  local usage
+  for index, line in ipairs(buffer_lines(buffer)) do
+    if line:find("[usage] total_tokens=", 1, true) == 1 then
+      usage = index
+    end
+  end
+  assert(usage, "rendered usage row missing")
+  local warning = line_of(buffer, "  Warning: first diagnostic")
+  local error_line = line_of(buffer, "Error: second diagnostic")
+  local thinking = line_of(buffer, "[thinking]")
+  local folded_before = { fold_range(thinking) }
+  local original_lines = buffer_lines(buffer)
+  nvim.api.nvim_set_vvar("errmsg", "")
+
+  for _, motion in ipairs({
+    { "]e", 1, usage, 0 },
+    { "]e", usage, usage, 0 },
+    { "[e", #original_lines, usage, 0 },
+    { "[e", usage, usage, 0 },
+    { "]E", 1, warning, 2 },
+    { "]E", warning, error_line, 0 },
+    { "[E", error_line, warning, 2 },
+    { "[E", warning, warning, 0 },
+    { "2]E", 1, error_line, 0 },
+    { "2[E", #original_lines, warning, 2 },
+    { "3]E", 1, 1, 0 },
+    { "2]e", 1, 1, 0 },
+  }) do
+    nvim.api.nvim_win_set_cursor(0, { motion[2], 0 })
+    nvim.api.nvim_feedkeys(motion[1], "mx", false)
+    MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { motion[3], motion[4] })
+    MiniTest.expect.equality(nvim.api.nvim_get_mode().mode, "n")
+  end
+  MiniTest.expect.equality(nvim.api.nvim_get_vvar("errmsg"), "")
+  MiniTest.expect.equality({ fold_range(thinking) }, folded_before)
+  MiniTest.expect.equality(buffer_lines(buffer), original_lines)
+end
+
+T["chat"]["navigates tool runs and thinking without changing folds or streaming"] = function()
+  local chat, session, buffer = navigable_chat()
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  local thinking = line_of(buffer, "[thinking]")
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(buffer), "[tool] tool-1: Read file (completed)")
+  end, 1)
+  local tool = line_of(buffer, "[tool] tool-1: Read file (completed)")
+  -- Native fold navigation cannot reach a standalone tool row.
+  MiniTest.expect.equality(nvim.fn.foldlevel(tool), 0)
+  nvim.api.nvim_win_set_cursor(0, { tool - 1, 0 })
+  nvim.cmd.normal({ args = { "zj" }, bang = true })
+  MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0)[1] ~= tool, true)
+
+  assert(chat:submit("Continue"))
+  for _, id in ipairs({ "tool-2", "tool-3" }) do
+    session:emit({
+      type = "tool_call_finished",
+      session_id = session.state.id,
+      data = { toolCallId = id, title = "Read another file", status = "completed" },
+    })
+  end
+  session:emit({
+    type = "thought_chunk",
+    session_id = session.state.id,
+    data = { content = { type = "text", text = "Live reasoning" } },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(buffer), "Live reasoning")
+  end, 1)
+  local tool_run = line_of(buffer, "[tool] tool-2: Read another file (completed)")
+  local live_thinking = line_of(buffer, "Live reasoning") - 1
+  local folds_before = { { fold_range(thinking) }, { fold_range(tool_run) }, { fold_range(live_thinking) } }
+  MiniTest.expect.equality(nvim.fn.foldlevel(live_thinking), 0)
+  nvim.api.nvim_set_vvar("errmsg", "")
+  for _, motion in ipairs({
+    { "]x", 1, thinking },
+    { "]x", thinking, tool },
+    { "]x", tool, tool_run },
+    { "]x", tool_run, live_thinking },
+    { "]x", live_thinking, live_thinking },
+    { "[x", live_thinking, tool_run },
+    { "[x", tool_run, tool },
+    { "[x", tool, thinking },
+    { "[x", thinking, thinking },
+    { "3]x", 1, tool_run },
+  }) do
+    nvim.api.nvim_win_set_cursor(0, { motion[2], 0 })
+    nvim.api.nvim_feedkeys(motion[1], "mx", false)
+    MiniTest.expect.equality(nvim.api.nvim_win_get_cursor(0), { motion[3], 0 })
+    MiniTest.expect.equality(nvim.api.nvim_get_mode().mode, "n")
+  end
+  MiniTest.expect.equality(nvim.api.nvim_get_vvar("errmsg"), "")
+  MiniTest.expect.equality(
+    { { fold_range(thinking) }, { fold_range(tool_run) }, { fold_range(live_thinking) } },
+    folds_before
+  )
+  session:emit({
+    type = "thought_chunk",
+    session_id = session.state.id,
+    data = { content = { type = "text", text = " continued" } },
+  })
+  session:emit({
+    type = "chunk",
+    session_id = session.state.id,
+    data = { content = { type = "text", text = "Final answer" } },
+  })
+  nvim.wait(100, function()
+    return nvim.tbl_contains(buffer_lines(buffer), "Final answer")
+  end, 1)
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "Live reasoning continued"), true)
+  MiniTest.expect.equality({ fold_range(live_thinking) }, { live_thinking, live_thinking + 1 })
 end
 
 T["chat"]["jumps between submitted prompts with ]u and [u"] = function()
