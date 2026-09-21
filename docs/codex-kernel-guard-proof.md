@@ -157,6 +157,92 @@ After the experiments, the private VM was explicitly stopped; its unit reported
 `LoadState=not-found`, `ActiveState=inactive`, `SubState=dead`, `MainPID=0`.
 The retained overlay is recoverable evidence, not an installed service.
 
+## Protected-link lifetime investigation
+
+`louiselm-qbr.5.1.3.7`, 2026-09-21: **partial evidence, not lifecycle acceptance**.
+`scripts/probes/codex-kernel-guard/lifetime_probe.py` reuses the exact binding
+object and fixtures below. A separate loader pins all three links in a fresh,
+root-owned `0700` bpffs directory. The controller kills that loader with
+`SIGKILL` while retaining the synthetic endpoint and assigned-UID runtime.
+
+| Transition | Observed result |
+| --- | --- |
+| Before loader death | Runtime accepted; inherited-socket helper denied with `EPERM` |
+| Loader killed, all its descriptors closed | Pins retain enforcement and referenced maps; helper denied |
+| Existing runtime after loader death | Still accepted under its existing grant; pinning does not automatically revoke authority |
+| Session attempts to unlink a protected pin | Permission denied |
+| All pins removed while controller retains link descriptors | Helper still denied |
+| Privileged `BPF_LINK_DETACH`, with a pin and descriptor retained | `EOPNOTSUPP`; helper still denied |
+| Send-link pin is its last reference | Helper still denied |
+| Last send-link reference removed while endpoint remains reachable | Helper request accepted after deferred kernel destruction: fail-open counterexample |
+
+The explicit detach syscall was initially expected to succeed; the measured
+kernel rejected it instead. This agrees with
+[Linux 6.12 tracing-link operations](https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/syscall.c#L3086),
+which have no detach callback, and the
+[syscall refusal](https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/syscall.c#L5058)
+when that callback is absent. Generic BPF detach documentation alone does not
+establish support for this link type. An immediate denial after final unpinning
+also gave misleading reassurance: destruction is deferred. The counterexample
+therefore waits at most five seconds for the unauthorized accepted request;
+timeouts and unexpected errors fail the probe rather than count as protection.
+
+Pins solve a narrower problem than endpoint admission. This test deliberately
+leaves the endpoint reachable to expose guard-reference loss; it does **not**
+prove inaccessible-first startup, supervisor/broker-loss composition, concurrent
+replacement, queued-request revocation, recovery or host-conformance admission.
+It changes no production behavior, Agent configuration or Verified posture.
+
+The maintainer resolved `louiselm-mvatk` on 2026-09-21 in Session
+`codex/01a0c1d7-bbcf-7f61-88dd-6b36b225272f`, confirming this boundary:
+
+- Our crashes and accidental privileged cleanup remain in scope. Malicious
+  root/kernel compromise remains excluded; our own cleanup bugs are not exempt.
+- Preserve the guard while any endpoint or accepted connection remains usable.
+  Revoke authority, stop request processing and close connections before
+  releasing the guard. Prove supported lifecycle paths cannot drop the final
+  reference prematurely.
+- Supervisor/broker death must prevent further request admission. A one-time
+  loader may exit without revocation only after safe ownership transfer.
+- Polling health is not proof of a gap-free boundary. If protected ownership
+  cannot establish the invariant, another enforcement boundary is required;
+  do not weaken Verified claims to fit the candidate.
+
+This confirms a design requirement, not implementation or lifecycle acceptance.
+Continue `.3.7` with crash/teardown tests and existing launch/conformance owners;
+request-level admission remains `.3.8`, full ACP composition `.3.9`.
+
+Reproduce inside the independently owned restricted guest, with the binding
+object compiled as below and `guard_probe.py`, `binding_probe.py` and the new
+fixture together in `/var/tmp`:
+
+```sh
+sudo -n python3 /var/tmp/lifetime_probe.py --disposable-vm /home/vm/binding.bpf.o
+```
+
+Expected verdict: `LIFETIME_COUNTEREXAMPLES_NOT_VERIFIED`, not a security pass.
+The fixture reaps its children, closes the endpoint and descriptors, and removes
+only its own pins/directory, including on failed assertions. Run it only in a
+disposable KVM guest; it deliberately demonstrates an unguarded endpoint.
+
+Evidence cache: `/home/lotso/.cache/louiselm-lifecycle.eD9HkK`; unit
+`louiselm-lifecycle-vm.service`, SSH port `22557`, guest kernel
+`6.12.107+deb13-cloud-amd64`. This was a private copy of the stopped binding-proof
+overlay, retaining restricted networking and the existing resource limits;
+neither the shared VM nor the earlier evidence overlay was modified. Binding
+object SHA-256:
+`1ac3b4321ebfabcd902d7c70356c197b585e8a10dd575ab8a565349c7db6deef`.
+
+Validation: the original primitive, exact-binding, stock-Codex primitive and
+stock-Codex binding probes all retained their expected verdicts. A scratch
+negative control removing link pinning failed the helper-denial assertion after
+loader death; the unmodified lifetime probe passed its counterexample assertions.
+Python compilation, BPF compilation with `-Wall -Werror`, the launcher-VM safety
+contract and `git diff --check` passed. No production Rust/Lua code changed.
+Afterward no owned lifetime pins or fixture processes remained; the private VM
+was explicitly stopped and reported `LoadState=not-found`,
+`ActiveState=inactive`, `SubState=dead`, `MainPID=0`. Its disk is retained evidence.
+
 ## Exact lifetime and endpoint binding follow-up
 
 `louiselm-qbr.5.1.3.6`, 2026-09-18: **binding component passes; production
