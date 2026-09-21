@@ -9,12 +9,19 @@ release authority. GitLab synchronization is tracked in
 
 ## Status and first release
 
-This workflow is prepared for review, **not operationally accepted**. No release
-has been published. The checked-in `VERSION` and manifest initially contain
-`0.0.0`, meaning unreleased. The previous ACP `0.1.0` literal was not a release.
-Release Please proposes the explicit initial version `0.1.0`, considering the
-entire history, including the root commit, subject to the component and commit
-type filters below. No `bootstrap-sha` is set. `commit-search-depth` is JavaScript's
+The first alpha release, [`plugin-v0.1.0`](https://github.com/euri10/louiselm/releases/tag/plugin-v0.1.0),
+was published on 2026-09-18 at 10:29:29 UTC and is immutable. Its tag targets
+`096c25d2f7cb845e4af73d997f91ae81871d1b59`; `VERSION`, the manifest and the
+consumed Lua version are `0.1.0`. Hosted acceptance in
+`louiselm-component-releases-oa0d.1` records the maintainer-merged release PR,
+successful CI on its exact head and merge commit, and publication/retry run
+`35334925205`. Companion releases remain separate work.
+
+For bootstrap, `VERSION` and the manifest initially contained `0.0.0`, meaning
+unreleased; the older ACP `0.1.0` literal was not a release. Release Please
+selected the explicit initial version `0.1.0` from the entire history, including
+the root commit, subject to the component and commit type filters below.
+No `bootstrap-sha` is set. `commit-search-depth` is JavaScript's
 maximum safe integer (9007199254740991), avoiding the upstream 500-commit cutoff;
 the scan ends at repository inception or the previous real plugin release.
 There is no fake historical tag or release. The separate commit-policy audit
@@ -67,8 +74,9 @@ must deliberately change the policy and gate. A breaking commit cannot infer 1.0
 
 ## Activation and hosted acceptance
 
-The maintainer must review/configure these repository settings. This change does
-not provision credentials, change visibility, merge release PRs, or publish one.
+The following setup and hosted acceptance were completed for the first release.
+Keep these requirements when reviewing or reconfiguring the workflow; this
+procedure does not authorize changing credentials or publishing another release.
 
 1. Register a dedicated GitHub App and install it only on `euri10/louiselm` with
    Contents and Pull requests read/write, plus Issues read/write for Release
@@ -148,14 +156,13 @@ or rely on GitHub's repository-wide “latest” release for plugin selection.
 
 ## Installation and pinning
 
-Until the first release exists, use the public HTTPS repository and an exact
-existing commit, for example this reviewed baseline:
+Use the public HTTPS repository and the exact published alpha tag:
 
 ```lua
 -- lazy.nvim example; no GitHub credential is required to clone public source.
 {
   url = "https://github.com/euri10/louiselm.git",
-  commit = "c905fdafa60370d1a07e6853bba741cce9da9870",
+  tag = "plugin-v0.1.0",
   config = function()
     require("louiselm").setup({
       agents = { codex = { command = "codex-acp", provider = "OpenAI" } },
@@ -164,10 +171,9 @@ existing commit, for example this reviewed baseline:
 }
 ```
 
-After verifying the first published release, replace `commit` with
-`tag = "plugin-v0.1.0"`. That is an exact tag pin; a wildcard/automatic SemVer
-selector may not understand component prefixes. The tag does not exist yet.
-An authenticated GitHub CLI can download the source after publication:
+This is an exact tag pin; a wildcard/automatic SemVer selector may not understand
+component prefixes. For development code, replace `tag` with a reviewed full
+commit SHA. An authenticated GitHub CLI can download the published source:
 `gh release download plugin-v0.1.0 --repo euri10/louiselm --archive tar.gz`.
 Public browsing and source downloads require no repository access grant. Never put a PAT
 in plugin configuration or a repository URL. Core chat still needs the documented

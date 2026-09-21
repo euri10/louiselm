@@ -47,8 +47,8 @@ for storage, recovery, and the asynchronous headless API contract.
 Shared state defaults to `~/.local/state/louiselm/` (`$XDG_STATE_HOME/louiselm/`
 when set), independently of the Neovim profile.
 
-The source is public; the first packaged release is still pending. Exact
-plugin pins are described in the
+The source is public, and the first alpha release is available as
+`plugin-v0.1.0`. Exact plugin pins are described in the
 [release guide](https://github.com/euri10/louiselm/blob/main/docs/releases.md).
 Core chat requires no capture, trusted-tool or Android companion. If you have a checkout,
 replace the path below and save this as `quickstart.lua`:
@@ -270,7 +270,8 @@ not imply identical capabilities across Agents.
   Attention inbox, not a mobile chat or workflow-control app.
 - `skills-core/README.md`: experimental, source-built immutable skill packages,
   deterministic Inspection, reviewer Dossiers, and Skill Admission. Root-owned
-  installation and protected trust data are not complete. This is separate
+  installation and protected trust have passed release acceptance in a disposable
+  VM; desktop deployment and end-to-end Verified Session cutover remain pending. This is separate
   from ordinary chat skill discovery and does not decide whether a skill is
   safe.
 
@@ -289,7 +290,9 @@ graph without operator decisions.
 - [Example workflow](docs/example-workflow.md): the maintainer's configuration,
   not a product contract.
 - [ACP log backups](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/acp-log-backups.md): opt-in encrypted snapshots, cloud
-  copy, staged restore and reviewed retention; live setup remains pending.
+  copy, staged restore and reviewed retention. The maintainer accepted scheduled
+  local/cloud recovery on 2026-09-10; new installations remain opt-in, and retention
+  remains manually reviewed.
 - [Contributing](CONTRIBUTING.md) and `AGENTS.md`: project policy and quality
   gates.
 

@@ -216,9 +216,11 @@ but nothing here validates a manufacturer certificate chain, so the record says
 `validated: false` and the bytes are evidence only — never proof that a key is
 genuine hardware.
 
-Until louiselm-d6fv.7 installs root-owned binaries and protected trust data, the
-trust store and Generation records live in the same store an operator can write.
-That is the gap that release makes real; it is not closed here.
+Root-owned release installation and protected trust have passed the disposable-VM
+acceptance recorded in `louiselm-lm70`. A development store remains writable by
+its operator and permanently untrusted; it does not acquire that boundary by
+running these commands. Desktop deployment and the complete Verified Session
+cutover remain `louiselm-d6fv.9`.
 
 ### The manual ceremony
 
@@ -882,8 +884,11 @@ must not also be able to decide the store is trustworthy.
 
 Automated tests assemble bundles from fake component files and install into
 temporary prefixes, so they cover identity, signing, tampering, atomicity, and
-downgrade without a nested build or root. Root ownership and genuine hardware
-signing remain `lm70`; installed Android/YubiKey recovery remains `.11.5`.
+downgrade without a nested build or root. `louiselm-lm70` records completed
+disposable-VM acceptance of genuine YubiKey signatures, root-owned installation
+and upgrade, downgrade/tamper refusal, and exact restoration. This does not
+certify desktop deployment or complete recovery readiness; unfinished installed
+Android/YubiKey recovery acceptance remains `louiselm-d6fv.11.5`.
 
 Use the [one-token release/recovery runbook](../docs/recovery-ceremony.md), not
 older two-token rotation recipes. It distinguishes the permanently untrusted

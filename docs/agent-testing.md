@@ -24,6 +24,7 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
   -c "lua MiniTest.run()" -c "qa!"
 ./scripts/generate-api-appendix --check
 ./scripts/generate-luacats --check
+./scripts/generate-vimdoc --check
 ./scripts/generate-plugin-version --check
 ```
 
@@ -129,14 +130,15 @@ this generator reads the schema and writes annotations, the opposite of
 `generate-api-appendix`, which reads annotations and writes `doc/api.md`.
 
 A generator that shells out to an external exporter must validate that
-export before trusting it. `lua-language-server --doc` exits 0 even when it
-dumps its export before the workspace finished loading, and the truncated
-result renders as a well-formed but shorter artifact — so the `--check` gate
-blames the committed file for being stale and a plain run silently overwrites
-it. CI job 104941880259 built its whole export in 2.5s where the passing job
-on a slower runner took 6.0s (louiselm-qbr.9.9.7.1). Check a property the
-export cannot plausibly lose, fail with the exporter named, and leave the
-artifact untouched.
+export before trusting its exit status. An incomplete export can render as a
+well-formed but shorter artifact: `--check` reports stale documentation, while
+an unchecked write can discard valid entries. The original CI mismatch in
+`louiselm-qbr.9.9.7.1` remains unexplained: its differing export was not retained,
+and a shorter runtime alone does not prove a workspace-loading race. LuaLS
+3.19.1 explicitly waits for workspace readiness; preserve the export, logs and
+unified diff on recurrence. Independently of that unresolved cause, check a
+property the export cannot plausibly lose, fail with the exporter named, and
+leave the artifact untouched.
 
 Check it at the granularity the exporter truncates at. This gate first asked
 only that each curated *section* hold an entry, but LuaLS truncates per file:
@@ -223,7 +225,7 @@ For all tests:
   its artifact is committed, consumed by something, and held current by a
   `--check` gate. `gen_luacats.lua` passed its unit tests from 2026-08-06 while
   writing no file and being referenced by nothing, so users got no `setup()`
-  completion for eight months
+  completion until the artifact was connected to its consumer
   (`louiselm-luacats-generator-inert-5y8i`). Prove the artifact reaches its
   consumer: for a type file that means running `lua-language-server --check`
   against a scratch workspace that requires the plugin the way a user does, not
