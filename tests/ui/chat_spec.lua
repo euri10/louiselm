@@ -5598,62 +5598,93 @@ T["chat"]["queues context items as ACP text before the user prompt"] = function(
   chat:dispose()
 end
 
-T["chat"]["renders every accepted context in one closed native fold before the user prompt"] = function()
-  local created = fake_session("session-1", "claude")
-  created.state.skills_policy = "inject"
-  local api = fake_api()
-  api.create_session = function()
-    return created
+T["chat"]["keeps the skill resource body independently folded inside submitted contexts"] = function()
+  for _, embedded_context in ipairs({ false, true }) do
+    local created = fake_session("session-1", "claude")
+    created.state.skills_policy = "inject"
+    created.state.embedded_context = embedded_context
+    local api = fake_api()
+    api.create_session = function()
+      return created
+    end
+    local chat = assert(Chat.new(api, {
+      agents = { "claude" },
+      skill_catalog = "catalog line one\ncatalog line two",
+    }))
+    MiniTest.finally(function()
+      chat:dispose()
+    end)
+    assert(chat:new_session("claude"))
+    assert(chat:queue_context({ label = "file: init.lua", text = "first line\nsecond line" }))
+    assert(chat:queue_context({ label = "AGENTS.md", uri = "file:///repo/AGENTS.md" }))
+
+    assert(chat:submit("Review this"))
+
+    MiniTest.expect.equality(created.prompts[1], {
+      embedded_context and {
+        type = "resource",
+        resource = {
+          uri = "louiselm://skills/index",
+          mimeType = "text/plain",
+          text = "catalog line one\ncatalog line two",
+        },
+      } or { type = "text", text = "catalog line one\ncatalog line two" },
+      { type = "text", text = "first line\nsecond line" },
+      { type = "resource_link", uri = "file:///repo/AGENTS.md", name = "AGENTS.md" },
+      { type = "text", text = "Review this" },
+    })
+    MiniTest.expect.equality(buffer_lines(chat:buffer()), {
+      "# claude · session-1",
+      "Session: status=ready · display=Your turn · skills=inject",
+      "ACP options:",
+      "Telemetry:",
+      "",
+      "> [contexts: skill-index · file: init.lua · AGENTS.md]",
+      "[context: skill-index]",
+      "type: resource",
+      "uri: louiselm://skills/index",
+      "mimeType: text/plain",
+      "[body: skill-index]",
+      "  catalog line one",
+      "  catalog line two",
+      "[context: file: init.lua]",
+      "first line",
+      "second line",
+      "[context: AGENTS.md]",
+      "type: resource_link",
+      "name: AGENTS.md",
+      "uri: file:///repo/AGENTS.md",
+      "> Review this",
+      "",
+      "> ",
+    })
+    MiniTest.expect.equality(nvim.api.nvim_get_option_value("buftype", { buf = chat:buffer() }), "nofile")
+    MiniTest.expect.equality(nvim.api.nvim_get_option_value("swapfile", { buf = chat:buffer() }), false)
+    MiniTest.expect.equality(nvim.api.nvim_get_option_value("foldmethod", { win = 0 }), "manual")
+    MiniTest.expect.equality({ fold_range(6) }, { 6, 20 })
+    MiniTest.expect.equality(fold_range(21), -1)
+
+    nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+    nvim.api.nvim_cmd({ cmd = "normal", args = { "zo" }, bang = true }, {})
+    MiniTest.expect.equality(fold_range(6), -1)
+    MiniTest.expect.equality(fold_range(8), -1)
+    MiniTest.expect.equality({ fold_range(12) }, { 11, 13 })
+    MiniTest.expect.equality(fold_range(14), -1)
+    MiniTest.expect.equality(fold_range(17), -1)
+    nvim.api.nvim_win_set_cursor(0, { 11, 0 })
+    nvim.api.nvim_cmd({ cmd = "normal", args = { "zo" }, bang = true }, {})
+    MiniTest.expect.equality(fold_range(12), -1)
+    MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(chat:buffer(), 11, 13, false), {
+      "  catalog line one",
+      "  catalog line two",
+    })
+    nvim.api.nvim_cmd({ cmd = "normal", args = { "zc" }, bang = true }, {})
+    nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+    nvim.api.nvim_cmd({ cmd = "normal", args = { "zc" }, bang = true }, {})
+    assert(chat:submit("Next"))
+    MiniTest.expect.equality(created.prompts[2], "Next")
+    chat:dispose()
   end
-  local chat = assert(Chat.new(api, {
-    agents = { "claude" },
-    skill_catalog = "catalog line one\ncatalog line two",
-  }))
-  assert(chat:new_session("claude"))
-  assert(chat:queue_context({ label = "file: init.lua", text = "first line\nsecond line" }))
-  assert(chat:queue_context({ label = "AGENTS.md", uri = "file:///repo/AGENTS.md" }))
-
-  assert(chat:submit("Review this"))
-
-  MiniTest.expect.equality(created.prompts[1], {
-    { type = "text", text = "catalog line one\ncatalog line two" },
-    { type = "text", text = "first line\nsecond line" },
-    { type = "resource_link", uri = "file:///repo/AGENTS.md", name = "AGENTS.md" },
-    { type = "text", text = "Review this" },
-  })
-  MiniTest.expect.equality(buffer_lines(chat:buffer()), {
-    "# claude · session-1",
-    "Session: status=ready · display=Your turn · skills=inject",
-    "ACP options:",
-    "Telemetry:",
-    "",
-    "> [contexts: skill-index · file: init.lua · AGENTS.md]",
-    "[context: skill-index]",
-    "catalog line one",
-    "catalog line two",
-    "[context: file: init.lua]",
-    "first line",
-    "second line",
-    "[context: AGENTS.md]",
-    "type: resource_link",
-    "name: AGENTS.md",
-    "uri: file:///repo/AGENTS.md",
-    "> Review this",
-    "",
-    "> ",
-  })
-  MiniTest.expect.equality(nvim.api.nvim_get_option_value("buftype", { buf = chat:buffer() }), "nofile")
-  MiniTest.expect.equality(nvim.api.nvim_get_option_value("swapfile", { buf = chat:buffer() }), false)
-  MiniTest.expect.equality(nvim.api.nvim_get_option_value("foldmethod", { win = 0 }), "manual")
-  MiniTest.expect.equality({ fold_range(6) }, { 6, 16 })
-
-  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
-  nvim.api.nvim_cmd({ cmd = "normal", args = { "zo" }, bang = true }, {})
-  MiniTest.expect.equality(fold_range(6), -1)
-  nvim.api.nvim_cmd({ cmd = "normal", args = { "zc" }, bang = true }, {})
-  assert(chat:submit("Next"))
-  MiniTest.expect.equality(created.prompts[2], "Next")
-  chat:dispose()
 end
 
 T["chat"]["keeps failed context chips without creating a submitted fold"] = function()
@@ -5698,6 +5729,40 @@ T["chat"]["applies a queued context fold when its hidden session buffer is focus
   })
   MiniTest.expect.equality({ fold_range(6) }, { 6, 8 })
   chat:dispose()
+end
+
+T["chat"]["installs the nested catalog fold after a hidden first prompt and preserves prompt navigation"] = function()
+  local first = fake_session("session-1", "one")
+  first.state.skills_policy = "inject"
+  local api = fake_api()
+  api.create_session = function()
+    return first
+  end
+  local chat = assert(Chat.new(api, { agents = { "one" }, skill_catalog = "> catalog example" }))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:new_session("one"))
+  first.state.status = "prompting"
+  assert(chat:submit("queued prompt"))
+  assert(chat:attach(fake_session("session-2", "two")))
+
+  first.state.status = "ready"
+  first:emit({ type = "turn_done", session_id = "session-1", data = {} })
+  nvim.wait(100, function()
+    return #first.prompts == 1
+  end, 1)
+  assert(chat:switch("session-1"))
+
+  MiniTest.expect.equality({ fold_range(6) }, { 6, 12 })
+  nvim.api.nvim_win_set_cursor(0, { 6, 0 })
+  nvim.api.nvim_cmd({ cmd = "normal", args = { "zo" }, bang = true }, {})
+  MiniTest.expect.equality({ fold_range(12) }, { 11, 12 })
+  MiniTest.expect.equality(buffer_lines(chat:buffer())[12], "  > catalog example")
+  MiniTest.expect.equality(fold_range(13), -1)
+  nvim.api.nvim_win_set_cursor(0, { #buffer_lines(chat:buffer()), 0 })
+  nvim.api.nvim_feedkeys("[u", "mx", false)
+  MiniTest.expect.equality(nvim.api.nvim_get_current_line(), "> queued prompt")
 end
 
 T["chat"]["positions the cursor after queued context, not before it"] = function()

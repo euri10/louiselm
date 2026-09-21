@@ -33,7 +33,7 @@ T["assembles resolved input in order without consuming it or requiring a buffer 
     { type = "text", text = "/$review first line\nsecond line" },
   })
   MiniTest.expect.equality(contexts, {
-    { label = "skill-index", text = "hidden catalog" },
+    { label = "skill-index", text = "hidden catalog", uri = "louiselm://skills/index" },
     { label = "notes", text = "original notes" },
     { label = "skill: review", text = "skill body", skill_path = "/not-read/SKILL.md" },
     { label = "AGENTS.md", uri = "file:///repo/AGENTS.md" },
@@ -104,7 +104,7 @@ T["prepends staged context to typed Handoff blocks without mutating or consuming
   MiniTest.expect.equality(#content, 3)
   MiniTest.expect.equality(content[1].resource.uri, "louiselm://skills/index")
   MiniTest.expect.equality({ content[2], content[3] }, body)
-  MiniTest.expect.equality(contexts, { { label = "skill-index", text = "catalog" } })
+  MiniTest.expect.equality(contexts, { { label = "skill-index", text = "catalog", uri = "louiselm://skills/index" } })
   MiniTest.expect.equality(draft:with_context(body, true), content)
   draft:clear_context()
   MiniTest.expect.equality({ draft:with_context(body, true) }, { body, {} })

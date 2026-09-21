@@ -278,7 +278,20 @@ local function replace_submitted_prompt(view, text, contexts)
     lines[1] = "> [contexts: " .. table.concat(labels, " · ") .. "]"
     for _, item in ipairs(contexts) do
       lines[#lines + 1] = "[context: " .. single_line(item.label) .. "]"
-      if item.text ~= nil then
+      if item.uri == "louiselm://skills/index" and item.text ~= nil then
+        lines[#lines + 1] = "type: resource"
+        lines[#lines + 1] = "uri: " .. item.uri
+        lines[#lines + 1] = "mimeType: text/plain"
+        local body_first = view.prompt_line + #lines
+        lines[#lines + 1] = "[body: " .. single_line(item.label) .. "]"
+        for _, line in ipairs(nvim.split(item.text, "\n", { plain = true })) do
+          lines[#lines + 1] = "  " .. line
+        end
+        view.context_folds[#view.context_folds + 1] = {
+          first = body_first,
+          last = view.prompt_line + #lines - 1,
+        }
+      elseif item.text ~= nil then
         nvim.list_extend(lines, nvim.split(item.text, "\n", { plain = true }))
       else
         lines[#lines + 1] = "type: resource_link"

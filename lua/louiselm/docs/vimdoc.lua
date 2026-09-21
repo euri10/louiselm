@@ -350,6 +350,11 @@ local SECTIONS = {
       )
       append_prose(
         lines,
+        "Submitted context is folded above the user prompt. With the inject skills policy, open that fold with zo to see the skill-index resource type and URI. Its catalog body stays in a separate [body: skill-index] fold; use zo there to inspect it and zc to close it.",
+        context
+      )
+      append_prose(
+        lines,
         "To remove a staged skill, erase its [context: skill: NAME] chip from the prompt. Before submitting or staging another item, LouiseLM keeps only skills with intact leading chips. Edited chip fragments remain ordinary text; other queued context and the hidden skill catalog are retained.",
         context
       )

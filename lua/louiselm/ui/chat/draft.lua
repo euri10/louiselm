@@ -193,15 +193,15 @@ end
 function Draft:context_content(embedded_context)
   local content, contexts = {}, {}
   if self.skill_catalog ~= nil then
-    local catalog = { label = "skill-index", text = self.skill_catalog }
+    local catalog = { label = "skill-index", text = self.skill_catalog, uri = "louiselm://skills/index" }
     contexts[#contexts + 1] = catalog
     if embedded_context then
       content[#content + 1] = {
         type = "resource",
-        resource = { uri = "louiselm://skills/index", mimeType = "text/plain", text = self.skill_catalog },
+        resource = { uri = catalog.uri, mimeType = "text/plain", text = self.skill_catalog },
       }
     else
-      content[#content + 1] = context_block(catalog)
+      content[#content + 1] = { type = "text", text = self.skill_catalog }
     end
   end
   for _, item in ipairs(self.contexts) do
