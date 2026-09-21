@@ -32,6 +32,17 @@ local function encoded(value)
   return nvim.json.encode(value)
 end
 
+local function literal(value)
+  local text = encoded(value)
+  local delimiter = "`"
+  for run in text:gmatch("`+") do
+    if #run >= #delimiter then
+      delimiter = run .. "`"
+    end
+  end
+  return delimiter .. text .. delimiter
+end
+
 local function sorted_keys(value)
   local keys = nvim.tbl_keys(value)
   table.sort(keys)
@@ -41,11 +52,11 @@ end
 ---@param lines string[]
 ---@param summary louiselm.session.UsageTotals
 local function metrics(lines, summary)
-  lines[#lines + 1] = string.format("%d turns | outcomes %s", summary.turns, encoded(summary.outcomes))
+  lines[#lines + 1] = string.format("**%d turns** | **outcomes:** %s", summary.turns, literal(summary.outcomes))
   for _, field in ipairs(sorted_keys(summary.tokens)) do
     local value = summary.tokens[field]
     lines[#lines + 1] = string.format(
-      "  %s: total %g | mean %g | coverage %d/%d",
+      "- **%s:** total %g | mean %g | coverage %d/%d",
       field,
       value.total,
       value.average,
@@ -55,7 +66,7 @@ local function metrics(lines, summary)
   end
   for _, value in ipairs(summary.costs) do
     lines[#lines + 1] = string.format(
-      "  Cost %s: total %g | mean %g | coverage %d/%d",
+      "- **Cost %s:** total %g | mean %g | coverage %d/%d",
       value.currency,
       value.total,
       value.average,
@@ -64,10 +75,10 @@ local function metrics(lines, summary)
     )
   end
   if next(summary.tokens) == nil then
-    lines[#lines + 1] = "  Tokens: not reported"
+    lines[#lines + 1] = "- **Tokens:** not reported"
   end
   if #summary.costs == 0 then
-    lines[#lines + 1] = "  Cost: no complete reported delta"
+    lines[#lines + 1] = "- **Cost:** no complete reported delta"
   end
 end
 
@@ -78,36 +89,44 @@ local function render(self)
   end
   local query = self.query
   local lines = {
-    "LouiseLM usage | " .. (query.view or "summary") .. " | UTC",
-    "<Enter> inspect/apply  <BS> back  n/p page  r refresh  q close",
-    "f filters  g grouping  t time range  b bucket  d dimensions  v view  m mixed  s Session timeline",
-    "Time: [" .. (query.from and encoded(query.from) or "beginning") .. ", " .. (query.until_time and encoded(
+    "# LouiseLM usage | " .. (query.view or "summary") .. " | UTC",
+    "",
+    "`<Enter>` inspect/apply  `<BS>` back  `n/p` page  `r` refresh  `q` close",
+    "`f` filters  `g` grouping  `t` time range  `b` bucket  `d` dimensions  `v` view  `m` mixed  `s` Session timeline",
+    "",
+    "## Query",
+    "",
+    "**Time:** [" .. (query.from and literal(query.from) or "beginning") .. ", " .. (query.until_time and literal(
       query.until_time
-    ) or "latest") .. ") UTC | buckets: " .. (query.bucket or "none"),
-    "Filters: " .. encoded(query.filters or nvim.empty_dict()) .. " | grouping: " .. encoded(query.group_by or {}),
+    ) or "latest") .. ") UTC | **buckets:** `" .. (query.bucket or "none") .. "`",
+    "**Filters:** " .. literal(query.filters or nvim.empty_dict()) .. " | **grouping:** " .. literal(
+      query.group_by or {}
+    ),
     "Turn filters use immutable starting values; events use observed timestamps.",
-    "Mixed: " .. (query.mixed or "include") .. "; configuration summaries exclude changed-during-turn records.",
+    "**Mixed:** " .. (query.mixed or "include") .. "; configuration summaries exclude changed-during-turn records.",
     "",
   }
   self.row_lines = {}
   local turn = self.selected
   if turn then
-    lines[#lines + 1] = "Session: "
-      .. encoded(turn.agent)
+    lines[#lines + 1] = "## Selected turn"
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "**Session:** "
+      .. literal(turn.agent)
       .. "/"
-      .. encoded(turn.acp_session_id)
-      .. " | turn "
-      .. encoded(turn.id)
-    lines[#lines + 1] = "Started: "
-      .. encoded(turn.prepared_at)
-      .. " | Provider: "
-      .. encoded(turn.provider)
-      .. " | Model: "
-      .. encoded(turn.model)
-    lines[#lines + 1] = "Starting options: " .. encoded(turn.options)
-    lines[#lines + 1] = "Starting cost: "
-      .. encoded(turn.cost_baseline)
-      .. " | changed during turn: "
+      .. literal(turn.acp_session_id)
+      .. " | **turn:** "
+      .. literal(turn.id)
+    lines[#lines + 1] = "**Started:** "
+      .. literal(turn.prepared_at)
+      .. " | **Provider:** "
+      .. literal(turn.provider)
+      .. " | **Model:** "
+      .. literal(turn.model)
+    lines[#lines + 1] = "**Starting options:** " .. literal(turn.options)
+    lines[#lines + 1] = "**Starting cost:** "
+      .. literal(turn.cost_baseline)
+      .. " | **changed during turn:** "
       .. tostring(turn.mixed)
     if turn.summary then
       metrics(lines, turn.summary)
@@ -117,22 +136,26 @@ local function render(self)
   local first_result_line
   local page = self.page
   if self.error then
-    lines[#lines + 1] = "Query failed: " .. self.error
+    lines[#lines + 1] = "**Query failed:** " .. self.error
     lines[#lines + 1] = "Edit filters/range or press r to retry."
   elseif not page then
-    lines[#lines + 1] = "Loading recorded history..."
+    lines[#lines + 1] = "*Loading recorded history...*"
   else
     if query.view ~= "events" then
+      lines[#lines + 1] = "## Totals"
+      lines[#lines + 1] = ""
       metrics(lines, page.summary)
     end
+    lines[#lines + 1] = ""
     lines[#lines + 1] =
-      string.format("Mixed turns: %d | excluded from this summary: %d", page.mixed_turns, page.excluded_mixed)
+      string.format("**Mixed turns:** %d | **excluded from this summary:** %d", page.mixed_turns, page.excluded_mixed)
+    lines[#lines + 1] = ""
     lines[#lines + 1] = string.format(
-      "Rows %d-%d of %d%s",
+      "## Rows %d-%d of %d%s",
       #page.rows == 0 and 0 or (query.offset or 0) + 1,
       (query.offset or 0) + #page.rows,
       page.total,
-      page.next_offset and " | n: next page" or ""
+      page.next_offset and " | `n`: next page" or ""
     )
     lines[#lines + 1] = ""
     if #page.rows == 0 then
@@ -143,32 +166,36 @@ local function render(self)
       first_result_line = first_result_line or first
       if query.view == "events" then
         lines[#lines + 1] = string.format(
-          "%s | %s | sequence %d | turn %s | observer %s",
+          "### %s | %s | sequence %d | turn %s | observer %s",
           encoded(row.observed_at),
           row.kind or "",
           row.sequence or 0,
           encoded(row.turn_id),
           encoded(row.observer_id)
         )
-        lines[#lines + 1] = "  " .. encoded(row.data)
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "**Data:** " .. literal(row.data)
       elseif query.view == "dimensions" then
-        lines[#lines + 1] = encoded(row.dimension) .. " = " .. encoded(row.value)
+        lines[#lines + 1] = "### " .. literal(row.dimension) .. " = " .. literal(row.value)
       elseif query.view == "turns" then
         lines[#lines + 1] = string.format(
-          "%s | %s/%s | %s%s",
+          "### %s | %s/%s | %s%s",
           encoded(row.prepared_at),
           encoded(row.agent),
           encoded(row.acp_session_id),
           encoded(row.id),
           row.mixed and " | MIXED: excluded from fixed comparisons" or ""
         )
-        lines[#lines + 1] = "  " .. encoded(row.provider) .. " | " .. encoded(row.options)
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "**Provider:** " .. literal(row.provider) .. " | **options:** " .. literal(row.options)
         if row.summary then
           metrics(lines, row.summary)
         end
       else
-        lines[#lines + 1] = encoded(row.dimensions or nvim.empty_dict())
+        lines[#lines + 1] = "### "
+          .. literal(row.dimensions or nvim.empty_dict())
           .. (row.bucket_start and " | [" .. row.bucket_start .. ", " .. row.bucket_end .. ") UTC" or "")
+        lines[#lines + 1] = ""
         if row.summary then
           metrics(lines, row.summary)
         end
@@ -389,6 +416,7 @@ function M.open(options)
   nvim.bo[self.buffer].bufhidden = "wipe"
   nvim.bo[self.buffer].swapfile = false
   nvim.bo[self.buffer].filetype = "louiselm_usage"
+  nvim.bo[self.buffer].syntax = "markdown"
   nvim.api.nvim_create_autocmd("BufWipeout", {
     buffer = self.buffer,
     once = true,

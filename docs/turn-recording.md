@@ -290,6 +290,9 @@ not flushed by exploration. Refresh after a turn finishes to include new facts.
 Pressing `p` while a next page loads returns to the previous page.
 Completed queries select the first result while the explorer is active, so
 Enter inspects that result immediately after paging or returning to a list.
+The explorer uses Markdown headings, emphasized labels and literal values with
+Neovim's built-in Markdown syntax highlighting. Its filetype stays
+`louiselm_usage`; no Markdown renderer or Tree-sitter parser is required.
 
 | Key | Action |
 | --- | --- |

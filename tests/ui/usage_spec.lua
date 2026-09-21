@@ -56,6 +56,43 @@ local function deliver(call, value, err)
   end, 1)
 end
 
+T["daily usage uses native Markdown highlighting without changing the explorer filetype"] = function()
+  local syntax_enabled = nvim.g.syntax_on ~= nil
+  nvim.cmd.syntax("enable")
+  MiniTest.finally(function()
+    if not syntax_enabled then
+      nvim.cmd.syntax("off")
+    end
+  end)
+  local view, calls = open()
+  view:set_query({ filters = { agent = "codex" }, bucket = "day" })
+  deliver(
+    calls[2],
+    page({
+      {
+        dimensions = {},
+        bucket_start = "2026-09-07T00:00:00Z",
+        bucket_end = "2026-09-08T00:00:00Z",
+        summary = page().summary,
+      },
+    })
+  )
+  MiniTest.expect.equality(nvim.bo[view.buffer].filetype, "louiselm_usage")
+  MiniTest.expect.equality(nvim.bo[view.buffer].syntax, "markdown")
+  MiniTest.expect.equality(text(view):find("# LouiseLM usage | summary | UTC", 1, true) == 1, true)
+  MiniTest.expect.equality(text(view):find('**Filters:** `{"agent":"codex"}`', 1, true) ~= nil, true)
+  MiniTest.expect.equality(text(view):find("**buckets:** `day`", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text(view):find("## Totals", 1, true) ~= nil, true)
+  MiniTest.expect.equality(text(view):find("## Rows 1-1 of 2", 1, true) ~= nil, true)
+  MiniTest.expect.equality(nvim.fn.synIDattr(nvim.fn.synID(1, 3, 1), "name"), "markdownH1")
+  local line = nvim.api.nvim_get_current_line()
+  MiniTest.expect.equality(line:find("### ", 1, true) == 1, true)
+  MiniTest.expect.equality(line:find("[2026-09-07T00:00:00Z, 2026-09-08T00:00:00Z) UTC", 1, true) ~= nil, true)
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx!", false)
+  MiniTest.expect.equality(calls[3].query.from, "2026-09-07T00:00:00Z")
+  MiniTest.expect.equality(calls[3].query.until_time, "2026-09-08T00:00:00Z")
+end
+
 T["view recomputes filters pages and ignores superseded fast-event results"] = function()
   local view, calls = open()
   MiniTest.expect.equality(text(view):find("Loading", 1, true) ~= nil, true)
@@ -73,6 +110,19 @@ T["view recomputes filters pages and ignores superseded fast-event results"] = f
   deliver(calls[3], page())
   view:previous_page()
   MiniTest.expect.equality(calls[4].query.offset, 0)
+end
+
+T["Markdown preserves recorded backticks and row navigation"] = function()
+  local view, calls = open()
+  local value = "model`with``ticks"
+  view:set_query({ view = "dimensions" })
+  deliver(calls[2], page({ { dimension = "model", value = value } }))
+  MiniTest.expect.equality(text(view):find('```"' .. value .. '"```', 1, true) ~= nil, true)
+  nvim.api.nvim_feedkeys(nvim.api.nvim_replace_termcodes("<CR>", true, false, true), "mx!", false)
+  MiniTest.expect.equality(calls[3].query.filters.model, value)
+  view:set_query({ view = "events" })
+  deliver(calls[4], page({ { kind = "options", data = { model = value } } }))
+  MiniTest.expect.equality(text(view):find('**Data:** ```{"model":"' .. value .. '"}```', 1, true) ~= nil, true)
 end
 
 T["previous-page key reverses a pending next-page read"] = function()
