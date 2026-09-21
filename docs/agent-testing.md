@@ -69,6 +69,15 @@ The skills CI job requires this distinct-UID gate. It tests the actual CLI,
 read-only provisioning, durable broker handler and restart after delivery failure;
 it does not certify physical signing or an installed desktop Session.
 
+The installed Attention gate runs `scripts/test-broker-attention.py` only inside
+a disposable VM/private mount namespace with `LOUISELM_REQUIRE_BROKER_ATTENTION=1`
+and `LOUISELM_TEST_CAPTURE` naming the built capture CLI. It requires OverlayFS
+to isolate account/provisioning writes without eagerly copying the runner's
+unrelated `/etc` files (louiselm-2ar2u). Keep the CI watchdog at 120s. Static phase
+markers and one 90s stack dump identify stalls without recording payloads;
+`python3 scripts/test-broker-attention-diagnostics.py` tests these diagnostics
+without privileges. A skipped installed gate is not privileged acceptance.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is
