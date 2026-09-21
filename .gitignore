@@ -15,6 +15,8 @@ android/local.properties
 android/**/google-services.json
 android/**/build/
 .playwright-cli/
+/reports/
+/.npm/
 nvim.log
 # br doctor per-run artifacts
 .doctor/

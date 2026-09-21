@@ -16,6 +16,19 @@ const publicArtifact = readFileSync('scripts/check-public-artifact', 'utf8');
 const promotionPath = 'docs/demo-promotion.md';
 assert.ok(existsSync(promotionPath), 'demo promotion checklist must exist');
 const promotion = existsSync(promotionPath) ? readFileSync(promotionPath, 'utf8') : '';
+const ci = readFileSync('.gitlab-ci.yml', 'utf8');
+const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
+assert.match(ci, /to-be-continuous\/playwright\/gitlab-ci-playwright@[0-9a-f]{40}/);
+assert.ok(ci.includes(`playwright:v${packageJson.devDependencies['@playwright/test']}-noble@sha256:`),
+	'CI browser image must match the exact Playwright Test version');
+const browserJob = ci.slice(ci.indexOf('\nplaywright:\n'), ci.indexOf('\nsite-deploy:\n'));
+assert.match(browserJob, /stage: test/);
+assert.match(browserJob, /job: site-build\n\s+artifacts: true/);
+assert.match(browserJob, /allow_failure: false/);
+assert.match(browserJob, /if: '\$CI_COMMIT_BRANCH \|\| \$CI_MERGE_REQUEST_ID'/);
+const deployJob = ci.slice(ci.indexOf('\nsite-deploy:\n'));
+assert.match(deployJob, /job: playwright\n\s+artifacts: false/,
+	'deployment must wait for the browser gate');
 
 const demoHeaders = (firebase.hosting.headers ?? []).find((entry) => entry.source === '/demo/**');
 assert(demoHeaders, 'Firebase must define headers for /demo/**');

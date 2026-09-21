@@ -59,18 +59,34 @@ For each row, start in a fresh browser context and verify:
    bottom status line remain visible. Neovim buffer scrolling stays inside
    Neovim. The static mobile/unsupported fallback may scroll normally.
 
-With the existing `playwright-cli` tool, open the built artifact served with
-the isolation headers below, then run the layout regression:
+The required GitLab `playwright` job downloads the candidate `site-build`
+artifact and runs the layout regression before `site-deploy` can be started.
+It uses the mirrored to-be-continuous component at
+`c9ddc28361794d4103989501b6658f47f96236f3` (1.10.0), with Playwright Test
+1.63.0 and the matching digest-pinned browser image. The component owns npm
+installation, caching and JUnit reporting. Job rules require it on branch
+and merge-request pipelines, including drafts; failure blocks deployment.
+
+To run the same check locally against a built artifact:
 
 ```bash
-playwright-cli open http://127.0.0.1:8765/demo/
-playwright-cli run-code --filename=scripts/test-demo-layout.js
+npm ci
+npx playwright install chromium
+npm run site:build
+npm run site:test:browser
 ```
 
-The check walks guide steps using Skip in both languages and profiles at all
-three sizes, measuring document overflow, guide controls, and rendered Neovim
-rows/columns. It supplements the real-action journey above. A `### Error`
-result fails the check even if the CLI process exits zero.
+Playwright starts and stops `scripts/serve-demo.mjs` on loopback, serving only
+`_build/html` with the isolation headers below. Set `LOUISELM_SITE_ARTIFACT`
+to an extracted CI artifact directory when testing a downloaded build.
+The tests never use the component's environment URL or the production site.
+
+The four profile/language tests walk guide steps using Skip at all three
+sizes: 132 layout checks, including completion. They assert real Neovim startup,
+document overflow, guide controls, and rendered Neovim rows/columns. Failures
+exit nonzero and produce JUnit, screenshots and traces under `reports/`, kept
+as GitLab artifacts. This gate supplements the real-action journey above;
+Skip does not certify prompting, permissions, Resume or Handoff behavior.
 
 ## Privacy and fallback audit
 
