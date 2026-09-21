@@ -54,6 +54,45 @@ fn passing() -> Report {
     }
 }
 
+/// Consumes the actual opt-in VM artifact through the existing report oracle.
+#[test]
+#[ignore = "requires ownership_probe.py output in LOUISELM_TEST_KERNEL_GUARD_REPORT"]
+fn kernel_guard_component_report_cannot_certify_a_host() {
+    use louiselm_skills::conformance::installed::{Certificate, HostSnapshot};
+    use std::io::Read;
+
+    let path = std::env::var_os("LOUISELM_TEST_KERNEL_GUARD_REPORT").unwrap();
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .unwrap()
+        .take(u64::try_from(MAX_REPORT_BYTES).unwrap() + 1)
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert!(bytes.len() <= MAX_REPORT_BYTES);
+    let artifact: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(artifact["verdict"], "OWNERSHIP_COMPONENT_PASS_NOT_VERIFIED");
+    let report: Report = serde_json::from_value(artifact["observations"].clone()).unwrap();
+    assert_eq!(report.scope, Scope::DisposableGuest);
+    assert_eq!(report.result().unwrap(), ReportResult::Incomplete);
+    assert_eq!(report.cleanup, Cleanup::Confirmed);
+    assert_eq!(
+        Report::parse_canonical(&report.canonical_bytes().unwrap()).unwrap(),
+        report
+    );
+    let digest = louiselm_skills::Digest::of(b"fixture").to_string();
+    let host = HostSnapshot {
+        profile: "debian13-x86_64-glibc/1".into(),
+        machine_digest: digest.clone(),
+        boot_id: "00000000-0000-0000-0000-000000000001".into(),
+        release_digest: digest.clone(),
+        inputs: ["launcher", "backend", "policy", "kernel", "loader"]
+            .into_iter()
+            .map(|name| (name.into(), digest.clone()))
+            .collect(),
+    };
+    assert!(Certificate::new(host, report).is_err());
+}
+
 #[test]
 fn complete_exact_observations_pass_and_round_trip_without_granting_host_authority() {
     let report = passing();

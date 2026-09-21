@@ -2,6 +2,7 @@
 import array
 import ctypes as C
 import errno
+import http.client
 import http.server
 import json
 import os
@@ -78,14 +79,19 @@ class BindingGuard(Guard):
         return pin
 
     def reserve(self, server):
-        self.put("ports", C.c_uint32(server.server_port), C.c_uint32(1))
+        key, reserved = C.c_uint32(server.server_port), C.c_uint32()
+        if self.lib.bpf_map_lookup_elem(self.map_fd("ports"), C.byref(key), C.byref(reserved)) == 0:
+            assert reserved.value == 1
+            return
+        assert C.get_errno() == errno.ENOENT
+        self.put("ports", key, C.c_uint32(1))
 
-    def publish(self, server, launch=1, session=101, run=201, revision=1):
+    def publish(self, server, launch=1, session=101, run=201, revision=1, deadline=None):
         self.reserve(server)
         listener = struct.unpack("Q", server.socket.getsockopt(socket.SOL_SOCKET, 57, 8))[0]
         self.put("listeners", C.c_uint64(listener), C.c_uint32(1))
         rule = Binding(launch, session, run, revision, listener,
-                       time.monotonic_ns() + 120_000_000_000,
+                       time.monotonic_ns() + 120_000_000_000 if deadline is None else deadline,
                        os.fstat(self.namespace).st_ino, server.address_family)
         address = socket.inet_pton(server.address_family, server.server_address[0])
         for index in range(len(address) // 4):
@@ -114,6 +120,16 @@ def child():
             result = {"connected": len(connections) - 1}
         elif operation == "send":
             result = transmit(connections[action.get("index", -1)], action.get("method", "send"))
+        elif operation == "queue":
+            connections[-1].sendall(b"POST /fixture HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            result = {"queued": True}
+        elif operation == "reply":
+            response = http.client.HTTPResponse(connections[-1])
+            response.begin()
+            response.read()
+            result = {"status": response.status}
+        elif operation == "eof":
+            result = {"closed": connections[-1].recv(1) == b""}
         elif operation == "thread":
             result = []
             worker = threading.Thread(target=lambda: result.append(transmit(connections[-1], "send")))

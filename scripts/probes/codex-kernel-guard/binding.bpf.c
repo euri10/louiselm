@@ -87,8 +87,7 @@ int invalidate_listener(__u64 *ctx)
     return 0;
 }
 
-SEC("lsm/socket_sendmsg")
-int endpoint_send(__u64 *ctx)
+static __attribute__((always_inline)) int binding_send(__u64 *ctx)
 {
     int previous = (int)ctx[3];
     if (previous)
@@ -132,5 +131,13 @@ int endpoint_send(__u64 *ctx)
         return -1;
     return 0;
 }
+
+#ifndef LIFECYCLE_PROOF
+SEC("lsm/socket_sendmsg")
+int endpoint_send(__u64 *ctx)
+{
+    return binding_send(ctx);
+}
+#endif
 
 char LICENSE[] SEC("license") = "GPL";

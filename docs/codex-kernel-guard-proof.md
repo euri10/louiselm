@@ -209,7 +209,7 @@ The maintainer resolved `louiselm-mvatk` on 2026-09-21 in Session
   do not weaken Verified claims to fit the candidate.
 
 This confirms a design requirement, not implementation or lifecycle acceptance.
-Continue `.3.7` with crash/teardown tests and existing launch/conformance owners;
+The ownership continuation below supplies the bounded crash/teardown component;
 request-level admission remains `.3.8`, full ACP composition `.3.9`.
 
 Reproduce inside the independently owned restricted guest, with the binding
@@ -242,6 +242,166 @@ contract and `git diff --check` passed. No production Rust/Lua code changed.
 Afterward no owned lifetime pins or fixture processes remained; the private VM
 was explicitly stopped and reported `LoadState=not-found`,
 `ActiveState=inactive`, `SubState=dead`, `MainPID=0`. Its disk is retained evidence.
+
+## Endpoint-owned guard lifecycle proof
+
+`louiselm-qbr.5.1.3.7`, 2026-09-21: **disposable lifecycle component passes**.
+`ownership_probe.py` and `lifecycle.bpf.c` extend the binding experiment. They
+implement no installed endpoint, privileged desktop service, Provider
+authentication or Verified cutover. The original final-reference-loss
+counterexample remains runnable and still demonstrates its failure.
+
+### Protected ownership and admission
+
+The endpoint owner creates a private mount namespace and private bpffs, loads
+all five hooks, pins them, then remounts that filesystem read-only. It reserves
+the endpoint port before listening and publishes no runtime policy until
+explicit enablement. Missing BPF LSM/BTF, an invalid object or a missing required
+hook refuses before constructing that listener. The owner later drops to the
+distinct broker-fixture UID 4020010 with no effective capabilities and
+`no_new_privs`; remounting writable is denied. Runtime UID 4020000 receives no
+guard, map, namespace or controller descriptors.
+
+Read-only pins reject even privileged unlink. Frozen reserved-port, runtime
+enrollment, owner-enrollment and loss-latch maps reject userspace deletion or
+rewriting. Freezing the reserved-port map matters: removing that entry would
+otherwise make the original hook treat the endpoint as an unrelated port.
+Policy/listener absence denies instead. Kernel hooks can still revoke frozen
+task storage and set the loss latch. All five explicit link-detach attempts
+return `EOPNOTSUPP` on this measured kernel; unsupported behavior is not a pass.
+
+The fixture then closes **all** loader link/program descriptors while 200
+inherited-helper sends run across the transition. Namespace-owned pins retain
+the programs and their maps. The endpoint retains only its admission-map
+descriptors. There is no health polling that attempts to repair a detached
+hook. Normal shutdown disables processing, stops accepting, closes and joins
+accepted connections, then closes map descriptors. Crash cleanup relies on
+endpoint process death and the retained namespace, not Python `finally`.
+The synthetic upstream observer also retains a namespace descriptor until its
+own sockets close. No supported cleanup path unpins or unmounts a live guard.
+
+This uses the kernel's [bpffs object references](https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/inode.c)
+and [process-exit lifecycle](https://github.com/torvalds/linux/blob/v6.12/kernel/exit.c).
+Do not infer that descriptor numbers alone order socket destruction: final
+file release can be deferred. The invariant is that no live processing owner
+or intentionally transferred endpoint can outlive the namespace reference.
+Arbitrary malicious root namespace entry/remount or kernel compromise remains
+outside the accepted threat model; ordinary unlink, fd cleanup and our crashes
+are tested rather than excluded.
+
+An immutable task-storage entry binds the exact supervisor lifetime to a
+single monotonic loss latch shared by this guard's two destinations. Kernel
+exit and exec hooks set it; userspace cannot reset it. Enablement additionally
+requires an actual supervisor response **after** hook attachment and enrollment,
+so a death before enrollment cannot be mistaken for a live authority. This
+fixture owns that subprocess and its private pipe. Production must use the
+existing authenticated supervisor/receipt channel for that ordering.
+
+The second destination is a synthetic upstream listener. Its distinct kernel
+grant admits only the broker owner, not the runtime. Each fixture request checks
+current policy, then makes one guarded upstream write. A deterministic barrier
+kills or execs the supervisor **after** that userspace check and **before** the
+write: the kernel refuses the write, and the observer receives no request.
+A cached userspace decision therefore cannot bridge supervisor loss. Writes
+already admitted before revocation are not retroactively undone.
+
+Recovery closes the old listener and every accepted connection. It accepts
+only the original launch, Session, Run, revision and unexpired deadline, creates
+a fresh listener cookie at the same address, and never reenrolls a runtime or
+clears owner loss. Old connections remain denied. Replacing a dead/exec'd owner
+requires a fresh launch, not recovery of this grant.
+
+### Observed lifecycle matrix
+
+| Case | Result |
+| --- | --- |
+| Unsupported LSM/BTF, invalid object, missing owner hook | Refused before endpoint construction |
+| Listener before enablement | Runtime send denied |
+| Enabled runtime; inherited helper | Runtime completes a synthetic request; helper denied |
+| Runtime directly addresses synthetic upstream | Denied; only broker has that grant |
+| Revocation and exact-authority recovery | Old sockets closed; fresh listener succeeds; changed scope/deadline rejected |
+| Privileged unlink; frozen map cleanup/reset | `EROFS`; `EPERM` |
+| Explicit detach of each of five links | `EOPNOTSUPP` |
+| Unprivileged remount; all loader descriptors closed | Remount refused; 200 concurrent helper attempts denied; runtime positive control passes |
+| Supervisor death before request check | Buffered request refused; no upstream effect |
+| Supervisor death/exec after check, before upstream write | Kernel denies final write; no upstream effect or grant restoration |
+| Broker owner killed while supervisor remains alive | Listener refuses connections; accepted socket reaches EOF |
+| Orderly close and crash disposal | Children reaped; listeners/accepted sockets closed; all seven owned map IDs disappear |
+
+Four scratch negative controls fail at the intended assertions: writable pins,
+an unfrozen reserved-port map, missing owner revocation, and bypassing the loss
+check **only** for the broker's final upstream write. The last mutation permits
+the precisely ordered stale-decision request and fails the expected-403 check.
+Restoring the guarded implementation passes.
+
+### Existing consumers and remaining integration
+
+The artifact includes an existing `louiselm.conformance.observations/1` report,
+with disposable-guest scope and one lifecycle component observation. The opt-in
+`conformance::kernel_guard_component_report_cannot_certify_a_host` test consumes
+the actual artifact through `Report` and `Certificate`: it is incomplete for
+whole-host conformance and cannot become an installed certificate. No parallel
+posture, guest-to-host promotion or new Verified claim is introduced.
+
+The existing broker, conformance and launch-supervisor suites passed 269 tests
+(five separate opt-in cases skipped), including sequence-0/sequence-1 ordering,
+unsupported integration, missing tool isolation, stale conformance, broker loss,
+recovery, disposal and ordinary pre-cutover Sessions. These are existing
+consumer gates, not proof that the Python fixture has been installed in them.
+Stock Codex remains unsupported by the installed deterministic-test integration;
+this work changes no Agent permissions or operator-selected auto-approval.
+
+`.3.9` must compose this ownership and final-write boundary with the real
+supervisor, broker and complete ACP chain. In particular it must preserve the
+namespace reference for every endpoint/connection owner, freeze enrollment only
+after the exact measured runtime and broker are registered, obtain the
+post-enrollment authenticated owner response before enablement, bind measured
+BPF/host inputs to existing conformance, and enforce loss at the actual upstream
+write. The proof uses a fixed synthetic HTTP operation, not production TLS,
+connection pooling or Provider destinations. `.3.8` retains per-request framing
+and queued-work policy; `.3.2` retains durable shared accounting; `.3.4` retains
+subscription authentication. None can substitute this component pass for its
+own acceptance.
+
+### Reproduction and validation
+
+Compile `binding.bpf.c` and `lifecycle.bpf.c` with the host-only Clang command
+above. Transfer their objects and `ownership_probe.py`, `lifetime_probe.py`,
+`binding_probe.py` and `guard_probe.py` into an independently owned restricted
+guest. Keep both objects together: the missing-hook negative case deliberately
+loads `binding.bpf.o`. Run inside that guest:
+
+```sh
+sudo -n python3 /var/tmp/ownership_probe.py --disposable-vm /home/vm/lifecycle.bpf.o
+sudo -n python3 /var/tmp/ownership_probe.py --disposable-vm /home/vm/lifecycle.bpf.o --before-check
+sudo -n python3 /var/tmp/ownership_probe.py --disposable-vm /home/vm/lifecycle.bpf.o --supervisor-exec --orderly-close
+sudo -n python3 /var/tmp/ownership_probe.py --disposable-vm /home/vm/lifecycle.bpf.o --broker-crash
+```
+
+Each emits `OWNERSHIP_COMPONENT_PASS_NOT_VERIFIED` only after cleanup checks.
+Save one complete JSON artifact, then consume it on the host:
+
+```sh
+LOUISELM_TEST_KERNEL_GUARD_REPORT=/absolute/path/ownership-crash.json \
+CARGO_PROFILE_DEV_DEBUG=line-tables-only ./scripts/test-skills-core \
+  --test conformance kernel_guard_component_report_cannot_certify_a_host -- --ignored --exact
+```
+
+Evidence cache: `/home/lotso/.cache/louiselm-guard-owner.J1lPxP`; independent unit
+`louiselm-guard-owner-vm.service`, SSH port `22559`, kernel
+`6.12.107+deb13-cloud-amd64`. This private copy retained restricted networking,
+the existing resource/deadline limits and no host mounts or account credentials.
+The original primitive, binding, both stock-Codex probes and lifetime
+counterexample retained their verdicts. The full isolated Rust suite passed
+1,091 tests (10 opt-in tests ignored); the artifact consumer passed explicitly.
+Formatting, strict all-target/all-feature Clippy, warning-free Rustdoc,
+13 browser tests, Python/BPF compilation and the launcher-VM safety contract
+passed. The measured lifecycle BPF object SHA-256 is
+`794c445bc3b68288efdcda539893b202f68682506ded40bd647bfe88ccd39b72`;
+debug paths can change rebuilt object hashes.
+After the final four variants, the private VM was explicitly stopped and
+reported `LoadState=not-found`, `ActiveState=inactive`, `SubState=dead`,
+`MainPID=0`. The private disk and structured results remain as evidence.
 
 ## Exact lifetime and endpoint binding follow-up
 
@@ -376,8 +536,8 @@ debug paths can change rebuilt object hashes.
 
 ### Limits carried into the remaining tasks
 
-This passes `.3.6`'s binding proof, not installed enforcement. `.3.7` still owns
-startup/guard-loss closure and protected attachment lifetime; `.3.8` owns
+This passes `.3.6`'s binding proof, not installed enforcement. `.3.7` supplies
+the lifecycle component above; `.3.8` owns
 per-request admission, queued bytes, revision races and budget. A send authorized
 before policy replacement can already be in flight, and multiple requests can
 share that send. The broker must validate each request again before effects.
