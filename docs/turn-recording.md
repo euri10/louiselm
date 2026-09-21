@@ -287,6 +287,7 @@ starts with totals across all recorded dispatched turns. There is no optional
 configuration gate. Each refresh queries SQLite asynchronously; closing the
 buffer or replacing the query cancels its reader. Pending recorder writes are
 not flushed by exploration. Refresh after a turn finishes to include new facts.
+Pressing `p` while a next page loads returns to the previous page.
 
 | Key | Action |
 | --- | --- |

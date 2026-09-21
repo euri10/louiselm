@@ -75,6 +75,26 @@ T["view recomputes filters pages and ignores superseded fast-event results"] = f
   MiniTest.expect.equality(calls[4].query.offset, 0)
 end
 
+T["previous-page key reverses a pending next-page read"] = function()
+  local view, calls = open()
+  view:set_query({ view = "turns", filters = { agent = "codex" }, limit = 1 })
+  deliver(calls[2], page({}, 1))
+
+  nvim.api.nvim_feedkeys("np", "mx!", false)
+  MiniTest.expect.equality(#calls, 4)
+  MiniTest.expect.equality(calls[3].query.offset, 1)
+  MiniTest.expect.equality(calls[3].cancelled, true)
+  MiniTest.expect.equality(calls[4].query.offset, 0)
+  MiniTest.expect.equality(calls[4].query.filters, { agent = "codex" })
+  deliver(calls[4], page({}, 1))
+  local current = text(view)
+  deliver(calls[3], nil, { code = "storage", message = "late next page" })
+  MiniTest.expect.equality(text(view), current)
+
+  nvim.api.nvim_feedkeys("p", "mx!", false)
+  MiniTest.expect.equality(#calls, 4)
+end
+
 T["group and turn navigation preserve query and show starting state and source"] = function()
   local view, calls = open()
   local row = {

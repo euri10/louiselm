@@ -241,7 +241,7 @@ end
 ---Read the previous page, preserving the complete query.
 ---@param self louiselm.ui.UsageView
 function View:previous_page()
-  if self.disposed or not self.page or (self.query.offset or 0) == 0 then
+  if self.disposed or (self.query.offset or 0) == 0 then
     return
   end
   self.query.offset = math.max(0, (self.query.offset or 0) - (self.query.limit or 25))
