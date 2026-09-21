@@ -1,0 +1,7 @@
+2026-09-21T05:22:18.6347031Z Cache hit for: android-deps-v1-Linux-19eb094d8cb0c4614cc82746784309f3bff78e4caf9ed66582d4076d16a25f13-0c3ad6964ddfa39a359dc7a2ae194903859e5a07fdcd1da99fe9aa91ae42f31a
+2026-09-21T05:22:22.5095194Z Cache Size: ~618 MB (647924025 B)
+2026-09-21T05:22:23.3795335Z Cache restored successfully
+2026-09-21T05:22:23.4664554Z Cache restored from key: android-deps-v1-Linux-19eb094d8cb0c4614cc82746784309f3bff78e4caf9ed66582d4076d16a25f13-0c3ad6964ddfa39a359dc7a2ae194903859e5a07fdcd1da99fe9aa91ae42f31a
+2026-09-21T05:24:50.2819833Z BUILD SUCCESSFUL in 2m 21s
+2026-09-21T05:24:50.2820642Z 98 actionable tasks: 98 executed
+2026-09-21T05:24:53.1409511Z Cache hit occurred on the primary key android-deps-v1-Linux-19eb094d8cb0c4614cc82746784309f3bff78e4caf9ed66582d4076d16a25f13-0c3ad6964ddfa39a359dc7a2ae194903859e5a07fdcd1da99fe9aa91ae42f31a, not saving cache.
