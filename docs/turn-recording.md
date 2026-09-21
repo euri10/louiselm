@@ -280,4 +280,99 @@ peer response and the uninterrupted baseline/readings described above. Zero is
 a measurement; absent telemetry is not. The picker names total turns and the
 denominator for each displayed metric, or shows `No matching history`.
 
-The history explorer and advisory reflection remain separate follow-up work.
+## Interactive usage history
+
+`:LouiselmUsage` opens committed history without requiring a live Session. It
+starts with totals across all recorded dispatched turns. There is no optional
+configuration gate. Each refresh queries SQLite asynchronously; closing the
+buffer or replacing the query cancels its reader. Pending recorder writes are
+not flushed by exploration. Refresh after a turn finishes to include new facts.
+
+| Key | Action |
+| --- | --- |
+| `f` | Edit joint filters as a JSON object; `{}` clears them |
+| `g` | Edit grouping as a JSON array of dimension names; `[]` removes grouping |
+| `t` | Edit the UTC range as `{"from":"2026-09-07T00:00:00Z","until_time":"2026-09-08T00:00:00Z"}`; `{}` clears it |
+| `b` | Cycle no bucket, UTC hour, UTC day |
+| `d` | Browse paged recorded dimension values; Enter applies the selected value |
+| `v` | Cycle summaries, turns, and observations/transitions |
+| `m` | Cycle including, excluding, or inspecting only mixed turns |
+| Enter / Backspace | Drill into a group, then a turn; return to the previous query |
+| `s` | From a turn, show its Session timeline, including transitions between turns |
+| `n` / `p` | Next / previous page |
+| `r` / `q` | Refresh / close |
+
+Dimension names are `agent`, `provider`, `model`, `session` (the ACP Session ID),
+and `option:<recorded option ID>`. For example,
+`{"agent":"codex","model":"astra","option:reasoning":"medium","option:enabled":false}`
+is one joint filter. Boolean `false` differs from string `"false"`; JSON `null`
+matches an absent dimension. Filters always use recorded attribution and the
+immutable starting tuple. Unknown query fields and invalid values are errors.
+Dimension values reflect matching recorded turns, not current Agent settings.
+
+Turn ranges and buckets use the recorded `prepared_at` timestamp. Event ranges
+use `observed_at`. UTC is explicit throughout; ranges include their start and
+exclude their end. Hour/day buckets follow UTC clock/calendar boundaries, with
+no local-time or daylight-saving conversion. Opening a bucket retains any
+narrower outer time range. Ordering within an observation stream uses sequence
+numbers to break timestamp ties; ordering across streams does not imply causality.
+
+Overall and Agent/Session totals retain mixed turns. A summary filtered or grouped
+by Provider, Model, or options excludes mixed turns and reports the exclusion
+count. This conservative rule never allocates a mixed turn's measurements to a
+fixed configuration. Turn listings still support starting-value filters and
+`mixed = "only"`, so excluded evidence remains inspectable. Details show the
+starting tuple, cost baseline, recorded usage/outcome, changed-during-turn state,
+option replacements, observed source, and request links only where established.
+Between-turn transitions are available in the Session timeline; a configuration
+filter cannot attribute those transitions to an unrecorded Provider.
+
+Each token field and currency has its own sum, mean, and measured-turn coverage.
+Unreported metrics remain absent; zero remains a measurement. Costs use the
+picker's complete-delta rules above and never combine currencies or estimate
+prices. The display bounds pages to 25 rows; the API permits 1–100 rows. Facts
+are retained indefinitely. Each page is a fresh snapshot; concurrent recording
+can change totals or page positions, so refresh to restart an inspection.
+
+### Headless query API
+
+The recorder extends the picker's query boundary with
+`store:usage_query(query, callback) -> cancel`. It uses the same SQL metric
+calculation as `usage_summaries`; Lua only submits queries and renders results.
+
+```lua
+local recording = require("louiselm.session.recording")
+local paths = require("louiselm.paths")
+local store, err = recording.new(vim.fs.joinpath(paths.state(), "usage"), function() end)
+if not store then
+  -- Handle err.code / err.message.
+  return
+end
+local cancel = store:usage_query({
+  view = "summary", -- also "turns", "events", or "dimensions"
+  filters = { agent = "codex", ["option:enabled"] = false },
+  group_by = { "provider", "model", "option:reasoning" },
+  bucket = "day", -- "none", "hour", or "day"
+  from = "2026-09-07T00:00:00Z", -- optional; inclusive
+  until_time = "2026-09-08T00:00:00Z", -- optional; exclusive
+  mixed = "include", -- or "exclude" / "only"
+  limit = 25,
+  offset = 0,
+}, function(page, query_error)
+  -- Main-loop callback: inspect page or handle the typed query_error.
+  -- page.summary: turns, outcomes, tokens[field], costs[]
+  -- Each metric: samples, average, total; cost entries also have currency.
+  -- page.rows: grouped summaries / starting turns / events / dimension values.
+  -- page.total, page.next_offset, page.mixed_turns, page.excluded_mixed.
+end)
+-- cancel() suppresses delivery and stops only this query's SQLite process.
+```
+
+`view = "events", turn_id = "<durable turn ID>"` returns that turn's observations
+and linked transitions. Use Agent and `session` filters without `turn_id` for the
+Session timeline. Missing storage produces an empty page without creating a
+database. Invalid filters, corrupt metadata, permissions and query/storage
+failures return typed sanitized errors. A cancelled query has no callback;
+otherwise it completes once. The private reader keeps its bounded timeout.
+
+Advisory reflection remains separate follow-up work.

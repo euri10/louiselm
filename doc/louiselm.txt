@@ -5,16 +5,17 @@
 Contents                                                   *louiselm-contents*
 
   1. Overview ..................................................... |louiselm|
-  2. Sessions ............................................ |louiselm-sessions|
-  3. Workflow ............................................ |louiselm-workflow|
-  4. Permissions ...................................... |louiselm-permissions|
-  5. Context and skills ................................... |louiselm-context|
-  6. Default mappings .................................... |louiselm-mappings|
-  7. Commands ............................................ |louiselm-commands|
-  8. Configuration .................................. |louiselm-configuration|
-  9. Optional capabilities .................. |louiselm-optional-capabilities|
-  10. Session API ............................................. |louiselm-api|
-  11. Troubleshooting ............................. |louiselm-troubleshooting|
+  2. Usage history .......................................... |louiselm-usage|
+  3. Sessions ............................................ |louiselm-sessions|
+  4. Workflow ............................................ |louiselm-workflow|
+  5. Permissions ...................................... |louiselm-permissions|
+  6. Context and skills ................................... |louiselm-context|
+  7. Default mappings .................................... |louiselm-mappings|
+  8. Commands ............................................ |louiselm-commands|
+  9. Configuration .................................. |louiselm-configuration|
+  10. Optional capabilities ................. |louiselm-optional-capabilities|
+  11. Session API ............................................. |louiselm-api|
+  12. Troubleshooting ............................. |louiselm-troubleshooting|
 
 ==============================================================================
 Overview                                                            *louiselm*
@@ -56,6 +57,30 @@ Setup ~                                                     *louiselm.setup()*
   capabilities and validate the prerequisites of explicitly enabled
   integrations. Ordinary chat requires an authenticated Agent and sqlite3 >=
   3.38 with JSON support.
+
+==============================================================================
+Usage history                                                 *louiselm-usage*
+
+  |:LouiselmUsage| explores recorded usage without a live Session. Press f for
+  joint filters (JSON object), g for grouping (JSON array), t for an
+  inclusive/exclusive UTC range, and b to cycle UTC hour/day buckets.
+  Dimensions are agent, provider, model, session and option:<recorded ID>; d
+  browses recorded values and Enter applies one. Boolean false and string
+  false remain distinct; JSON null matches an absent value.
+
+  Enter drills from a summary into turns, then recorded observations and
+  option transitions. Backspace returns; s shows a turn's Session timeline,
+  including between-turn changes. v cycles summary/turns/events, m cycles
+  mixed-turn inclusion, n/p page, r refreshes and q closes. Turn ranges use
+  recorded start timestamps; event ranges use observation timestamps. Pages
+  contain at most 25 rows and query committed facts asynchronously.
+
+  Overall totals include mixed turns. Provider/Model/option summaries exclude
+  changed-during-turn records and report the count; inspect those turns in the
+  turn view. Each token field and currency displays its own reported total,
+  mean and coverage. Missing data stays absent, currencies are never combined,
+  and no prices are estimated. See docs/turn-recording.md for the headless
+  store:usage_query API and exact attribution rules.
 
 ==============================================================================
 Sessions                                                   *louiselm-sessions*
@@ -358,6 +383,10 @@ Commands                                                   *louiselm-commands*
 
 :LouiselmTutor                                                *:LouiselmTutor*
     Open the LouiseLM onboarding Tutor
+    Arguments: none
+
+:LouiselmUsage                                                *:LouiselmUsage*
+    Explore recorded usage: UTC ranges, joint filters, groups and turn details
     Arguments: none
 
 ==============================================================================

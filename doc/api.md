@@ -366,6 +366,86 @@ louiselm.session.LimitsStatus:
 - `title: string?` -- Agent-provided display title.
 - `updated_at: string?` -- Agent-provided ISO 8601 activity timestamp.
 
+### louiselm.session.UsageDimension
+
+```lua
+string
+```
+
+### louiselm.session.UsageQuery
+
+- `bucket: ("day"|"hour"|"none")?` -- UTC buckets of prepared_at; defaults to none.
+- `filters: table<string, boolean|string|userdata>?` -- Conjunction; vim.NIL matches an absent dimension. Turns use starting values.
+- `from: string?` -- Inclusive UTC timestamp YYYY-MM-DDTHH:MM:SS[.fff]Z.
+- `group_by: string[]?` -- Defaults to no dimensions.
+- `limit: integer?` -- Page size, 1..100; defaults to 25.
+- `mixed: ("exclude"|"include"|"only")?` -- Defaults to include; fixed-configuration summaries still exclude mixed turns.
+- `offset: integer?` -- Zero-based page offset; defaults to zero.
+- `turn_id: string?` -- Exact durable turn; events includes that turn's observations and associated transitions.
+- `until_time: string?` -- Exclusive UTC timestamp.
+- `view: ("dimensions"|"events"|"summary"|"turns")?` -- Defaults to summary.
+
+### louiselm.session.UsageTotals
+
+- `costs: louiselm.session.UsageTotalCurrency[]`
+- `outcomes: table<string, integer>` -- Counts by observed outcome; unobserved means no terminal observation.
+- `tokens: table<string, louiselm.session.UsageTotalMetric>`
+- `turns: integer` -- Dispatched turns, including unmeasured and unobserved completions.
+
+### louiselm.session.UsageTotalMetric
+
+- `average: number` -- Mean over measured turns only.
+- `samples: integer` -- Turns reporting this measurement.
+- `total: number` -- Sum over measured turns only.
+
+### louiselm.session.UsageTotalCurrency
+
+- `average: number` -- Mean over measured turns only.
+- `currency: string`
+- `samples: integer` -- Turns reporting this measurement.
+- `total: number` -- Sum over measured turns only.
+
+### louiselm.session.UsageRow
+
+- `acp_session_id: string?`
+- `agent: string?`
+- `bucket_end: string?` -- Exclusive UTC bucket boundary.
+- `bucket_start: string?` -- Inclusive UTC bucket boundary.
+- `cost_baseline: (louiselm.session.Cost)?`
+- `data: table?` -- Normalized event metadata, including observed source and established request links.
+- `dimension: string?` -- Dimension discovery row.
+- `dimensions: table<string, boolean|string>?` -- Summary group; absent values are omitted.
+- `id: string?` -- Durable turn ID or option event ID.
+- `kind: string?` -- Event kind.
+- `mixed: boolean?` -- Changed during turn; excluded from fixed-configuration comparisons.
+- `model: (boolean|string)?` -- Starting advertised Model.
+- `observed_at: string?` -- Event timestamp.
+- `observer_id: string?` -- Option observation stream identity.
+- `options: table<string, boolean|string>?` -- Immutable starting tuple.
+- `prepared_at: string?`
+- `provider: string?` -- Starting resolved Provider.
+- `sequence: integer?` -- Order within the recorded stream.
+- `summary: (louiselm.session.UsageTotals)?`
+- `turn_id: string?` -- Associated durable turn, only when recorded.
+- `value: (boolean|string)?` -- Recorded dimension value.
+
+### louiselm.session.UsagePage
+
+- `excluded_mixed: integer` -- Matching mixed turns excluded from this summary.
+- `mixed_turns: integer` -- Mixed turns matching starting-value filters.
+- `next_offset: integer?` -- Absent on the last page.
+- `rows: louiselm.session.UsageRow[]`
+- `summary: louiselm.session.UsageTotals` -- Matching dispatched turns; no Lua aggregation.
+- `timezone: "UTC"`
+- `total: integer` -- Matching rows, independent of the page size.
+- `view: string`
+
+### louiselm.session.UsageQueryCallback
+
+```lua
+fun(page?: louiselm.session.UsagePage, error?: louiselm.session.RecordingError)
+```
+
 ## Typed Events
 
 ### louiselm.session.EventType

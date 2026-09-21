@@ -36,6 +36,7 @@
 :LouiselmSessionSwitch	louiselm.txt	/*:LouiselmSessionSwitch*
 :LouiselmToMarkdown	louiselm.txt	/*:LouiselmToMarkdown*
 :LouiselmTutor	louiselm.txt	/*:LouiselmTutor*
+:LouiselmUsage	louiselm.txt	/*:LouiselmUsage*
 louiselm	louiselm.txt	/*louiselm*
 louiselm-api	louiselm.txt	/*louiselm-api*
 louiselm-commands	louiselm.txt	/*louiselm-commands*
@@ -88,6 +89,7 @@ louiselm-optional-capabilities	louiselm.txt	/*louiselm-optional-capabilities*
 louiselm-permissions	louiselm.txt	/*louiselm-permissions*
 louiselm-sessions	louiselm.txt	/*louiselm-sessions*
 louiselm-troubleshooting	louiselm.txt	/*louiselm-troubleshooting*
+louiselm-usage	louiselm.txt	/*louiselm-usage*
 louiselm-workflow	louiselm.txt	/*louiselm-workflow*
 louiselm.setup()	louiselm.txt	/*louiselm.setup()*
 louiselm.txt	louiselm.txt	/*louiselm.txt*

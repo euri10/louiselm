@@ -1,5 +1,6 @@
 ---@diagnostic disable-next-line: undefined-global -- Neovim owns process and filesystem effects.
 local nvim = vim
+local UsageQuery = require("louiselm.session.usage_query")
 
 ---@alias louiselm.session.RecordingErrorCode "invalid"|"unavailable"|"permissions"|"locked"|"corrupt"|"conflict"|"storage"|"attribution"
 ---@class louiselm.session.RecordingError
@@ -60,6 +61,7 @@ local nvim = vim
 ---@field flush fun(self: louiselm.session.RecordingStore, callback: louiselm.session.RecordingCallback)
 ---@field usage_history fun(self: louiselm.session.RecordingStore, agent: string, acp_session_id: string, callback: louiselm.session.UsageHistoryCallback)
 ---@field usage_summaries fun(self: louiselm.session.RecordingStore, cohorts: louiselm.session.UsageCohort[], callback: louiselm.session.UsageSummariesCallback)
+---@field usage_query fun(self: louiselm.session.RecordingStore, query: louiselm.session.UsageQuery, callback: louiselm.session.UsageQueryCallback): fun()
 
 ---@class louiselm.session.UsageCohort
 ---@field agent string Exact configured Agent.
@@ -584,8 +586,14 @@ end
 ---@param self louiselm.session.RecordingStore
 ---@param query string
 ---@param callback fun(rows: table[]?, error?: louiselm.session.RecordingError)
+---@return fun() cancel Suppress delivery and terminate this read's SQLite process.
 local function read(self, query, callback)
+  local cancelled = false
+  local running ---@type {kill: fun(self: table, signal: integer)}?
   nvim.schedule(function()
+    if cancelled then
+      return
+    end
     local stat, _, code = nvim.uv.fs_lstat(self.path)
     if stat == nil then
       if code == "ENOENT" then
@@ -623,6 +631,10 @@ COMMIT;
       { "sqlite3", "-readonly", "-batch", "-bail", "-json", "-nofollow", "-init", "/dev/null", self.path },
       { cwd = self.directory, env = {}, text = true, stdin = sql, timeout = 5000 },
       nvim.schedule_wrap(function(result)
+        if cancelled then
+          return
+        end
+        running = nil
         if result.code ~= 0 then
           callback(nil, sqlite_error(result.stderr or ""))
           return
@@ -638,8 +650,17 @@ COMMIT;
     )
     if not started or process == nil then
       callback(nil, failure("unavailable"))
+    else
+      running = process
     end
   end)
+  return function()
+    cancelled = true
+    if running ~= nil then
+      running:kill(15)
+      running = nil
+    end
+  end
 end
 
 ---Read committed presentation associations for exactly one Agent/ACP Session.
@@ -738,55 +759,7 @@ LEFT JOIN turn_events o ON o.turn_id=t.id AND o.kind='outcome'
 WHERE EXISTS (SELECT 1 FROM turn_events d WHERE d.turn_id=t.id AND d.kind='dispatch')
 AND NOT EXISTS (SELECT 1 FROM option_events e WHERE e.turn_id=t.id);
 
--- Refuse malformed consumed telemetry rather than letting SQLite coerce it.
-INSERT INTO history_guard SELECT NOT EXISTS (
- SELECT 1 FROM cohort_turns t WHERE t.outcome_data IS NOT NULL AND (
-  json_type(t.outcome_data) IS NOT 'object'
-  OR json_extract(t.outcome_data,'$.outcome') NOT IN ('completed','cancelled','failed','disposed','not_sent')
-  OR json_type(t.outcome_data,'$.outcome') IS NOT 'text'
-  OR json_type(t.outcome_data,'$.peer_response') NOT IN ('true','false')
-  OR json_type(t.outcome_data,'$.peer_response') IS NULL
-  OR (json_type(t.outcome_data,'$.usage') IS NOT NULL AND json_type(t.outcome_data,'$.usage') IS NOT 'object')
-  OR EXISTS (SELECT 1 FROM json_each(t.outcome_data,'$.usage') u WHERE
-   u.key NOT IN ('total_tokens','input_tokens','output_tokens','thought_tokens','cached_read_tokens','cached_write_tokens')
-   OR u.type IS NOT 'integer' OR u.value<0)
- ));
-CREATE TEMP TABLE cost_readings AS
-SELECT candidate,id,0 AS sequence,cost_baseline AS cost FROM cohort_turns
-UNION ALL
-SELECT t.candidate,t.id,e.sequence,json_extract(e.data,'$.cost')
-FROM cohort_turns t JOIN turn_events e ON e.turn_id=t.id AND e.kind='cost';
-INSERT INTO history_guard SELECT NOT EXISTS (
- SELECT 1 FROM cost_readings WHERE cost IS NOT NULL AND json_type(cost) IS NOT 'null' AND (
-  json_type(cost) IS NOT 'object' OR (SELECT count(*) FROM json_each(cost))<>2
-  OR json_type(cost,'$.amount') NOT IN ('integer','real') OR json_type(cost,'$.amount') IS NULL
-  OR json_extract(cost,'$.amount')<0 OR json_extract(cost,'$.amount')>=1e999
-  OR json_type(cost,'$.currency') IS NOT 'text'
-  OR json_extract(cost,'$.currency') NOT GLOB '[A-Z][A-Z][A-Z]'
- ));
-WITH ordered_costs AS (
- SELECT *,json_extract(cost,'$.amount') AS amount,json_extract(cost,'$.currency') AS currency,
- lag(json_extract(cost,'$.amount')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous,
- lag(json_extract(cost,'$.currency')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous_currency
- FROM cost_readings
-), deltas AS (
- SELECT candidate,id,min(currency) AS currency,max(amount)-min(amount) AS amount
- FROM ordered_costs GROUP BY candidate,id
- HAVING count(*)>1 AND count(amount)=count(*)
- AND sum(CASE WHEN sequence>0 AND (previous IS NULL OR amount<previous OR currency IS NOT previous_currency) THEN 1 ELSE 0 END)=0
-), metrics AS (
- SELECT candidate,'turns' AS kind,'' AS name,count(*) AS samples,NULL AS average FROM cohort_turns GROUP BY candidate
- UNION ALL
- SELECT candidate,'outcome',coalesce(json_extract(outcome_data,'$.outcome'),'unobserved'),count(*),NULL
- FROM cohort_turns GROUP BY candidate,coalesce(json_extract(outcome_data,'$.outcome'),'unobserved')
- UNION ALL
- SELECT t.candidate,'token',u.key,count(*),avg(u.value)
- FROM cohort_turns t,json_each(t.outcome_data,'$.usage') u GROUP BY t.candidate,u.key
- UNION ALL
- SELECT d.candidate,'cost',d.currency,count(*),avg(d.amount) FROM deltas d
- JOIN cohort_turns t ON t.candidate=d.candidate AND t.id=d.id
- WHERE json_extract(t.outcome_data,'$.peer_response')=1 GROUP BY d.candidate,d.currency
-)
+]] .. UsageQuery.metrics .. [[
 SELECT * FROM metrics ORDER BY candidate,kind,name;
 ]], function(rows, err)
     if rows == nil then
@@ -816,6 +789,56 @@ SELECT * FROM metrics ORDER BY candidate,kind,name;
       end
     end
     callback(summaries)
+  end)
+end
+
+---Explore committed facts in a bounded read-only snapshot. SQL owns all metrics.
+---Missing history returns an empty page. Invalid queries and storage failures
+---return typed errors; callbacks run once on the main loop. Never flushes or writes.
+---@param self louiselm.session.RecordingStore
+---@param query louiselm.session.UsageQuery
+---@param callback louiselm.session.UsageQueryCallback
+---@return fun() cancel Suppresses delivery and terminates this read, without affecting writes or other readers.
+function Store:usage_query(query, callback)
+  local sql = UsageQuery.build(query, sql_text)
+  if sql == nil then
+    local cancelled = false
+    nvim.schedule(function()
+      if not cancelled then
+        callback(
+          nil,
+          { code = "invalid", message = "invalid usage query; check dimensions, UTC range and page bounds" }
+        )
+      end
+    end)
+    return function()
+      cancelled = true
+    end
+  end
+  local view = query.view or "summary"
+  return read(self, sql, function(rows, err)
+    if rows == nil then
+      callback(nil, err)
+      return
+    end
+    if #rows == 0 then
+      callback({
+        timezone = "UTC",
+        view = view,
+        total = 0,
+        mixed_turns = 0,
+        excluded_mixed = 0,
+        summary = { turns = 0, outcomes = {}, tokens = {}, costs = {} },
+        rows = {},
+      })
+      return
+    end
+    local ok, page = pcall(nvim.json.decode, rows[1].result, { luanil = { object = true } })
+    if not ok or type(page) ~= "table" or type(page.rows) ~= "table" or type(page.summary) ~= "table" then
+      callback(nil, failure("corrupt"))
+      return
+    end
+    callback(page)
   end)
 end
 

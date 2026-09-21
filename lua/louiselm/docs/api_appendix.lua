@@ -21,6 +21,7 @@ M.SECTIONS = {
       "lua/louiselm/session/registry.lua",
       "lua/louiselm/session/limits.lua",
       "lua/louiselm/session/validation.lua",
+      "lua/louiselm/session/usage_query.lua",
     },
   },
   {

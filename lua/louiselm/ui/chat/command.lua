@@ -322,6 +322,7 @@ function M.register()
     dispose_registered = nil
   end
   local chat
+  local usage ---@type louiselm.ui.UsageView?
   local inline
   local export_cancel ---@type fun()?
   local disposed = false
@@ -528,6 +529,15 @@ function M.register()
     desc = "Open the LouiseLM onboarding Tutor",
     force = true,
   })
+
+  nvim.api.nvim_create_user_command("LouiselmUsage", function()
+    if usage ~= nil then
+      usage:dispose()
+    end
+    local err
+    usage, err = require("louiselm.ui.usage").open()
+    report_error(err and err.message)
+  end, { desc = "Explore recorded usage: UTC ranges, joint filters, groups and turn details", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmInspectBead", inspect_bead, {
     desc = "Inspect the Beads issue under the cursor",
@@ -903,6 +913,9 @@ function M.register()
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
     disposed = true
+    if usage ~= nil then
+      usage:dispose()
+    end
     if mousemove_observer ~= nil then
       nvim.api.nvim_del_autocmd(mousemove_observer)
     end

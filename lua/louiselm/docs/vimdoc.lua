@@ -271,6 +271,27 @@ end
 local SECTIONS = {
   { title = "Overview", tag = "louiselm", emit = emit_overview },
   {
+    title = "Usage history",
+    tag = "louiselm-usage",
+    emit = function(lines, context)
+      append_prose(
+        lines,
+        ":LouiselmUsage explores recorded usage without a live Session. Press f for joint filters (JSON object), g for grouping (JSON array), t for an inclusive/exclusive UTC range, and b to cycle UTC hour/day buckets. Dimensions are agent, provider, model, session and option:<recorded ID>; d browses recorded values and Enter applies one. Boolean false and string false remain distinct; JSON null matches an absent value.",
+        context
+      )
+      append_prose(
+        lines,
+        "Enter drills from a summary into turns, then recorded observations and option transitions. Backspace returns; s shows a turn's Session timeline, including between-turn changes. v cycles summary/turns/events, m cycles mixed-turn inclusion, n/p page, r refreshes and q closes. Turn ranges use recorded start timestamps; event ranges use observation timestamps. Pages contain at most 25 rows and query committed facts asynchronously.",
+        context
+      )
+      append_prose(
+        lines,
+        "Overall totals include mixed turns. Provider/Model/option summaries exclude changed-during-turn records and report the count; inspect those turns in the turn view. Each token field and currency displays its own reported total, mean and coverage. Missing data stays absent, currencies are never combined, and no prices are estimated. See docs/turn-recording.md for the headless store:usage_query API and exact attribution rules.",
+        context
+      )
+    end,
+  },
+  {
     title = "Sessions",
     tag = "louiselm-sessions",
     emit = function(lines, context)
