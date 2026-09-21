@@ -1,0 +1,99 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+2026-09-21T04:20:42Z
+sample=warmup
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+daemon: retired history at 1.40874384s
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: installed broker authority is invalid
+louiselm-control: broker state identity changed; preserve state and explicitly run louiselm-control adopt-state
+daemon: upgrade and refusals at 2.223990143s
+/etc/sudoers.d/adoption-fixture: parsed OK
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: adoption complete at 2.782831036s
+test launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.83s
+
+sample=1
+wall=2.851 user=1.879 sys=0.721
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+daemon: retired history at 1.379221879s
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: installed broker authority is invalid
+louiselm-control: broker state identity changed; preserve state and explicitly run louiselm-control adopt-state
+daemon: upgrade and refusals at 2.20503196s
+/etc/sudoers.d/adoption-fixture: parsed OK
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: adoption complete at 2.744516852s
+test launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.79s
+
+wall=2.818 user=1.849 sys=0.736
+sample=2
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+daemon: retired history at 1.339113946s
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: installed broker authority is invalid
+louiselm-control: broker state identity changed; preserve state and explicitly run louiselm-control adopt-state
+daemon: upgrade and refusals at 2.146285383s
+/etc/sudoers.d/adoption-fixture: parsed OK
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: adoption complete at 2.694591332s
+test launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.74s
+
+wall=2.764 user=1.868 sys=0.682
+sample=3
+
+running 1 test
+useradd warning: louiselm-broker-gate's uid 4019000 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: Session worker: authorization is unknown or already consumed
+daemon: retired history at 1.388147311s
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+louiselm-control: installed broker authority is invalid
+louiselm-control: broker state identity changed; preserve state and explicitly run louiselm-control adopt-state
+daemon: upgrade and refusals at 2.243014321s
+/etc/sudoers.d/adoption-fixture: parsed OK
+louiselm-control: Attention delivery unavailable (launch grant is not well formed); queued entries retained; check endpoint configuration, receiver and outbox storage
+daemon: adoption complete at 2.805698101s
+test launch_supervisor::system::installed_tests::daemon::state::privileged_activated_daemon_upgrades_and_adopts_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 2.85s
+
+wall=2.874 user=2.023 sys=0.586
+/var/tmp/louiselm-skills-target/debug/louiselm-launch bytes=50704920 sample=1 seconds=0.024431
+/var/tmp/louiselm-skills-target/debug/louiselm-launch bytes=50704920 sample=2 seconds=0.024935
+/var/tmp/louiselm-skills-target/debug/louiselm-launch bytes=50704920 sample=3 seconds=0.025792
+/var/tmp/louiselm-skills-target/debug/louiselm-launch bytes=50704920 sample=4 seconds=0.023977
+/var/tmp/louiselm-skills-target/debug/louiselm-launch bytes=50704920 sample=5 seconds=0.023587
+/var/tmp/louiselm-skills-target/debug/louiselm-control bytes=60106216 sample=1 seconds=0.028142
+/var/tmp/louiselm-skills-target/debug/louiselm-control bytes=60106216 sample=2 seconds=0.028647
+/var/tmp/louiselm-skills-target/debug/louiselm-control bytes=60106216 sample=3 seconds=0.028076
+/var/tmp/louiselm-skills-target/debug/louiselm-control bytes=60106216 sample=4 seconds=0.028653
+/var/tmp/louiselm-skills-target/debug/louiselm-control bytes=60106216 sample=5 seconds=0.027941
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-agent bytes=37723560 sample=1 seconds=0.017201
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-agent bytes=37723560 sample=2 seconds=0.017165
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-agent bytes=37723560 sample=3 seconds=0.018201
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-agent bytes=37723560 sample=4 seconds=0.017958
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-agent bytes=37723560 sample=5 seconds=0.017748
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-helper bytes=37655536 sample=1 seconds=0.017698
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-helper bytes=37655536 sample=2 seconds=0.017390
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-helper bytes=37655536 sample=3 seconds=0.018098
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-helper bytes=37655536 sample=4 seconds=0.018448
+/var/tmp/louiselm-skills-target/debug/louiselm-tool-test-helper bytes=37655536 sample=5 seconds=0.018368
+2026-09-21T04:20:54Z

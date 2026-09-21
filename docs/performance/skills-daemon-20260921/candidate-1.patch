@@ -1,0 +1,22 @@
+diff --git c/docs/agent-testing.md i/docs/agent-testing.md
+index 8d96469..ea21a19 100644
+--- c/docs/agent-testing.md
++++ i/docs/agent-testing.md
+@@ -94,2 +94,5 @@ executables and can exhaust fixture deadlines on slow runners
+-(louiselm-cjpep). Line tables retain backtrace locations; optimization, debug
+-assertions, overflow checks, and security verification stay unchanged.
++(louiselm-cjpep). Line tables retain backtrace locations. The crate's dev profile
++optimizes only the existing `sha2` dependency, inherited by tests, because these
++fixtures repeatedly hash executables (louiselm-klm35). Project code remains
++unoptimized; debug assertions, overflow checks, and security verification stay
++enabled. Release settings are unchanged.
+diff --git c/skills-core/Cargo.toml i/skills-core/Cargo.toml
+index 5edc813..2a57ae1 100644
+--- c/skills-core/Cargo.toml
++++ i/skills-core/Cargo.toml
+@@ -26,0 +27,5 @@ openssl = "0.10"
++# Installed fixtures repeatedly hash executables; keep those checks affordable
++# without optimizing project code or disabling development assertions.
++[profile.dev.package.sha2]
++opt-level = 3
++

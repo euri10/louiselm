@@ -91,8 +91,11 @@ The `skills-core` CI job sets `CARGO_PROFILE_DEV_DEBUG=line-tables-only`;
 Cargo's test profile inherits it. Use the same environment when reproducing
 its measured-binary gates. Full debug metadata bloats the repeatedly hashed
 executables and can exhaust fixture deadlines on slow runners
-(louiselm-cjpep). Line tables retain backtrace locations; optimization, debug
-assertions, overflow checks, and security verification stay unchanged.
+(louiselm-cjpep). Line tables retain backtrace locations. The crate's dev profile
+optimizes only the existing `sha2` dependency, inherited by tests, because these
+fixtures repeatedly hash executables (louiselm-klm35). Project code remains
+unoptimized; debug assertions, overflow checks, and security verification stay
+enabled. Release settings are unchanged.
 
 Run that suite from outside your own ACP Session. `acp-proxy` is a child
 subreaper that never reaps adopted orphans, so a killed descendant lingers as a

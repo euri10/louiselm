@@ -1,0 +1,7 @@
+   Compiling louiselm-skills v0.1.0 (/home/vm/daemon-klm35/skills-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.52s
+build wall=22.594 user=22.511 sys=4.073
+   Compiling louiselm-skills v0.1.0 (/home/vm/daemon-klm35/skills-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.58s
+  Executable unittests src/lib.rs (/var/tmp/louiselm-skills-target/debug/deps/louiselm_skills-30d700aec22bdf5f)
+build wall=17.602 user=21.050 sys=1.371

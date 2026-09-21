@@ -24,6 +24,11 @@ zeroize = "1.9"
 [dev-dependencies]
 openssl = "0.10"
 
+# Installed fixtures repeatedly hash executables; keep those checks affordable
+# without optimizing project code or disabling development assertions.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [lints.rust]
 missing_docs = "deny"
 unsafe_code = "deny"
