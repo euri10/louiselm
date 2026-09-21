@@ -12,7 +12,7 @@ pub(crate) mod conformance;
 mod conformance_update;
 pub use conformance::{
     CONFORMANCE_REPORT_CHUNK_BYTES, CONFORMANCE_REPORT_CHUNK_SCHEMA, ConformanceAuthorization,
-    ConformanceReportChunk, ConformanceWaiver,
+    ConformanceReportChunk, ConformanceWaiver, WaiverChange,
 };
 pub use conformance_update::{
     CONFORMANCE_FRESHNESS_MS, CONFORMANCE_UPDATE_SCHEMA, ConformanceCheck, ConformanceFailure,
@@ -1028,6 +1028,8 @@ impl LaunchAuthorization {
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Current conformance waiver from the authenticated broker.
+    WaiverChange(Box<conformance::WaiverChange>),
     /// Restore selected protected bytes into a distinct frozen target.
     RecoveryRestore(Box<RecoveryRestoreRequest>),
     /// Exact broker-approved producer export or independent verification job.
@@ -1064,6 +1066,11 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        "louiselm.launch.waiver-change/1" => {
+            let request: conformance::WaiverChange = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::WaiverChange(Box::new(request)))
+        }
         RECOVERY_RESTORE_SCHEMA => {
             let request: RecoveryRestoreRequest = decode_closed(bytes)?;
             request.validate()?;
@@ -1754,6 +1761,11 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Exact current-policy update accepted without resuming the Session.
+    WaiverChanged {
+        /// Authenticated echo of the exact applied decision.
+        change: Box<conformance::WaiverChange>,
+    },
     /// Exact protected bytes published read-only for the dedicated broker.
     VerificationTransfer {
         /// Original authenticated operation.
@@ -1869,6 +1881,13 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
+            ResponseResult::WaiverChanged { change } => {
+                change.validate()?;
+                if change.request_id != self.request_id {
+                    return Err(ProtocolError::new(ErrorCode::InvalidRequest, None, None));
+                }
+                Ok(())
+            }
             ResponseResult::VerificationTransfer { request, directory } => {
                 request.validate()?;
                 if request.request_id != self.request_id

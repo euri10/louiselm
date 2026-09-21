@@ -28,9 +28,35 @@ fn validates_verbs_confirmation_and_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', or 'dependencies inspect|approve SESSION [CANDIDATE...] --json'"
+                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', or 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json'"
             }),
             "{error}"
+        );
+    }
+}
+
+#[test]
+fn waiver_refusals_are_typed_and_do_not_echo_private_input() {
+    for arguments in [
+        vec!["waiver"],
+        vec!["waiver", "inspect", "../private-input", "--json"],
+        vec!["waiver", "plan", "session", "private-rationale", "--json"],
+        vec!["waiver", "apply", "session", "--json"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+            .args(arguments)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(
+            error,
+            serde_json::json!({
+                "schema": "louiselm.conformance-waiver-error/1",
+                "error": "invalid_request", "next_action": "check_request"
+            })
         );
     }
 }

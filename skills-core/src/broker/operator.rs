@@ -81,6 +81,11 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-conformance-waiver/1")]
+    Waiver {
+        session_id: String,
+        request: super::waiver::Request,
+    },
     #[serde(rename = "louiselm.operator-dependencies/1")]
     Dependencies {
         session_id: String,
@@ -105,6 +110,88 @@ enum Request {
         operation_id: String,
         outcome: Option<SkillRequestOutcome>,
     },
+}
+
+/// A bounded authenticated conformance-waiver exchange.
+/// # Errors
+/// Transport errors are distinct from typed broker policy refusals in the result.
+pub fn conformance_waiver(
+    path: &Path,
+    broker_uid: u32,
+    session_id: &str,
+    request: &super::waiver::Request,
+    timeout: Duration,
+) -> Result<Result<super::waiver::Outcome, super::waiver::WaiverError>, InspectError> {
+    validate_subject(session_id)?;
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Waiver {
+            session_id: session_id.into(),
+            request: request.clone(),
+        },
+        timeout,
+    )?;
+    let reply: Result<super::waiver::Outcome, super::waiver::WaiverError> =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if serde_json::to_vec(&reply).map_err(|_| InspectError::StatusUnavailable)? != bytes {
+        return Err(InspectError::StatusUnavailable);
+    }
+    if let Ok(outcome) = &reply {
+        if outcome.schema != "louiselm.conformance-waiver-outcome/1"
+            || outcome.session_id != session_id
+            || outcome
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.session_id != session_id)
+            || outcome
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.plan.session_id != session_id)
+            || outcome.active && outcome.receipt.is_none()
+        {
+            return Err(InspectError::StatusUnavailable);
+        }
+        if let Some(receipt) = &outcome.receipt {
+            let bytes = serde_json::to_vec(&(&receipt.plan, receipt.approved_at_ms))
+                .map_err(|_| InspectError::StatusUnavailable)?;
+            if outcome.plan.as_ref() != Some(&receipt.plan)
+                || receipt.digest != crate::Digest::of(&bytes).to_string()
+                || receipt.approved_at_ms >= receipt.plan.proposal.expires_at_ms
+            {
+                return Err(InspectError::StatusUnavailable);
+            }
+        }
+        let matches = match request {
+            super::waiver::Request::Inspect => true,
+            super::waiver::Request::Plan { proposal } => outcome
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.proposal == *proposal),
+            super::waiver::Request::Apply { plan_digest } => {
+                outcome.receipt.is_some()
+                    && outcome
+                        .plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.digest == *plan_digest)
+            }
+            super::waiver::Request::Result { plan_digest } => outcome
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.digest == *plan_digest),
+            super::waiver::Request::Revoke { receipt_digest } => {
+                !outcome.active
+                    && outcome
+                        .receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.digest == *receipt_digest)
+            }
+        };
+        if !matches {
+            return Err(InspectError::StatusUnavailable);
+        }
+    }
+    Ok(reply)
 }
 
 /// Inspects retained workspace evidence or changes its explicit pin. Available
@@ -471,6 +558,10 @@ impl OperatorServer {
     ///
     /// # Errors
     /// Returns listener failure; refused or disconnected clients are isolated.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Each existing operator operation has a distinct typed handler; keep explicit authentication routing without a mutable handler registry."
+    )]
     pub fn serve_once(
         &self,
         dependencies: impl FnOnce(
@@ -489,6 +580,11 @@ impl OperatorServer {
             Option<bool>,
         )
             -> Result<crate::workspace::retention::RetentionInspection, InspectError>,
+        waiver: impl FnOnce(
+            &str,
+            &super::waiver::Request,
+            Instant,
+        ) -> Result<super::waiver::Outcome, super::waiver::WaiverError>,
     ) -> io::Result<()> {
         let (mut stream, _) = self.listener.accept()?;
         let deadline = Instant::now() + TIMEOUT;
@@ -505,6 +601,14 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Waiver {
+                    session_id,
+                    request,
+                } => {
+                    validate_subject(&session_id)?;
+                    serde_json::to_vec(&waiver(&session_id, &request, deadline))
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
                 Request::Dependencies {
                     session_id,
                     approve,

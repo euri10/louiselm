@@ -24,7 +24,8 @@ pub(super) struct LaunchPostureEvidence {
     pub(super) conformance_admission: ConformanceEvidence,
     conformance_report: Option<EvidenceRef>,
     pub(super) current_conformance: Option<super::current_conformance::RetainedConformance>,
-    conformance_authorization: crate::launch_protocol::ConformanceAuthorization,
+    pub(super) conformance_authorization: crate::launch_protocol::ConformanceAuthorization,
+    pub(super) waiver_revision: u64,
 }
 
 impl BrokerService {
@@ -91,13 +92,20 @@ impl BrokerService {
             Err(BrokerError::Storage(_)) => None,
             Err(error) => return Err(error),
         };
+        let (waiver_revision, waiver) = self.waivers.decision(authorization)?;
+        let mut current_authorization = authorization.clone();
+        current_authorization.conformance.waiver = waiver;
         Ok(LaunchPostureEvidence {
-            current_conformance: match self.receipts().current_conformance(authorization) {
+            waiver_revision,
+            current_conformance: match self
+                .receipts()
+                .current_conformance(&current_authorization, waiver_revision)
+            {
                 Ok(current) => current,
                 Err(BrokerError::Storage(_)) => None,
                 Err(error) => return Err(error),
             },
-            conformance_authorization: authorization.conformance.clone(),
+            conformance_authorization: current_authorization.conformance,
             conformance_admission: evidence.conformance.clone(),
             // verified_history also validates the exact retained report. The
             // reference preserves admission history, never current host proof.

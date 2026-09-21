@@ -369,6 +369,7 @@ fn installed_linked_admission_server() {
                 },
                 |_, _| Err(InspectError::StatusUnavailable),
                 |_, _| Err(InspectError::StatusUnavailable),
+                |_, _, _| panic!("not waiver control"),
             )
             .unwrap();
     }

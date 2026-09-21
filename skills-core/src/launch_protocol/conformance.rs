@@ -67,6 +67,65 @@ pub struct ConformanceWaiver {
     pub receipt_digest: String,
 }
 
+/// Authenticated broker update to a live supervisor's current waiver policy.
+/// Original launch authorization and signed admission remain immutable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaiverChange {
+    /// Closed operation schema.
+    pub schema: String,
+    /// Launch protocol version.
+    pub protocol_version: u32,
+    /// Correlation identity.
+    pub request_id: String,
+    /// Exact existing Session.
+    pub session_id: String,
+    /// Immutable launch request digest.
+    pub request_digest: String,
+    /// Monotonic broker decision revision; zero denotes original admission.
+    pub revision: u64,
+    /// Current approved decision, or explicit revocation.
+    pub waiver: Option<ConformanceWaiver>,
+}
+
+impl WaiverChange {
+    /// Validate the closed request without authenticating its sender.
+    /// # Errors
+    /// Refuses malformed identifiers, unsupported schemas and invalid decisions.
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.schema != "louiselm.launch.waiver-change/1"
+            || self.protocol_version != crate::launch::PROTOCOL_VERSION
+            || self.revision == 0
+        {
+            return Err(invalid());
+        }
+        super::validate_identifier(&self.request_id)?;
+        super::validate_identifier(&self.session_id)?;
+        validate_digest(&self.request_digest)?;
+        if let Some(waiver) = &self.waiver {
+            ConformanceAuthorization {
+                attendance: Attendance::Interactive,
+                waiver: Some(waiver.clone()),
+            }
+            .validate_for(
+                &self.session_id,
+                &self.request_digest,
+                waiver.operator_uid,
+                0,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Encode an exact bounded request.
+    /// # Errors
+    /// Refuses invalid fields or serialization failure.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ProtocolError> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|_| invalid())
+    }
+}
+
 impl ConformanceAuthorization {
     /// Check the exact launch binding and current waiver validity.
     ///

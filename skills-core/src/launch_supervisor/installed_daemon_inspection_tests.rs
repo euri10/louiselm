@@ -34,7 +34,17 @@ fn privileged_activated_daemon_refuses_foreign_inspection() {
     for uid in [0, AGENT_UID, BROKER_UID] {
         refusal(uid, "session", InspectError::AuthenticationRefused);
         refusal(uid, "unknown", InspectError::AuthenticationRefused);
+        waiver_refusal(
+            uid,
+            "unknown",
+            crate::broker::waiver::WaiverError::WrongOperator,
+        );
     }
+    waiver_refusal(
+        config.operator_uid,
+        "unknown",
+        crate::broker::waiver::WaiverError::Unknown,
+    );
     terminate(&mut daemon);
     eprintln!("daemon: inspection refusals at {:?}", started.elapsed());
 }
@@ -44,6 +54,10 @@ fn command(uid: u32, id: &str) -> std::process::Output {
 }
 
 fn session_command(uid: u32, verb: &str, id: &str) -> std::process::Output {
+    control_command(uid, "session", verb, id)
+}
+
+fn control_command(uid: u32, group: &str, verb: &str, id: &str) -> std::process::Output {
     Command::new("/usr/bin/setpriv")
         .args([
             "--reuid",
@@ -53,10 +67,24 @@ fn session_command(uid: u32, verb: &str, id: &str) -> std::process::Output {
             "--clear-groups",
         ])
         .arg("/usr/local/lib/louiselm/current/bin/louiselm-control")
-        .args(["session", verb, id, "--json"])
+        .args([group, verb, id, "--json"])
         .env_clear()
         .output()
         .unwrap()
+}
+
+fn waiver_refusal(uid: u32, id: &str, error: crate::broker::waiver::WaiverError) {
+    let output = control_command(uid, "waiver", "inspect", id);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let actual: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        actual,
+        serde_json::json!({
+            "schema": "louiselm.conformance-waiver-error/1", "error": error,
+            "next_action": error.next_action(),
+        })
+    );
 }
 
 pub(super) fn refusal(uid: u32, id: &str, error: InspectError) {
@@ -115,6 +143,11 @@ pub(super) fn status(config: &LauncherConfig, id: &str) -> SessionStatus {
     assert!(evidence.report.is_none());
     assert!(evidence.waiver.is_none());
     assert!(evidence.last_check.is_none());
+    waiver_refusal(
+        config.operator_uid,
+        id,
+        crate::broker::waiver::WaiverError::Unattended,
+    );
     let text = String::from_utf8(output.stdout).unwrap();
     for forbidden in [
         "assigned_uid",

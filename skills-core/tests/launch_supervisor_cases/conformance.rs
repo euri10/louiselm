@@ -2,6 +2,146 @@
 
 use super::*;
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One Session proves approval, late-check expiry, revocation and replay ordering without automatic Resume."
+)]
+fn live_waiver_changes_reach_checks_without_resuming_or_accepting_old_revisions() {
+    use louiselm_skills::{
+        conformance::admission::{Attendance, Condition},
+        launch_protocol::{ConformanceWaiver, WaiverChange},
+    };
+    let setup = setup(
+        true,
+        |authorization| authorization.conformance.attendance = Attendance::Interactive,
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    lock(&setup.platform.state).conformance_report = Some(b"admission observations".to_vec());
+    let timer = Arc::new(FakeTimer::new(Arc::clone(&setup.events)));
+    let supervisor = setup.fresh_supervisor_with_timer(timer.clone());
+    let session = complete_launch_on(&setup, &supervisor);
+    let (input, receiver, worker) = begin_session_relay(session);
+    complete_check(
+        &setup,
+        0,
+        Err(SupervisorError::ConformanceRefused(Condition::Missing)),
+    );
+    acknowledge_park(&setup);
+    let change = WaiverChange {
+        schema: "louiselm.launch.waiver-change/1".into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "approve-waiver".into(),
+        session_id: setup.request.session_id.clone(),
+        request_digest: setup.request.digest().to_string(),
+        revision: 1,
+        waiver: Some(ConformanceWaiver {
+            session_id: setup.request.session_id.clone(),
+            request_digest: setup.request.digest().to_string(),
+            operator_uid: CONTROLLER_UID,
+            condition: Condition::Missing,
+            expires_at_ms: NOW_MS + 100,
+            receipt_digest: Digest::of(b"durable operator decision").to_string(),
+        }),
+    };
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::WaiverChange(Box::new(change.clone())));
+    let response = setup
+        .broker
+        .wait_for_session_response(&change.request_id, 0);
+    assert!(matches!(
+        response.result,
+        ResponseResult::WaiverChanged { .. }
+    ));
+    wait_for_check(&setup, 1);
+    assert_eq!(
+        lock(&setup.platform.state).conformance_authorizations[1]
+            .conformance
+            .waiver,
+        change.waiver
+    );
+    complete_check(
+        &setup,
+        1,
+        Ok(ConformanceEvidence::Waived {
+            condition: Condition::Missing,
+            report_digest: None,
+        }),
+    );
+    wait_for_update(&setup, 3);
+    assert_eq!(
+        request_supervisor_status(&setup, "waiver-does-not-resume").state,
+        SessionState::Parked
+    );
+    setup.broker.wait_for_session_request();
+    let resume = resume_request(&setup, "waiver-expiry-during-check");
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(resume.clone()));
+    wait_for_check(&setup, 2);
+    timer.advance(Duration::from_millis(100));
+    complete_check(
+        &setup,
+        2,
+        Ok(ConformanceEvidence::Waived {
+            condition: Condition::Missing,
+            report_digest: None,
+        }),
+    );
+    assert!(matches!(
+        setup
+            .broker
+            .wait_for_session_response(&resume.request_id, 0)
+            .result,
+        ResponseResult::Error { .. }
+    ));
+    assert_eq!(event_count(&setup.events, "agent.resume"), 0);
+    let mut revoke = change.clone();
+    revoke.request_id = "revoke-waiver".into();
+    revoke.revision = 2;
+    revoke.waiver = None;
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::WaiverChange(Box::new(revoke.clone())));
+    assert!(matches!(
+        setup
+            .broker
+            .wait_for_session_response(&revoke.request_id, 0)
+            .result,
+        ResponseResult::WaiverChanged { .. }
+    ));
+    wait_for_check(&setup, 3);
+    assert!(
+        lock(&setup.platform.state).conformance_authorizations[3]
+            .conformance
+            .waiver
+            .is_none()
+    );
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::WaiverChange(Box::new(change.clone())));
+    assert!(matches!(
+        setup
+            .broker
+            .wait_for_session_response(&change.request_id, 1)
+            .result,
+        ResponseResult::Error { .. }
+    ));
+    complete_check(
+        &setup,
+        3,
+        Err(SupervisorError::ConformanceRefused(Condition::Missing)),
+    );
+    assert_eq!(event_count(&setup.events, "agent.resume"), 0);
+    finish_session_relay(&setup, input, receiver, worker);
+}
+
 pub(super) fn real_tree_recovery(
     setup: &Setup,
     agent_pid: u32,

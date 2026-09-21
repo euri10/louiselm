@@ -71,6 +71,7 @@ pub(super) fn inspect_current(
         .conformance
         .waiver
         .as_ref()
+        .filter(|waiver| admitting || now_ms < waiver.expires_at_ms)
         .map(|waiver| Waiver {
             session_id: waiver.session_id.clone(),
             condition: waiver.condition,

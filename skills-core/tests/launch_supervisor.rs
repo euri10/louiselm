@@ -1832,6 +1832,7 @@ struct PlatformBehavior {
 
 #[derive(Default)]
 struct PlatformState {
+    conformance_authorizations: Vec<LaunchAuthorization>,
     conformance_report: Option<Vec<u8>>,
     conformance_checks: Vec<Option<SupervisorCompletion<ConformanceEvidence>>>,
     conformance_blocked: bool,
@@ -1928,12 +1929,16 @@ impl FakePlatform {
 impl LaunchPlatform for FakePlatform {
     fn revalidate_conformance(
         &self,
-        _: &LaunchAuthorization,
+        authorization: &LaunchAuthorization,
         _: u64,
         _: Instant,
         complete: SupervisorCompletion<ConformanceEvidence>,
     ) -> Result<(), SupervisorError> {
-        lock(&self.state).conformance_checks.push(Some(complete));
+        {
+            let mut state = lock(&self.state);
+            state.conformance_authorizations.push(authorization.clone());
+            state.conformance_checks.push(Some(complete));
+        }
         self.conformance_changed.notify_all();
         drop(
             self.conformance_changed

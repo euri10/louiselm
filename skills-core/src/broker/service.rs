@@ -162,6 +162,7 @@ pub enum LaunchObservation {
 
 /// The Control broker's local-only rendezvous service.
 pub struct BrokerService {
+    pub(super) waivers: super::waiver::Waivers,
     pub(super) dependencies: super::dependencies::Dependencies,
     listener: SeqpacketListener,
     authorizations: AuthorizationStore,
@@ -235,6 +236,9 @@ impl BrokerService {
             &authorizations.root.join("beads-mutations"),
         )?;
         Ok(Self {
+            waivers: super::waiver::Waivers::open(
+                &authorizations.root.join("conformance-waivers"),
+            )?,
             dependencies: super::dependencies::Dependencies::open(
                 &authorizations.root.join("dependency-requests"),
             )?,

@@ -26,6 +26,7 @@ pub(in crate::launch_supervisor) struct Monitor {
     containment_failed: bool,
     invalidated_at: Option<Instant>,
     source: Option<(Arc<dyn LaunchPlatform>, LaunchAuthorization)>,
+    waiver_revision: u64,
     origin: Instant,
     origin_ms: u64,
     last_success: Instant,
@@ -46,6 +47,92 @@ pub(in crate::launch_supervisor) struct Monitor {
 }
 
 impl Monitor {
+    fn waiver_valid_at(&self, now: Instant) -> bool {
+        self.source.as_ref().is_some_and(|(_, authorization)| {
+            authorization
+                .conformance
+                .waiver
+                .as_ref()
+                .is_some_and(|waiver| self.at_ms(now) < waiver.expires_at_ms)
+        })
+    }
+
+    fn waiver_expired(&self, now: Instant) -> bool {
+        !self.waiver_valid_at(now)
+            && self.latest.as_ref().is_some_and(|current| {
+                matches!(
+                    current.check,
+                    ConformanceCheck::Current {
+                        evidence: ConformanceEvidence::Waived { .. }
+                    }
+                )
+            })
+    }
+    fn change_waiver(
+        &mut self,
+        change: &crate::launch_protocol::conformance::WaiverChange,
+        now: Instant,
+    ) -> Result<bool, ProtocolError> {
+        let invalid = || ProtocolError::new(ErrorCode::InvalidRequest, None, None);
+        change.validate()?;
+        let now_ms = self.at_ms(now);
+        let (_, authorization) = self.source.as_ref().ok_or_else(invalid)?;
+        if !self.enabled
+            || change.session_id != authorization.session_id
+            || change.request_digest != authorization.request_digest
+            || authorization.conformance.attendance
+                != crate::conformance::admission::Attendance::Interactive
+            || change.revision < self.waiver_revision
+        {
+            return Err(invalid());
+        }
+        if change.revision == self.waiver_revision {
+            return if change.waiver == authorization.conformance.waiver {
+                Ok(false)
+            } else {
+                Err(invalid())
+            };
+        }
+        if let Some(waiver) = &change.waiver {
+            crate::launch_protocol::ConformanceAuthorization {
+                attendance: authorization.conformance.attendance,
+                waiver: Some(waiver.clone()),
+            }
+            .validate_for(
+                &authorization.session_id,
+                &authorization.request_digest,
+                authorization.controller_uid,
+                now_ms,
+            )?;
+            let current = self.latest.as_ref().ok_or_else(invalid)?;
+            let condition = match &current.check {
+                ConformanceCheck::Invalid {
+                    failure: ConformanceFailure::Condition(condition),
+                }
+                | ConformanceCheck::Current {
+                    evidence: ConformanceEvidence::Waived { condition, .. },
+                } => *condition,
+                _ => return Err(invalid()),
+            };
+            if self.containment_failed
+                || condition != waiver.condition
+                || condition == Condition::ContainmentFailure
+                || current.observed_at_ms > now_ms
+                || now_ms.saturating_sub(current.observed_at_ms) >= 5_000
+            {
+                return Err(invalid());
+            }
+        }
+        let (_, authorization) = self.source.as_mut().ok_or_else(invalid)?;
+        authorization.conformance.waiver.clone_from(&change.waiver);
+        self.waiver_revision = change.revision;
+        // A check already in flight used the previous decision. Its callback may
+        // finish, but cannot publish proof or renew authority under this revision.
+        self.pending = None;
+        self.invalidated_at = Some(now);
+        self.next_check = now;
+        Ok(true)
+    }
     pub(in crate::launch_supervisor) fn new(
         source: Option<(Arc<dyn LaunchPlatform>, LaunchAuthorization)>,
         origin_ms: u64,
@@ -57,6 +144,7 @@ impl Monitor {
             containment_failed: false,
             invalidated_at: None,
             source,
+            waiver_revision: 0,
             origin,
             origin_ms,
             last_success: origin,
@@ -143,6 +231,8 @@ impl Monitor {
         let result = match receiver.try_recv() {
             Ok(result)
                 if now.duration_since(*started) < FRESHNESS
+                    && (!matches!(result, Ok(ConformanceEvidence::Waived { .. }))
+                        || self.waiver_valid_at(now))
                     && self
                         .invalidated_at
                         .is_none_or(|invalidated| *started >= invalidated) =>
@@ -189,6 +279,49 @@ impl Drop for Monitor {
 }
 
 impl SessionOwner {
+    pub(super) fn handle_waiver_change(
+        &mut self,
+        change: crate::launch_protocol::conformance::WaiverChange,
+    ) {
+        let result = if matches!(self.state, SessionState::Running | SessionState::Parked)
+            && self.pending.is_none()
+            && !self.quarantined
+            && !self.key_authority.withdrawn
+        {
+            self.resources
+                .conformance
+                .change_waiver(&change, self.timer.now())
+        } else {
+            Err(ProtocolError::new(
+                ErrorCode::OperationPending,
+                Some(self.state),
+                Some(self.broker_head.sequence),
+            ))
+        };
+        match result {
+            Ok(changed) => {
+                if changed {
+                    self.cancel_conformance_resume();
+                    self.suspend_conformance(false);
+                    self.observe_conformance(
+                        ConformanceCheck::Invalid {
+                            failure: ConformanceFailure::Unavailable,
+                        },
+                        self.timer.now(),
+                    );
+                }
+                self.send_response(crate::launch_protocol::ProtocolResponse {
+                    schema: crate::launch_protocol::RESPONSE_SCHEMA.into(),
+                    protocol_version: crate::launch::PROTOCOL_VERSION,
+                    request_id: change.request_id.clone(),
+                    result: crate::launch_protocol::ResponseResult::WaiverChanged {
+                        change: Box::new(change),
+                    },
+                });
+            }
+            Err(error) => self.send_error(change.request_id, error),
+        }
+    }
     pub(super) fn maintain_conformance(&mut self) {
         if !self.resources.conformance.enabled
             || self.state == SessionState::Terminal
@@ -198,6 +331,15 @@ impl SessionOwner {
             return;
         }
         let now = self.timer.now();
+        if self.resources.conformance.waiver_expired(now) {
+            self.suspend_conformance(false);
+            self.observe_conformance(
+                ConformanceCheck::Invalid {
+                    failure: ConformanceFailure::Unavailable,
+                },
+                now,
+            );
+        }
         if self
             .resources
             .conformance
@@ -382,6 +524,7 @@ impl SessionOwner {
             .map_or(1, |old| old.sequence.saturating_add(1));
         if let Some((_, authorization)) = &self.resources.conformance.source {
             self.resources.conformance.latest = Some(ConformanceUpdate {
+                waiver_revision: self.resources.conformance.waiver_revision,
                 schema: CONFORMANCE_UPDATE_SCHEMA.into(),
                 session_id: authorization.session_id.clone(),
                 run_id: authorization.run_id.clone(),

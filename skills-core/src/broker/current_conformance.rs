@@ -26,6 +26,7 @@ impl super::ReceiptStore {
     pub(super) fn current_conformance(
         &self,
         authorization: &LaunchAuthorization,
+        waiver_revision: u64,
     ) -> Result<Option<RetainedConformance>, BrokerError> {
         let path = self.current_conformance_path(&authorization.session_id)?;
         match fs::symlink_metadata(&path) {
@@ -35,6 +36,12 @@ impl super::ReceiptStore {
             Err(error) => return Err(BrokerError::Storage(error)),
         }
         let record: Option<RetainedConformance> = read_record(&path)?;
+        if record
+            .as_ref()
+            .is_some_and(|record| record.update.waiver_revision != waiver_revision)
+        {
+            return Ok(None);
+        }
         if let Some(record) = &record {
             record.update.validate_for(authorization)?;
             if let Some((digest, at)) = &record.last_verified {
@@ -66,7 +73,7 @@ impl super::ReceiptStore {
     ) -> Result<RetainedConformance, BrokerError> {
         update.validate_for(authorization)?;
         let _guard = lock(&self.appending);
-        let previous = self.current_conformance(authorization)?;
+        let previous = self.current_conformance(authorization, update.waiver_revision)?;
         if let Some(previous) = &previous {
             if &previous.update == update {
                 return Ok(previous.clone());
@@ -139,14 +146,24 @@ impl BrokerService {
         update: &ConformanceUpdate,
         now_ms: u64,
     ) -> Result<(), BrokerError> {
+        if update.waiver_revision < session.posture_evidence.waiver_revision {
+            return Ok(());
+        }
+        if update.waiver_revision != session.posture_evidence.waiver_revision {
+            return Err(BrokerError::InvalidGrant);
+        }
         if update.observed_at_ms > now_ms
             || self.receipts().state(&update.session_id)? == Some(SessionState::Terminal)
         {
             return Err(BrokerError::InvalidGrant);
         }
+        let mut current_authorization = session.authorization().clone();
+        current_authorization
+            .conformance
+            .clone_from(&session.posture_evidence.conformance_authorization);
         let retained = self
             .receipts()
-            .retain_current_conformance(session.authorization(), update)?;
+            .retain_current_conformance(&current_authorization, update)?;
         session.posture_evidence.current_conformance = Some(retained);
         Ok(())
     }

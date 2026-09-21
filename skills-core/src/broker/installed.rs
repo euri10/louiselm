@@ -37,6 +37,46 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Processes an authenticated operator conformance-waiver request on its Session worker.
+    /// # Errors
+    /// Refuses invalid policy, unavailable state and unacknowledged supervisor changes.
+    pub fn waiver_control(
+        &self,
+        session: &mut BrokerSession,
+        uid: u32,
+        request: &super::waiver::Request,
+    ) -> Result<super::waiver::Outcome, BrokerError> {
+        let mut failure = None;
+        let result = self.service.waiver_control(
+            session,
+            uid,
+            request,
+            now_ms()?,
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    failure = Some(error);
+                    false
+                }
+            },
+        );
+        match failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
+    /// Inspect durable waiver outcomes without a live supervisor.
+    /// # Errors
+    /// Refuses foreign callers, mutations and unavailable canonical history.
+    pub fn waiver_history(
+        &self,
+        uid: u32,
+        id: &str,
+        request: &super::waiver::Request,
+    ) -> Result<super::waiver::Outcome, BrokerError> {
+        self.service.waiver_history(uid, id, request, now_ms()?)
+    }
     /// Returns a secret-free reference to a configured Provider, not permission to call it.
     ///
     /// # Errors

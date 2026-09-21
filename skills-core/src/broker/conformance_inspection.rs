@@ -193,6 +193,9 @@ impl BrokerService {
             .map(String::from_utf8)
             .transpose()
             .map_err(|_| corrupt("invalid report encoding"))?;
+        let (revision, waiver) = self.waivers.decision(&authorization)?;
+        let mut current_authorization = authorization.clone();
+        current_authorization.conformance.waiver = waiver;
         let record =
             ConformanceInspection {
                 schema: SCHEMA.into(),
@@ -213,7 +216,7 @@ impl BrokerService {
                 report,
                 last_check: self
                     .receipts()
-                    .current_conformance(&authorization)?
+                    .current_conformance(&current_authorization, revision)?
                     .map(|record| record.update.into()),
             };
         record.validate()?;

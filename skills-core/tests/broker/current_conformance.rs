@@ -11,6 +11,7 @@ pub(super) fn update(
     evidence: ConformanceEvidence,
 ) -> ConformanceUpdate {
     ConformanceUpdate {
+        waiver_revision: 0,
         schema: CONFORMANCE_UPDATE_SCHEMA.into(),
         session_id: authorization.session_id.clone(),
         run_id: authorization.run_id.clone(),
@@ -32,6 +33,131 @@ fn isolation(status: &SessionStatus) -> &louiselm_skills::launch_protocol::Dimen
         .iter()
         .find(|row| row.dimension == DimensionName::Isolation)
         .unwrap()
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Ordered authenticated peer exchange proves the decision reaches current posture without rewriting admission."
+)]
+fn operator_approval_reaches_current_posture_without_rewriting_admission() {
+    use louiselm_skills::broker::waiver::{Proposal, Request};
+    let root = TempDir::new().unwrap();
+    let admission = ConformanceEvidence::Waived {
+        condition: Condition::Missing,
+        report_digest: None,
+    };
+    let (service, authorization, launch, start) = retained_service(root.path(), &admission, &[]);
+    let mut failed = update(&authorization, admission.clone());
+    failed.observed_at_ms = 20_000;
+    failed.last_success_at_ms = None;
+    failed.suspended = true;
+    failed.check = ConformanceCheck::Invalid {
+        failure: ConformanceFailure::Condition(Condition::Stale),
+    };
+    let mut mechanical = lifecycle::status(&authorization);
+    let head = ReceiptHead {
+        sequence: 1,
+        digest: start.digest().to_string(),
+    };
+    mechanical.broker_head = Some(head.clone());
+    mechanical.launcher_head = Some(head);
+    let offer = reconnect::checkpoint(&start);
+    let peer_root = root.path().to_owned();
+    let peer = thread::spawn(move || {
+        let channel = reconnect::peer(&peer_root, &offer);
+        settle(|done| channel.receive(done));
+        settle(|done| channel.send(failed.canonical_bytes().unwrap(), done));
+        for _ in 0..2 {
+            lifecycle::answer_one_status_query(&channel, &mechanical);
+        }
+        let packet = settle(|done| channel.receive(done));
+        let LauncherPacket::Request(ProtocolMessage::WaiverChange(change)) = packet.packet else {
+            panic!("expected authoritative waiver change")
+        };
+        assert_eq!(change.waiver.as_ref().unwrap().condition, Condition::Stale);
+        let reply = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: change.request_id.clone(),
+            result: louiselm_skills::launch_protocol::ResponseResult::WaiverChanged {
+                change: change.clone(),
+            },
+        };
+        settle(|done| channel.send(reply.canonical_bytes(), done));
+        failed.sequence = 2;
+        failed.waiver_revision = change.revision;
+        failed.observed_at_ms = 20_100;
+        failed.last_success_at_ms = Some(20_100);
+        failed.check = ConformanceCheck::Current {
+            evidence: ConformanceEvidence::Waived {
+                condition: Condition::Stale,
+                report_digest: None,
+            },
+        };
+        settle(|done| channel.send(failed.canonical_bytes().unwrap(), done));
+        lifecycle::answer_one_status_query(&channel, &mechanical);
+    });
+    let mut session = service
+        .serve_reconnect(20_000, verify_fixture_signature)
+        .unwrap();
+    service
+        .step(&mut session, 20_000, None, verify_fixture_signature)
+        .unwrap();
+    let plan = service
+        .waiver_control(
+            &mut session,
+            authorization.controller_uid,
+            &Request::Plan {
+                proposal: Proposal {
+                    request_id: "review-current-failure".into(),
+                    condition: Condition::Stale,
+                    rationale: "Investigate this exact host".into(),
+                    expires_at_ms: 40_000,
+                },
+            },
+            20_001,
+            verify_fixture_signature,
+        )
+        .unwrap()
+        .plan
+        .unwrap();
+    let result = service
+        .waiver_control(
+            &mut session,
+            authorization.controller_uid,
+            &Request::Apply {
+                plan_digest: plan.digest,
+            },
+            20_002,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert!(result.active);
+    service
+        .step(&mut session, 20_100, None, verify_fixture_signature)
+        .unwrap();
+    let status = service
+        .session_status(
+            &mut session,
+            &LifecycleCaller::Agent,
+            20_101,
+            verify_fixture_signature,
+        )
+        .unwrap();
+    assert_eq!(
+        isolation(&status).state,
+        louiselm_skills::posture::DimensionState::Waived
+    );
+    assert_eq!(status.conformance_admission, admission);
+    assert_eq!(
+        service
+            .receipts()
+            .stored_bytes(&authorization.session_id)
+            .unwrap()[0],
+        launch.canonical_bytes()
+    );
+    peer.join().unwrap();
 }
 
 #[test]

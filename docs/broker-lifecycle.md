@@ -945,6 +945,56 @@ The initial outbox retains at most 4096 entries and refuses further enqueue at
 that bound. History is not silently truncated and sequences never reset on
 restart. Lifecycle request history has the same explicit bound per Session.
 
+## Interactive live conformance waivers
+
+The installed operator socket accepts an explicit, Session-scoped exception for
+missing, stale or incomplete host certification. It refuses unattended Runs,
+containment failures, unreadable evidence and missing mandatory controls. The
+Agent socket cannot approve exceptions. This does not change other posture
+dimensions, the capability envelope, Skill Generation or admission history.
+
+```sh
+louiselm-control session conformance SESSION --json
+louiselm-control waiver inspect SESSION --json
+louiselm-control waiver plan SESSION --json < proposal.json
+louiselm-control waiver apply SESSION PLAN_DIGEST --json
+louiselm-control waiver result SESSION PLAN_DIGEST --json
+louiselm-control waiver revoke SESSION RECEIPT_DIGEST --json
+```
+
+`proposal.json` has exactly `request_id` (a Session-local retry identity),
+`condition` (`missing`, `stale` or `incomplete`), `rationale` (nonempty, at most
+1024 bytes, no control characters), and `expires_at_ms` (exclusive Unix
+milliseconds). Rationale enters through bounded stdin, not command arguments,
+and stays in private broker records and authenticated operator replies.
+
+Planning grants nothing. Review the returned `plan`, then apply its exact
+`digest`. Its binding includes the launch identity, operator, current condition,
+envelope revision, lifecycle receipt head and prior waiver revision. State
+changes or a competing approval invalidate a preview. Approval is persisted
+before delivery to the supervisor; retrying the same apply returns the original
+receipt without extending its expiry or reviving a revoked decision. After an
+ambiguous transport failure, retrieve `result` before deciding what to retry.
+Errors return stable `error` and `next_action` fields, without private payloads.
+
+The private `authorizations/conformance-waivers` ledger retains up to 32 previews
+per Session and refuses overflow without truncating history. Inspection and
+result retrieval work after disconnection and Session termination and never
+write or renew authority. `active` means only an unrevoked, unexpired broker
+decision for a nonterminal Session, not proof that the supervisor can use it.
+
+The enforcing supervisor checks the exact current condition independently,
+invalidates older in-flight checks and suspends authority on decision changes.
+Only a fresh source check under the current decision can produce waived isolation
+posture. Approval never resumes work; explicit Resume and its normal gates are
+still required. Expiry is checked when delivering check results as well as when
+starting them. A revoked, expired or ended-Session exception grants nothing.
+
+This flow currently requires an already-admitted, enforced Session. Initial-launch
+waiver preparation is not implemented; do not hand-edit authorization records
+to bypass a refused admission. Desktop activation and installed acceptance remain
+separate work. Pre-cutover Sessions have no measured failure to waive.
+
 ## Verification
 
 `skills-core/tests/operator.rs` covers UID refusal before lookup, malformed and

@@ -834,6 +834,7 @@ impl SessionOwner {
             }
         };
         match message {
+            ProtocolMessage::WaiverChange(change) => self.handle_waiver_change(*change),
             ProtocolMessage::RecoveryRestore(request) => self.handle_restore(*request),
             ProtocolMessage::Recovery(request) => self.handle_recovery(request),
             ProtocolMessage::Verification(request) => self.handle_verification(request),

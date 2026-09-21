@@ -5,7 +5,7 @@ use crate::{conformance::admission::Condition, launch_receipt::ConformanceEviden
 use serde::{Deserialize, Serialize};
 
 /// Schema for current host evidence; it never replaces admission history.
-pub const CONFORMANCE_UPDATE_SCHEMA: &str = "louiselm.launch.conformance-update/1";
+pub const CONFORMANCE_UPDATE_SCHEMA: &str = "louiselm.launch.conformance-update/2";
 /// Maximum age of a successful supervisor check, in milliseconds.
 pub const CONFORMANCE_FRESHNESS_MS: u64 = 5_000;
 
@@ -57,6 +57,8 @@ pub struct ConformanceUpdate {
     pub envelope_revision: u64,
     /// Strictly increasing within this supervisor lifetime.
     pub sequence: u64,
+    /// Current broker waiver decision revision, independent of immutable admission.
+    pub waiver_revision: u64,
     /// Check input time, or failure observation time; transport never renews it.
     pub observed_at_ms: u64,
     /// Most recent successful validity check, preserved across failures.

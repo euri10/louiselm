@@ -10,6 +10,8 @@ use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
 
 #[path = "operator/dependencies.rs"]
 mod dependencies;
+#[path = "operator/waiver.rs"]
+mod waiver;
 
 fn private_root() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -78,6 +80,7 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
                         })
                     },
                     |_, _| panic!("not retention control"),
+                    |_, _, _| panic!("not waiver control"),
                 )
                 .unwrap();
         });
@@ -135,6 +138,7 @@ fn beads_operator_request_reaches_authenticated_control() {
                     })
                 },
                 |_, _| panic!("unexpected retention control"),
+                |_, _, _| panic!("not waiver control"),
             )
             .unwrap();
     });
@@ -177,6 +181,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
                 |_, _| panic!("unauthenticated skill control"),
                 |_, _| panic!("unauthenticated Beads control"),
                 |_, _| panic!("unexpected retention control"),
+                |_, _, _| panic!("not waiver control"),
             )
             .unwrap();
     });
@@ -205,6 +210,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
                 |_, _| panic!("unexpected skill control"),
                 |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
+                |_, _, _| panic!("not waiver control"),
             )
             .unwrap();
     });
@@ -291,6 +297,7 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
                     },
                     |_, _| panic!("unexpected Beads control"),
                     |_, _| panic!("unexpected retention control"),
+                    |_, _, _| panic!("not waiver control"),
                 )
                 .unwrap();
         }
@@ -345,6 +352,7 @@ fn conformance_inspection_distinguishes_an_unknown_session() {
                 |_, _| panic!("not a skill decision"),
                 |_, _| panic!("not a Beads decision"),
                 |_, _| panic!("not a retention decision"),
+                |_, _, _| panic!("not waiver control"),
             )
             .unwrap();
     });
@@ -387,6 +395,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                     |_, _| panic!("invalid skill control"),
                     |_, _| panic!("invalid Beads control"),
                     |_, _| panic!("unexpected retention control"),
+                    |_, _, _| panic!("not waiver control"),
                 )
                 .unwrap();
         }
@@ -398,6 +407,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                 |_, _| panic!("unexpected skill control"),
                 |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
+                |_, _, _| panic!("not waiver control"),
             )
             .unwrap();
     });

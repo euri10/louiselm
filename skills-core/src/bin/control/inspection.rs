@@ -133,9 +133,23 @@ struct Query {
     reply: SyncSender<Result<SessionStatus, InspectError>>,
 }
 
+enum WorkerQuery {
+    Status(Query),
+    Waiver {
+        expires: Instant,
+        request: louiselm_skills::broker::waiver::Request,
+        reply: SyncSender<
+            Result<
+                louiselm_skills::broker::waiver::Outcome,
+                louiselm_skills::broker::waiver::WaiverError,
+            >,
+        >,
+    },
+}
+
 pub(super) struct Queries {
     operator_uid: u32,
-    sessions: Mutex<HashMap<String, SyncSender<Query>>>,
+    sessions: Mutex<HashMap<String, SyncSender<WorkerQuery>>>,
 }
 
 impl Queries {
@@ -196,6 +210,24 @@ impl Queries {
                                 .workspace_retention(owner.operator_uid, id, pin)
                                 .map_err(|_| InspectError::StatusUnavailable)
                         },
+                        |id, request, deadline| {
+                            if matches!(
+                                request,
+                                louiselm_skills::broker::waiver::Request::Inspect
+                                    | louiselm_skills::broker::waiver::Request::Result { .. }
+                            ) {
+                                broker
+                                    .waiver_history(owner.operator_uid, id, request)
+                                    .map_err(|error| {
+                                        match error {
+                                    BrokerError::Waiver(error) => error,
+                                    _ => louiselm_skills::broker::waiver::WaiverError::Unavailable,
+                                }
+                                    })
+                            } else {
+                                owner.waiver(id, request, deadline)
+                            }
+                        },
                     ) {
                         if error.kind() == io::ErrorKind::Interrupted {
                             continue;
@@ -230,6 +262,37 @@ impl Queries {
         request_status(&sender, deadline)
     }
 
+    fn waiver(
+        &self,
+        id: &str,
+        request: &louiselm_skills::broker::waiver::Request,
+        deadline: Instant,
+    ) -> Result<
+        louiselm_skills::broker::waiver::Outcome,
+        louiselm_skills::broker::waiver::WaiverError,
+    > {
+        use louiselm_skills::broker::waiver::WaiverError;
+        let expires = deadline.min(Instant::now() + QUERY_TIMEOUT);
+        let sender = self
+            .sessions
+            .lock()
+            .map_err(|_| WaiverError::Unavailable)?
+            .get(id)
+            .cloned()
+            .ok_or(WaiverError::Unknown)?;
+        let (reply, receive) = mpsc::sync_channel(1);
+        sender
+            .try_send(WorkerQuery::Waiver {
+                expires,
+                request: request.clone(),
+                reply,
+            })
+            .map_err(|_| WaiverError::Unavailable)?;
+        receive
+            .recv_timeout(expires.saturating_duration_since(Instant::now()))
+            .map_err(|_| WaiverError::Unavailable)?
+    }
+
     pub(super) fn run_session(
         &self,
         broker: &InstalledBroker,
@@ -251,18 +314,40 @@ impl Queries {
         let result = (|| {
             loop {
                 if let Ok(query) = requests.try_recv() {
-                    if Instant::now() < query.expires {
-                        let result = broker.session_status(
-                            session,
-                            &LifecycleCaller::Operator {
-                                uid: self.operator_uid,
-                            },
-                        );
-                        // This query is observational. Client timeout/disconnect
-                        // cannot cancel another operation or renew authority.
-                        let _ = query
-                            .reply
-                            .send(result.map_err(|_| InspectError::StatusUnavailable));
+                    match query {
+                        WorkerQuery::Waiver {
+                            expires,
+                            request,
+                            reply,
+                        } => {
+                            if Instant::now() < expires {
+                                let result = broker
+                                    .waiver_control(session, self.operator_uid, &request)
+                                    .map_err(|error| {
+                                        match error {
+                                BrokerError::Waiver(error) => error,
+                                _ => louiselm_skills::broker::waiver::WaiverError::Unavailable,
+                            }
+                                    });
+                                // A disconnected operator can inspect the durable result later.
+                                let _ = reply.send(result);
+                            }
+                        }
+                        WorkerQuery::Status(query) => {
+                            if Instant::now() < query.expires {
+                                let result = broker.session_status(
+                                    session,
+                                    &LifecycleCaller::Operator {
+                                        uid: self.operator_uid,
+                                    },
+                                );
+                                // This query is observational. Client timeout/disconnect
+                                // cannot cancel another operation or renew authority.
+                                let _ = query
+                                    .reply
+                                    .send(result.map_err(|_| InspectError::StatusUnavailable));
+                            }
+                        }
                     }
                     if session.channel().is_closed() {
                         return Err(BrokerError::Transport(TransportError::Closed));
@@ -296,7 +381,7 @@ impl Queries {
 }
 
 fn request_status(
-    sender: &SyncSender<Query>,
+    sender: &SyncSender<WorkerQuery>,
     deadline: Instant,
 ) -> Result<SessionStatus, InspectError> {
     let now = Instant::now();
@@ -306,7 +391,7 @@ fn request_status(
     let expires = deadline.min(now + QUERY_TIMEOUT);
     let (reply, receive) = mpsc::sync_channel(1);
     sender
-        .try_send(Query { expires, reply })
+        .try_send(WorkerQuery::Status(Query { expires, reply }))
         .map_err(|_| InspectError::StatusUnavailable)?;
     receive
         .recv_timeout(expires.saturating_duration_since(Instant::now()))
@@ -323,9 +408,11 @@ mod tests {
         reason = "Bounded queue fixture asserts the deadline contract."
     )]
     fn expired_exchange_never_queues_or_renews_a_worker_wait() {
-        let (sender, receiver) = mpsc::sync_channel::<Query>(1);
+        let (sender, receiver) = mpsc::sync_channel::<WorkerQuery>(1);
         let worker = thread::spawn(move || {
-            if let Ok(query) = receiver.recv_timeout(Duration::from_millis(100)) {
+            if let Ok(WorkerQuery::Status(query)) =
+                receiver.recv_timeout(Duration::from_millis(100))
+            {
                 let _ = query.reply.send(Err(InspectError::UnknownSession));
                 true
             } else {
@@ -345,10 +432,13 @@ mod tests {
         reason = "Bounded queue fixture asserts the deadline contract."
     )]
     fn queue_expiry_and_wait_are_clamped_to_the_exchange_deadline() {
-        let (sender, receiver) = mpsc::sync_channel::<Query>(1);
+        let (sender, receiver) = mpsc::sync_channel::<WorkerQuery>(1);
         let deadline = Instant::now() + Duration::from_millis(50);
         let worker = thread::spawn(move || {
-            let query = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            let WorkerQuery::Status(query) = receiver.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                return;
+            };
             assert_eq!(query.expires, deadline);
             thread::sleep(Duration::from_millis(150));
             let _ = query.reply.send(Err(InspectError::UnknownSession));

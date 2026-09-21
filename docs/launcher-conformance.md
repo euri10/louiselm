@@ -201,8 +201,11 @@ attendance and any already-approved waiver. A waiver binds the exact Session,
 request digest (including Run, authorization and envelope revision), operator
 UID, condition, exclusive expiry and durable waiver-receipt digest. Unattended,
 foreign, expired and containment-failure waivers are rejected. These fields are
-not accepted in `LaunchRequest`. The operator approval/receipt producer remains
-`d6fv.6.3`; this carrier does not create approval or authorize an Agent to waive.
+not accepted in `LaunchRequest`. The authenticated operator flow described in
+[broker lifecycle](https://github.com/euri10/louiselm/blob/main/docs/broker-lifecycle.md#interactive-live-conformance-waivers)
+produces durable decisions for already-admitted Sessions. Initial-launch waiver
+preparation remains unfinished in `d6fv.6.3`; this carrier alone does not create
+approval or authorize an Agent to waive.
 Cold resume does not inherit the source Session's waiver.
 
 With enforcement active, the supervisor measures the current installed host and
@@ -284,7 +287,7 @@ failures permit this recovery; a retained containment failure requires diagnosti
 preservation, Disposal and a fresh Session after recertification. An old waiver
 cannot hide a containment failure or be renewed by a read or reconnect.
 
-Authenticated `louiselm.launch.conformance-update/1` packets publish bounded,
+Authenticated `louiselm.launch.conformance-update/2` packets publish bounded,
 ordered source facts to the broker's retained evidence owner. One private record
 at `receipts/current-conformance/<Session>.json` retains the latest check and the
 last verified report reference/time. Exact replays do not renew timestamps;
@@ -293,6 +296,14 @@ cannot establish current posture. Restart retains the source's original expiry.
 Canonical isolation posture uses these facts alongside the immutable signed
 admission receipt; other dimensions retain their own evidence and freshness.
 Neither reading status nor receiving a passing check implicitly resumes work.
+Updates carry a mandatory waiver decision revision. The broker ignores checks
+from older revisions and refuses unknown future revisions. Authenticated
+`louiselm.launch.waiver-change/1` requests replace only the live conformance
+decision; original launch authorization and signed admission stay immutable.
+The supervisor acknowledges the exact request, rejects older/conflicting
+revisions, discards checks started under an earlier decision, and independently
+enforces expiry even when a checker stalls. A late waived result cannot Resume
+after its decision has expired.
 
 Canonical Session status separately exposes immutable `conformance_admission`
 history (`unevaluated`, `certified` with its report digest, or `waived` with its
@@ -307,7 +318,7 @@ Ordinary pre-cutover launch still records `Unevaluated`, as confirmed in
 `louiselm-oi5an`, and does not read certification state. The protected enforced
 path can now supply report-bound admission through the broker ACK transaction;
 that does not enable Verified posture by itself. `louiselm-d6fv.9.1` still needs
-the waiver producer (`.6.3`) and actual installed-release acceptance.
+initial-launch waiver preparation (`.6.3`) and actual installed-release acceptance.
 Currentness monitoring (`.12.4`) supplies source checks; canonical admission-history
 projection (`.12.6`) separately preserves the launch decision. Component and disposable-guest
 tests do not satisfy that installed cutover.
@@ -350,8 +361,8 @@ not constitute maintainer confirmation or activate the Verified claim.
    evidence. Unattended launches refuse; interactive launches require the
    already-approved exact Session/condition waiver. Verify its recorded expiry
    and receipt, degraded isolation, refusal for another Session or condition,
-   and non-waivable containment failure. The authenticated waiver producer is
-   still tracked by `louiselm-d6fv.6.3`; until it is installed, record this step
+   and non-waivable containment failure. Initial-launch waiver preparation is
+   still tracked by `louiselm-d6fv.6.3`; until it is available, record this step
    as blocked rather than constructing an approval record by hand.
 5. Use the maintained disposable conformance monitor fixtures to invalidate a
    relevant input and stall a check under load. Inspect the last condition,

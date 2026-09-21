@@ -44,6 +44,7 @@ mod skill_requests;
 mod state_identity;
 mod tracker_runner;
 pub mod verification;
+pub mod waiver;
 mod workspace;
 mod workspace_retention;
 
@@ -84,6 +85,9 @@ const CONSUMED_DIRECTORY: &str = "consumed";
 /// A launch transaction the broker refused or could not make durable.
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    /// An exact operator waiver request was refused.
+    #[error("{0}")]
+    Waiver(#[from] waiver::WaiverError),
     /// Installed tracker provisioning is present but cannot safely enable writes.
     #[error("broker tracker configuration: {0}")]
     TrackerConfiguration(&'static str),
