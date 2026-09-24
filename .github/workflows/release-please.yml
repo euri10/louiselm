@@ -1,4 +1,4 @@
-name: Plugin releases
+name: Component releases
 
 on:
   workflow_run:
@@ -29,7 +29,7 @@ jobs:
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_repository.full_name == github.repository))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       actions: read
@@ -64,13 +64,19 @@ jobs:
       - name: Check commit classification before making proposals
         run: python3 scripts/check-release-commits.py
 
+      - name: Install the capture release toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target x86_64-unknown-linux-gnu
+
       - name: Recover an already prepared draft before retrying Release Please
         env:
           GH_TOKEN: ${{ github.token }}
           GH_IMMUTABILITY_TOKEN: ${{ steps.immutability-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
-        run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
+        run: |
+          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
+          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID" --component capture
 
       - name: Prepare unpublished release drafts
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.6.0
@@ -85,9 +91,11 @@ jobs:
           GH_IMMUTABILITY_TOKEN: ${{ steps.immutability-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
           CI_RUN_ID: ${{ github.event.workflow_run.id || inputs.ci_run_id }}
-        run: python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
+        run: |
+          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID"
+          python3 scripts/publish-plugin-release.py --repository "$REPOSITORY" --run-id "$CI_RUN_ID" --component capture
 
-      - name: Wait for outstanding plugin drafts before proposing another version
+      - name: Wait for outstanding component drafts before proposing another version
         id: pending
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,10 +103,10 @@ jobs:
         run: |
           set -euo pipefail
           ready=$(gh api --paginate --slurp "repos/$REPOSITORY/releases?per_page=100" |
-            jq '[.[][] | select(.draft and (.tag_name | startswith("plugin-v")))] | length == 0')
+            jq '[.[][] | select(.draft and (.tag_name | test("^(plugin|capture)-v")))] | length == 0')
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
 
-      - name: Propose the next plugin release
+      - name: Propose the next component releases
         if: steps.pending.outputs.ready == 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; release-please 17.6.0
         with:

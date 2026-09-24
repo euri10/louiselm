@@ -49,6 +49,7 @@ T["starts the constrained Run admission command"] = function()
   MiniTest.expect.equality(started, true)
   MiniTest.expect.equality(command, {
     "louiselm-capture",
+    "--require-interface=1",
     "run",
     "admit",
     "--id",
@@ -77,6 +78,7 @@ T["starts the constrained Session attachment command"] = function()
   end))
   MiniTest.expect.equality(command, {
     "louiselm-capture",
+    "--require-interface=1",
     "run",
     "attach",
     "--id",
@@ -122,6 +124,7 @@ T["starts the constrained Park command"] = function()
   MiniTest.expect.equality(started, true)
   MiniTest.expect.equality(command, {
     "louiselm-capture",
+    "--require-interface=1",
     "run",
     "park",
     "--id",

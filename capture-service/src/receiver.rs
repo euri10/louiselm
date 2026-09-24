@@ -128,12 +128,14 @@ impl Receiver {
 
 #[derive(Serialize)]
 struct HealthResponse {
+    service: crate::compatibility::ServiceMetadata,
     status: &'static str,
     receiver_identity_sha256: String,
 }
 
 async fn health(State(state): State<ReceiverState>) -> Json<HealthResponse> {
     Json(HealthResponse {
+        service: crate::compatibility::metadata(),
         status: "ok",
         receiver_identity_sha256: state.receiver_identity_sha256,
     })

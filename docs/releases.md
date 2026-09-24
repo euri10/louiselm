@@ -1,8 +1,9 @@
 # Plugin releases (GitHub)
 
 The core Lua plugin is independently installable. Capture, trusted tools and
-Android are optional companions; core chat requires none of them. Their release
-automation belongs to separate implementation slices. GitHub
+Android are optional companions; core chat requires none of them. Capture has its
+own Cargo release and Linux download. Trusted-tool and Android release automation
+belongs to separate implementation slices. GitHub
 [`euri10/louiselm`](https://github.com/euri10/louiselm) is public and is the
 release authority. GitLab synchronization is tracked in
 `louiselm-component-releases-oa0d.5`; it is not implemented by this slice.
@@ -43,7 +44,7 @@ last packaged version, so use a full commit pin when identifying development cod
 
 One pinned Release Please action (v5.0.0, commit
 `45996ed1f6d02564a971a2fa1b5860e934307cf7`, locked Release Please 17.6.0) prepares
-separate component PRs on `main`. Only the plugin is configured here.
+separate component PRs on `main`. Plugin and capture are configured here.
 
 | Change | Plugin release effect |
 | --- | --- |
@@ -178,6 +179,72 @@ commit SHA. An authenticated GitHub CLI can download the published source:
 Public browsing and source downloads require no repository access grant. Never put a PAT
 in plugin configuration or a repository URL. Core chat still needs the documented
 Neovim, SQLite and configured ACP Agent prerequisites, but no companion binary.
+
+## Capture releases and compatibility
+
+Capture uses `capture-v0.x.y` tags and the Rust Release Please strategy. Its
+canonical version is `capture-service/Cargo.toml`; Cargo.lock and the
+`capture-service` release-manifest entry must agree. `0.0.0` means unpublished;
+the first proposed release is `0.1.0`. `python3 scripts/capture_release.py --check`
+enforces agreement and the alpha ceiling. Capture-only source commits never
+bump the plugin. Mixed interface/client changes may release both components.
+
+The existing publisher also checks capture release PR approval and exact PR/main
+CI before building. It builds only a Git archive of the approved source using
+Rust 1.97.1, locked dependencies and `x86_64-unknown-linux-gnu` on the workflow's
+Ubuntu 24.04 runner. The download requires Linux x86-64 with glibc 2.39 or newer;
+it is not a portable static binary. No other target is advertised.
+
+Each release contains `louiselm-capture-VERSION-x86_64-unknown-linux-gnu.tar.gz`,
+a matching `.json` identity record and `.sha256` checksum file. The archive holds
+the executable and `metadata.json`; identity records bind package version,
+source commit, target, toolchain, interface versions and binary digest. The
+publisher verifies native `--version`/`metadata` output before packaging. Every
+existing remote asset must match the rebuilt bytes; incomplete uploads may add
+missing assets, but retries never replace assets or move tags. A mismatching
+draft stays unpublished for inspection. Published releases are immutable.
+
+After the maintainer reviews and merges the capture release PR, verify hosted
+CI/publication and download the exact tag. This implementation alone is not
+evidence that the first binary has been published. Example after `capture-v0.1.0`
+exists (run in an empty download directory):
+
+```sh
+gh release download capture-v0.1.0 --repo euri10/louiselm \
+  --pattern 'louiselm-capture-0.1.0-x86_64-unknown-linux-gnu.*'
+sha256sum --check louiselm-capture-0.1.0-x86_64-unknown-linux-gnu.sha256
+tar -xzf louiselm-capture-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+./louiselm-capture --version
+./louiselm-capture metadata
+```
+
+Retain the previous executable and stop/restart the configured service at a safe
+boundary after pending operations finish. Install the verified download at the
+existing configured executable path; preserve the service identity, permissions,
+environment and data directories. For a user-owned installation, use
+`install -m 0755 ./louiselm-capture /exact/configured/path/louiselm-capture` while
+the service is stopped. Root-owned deployments require the existing privileged
+installation procedure. No release command changes live dotfiles or services.
+
+Package versions do not decide compatibility. Current clients require interface
+1 for the capture CLI, Run socket and Attention socket. Every CLI operation
+passes `--require-interface=1`, checked before state discovery; initial socket
+snapshots carry the actual daemon's package identity and interfaces. Missing,
+malformed or unsupported metadata closes only that client before mutations.
+The existing receiver health response also advertises bounded interface metadata
+for Android's subsequent compatibility slice, without widening access.
+
+Update an enabled companion before reloading a plugin that requires these
+interfaces. An older binary without metadata is intentionally refused; core chat
+and disabled integrations remain usable, and refusals preserve recordings and
+durable Run/Attention state. Keep package pins separate from interface revisions
+and persisted schemas. Bump the affected interface when its consumed contract
+changes incompatibly.
+
+Capture checks additionally run `python3 scripts/test-capture-release.py`, the
+complete capture Rust and Lua gates, and the existing pinned Release Please
+fixtures. Local fixtures prove refusal and retry behavior; hosted PR/event,
+download and installed-service acceptance remain distinct.
 
 ## Checks and upstream references
 

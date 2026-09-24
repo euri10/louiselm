@@ -48,7 +48,11 @@ T["renders durable conditions read-only and ignores queued frames after close"] 
     reason = "untrusted text must never render",
   }
   local function send(items)
-    pipe.read(nil, nvim.json.encode({ type = "snapshot", snapshot = { generation = 1, items = items } }) .. "\n")
+    pipe.read(nil, nvim.json.encode({
+      type = "snapshot",
+      service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+      snapshot = { generation = 1, items = items },
+    }) .. "\n")
   end
   local async = assert(nvim.uv.new_async(function()
     assert(nvim.in_fast_event())

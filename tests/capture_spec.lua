@@ -88,9 +88,10 @@ T["recorder"]["records, stops, then ingests only after leaving the fast event"] 
     MiniTest.expect.equality(#runtime.scheduled, 1)
     runtime.scheduled[1]()
     MiniTest.expect.equality(runtime.processes[2].command[1], "test-capture-service")
-    MiniTest.expect.equality(runtime.processes[2].command[2], "ingest-local")
-    MiniTest.expect.equality(runtime.processes[2].command[3], "--file")
-    MiniTest.expect.equality(runtime.processes[2].command[4], output)
+    MiniTest.expect.equality(runtime.processes[2].command[2], "--require-interface=1")
+    MiniTest.expect.equality(runtime.processes[2].command[3], "ingest-local")
+    MiniTest.expect.equality(runtime.processes[2].command[4], "--file")
+    MiniTest.expect.equality(runtime.processes[2].command[5], output)
     MiniTest.expect.equality(nvim.tbl_contains(runtime.processes[2].command, id), true)
 
     runtime.processes[2].callback({
@@ -150,7 +151,7 @@ T["recorder"]["accepts a stopped recorder with an audio file"] = function()
     runtime.processes[1].callback({ code = 1, signal = 0, stdout = "", stderr = "" })
     runtime.scheduled[1]()
 
-    MiniTest.expect.equality(runtime.processes[2].command[2], "ingest-local")
+    MiniTest.expect.equality(runtime.processes[2].command[3], "ingest-local")
     runtime.processes[2].callback({
       code = 0,
       signal = 0,
@@ -167,6 +168,34 @@ T["recorder"]["accepts a stopped recorder with an audio file"] = function()
 end
 
 T["service"] = MiniTest.new_set()
+
+T["service"]["legacy companion refusal retains audio and names the required update"] = function()
+  local runtime = fake_runtime()
+  MiniTest.finally(runtime.restore)
+  local capture = assert(Capture.new({ enabled = true, recorder = { "recorder", "{output}" } }))
+  assert(capture:start())
+  local output = runtime.processes[1].command[2]
+  nvim.fn.writefile({ "audio" }, output, "b")
+  local completion
+  assert(capture:stop(function(value, err)
+    completion = { value = value, err = err }
+  end))
+  runtime.processes[1].callback({ code = 0, signal = 2, stdout = "", stderr = "" })
+  runtime.scheduled[1]()
+  runtime.processes[2].callback({
+    code = 1,
+    stdout = "",
+    stderr = "invalid command: unknown command '--require-interface=1'",
+  })
+  runtime.scheduled[2]()
+  MiniTest.expect.equality(completion.value, nil)
+  MiniTest.expect.equality(
+    completion.err:find("install a capture release supporting capture interface 1", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(nvim.fn.readfile(output), { "audio" })
+  MiniTest.expect.equality(capture:is_busy(), false)
+end
 
 T["service"]["decodes capture listings after scheduling"] = function()
   local runtime = fake_runtime()
@@ -272,7 +301,7 @@ T["commands"]["pairing QR is black on white independently of the colorscheme"] =
     assert(CaptureCommand.configure({ capture = { enabled = true } }))
     assert(CaptureCommand.register())
     nvim.cmd("LouiselmCapturePair")
-    MiniTest.expect.equality(runtime.processes[1].command, { "louiselm-capture", "pair" })
+    MiniTest.expect.equality(runtime.processes[1].command, { "louiselm-capture", "--require-interface=1", "pair" })
     runtime.processes[1].callback({ code = 0, signal = 0, stdout = " █ \n██ ", stderr = "" })
     runtime.scheduled[1]()
 

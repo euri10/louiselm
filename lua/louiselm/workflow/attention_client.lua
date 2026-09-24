@@ -4,6 +4,7 @@
 local nvim = vim
 
 local Socket = require("louiselm.workflow.socket")
+local Compatibility = require("louiselm.capture.compatibility")
 
 local M = {}
 local Client = {}
@@ -61,7 +62,18 @@ local function handle_line(client, line)
     report_error(client, "Attention socket returned invalid JSON")
     return
   end
+  if not client.ready and message.type ~= "snapshot" then
+    report_error(client, "Attention socket requires an initial compatible snapshot; install a matching capture release")
+    client:dispose()
+    return
+  end
   if message.type == "snapshot" and valid_snapshot(message.snapshot) then
+    local compatible, err = Compatibility.check(message.service, "attention")
+    if not compatible then
+      report_error(client, err)
+      client:dispose()
+      return
+    end
     client.ready = true
     client.on_snapshot(message.snapshot)
     return
@@ -71,7 +83,6 @@ local function handle_line(client, line)
     and type(message.request_id) == "string"
     and valid_snapshot(message.snapshot)
   then
-    client.ready = true
     client.on_snapshot(message.snapshot)
     local callback = client.pending[message.request_id]
     if callback ~= nil then

@@ -1,6 +1,7 @@
 ---Run-owned generated-work ledger reached through the capture service.
 
 local M = {}
+local Compatibility = require("louiselm.capture.compatibility")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -25,7 +26,7 @@ local nvim = vim
 local function failure(result)
   local stderr = type(result.stderr) == "string" and nvim.trim(result.stderr) or ""
   if stderr ~= "" then
-    return stderr
+    return Compatibility.command_error(stderr)
   end
   return string.format("Run ledger command failed with status %s", tostring(result.code))
 end
@@ -39,7 +40,7 @@ end
 ---@param arguments string[]
 ---@param callback fun(state: string?, error_message?: string)
 local function invoke(context, arguments, callback)
-  local command = { context.capture, "run" }
+  local command = { context.capture, "--require-interface=1", "run" }
   nvim.list_extend(command, arguments)
   local options = {
     text = true,

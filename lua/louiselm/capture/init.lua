@@ -1,6 +1,7 @@
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
 local Paths = require("louiselm.paths")
+local Compatibility = require("louiselm.capture.compatibility")
 
 ---@class louiselm.capture.Config
 ---@field enabled? boolean Explicit desktop capture opt-in; defaults to false.
@@ -113,6 +114,7 @@ function Capture:run_service(arguments, decode_json, callback)
     return false, "capture is disabled; set capture.enabled = true and run :checkhealth louiselm"
   end
   local command = nvim.deepcopy(self.service)
+  command[#command + 1] = "--require-interface=1"
   for _, argument in ipairs(arguments) do
     command[#command + 1] = argument
   end
@@ -121,7 +123,7 @@ function Capture:run_service(arguments, decode_json, callback)
     nvim.schedule(function()
       self.pending = self.pending - 1
       if result.code ~= 0 then
-        complete(callback, nil, process_error(result.stderr))
+        complete(callback, nil, Compatibility.command_error(process_error(result.stderr)))
         return
       end
       if not decode_json then

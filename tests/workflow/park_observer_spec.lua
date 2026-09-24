@@ -28,6 +28,7 @@ end
 local function parked_snapshot(revision)
   return nvim.json.encode({
     type = "snapshot",
+    service = { component = "capture", version = "0.9.2", interfaces = { run = 1 } },
     runs = {
       {
         id = "run",

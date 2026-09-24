@@ -5,7 +5,7 @@ case "${1-}" in
   create|q)
     command=$1
     shift
-    exec "${LOUISELM_CAPTURE:?}" run generate --command "$command" -- "$@"
+    exec "${LOUISELM_CAPTURE:?}" --require-interface=1 run generate --command "$command" -- "$@"
     ;;
   *)
     exec "${LOUISELM_REAL_BR:?}" "$@"

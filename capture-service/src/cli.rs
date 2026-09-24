@@ -93,7 +93,24 @@ pub enum CliError {
 ///
 /// Returns explicit command, configuration, storage, identity, and service errors.
 pub async fn run() -> Result<(), CliError> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let mut arguments = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(required) = arguments
+        .first()
+        .and_then(|value| value.strip_prefix("--require-interface="))
+    {
+        if required
+            != crate::compatibility::metadata()
+                .interfaces
+                .capture
+                .to_string()
+        {
+            return Err(CliError::Invalid(format!(
+                "louiselm-capture {}: incompatible capture interface; install the capture release required by the plugin",
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+        arguments.remove(0);
+    }
     let Some(command) = arguments.first().map(String::as_str) else {
         print_help();
         return Ok(());
@@ -103,6 +120,18 @@ pub async fn run() -> Result<(), CliError> {
         return Ok(());
     }
     let options = &arguments[1..];
+    if command == "metadata" || command == "--version" {
+        no_arguments(options, command)?;
+        if command == "metadata" {
+            println!(
+                "{}",
+                serde_json::to_string(&crate::compatibility::metadata())?
+            );
+        } else {
+            println!("louiselm-capture {}", env!("CARGO_PKG_VERSION"));
+        }
+        return Ok(());
+    }
     let paths = Paths::discover()?;
     match command {
         "ingest-local" => ingest_local(&Store::new(paths.captures())?, options),

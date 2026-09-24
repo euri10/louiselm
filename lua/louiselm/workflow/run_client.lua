@@ -1,6 +1,7 @@
 ---Asynchronous local client for authoritative durable Run snapshots.
 
 local Socket = require("louiselm.workflow.socket")
+local Compatibility = require("louiselm.capture.compatibility")
 
 local M = {}
 local Client = {}
@@ -37,6 +38,7 @@ local nvim = vim
 ---@field buffer string
 ---@field revisions table<string, integer>
 ---@field disposed boolean
+---@field ready boolean Validated initial interface snapshot received.
 ---@field operator_capability? string
 ---@field next_request_id integer
 ---@field pending table<string, fun(run: louiselm.workflow.RunView?, error_message?: string)>
@@ -93,6 +95,11 @@ local function handle_line(client, line)
     report_error(client, "Run socket returned invalid JSON")
     return
   end
+  if not client.ready and message.type ~= "snapshot" then
+    report_error(client, "Run socket requires an initial compatible snapshot; install a matching capture release")
+    client:dispose()
+    return
+  end
   if type(message.runs) == "table" then
     for _, run in ipairs(message.runs) do
       normalize_optional_fields(run)
@@ -100,6 +107,12 @@ local function handle_line(client, line)
   end
   normalize_optional_fields(message.run)
   if message.type == "snapshot" and type(message.runs) == "table" then
+    local compatible, err = Compatibility.check(message.service, "run")
+    if not compatible then
+      report_error(client, err)
+      client:dispose()
+      return
+    end
     local revisions = {}
     for _, run in ipairs(message.runs) do
       if not valid_run(run) then
@@ -109,6 +122,7 @@ local function handle_line(client, line)
       revisions[run.id] = run.revision
     end
     client.revisions = revisions
+    client.ready = true
     client.on_snapshot(message.runs)
     return
   end
@@ -246,6 +260,7 @@ function M.connect(path, on_snapshot, options)
     buffer = "",
     revisions = {},
     disposed = false,
+    ready = false,
     operator_capability = options.operator_capability,
     next_request_id = 1,
     pending = {},
@@ -305,7 +320,7 @@ local function valid_mutation(id, expected_revision, callback)
 end
 
 local function mutate(client, message, callback)
-  if client.disposed or client.pipe == nil or client.pipe:is_closing() then
+  if client.disposed or not client.ready or client.pipe == nil or client.pipe:is_closing() then
     return false, "Run client is not connected"
   end
   if client.operator_capability == nil then

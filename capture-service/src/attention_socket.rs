@@ -48,6 +48,8 @@ pub enum AttentionSocketMessage {
     },
     /// Complete current state, without the operator capability.
     Snapshot {
+        /// Identity and interface contract of the connected daemon.
+        service: crate::compatibility::ServiceMetadata,
         /// Complete current observer state.
         snapshot: AttentionSnapshot,
     },
@@ -187,7 +189,10 @@ async fn serve_client(
     let mut known_generation = initial.generation;
     write_message(
         &mut writer,
-        &AttentionSocketMessage::Snapshot { snapshot: initial },
+        &AttentionSocketMessage::Snapshot {
+            service: crate::compatibility::metadata(),
+            snapshot: initial,
+        },
     )
     .await?;
     let mut interval = tokio::time::interval(Duration::from_millis(50));
@@ -200,7 +205,7 @@ async fn serve_client(
                     ClientMessage::Snapshot => {
                         let snapshot = read_snapshot(&store).await?;
                         known_generation = snapshot.generation;
-                        write_message(&mut writer, &AttentionSocketMessage::Snapshot { snapshot }).await?;
+                        write_message(&mut writer, &AttentionSocketMessage::Snapshot { service: crate::compatibility::metadata(), snapshot }).await?;
                     }
                     request => handle_mutation(&mut writer, &store, &operator_hash, request).await?,
                 }

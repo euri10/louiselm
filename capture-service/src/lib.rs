@@ -4,6 +4,7 @@ mod attention;
 mod attention_socket;
 mod broker_attention;
 pub mod cli;
+pub mod compatibility;
 mod fcm;
 mod generation;
 mod identity;

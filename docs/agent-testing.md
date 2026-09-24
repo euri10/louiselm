@@ -39,6 +39,9 @@ Plugin release automation also runs `python3 scripts/check-release-commits.py`,
 fixtures in `scripts/test-release-please.cjs` (temporary tool setup is in the
 `plugin-release-contract` CI job). See [releases](releases.md) for activation
 and hosted bot-PR acceptance; local fixtures cannot certify GitHub event delivery.
+Capture release changes also run `python3 scripts/capture_release.py --check`
+and `python3 scripts/test-capture-release.py`; CI enforces both. A native download
+is built only from an exact approved Git commit with the pinned Rust toolchain.
 
 `capture-service/`, `skills-core/`, and `usage-cli/` are Rust crates, not Lua, and each carries
 its own gates. Run them from the crate directory you touched:

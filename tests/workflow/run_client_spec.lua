@@ -42,7 +42,7 @@ T["schedules snapshots from a real fast-event boundary and rereads on newer hint
   async = nvim.uv.new_async(function()
     MiniTest.expect.equality(nvim.in_fast_event(), true)
     local frame =
-      '{"type":"snapshot","runs":[{"id":"run","revision":1,"state":"active","generated_work_ceiling":3,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"park_expires_at_ms":0}]}\n'
+      '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[{"id":"run","revision":1,"state":"active","generated_work_ceiling":3,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"park_expires_at_ms":0}]}\n'
     pipe.read_callback(nil, frame:sub(1, 10))
     pipe.read_callback(nil, frame:sub(11) .. '{"type":"run_changed","id":"run","revision":2}\n')
     async:close()
@@ -72,7 +72,7 @@ T["ignores work queued before disposal"] = function()
   pipe.connect_callback()
   pipe.read_callback(
     nil,
-    '{"type":"snapshot","runs":[{"id":"run","revision":1,"state":"active","generated_work_ceiling":3,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"park_expires_at_ms":0}]}\n'
+    '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[{"id":"run","revision":1,"state":"active","generated_work_ceiling":3,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"park_expires_at_ms":0}]}\n'
   )
   assert(client:dispose())
   nvim.wait(20)
@@ -93,7 +93,7 @@ T["normalizes null optional fields from a Run socket snapshot"] = function()
   pipe.connect_callback()
   pipe.read_callback(
     nil,
-    '{"type":"snapshot","runs":[{"id":"8981f800-c2ea-457f-8238-13e561246679","revision":3,"state":"cold_parked","session_id":"codex/01a05d64-ece8-77a0-998c-5e44f3be40f1","generated_work_ceiling":1,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"triggering_mutation_id":null,"park_expires_at_ms":1788359713137,"resume_operation_id":null,"resume_deadline_ms":null}]}\n'
+    '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[{"id":"8981f800-c2ea-457f-8238-13e561246679","revision":3,"state":"cold_parked","session_id":"codex/01a05d64-ece8-77a0-998c-5e44f3be40f1","generated_work_ceiling":1,"generated_work_consumed":0,"generated_work_reserved":0,"pending_mutation_ids":[],"triggering_mutation_id":null,"park_expires_at_ms":1788359713137,"resume_operation_id":null,"resume_deadline_ms":null}]}\n'
   )
   MiniTest.expect.equality(
     nvim.wait(1000, function()
@@ -147,6 +147,13 @@ T["closes a failed transport and fails pending mutations once on the main loop"]
     client:dispose()
   end)
   pipe.connect_callback()
+  pipe.read_callback(
+    nil,
+    '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[]}\n'
+  )
+  assert(nvim.wait(1000, function()
+    return client.ready
+  end))
   assert(client:resume("run", 3, "operation", function(_, err)
     MiniTest.expect.equality(nvim.in_fast_event(), false)
     completions[#completions + 1] = err
@@ -178,6 +185,13 @@ T["correlates operator mutations and invokes callbacks once"] = function()
     operator_capability = "operator-secret",
   }))
   pipe.connect_callback()
+  pipe.read_callback(
+    nil,
+    '{"type":"snapshot","service":{"component":"capture","version":"0.9.2","interfaces":{"run":1}},"runs":[]}\n'
+  )
+  assert(nvim.wait(1000, function()
+    return client.ready
+  end))
   assert(client:raise("run", 3, 5, function(run, error_message)
     result = { run, error_message }
   end))

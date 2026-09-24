@@ -752,3 +752,34 @@ fn command(data: &std::path::Path, state: &std::path::Path) -> Command {
         .env("LOUISELM_CAPTURE_CONFIG_DIR", state);
     command
 }
+#[test]
+fn metadata_and_interface_refusal_do_not_create_state() {
+    let temporary = tempfile::tempdir().unwrap();
+    let state = temporary.path().join("state");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
+        .args(["--require-interface=1", "metadata"])
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(metadata["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(metadata["interfaces"]["capture"], 1);
+    assert_eq!(metadata["interfaces"]["run"], 1);
+    assert_eq!(metadata["interfaces"]["attention"], 1);
+    let refused = std::process::Command::new(env!("CARGO_BIN_EXE_louiselm-capture"))
+        .args(["--require-interface=999", "status"])
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("incompatible capture interface"));
+    assert!(
+        !state.exists(),
+        "metadata/refusal must have no storage effects"
+    );
+}

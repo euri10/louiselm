@@ -87,6 +87,8 @@ jobs:
           ./scripts/generate-plugin-version --check
           python3 scripts/check-release-commits.py
           python3 scripts/test-plugin-release.py
+          python3 scripts/capture_release.py --check
+          python3 scripts/test-capture-release.py
       - name: Test the exact release tool against disposable API history
         run: |
           set -eu

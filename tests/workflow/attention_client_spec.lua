@@ -47,7 +47,11 @@ T["schedules snapshots and rereads after generation invalidation"] = function()
   local async
   async = nvim.uv.new_async(function()
     MiniTest.expect.equality(nvim.in_fast_event(), true)
-    local frame = nvim.json.encode({ type = "snapshot", snapshot = snapshot(1) }) .. "\n"
+    local frame = nvim.json.encode({
+      type = "snapshot",
+      service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+      snapshot = snapshot(1),
+    }) .. "\n"
     pipe.read_callback(nil, frame:sub(1, 10))
     pipe.read_callback(nil, frame:sub(11) .. nvim.json.encode({ type = "attention_changed", generation = 2 }) .. "\n")
     async:close()
@@ -76,7 +80,11 @@ T["fails pending requests once and ignores frames queued before disposal"] = fun
     end,
   }))
   pipe.connect_callback()
-  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(0) }) .. "\n")
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "snapshot",
+    service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+    snapshot = snapshot(0),
+  }) .. "\n")
   assert(nvim.wait(1000, function()
     return #snapshots == 1
   end))
@@ -106,7 +114,11 @@ T["correlates mutation results and ignores late callbacks after disposal"] = fun
     end,
   }))
   pipe.connect_callback()
-  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(0) }) .. "\n")
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "snapshot",
+    service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+    snapshot = snapshot(0),
+  }) .. "\n")
   nvim.wait(20)
   assert(client:upsert({ kind = "turn_ready" }, function(value, error_message)
     result = { value, error_message }
@@ -128,7 +140,11 @@ T["correlates mutation results and ignores late callbacks after disposal"] = fun
   )
   MiniTest.expect.equality(result[1].generation, 1)
   assert(client:dispose())
-  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(2) }) .. "\n")
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "snapshot",
+    service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+    snapshot = snapshot(2),
+  }) .. "\n")
   nvim.wait(20)
 end
 
@@ -141,7 +157,11 @@ T["clears all conditions or one kind for a Session"] = function()
     end,
   }))
   pipe.connect_callback()
-  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(0) }) .. "\n")
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "snapshot",
+    service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+    snapshot = snapshot(0),
+  }) .. "\n")
   nvim.wait(20)
   assert(client:clear_session("codex/session-1", function() end))
   local request = nvim.json.decode(pipe.writes[1])
@@ -177,7 +197,11 @@ T["read-only observer needs no capability and cannot mutate"] = function()
     client:dispose()
   end)
   pipe.connect_callback()
-  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(1) }) .. "\n")
+  pipe.read_callback(nil, nvim.json.encode({
+    type = "snapshot",
+    service = { component = "capture", version = "0.9.2", interfaces = { attention = 1 } },
+    snapshot = snapshot(1),
+  }) .. "\n")
   assert(nvim.wait(1000, function()
     return #snapshots == 1
   end))

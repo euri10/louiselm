@@ -42,6 +42,8 @@ pub enum RunSocketError {
 pub enum RunSocketMessage {
     /// Complete current observer state.
     Snapshot {
+        /// Identity and interface contract of the connected daemon.
+        service: crate::compatibility::ServiceMetadata,
         /// All retained Run projections.
         runs: Vec<RunView>,
     },
@@ -170,7 +172,14 @@ async fn serve_client(
     let mut lines = BufReader::new(reader).lines();
     let initial = store.snapshot()?;
     let mut known = revisions(&initial);
-    write_message(&mut writer, &RunSocketMessage::Snapshot { runs: initial }).await?;
+    write_message(
+        &mut writer,
+        &RunSocketMessage::Snapshot {
+            service: crate::compatibility::metadata(),
+            runs: initial,
+        },
+    )
+    .await?;
     let mut interval = tokio::time::interval(Duration::from_millis(50));
     interval.tick().await;
     loop {
@@ -181,7 +190,7 @@ async fn serve_client(
                     ClientMessage::Snapshot => {
                         let runs = store.snapshot()?;
                         known = revisions(&runs);
-                        write_message(&mut writer, &RunSocketMessage::Snapshot { runs }).await?;
+                        write_message(&mut writer, &RunSocketMessage::Snapshot { service: crate::compatibility::metadata(), runs }).await?;
                     }
                     request => handle_mutation(&mut writer, &store, &operator_hash, request).await?,
                 }

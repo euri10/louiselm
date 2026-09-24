@@ -170,6 +170,50 @@ class Publication(unittest.TestCase):
         self.assertEqual(self.writes, [])
 
 
+class CapturePublication(unittest.TestCase):
+    def setUp(self):
+        self.fixture = Publication()
+        self.fixture.setUp()
+        self.fixture.draft['tag_name'] = 'capture-v0.1.0'
+        self.fixture.pr['head']['ref'] = 'release-please--branches--main--components--capture'
+        self.prepared = []
+
+    def api(self, path, data=None):
+        if '/contents/' in path:
+            filename = path.split('/contents/')[1].split('?')[0]
+            value = {
+                'capture-service/Cargo.toml': '[package]\nname="louiselm-capture"\nversion="0.1.0"\n',
+                'capture-service/Cargo.lock': '[[package]]\nname="louiselm-capture"\nversion="0.1.0"\n',
+                '.release-please-manifest.json': '{"capture-service":"0.1.0"}',
+                'capture-service/CHANGELOG.md': '## 0.1.0\n',
+            }[filename]
+            return dict(encoding='base64', content=base64.b64encode(value.encode()).decode())
+        if '/git/matching-refs/tags/capture-' in path:
+            return []
+        return self.fixture.api(path, data)
+
+    def prepare(self, repository, draft, sha, version):
+        self.prepared.append((repository, sha, version))
+
+    def test_capture_requires_approved_exact_source_before_build_or_publication(self):
+        self.fixture.pr_run['conclusion'] = 'failure'
+        with self.assertRaisesRegex(ValueError, 'pull_request CI'):
+            release.publish(self.api, 'euri10/louiselm', 10, component='capture', prepare_assets=self.prepare)
+        self.assertEqual(self.prepared, [])
+        self.assertEqual(self.fixture.writes, [])
+        self.fixture.pr_run['conclusion'] = 'success'
+        result = release.publish(self.api, 'euri10/louiselm', 10, component='capture', prepare_assets=self.prepare)
+        self.assertEqual(self.prepared, [('euri10/louiselm', SHA, '0.1.0')])
+        self.assertEqual(result[0]['component'], 'capture')
+
+    def test_incomplete_assets_leave_draft_unpublished(self):
+        def fail(*args):
+            raise ValueError('incomplete assets')
+        with self.assertRaisesRegex(ValueError, 'incomplete assets'):
+            release.publish(self.api, 'euri10/louiselm', 10, component='capture', prepare_assets=fail)
+        self.assertEqual(self.fixture.writes, [])
+
+
 class CommitPolicy(unittest.TestCase):
     def test_root_companion_and_site_files_cannot_drive_releases(self):
         for filename in policy.NON_PLUGIN_FILES:

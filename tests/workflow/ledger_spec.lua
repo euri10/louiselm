@@ -68,6 +68,7 @@ T["carries the Run capability in the environment, never in the argument vector"]
 
   MiniTest.expect.equality(calls[1].command, {
     "/usr/bin/louiselm-capture",
+    "--require-interface=1",
     "run",
     "reserve",
     "--mutation-id",
@@ -98,9 +99,11 @@ T["charges a back-edge as a reservation confirmed against its own identity"] = f
   )
 
   MiniTest.expect.equality(#calls, 2)
-  MiniTest.expect.equality(calls[1].command[3], "reserve")
+  MiniTest.expect.equality(calls[1].command[2], "--require-interface=1")
+  MiniTest.expect.equality(calls[1].command[4], "reserve")
   MiniTest.expect.equality(calls[2].command, {
     "/usr/bin/louiselm-capture",
+    "--require-interface=1",
     "run",
     "confirm",
     "--mutation-id",

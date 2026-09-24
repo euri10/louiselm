@@ -78,6 +78,7 @@ async fn pairing_then_authenticated_upload_is_retry_safe() {
         health,
         serde_json::json!({
             "status": "ok",
+            "service": louiselm_capture::compatibility::metadata(),
             "receiver_identity_sha256":
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         })

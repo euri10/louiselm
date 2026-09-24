@@ -22,6 +22,19 @@
         "capture-service", "skills-core", "android", "contrib", "infra",
         "blog", "site", "demo", "assets"
       ]
+    },
+    "capture-service": {
+      "release-type": "rust",
+      "component": "capture",
+      "initial-version": "0.1.0",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "tag-separator": "-",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "draft": true,
+      "prerelease": true
     }
   }
 }

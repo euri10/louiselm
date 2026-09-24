@@ -57,10 +57,11 @@ async fn socket_sends_snapshot_then_revision_only_invalidation() {
     let initial_line = lines.next_line().await.expect("read").expect("snapshot");
     assert!(!initial_line.contains(TOKEN));
     let snapshot: RunSocketMessage = serde_json::from_str(&initial_line).expect("snapshot JSON");
-    let RunSocketMessage::Snapshot { runs } = snapshot else {
+    let RunSocketMessage::Snapshot { runs, service } = snapshot else {
         panic!("expected snapshot");
     };
     assert_eq!(runs.len(), 1);
+    assert_eq!(service, louiselm_capture::compatibility::metadata());
     assert_eq!(runs[0].revision, 1);
 
     store
@@ -98,7 +99,7 @@ async fn socket_sends_snapshot_then_revision_only_invalidation() {
             .expect("refreshed snapshot"),
     )
     .expect("refreshed JSON");
-    let RunSocketMessage::Snapshot { runs } = refreshed else {
+    let RunSocketMessage::Snapshot { runs, .. } = refreshed else {
         panic!("expected refreshed snapshot");
     };
     assert_eq!(runs[0].revision, 2);

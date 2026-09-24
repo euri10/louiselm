@@ -1,6 +1,7 @@
 ---Asynchronous local-service boundary for durable workflow state.
 
 local M = {}
+local Compatibility = require("louiselm.capture.compatibility")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -104,6 +105,7 @@ function M.admit(record, callback, system)
   system = system or nvim.system
   local command = {
     "louiselm-capture",
+    "--require-interface=1",
     "run",
     "admit",
     "--id",
@@ -123,7 +125,7 @@ function M.admit(record, callback, system)
           callback(nil, "Run admission service returned invalid data")
         end
       else
-        callback(nil, result.stderr ~= "" and result.stderr or "could not admit Run")
+        callback(nil, Compatibility.command_error(result.stderr ~= "" and result.stderr or "could not admit Run"))
       end
     end)
   end)
@@ -154,6 +156,7 @@ function M.attach(record, callback, system)
   system = system or nvim.system
   local command = {
     "louiselm-capture",
+    "--require-interface=1",
     "run",
     "attach",
     "--id",
@@ -174,7 +177,10 @@ function M.attach(record, callback, system)
       if result.code == 0 then
         callback(true)
       else
-        callback(false, result.stderr ~= "" and result.stderr or "could not attach Run Session")
+        callback(
+          false,
+          Compatibility.command_error(result.stderr ~= "" and result.stderr or "could not attach Run Session")
+        )
       end
     end)
   end)
@@ -226,6 +232,7 @@ function M.park(record, callback, system)
   system = system or nvim.system
   local command = {
     "louiselm-capture",
+    "--require-interface=1",
     "run",
     "park",
     "--id",
@@ -248,7 +255,10 @@ function M.park(record, callback, system)
       if result.code == 0 then
         callback(true)
       else
-        callback(false, result.stderr ~= "" and result.stderr or "could not persist cold Park")
+        callback(
+          false,
+          Compatibility.command_error(result.stderr ~= "" and result.stderr or "could not persist cold Park")
+        )
       end
     end)
   end)
@@ -267,10 +277,11 @@ function M.list(callback, system)
     return false, "Park list callback must be a function"
   end
   system = system or nvim.system
-  local started = pcall(system, { "louiselm-capture", "run", "list" }, { text = true }, function(result)
+  local command = { "louiselm-capture", "--require-interface=1", "run", "list" }
+  local started = pcall(system, command, { text = true }, function(result)
     nvim.schedule(function()
       if result.code ~= 0 then
-        callback({}, result.stderr ~= "" and result.stderr or "could not list cold Parks")
+        callback({}, Compatibility.command_error(result.stderr ~= "" and result.stderr or "could not list cold Parks"))
         return
       end
       local ok, decoded = pcall(nvim.json.decode, result.stdout)

@@ -12,14 +12,18 @@ setLogger({debug() {}, info() {}, warn() {}, error() {}});
 
 const config = JSON.parse(readFileSync('release-please-config.json'));
 const releaseSha = 'b'.repeat(40);
-async function proposal(message, files, previous = '0.4.2', history = []) {
+async function proposal(message, files, previous = '0.4.2', history = [], previousCapture = '0.0.0') {
   const github = {
     repository: {owner: 'fixture', repo: 'plugin'},
     async getFileJson(path) {
-      return path === 'release-please-config.json' ? config : {'.': previous};
+      return path === 'release-please-config.json' ? config : {'.': previous, 'capture-service': previousCapture};
+    },
+    async getFileContentsOnBranch(path) {
+      return {parsedContent: readFileSync(path, 'utf8')};
     },
     async *releaseIterator() {
       if (previous !== '0.0.0') yield {tagName: `plugin-v${previous}`, sha: releaseSha};
+      if (previousCapture !== '0.0.0') yield {tagName: `capture-v${previousCapture}`, sha: releaseSha};
     },
     async *tagIterator() {},
     async *mergeCommitIterator(branch, {maxResults}) {
@@ -38,10 +42,32 @@ async function proposal(message, files, previous = '0.4.2', history = []) {
 
 test('excluded components and tracker/site directories never bump plugin', async () => {
   for (const directory of config.packages['.']['exclude-paths']) {
-    assert.deepEqual(await proposal('feat!: other component', [`${directory}/file`]), [], directory);
+    const candidates = await proposal('feat!: other component', [`${directory}/file`]);
+    assert.deepEqual(candidates.filter(candidate => candidate.headRefName.endsWith('components--plugin')), [], directory);
   }
   assert.deepEqual(await proposal('build(site): update tooling', ['package.json']), []);
   assert.deepEqual(await proposal('chore: update receiver installer', ['scripts/install-capture-service']), []);
+});
+
+test('capture-only change proposes its own Cargo release with no plugin bump', async () => {
+  const candidates = await proposal('fix: accept capture input', ['capture-service/src/cli.rs']);
+  assert.equal(candidates.length, 1);
+  const candidate = candidates[0];
+  assert.match(candidate.headRefName, /components--capture$/);
+  assert.equal(candidate.version.toString(), '0.1.0');
+  const updated = Object.fromEntries(candidate.updates.map(update => [
+    update.path, update.updater.updateContent(existsSync(update.path) ? readFileSync(update.path, 'utf8') : ''),
+  ]));
+  assert.match(updated['capture-service/Cargo.toml'], /version = "0.1.0"/);
+  assert.match(updated['capture-service/Cargo.lock'], /name = "louiselm-capture"\nversion = "0.1.0"/);
+  assert.equal(JSON.parse(updated['.release-please-manifest.json'])['capture-service'], '0.1.0');
+  assert.equal(updated.VERSION, undefined);
+  for (const [message, expected] of [['fix: repair capture', '0.2.1'], ['feat: extend capture', '0.3.0'], ['feat!: change capture interface', '0.3.0']]) {
+    const next = await proposal(message, ['capture-service/src/cli.rs'], '0.4.2', [], '0.2.0');
+    assert.equal(next.length, 1);
+    assert.equal(next[0].version.toString(), expected);
+    assert.match(next[0].headRefName, /components--capture$/);
+  }
 });
 
 test('plugin and intentional shared changes select patch/minor, never automatic 1.0', async () => {
@@ -185,7 +211,7 @@ test('draft gate executes pagination filtering and fails closed on API errors', 
   try {
     for (const [pages, expected] of [
       [[[]], 'true'],
-      [[[{draft: false, tag_name: 'plugin-v0.1.0'}, {draft: true, tag_name: 'capture-v0.1.0'}]], 'true'],
+      [[[{draft: false, tag_name: 'plugin-v0.1.0'}, {draft: true, tag_name: 'capture-v0.1.0'}]], 'false'],
       [[[], [{draft: true, tag_name: 'plugin-v0.1.0'}]], 'false'],
     ]) {
       const output = join(directory, expected + '.output');

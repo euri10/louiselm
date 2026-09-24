@@ -43,7 +43,16 @@ or restart the service. Editor choices (`attention.enabled`, `capture.enabled`,
 
 ## Commands
 
+`louiselm-capture --version` reports the compiled Cargo version. `metadata`
+returns bounded package and interface identity without opening any state.
+Plugin clients prefix commands with `--require-interface=1`; incompatible
+interfaces fail before mutations. Run and Attention socket snapshots advertise
+the same identity. See `docs/releases.md` for exact capture download pins and
+safe service updates; release numbers need not match the plugin version.
+
 ```text
+metadata
+--version
 configure-network --profile lan|overlay|private --bind IP:PORT --url HTTPS_URL
 serve
 pair
