@@ -11,6 +11,7 @@ mod sources;
 mod store;
 
 use clap::Parser;
+use clap::error::{ContextKind, ContextValue};
 use cli::{Cli, Command};
 use error::{Failure, Result};
 use serde_json::Value;
@@ -90,7 +91,7 @@ fn main() -> ExitCode {
                 ExitCode::from(3)
             };
         }
-        Err(_) => return fail(&Failure::query("Invalid command or argument; use --help")),
+        Err(error) => return fail(&Failure::query(argument_error(&error))),
     };
     let table = cli.format == "table";
     match execute(cli) {
@@ -116,6 +117,19 @@ fn main() -> ExitCode {
             ExitCode::from(exit)
         }
         Err(error) => fail(&error),
+    }
+}
+
+/// Names the failing argument from clap's context, never the supplied value.
+fn argument_error(error: &clap::Error) -> String {
+    let kind = error
+        .kind()
+        .as_str()
+        .unwrap_or("Invalid command or argument");
+    match error.get(ContextKind::InvalidArg) {
+        Some(ContextValue::String(arg)) => format!("{kind}: {arg}; use --help"),
+        Some(ContextValue::Strings(args)) => format!("{kind}: {}; use --help", args.join("|")),
+        _ => format!("{kind}; use --help"),
     }
 }
 

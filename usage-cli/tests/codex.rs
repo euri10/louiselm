@@ -129,6 +129,27 @@ fn queries_do_not_create_an_index_and_invalid_fields_are_errors() {
 }
 
 #[test]
+fn argument_errors_name_the_argument_without_echoing_values() {
+    let fixture = Fixture::new();
+    let result = fixture.run(&["index"]);
+    assert_eq!(result.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&result.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "invalid_query");
+    assert_eq!(
+        error["error"]["message"],
+        "one or more required arguments were not provided: --all|--source <SOURCE>; use --help"
+    );
+    let result = fixture.run(&["stats", "commands", "--children", "private-value"]);
+    let error: Value = serde_json::from_slice(&result.stderr).unwrap();
+    assert_eq!(
+        error["error"]["message"],
+        "one of the values isn't valid for an argument: --children <CHILDREN>; use --help"
+    );
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("private-value"));
+    assert!(!fixture.0.join("state").exists());
+}
+
+#[test]
 fn structured_file_changes_inside_orchestration_are_tools() {
     let fixture = Fixture::new();
     let source = fixture.log("codex","history.jsonl",&[
