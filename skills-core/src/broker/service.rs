@@ -514,47 +514,48 @@ impl BrokerService {
         let clock = Instant::now();
         let consumed_at_ms =
             now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
-        let authorization = match self
-            .authorizations
-            .consume_for_launcher(request, consumed_at_ms)
-        {
-            Ok(authorization) => authorization,
-            Err(BrokerError::IdentityExhausted(exhaustion)) => {
-                send(
-                    channel,
-                    response(
-                        &request.request_id,
-                        ResponseResult::IdentityExhaustion {
-                            exhaustion: exhaustion.as_ref().clone(),
+        let authorization =
+            match self
+                .authorizations
+                .consume_with_waivers(request, consumed_at_ms, &self.waivers)
+            {
+                Ok(authorization) => authorization,
+                Err(BrokerError::IdentityExhausted(exhaustion)) => {
+                    send(
+                        channel,
+                        response(
+                            &request.request_id,
+                            ResponseResult::IdentityExhaustion {
+                                exhaustion: exhaustion.as_ref().clone(),
+                            },
+                        ),
+                    )?;
+                    return Err(BrokerError::IdentityExhausted(exhaustion));
+                }
+                Err(BrokerError::Storage(error)) => return Err(BrokerError::Storage(error)),
+                Err(refusal) => {
+                    self.record(
+                        &request.session_id,
+                        &request.run_id,
+                        &request.authorization_id,
+                        None,
+                        now_ms,
+                        AuditDecision::AuthorizationRefused {
+                            error: ErrorCode::InvalidRequest,
                         },
-                    ),
-                )?;
-                return Err(BrokerError::IdentityExhausted(exhaustion));
-            }
-            Err(BrokerError::Storage(error)) => return Err(BrokerError::Storage(error)),
-            Err(refusal) => {
-                self.record(
-                    &request.session_id,
-                    &request.run_id,
-                    &request.authorization_id,
-                    None,
-                    now_ms,
-                    AuditDecision::AuthorizationRefused {
-                        error: ErrorCode::InvalidRequest,
-                    },
-                )?;
-                send(
-                    channel,
-                    response(
-                        &request.request_id,
-                        ResponseResult::Error {
-                            error: ProtocolError::new(ErrorCode::InvalidRequest, None, None),
-                        },
-                    ),
-                )?;
-                return Err(refusal);
-            }
-        };
+                    )?;
+                    send(
+                        channel,
+                        response(
+                            &request.request_id,
+                            ResponseResult::Error {
+                                error: ProtocolError::new(ErrorCode::InvalidRequest, None, None),
+                            },
+                        ),
+                    )?;
+                    return Err(refusal);
+                }
+            };
         self.record_for(&authorization, now_ms, AuditDecision::AuthorizationConsumed)?;
         self.retain_workspace_inputs(request)?;
         let _replica_input = self.stage_beads_replica(&authorization)?;

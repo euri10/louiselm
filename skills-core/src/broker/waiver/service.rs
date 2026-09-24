@@ -38,6 +38,7 @@ impl BrokerService {
         }
         self.check_history(session_id)?;
         let context = Context {
+            preparation: None,
             session_id: session_id.into(),
             run_id: authorization.run_id,
             authorization_id: authorization.authorization_id,
@@ -99,6 +100,7 @@ impl BrokerService {
             _ => None,
         });
         let context = Context {
+            preparation: None,
             session_id: authorization.session_id.clone(),
             run_id: authorization.run_id.clone(),
             authorization_id: authorization.authorization_id.clone(),

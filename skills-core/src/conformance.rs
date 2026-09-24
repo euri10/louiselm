@@ -14,6 +14,7 @@ use crate::Digest;
 pub mod admission;
 #[cfg(target_os = "linux")]
 pub mod installed;
+pub mod preparation;
 
 /// Canonical observation report schema.
 pub const REPORT_SCHEMA: &str = "louiselm.conformance.observations/1";

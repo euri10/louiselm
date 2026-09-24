@@ -39,13 +39,24 @@ pub(super) fn inspect_current(
     deadline: Instant,
     admitting: bool,
 ) -> Result<ConformanceAdmission, SupervisorError> {
+    let started = Instant::now();
+    let preparation = authorization
+        .conformance
+        .waiver
+        .as_ref()
+        .and_then(|waiver| waiver.preparation.as_ref())
+        .filter(|_| admitting);
+    if let Some(preparation) = preparation {
+        preparation
+            .validate_current(config, now_ms)
+            .map_err(|_| SupervisorError::AuthorizationRejected)?;
+    }
     if config.conformance == Enforcement::PreCutover {
         return Ok(ConformanceAdmission {
             evidence: ConformanceEvidence::Unevaluated,
             report_bytes: None,
         });
     }
-    let started = Instant::now();
     if !admitting {
         crate::launcher_install::require_session_policy(paths, config)
             .map_err(|_| SupervisorError::ConformanceUnavailable)?;
@@ -66,6 +77,11 @@ pub(super) fn inspect_current(
         now_ms.saturating_add(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     if admitting && now_ms >= authorization.expires_at_ms {
         return Err(SupervisorError::AuthorizationRejected);
+    }
+    if let Some(preparation) = preparation {
+        preparation
+            .validate(now_ms)
+            .map_err(|_| SupervisorError::AuthorizationRejected)?;
     }
     let waiver = authorization
         .conformance

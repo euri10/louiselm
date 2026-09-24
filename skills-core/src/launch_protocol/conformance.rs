@@ -53,6 +53,8 @@ pub struct ConformanceAuthorization {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConformanceWaiver {
+    /// Initial approval's protected observation; absent for an already-admitted Session.
+    pub preparation: Option<crate::conformance::preparation::Preparation>,
     /// Session explicitly approved by the operator.
     pub session_id: String,
     /// Exact request digest, binding Run, authorization and envelope revision too.
@@ -141,6 +143,18 @@ impl ConformanceAuthorization {
     ) -> Result<(), ProtocolError> {
         if let Some(waiver) = &self.waiver {
             validate_digest(&waiver.receipt_digest)?;
+            if let Some(preparation) = &waiver.preparation {
+                preparation
+                    .validate(preparation.observed_at_ms)
+                    .map_err(|_| invalid())?;
+                if preparation.session_id != session_id
+                    || preparation.request_digest != request_digest
+                    || preparation.operator_uid != controller_uid
+                    || preparation.condition != waiver.condition
+                {
+                    return Err(invalid());
+                }
+            }
             if self.attendance != Attendance::Interactive
                 || waiver.session_id != session_id
                 || waiver.request_digest != request_digest

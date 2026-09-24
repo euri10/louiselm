@@ -211,22 +211,7 @@ impl Queries {
                                 .map_err(|_| InspectError::StatusUnavailable)
                         },
                         |id, request, deadline| {
-                            if matches!(
-                                request,
-                                louiselm_skills::broker::waiver::Request::Inspect
-                                    | louiselm_skills::broker::waiver::Request::Result { .. }
-                            ) {
-                                broker
-                                    .waiver_history(owner.operator_uid, id, request)
-                                    .map_err(|error| {
-                                        match error {
-                                    BrokerError::Waiver(error) => error,
-                                    _ => louiselm_skills::broker::waiver::WaiverError::Unavailable,
-                                }
-                                    })
-                            } else {
-                                owner.waiver(id, request, deadline)
-                            }
+                            owner.waiver_request(&broker, id, request, deadline)
                         },
                     ) {
                         if error.kind() == io::ErrorKind::Interrupted {
@@ -239,6 +224,33 @@ impl Queries {
             })
             .map_err(|_| BrokerError::Transport(TransportError::WorkerUnavailable))?;
         Ok(queries)
+    }
+
+    fn waiver_request(
+        &self,
+        broker: &InstalledBroker,
+        id: &str,
+        request: &louiselm_skills::broker::waiver::Request,
+        deadline: Instant,
+    ) -> Result<
+        louiselm_skills::broker::waiver::Outcome,
+        louiselm_skills::broker::waiver::WaiverError,
+    > {
+        use louiselm_skills::broker::waiver::{Request, WaiverError};
+        let result = if broker
+            .has_pending_launch(id)
+            .map_err(|_| WaiverError::Unavailable)?
+        {
+            broker.pre_admission_waiver(self.operator_uid, id, request)
+        } else if matches!(request, Request::Inspect | Request::Result { .. }) {
+            broker.waiver_history(self.operator_uid, id, request)
+        } else {
+            return self.waiver(id, request, deadline);
+        };
+        result.map_err(|error| match error {
+            BrokerError::Waiver(error) => error,
+            _ => WaiverError::Unavailable,
+        })
     }
 
     fn inspect(

@@ -38,6 +38,7 @@ fn live_waiver_changes_reach_checks_without_resuming_or_accepting_old_revisions(
         request_digest: setup.request.digest().to_string(),
         revision: 1,
         waiver: Some(ConformanceWaiver {
+            preparation: None,
             session_id: setup.request.session_id.clone(),
             request_digest: setup.request.digest().to_string(),
             operator_uid: CONTROLLER_UID,

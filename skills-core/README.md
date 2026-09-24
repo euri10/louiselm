@@ -1032,7 +1032,7 @@ done
 
 Validate the exact sudo boundary independently. The operator is pinned by
 numeric UID, the component by SHA-256, and the argument vector by the fixed
-literal `run` or `certify` argument:
+literal `run`, `prepare` or `certify` argument:
 
 ```sh
 operator_uid=$(id -u "$operator")
@@ -1041,7 +1041,7 @@ sudo /usr/sbin/visudo -cf /etc/sudoers.d/louiselm-launch
 sudo grep -Fx "Defaults!$launcher fdexec=digest_only" \
   /etc/sudoers.d/louiselm-launch
 sudo grep -Fx \
-  "#$operator_uid ALL=(root:root) NOPASSWD: NOSETENV: sha256:$launcher_sha256 $launcher run, sha256:$launcher_sha256 $launcher certify" \
+  "#$operator_uid ALL=(root:root) NOPASSWD: NOSETENV: sha256:$launcher_sha256 $launcher run, sha256:$launcher_sha256 $launcher certify, sha256:$launcher_sha256 $launcher prepare" \
   /etc/sudoers.d/louiselm-launch
 ```
 
@@ -1123,7 +1123,7 @@ sudo -u "$operator" sudo -n \
   < /tmp/launch-request.json
 ```
 
-Confirm that `run extra`, `certify extra`, internal worker verbs, a copied launcher at a different path, the exact path
+Confirm that `run extra`, `prepare extra`, `certify extra`, internal worker verbs, a copied launcher at a different path, the exact path
 after changing one byte, and a rule containing a different valid SHA-256 are all
 rejected by `sudo -n`. Roll the VM back after these destructive checks; do not
 repair an immutable release in place.

@@ -320,7 +320,10 @@ fn host_key(host: &HostSnapshot) -> Result<String, CertificationError> {
     Ok(Digest::of(&serde_json::to_vec(host).map_err(|_| CertificationError::Invalid)?).to_string())
 }
 
-pub(super) fn trusted_directory(path: &Path, owner: u32) -> Result<(), CertificationError> {
+pub(in crate::conformance) fn trusted_directory(
+    path: &Path,
+    owner: u32,
+) -> Result<(), CertificationError> {
     if !path.is_absolute() {
         return Err(CertificationError::Invalid);
     }

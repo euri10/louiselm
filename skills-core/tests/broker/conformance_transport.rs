@@ -146,6 +146,7 @@ fn conformance_waiver_expiry_survives_authorization_restart() {
     let mut grant = grant(&request);
     grant.conformance.attendance = Attendance::Interactive;
     grant.conformance.waiver = Some(ConformanceWaiver {
+        preparation: None,
         session_id: request.session_id.clone(),
         request_digest: request.digest().to_string(),
         operator_uid: CONTROLLER_UID,

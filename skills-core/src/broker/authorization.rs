@@ -192,6 +192,28 @@ pub struct AuthorizationStore {
 }
 
 impl AuthorizationStore {
+    pub(super) fn with_pending<T>(
+        &self,
+        session_id: &str,
+        action: impl FnOnce(&PendingAuthorization) -> Result<T, BrokerError>,
+    ) -> Result<T, BrokerError> {
+        let _assignment = lock(&self.assignment);
+        let mut found = None;
+        for entry in
+            fs::read_dir(self.root.join(PENDING_DIRECTORY)).map_err(BrokerError::Storage)?
+        {
+            let entry = entry.map_err(BrokerError::Storage)?;
+            if let Some(pending) = read_record::<PendingAuthorization>(&entry.path())?
+                && pending.session_id == session_id
+            {
+                if found.is_some() {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                found = Some(pending);
+            }
+        }
+        action(&found.ok_or(super::waiver::WaiverError::Unknown)?)
+    }
     pub(super) fn has_session(&self, session_id: &str) -> Result<bool, BrokerError> {
         Ok(self
             .occupants(0)?
@@ -367,13 +389,23 @@ impl AuthorizationStore {
         controller_uid: u32,
         now_ms: u64,
     ) -> Result<LaunchAuthorization, BrokerError> {
+        self.consume_with(request, controller_uid, now_ms, |_| Ok(()))
+    }
+
+    fn consume_with(
+        &self,
+        request: &LaunchRequest,
+        controller_uid: u32,
+        now_ms: u64,
+        decision: impl FnOnce(&mut LaunchAuthorization) -> Result<(), BrokerError>,
+    ) -> Result<LaunchAuthorization, BrokerError> {
         // Serialize first Run consumption with pre-start dependency grants.
         // A launch already approved before this point retains its exact scope.
         let _assignment = lock(&self.assignment);
         request.validate().map_err(|_| BrokerError::InvalidGrant)?;
         let record_name = record_name(&request.authorization_id)?;
         let path = self.pending_path(&record_name);
-        let pending: PendingAuthorization = match read_record(&path) {
+        let mut pending: PendingAuthorization = match read_record(&path) {
             Ok(Some(pending)) => pending,
             Ok(None) => return Err(BrokerError::UnknownAuthorization),
             Err(error) => return Err(error),
@@ -393,6 +425,9 @@ impl AuthorizationStore {
         if now_ms >= pending.expires_at_ms {
             return Err(BrokerError::Expired);
         }
+        let mut authorization = pending.launch_authorization();
+        decision(&mut authorization)?;
+        pending.conformance = authorization.conformance;
         pending
             .conformance
             .validate_for(
@@ -449,6 +484,21 @@ impl AuthorizationStore {
         let pending: PendingAuthorization = read_record(&self.pending_path(&record_name))?
             .ok_or(BrokerError::UnknownAuthorization)?;
         self.consume(request, pending.controller_uid, now_ms)
+    }
+
+    pub(super) fn consume_with_waivers(
+        &self,
+        request: &LaunchRequest,
+        now_ms: u64,
+        waivers: &super::waiver::Waivers,
+    ) -> Result<LaunchAuthorization, BrokerError> {
+        let name = record_name(&request.authorization_id)?;
+        let pending: PendingAuthorization =
+            read_record(&self.pending_path(&name))?.ok_or(BrokerError::UnknownAuthorization)?;
+        self.consume_with(request, pending.controller_uid, now_ms, |authorization| {
+            authorization.conformance.waiver = waivers.decision(authorization)?.1;
+            Ok(())
+        })
     }
 
     fn dependencies_before_run_start(&self, grant: &GrantRequest) -> Result<(), BrokerError> {

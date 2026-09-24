@@ -81,6 +81,9 @@ mod conformance;
 #[path = "broker/conformance_transport.rs"]
 mod conformance_transport;
 
+#[path = "broker/pre_admission.rs"]
+mod pre_admission;
+
 #[path = "broker/attention.rs"]
 mod attention;
 

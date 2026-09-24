@@ -1012,10 +1012,34 @@ posture. Approval never resumes work; explicit Resume and its normal gates are
 still required. Expiry is checked when delivering check results as well as when
 starting them. A revoked, expired or ended-Session exception grants nothing.
 
-This flow currently requires an already-admitted, enforced Session. Initial-launch
-waiver preparation is not implemented; do not hand-edit authorization records
-to bypass a refused admission. Desktop activation and installed acceptance remain
-separate work. Pre-cutover Sessions have no measured failure to waive.
+For an initial launch, the trusted controller first records its ordinary pending
+interactive launch authorization. Before consuming it, prepare the exact canonical
+newline-terminated launch request:
+
+```sh
+sudo /usr/local/lib/louiselm/current/bin/louiselm-launch prepare < launch.json
+louiselm-control waiver plan SESSION --json < proposal.json
+louiselm-control waiver apply SESSION PLAN_DIGEST --json
+```
+
+Preparation measures protected host state and retains a minimal root-owned
+observation under the launcher state directory. It consumes no authorization,
+acquires no Session identity and starts no Agent. The existing operator commands
+use that observation while the launch is pending. The preview binds its exact
+request, installed policy, boot, condition and observation time; operator input
+cannot supply trusted evidence. Preparation is usable for five minutes and cannot
+extend the controller's original authorization expiry. If either expires, obtain
+fresh preparation or authorization as appropriate and review again.
+
+Approval is durable but does not start the launch. The controller explicitly
+launches the same request; the broker consumes its authorization and the current
+waiver decision atomically with respect to approval/revocation. The supervisor
+rechecks policy, boot, freshness and actual host conformance before admission.
+Changed conditions, broken controls and unreadable failure history still refuse.
+Once admitted, the original waiver expiry governs its lifetime; the preparation's
+five-minute review window does not shorten a running Session's approved waiver.
+Pre-cutover Sessions have no measured failure to waive. Installing the new fixed
+`prepare` command and desktop activation remain explicit operator work.
 
 ## Verification
 

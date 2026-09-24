@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, io};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::preparation::uuid;
 use super::{Report, ReportError, ReportResult, Scope};
 use crate::Digest;
 
@@ -15,7 +16,7 @@ mod measurement;
 #[doc(hidden)]
 pub mod probes;
 mod runner;
-mod storage;
+pub(super) mod storage;
 
 pub use measurement::measure;
 pub use probes::serve_probe;
@@ -68,17 +69,6 @@ impl HostSnapshot {
         }
         Ok(())
     }
-}
-
-fn uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if [8, 13, 18, 23].contains(&index) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-            }
-        })
 }
 
 /// Measured installed observations. A valid certificate can report failure.

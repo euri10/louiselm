@@ -3,6 +3,7 @@
 use crate::conformance::admission::{Attendance, Condition};
 use serde::{Deserialize, Serialize};
 
+mod pre_admission;
 mod service;
 mod store;
 pub(super) use store::Waivers;
@@ -150,6 +151,7 @@ impl WaiverError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Context {
+    preparation: Option<crate::conformance::preparation::Preparation>,
     session_id: String,
     run_id: String,
     authorization_id: String,

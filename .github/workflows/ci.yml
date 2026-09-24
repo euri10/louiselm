@@ -566,7 +566,8 @@ jobs:
           for scenario in \
             privileged_activated_daemon_serves_launches_and_restart \
             state::privileged_activated_daemon_upgrades_and_adopts_state \
-            inspection::privileged_activated_daemon_refuses_foreign_inspection; do
+            inspection::privileged_activated_daemon_refuses_foreign_inspection \
+            inspection::privileged_initial_waiver_prepares_approves_then_launches; do
             test_name="launch_supervisor::system::installed_tests::daemon::$scenario"
             printf 'Activated daemon scenario: %s\n' "$scenario"
             time sudo env LOUISELM_REQUIRE_CONTROL_DAEMON=1 \

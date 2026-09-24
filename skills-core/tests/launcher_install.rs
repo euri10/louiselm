@@ -472,7 +472,9 @@ fn install_pins_one_release_key_pool_and_exact_sudo_command_idempotently() {
     assert_eq!(
         sudoers,
         format!(
-            "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#1000 ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify\n",
+            "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#1000 ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify, sha256:{} {} prepare\n",
+            launcher_path.display(),
+            Digest::parse(&fixture.launcher_digest).unwrap().hex(),
             launcher_path.display(),
             Digest::parse(&fixture.launcher_digest).unwrap().hex(),
             launcher_path.display(),

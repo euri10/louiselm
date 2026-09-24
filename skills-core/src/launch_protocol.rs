@@ -2010,7 +2010,7 @@ fn validate_version(value: u32) -> Result<(), ProtocolError> {
     }
 }
 
-fn validate_identifier(value: &str) -> Result<(), ProtocolError> {
+pub(crate) fn validate_identifier(value: &str) -> Result<(), ProtocolError> {
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
         || !value

@@ -155,6 +155,7 @@ impl Waivers {
         let _guard = crate::broker::lock(&self.writing);
         let ledger = self.load(&authorization.session_id)?;
         ledger.check_subject(&Context {
+            preparation: None,
             session_id: authorization.session_id.clone(),
             run_id: authorization.run_id.clone(),
             authorization_id: authorization.authorization_id.clone(),
@@ -168,20 +169,27 @@ impl Waivers {
         if ledger.revision == 0 {
             return Ok((0, authorization.conformance.waiver.clone()));
         }
-        let receipt = ledger
-            .plans
-            .iter()
-            .filter_map(|record| record.receipt.as_ref())
-            .find(|receipt| ledger.active.as_ref() == Some(&receipt.digest));
+        let record = ledger.plans.iter().find(|record| {
+            record
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| ledger.active.as_ref() == Some(&receipt.digest))
+        });
         Ok((
             ledger.revision,
-            receipt.map(|receipt| crate::launch_protocol::ConformanceWaiver {
-                session_id: authorization.session_id.clone(),
-                request_digest: authorization.request_digest.clone(),
-                operator_uid: receipt.plan.operator_uid,
-                condition: receipt.plan.proposal.condition,
-                expires_at_ms: receipt.plan.proposal.expires_at_ms,
-                receipt_digest: receipt.digest.clone(),
+            record.and_then(|record| {
+                record
+                    .receipt
+                    .as_ref()
+                    .map(|receipt| crate::launch_protocol::ConformanceWaiver {
+                        preparation: record.context.preparation.clone(),
+                        session_id: authorization.session_id.clone(),
+                        request_digest: authorization.request_digest.clone(),
+                        operator_uid: receipt.plan.operator_uid,
+                        condition: receipt.plan.proposal.condition,
+                        expires_at_ms: receipt.plan.proposal.expires_at_ms,
+                        receipt_digest: receipt.digest.clone(),
+                    })
             }),
         ))
     }

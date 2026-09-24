@@ -16,6 +16,7 @@ fn waiver(request: &LaunchRequest) -> ConformanceAuthorization {
     ConformanceAuthorization {
         attendance: Attendance::Interactive,
         waiver: Some(ConformanceWaiver {
+            preparation: None,
             session_id: request.session_id.clone(),
             request_digest: request.digest().to_string(),
             operator_uid: 1000,
@@ -170,6 +171,62 @@ fn conformance_authority_cannot_be_omitted_or_smuggled_into_launch_requests() {
     let mut value = serde_json::to_value(request).unwrap();
     value["conformance"] = serde_json::json!({"attendance": "interactive", "waiver": null});
     assert!(serde_json::from_value::<LaunchRequest>(value).is_err());
+}
+
+#[test]
+fn waiver_requests_reject_non_conformance_dimensions_and_unknown_failures() {
+    use louiselm_skills::broker::waiver::Request;
+
+    let proposal = serde_json::json!({
+        "request_id": "review-missing-certification",
+        "condition": "missing",
+        "rationale": "Inspect this exact host",
+        "expires_at_ms": 1500
+    });
+    for condition in ["missing", "stale", "incomplete"] {
+        let mut value = proposal.clone();
+        value["condition"] = condition.into();
+        assert!(
+            serde_json::from_value::<Request>(serde_json::json!({
+                "operation": "plan", "proposal": value
+            }))
+            .is_ok()
+        );
+    }
+    for dimension in [
+        "managed_supply",
+        "native_supply",
+        "runtime",
+        "network",
+        "provider_disclosure",
+    ] {
+        let mut value = proposal.clone();
+        value["dimension"] = dimension.into();
+        let error = serde_json::from_value::<Request>(serde_json::json!({
+            "operation": "plan", "proposal": value
+        }))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `dimension`"),
+            "{error}"
+        );
+    }
+    for condition in [
+        "evidence_missing",
+        "missing_witness",
+        "runtime_drift",
+        "broker_unavailable",
+        "audit_unavailable",
+        "unknown",
+    ] {
+        let mut value = proposal.clone();
+        value["condition"] = condition.into();
+        let error = serde_json::from_value::<Request>(serde_json::json!({
+            "operation": "plan", "proposal": value
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+    }
 }
 
 fn chunk() -> ConformanceReportChunk {

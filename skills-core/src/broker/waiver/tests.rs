@@ -213,6 +213,7 @@ fn expiry_and_competing_plans_never_renew_or_replace_an_approval() {
 
 fn context() -> Context {
     Context {
+        preparation: None,
         session_id: "session".into(),
         run_id: "run".into(),
         authorization_id: "authorization".into(),

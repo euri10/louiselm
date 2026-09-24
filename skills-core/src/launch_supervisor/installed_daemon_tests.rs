@@ -57,7 +57,16 @@ fn seed_authorizations() {
     for name in beads::subjects() {
         broker
             .authorize(&GrantRequest {
-                conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+                conformance: crate::launch_protocol::ConformanceAuthorization {
+                    attendance: if config.conformance
+                        == crate::conformance::admission::Enforcement::Enforced
+                    {
+                        crate::conformance::admission::Attendance::Interactive
+                    } else {
+                        crate::conformance::admission::Attendance::Unattended
+                    },
+                    waiver: None,
+                },
                 dependencies: None,
                 skill_requests: None,
                 beads_mutations: beads::permission(name, now),
@@ -233,7 +242,17 @@ fn launch(
 }
 
 fn install_daemon(root: &Path) -> (LauncherPaths, LauncherConfig, OwnedFd) {
-    let (paths, config, _) = install_fixture_at(root, 3, LauncherPaths::system());
+    install_daemon_with(root, crate::conformance::admission::Enforcement::PreCutover)
+}
+
+fn install_daemon_with(
+    root: &Path,
+    enforcement: crate::conformance::admission::Enforcement,
+) -> (LauncherPaths, LauncherConfig, OwnedFd) {
+    let (paths, mut config, _) = install_fixture_at(root, 3, LauncherPaths::system());
+    config.conformance = enforcement;
+    write_json(&paths.state_root.join("config.json"), &config);
+    write_json(&paths.state_root.join("public-config.json"), &config);
     inspection::provision();
     fs::create_dir(STATE).unwrap();
     chown(STATE, Some(BROKER_UID), Some(BROKER_UID)).unwrap();

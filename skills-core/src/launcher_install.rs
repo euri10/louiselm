@@ -1343,7 +1343,7 @@ pub fn status(paths: &LauncherPaths) -> LauncherStatus {
                     Ok(found) if found == expected => {}
                     Ok(_) => failures.push(failure(
                         "sudoers_changed",
-                        "The sudoers fragment does not match the fixed measured run/certify commands.",
+                        "The sudoers fragment does not match the fixed measured run/prepare/certify commands.",
                         "Rerun the root launcher installer and validate the fragment with visudo.",
                     )),
                     Err(error) => failures.push(failure(
@@ -2181,9 +2181,11 @@ fn render_sudoers(config: &LauncherConfig) -> Result<String, LauncherError> {
     let digest = Digest::parse(&config.launcher_digest)
         .map_err(|error| LauncherError::Malformed(error.to_string()))?;
     Ok(format!(
-        "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#{} ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify\n",
+        "# Managed by louiselm-skills. Do not edit.\nDefaults!{} fdexec=digest_only\n#{} ALL=(root:root) NOPASSWD: NOSETENV: sha256:{} {} run, sha256:{} {} certify, sha256:{} {} prepare\n",
         config.launcher_path.display(),
         config.operator_uid,
+        digest.hex(),
+        config.launcher_path.display(),
         digest.hex(),
         config.launcher_path.display(),
         digest.hex(),

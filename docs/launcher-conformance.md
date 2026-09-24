@@ -92,7 +92,7 @@ refreshing its launcher authority, the maintainer can invoke:
 sudo -n /usr/local/lib/louiselm/current/bin/louiselm-launch certify
 ```
 
-The sudo fragment permits exactly `run` and `certify`, both at the same measured
+The sudo fragment permits exactly `run`, `prepare` and `certify`, all at the same measured
 path/digest. It grants neither internal worker verbs nor extra arguments.
 Certification checks the installed operator and running release before starting
 a fixed worker in a new, empty network namespace. The worker receives its
@@ -203,9 +203,13 @@ UID, condition, exclusive expiry and durable waiver-receipt digest. Unattended,
 foreign, expired and containment-failure waivers are rejected. These fields are
 not accepted in `LaunchRequest`. The authenticated operator flow described in
 [broker lifecycle](https://github.com/euri10/louiselm/blob/main/docs/broker-lifecycle.md#interactive-live-conformance-waivers)
-produces durable decisions for already-admitted Sessions. Initial-launch waiver
-preparation remains unfinished in `d6fv.6.3`; this carrier alone does not create
-approval or authorize an Agent to waive.
+produces durable decisions for admitted Sessions and pending interactive launches.
+For initial admission, the fixed `prepare` command measures and retains a bounded
+root-owned observation without starting an Agent or consuming launch authority.
+The broker binds operator approval to that exact request, policy, boot and condition;
+the supervisor rechecks them and actual host evidence at launch. Preparation grants
+no authority by itself and is usable for five minutes. Existing waivers on running
+Sessions retain their original approved expiry.
 Cold resume does not inherit the source Session's waiver.
 
 With enforcement active, the supervisor measures the current installed host and

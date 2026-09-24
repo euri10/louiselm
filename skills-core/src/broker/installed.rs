@@ -28,6 +28,7 @@ use crate::{
 /// only private broker state and its rendezvous directory belong to the broker.
 /// All methods perform blocking I/O on the explicitly owned broker worker.
 pub struct InstalledBroker {
+    preparation_paths: LauncherPaths,
     pub(in crate::broker) service: BrokerService,
     pub(in crate::broker) verifier: Arc<LauncherVerifier>,
     pub(in crate::broker) provider_credentials:
@@ -37,6 +38,50 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Handle a pending launch's operator decision using only protected preparation evidence.
+    /// No launcher or Agent is started by this operation.
+    /// # Errors
+    /// Refuses absent/unsafe/stale preparation, foreign policy or a consumed launch.
+    pub fn pre_admission_waiver(
+        &self,
+        uid: u32,
+        id: &str,
+        request: &super::waiver::Request,
+    ) -> Result<super::waiver::Outcome, BrokerError> {
+        if uid != self.verifier.config().operator_uid {
+            return Err(super::waiver::WaiverError::WrongOperator.into());
+        }
+        let now = now_ms()?;
+        if matches!(
+            request,
+            super::waiver::Request::Inspect
+                | super::waiver::Request::Result { .. }
+                | super::waiver::Request::Revoke { .. }
+        ) {
+            return self.service.pending_waiver_history(uid, id, request, now);
+        }
+        let config = crate::launcher_install::public_runtime_config(&self.preparation_paths)
+            .map_err(|_| super::waiver::WaiverError::Unavailable)?;
+        let observation = crate::conformance::preparation::Preparation::read(
+            &self.preparation_paths,
+            &config,
+            id,
+            now,
+        )
+        .map_err(|_| super::waiver::WaiverError::Unavailable)?;
+        self.service
+            .pre_admission_waiver(uid, &observation, request, now)
+    }
+
+    /// Whether the exact Session has an unconsumed launch authorization.
+    /// # Errors
+    /// Refuses unavailable or ambiguous private pending state.
+    pub fn has_pending_launch(&self, id: &str) -> Result<bool, BrokerError> {
+        match self.service.authorizations().with_pending(id, |_| Ok(true)) {
+            Err(BrokerError::Waiver(super::waiver::WaiverError::Unknown)) => Ok(false),
+            result => result,
+        }
+    }
     /// Processes an authenticated operator conformance-waiver request on its Session worker.
     /// # Errors
     /// Refuses invalid policy, unavailable state and unacknowledged supervisor changes.
@@ -453,6 +498,7 @@ impl InstalledBroker {
             config.broker_gid,
         )?;
         Ok(Self {
+            preparation_paths: paths.clone(),
             provider_credentials,
             _state_lock: state_lock,
             service,

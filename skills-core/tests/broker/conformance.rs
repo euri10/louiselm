@@ -42,6 +42,7 @@ fn authorized_admission(
         grant.conformance.attendance =
             louiselm_skills::conformance::admission::Attendance::Interactive;
         grant.conformance.waiver = Some(louiselm_skills::launch_protocol::ConformanceWaiver {
+            preparation: None,
             session_id: request.session_id.clone(),
             request_digest: request.digest().to_string(),
             operator_uid: CONTROLLER_UID,

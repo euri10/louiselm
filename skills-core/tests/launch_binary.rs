@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
-    // Only exact run/certify are operator verbs; no caller-selected commands.
+    // Only exact run/prepare/certify are operator verbs; no caller-selected commands.
     let binary = env!("CARGO_BIN_EXE_louiselm-launch");
     for arguments in [
         vec![],
@@ -19,6 +19,7 @@ fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
         vec!["run", "--broker", "/tmp/socket"],
         vec!["run", "__sandbox_bootstrap"],
         vec!["certify", "--probe", "private-command"],
+        vec!["prepare", "--root", "/tmp/private-storage"],
         vec!["cleanup", "--root", "/tmp/private-storage"],
         vec!["__conformance-worker", "private-command"],
     ] {
@@ -33,7 +34,7 @@ fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
             if arguments.len() > 1 {
                 "louiselm-launch: unexpected arguments\n"
             } else {
-                "louiselm-launch: expected exactly 'run', 'certify' or root-only 'cleanup'\n"
+                "louiselm-launch: expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'\n"
             }
         );
     }
@@ -41,7 +42,7 @@ fn privileged_entrypoint_accepts_only_fixed_operator_verbs() {
 
 #[test]
 fn development_certifier_cannot_acquire_installed_authority() {
-    for verb in ["certify", "__conformance-worker", "cleanup"] {
+    for verb in ["prepare", "certify", "__conformance-worker", "cleanup"] {
         let output = Command::new(env!("CARGO_BIN_EXE_louiselm-launch"))
             .arg(verb)
             .stdin(Stdio::null())

@@ -156,6 +156,7 @@ fn assert_installed_admission(
 fn approve_waiver(authorization: &mut LaunchAuthorization, condition: Condition) {
     authorization.conformance.attendance = Attendance::Interactive;
     authorization.conformance.waiver = Some(ConformanceWaiver {
+        preparation: None,
         session_id: authorization.session_id.clone(),
         request_digest: authorization.request_digest.clone(),
         operator_uid: authorization.controller_uid,

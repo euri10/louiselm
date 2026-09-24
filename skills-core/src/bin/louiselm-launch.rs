@@ -28,7 +28,7 @@ fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
     let verb = arguments.next();
     // Internal bootstrap/probe verbs use inherited authority only. Sudoers
-    // grants exactly run/certify, never these internal worker verbs.
+    // grants exactly run/prepare/certify, never these internal worker verbs.
     if verb.as_deref() == Some(OsStr::new(bootstrap::ARGUMENT)) {
         if bootstrap::run(&arguments.collect::<Vec<_>>()).is_ok() {
             return ExitCode::SUCCESS;
@@ -42,6 +42,7 @@ fn main() -> ExitCode {
     }
     let result = match verb.as_deref() {
         Some(value) if value == OsStr::new("run") => run(),
+        Some(value) if value == OsStr::new("prepare") => preparation(),
         Some(value) if value == OsStr::new("certify") => certification(false),
         Some(value) if value == OsStr::new("cleanup") => cleanup(),
         Some(value) if value == OsStr::new("__conformance-worker") => certification(true),
@@ -50,7 +51,7 @@ fn main() -> ExitCode {
                 .map(|()| 0)
                 .map_err(|_| "probe failed")
         }
-        _ => Err("expected exactly 'run', 'certify' or root-only 'cleanup'"),
+        _ => Err("expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'"),
     };
     match result {
         Ok(code) => u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from),
@@ -207,6 +208,34 @@ fn run() -> Result<i32, &'static str> {
                 .map_err(|_| "controller stdio unavailable")?,
         )
         .map_err(|_| "Agent relay failed")
+}
+
+fn preparation() -> Result<i32, &'static str> {
+    use std::io::Write;
+    let (paths, config) = authority(true)?;
+    let request =
+        read_launch_frame(&mut io::stdin().lock()).map_err(|_| "launch document rejected")?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|time| u64::try_from(time.as_millis()).ok())
+        .ok_or("system clock unavailable")?;
+    let prepared = louiselm_skills::conformance::preparation::prepare(
+        &paths,
+        &config,
+        &request,
+        now,
+        std::time::Instant::now() + BROKER_TIMEOUT,
+    )
+    .map_err(
+        |_| "conformance preparation refused; restore host evidence or inspect launcher policy",
+    )?;
+    let bytes = serde_json::to_vec(&prepared).map_err(|_| "preparation unavailable")?;
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|_| "preparation output unavailable")?;
+    Ok(0)
 }
 
 fn canonical_sudo_uid() -> Option<u32> {
