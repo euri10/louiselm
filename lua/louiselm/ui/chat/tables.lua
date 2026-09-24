@@ -177,6 +177,7 @@ function Tables:inspect()
         self.inspector = Inspector.open(lines, function()
           self.inspector = nil
         end, "Table · zh/zl scroll · q close")
+        nvim.api.nvim_win_set_height(self.inspector, math.min(math.max(10, #lines), math.max(1, nvim.o.lines - 4)))
         nvim.api.nvim_set_option_value("wrap", false, { win = self.inspector })
         return true
       end

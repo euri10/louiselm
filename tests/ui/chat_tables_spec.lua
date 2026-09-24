@@ -157,7 +157,13 @@ T["updates streamed tables and clears decoration after invalidation"] = function
   nvim.wait(20)
 end
 
-T["offers full-width inspection for overflow and owns the inspector lifecycle"] = function()
+T["table inspector sizing"] = MiniTest.new_set({ parametrize = { { 24 }, { 8 } } })
+T["table inspector sizing"]["offers full-width inspection and owns the inspector lifecycle"] = function(screen_lines)
+  local original_lines = nvim.o.lines
+  MiniTest.finally(function()
+    nvim.o.lines = original_lines
+  end)
+  nvim.o.lines = screen_lines
   local text = "| Name | Value |\n| --- | --- |\n| a | " .. string.rep("long cell ", 30) .. "|"
   local owner = chat_buffer(text)
   local source = nvim.api.nvim_buf_get_lines(owner.buffer, 0, -1, false)
@@ -173,6 +179,7 @@ T["offers full-width inspection for overflow and owns the inspector lifecycle"] 
   local inspector = nvim.api.nvim_get_current_win()
   MiniTest.expect.equality(inspector ~= owner.window, true)
   MiniTest.expect.equality(nvim.wo[inspector].wrap, false)
+  MiniTest.expect.equality(nvim.api.nvim_win_get_height(inspector), math.min(10, screen_lines - 4))
   local inspected = nvim.api.nvim_buf_get_lines(nvim.api.nvim_win_get_buf(inspector), 0, -1, false)
   MiniTest.expect.equality(inspected[3]:find(string.rep("long cell ", 29) .. "long cell", 1, true) ~= nil, true)
   MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(owner.buffer, 0, -1, false), source)
