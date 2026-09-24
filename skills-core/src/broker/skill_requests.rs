@@ -46,6 +46,7 @@ impl Record {
 
     fn condition(&self) -> AttentionCondition {
         AttentionCondition {
+            linked_run_id: None,
             subject: self.subject(),
             operation_id: self.operation_id.clone(),
             created_at_ms: self.created_at_ms,

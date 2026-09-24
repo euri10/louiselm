@@ -25,6 +25,7 @@ impl EscalationRecord {
 
     pub(super) fn condition(&self) -> AttentionCondition {
         AttentionCondition {
+            linked_run_id: None,
             subject: AttentionSubject::Session(self.binding.session_id.clone()),
             operation_id: self.escalation.operation_id.clone(),
             created_at_ms: self.created_at_ms,

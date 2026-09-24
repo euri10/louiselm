@@ -174,6 +174,7 @@ impl BrokerService {
             let digest = crate::Digest::of(request.session_id.as_bytes());
             let hex = digest.hex();
             let condition = AttentionCondition {
+                linked_run_id: None,
                 subject: AttentionSubject::Session(request.session_id.clone()),
                 operation_id: format!(
                     "{}-{}-{}-{}-{}",

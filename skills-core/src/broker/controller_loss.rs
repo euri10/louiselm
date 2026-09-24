@@ -1,5 +1,6 @@
 //! Durable controller-loss decisions precede authenticated disposal settlement.
 use super::{BrokerError, BrokerService, BrokerSession, response, send};
+use crate::broker::attention::condition_id;
 use crate::{
     broker::{
         attention::{AttentionCondition, AttentionReason, AttentionSubject, ProjectionChange},
@@ -160,6 +161,10 @@ impl BrokerService {
                 } else {
                     append()?
                 };
+                if receipt.payload.resulting_state == SessionState::Terminal {
+                    self.posture_attention
+                        .end(&session.authorization().session_id, &self.attention)?;
+                }
                 send(session.channel(), ack.canonical_bytes())?;
                 Ok(receipt.payload.resulting_state == SessionState::Terminal)
             }
@@ -308,6 +313,7 @@ impl BrokerService {
             request: request.clone(),
             acknowledgement,
             attention: AttentionCondition {
+                linked_run_id: None,
                 subject: AttentionSubject::Session(request.session_id.clone()),
                 operation_id,
                 created_at_ms: now_ms,
@@ -315,19 +321,6 @@ impl BrokerService {
             },
         })
     }
-}
-
-fn condition_id(bytes: &[u8]) -> String {
-    let digest = crate::Digest::of(bytes);
-    let hex = digest.hex();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
 }
 
 fn elapsed_ms(start_ms: u64, clock: std::time::Instant) -> u64 {

@@ -967,6 +967,32 @@ The initial outbox retains at most 4096 entries and refuses further enqueue at
 that bound. History is not silently truncated and sequences never reset on
 restart. Lifecycle request history has the same explicit bound per Session.
 
+## Waiting posture Attention
+
+The broker's Session worker evaluates its retained validated evidence once per
+second, independently of status reads and Neovim. Only Parked or
+conformance-suspended Sessions start posture Attention episodes; an ordinary
+running Session with partial posture creates none. Each failed dimension gets
+its own durable operation UUID and exact `skill_unverified` code. Items remain
+Session-scoped, with `linked_run_id` when the launch names a canonical Run UUID;
+they are never merged into a Run-wide posture verdict.
+
+Repeated checks preserve the operation and its original creation time. A code
+change updates that operation; verified evidence or a currently applicable
+waiver clears only its dimension. A later failure while waiting starts a new
+operation. Leaving the waiting state does not erase an unresolved failure.
+Park preserves conditions. Session Disposal or an authenticated terminal Run
+clears the affected Session conditions and prevents late observations reopening
+them, without clearing sibling Sessions in another Run or changing Admission.
+
+Bounded private `authorizations/posture-attention` records persist episode state,
+terminal markers and exact pending outbox changes before publication. Restart
+replays unfinished enqueue intent idempotently; direct capture-service delivery
+uses the existing ordered outbox. Receiver absence or rejected delivery never
+changes the posture, waiver decision or authorization. The installed daemon gate
+checks waiver expiry creates conditions without a UI/status request and Disposal
+clears them. Desktop activation remains separate.
+
 ## Interactive live conformance waivers
 
 The installed operator socket accepts an explicit, Session-scoped exception for

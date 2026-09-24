@@ -149,7 +149,7 @@ fn privileged_initial_waiver_prepares_approves_then_launches() {
     );
     assert_preparation_boundaries(&paths, &config, &observation);
     assert!(!Path::new(STATE).join("receipts/sessions/session").exists());
-    let proposal = serde_json::json!({"request_id":"review-initial", "condition":"missing", "rationale":"Inspect this disposable host", "expires_at_ms":observation.observed_at_ms + 120_000});
+    let proposal = serde_json::json!({"request_id":"review-initial", "condition":"missing", "rationale":"Inspect this disposable host", "expires_at_ms":observation.observed_at_ms + 10_000});
     let plan = waiver_command(
         &config,
         &["plan", "session", "--json"],
@@ -174,7 +174,9 @@ fn privileged_initial_waiver_prepares_approves_then_launches() {
         evidence["waiver"]["receipt_digest"],
         approved.receipt.unwrap().digest
     );
+    attention::assert_waiver_expiry_projects_without_reads(&session);
     session.dispose().unwrap();
+    attention::assert_posture_cleared("session");
     terminate(&mut daemon);
 }
 

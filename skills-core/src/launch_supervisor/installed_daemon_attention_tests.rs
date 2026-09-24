@@ -9,6 +9,59 @@ use std::{
 
 const OUTBOX: &str = "/var/lib/louiselm/broker/authorizations/attention-outbox";
 
+pub(super) fn assert_waiver_expiry_projects_without_reads(session: &LaunchedSession) {
+    use crate::broker::attention::AttentionReason;
+    let outbox = Outbox::open(Path::new(OUTBOX)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut operations = std::collections::BTreeSet::new();
+    while operations.len() < 5 {
+        assert!(
+            Instant::now() < deadline,
+            "expiry did not produce five independent conditions"
+        );
+        if let Some(item) = outbox.next().unwrap() {
+            if let ProjectionChange::Upsert(condition) = &item.change {
+                assert_eq!(
+                    condition.subject,
+                    AttentionSubject::Session(session.receipt().payload.session_id.clone())
+                );
+                assert!(matches!(
+                    condition.reason,
+                    AttentionReason::SkillUnverified(_)
+                ));
+                assert!(operations.insert(condition.operation_id.clone()));
+            }
+            // Fixture consumes the real persisted outbox; no status calls or UI.
+            outbox.acknowledge(item.sequence, &item.digest()).unwrap();
+            chown(
+                Path::new(OUTBOX).join(format!("acks/{:020}.json", item.sequence)),
+                Some(BROKER_UID),
+                Some(BROKER_UID),
+            )
+            .unwrap();
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+pub(super) fn assert_posture_cleared(session: &str) {
+    let outbox = Outbox::open(Path::new(OUTBOX)).unwrap();
+    let mut cleared = 0;
+    while let Some(item) = outbox.next().unwrap() {
+        if let ProjectionChange::Clear(condition) = &item.change
+            && condition.subject == AttentionSubject::Session(session.into())
+        {
+            cleared += 1;
+        }
+        outbox.acknowledge(item.sequence, &item.digest()).unwrap();
+    }
+    assert_eq!(
+        cleared, 5,
+        "terminal receipt clears only its posture conditions"
+    );
+}
+
 pub(super) fn enqueue(name: &str) -> u64 {
     let entry = Outbox::open(Path::new(OUTBOX))
         .unwrap()

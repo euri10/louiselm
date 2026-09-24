@@ -29,6 +29,88 @@ pub(super) struct LaunchPostureEvidence {
 }
 
 impl BrokerService {
+    pub(super) fn reconcile_posture_attention<F>(
+        &self,
+        endpoint: Option<&super::attention::AttentionEndpoint>,
+        mut verify: F,
+    ) -> Result<(), BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        self.posture_attention.reconcile(&self.attention)?;
+        let mut runs = std::collections::BTreeSet::new();
+        let mut failure = None;
+        for record in self.posture_attention.records()? {
+            let result = (|| {
+                let auth = self
+                    .authorizations()
+                    .consumed_for_session(&record.session_id)?
+                    .ok_or(BrokerError::UnknownAuthorization)?;
+                let history = self.verified_history(&auth.launch_authorization(), &mut verify)?;
+                if history.last().is_some_and(|receipt| {
+                    receipt.payload.resulting_state == SessionState::Terminal
+                }) {
+                    self.posture_attention
+                        .end(&record.session_id, &self.attention)?;
+                }
+                if let Some(endpoint) = endpoint
+                    && super::attention::canonical_uuid(&record.run_id)
+                    && runs.insert(record.run_id.clone())
+                {
+                    self.refresh_run(endpoint, &record.run_id)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Reconcile waiting Session conditions on its serialized source worker.
+    /// Reads authenticated mechanics and evaluates retained proof, not display JSON.
+    /// Call independently of status reads so expiry and waiver changes reach Attention.
+    /// This performs blocking source/storage I/O and never delivers over the network.
+    /// # Errors
+    /// Refuses untrusted history, foreign mechanics or unavailable durable projection.
+    pub fn project_posture_attention<F>(
+        &self,
+        session: &mut super::BrokerSession,
+        now_ms: u64,
+        verify: F,
+    ) -> Result<(), BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let started = std::time::Instant::now();
+        let status = self.supervisor_status(session, verify)?;
+        if status.state == SessionState::Terminal {
+            return self
+                .posture_attention
+                .end(&status.session_id, &self.attention);
+        }
+        let now =
+            now_ms.saturating_add(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+        let quarantined = self.lifecycle.is_quarantined(&status.session_id)?;
+        let (posture, _) = session
+            .posture_evidence
+            .evaluate(&status, quarantined, now)?;
+        let waiting = status.state == SessionState::Parked
+            || session
+                .posture_evidence
+                .current_conformance
+                .as_ref()
+                .is_some_and(|current| current.update.suspended);
+        self.posture_attention.observe(
+            session.authorization(),
+            &posture,
+            waiting,
+            now,
+            &self.attention,
+        )
+    }
+
     /// Retains producer facts for the admitted Session without changing authority.
     ///
     /// Call on the owning broker worker after producer I/O completes.
@@ -147,6 +229,16 @@ impl LaunchPostureEvidence {
         quarantined: bool,
         now_ms: u64,
     ) -> Result<PostureStatus, BrokerError> {
+        let (posture, freshness) = self.evaluate(supervisor, quarantined, now_ms)?;
+        Ok(PostureStatus::from_posture(&posture, freshness))
+    }
+
+    pub(super) fn evaluate(
+        &self,
+        supervisor: &SupervisorStatus,
+        quarantined: bool,
+        now_ms: u64,
+    ) -> Result<(Posture, [EvidenceFreshness; 6]), BrokerError> {
         let missing = EvidenceFreshness {
             basis: FreshnessBasis::Missing,
             last_verified_at_ms: None,
@@ -221,6 +313,6 @@ impl LaunchPostureEvidence {
             };
         }
         let posture = Posture::evaluate(&supervisor.session_id, &supervisor.run_id, inputs)?;
-        Ok(PostureStatus::from_posture(&posture, freshness))
+        Ok((posture, freshness))
     }
 }

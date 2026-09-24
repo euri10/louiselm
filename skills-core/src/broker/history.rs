@@ -104,6 +104,7 @@ impl BrokerService {
                     let digest = crate::Digest::of(format!("history-{session_id}").as_bytes());
                     let hex = digest.hex();
                     let condition = AttentionCondition {
+                        linked_run_id: None,
                         subject: AttentionSubject::Session(session_id.into()),
                         operation_id: format!(
                             "{}-{}-{}-{}-{}",

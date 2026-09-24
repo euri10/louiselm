@@ -48,6 +48,8 @@ use tempfile::TempDir;
 
 #[path = "support/discovery.rs"]
 mod discovery_support;
+#[path = "broker/posture_attention.rs"]
+mod posture_attention;
 #[path = "broker/supply_posture.rs"]
 mod supply_posture;
 #[path = "support/supply.rs"]

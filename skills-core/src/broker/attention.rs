@@ -89,6 +89,8 @@ impl AttentionReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttentionCondition {
+    /// Associated canonical Run, when the Session belongs to one.
+    pub linked_run_id: Option<String>,
     /// Authenticated owning Session or Run.
     pub subject: AttentionSubject,
     /// Stable canonical UUID for this condition's lifetime.
@@ -106,9 +108,15 @@ impl AttentionCondition {
             "kind": self.reason.fields().0, "source_operation_id": self.operation_id})
     }
 
-    fn validate(&self) -> Result<(), BrokerError> {
+    pub(super) fn validate(&self) -> Result<(), BrokerError> {
         self.subject.validate()?;
-        if !canonical_uuid(&self.operation_id) || self.created_at_ms == 0 {
+        if !canonical_uuid(&self.operation_id)
+            || self.created_at_ms == 0
+            || self
+                .linked_run_id
+                .as_ref()
+                .is_some_and(|id| !canonical_uuid(id))
+        {
             return Err(BrokerError::InvalidGrant);
         }
         Ok(())
@@ -145,7 +153,7 @@ impl ProjectionChange {
             Self::Upsert(condition) => {
                 let mut attention = condition.key();
                 attention["created_at_ms"] = json!(condition.created_at_ms);
-                attention["linked_run_id"] = Value::Null;
+                attention["linked_run_id"] = json!(condition.linked_run_id);
                 attention["stage"] = Value::Null;
                 if let Some(code) = condition.reason.fields().1 {
                     attention["code"] = json!(code);
@@ -356,4 +364,17 @@ pub(crate) fn canonical_uuid(value: &str) -> bool {
                 byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
             }
         })
+}
+
+pub(super) fn condition_id(bytes: &[u8]) -> String {
+    let digest = Digest::of(bytes);
+    let hex = digest.hex();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }

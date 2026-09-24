@@ -324,7 +324,22 @@ impl Queries {
             Entry::Occupied(_) => return Err(BrokerError::DuplicateAuthorization),
         }
         let result = (|| {
+            let mut posture_check = Instant::now();
+            let mut posture_unavailable = false;
             loop {
+                if Instant::now() >= posture_check {
+                    match broker.project_posture_attention(session) {
+                        Ok(()) => posture_unavailable = false,
+                        Err(_) if !posture_unavailable => {
+                            eprintln!(
+                                "louiselm-control: posture Attention unavailable; retained conditions unchanged"
+                            );
+                            posture_unavailable = true;
+                        }
+                        Err(_) => (),
+                    }
+                    posture_check = Instant::now() + Duration::from_secs(1);
+                }
                 if let Ok(query) = requests.try_recv() {
                     match query {
                         WorkerQuery::Waiver {

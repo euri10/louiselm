@@ -36,11 +36,17 @@ fn isolation(status: &SessionStatus) -> &louiselm_skills::launch_protocol::Dimen
 }
 
 #[test]
+fn operator_approval_reaches_current_posture_without_rewriting_admission() {
+    assert_waiver_attention(false);
+    assert_waiver_attention(true);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "Ordered authenticated peer exchange proves the decision reaches current posture without rewriting admission."
 )]
-fn operator_approval_reaches_current_posture_without_rewriting_admission() {
+fn assert_waiver_attention(revoke: bool) {
+    use louiselm_skills::broker::attention::{Outbox, ProjectionChange};
     use louiselm_skills::broker::waiver::{Proposal, Request};
     let root = TempDir::new().unwrap();
     let admission = ConformanceEvidence::Waived {
@@ -48,6 +54,7 @@ fn operator_approval_reaches_current_posture_without_rewriting_admission() {
         report_digest: None,
     };
     let (service, authorization, launch, start) = retained_service(root.path(), &admission, &[]);
+    let outbox = Outbox::open(&root.path().join("authorizations/attention-outbox")).unwrap();
     let mut failed = update(&authorization, admission.clone());
     failed.observed_at_ms = 20_000;
     failed.last_success_at_ms = None;
@@ -68,7 +75,7 @@ fn operator_approval_reaches_current_posture_without_rewriting_admission() {
         let channel = reconnect::peer(&peer_root, &offer);
         settle(|done| channel.receive(done));
         settle(|done| channel.send(failed.canonical_bytes().unwrap(), done));
-        for _ in 0..2 {
+        for _ in 0..3 {
             lifecycle::answer_one_status_query(&channel, &mechanical);
         }
         let packet = settle(|done| channel.receive(done));
@@ -87,8 +94,8 @@ fn operator_approval_reaches_current_posture_without_rewriting_admission() {
         settle(|done| channel.send(reply.canonical_bytes(), done));
         failed.sequence = 2;
         failed.waiver_revision = change.revision;
-        failed.observed_at_ms = 20_100;
-        failed.last_success_at_ms = Some(20_100);
+        failed.observed_at_ms = 23_000;
+        failed.last_success_at_ms = Some(23_000);
         failed.check = ConformanceCheck::Current {
             evidence: ConformanceEvidence::Waived {
                 condition: Condition::Stale,
@@ -96,6 +103,34 @@ fn operator_approval_reaches_current_posture_without_rewriting_admission() {
             },
         };
         settle(|done| channel.send(failed.canonical_bytes().unwrap(), done));
+        for _ in 0..2 {
+            lifecycle::answer_one_status_query(&channel, &mechanical);
+        }
+        if revoke {
+            lifecycle::answer_one_status_query(&channel, &mechanical);
+            let packet = settle(|done| channel.receive(done));
+            let LauncherPacket::Request(ProtocolMessage::WaiverChange(change)) = packet.packet
+            else {
+                panic!("expected waiver revocation");
+            };
+            assert!(change.waiver.is_none());
+            let reply = ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: change.request_id.clone(),
+                result: ResponseResult::WaiverChanged {
+                    change: change.clone(),
+                },
+            };
+            settle(|done| channel.send(reply.canonical_bytes(), done));
+            failed.sequence += 1;
+            failed.waiver_revision = change.revision;
+            failed.observed_at_ms = 24_000;
+            failed.check = ConformanceCheck::Invalid {
+                failure: ConformanceFailure::Condition(Condition::Stale),
+            };
+            settle(|done| channel.send(failed.canonical_bytes().unwrap(), done));
+        }
         lifecycle::answer_one_status_query(&channel, &mechanical);
     });
     let mut session = service
@@ -104,6 +139,14 @@ fn operator_approval_reaches_current_posture_without_rewriting_admission() {
     service
         .step(&mut session, 20_000, None, verify_fixture_signature)
         .unwrap();
+    service
+        .project_posture_attention(&mut session, 20_000, verify_fixture_signature)
+        .unwrap();
+    let failures = crate::posture_attention::drain(&outbox);
+    assert_eq!(failures.len(), 6);
+    let ProjectionChange::Upsert(isolation_condition) = &failures[3] else {
+        panic!("isolation failure");
+    };
     let plan = service
         .waiver_control(
             &mut session,
@@ -135,16 +178,54 @@ fn operator_approval_reaches_current_posture_without_rewriting_admission() {
         .unwrap();
     assert!(result.active);
     service
-        .step(&mut session, 20_100, None, verify_fixture_signature)
+        .step(&mut session, 23_000, None, verify_fixture_signature)
         .unwrap();
+    service
+        .project_posture_attention(&mut session, 23_100, verify_fixture_signature)
+        .unwrap();
+    assert_eq!(
+        crate::posture_attention::drain(&outbox),
+        vec![ProjectionChange::Clear(isolation_condition.clone())]
+    );
     let status = service
         .session_status(
             &mut session,
             &LifecycleCaller::Agent,
-            20_101,
+            23_100,
             verify_fixture_signature,
         )
         .unwrap();
+    assert!(
+        crate::posture_attention::drain(&outbox).is_empty(),
+        "status is read-only"
+    );
+    if revoke {
+        service
+            .waiver_control(
+                &mut session,
+                authorization.controller_uid,
+                &Request::Revoke {
+                    receipt_digest: result.receipt.unwrap().digest,
+                },
+                24_000,
+                verify_fixture_signature,
+            )
+            .unwrap();
+    }
+    service
+        .project_posture_attention(
+            &mut session,
+            // Leave scheduling headroom after the previous timed observation.
+            if revoke { 25_000 } else { 40_000 },
+            verify_fixture_signature,
+        )
+        .unwrap();
+    let expired = crate::posture_attention::drain(&outbox);
+    assert_eq!(expired.len(), 1);
+    let ProjectionChange::Upsert(recreated) = &expired[0] else {
+        panic!("expiry recreates failure");
+    };
+    assert_ne!(recreated.operation_id, isolation_condition.operation_id);
     assert_eq!(
         isolation(&status).state,
         louiselm_skills::posture::DimensionState::Waived

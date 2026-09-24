@@ -113,7 +113,11 @@ impl BrokerService {
         }
     }
 
-    fn refresh_run(&self, endpoint: &AttentionEndpoint, run: &str) -> Result<(), BrokerError> {
+    pub(super) fn refresh_run(
+        &self,
+        endpoint: &AttentionEndpoint,
+        run: &str,
+    ) -> Result<(), BrokerError> {
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         let worker = endpoint.read_run(
             run.to_owned(),
@@ -123,7 +127,13 @@ impl BrokerService {
         )?;
         worker.join().map_err(|_| BrokerError::InvalidGrant)?;
         let observed = receive.recv().map_err(|_| BrokerError::InvalidGrant)??;
-        self.skill_requests.observe_run(&observed, &self.attention)
+        self.skill_requests
+            .observe_run(&observed, &self.attention)?;
+        if observed.state == super::attention::RunState::Disposed {
+            self.posture_attention
+                .end_run(&observed.run_id, &self.attention)?;
+        }
+        Ok(())
     }
 
     /// Reconciles pending subjects against authenticated durable lifecycle evidence.

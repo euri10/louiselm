@@ -38,6 +38,18 @@ pub struct InstalledBroker {
 }
 
 impl InstalledBroker {
+    /// Drive waiting posture episodes from the owning worker, independent of UI reads.
+    /// # Errors
+    /// Refuses unavailable or unauthenticated mechanical/evidence state and storage failure.
+    pub fn project_posture_attention(
+        &self,
+        session: &mut BrokerSession,
+    ) -> Result<(), BrokerError> {
+        self.service
+            .project_posture_attention(session, now_ms()?, |key, payload, signature| {
+                self.verifier.verify(key, payload, signature).is_ok()
+            })
+    }
     /// Handle a pending launch's operator decision using only protected preparation evidence.
     /// No launcher or Agent is started by this operation.
     /// # Errors
@@ -306,12 +318,18 @@ impl InstalledBroker {
         endpoint: Option<&super::attention::AttentionEndpoint>,
     ) -> Result<bool, BrokerError> {
         let reconciled = self.reconcile_admissions(endpoint);
+        let posture = self
+            .service
+            .reconcile_posture_attention(endpoint, |key, payload, signature| {
+                self.verifier.verify(key, payload, signature).is_ok()
+            });
         // A Run observation outage must not suppress already-durable projections.
         let delivered = self
             .service
             .attention
             .deliver_next(endpoint.ok_or(BrokerError::InvalidGrant)?)?;
         reconciled?;
+        posture?;
         Ok(delivered)
     }
 

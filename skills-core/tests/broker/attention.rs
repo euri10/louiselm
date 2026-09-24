@@ -81,6 +81,7 @@ use louiselm_skills::broker::attention::{
 
 fn condition() -> AttentionCondition {
     AttentionCondition {
+        linked_run_id: None,
         subject: AttentionSubject::Session("session-1".into()),
         operation_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
         created_at_ms: 100,

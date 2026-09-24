@@ -34,6 +34,7 @@ pub mod installed;
 pub mod lifecycle;
 pub mod operator;
 mod posture;
+mod posture_attention;
 pub mod promotion;
 pub mod provider_credentials;
 pub mod receipts;
