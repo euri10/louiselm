@@ -116,6 +116,52 @@ fn manifest_rejects_duplicate_and_colliding_paths() {
 }
 
 #[test]
+fn manifest_rejects_unicode_normalization_collisions() {
+    for (first, second) in [
+        ("café.md", "cafe\u{301}.md"),
+        ("ﬁle.md", "file.md"),
+        ("ＳＫＩＬＬ.md", "skill.md"),
+        ("café/notes.md", "cafe\u{301}/notes.md"),
+    ] {
+        let mut entries = vec![entry(first), entry(second)];
+        assert!(
+            matches!(
+                Manifest::new(entries.clone(), true),
+                Err(ManifestError::CollidingPaths { .. })
+            ),
+            "{first:?} and {second:?} must collide"
+        );
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        let manifest = Manifest {
+            schema: MANIFEST_SCHEMA.to_owned(),
+            entries,
+        };
+        assert!(matches!(
+            Manifest::parse(&manifest.canonical_bytes(), true),
+            Err(ManifestError::CollidingPaths { .. })
+        ));
+    }
+}
+
+#[test]
+fn unicode_paths_keep_their_original_manifest_bytes() {
+    let paths = ["cafe\u{301}.md", "別.md"];
+    let manifest = Manifest::new(paths.iter().map(|path| entry(path)).collect(), true).unwrap();
+    assert_eq!(
+        manifest
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert_eq!(
+        Manifest::parse(&manifest.canonical_bytes(), true).unwrap(),
+        manifest
+    );
+}
+
+#[test]
 fn manifest_rejects_an_unknown_schema() {
     let foreign = GOLDEN_MANIFEST.replace(MANIFEST_SCHEMA, "louiselm.skills.manifest/99");
 

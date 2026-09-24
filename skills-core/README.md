@@ -95,6 +95,11 @@ link; directory cycles through symlinks; paths that collide once a filesystem
 normalizes them; non-ASCII paths, unless a pinned policy admits them; files that
 changed while being read; anything over a policy limit.
 
+Path collision keys use Unicode compatibility decomposition (NFKD), then
+ASCII case folding. This rejects canonical and compatibility-equivalent names
+even under a policy admitting non-ASCII paths, while preserving original path
+bytes in manifests. It does not implement full Unicode case folding.
+
 **Symlinks are resolved, not preserved.** A link's content is copied in as a
 regular read-only file, so a later edit to the link or its target cannot change
 bytes that were already reviewed. Where the link pointed is a local fact with no

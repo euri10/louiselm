@@ -18,6 +18,7 @@ use std::fmt;
 
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization as _;
 
 /// Longest accepted single path component, in bytes.
 pub const MAX_COMPONENT_BYTES: usize = 255;
@@ -62,10 +63,8 @@ impl CanonicalPath {
     /// Validates `raw` against the canonical path contract.
     ///
     /// `allow_non_ascii` comes from the Inspection policy rather than a
-    /// caller's preference; see [`crate::Policy`]. When non-ASCII paths are
-    /// admitted, [`CanonicalPath::collision_key`] no longer detects Unicode
-    /// normalization collisions on its own — capture must then reject the
-    /// package (louiselm-u530).
+    /// caller's preference; see [`crate::Policy`]. Original path bytes are
+    /// preserved; [`CanonicalPath::collision_key`] detects equivalent names.
     ///
     /// # Errors
     /// Rejects empty/absolute paths, empty or relative components, controls, excessive length, and non-ASCII bytes when disallowed.
@@ -106,14 +105,14 @@ impl CanonicalPath {
         &self.0
     }
 
-    /// Returns the key two paths share when a filesystem would confuse them.
+    /// Returns a conservative key for normalization and ASCII-case collisions.
     ///
-    /// ASCII case folding covers the practical collision — a case-insensitive
-    /// or case-preserving filesystem materializing `Skill.md` and `skill.md`
-    /// as one file — for the ASCII-only paths the default policy admits.
+    /// Compatibility decomposition (NFKD) catches canonical and compatibility
+    /// equivalence before ASCII case folding, including fullwidth ASCII names.
+    /// This does not perform full Unicode case folding or change manifest bytes.
     #[must_use]
     pub fn collision_key(&self) -> String {
-        self.0.to_ascii_lowercase()
+        self.0.nfkd().map(|ch| ch.to_ascii_lowercase()).collect()
     }
 
     /// Returns the final component, which names the file itself.

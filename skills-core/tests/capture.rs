@@ -232,6 +232,30 @@ fn paths_that_a_filesystem_would_merge_are_refused() {
 }
 
 #[test]
+fn unicode_collisions_publish_nothing_when_non_ascii_paths_are_allowed() {
+    let policy =
+        support::policy_with(&[("\"allow_non_ascii\": false", "\"allow_non_ascii\": true")]);
+    for (first, second) in [("café.md", "cafe\u{301}.md"), ("ﬁle.md", "file.md")] {
+        let fixture = Fixture::new();
+        let candidate = fixture.candidate("candidate");
+        write_file(&candidate.join("SKILL.md"), "body\n");
+        write_file(&candidate.join(first), "first\n");
+        write_file(&candidate.join(second), "second\n");
+        let error = fixture
+            .capture_with(&candidate, &policy)
+            .expect_err("Unicode collision refused");
+        assert!(
+            matches!(
+                error,
+                StoreError::Capture(CaptureError::Manifest(ManifestError::CollidingPaths { .. }))
+            ),
+            "unexpected error: {error}"
+        );
+        fixture.assert_store_is_empty();
+    }
+}
+
+#[test]
 fn a_non_ascii_path_is_refused_under_the_default_policy() {
     let fixture = Fixture::new();
     let candidate = fixture.candidate("candidate");
