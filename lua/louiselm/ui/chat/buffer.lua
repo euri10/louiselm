@@ -177,16 +177,16 @@ local function close_tool_fold_run(view)
   view.tool_fold_run = nil
 end
 
----Reinstall every recorded reasoning fold that is not currently a real closed
+---Reinstall every recorded reasoning fold that is not currently a real
 ---fold in `win`. Unlike the incremental context/tool fold appliers, this
 ---rescans the full `thought_folds` history on every call instead of trusting
 ---a "folds already installed" counter: something outside this module's
 ---control can silently drop a manual fold (observed for replayed reasoning
 ---paragraphs during `session/load`, louiselm-9wjm), and a counter that only
 ---ever advances has no way to notice or recover from that. Checking
----`foldclosed` first keeps repeated calls idempotent -- re-issuing `:fold` on
----a range that is already folded nests a second fold inside the first rather
----than being a no-op.
+---`foldlevel` first preserves manually opened folds and keeps repeated calls
+---idempotent: re-issuing `:fold` nests another fold even when the existing
+---fold is open.
 ---@param view louiselm.ui.ChatBuffer
 ---@param win integer
 local function apply_thought_folds(view, win)
@@ -197,7 +197,7 @@ local function apply_thought_folds(view, win)
   nvim.api.nvim_set_option_value("foldenable", true, { win = win })
   nvim.api.nvim_win_call(win, function()
     for _, fold in ipairs(view.thought_folds) do
-      if nvim.fn.foldclosed(fold.first + 1) == -1 then
+      if nvim.fn.foldlevel(fold.first + 1) == 0 then
         nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
       end
     end
@@ -998,6 +998,7 @@ function Buffer:show(window, start_insert)
   end
   apply_incremental_folds(self, self.window, self.context_folds, self.fold_counts)
   apply_incremental_folds(self, self.window, self.tool_folds, self.tool_fold_counts)
+  apply_thought_folds(self, self.window)
 end
 
 ---Delete the owned buffer and its buffer-local handlers; safe to repeat.
