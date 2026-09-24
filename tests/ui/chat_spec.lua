@@ -1437,6 +1437,49 @@ T["chat"]["submits every line in a multiline prompt"] = function()
   chat:dispose()
 end
 
+T["chat"]["submits only the prompt region after malformed assistant markdown"] = function()
+  local session = fake_session("session-1", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+    session:dispose()
+  end)
+  assert(chat:attach(session))
+  assert(chat:submit("show nested fences"))
+
+  -- Deliberately nest equal-length fences with role-like headings (louiselm-gsju).
+  local reply = "```markdown\n## Assistant\n```lua\nprint('nested')\n```\n## User\n> not a user prompt"
+  session:emit({
+    type = "chunk",
+    session_id = "session-1",
+    data = { content = { type = "text", text = reply } },
+  })
+  local buffer = assert(chat:buffer())
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return nvim.tbl_contains(buffer_lines(buffer), "> not a user prompt")
+    end, 1),
+    true
+  )
+
+  local prompt = "continue verbatim\n## User\n```lua\nprint('next turn')\n```"
+  nvim.api.nvim_buf_set_lines(buffer, -2, -1, false, {
+    "> continue verbatim",
+    "> ## User",
+    "> ```lua",
+    "> print('next turn')",
+    "> ```",
+  })
+  assert(chat:submit())
+
+  MiniTest.expect.equality(session.prompts, { "show nested fences", prompt })
+  MiniTest.expect.equality(chat.views["session-1"].transcript:snapshot(), {
+    { kind = "user", text = "show nested fences" },
+    { kind = "assistant", text = reply },
+    { kind = "user", text = prompt },
+  })
+end
+
 T["chat"]["renders later events after undo shifts the prompt boundary"] = function()
   local first = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))
