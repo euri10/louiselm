@@ -45,6 +45,7 @@ fn auth(attendance: Attendance) -> PendingAuthorization {
         commands: None,
         skill_requests: None,
         beads_mutations: None,
+        provider_requests: None,
     }
 }
 

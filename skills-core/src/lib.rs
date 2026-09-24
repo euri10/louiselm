@@ -39,6 +39,7 @@ pub mod manifest;
 pub mod policy;
 pub mod posture;
 pub mod preflight;
+pub mod provider_request;
 pub mod quarantine;
 pub mod registry;
 pub mod release;

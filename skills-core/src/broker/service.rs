@@ -174,6 +174,7 @@ pub struct BrokerService {
     pub(super) attention: super::attention::Outbox,
     pub(super) skill_requests: super::skill_requests::SkillRequests,
     pub(super) beads_mutations: super::beads_mutation::BeadsMutations,
+    pub(super) provider_requests: super::provider_requests::ProviderLedger,
     pub(super) tracker: Option<super::beads_mutation::TrackerConfig>,
     pub(super) beads_replicas: Option<super::beads_replica::Paths>,
     pub(super) verification_inputs: std::path::PathBuf,
@@ -240,6 +241,9 @@ impl BrokerService {
         let beads_mutations = super::beads_mutation::BeadsMutations::open(
             &authorizations.root.join("beads-mutations"),
         )?;
+        let provider_requests = super::provider_requests::ProviderLedger::open(
+            &authorizations.root.join("provider-requests"),
+        )?;
         Ok(Self {
             posture_attention,
             waivers: super::waiver::Waivers::open(
@@ -257,6 +261,7 @@ impl BrokerService {
             attention,
             skill_requests,
             beads_mutations,
+            provider_requests,
             tracker: None,
             beads_replicas: None,
             verification_inputs: socket_path

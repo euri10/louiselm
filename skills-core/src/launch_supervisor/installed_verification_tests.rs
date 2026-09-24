@@ -63,6 +63,7 @@ fn approval(launch: LaunchRequest, uid: u32, commands: Option<ApprovedCommands>)
         dependencies: None,
         skill_requests: None,
         beads_mutations: None,
+        provider_requests: None,
         require_cold_recovery: false,
         request: launch,
         controller_uid: uid,

@@ -194,10 +194,11 @@ fn config(timeout: Duration) -> ureq::config::Config {
         .build()
 }
 
+/// Resolves only the exact origin to controller-selected addresses; no DNS lookup.
 #[derive(Debug)]
-struct PinnedResolver {
-    origin: url::Url,
-    addresses: Vec<std::net::IpAddr>,
+pub(crate) struct PinnedResolver {
+    pub(crate) origin: url::Url,
+    pub(crate) addresses: Vec<std::net::IpAddr>,
 }
 
 impl ureq::unversioned::resolver::Resolver for PinnedResolver {

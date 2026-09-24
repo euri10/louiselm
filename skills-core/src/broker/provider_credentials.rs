@@ -7,8 +7,8 @@
 //! else, and exposes the secret only through a crate-internal accessor that
 //! borrows the material rather than returning it.
 //!
-//! Nothing here reaches the network. Performing the request is
-//! `louiselm-qbr.5.1.3.2`, which is blocked on this module.
+//! Nothing here reaches the network. The Provider request path
+//! (`provider_service.rs`) borrows the secret for each admitted attempt.
 //!
 //! Redaction is a type property, not a convention: the private secret type has
 //! a hand-written `Debug` and no `Serialize`, so a secret cannot reach a
@@ -266,7 +266,7 @@ impl ProviderCredentialStore {
     /// Borrows the secret for one broker-side operation.
     ///
     /// Crate-internal on purpose: this is how the Provider request path
-    /// (`louiselm-qbr.5.1.3.2`) authenticates a call the broker itself makes.
+    /// (`provider_service.rs`) authenticates a call the broker itself makes.
     /// Callers must keep the borrowed material and any derived authentication
     /// bytes inside the broker request path; the callback can still copy it.
     ///
@@ -274,12 +274,6 @@ impl ProviderCredentialStore {
     /// Returns [`ErrorCode::InvalidRequest`] when the handle names a Provider
     /// this store does not hold, and [`ErrorCode::CredentialUnavailable`] when
     /// the entry holds no usable material.
-    // Configuration-specific: the tests below exercise this accessor, so an
-    // expectation would be unfulfilled in the test build and fire there instead.
-    #[allow(
-        dead_code,
-        reason = "The only production caller is the Provider request path in louiselm-qbr.5.1.3.2, which is blocked on this task; custody is useless without a way for the broker to use what it holds, and widening this to `pub` to satisfy the lint would hand the secret to every crate consumer."
-    )]
     pub(crate) fn with_secret<T>(
         &self,
         handle: &CredentialHandle,

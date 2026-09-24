@@ -70,6 +70,7 @@ fn seed_authorizations() {
                 dependencies: None,
                 skill_requests: None,
                 beads_mutations: beads::permission(name, now),
+                provider_requests: None,
                 request: named_request(name),
                 controller_uid: config.operator_uid,
                 require_cold_recovery: false,

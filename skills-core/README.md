@@ -666,17 +666,42 @@ mode-`0600` regular file named for its configured Provider id (1–64 lowercase
 ASCII letters, digits or hyphens). The contents are nonempty UTF-8, at most
 16 KiB, with surrounding whitespace removed. Do not put credential bytes in
 command arguments, environment variables, Session files or logs. Restart the
-broker to reload changed files; this API neither imports other tools' stores
-nor performs Provider requests.
+broker to reload changed files; custody never imports other tools' stores.
 
 Startup refuses foreign ownership, wider or special mode bits, symlinks,
 multiply linked files, special files and malformed contents with the existing
 `CredentialUnavailable` protocol error. Opened inodes are pinned before reading;
 secret buffers are zeroized on drop and never serialized or included in Debug.
 `provider_credential(id)` returns a `CredentialHandle` containing only the id.
-It grants no request authority: Provider calls and their authorization remain
-`louiselm-qbr.5.1.3.2`, and the Verified-launch gate remains
-`louiselm-qbr.5.1.3.3`.
+It grants no request authority by itself. An API key needs no refresh; rotate it
+by replacing the file and restarting the broker.
+
+### Brokered Provider requests
+
+A launch grant may carry `provider_requests` (`ApprovedProviderRequests`):
+the configured Provider id, the exact HTTPS `upstream` URL
+(`…/v1/responses`), controller-selected `addresses` (no DNS lookup), a
+non-refundable `max_run_requests` shared by every Session of the Run, and an
+expiry. Absence denies every request.
+
+`provider_endpoint::serve_provider_connection` accepts only the Responses
+request shape stock Codex was observed to send (reviewed headers and top-level
+fields, `Host` equal to the endpoint's own authority, no `Authorization`,
+compression or chunked bodies; 32 MiB body bound). Each complete request goes to
+`BrokerService::serve_provider_request` on the Session's worker, which checks
+the grant, credential and live supervisor status, durably spends one Run unit
+under `provider-requests/`, rechecks expiry and channel after that write, and
+only then sends the request upstream with the broker-held key as the bearer.
+Upstream `401`/`403` is a typed `CredentialUnavailable` refusal; nothing is
+retried and a spent unit is never refunded. The response streams back as it
+arrives.
+
+Not yet enabled: the Model/effort allowlist is `louiselm-qbr.5.1.3.2.2`,
+Park/Attention on exhaustion and expiry `louiselm-qbr.5.1.3.2.3`, and placing
+the listener in a Session's network namespace behind the kernel sender guard
+`louiselm-qbr.5.1.3.2.4`. Until then the sandbox refuses `Brokered` network
+and nothing in production serves the endpoint. The Verified-launch gate
+remains `louiselm-qbr.5.1.3.3`.
 
 The existing closed receipt/audit schemas exclude credential fields. The
 required installed-custody VM gate checks actual distinct-UID denial, both

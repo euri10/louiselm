@@ -364,6 +364,7 @@ fn installed_broker_worker() {
             dependencies: None,
             skill_requests: None,
             beads_mutations: None,
+            provider_requests: None,
             require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,

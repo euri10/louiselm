@@ -37,6 +37,10 @@ mod posture;
 mod posture_attention;
 pub mod promotion;
 pub mod provider_credentials;
+pub mod provider_endpoint;
+mod provider_requests;
+mod provider_service;
+pub mod provider_transport;
 pub mod receipts;
 pub mod recovery;
 pub mod service;
@@ -185,6 +189,13 @@ pub enum BrokerError {
     /// Every approved Beads attempt has already been spent.
     #[error("Beads mutation budget exhausted")]
     BeadsBudgetExhausted,
+    /// Every approved Provider request attempt of the Run has already been spent.
+    #[error("Provider request budget exhausted")]
+    ProviderBudgetExhausted,
+    /// The Provider upstream could not be reached or its stream failed.
+    /// The attempt's outcome is unknown and its unit stays spent.
+    #[error("Provider upstream is unavailable")]
+    ProviderUnavailable,
 }
 
 /// Reads one bounded durable record, or `None` when it is absent.

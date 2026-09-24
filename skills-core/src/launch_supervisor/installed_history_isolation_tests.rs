@@ -49,6 +49,7 @@ fn installed_history_inspector() {
                         dependencies: None,
                         skill_requests: None,
                         beads_mutations: None,
+                        provider_requests: None,
                         request: request.clone(),
                         controller_uid: verifier.config().operator_uid,
                         expires_at_ms: 30000,

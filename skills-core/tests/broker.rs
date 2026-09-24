@@ -70,6 +70,8 @@ mod beads_mutations;
 mod buffered_requests;
 #[path = "broker/lifecycle.rs"]
 mod lifecycle;
+#[path = "broker/provider_requests.rs"]
+mod provider_requests;
 #[path = "broker/skill_requests.rs"]
 mod skill_requests;
 
@@ -152,6 +154,7 @@ fn grant(request: &LaunchRequest) -> GrantRequest {
         dependencies: None,
         skill_requests: None,
         beads_mutations: None,
+        provider_requests: None,
         require_cold_recovery: false,
         request: request.clone(),
         controller_uid: CONTROLLER_UID,

@@ -101,6 +101,8 @@ pub struct GrantRequest {
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
     /// Explicit bounded canonical mutation permission; absence denies all effects.
     pub beads_mutations: Option<crate::beads_mutation::ApprovedBeadsMutations>,
+    /// Explicit brokered Provider request permission; absence denies every request.
+    pub provider_requests: Option<crate::provider_request::ApprovedProviderRequests>,
 }
 
 /// One durable single-use authorization awaiting its supervisor.
@@ -143,6 +145,8 @@ pub struct PendingAuthorization {
     pub skill_requests: Option<crate::skill_request::ApprovedSkillRequests>,
     /// Exact mutation effects, role, issue scope and budget retained across retries and restarts.
     pub beads_mutations: Option<crate::beads_mutation::ApprovedBeadsMutations>,
+    /// Exact brokered Provider request approval bound to this single-use launch.
+    pub provider_requests: Option<crate::provider_request::ApprovedProviderRequests>,
 }
 
 /// Durable evidence that one authorization was spent.
@@ -242,6 +246,7 @@ impl AuthorizationStore {
                 || prior.skill_requests != grant.skill_requests
                 || prior.dependencies != grant.dependencies
                 || prior.beads_mutations != grant.beads_mutations
+                || prior.provider_requests != grant.provider_requests
                 || prior.expires_at_ms != grant.expires_at_ms
                 || prior.require_cold_recovery != grant.require_cold_recovery
                 || prior.broker_loss_grace_ms != grant.broker_loss_grace_ms
@@ -339,6 +344,13 @@ impl AuthorizationStore {
         {
             return Err(BrokerError::InvalidGrant);
         }
+        if grant
+            .provider_requests
+            .as_ref()
+            .is_some_and(|permission| !permission.valid(now_ms))
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
         let record_name = record_name(&grant.request.authorization_id)?;
 
         let assignment = lock(&self.assignment);
@@ -365,6 +377,7 @@ impl AuthorizationStore {
             commands: grant.commands.clone(),
             skill_requests: grant.skill_requests.clone(),
             beads_mutations: grant.beads_mutations.clone(),
+            provider_requests: grant.provider_requests.clone(),
         };
         self.retention_store()?.register(&grant.request, now_ms)?;
         write_new_record(&self.pending_path(&record_name), &pending)?;

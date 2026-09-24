@@ -75,8 +75,10 @@ Session/registry files, and durable authorization, receipt and audit records.
 Unit tests additionally cover symlinks, hard links, FIFOs, special mode bits,
 missing/unreadable files and malformed or oversized contents. Receipt and audit
 tests reject credential fields through the existing closed schemas. No real
-Provider credential or network request is used. Provider request mediation and
-the Verified-launch gate remain the sibling tasks named in the crate README.
+Provider credential or network request is used. The brokered request path and
+its remaining enablement tasks are described in the crate README; offline tests
+in `skills-core/tests/broker/provider_requests.rs` use a fake upstream and are
+not installed or live acceptance.
 
 Recorded 2026-09-17: the explicitly enabled custody gate passed in the restricted
 launcher VM, using the host-built library test and four selected binaries.

@@ -90,6 +90,7 @@ mod tests {
             dependencies: None,
             skill_requests: None,
             beads_mutations: None,
+            provider_requests: None,
             require_cold_recovery: true,
             authorization_id: "authorization".into(),
             request_id: "request".into(),
