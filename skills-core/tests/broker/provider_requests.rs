@@ -10,7 +10,7 @@ use louiselm_skills::{
         provider_transport::{ProviderTransport, UpstreamResponse},
     },
     launch_protocol::SupervisorStatus,
-    provider_request::{ApprovedProviderRequests, Frames, ProviderRequest},
+    provider_request::{ApprovedProviderRequests, Frames, ProviderRequest, ReasoningEffort},
 };
 use std::{
     io::{Read, Write},
@@ -42,12 +42,21 @@ fn parsed() -> ProviderRequest {
     frames.next_request().unwrap().unwrap()
 }
 
+fn with_policy(model: &str, effort: Option<&str>) -> ProviderRequest {
+    let mut request = parsed();
+    request.model = model.into();
+    request.effort = effort.map(str::to_owned);
+    request
+}
+
 fn approval(max_run_requests: u32) -> ApprovedProviderRequests {
     ApprovedProviderRequests {
         provider: "openai".into(),
         upstream: "https://api.openai.com/v1/responses".into(),
         addresses: vec!["192.0.2.1".parse().unwrap()],
         max_run_requests,
+        models: vec!["gpt-5.6-luna".into()],
+        max_effort: ReasoningEffort::High,
         expires_at_ms: 30_000,
     }
 }
@@ -291,6 +300,36 @@ fn exhausted_run_budget_is_refused_before_any_upstream_attempt() {
 }
 
 #[test]
+fn models_and_efforts_outside_the_grant_are_denied_before_any_spend() {
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let upstream = FakeUpstream::replying(200);
+    for (model, effort) in [
+        ("gpt-6-astra", Some("high")),
+        ("gpt-5.6-luna", Some("xhigh")),
+        ("gpt-5.6-luna", None),
+    ] {
+        let error = fixture
+            .service
+            .serve_provider_request(
+                &mut fixture.session,
+                &fixture.credentials,
+                &upstream,
+                &with_policy(model, effort),
+                2500,
+                verify_fixture_signature,
+            )
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(&error, BrokerError::Policy(e) if e.code == ErrorCode::CapabilityDenied && !e.retryable),
+            "{model} {effort:?}: {error:?}"
+        );
+    }
+    assert_eq!(upstream.calls(), 0);
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 0);
+}
+
+#[test]
 fn expired_permission_is_refused_without_an_attempt() {
     let mut fixture = fixture(Some(approval(5)), Some("openai"));
     let upstream = FakeUpstream::replying(200);
@@ -385,9 +424,18 @@ fn endpoint_relays_admitted_chunks_as_they_arrive_and_never_the_key() {
 
 #[test]
 fn endpoint_refuses_malformed_or_denied_requests_with_a_typed_error() {
-    for (bytes, expected) in [
-        (b"GET / HTTP/1.1\r\nhost: x\r\n\r\n".to_vec(), "400"),
-        (frame(), "403"),
+    for (bytes, expected, refusal) in [
+        (
+            b"GET / HTTP/1.1\r\nhost: x\r\n\r\n".to_vec(),
+            "400",
+            BrokerError::ProviderBudgetExhausted,
+        ),
+        (frame(), "403", BrokerError::ProviderBudgetExhausted),
+        (
+            frame(),
+            "403",
+            ProtocolError::new(ErrorCode::CapabilityDenied, None, None).into(),
+        ),
     ] {
         let upstream = FakeUpstream::replying(200);
         let (mut client, server) = UnixStream::pair().unwrap();
@@ -395,8 +443,9 @@ fn endpoint_refuses_malformed_or_denied_requests_with_a_typed_error() {
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let endpoint = thread::spawn(move || {
-            serve_provider_connection(server, HOST.into(), |_request| {
-                Err(BrokerError::ProviderBudgetExhausted)
+            let mut refusal = Some(refusal);
+            serve_provider_connection(server, HOST.into(), move |_request| {
+                Err(refusal.take().unwrap())
             })
         });
         client.write_all(&bytes).unwrap();

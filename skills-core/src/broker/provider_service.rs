@@ -27,7 +27,9 @@ impl BrokerService {
     /// # Errors
     /// Refuses without spending a unit when the launch grants no valid Provider
     /// permission ([`BrokerError::InvalidGrant`], [`BrokerError::Expired`]), the
-    /// credential is not configured, or the Session is not running with an
+    /// request names a Model or effort outside the grant
+    /// ([`ErrorCode::CapabilityDenied`]), the credential is not configured, or
+    /// the Session is not running with an
     /// enabled channel. Refuses with [`BrokerError::ProviderBudgetExhausted`]
     /// once the Run's total is spent. After a unit is spent, an expiry or channel
     /// loss discovered before the attempt, an unreachable upstream, or a rejected
@@ -68,6 +70,9 @@ impl BrokerService {
         };
         if !live(now_ms) {
             return Err(BrokerError::Expired);
+        }
+        if !permission.permits(&request.model, request.effort.as_deref()) {
+            return Err(ProtocolError::new(ErrorCode::CapabilityDenied, None, None).into());
         }
         let handle = credentials.handle(&permission.provider)?;
         let status = self.supervisor_status(session, &mut verify)?;

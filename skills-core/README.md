@@ -681,8 +681,12 @@ by replacing the file and restarting the broker.
 A launch grant may carry `provider_requests` (`ApprovedProviderRequests`):
 the configured Provider id, the exact HTTPS `upstream` URL
 (`…/v1/responses`), controller-selected `addresses` (no DNS lookup), a
-non-refundable `max_run_requests` shared by every Session of the Run, and an
-expiry. Absence denies every request.
+non-refundable `max_run_requests` shared by every Session of the Run, the
+sorted `models` a request may name, the `max_effort` ceiling for
+`reasoning.effort` (`none` < `minimal` < `low` < `medium` < `high` < `xhigh`
+< `max`), and an expiry. Absence denies every request. A request naming another
+Model, stating a higher or unknown effort, or stating none is refused with
+`CapabilityDenied` before any unit is spent.
 
 `provider_endpoint::serve_provider_connection` accepts only the Responses
 request shape stock Codex was observed to send (reviewed headers and top-level
@@ -696,8 +700,8 @@ Upstream `401`/`403` is a typed `CredentialUnavailable` refusal; nothing is
 retried and a spent unit is never refunded. The response streams back as it
 arrives.
 
-Not yet enabled: the Model/effort allowlist is `louiselm-qbr.5.1.3.2.2`,
-Park/Attention on exhaustion and expiry `louiselm-qbr.5.1.3.2.3`, and placing
+Not yet enabled: Park/Attention on exhaustion and expiry is
+`louiselm-qbr.5.1.3.2.3`, and placing
 the listener in a Session's network namespace behind the kernel sender guard
 `louiselm-qbr.5.1.3.2.4`. Until then the sandbox refuses `Brokered` network
 and nothing in production serves the endpoint. The Verified-launch gate

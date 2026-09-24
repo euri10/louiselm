@@ -96,10 +96,10 @@ fn relay<S: Write>(stream: &mut S, mut response: UpstreamResponse) -> Result<(),
 fn refuse<S: Write>(stream: &mut S, error: &BrokerError) -> Result<(), BrokerError> {
     let (status, protocol) = match error {
         BrokerError::Policy(protocol) => (
-            if protocol.code == ErrorCode::CredentialUnavailable {
-                502
-            } else {
-                400
+            match protocol.code {
+                ErrorCode::CredentialUnavailable => 502,
+                ErrorCode::CapabilityDenied => 403,
+                _ => 400,
             },
             protocol.clone(),
         ),

@@ -4,7 +4,7 @@
 )]
 
 use super::*;
-use crate::provider_request::Frames;
+use crate::provider_request::{Frames, ReasoningEffort};
 use std::{
     io::Cursor,
     sync::{Arc, Mutex},
@@ -85,6 +85,8 @@ fn approved() -> ApprovedProviderRequests {
         upstream: "https://api.openai.com/v1/responses".into(),
         addresses: vec!["192.0.2.1".parse().unwrap()],
         max_run_requests: 5,
+        models: vec!["gpt-5.6-luna".into()],
+        max_effort: ReasoningEffort::High,
         expires_at_ms: 60_000,
     }
 }

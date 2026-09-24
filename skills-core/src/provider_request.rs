@@ -17,6 +17,44 @@ pub use framing::Frames;
 /// Largest total request budget one Run may be granted.
 pub const MAX_RUN_REQUESTS: u32 = 10_000;
 
+/// Responses API `reasoning.effort` values, in increasing cost order.
+///
+/// Values the API does not define (for example Codex's subscription-only
+/// `ultra`) have no place in this order and are always refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// No reasoning.
+    None,
+    /// Minimal reasoning.
+    Minimal,
+    /// Low reasoning.
+    Low,
+    /// Medium reasoning.
+    Medium,
+    /// High reasoning.
+    High,
+    /// Extra-high reasoning.
+    Xhigh,
+    /// Maximum reasoning.
+    Max,
+}
+
+impl ReasoningEffort {
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "none" => Self::None,
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
+            _ => return None,
+        })
+    }
+}
+
 /// Controller-issued permission to spend a Run's shared Provider request budget.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +69,11 @@ pub struct ApprovedProviderRequests {
     /// Non-refundable total upstream attempts shared by every Session of the Run.
     /// Every grant for one Run must state the same total.
     pub max_run_requests: u32,
+    /// Sorted unique exact Model ids a request may name (1..=16).
+    pub models: Vec<String>,
+    /// Highest reasoning effort a request may state. Raised only by a new
+    /// grant, never by the request.
+    pub max_effort: ReasoningEffort,
     /// Exclusive absolute expiry; retries never renew permission.
     pub expires_at_ms: u64,
 }
@@ -69,7 +112,27 @@ impl ApprovedProviderRequests {
                 .iter()
                 .all(|address| !address.is_unspecified() && !address.is_multicast())
             && (1..=MAX_RUN_REQUESTS).contains(&self.max_run_requests)
+            && (1..=16).contains(&self.models.len())
+            && self.models.windows(2).all(|pair| pair[0] < pair[1])
+            && self
+                .models
+                .iter()
+                .all(|model| !model.is_empty() && model.len() <= 128)
             && now_ms < self.expires_at_ms
+    }
+
+    /// Whether a request naming `model` at `effort` is inside this grant.
+    ///
+    /// A request must state its effort: the Provider's default is not a
+    /// value this grant approved.
+    #[must_use]
+    pub fn permits(&self, model: &str, effort: Option<&str>) -> bool {
+        self.models
+            .binary_search_by(|allowed| allowed.as_str().cmp(model))
+            .is_ok()
+            && effort
+                .and_then(ReasoningEffort::parse)
+                .is_some_and(|effort| effort <= self.max_effort)
     }
 }
 

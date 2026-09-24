@@ -176,6 +176,8 @@ fn approved() -> ApprovedProviderRequests {
         upstream: "https://api.openai.com/v1/responses".into(),
         addresses: vec!["192.0.2.1".parse().unwrap()],
         max_run_requests: 20,
+        models: vec!["gpt-5.6-luna".into(), "gpt-6-astra".into()],
+        max_effort: ReasoningEffort::High,
         expires_at_ms: 2000,
     }
 }
@@ -184,7 +186,7 @@ fn approved() -> ApprovedProviderRequests {
 fn approval_bounds_destination_budget_and_lifetime() {
     assert!(approved().valid(1999));
     assert!(!approved().valid(2000));
-    let invalid: [fn(&mut ApprovedProviderRequests); 9] = [
+    let invalid: [fn(&mut ApprovedProviderRequests); 13] = [
         |a| a.provider = "OpenAI".into(),
         |a| a.upstream = "http://api.openai.com/v1/responses".into(),
         |a| a.upstream = "https://api.openai.com/v1/chat/completions".into(),
@@ -194,10 +196,38 @@ fn approval_bounds_destination_budget_and_lifetime() {
         |a| a.addresses.push("192.0.2.1".parse().unwrap()),
         |a| a.max_run_requests = 0,
         |a| a.max_run_requests = MAX_RUN_REQUESTS + 1,
+        |a| a.models.clear(),
+        |a| a.models.reverse(),
+        |a| a.models.push("gpt-6-astra".into()),
+        |a| a.models = vec![String::new()],
     ];
     for change in invalid {
         let mut approval = approved();
         change(&mut approval);
         assert!(!approval.valid(0), "{approval:?}");
     }
+}
+
+#[test]
+fn only_allowlisted_models_at_or_below_the_effort_ceiling_are_permitted() {
+    let approval = approved();
+    assert!(approval.permits("gpt-5.6-luna", Some("high")));
+    assert!(approval.permits("gpt-6-astra", Some("low")));
+    assert!(approval.permits("gpt-5.6-luna", Some("none")));
+    for (model, effort) in [
+        ("gpt-6-sol", Some("low")),
+        ("GPT-5.6-luna", Some("low")),
+        ("gpt-5.6-luna", Some("xhigh")),
+        ("gpt-6-astra", Some("max")),
+        // Not an API effort value; unknown values are never ordered below the ceiling.
+        ("gpt-6-astra", Some("ultra")),
+        ("gpt-6-astra", Some("")),
+        // The Provider default is not a stated ceiling-compliant value.
+        ("gpt-5.6-luna", None),
+    ] {
+        assert!(!approval.permits(model, effort), "{model} {effort:?}");
+    }
+    let mut raised = approved();
+    raised.max_effort = ReasoningEffort::Max;
+    assert!(raised.permits("gpt-6-astra", Some("max")));
 }

@@ -2318,7 +2318,7 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
             NextAction::ContactOperator,
         ),
         ErrorCode::CapabilityDenied => (
-            "Beads capability is unavailable",
+            "broker capability is unavailable",
             false,
             NextAction::ContactOperator,
         ),
