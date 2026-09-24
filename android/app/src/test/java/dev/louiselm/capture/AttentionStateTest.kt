@@ -14,6 +14,15 @@ import org.robolectric.annotation.Config
 @Config(sdk = [28, 34])
 class AttentionStateTest {
     @Test
+    fun invalidatedEvidenceSurvivesCacheRestart() {
+        val context = RuntimeEnvironment.getApplication()
+        val state = AttentionState(context) { "pair" }
+        val snapshot = AttentionSnapshot.parse(invalidatedAttentionPayload)
+        assertTrue(state.cache("pair", snapshot))
+        assertEquals(snapshot, AttentionState(context) { "pair" }.cached("pair"))
+    }
+
+    @Test
     fun tokenModeStateCannotAuthorizeInstallationModeNotifications() {
         val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("attention-push", android.content.Context.MODE_PRIVATE).edit()

@@ -51,6 +51,7 @@ internal enum class AttentionCode {
     AUDIT_PERSISTENCE_UNAVAILABLE,
     PROVIDER_DISCLOSURE_MISSING,
     EVIDENCE_MISSING,
+    EVIDENCE_INVALIDATED,
     UNKNOWN_FAILURE,
     ;
 
@@ -67,6 +68,7 @@ internal enum class AttentionCode {
             "audit_persistence_unavailable" -> AUDIT_PERSISTENCE_UNAVAILABLE
             "provider_disclosure_missing" -> PROVIDER_DISCLOSURE_MISSING
             "evidence_missing" -> EVIDENCE_MISSING
+            "evidence_invalidated" -> EVIDENCE_INVALIDATED
             "unknown_failure" -> UNKNOWN_FAILURE
             else -> throw IllegalArgumentException("attention code is unsupported")
         }

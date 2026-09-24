@@ -10,6 +10,19 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun invalidatedEvidenceSnapshotIsAcceptedButUnknownCodesAreRejected() {
+        val result = parseAttentionResponse(invalidatedAttentionPayload)
+        assertTrue(result is AttentionFetch.Success)
+        val item = (result as AttentionFetch.Success).snapshot.items.single()
+        assertEquals(AttentionKind.SKILL_UNVERIFIED, item.kind)
+        assertEquals("EVIDENCE_INVALIDATED", item.code?.name)
+        assertEquals(
+            AttentionFetch.OperatorAction("receiver returned an invalid Attention inbox"),
+            parseAttentionResponse(invalidatedAttentionPayload.replace("evidence_invalidated", "future_code")),
+        )
+    }
+
+    @Test
     fun malformedPrivateResponsesBecomeOperatorActionWithoutRemoteText() {
         val malformed = listOf(
             "{", "{}", "{\"generation\":\"secret-invalid-value\",\"items\":[]}", "{\"generation\":-1,\"items\":[]}",

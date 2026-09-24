@@ -84,6 +84,21 @@ class MainActivityTest {
     }
 
     @Test
+    @Config(
+        shadows = [AttentionFixturePairing::class, AttentionFixtureReceiver::class],
+        instrumentedPackages = ["dev.louiselm.capture"],
+    )
+    fun invalidatedEvidenceRendersFromPrivateInbox() {
+        button(R.string.attention_retry).performClick()
+        drainStatus()
+        val text = views(activity.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }
+        assertTrue(text.contains("Skill supply is unverified"))
+        assertTrue(text.contains(activity.getString(R.string.attention_session, "invalidated-session")))
+        assertFalse(text.any { it.contains("invalid Attention inbox") })
+        assertEquals(7L, AttentionState(activity).cached("fixture-pair")?.generation)
+    }
+
+    @Test
     fun notificationTapRefreshesInboxAndIgnoresLateCompletionAfterDestruction() {
         val inbox = views(activity.window.decorView).filterIsInstance<TextView>()
             .single { it.text.toString() == activity.getString(R.string.attention_unpaired) }
