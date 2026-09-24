@@ -184,9 +184,13 @@ case $action in
     guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.97.1 --component rustfmt,clippy
     guest sudo -n install -d -o vm -g vm -m 0755 /var/tmp/louiselm-skills-target
     project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-    git -C "$project_root" archive HEAD skills-core tests/fixtures/verified_posture_v1.json | guest tar -x -C /home/vm
+    git -C "$project_root" archive HEAD skills-core docs/recovery-ceremony.md \
+      tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
+      tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
+      tests/fixtures/broker_attention_projection.json | guest tar -x -C /home/vm
     guest /home/vm/.cargo/bin/cargo fetch --manifest-path /home/vm/skills-core/Cargo.toml --locked
     guest env CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target CARGO_BUILD_JOBS=2 \
+      CARGO_PROFILE_DEV_DEBUG=line-tables-only \
       /home/vm/.cargo/bin/cargo test --manifest-path /home/vm/skills-core/Cargo.toml \
       --all-features --locked --offline --no-run
     guest sudo -n sync

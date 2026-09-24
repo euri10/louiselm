@@ -141,16 +141,23 @@ or a writable shared mount. For uncommitted changes, explicitly select the
 files to transfer; do not assume this archive contains them.
 
 ```sh
-git archive HEAD skills-core tests/fixtures/verified_posture_v1.json |
+git archive HEAD skills-core docs/recovery-ceremony.md \
+  tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
+  tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
+  tests/fixtures/broker_attention_projection.json |
   ./scripts/launcher-vm exec tar -x -C /home/vm
 ./scripts/launcher-vm exec env \
   PATH=/home/vm/.cargo/bin:/usr/bin:/bin \
+  CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 \
+  CARGO_PROFILE_DEV_DEBUG=line-tables-only \
   CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target \
   cargo test --manifest-path /home/vm/skills-core/Cargo.toml --all-features --locked
 ```
 
-`prepare` copies committed `skills-core` sources and their one shared posture
-fixture, fetches locked dependencies, and compiles tests without running them.
+`prepare` copies committed `skills-core` sources, their shared JSON fixtures,
+and the recovery guide included by the onboarding test. It fetches locked
+dependencies and compiles tests without running them.
+Builds use the same line-table debug metadata as the skills-core CI gate.
 The clean baseline thus retains dependency and build caches across resets.
 Normal builds are offline. A changed lockfile needs a new baseline or an explicit
 transfer of its dependency cache; do not silently enable guest egress.
