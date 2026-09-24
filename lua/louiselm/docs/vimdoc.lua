@@ -367,6 +367,11 @@ local SECTIONS = {
         "Motions accept counts (for example 2]e), land at the first non-blank column, preserve folds and stay in Normal mode. If the requested target does not exist, the cursor stays put silently; motions never wrap. Usage and diagnostic targets exclude submitted prompts, context and thinking content. Activity motions visit the first row of each contiguous tool run, including single-line tools, and thinking headers even while reasoning is streaming. Use za to toggle a completed fold.",
         context
       )
+      append_prose(
+        lines,
+        "With Markdown highlighting enabled (the default), parsed pipe tables that fit the chat window display aligned columns. Wide tables retain their source display and show an inspection hint. On any table row, gT opens an aligned, read-only table inspector: use zh/zl to scroll horizontally and q or <Esc> to close it. The inspector is a snapshot; reopen it after more rows stream in. Source Markdown, yanks and transcript exports remain unchanged. Malformed tables retain their source display. The buffer keeps filetype louiselm-session; :InspectTree resolves its Markdown parser.",
+        context
+      )
     end,
   },
   {

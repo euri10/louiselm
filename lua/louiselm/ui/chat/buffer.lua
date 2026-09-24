@@ -1,4 +1,5 @@
 local Status = require("louiselm.ui.chat.status")
+local Tables = require("louiselm.ui.chat.tables")
 
 ---@diagnostic disable-next-line: undefined-global -- Neovim injects its runtime API.
 local nvim = vim
@@ -41,6 +42,7 @@ local nvim = vim
 ---@field package queue_namespace integer Extmark namespace for queued prompt state.
 ---@field package replay_prompt_mark integer? Range extmark for the current replayed user turn.
 ---@field package header_namespace integer Header highlight namespace.
+---@field package tables louiselm.ui.ChatTables? Owned Markdown table presentation.
 ---@field header fun(self: louiselm.ui.ChatBuffer, state: louiselm.session.State)
 ---@field append fun(self: louiselm.ui.ChatBuffer, lines: string[])
 ---@field usage fun(self: louiselm.ui.ChatBuffer, line: string)
@@ -1004,6 +1006,9 @@ end
 ---Delete the owned buffer and its buffer-local handlers; safe to repeat.
 ---@param self louiselm.ui.ChatBuffer
 function Buffer:dispose()
+  if self.tables ~= nil then
+    self.tables:dispose()
+  end
   self:clear_queue_indicator()
   if nvim.api.nvim_buf_is_valid(self.buffer) then
     nvim.api.nvim_buf_delete(self.buffer, { force = true })
@@ -1030,6 +1035,7 @@ function M.new(state, options)
   -- decoupled from `filetype`, so this buffer opts back into only what it
   -- actually wants.
   nvim.api.nvim_set_option_value("filetype", "louiselm-session", { buf = buffer })
+  nvim.treesitter.language.register("markdown", "louiselm-session")
   if options.markdown_highlighting then
     nvim.treesitter.start(buffer, "markdown")
   end
@@ -1068,6 +1074,13 @@ function M.new(state, options)
     header_namespace = nvim.api.nvim_create_namespace("louiselm.chat.header"),
   }, Buffer)
   mark_prompt(view, view.prompt_line)
+  if options.markdown_highlighting then
+    view.tables = Tables.new(buffer, function()
+      -- Observation must not refresh the cached line used to detect undo recovery.
+      local position = nvim.api.nvim_buf_get_extmark_by_id(buffer, view.prompt_namespace, view.prompt_mark, {})
+      return position[1] or view.prompt_line
+    end)
+  end
   nvim.api.nvim_buf_attach(buffer, false, {
     on_lines = function(_, _, _, first_line, last_line)
       if first_line <= view.prompt_line and last_line > view.prompt_line then

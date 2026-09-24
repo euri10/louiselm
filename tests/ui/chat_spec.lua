@@ -1529,6 +1529,29 @@ T["chat"]["renders later events after undo shifts the prompt boundary"] = functi
   chat:dispose()
 end
 
+T["chat"]["exports the original Markdown after native table presentation"] = function()
+  local session = fake_session("table-export", "claude")
+  local chat = assert(Chat.new(fake_api()))
+  local path = nvim.fn.tempname()
+  MiniTest.finally(function()
+    chat:dispose()
+    session:dispose()
+    nvim.fn.delete(path)
+  end)
+  assert(chat:attach(session))
+  local reply = "| a | b |\n| --- | --- |\n| long cell | 中 |"
+  session:emit({ type = "chunk", session_id = "table-export", data = { content = { type = "text", text = reply } } })
+  local namespace = nvim.api.nvim_create_namespace("louiselm.chat.tables")
+  MiniTest.expect.equality(
+    nvim.wait(1000, function()
+      return #nvim.api.nvim_buf_get_extmarks(chat:buffer(), namespace, 0, -1, {}) == 3
+    end, 1),
+    true
+  )
+  assert(chat:to_markdown(nil, path))
+  MiniTest.expect.equality(table.concat(nvim.fn.readfile(path), "\n"):find(reply, 1, true) ~= nil, true)
+end
+
 T["chat"]["renders session events and forwards slash prompts"] = function()
   local first = fake_session("session-1", "claude")
   local chat = assert(Chat.new(fake_api()))
@@ -4333,6 +4356,13 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   local first_buffer = chat:buffer("session-1")
   local original_schedule = nvim.schedule
   local original_select = nvim.ui.select
+  MiniTest.finally(function()
+    rawset(nvim, "schedule", original_schedule)
+    nvim.ui.select = original_select
+    chat:dispose()
+    first:dispose()
+    restored:dispose()
+  end)
   local scheduled = {}
   local formatted
   rawset(nvim, "schedule", function(callback)
@@ -4355,7 +4385,7 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
     },
   }, {})
   MiniTest.expect.equality(load_call, nil)
-  scheduled[1]()
+  table.remove(scheduled, 1)()
 
   MiniTest.expect.equality(
     formatted,
@@ -4375,18 +4405,15 @@ T["chat"]["discovers and resumes into a separate scheduled chat view"] = functio
   })
   restored.state.status = "ready"
   restored:emit({ type = "state_changed", session_id = "session-2", data = { status = "ready" } })
-  scheduled[2]()
-  scheduled[3]()
+  while #scheduled > 0 do
+    table.remove(scheduled, 1)()
+  end
   load_call.ready_callback(restored)
 
   MiniTest.expect.equality(
     buffer_lines(chat:buffer("session-2")),
     chat_lines("codex · session-2", "status=ready · display=Your turn", { "", "replayed history", "", "> " })
   )
-
-  rawset(nvim, "schedule", original_schedule)
-  nvim.ui.select = original_select
-  chat:dispose()
 end
 
 T["chat"]["normalizes discovered session subjects across agent title shapes"] = function()
