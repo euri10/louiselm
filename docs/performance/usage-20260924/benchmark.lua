@@ -37,6 +37,12 @@ local cases = read_json(directory .. "/cases.json")
 local results = {}
 for _, case in ipairs(cases) do
   nvim.env.LOUISELM_BENCH_CASE = case.name
+  if mode == "capture" then
+    nvim.fn.writefile(
+      { nvim.json.encode({ case = case.name, completed = results }) },
+      directory .. "/capture-progress.json"
+    )
+  end
   local function query(cb)
     if case.cohorts then
       store:usage_summaries(case.cohorts, cb)
@@ -44,10 +50,11 @@ for _, case in ipairs(cases) do
       store:usage_query(case.query, cb)
     end
   end
-  local baseline = await(query)
+  local baseline, capture_ms = await(query)
   local reference_path = directory .. "/" .. case.name .. ".page.json"
   if mode == "capture" then
     nvim.fn.writefile({ nvim.json.encode(baseline) }, reference_path)
+    results[case.name] = { capture_ms = capture_ms }
   else
     -- Neovim's JSON encoder rounds floating-point values; compare both sides
     -- through that same transport. In-process repeats below use exact values.

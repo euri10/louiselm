@@ -1,5 +1,28 @@
 # Usage query host measurements — louiselm-9ytn
 
+## Capture failure artifacts
+
+Redirect stdout to a JSON file when running `benchmark.py`. A failed Neovim
+capture exits nonzero but emits JSON containing completed datasets plus a
+`failure` record: dataset, phase, case, completed capture timings, Neovim exit
+status and SQLite wrapper status. SQL, result payloads, option values, process
+arguments and stderr are not copied into this record; scratch data is removed.
+Do not compare an artifact containing `failure` as a completed benchmark.
+
+`returncode` and `signal` describe the wrapped SQLite process; `wrapper_signal`
+describes an interruption of the capture wrapper. A wrapper signal alone does
+not prove a production timeout: its `timeout` stays null. `timeout: true` means
+the existing ten-second wrapper deadline fired. `started` or `not_observed`
+means completion was not captured, not success. The production five-second
+deadline and successful measurement timers are unchanged. Capture timings are
+diagnostic, not the unwrapped `api_ms` measurements.
+
+Run `python3 scripts/test-usage-benchmark.py` for injected exit/signal/timeout
+and artifact-retention checks. These diagnostics do not establish or fix the
+cause of the original `louiselm-sawgo` capture failure.
+
+## Decision
+
 Keep the existing SQL/Lua execution boundary. Broad explorer queries have a
 measured history-size cost worth tuning in SQL; these measurements do not justify
 another owned Rust executable. Preserve the existing SQL definitions, exact typed

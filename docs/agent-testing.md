@@ -28,6 +28,12 @@ nvim --headless --noplugin -u ./tests/minimal_init.lua \
 ./scripts/generate-plugin-version --check
 ```
 
+Usage benchmark harness changes also run `python3 scripts/test-usage-benchmark.py`.
+It injects SQLite exits, signals and timeout into disposable synthetic captures,
+checks redacted failure artifacts and retained timings, and runs the successful
+small-data measurement path. CI runs it with the Lua gates. It does not diagnose
+the original large-history capture failure (louiselm-tetp1).
+
 Plugin release automation also runs `python3 scripts/check-release-commits.py`,
 `python3 scripts/test-plugin-release.py`, and the pinned Release Please API
 fixtures in `scripts/test-release-please.cjs` (temporary tool setup is in the

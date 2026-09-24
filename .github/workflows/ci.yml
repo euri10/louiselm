@@ -354,6 +354,9 @@ jobs:
           nvim --headless --noplugin -u ./tests/minimal_init.lua \
             -c "lua MiniTest.run()" -c "qa!"
 
+      - name: Verify usage benchmark failure artifacts
+        run: python3 scripts/test-usage-benchmark.py
+
   capture-service:
     name: cargo (capture-service)
     runs-on: ubuntu-latest

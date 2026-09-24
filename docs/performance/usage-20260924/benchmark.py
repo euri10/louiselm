@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import signal
 import sqlite3
 import statistics
 import subprocess
@@ -35,8 +36,70 @@ def nvim(directory, mode, env=None):
     try:
         run(["nvim", "--headless", "--noplugin", "-u", "NONE", "-l",
              str(HERE / "benchmark.lua"), str(directory), mode], cwd=ROOT, env=env, timeout=300)
-    except subprocess.CalledProcessError as error:
-        raise RuntimeError(error.stderr.decode()) from error
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        evidence = {"phase": mode, "nvim": process_status(error)}
+        progress = directory / "capture-progress.json"
+        if mode == "capture" and progress.exists():
+            evidence.update(json.loads(progress.read_text()))
+            status = directory / (evidence["case"] + ".status.json")
+            evidence["sqlite"] = json.loads(status.read_text()) if status.exists() else {"state": "not_observed"}
+        raise BenchmarkFailure(evidence) from None
+
+
+class BenchmarkFailure(RuntimeError):
+    def __init__(self, evidence):
+        super().__init__("benchmark process failed; see JSON failure artifact")
+        self.evidence = evidence
+
+
+class CaptureInterrupted(Exception):
+    """Not InterruptedError: selectors would swallow it as a retryable syscall."""
+
+
+def process_status(result):
+    timed_out = isinstance(result, subprocess.TimeoutExpired)
+    code = None if timed_out else result.returncode
+    return {"returncode": code, "signal": -code if code is not None and code < 0 else None,
+            "timeout": timed_out}
+
+
+def capture_sqlite():
+    """Private SQL stays in scratch; only fixed status fields leave it on failure."""
+    sql = sys.stdin.buffer.read()
+    target = Path(sys.argv[-1]).parent / os.environ["LOUISELM_BENCH_CASE"]
+    target.with_suffix(".sql").write_bytes(sql)
+    status_path = target.with_suffix(".status.json")
+    status = {"state": "started", "returncode": None, "signal": None,
+              "wrapper_signal": None, "timeout": None}
+    dump(status_path, status)
+
+    def interrupted(signum, _frame):
+        raise CaptureInterrupted(signum)
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    try:
+        response = subprocess.run([os.environ["LOUISELM_BENCH_SQLITE"], *sys.argv[1:]],
+                                  input=sql, capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired as error:
+        status.update(process_status(error), state="timeout")
+        returncode = 124
+    except CaptureInterrupted as error:
+        # A wrapper signal does not prove who sent it or that a deadline fired.
+        status.update(state="interrupted", wrapper_signal=error.args[0])
+        returncode = 128 + error.args[0]
+    except OSError:
+        status.update(state="spawn_failed")
+        returncode = 127
+    else:
+        status.update(process_status(response), state="exited")
+        target.with_suffix(".out").write_bytes(response.stdout)
+        returncode = response.returncode if response.returncode >= 0 else 128 - response.returncode
+    dump(status_path, status)
+    if status["state"] == "exited":
+        sys.stdout.buffer.write(response.stdout)
+        sys.stderr.buffer.write(response.stderr)
+    return returncode
 
 
 def elapsed(action):
@@ -260,7 +323,12 @@ def main():
                 fixture(path, size)
             path.chmod(0o600)
             print(f"Measuring {name}", file=sys.stderr, flush=True)
-            result["datasets"][name] = measure(directory, sqlite, env, args.profile)
+            try:
+                result["datasets"][name] = measure(directory, sqlite, env, args.profile)
+            except BenchmarkFailure as error:
+                result["failure"] = {"dataset": name, **error.evidence}
+                print(json.dumps(result, indent=2, sort_keys=True))
+                return 1
         baseline = []
         for _ in range(REPEATS):
             _, ms = elapsed(lambda: run([sqlite, "-batch", "-init", "/dev/null", ":memory:", "SELECT 1;"]))
@@ -275,12 +343,5 @@ if __name__ == "__main__":
     if Path(sys.argv[0]).name == "sqlite3":
         # Capture once via PATH, then measure with the genuine executable. Never
         # replace vim.system or introspect private Lua functions.
-        sql = sys.stdin.buffer.read()
-        target = Path(sys.argv[-1]).parent / os.environ["LOUISELM_BENCH_CASE"]
-        target.with_suffix(".sql").write_bytes(sql)
-        response = subprocess.run([os.environ["LOUISELM_BENCH_SQLITE"], *sys.argv[1:]], input=sql, capture_output=True, timeout=10)
-        target.with_suffix(".out").write_bytes(response.stdout)
-        sys.stdout.buffer.write(response.stdout)
-        sys.stderr.buffer.write(response.stderr)
-        sys.exit(response.returncode)
-    main()
+        sys.exit(capture_sqlite())
+    sys.exit(main())
