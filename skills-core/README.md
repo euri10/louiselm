@@ -8,6 +8,30 @@ the only writer of immutable packages.
 It decides nothing about whether a skill is safe. It decides what a reviewer is
 shown, and it guarantees that the bytes shown are the bytes that were captured.
 
+## Building the Sender guard
+
+Building this crate requires Linux x86_64, Clang with the BPF backend, and
+Linux UAPI development headers (`clang` and `linux-libc-dev` on Debian/Ubuntu).
+`build.rs` compiles `src/launch_supervisor/sender_guard/lifecycle.bpf.c` and its
+shared binding source into a little-endian BPF object. Cargo tracks both the
+source directory and the fixed UAPI include trees. Compiler failures fail the
+build; an earlier object cannot satisfy a failed rebuild.
+
+`launch_supervisor::SENDER_GUARD_OBJECT` contains the bytes. The launcher embeds
+them and its internal, unprivileged `__sender-guard-object` inspection verb
+writes only that object to stdout, without accepting a path or loading it.
+The signed launcher measurement therefore covers the guard too. No compiled
+object is committed or installed separately.
+
+`python3 scripts/test-sender-guard-build.py` (from the repository root) checks
+rebuilds and compiler errors. The artifact gate is
+`python3 scripts/test-sender-guard.py skills-core/target/debug/louiselm-launch`;
+it checks the actual embedded object, including the six program/seven map
+inventory and BTF data. The privileged
+[VM gate](../docs/launcher-vm.md#embedded-sender-guard) consumes those same bytes.
+The production loader and activation remain separate tasks; `Brokered` still
+refuses, and these component checks do not confer Verified posture.
+
 ## Commands
 
 ```text

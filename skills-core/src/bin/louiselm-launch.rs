@@ -45,6 +45,16 @@ fn main() -> ExitCode {
         Some(value) if value == OsStr::new("prepare") => preparation(),
         Some(value) if value == OsStr::new("certify") => certification(false),
         Some(value) if value == OsStr::new("cleanup") => cleanup(),
+        // Read-only artifact inspection. No root authority, input path, load,
+        // or attachment; the disposable VM gate consumes exactly these bytes.
+        Some(value) if value == OsStr::new("__sender-guard-object") => {
+            use std::io::Write;
+            io::stdout()
+                .lock()
+                .write_all(louiselm_skills::launch_supervisor::SENDER_GUARD_OBJECT)
+                .map(|()| 0)
+                .map_err(|_| "Sender guard artifact output failed")
+        }
         Some(value) if value == OsStr::new("__conformance-worker") => certification(true),
         Some(value) if value == OsStr::new("__conformance-probe") => {
             louiselm_skills::conformance::installed::serve_probe()

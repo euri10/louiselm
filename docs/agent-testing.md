@@ -63,6 +63,16 @@ dependencies), run from the repository root:
 `node --test --test-timeout=5000 skills-core/tests/recovery_browser.test.cjs`.
 CI runs it alongside the Rust gates; Cargo alone does not execute the client.
 
+Sender guard build changes also run `python3 scripts/test-sender-guard-build.py`
+and `python3 scripts/test-sender-guard.py <built-louiselm-launch>`. They check
+Cargo source/header invalidation, compiler failure and the embedded object's
+program/map inventory. The additional `--disposable-vm` mode runs all four
+existing ownership/loss proofs on those exact bytes, including the actual
+upstream-write race; it requires the disposable launcher KVM, never desktop
+sudo. The `sender-guard-vm` CI job provisions that guest and requires the gate.
+Missing KVM/BPF-LSM/BTF is failure, not a skipped pass. These checks do not
+certify production guard loading or installed-host acceptance.
+
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both
 crates' existing integration-test targets and connects separate broker and

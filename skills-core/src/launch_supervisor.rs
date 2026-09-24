@@ -73,6 +73,11 @@ pub use system::{
     SystemRunningAgent, connect_control_broker,
 };
 
+/// Reviewed BPF object embedded in the launcher and covered by its measurement.
+/// Exposing these public bytes does not load the guard or grant any authority.
+pub const SENDER_GUARD_OBJECT: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/sender-guard.bpf.o"));
+
 /// One exactly-once asynchronous launch completion.
 pub type LaunchCompletion =
     Box<dyn FnOnce(Result<LaunchedSession, SupervisorError>) + Send + 'static>;
