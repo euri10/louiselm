@@ -1,0 +1,112 @@
+{
+  "schema": "louiselm.ecosystem-radar/v1",
+  "captured_at": "2026-09-24",
+  "origin": {
+    "kind": "public_issue",
+    "url": "https://github.com/Dicklesworthstone/beads_rust/issues/436",
+    "title": "sync tries to open / which works poorly in a locked-down environment",
+    "status": "closed",
+    "number": 436,
+    "author": {
+      "handle": "tfheen",
+      "identity_claim": "public account handle only"
+    },
+    "published_at": "2026-08-22",
+    "evidence": [
+      {
+        "url": "https://github.com/Dicklesworthstone/beads_rust/issues/436",
+        "claim": "The issue author says their coding agent uses nono and describes br sync traversal as incompatible with a restrictive filesystem grant.",
+        "excerpt": "I'm using nono to lock down the permissions of my coding agent."
+      }
+    ]
+  },
+  "chain": [
+    {
+      "kind": "public_contributor_activity",
+      "identity": "tfheen",
+      "project": "Dicklesworthstone/beads_rust",
+      "evidence_url": "https://github.com/Dicklesworthstone/beads_rust/issues/436"
+    },
+    {
+      "kind": "public_project",
+      "name": "nono homepage",
+      "url": "https://nono.sh/",
+      "evidence_url": "https://github.com/Dicklesworthstone/beads_rust/issues/436"
+    },
+    {
+      "kind": "official_project_repository",
+      "name": "nolabs-ai/nono",
+      "url": "https://github.com/nolabs-ai/nono",
+      "evidence_url": "https://nono.sh/"
+    },
+    {
+      "kind": "louiselm_finding",
+      "summary": "A concrete Beads CLI use case exists inside a process sandbox; the closed LouiseLM decision selected launcher-owned confinement.",
+      "linked_bead_ids": ["louiselm-sooa", "louiselm-d6fv.4"]
+    }
+  ],
+  "candidates": [
+    {
+      "id": "nono",
+      "project_url": "https://github.com/nolabs-ai/nono",
+      "evidence": [
+        {
+          "url": "https://github.com/Dicklesworthstone/beads_rust/issues/436",
+          "claim": "The source author directly names nono as the coding-agent sandbox in use."
+        },
+        {
+          "url": "https://github.com/nolabs-ai/nono/releases",
+          "claim": "The release page lists v0.78.0 dated 2026-09-16 in the captured view."
+        },
+        {
+          "url": "https://github.com/nolabs-ai/nono/security",
+          "claim": "The security policy describes a host-kernel capability sandbox, not a VM or separate-kernel boundary."
+        }
+      ],
+      "assessment": {
+        "workflow_fit": {
+          "rating": "high",
+          "reason": "Directly relevant to the source's Beads-in-sandbox workflow and existing LouiseLM sandbox decision."
+        },
+        "maturity": {
+          "rating": "active_v0.x",
+          "reason": "Frequent public releases are visible, while the captured release is still v0.78.0."
+        },
+        "security": {
+          "rating": "high_review_need",
+          "reason": "Security-critical kernel enforcement needs LouiseLM threat-model and conformance review; no code was run or audited here."
+        },
+        "novelty": {
+          "rating": "low_new_topic",
+          "reason": "louiselm-sooa and louiselm-d6fv.4 already record the decision and implementation; this adds a concrete workflow example."
+        }
+      },
+      "confidence": {
+        "rating": "high",
+        "reason": "The origin issue directly names the project; broader compatibility remains unverified."
+      },
+      "risks": [
+        "Project claims are not independent security validation.",
+        "OS-level shared-kernel confinement is not equivalent to a VM or separate kernel.",
+        "No source code or executable was downloaded, installed, or run."
+      ],
+      "disposition": "linked_bead",
+      "linked_bead_ids": ["louiselm-sooa", "louiselm-d6fv.4"]
+    }
+  ],
+  "history_search": {
+    "queries": ["nono", "ecosystem-radar", "landlock"],
+    "matches": ["louiselm-sooa", "louiselm-d6fv.4", "louiselm-d6fv", "louiselm-lkoc"],
+    "dedup_decision": "Link to the closed decision louiselm-sooa and its implementation louiselm-d6fv.4; do not reopen or duplicate work."
+  },
+  "unresolved": [
+    "This pass did not assess whether nono conforms to LouiseLM's launcher contract; it does not reopen the closed decision.",
+    "The public source supports the handle tfheen only; no real-world identity is asserted."
+  ],
+  "created_bead_ids": [],
+  "linked_bead_ids": ["louiselm-sooa", "louiselm-d6fv.4"],
+  "trust": {
+    "external_text_is_untrusted_data": true,
+    "may_install_execute_approve_or_adopt": false
+  }
+}

@@ -154,6 +154,24 @@ fixture, fetches locked dependencies, and compiles tests without running them.
 The clean baseline thus retains dependency and build caches across resets.
 Normal builds are offline. A changed lockfile needs a new baseline or an explicit
 transfer of its dependency cache; do not silently enable guest egress.
+
+`prepare` is one-time for each cache root: it returns without updating an
+existing `prepared.qcow2`, and `reset --discard` replaces only the run overlay.
+To refresh guest packages or locked dependencies, wait until the existing VM is
+stopped and no longer in use, then prepare under a new private cache root. The
+old prepared base remains intact:
+
+```sh
+refresh_cache="$HOME/.cache/louiselm-launcher-refresh"
+mkdir -m 700 -- "$refresh_cache"
+XDG_CACHE_HOME="$refresh_cache" ./scripts/launcher-vm prepare
+XDG_CACHE_HOME="$refresh_cache" ./scripts/launcher-vm start
+```
+
+Use that same `XDG_CACHE_HOME` for later commands targeting the refreshed VM.
+The launcher VM has one shared systemd unit and SSH port, so do not prepare a
+second cache root while another launcher VM is active or in use.
+
 Existing privileged CI recipes are in `.github/workflows/ci.yml`, under
 `cargo (skills-core)`. Execute them **inside the guest**. Keep build artifacts
 under `/var/tmp/louiselm-skills-target`, mode `0755`, so the assigned test UID

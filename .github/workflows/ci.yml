@@ -103,6 +103,13 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check-agent-instructions
 
+  ecosystem-radar:
+    name: Ecosystem radar offline contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/test-ecosystem-radar.py
+
   usage-cli:
     name: cargo (usage-cli)
     runs-on: ubuntu-latest

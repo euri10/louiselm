@@ -86,6 +86,12 @@ deployment files and exercises the shipped hardening with distinct kernel UIDs;
 the setpriv/private-mount gate alone cannot verify this identity view
 (louiselm-y2j3o). Neither gate certifies the maintainer's installed deployment.
 
+The manual ecosystem-radar workflow uses the Python standard-library gate
+`python3 scripts/test-ecosystem-radar.py`. It checks routing and receipt
+validation against offline fixtures; it does not certify external project
+claims or make Agent research immune to hostile source text. CI runs the same
+gate without network access from the test command.
+
 The opt-in ACP backup command uses a Python standard-library suite:
 `python3 scripts/test-acp-log-backup.py`. Its real encrypted backup/deletion/restore
 and copy/retention/corruption tests require Restic 0.19.1; report a skip when that runtime is
