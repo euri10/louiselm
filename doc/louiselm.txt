@@ -240,6 +240,10 @@ Commands                                                   *louiselm-commands*
 
   Commands are registered by |louiselm.setup()|.
 
+:LouiselmAttention                                        *:LouiselmAttention*
+    Observe durable Attention without changing authority
+    Arguments: none
+
 :LouiselmCancel                                              *:LouiselmCancel*
     Cancel the current louiselm turn
     Arguments: none

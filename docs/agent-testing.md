@@ -63,7 +63,9 @@ CI runs it alongside the Rust gates; Cargo alone does not execute the client.
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both
 crates' existing integration-test targets and connects separate broker and
-capture-service processes over disposable authenticated sockets. The fixture
+capture-service processes over disposable authenticated sockets and starts fresh
+headless Neovim observers of the resulting durable Attention. Stable Neovim must
+be on PATH; this gate needs no mini.test dependency. The fixture
 tests are ignored by standalone Cargo runs; this explicit cross-crate gate,
 also enforced in CI, runs them with their required peer.
 

@@ -214,3 +214,69 @@ async fn run_broker_fixture(broker: &std::path::Path, endpoint: &std::path::Path
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[tokio::test]
+#[ignore = "cross-crate broker binary and Neovim supplied by scripts/test-skill-requests"]
+async fn cross_crate_posture_reaches_neovim() {
+    for fixture in [
+        "conformance::status::current::posture_waiver_reaches_neovim",
+        "conformance::status::current::posture_revocation_reaches_neovim",
+        "skill_requests::verified_admission_reaches_neovim",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join("runtime");
+        fs::create_dir(&runtime).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o711)).unwrap();
+        let store = AttentionStore::new(root.path().join("attention"), None).unwrap();
+        let token = root.path().join("token");
+        fs::write(&token, TOKEN).unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+        let config = BrokerAttentionConfig {
+            socket: runtime.join("broker.sock"),
+            broker_uid: fs::metadata(root.path()).unwrap().uid(),
+            capability_sha256: format!("{:x}", Sha256::digest(TOKEN)),
+        };
+        let endpoint = root.path().join("endpoint.json");
+        fs::write(
+            &endpoint,
+            serde_json::to_vec(&serde_json::json!({
+                "socket": config.socket, "receiver_uid": config.broker_uid, "capability_file": token
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let broker = tokio::spawn(
+            BrokerAttentionSocket::bind(config, store.clone())
+                .await
+                .unwrap()
+                .serve(),
+        );
+        let socket = root.path().join("observer.sock");
+        let observer = tokio::spawn(
+            louiselm_capture::AttentionSocket::bind(&socket, &root.path().join("operator"), store)
+                .await
+                .unwrap()
+                .serve(),
+        );
+        let mut command =
+            std::process::Command::new(std::env::var_os("LOUISELM_TEST_REQUEST_BROKER").unwrap());
+        command
+            .args(["--ignored", "--exact", fixture, "--nocapture"])
+            .env("LOUISELM_REQUEST_ENDPOINT", endpoint)
+            .env("LOUISELM_ATTENTION_SOCKET", socket);
+        let output = tokio::task::spawn_blocking(move || command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        broker.abort();
+        observer.abort();
+        assert!(broker.await.unwrap_err().is_cancelled());
+        assert!(observer.await.unwrap_err().is_cancelled());
+        assert!(
+            output.status.success(),
+            "{fixture}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

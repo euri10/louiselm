@@ -10,13 +10,13 @@ local Client = {}
 Client.__index = Client
 
 ---@class louiselm.workflow.AttentionClientOptions
----@field operator_capability string Shared owner capability for mutations.
+---@field operator_capability? string Shared owner capability; omission creates a read-only observer.
 ---@field on_error? fun(message: string)
 ---@field pipe_factory? fun(): table Test seam returning a `vim.uv` pipe-compatible handle.
 
 ---@class louiselm.workflow.AttentionClient
 ---@field path string
----@field operator_capability string
+---@field operator_capability? string
 ---@field on_snapshot fun(snapshot: table)
 ---@field on_error? fun(message: string)
 ---@field pipe_factory fun(): table
@@ -100,6 +100,9 @@ local function handle_line(client, line)
 end
 
 local function send(client, message, callback)
+  if client.operator_capability == nil then
+    return false, "Attention client is read-only"
+  end
   if client.disposed or not client.ready or client.pipe == nil or client.pipe:is_closing() then
     return false, "Attention socket is not connected"
   end
@@ -138,7 +141,10 @@ function M.connect(path, on_snapshot, options)
   if type(options) ~= "table" then
     return nil, "Attention client options must be a table"
   end
-  if type(options.operator_capability) ~= "string" or options.operator_capability == "" then
+  if
+    options.operator_capability ~= nil
+    and (type(options.operator_capability) ~= "string" or options.operator_capability == "")
+  then
     return nil, "Attention client operator capability must be a non-empty string"
   end
   if options.on_error ~= nil and type(options.on_error) ~= "function" then

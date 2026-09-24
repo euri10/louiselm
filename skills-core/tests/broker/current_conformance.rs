@@ -37,15 +37,34 @@ fn isolation(status: &SessionStatus) -> &louiselm_skills::launch_protocol::Dimen
 
 #[test]
 fn operator_approval_reaches_current_posture_without_rewriting_admission() {
-    assert_waiver_attention(false);
-    assert_waiver_attention(true);
+    assert_waiver_attention(false, &mut crate::posture_attention::drain);
+    assert_waiver_attention(true, &mut crate::posture_attention::drain);
+}
+
+#[test]
+#[ignore = "requires scripts/test-skill-requests capture-service and Neovim"]
+fn posture_waiver_reaches_neovim() {
+    let mut observer = crate::attention_delivery::Observer::new();
+    assert_waiver_attention(false, &mut |outbox| observer.drain(outbox));
+}
+
+#[test]
+#[ignore = "requires scripts/test-skill-requests capture-service and Neovim"]
+fn posture_revocation_reaches_neovim() {
+    let mut observer = crate::attention_delivery::Observer::new();
+    assert_waiver_attention(true, &mut |outbox| observer.drain(outbox));
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "Ordered authenticated peer exchange proves the decision reaches current posture without rewriting admission."
 )]
-fn assert_waiver_attention(revoke: bool) {
+fn assert_waiver_attention(
+    revoke: bool,
+    drain: &mut dyn FnMut(
+        &louiselm_skills::broker::attention::Outbox,
+    ) -> Vec<louiselm_skills::broker::attention::ProjectionChange>,
+) {
     use louiselm_skills::broker::attention::{Outbox, ProjectionChange};
     use louiselm_skills::broker::waiver::{Proposal, Request};
     let root = TempDir::new().unwrap();
@@ -142,7 +161,7 @@ fn assert_waiver_attention(revoke: bool) {
     service
         .project_posture_attention(&mut session, 20_000, verify_fixture_signature)
         .unwrap();
-    let failures = crate::posture_attention::drain(&outbox);
+    let failures = drain(&outbox);
     assert_eq!(failures.len(), 6);
     let ProjectionChange::Upsert(isolation_condition) = &failures[3] else {
         panic!("isolation failure");
@@ -184,7 +203,7 @@ fn assert_waiver_attention(revoke: bool) {
         .project_posture_attention(&mut session, 23_100, verify_fixture_signature)
         .unwrap();
     assert_eq!(
-        crate::posture_attention::drain(&outbox),
+        drain(&outbox),
         vec![ProjectionChange::Clear(isolation_condition.clone())]
     );
     let status = service
@@ -195,10 +214,7 @@ fn assert_waiver_attention(revoke: bool) {
             verify_fixture_signature,
         )
         .unwrap();
-    assert!(
-        crate::posture_attention::drain(&outbox).is_empty(),
-        "status is read-only"
-    );
+    assert!(drain(&outbox).is_empty(), "status is read-only");
     if revoke {
         service
             .waiver_control(
@@ -220,7 +236,7 @@ fn assert_waiver_attention(revoke: bool) {
             verify_fixture_signature,
         )
         .unwrap();
-    let expired = crate::posture_attention::drain(&outbox);
+    let expired = drain(&outbox);
     assert_eq!(expired.len(), 1);
     let ProjectionChange::Upsert(recreated) = &expired[0] else {
         panic!("expiry recreates failure");

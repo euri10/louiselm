@@ -34,6 +34,6 @@ if __name__ == "__main__":
     broker = test_binary("skills-core", "broker")
     capture = test_binary("capture-service", "broker_runs")
     subprocess.run(
-        [capture, "--ignored", "--exact", "cross_crate_requests_survive_restart_park_and_disposal", "--nocapture"],
+        [capture, "--ignored", "cross_crate_", "--nocapture"],
         env={**os.environ, "LOUISELM_TEST_REQUEST_BROKER": broker}, check=True, timeout=120,
     )

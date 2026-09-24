@@ -163,4 +163,29 @@ T["clears all conditions or one kind for a Session"] = function()
   assert(client:dispose())
 end
 
+T["read-only observer needs no capability and cannot mutate"] = function()
+  local pipe = fake_pipe()
+  local snapshots = {}
+  local client = assert(AttentionClient.connect("/tmp/attention.sock", function(value)
+    snapshots[#snapshots + 1] = value
+  end, {
+    pipe_factory = function()
+      return pipe
+    end,
+  }))
+  MiniTest.finally(function()
+    client:dispose()
+  end)
+  pipe.connect_callback()
+  pipe.read_callback(nil, nvim.json.encode({ type = "snapshot", snapshot = snapshot(1) }) .. "\n")
+  assert(nvim.wait(1000, function()
+    return #snapshots == 1
+  end))
+  local sent, err = client:clear_session("session", function()
+    error("read-only mutation")
+  end)
+  MiniTest.expect.equality({ sent, err }, { false, "Attention client is read-only" })
+  MiniTest.expect.equality(pipe.writes, {})
+end
+
 return T

@@ -77,11 +77,24 @@ fn fixture_for(
 }
 
 #[test]
+fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
+    assert_verified_admission(&mut |_| {});
+}
+
+#[test]
+#[ignore = "requires scripts/test-skill-requests capture-service and Neovim"]
+fn verified_admission_reaches_neovim() {
+    let mut observer = crate::attention_delivery::Observer::new();
+    assert_verified_admission(&mut |outbox| {
+        observer.drain(outbox);
+    });
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "One real-signing scenario follows approval and competing terminal decisions through the same broker owner."
 )]
-fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
+fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
     use louiselm_skills::{
         Policy, Store,
         admission::{self, AdmissionMember, AdmissionRequest},
@@ -97,6 +110,7 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let uid = rustix::process::geteuid().as_raw();
     let (service, mut session, peer) = fixture_for(root.path(), true, false, uid);
+    let outbox = Outbox::open(&root.path().join("authorizations/attention-outbox")).unwrap();
     let key_fixture = support::Fixture::new();
     let key = support::SshKey::generate(&key_fixture, "primary");
     let release = support::SshKey::generate(&key_fixture, "release");
@@ -132,6 +146,7 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
     };
     request.packages = vec![package.digest.to_string()];
     let first = accepted(exchange(&service, &mut session, &peer, &message, true));
+    observe(&outbox);
     let launch_history = service.receipts().stored_bytes("skill-session").unwrap();
     assert!(
         service
@@ -161,12 +176,14 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
         let metadata = fs::symlink_metadata(ancestor).unwrap();
         assert!(
             metadata.is_dir() && metadata.mode() & 0o022 == 0,
-            "{ancestor:?}: {metadata:?}"
+            "{}: {metadata:?}",
+            ancestor.display()
         );
     }
     service
         .reconcile_skill_admissions(None, None, verify_fixture_signature)
         .unwrap();
+    observe(&outbox);
     assert_eq!(
         service
             .skill_request_control(uid, &first.operation_id, None)
@@ -181,6 +198,7 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
         .skill_request_control(uid, &first.operation_id, None)
         .unwrap();
     assert_eq!(approved.outcome, SkillRequestOutcome::Approved);
+    observe(&outbox);
     assert_eq!(
         approved.admission.as_deref(),
         Some(record.generation.as_str())
@@ -198,9 +216,11 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
         };
         request.request_id = format!("request-{outcome:?}");
         let pending = accepted(exchange(&service, &mut session, &peer, &message, true));
+        observe(&outbox);
         service
             .skill_request_control(uid, &pending.operation_id, Some(outcome))
             .unwrap();
+        observe(&outbox);
         admission::admit_linked(
             &store,
             &Policy::embedded(),
@@ -240,6 +260,7 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
     };
     request.request_id = "disposed-request".into();
     let pending = accepted(exchange(&service, &mut session, &peer, &message, true));
+    observe(&outbox);
     let current = lifecycle::status(session.authorization());
     let mut change = lifecycle::park(session.authorization());
     change.action = LifecycleAction::Disposal;
@@ -284,6 +305,7 @@ fn verified_admission_resolves_pending_witness_and_terminal_decisions_win() {
         approved
     );
     peer.close();
+    observe(&outbox);
 }
 
 fn protect_fixture_directories(root: &Path) {

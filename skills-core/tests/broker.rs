@@ -46,6 +46,8 @@ use louiselm_skills::{
 use rustix::process::{getgid, getuid};
 use tempfile::TempDir;
 
+#[path = "broker/attention_delivery.rs"]
+mod attention_delivery;
 #[path = "support/discovery.rs"]
 mod discovery_support;
 #[path = "broker/posture_attention.rs"]

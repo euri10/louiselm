@@ -969,6 +969,19 @@ restart. Lifecycle request history has the same explicit bound per Session.
 
 ## Waiting posture Attention
 
+With `attention.enabled = true`, `:LouiselmAttention` opens a live read-only
+view of capture-service's durable items, including exact posture failure codes,
+Session/Run identities and operation IDs. `q` closes the subscription. Reopen the
+command after a service outage to reconnect. The view has no operator capability
+and cannot approve, waive, clear or Resume anything; broker delivery continues
+while Neovim is absent. Unset configuration leaves the command disabled.
+
+`scripts/test-skill-requests` exercises trusted request and verified Admission
+handlers, dimension failures, waiver expiry/revocation and the Neovim view across
+real disposable sockets. Its expected frames come directly from actual broker
+outbox entries, not Agent text or prospective preflight snapshots. The older
+UI-only skill-producer methods have been removed; ordinary UI Attention remains.
+
 The broker's Session worker evaluates its retained validated evidence once per
 second, independently of status reads and Neovim. Only Parked or
 conformance-suspended Sessions start posture Attention episodes; an ordinary

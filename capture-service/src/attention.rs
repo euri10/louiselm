@@ -95,6 +95,8 @@ pub enum AttentionCode {
     ProviderDisclosureMissing,
     /// Required trusted evidence is absent.
     EvidenceMissing,
+    /// Retained proof no longer establishes the current posture dimension.
+    EvidenceInvalidated,
     /// A failure has no recognized typed diagnosis.
     UnknownFailure,
 }

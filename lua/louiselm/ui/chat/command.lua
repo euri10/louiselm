@@ -323,6 +323,7 @@ function M.register()
   end
   local chat
   local usage ---@type louiselm.ui.UsageView?
+  local attention_view ---@type louiselm.ui.AttentionView?
   local inline
   local export_cancel ---@type fun()?
   local disposed = false
@@ -538,6 +539,19 @@ function M.register()
     usage, err = require("louiselm.ui.usage").open()
     report_error(err and err.message)
   end, { desc = "Explore recorded usage: UTC ranges, joint filters, groups and turn details", force = true })
+
+  nvim.api.nvim_create_user_command("LouiselmAttention", function()
+    if not Config.enabled(configured, "attention") then
+      report_error("Attention is disabled; set attention.enabled = true")
+      return
+    end
+    if attention_view ~= nil then
+      attention_view:dispose()
+    end
+    local err
+    attention_view, err = require("louiselm.ui.attention_view").open()
+    report_error(err)
+  end, { desc = "Observe durable Attention without changing authority", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmInspectBead", inspect_bead, {
     desc = "Inspect the Beads issue under the cursor",
@@ -913,6 +927,9 @@ function M.register()
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
     disposed = true
+    if attention_view ~= nil then
+      attention_view:dispose()
+    end
     if usage ~= nil then
       usage:dispose()
     end

@@ -391,7 +391,12 @@ jobs:
       - name: Test
         run: cargo test --all-features --locked
 
-      - name: Test cross-service durable skill requests
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Test cross-service durable skill requests and Neovim observation
         run: python3 ../scripts/test-skill-requests
 
       - name: Test installed broker Attention provisioning across identities
