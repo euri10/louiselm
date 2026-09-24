@@ -190,6 +190,59 @@ local function explore(query)
   return result, failure
 end
 
+T["cost baselines remain validated and incomplete chains stay absent"] = function()
+  local usd = { amount = 1, currency = "USD" }
+  turn("baseline-only", cohort(), nil, { usd })
+  turn("missing-baseline", cohort(), nil, { nvim.NIL, usd, { amount = 2, currency = "USD" } })
+  turn("missing-sql-baseline", cohort(), nil, { nvim.NIL, usd, { amount = 2, currency = "USD" } })
+  turn("cleared", cohort(), nil, { usd, nvim.NIL, { amount = 2, currency = "USD" } })
+  turn("zero", cohort(), nil, { usd, usd })
+  flush()
+  local absent = nvim
+    .system({ "sqlite3", writer.path, [[UPDATE turns SET cost_baseline=NULL WHERE id='missing-sql-baseline';]] })
+    :wait()
+  assert(absent.code == 0)
+  local page = assert(explore({}))
+  MiniTest.expect.equality(page.summary.turns, 5)
+  MiniTest.expect.equality(page.summary.costs, { { currency = "USD", samples = 1, average = 0, total = 0 } })
+  MiniTest.expect.equality(page.rows[1].summary, page.summary)
+  MiniTest.expect.equality(assert(summaries({ cohort() }))[1].costs, {
+    { currency = "USD", samples = 1, average = 0 },
+  })
+  local result = nvim
+    .system({
+      "sqlite3",
+      writer.path,
+      [[UPDATE turns SET cost_baseline='{"amount":"1","currency":"USD"}' WHERE id='baseline-only';]],
+    })
+    :wait()
+  assert(result.code == 0)
+  local rows, err = explore({})
+  MiniTest.expect.equality(rows, nil)
+  MiniTest.expect.equality(err.code, "corrupt")
+  rows, err = summaries({ cohort() })
+  MiniTest.expect.equality(rows, nil)
+  MiniTest.expect.equality(err.code, "corrupt")
+end
+
+T["ungrouped totals are independent of summary row paging"] = function()
+  turn("one", cohort(), { total_tokens = 12 })
+  flush()
+  local page = assert(explore({ group_by = {}, bucket = "none", limit = 1 }))
+  MiniTest.expect.equality(page.total, 1)
+  MiniTest.expect.equality(page.next_offset, nil)
+  MiniTest.expect.equality(page.rows[1].dimensions, {})
+  MiniTest.expect.equality(page.rows[1].summary, page.summary)
+  local later = assert(explore({ offset = 1 }))
+  MiniTest.expect.equality(later.total, 1)
+  MiniTest.expect.equality(later.rows, {})
+  MiniTest.expect.equality(later.summary, page.summary)
+  local empty = assert(explore({ filters = { model = "missing" } }))
+  MiniTest.expect.equality(empty.total, 0)
+  MiniTest.expect.equality(empty.rows, {})
+  MiniTest.expect.equality(empty.summary.turns, 0)
+end
+
 T["explorer groups joint typed dimensions and UTC half-open time buckets"] = function()
   turn("before", cohort(), { total_tokens = 999 }, nil, nil, "2026-09-06T23:59:59Z")
   turn("first", cohort(), { total_tokens = 10 }, nil, nil, "2026-09-07T00:00:00Z")

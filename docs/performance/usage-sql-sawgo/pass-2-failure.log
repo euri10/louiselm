@@ -1,0 +1,13 @@
+Command: python3 docs/performance/usage-20260924/benchmark.py --profile
+Current candidate: pass-2.patch; all required gates passed before measurement.
+The 2518- and 25180-turn datasets completed. The 251800-turn capture failed:
+
+RuntimeError: E5113: Lua chunk: docs/performance/usage-20260924/benchmark.lua:22:
+turn recording failed; check storage access and free space, then retry
+stack traceback:
+  [C]: in function 'assert'
+  docs/performance/usage-20260924/benchmark.lua:22: in function 'await'
+  docs/performance/usage-20260924/benchmark.lua:47: in main chunk
+
+The harness did not emit a final JSON result. /tmp has 14 GiB available (3% used).
+No production deadline, query or candidate changed during diagnosis.

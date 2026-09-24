@@ -1,0 +1,255 @@
+{
+  "comparisons": {
+    "synthetic-2518": {
+      "dimensions": {
+        "after_ms": 25.259084,
+        "after_spread_ms": 8.895298,
+        "before_ms": 22.253509,
+        "before_spread_ms": 8.544618,
+        "gain_ms": -3.0055750000000003,
+        "gain_percent": -13.506072233372274,
+        "regression_tolerance_ms": 8.544618,
+        "required_gain_ms": 25
+      },
+      "filtered": {
+        "after_ms": 4.685728,
+        "after_spread_ms": 2.171728,
+        "before_ms": 4.50264,
+        "before_spread_ms": 1.4374069999999999,
+        "gain_ms": -0.1830879999999997,
+        "gain_percent": -4.066236696693489,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "grouped": {
+        "after_ms": 29.491088,
+        "after_spread_ms": 6.818489999999997,
+        "before_ms": 32.927393,
+        "before_spread_ms": 5.706206000000002,
+        "gain_ms": 3.436305000000001,
+        "gain_percent": 10.43600688338734,
+        "regression_tolerance_ms": 5.706206000000002,
+        "required_gain_ms": 25
+      },
+      "picker": {
+        "after_ms": 4.947215,
+        "after_spread_ms": 1.2454029999999996,
+        "before_ms": 3.795594,
+        "before_spread_ms": 2.1202970000000003,
+        "gain_ms": -1.151621,
+        "gain_percent": -30.34099537516394,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "session_events": {
+        "after_ms": 4.296225,
+        "after_spread_ms": 1.2942049999999998,
+        "before_ms": 4.187784,
+        "before_spread_ms": 2.1518380000000006,
+        "gain_ms": -0.10844100000000001,
+        "gain_percent": -2.5894602013857453,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "summary": {
+        "after_ms": 23.59849,
+        "after_spread_ms": 8.668757,
+        "before_ms": 35.051868,
+        "before_spread_ms": 1.8388849999999977,
+        "gain_ms": 11.453377999999997,
+        "gain_percent": 32.67551389843189,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "turn_events": {
+        "after_ms": 3.333892,
+        "after_spread_ms": 1.5106689999999998,
+        "before_ms": 2.697248,
+        "before_spread_ms": 0.8005439999999999,
+        "gain_ms": -0.636644,
+        "gain_percent": -23.60346545812621,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "turns": {
+        "after_ms": 25.637576,
+        "after_spread_ms": 5.24362,
+        "before_ms": 26.813618,
+        "before_spread_ms": 8.203615,
+        "gain_ms": 1.1760420000000025,
+        "gain_percent": 4.385987746972462,
+        "regression_tolerance_ms": 8.203615,
+        "required_gain_ms": 25
+      }
+    },
+    "synthetic-25180": {
+      "dimensions": {
+        "after_ms": 200.473329,
+        "after_spread_ms": 11.526238000000006,
+        "before_ms": 217.254728,
+        "before_spread_ms": 6.7792329999999765,
+        "gain_ms": 16.781398999999993,
+        "gain_percent": 7.7242963384437795,
+        "regression_tolerance_ms": 21.725472800000002,
+        "required_gain_ms": 25
+      },
+      "filtered": {
+        "after_ms": 11.937121,
+        "after_spread_ms": 3.571785,
+        "before_ms": 13.985492,
+        "before_spread_ms": 3.8512699999999995,
+        "gain_ms": 2.0483710000000013,
+        "gain_percent": 14.646399282914047,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "grouped": {
+        "after_ms": 228.573764,
+        "after_spread_ms": 2.1498320000000035,
+        "before_ms": 246.623276,
+        "before_spread_ms": 17.853634000000028,
+        "gain_ms": 18.049511999999993,
+        "gain_percent": 7.3186571408612675,
+        "regression_tolerance_ms": 24.6623276,
+        "required_gain_ms": 25
+      },
+      "picker": {
+        "after_ms": 16.301286,
+        "after_spread_ms": 3.493405000000001,
+        "before_ms": 16.128102,
+        "before_spread_ms": 2.9026159999999983,
+        "gain_ms": -0.17318400000000267,
+        "gain_percent": -1.0738027326464248,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "session_events": {
+        "after_ms": 6.303668,
+        "after_spread_ms": 3.333069000000001,
+        "before_ms": 5.081213,
+        "before_spread_ms": 3.7438069999999994,
+        "gain_ms": -1.222455,
+        "gain_percent": -24.058330166438605,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "summary": {
+        "after_ms": 168.447567,
+        "after_spread_ms": 10.98003399999999,
+        "before_ms": 353.957298,
+        "before_spread_ms": 6.995469999999955,
+        "gain_ms": 185.509731,
+        "gain_percent": 52.41020090508206,
+        "regression_tolerance_ms": 35.3957298,
+        "required_gain_ms": 35.3957298
+      },
+      "turn_events": {
+        "after_ms": 3.533521,
+        "after_spread_ms": 0.611224,
+        "before_ms": 3.685555,
+        "before_spread_ms": 1.282324,
+        "gain_ms": 0.152034,
+        "gain_percent": 4.1251317644154,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "turns": {
+        "after_ms": 180.538587,
+        "after_spread_ms": 7.393675999999999,
+        "before_ms": 202.164609,
+        "before_spread_ms": 12.755217999999985,
+        "gain_ms": 21.626022000000006,
+        "gain_percent": 10.697234351240976,
+        "regression_tolerance_ms": 20.2164609,
+        "required_gain_ms": 25
+      }
+    },
+    "synthetic-251800": {
+      "dimensions": {
+        "after_ms": 2291.471757,
+        "after_spread_ms": 23.8117000000002,
+        "before_ms": 2492.779274,
+        "before_spread_ms": 43.06672499999968,
+        "gain_ms": 201.3075170000002,
+        "gain_percent": 8.075625431407538,
+        "regression_tolerance_ms": 249.2779274,
+        "required_gain_ms": 249.2779274
+      },
+      "filtered": {
+        "after_ms": 53.254316,
+        "after_spread_ms": 2.311388000000001,
+        "before_ms": 89.578525,
+        "before_spread_ms": 5.96012300000001,
+        "gain_ms": 36.324208999999996,
+        "gain_percent": 40.5501307372498,
+        "regression_tolerance_ms": 8.9578525,
+        "required_gain_ms": 25
+      },
+      "grouped": {
+        "after_ms": 2481.414611,
+        "after_spread_ms": 67.60449699999981,
+        "before_ms": 2699.890719,
+        "before_spread_ms": 176.4816679999999,
+        "gain_ms": 218.47610799999984,
+        "gain_percent": 8.092035224333827,
+        "regression_tolerance_ms": 269.9890719,
+        "required_gain_ms": 269.9890719
+      },
+      "picker": {
+        "after_ms": 137.539758,
+        "after_spread_ms": 8.095846999999992,
+        "before_ms": 135.962785,
+        "before_spread_ms": 3.0229129999999884,
+        "gain_ms": -1.5769730000000095,
+        "gain_percent": -1.159856353339636,
+        "regression_tolerance_ms": 13.5962785,
+        "required_gain_ms": 25
+      },
+      "session_events": {
+        "after_ms": 25.268246,
+        "after_spread_ms": 3.8049,
+        "before_ms": 26.08797,
+        "before_spread_ms": 6.250802,
+        "gain_ms": 0.8197239999999972,
+        "gain_percent": 3.1421532606791454,
+        "regression_tolerance_ms": 6.250802,
+        "required_gain_ms": 25
+      },
+      "summary": {
+        "after_ms": 1840.311137,
+        "after_spread_ms": 110.26874700000008,
+        "before_ms": 3820.552092,
+        "before_spread_ms": 165.75406999999996,
+        "gain_ms": 1980.240955,
+        "gain_percent": 51.83127745192906,
+        "regression_tolerance_ms": 382.05520920000004,
+        "required_gain_ms": 382.05520920000004
+      },
+      "turn_events": {
+        "after_ms": 3.607265,
+        "after_spread_ms": 1.411045,
+        "before_ms": 3.038553,
+        "before_spread_ms": 1.800112,
+        "gain_ms": -0.5687120000000001,
+        "gain_percent": -18.71654040591032,
+        "regression_tolerance_ms": 5,
+        "required_gain_ms": 25
+      },
+      "turns": {
+        "after_ms": 1927.454606,
+        "after_spread_ms": 18.98562199999992,
+        "before_ms": 2136.405814,
+        "before_spread_ms": 21.02381099999957,
+        "gain_ms": 208.95120800000018,
+        "gain_percent": 9.780501748812418,
+        "regression_tolerance_ms": 213.64058140000003,
+        "required_gain_ms": 213.64058140000003
+      }
+    }
+  },
+  "errors": [
+    "synthetic-251800/dimensions: gain below declared threshold",
+    "synthetic-251800/grouped: gain below declared threshold",
+    "synthetic-251800/turns: gain below declared threshold"
+  ]
+}

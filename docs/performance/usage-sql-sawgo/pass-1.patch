@@ -1,0 +1,14 @@
+diff --git i/lua/louiselm/session/usage_query.lua w/lua/louiselm/session/usage_query.lua
+index 45f58da..f8689fd 100644
+--- i/lua/louiselm/session/usage_query.lua
++++ w/lua/louiselm/session/usage_query.lua
+@@ -43,6 +43,9 @@ WITH ordered_costs AS (
+  lag(json_extract(cost,'$.amount')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous,
+  lag(json_extract(cost,'$.currency')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous_currency
+  FROM cost_readings
++ -- Baseline-only chains cannot yield a delta; all readings were validated above.
++ -- Retain NULL readings within observed chains so incomplete deltas stay absent.
++ WHERE (candidate,id) IN (SELECT candidate,id FROM cost_readings WHERE sequence>0)
+ ), deltas AS (
+  SELECT candidate,id,min(currency) AS currency,max(amount)-min(amount) AS amount
+  FROM ordered_costs GROUP BY candidate,id

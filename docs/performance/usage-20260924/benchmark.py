@@ -2,10 +2,12 @@
 """Measure shipped usage readers. Stdlib only; private scratch data is removed on exit."""
 import argparse
 from datetime import datetime, timedelta
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import sqlite3
 import statistics
@@ -143,7 +145,21 @@ def normalized(rows):
     return [{**row, "result": json.loads(row["result"])} if "result" in row else row for row in rows]
 
 
-def measure(directory, sqlite, capture_env):
+def profile_statements(path, sql):
+    """Diagnostic pass only: timings are separate from the benchmark samples."""
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    profiles = []
+    for statement in sql:
+        clean = re.sub(r"--[^\n]*", "", statement).strip()
+        label = " ".join(clean.split()[:5]) if clean.startswith("CREATE TEMP TABLE") else clean.split()[0]
+        plan = [row[3] for row in db.execute("EXPLAIN QUERY PLAN " + statement)]
+        _, ms = elapsed(lambda: db.execute(statement).fetchall())
+        profiles.append({"statement": label, "ms": ms, "plan": plan})
+    db.close()
+    return profiles
+
+
+def measure(directory, sqlite, capture_env, profile=False):
     path = directory / "turns.sqlite3"
     queries = cases(path)
     dump(directory / "cases.json", queries)
@@ -189,10 +205,13 @@ def measure(directory, sqlite, capture_env):
             transfer.append(ms)
         connection.close()
         results[name] = {"bytes": len(out), "sqlite_cli_ms": distribution(cli),
+                         "result_sha256": hashlib.sha256(json.dumps(reference, sort_keys=True).encode()).hexdigest(),
                          "sqlite_fresh_connection_ms": distribution(fresh),
                          "sqlite_reused_connection_ms": distribution(warm[1:]),
                          "cat_process_and_transfer_ms": distribution(transfer),
                          **{k: distribution(v) for k, v in lua[name].items() if v}}
+        if profile:
+            results[name]["profile"] = profile_statements(path, sql)
     with sqlite3.connect(path) as db:
         shape = dict(zip(["turns", "agents", "providers", "models", "sessions", "tuples"], db.execute(
             "SELECT count(*),count(distinct agent),count(distinct provider),count(distinct model),count(distinct acp_session_id),count(distinct options) FROM turns").fetchone()))
@@ -208,6 +227,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current", type=Path, help="Optional current recorder DB; only a private snapshot is measured")
     parser.add_argument("--sizes", nargs="+", type=int, default=[2518, 25180, 251800])
+    parser.add_argument("--profile", action="store_true", help="Include separate per-statement timings and query plans")
     args = parser.parse_args()
     assert all(0 < size <= 86400 * 28 for size in args.sizes)
     sqlite = shutil.which("sqlite3")
@@ -240,7 +260,7 @@ def main():
                 fixture(path, size)
             path.chmod(0o600)
             print(f"Measuring {name}", file=sys.stderr, flush=True)
-            result["datasets"][name] = measure(directory, sqlite, env)
+            result["datasets"][name] = measure(directory, sqlite, env, args.profile)
         baseline = []
         for _ in range(REPEATS):
             _, ms = elapsed(lambda: run([sqlite, "-batch", "-init", "/dev/null", ":memory:", "SELECT 1;"]))

@@ -1,0 +1,35 @@
+diff --git i/lua/louiselm/session/usage_query.lua w/lua/louiselm/session/usage_query.lua
+index 45f58da..20d3ccd 100644
+--- i/lua/louiselm/session/usage_query.lua
++++ w/lua/louiselm/session/usage_query.lua
+@@ -43,6 +43,9 @@ WITH ordered_costs AS (
+  lag(json_extract(cost,'$.amount')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous,
+  lag(json_extract(cost,'$.currency')) OVER (PARTITION BY candidate,id ORDER BY sequence) AS previous_currency
+  FROM cost_readings
++ -- Missing baselines cannot seed a delta. Keep all observations: their first
++ -- positive sequence still fails the NULL-previous check when no baseline exists.
++ WHERE sequence>0 OR cost IS NOT NULL
+ ), deltas AS (
+  SELECT candidate,id,min(currency) AS currency,max(amount)-min(amount) AS amount
+  FROM ordered_costs GROUP BY candidate,id
+@@ -343,7 +346,19 @@ WHERE EXISTS(SELECT 1 FROM turn_events d WHERE d.turn_id=t.id AND d.kind='dispat
+     .. ((exclude and mixed == "only") and " AND 0" or "")
+     .. ";"
+   local page_rows, total
+-  if view == "summary" then
++  if view == "summary" and bucket == "none" and #(query.group_by or {}) == 0 then
++    -- The ungrouped row and overall totals describe the same cohort.
++    sql[#sql + 1] = "CREATE TEMP TABLE cohort_turns AS SELECT 0 AS candidate,t.* FROM selected_turns t;"
++    total = "EXISTS(SELECT 1 FROM selected_turns)"
++    page_rows = [[SELECT json_object('dimensions',json('{}'),'bucket_start',NULL,'bucket_end',NULL,'summary',]]
++      .. summary_sql("0")
++      .. ") AS data WHERE "
++      .. total
++      .. " LIMIT "
++      .. limit
++      .. " OFFSET "
++      .. offset
++  elseif view == "summary" then
+     local group_fields = {}
+     for _, key in ipairs(query.group_by or {}) do
+       group_fields[#group_fields + 1] = quote(key)
