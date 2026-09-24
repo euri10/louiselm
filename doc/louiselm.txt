@@ -316,6 +316,10 @@ Commands                                                   *louiselm-commands*
     Inspect the raw payload under the cursor
     Arguments: none
 
+:LouiselmJsonl                                                *:LouiselmJsonl*
+    Toggle compact JSONL display; cursor record stays raw
+    Arguments: none
+
 :LouiselmLimits                                              *:LouiselmLimits*
     Inspect account limits for the active or named louiselm Agent
     Arguments: optional

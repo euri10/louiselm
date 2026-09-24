@@ -327,6 +327,7 @@ function M.register()
   local usage ---@type louiselm.ui.UsageView?
   local attention_view ---@type louiselm.ui.AttentionView?
   local inline
+  local jsonl ---@type louiselm.ui.JsonlView?
   local export_cancel ---@type fun()?
   local disposed = false
   local restore_mousemove ---@type boolean?
@@ -910,6 +911,12 @@ function M.register()
     { desc = "Queue the source buffer's diagnostics as louiselm context", force = true }
   )
 
+  nvim.api.nvim_create_user_command("LouiselmJsonl", function()
+    jsonl = jsonl or require("louiselm.ui.jsonl").new()
+    local _, err = jsonl:toggle(nvim.api.nvim_get_current_buf())
+    report_error(err)
+  end, { desc = "Toggle compact JSONL display; cursor record stays raw", force = true })
+
   nvim.api.nvim_create_user_command("LouiselmInline", function()
     if inline == nil then
       local definitions = require_configured_agents()
@@ -939,6 +946,9 @@ function M.register()
   end, { desc = "Replace the current selection with louiselm output", force = true })
   dispose_registered = function()
     disposed = true
+    if jsonl ~= nil then
+      jsonl:dispose()
+    end
     if attention_view ~= nil then
       attention_view:dispose()
     end

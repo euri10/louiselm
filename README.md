@@ -173,6 +173,12 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   plain text, showing which evidence is still readable and which is gone.
   [Evidence export](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/evidence-export.md) creates a bounded,
   redacted artifact from selected observations or JSONL ranges for sharing.
+- **Read JSONL in place.** `:LouiselmJsonl` toggles compact summaries in the
+  current text buffer, regardless of its JSON schema. The cursor record and
+  Visual selections stay raw for editing and copying; file contents never
+  change. Nested values stay compact, up to eight fields/items are shown,
+  and malformed records or records over 16 KiB remain raw. No folds, extra
+  panels, parser dependency, or automatic activation.
 - **Use Agent Skills.** Discover and pick local skills, delegate to an Agent's
   native skill support, inject a bounded catalog, or turn skill automation off
   per Agent.
