@@ -11,6 +11,7 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary.
 ---@field now_ms? fun(): integer Testable epoch clock.
 ---@field on_error? fun(message: string) Operator-visible transport failure.
+---@field paste_dispatcher louiselm.ui.AttentionPaste Required shared owner for paste activity.
 
 ---@class louiselm.ui.Attention
 ---@field socket_path string
@@ -24,6 +25,7 @@ local RunClient = require("louiselm.workflow.run_client")
 ---@field entries table<string, table> Unresolved Attention entries by typed key.
 ---@field autocmd_group integer
 ---@field key_namespace integer Input listener owned by this controller.
+---@field paste_dispatcher louiselm.ui.AttentionPaste Shared paste dispatcher.
 ---@field disposed boolean
 ---@field turn_done fun(self: louiselm.ui.Attention, state: table, seen: boolean)
 ---@field seen fun(self: louiselm.ui.Attention, session_id: string)
@@ -256,11 +258,23 @@ local function clear_entries(self, predicate)
   end
 end
 
----Create a controller and observe activity across Neovim.
----@param options? louiselm.ui.AttentionOptions
----@return louiselm.ui.Attention attention
+---Create a controller and observe input/focus activity across Neovim.
+---@param options? louiselm.ui.AttentionOptions Must include the shared paste dispatcher.
+---@return louiselm.ui.Attention? attention
+---@return string? error_message Why the required dispatcher could not be registered.
 function M.new(options)
+  if options ~= nil and type(options) ~= "table" then
+    return nil, "Attention options must be a table"
+  end
   options = options or {}
+  local paste_dispatcher = options.paste_dispatcher
+  if
+    type(paste_dispatcher) ~= "table"
+    or type(paste_dispatcher.subscribe) ~= "function"
+    or type(paste_dispatcher.unsubscribe) ~= "function"
+  then
+    return nil, "Attention requires a shared paste dispatcher"
+  end
   local root = capture_state_root()
   local workflow = nvim.fs.joinpath(root, "louiselm", "workflow")
   local attention = setmetatable({
@@ -279,14 +293,15 @@ function M.new(options)
     connecting = false,
     queue = {},
     entries = {},
+    paste_dispatcher = paste_dispatcher,
     autocmd_group = 0,
     key_namespace = 0,
     disposed = false,
   }, Attention)
   attention.autocmd_group =
     nvim.api.nvim_create_augroup("louiselm.attention." .. tostring(nvim.uv.hrtime()), { clear = true })
-  -- Buffer/cursor changes also come from Agent rendering. Only typed input
-  -- (including mouse input and mapping triggers) restarts the inactivity delay.
+  -- Buffer/cursor changes also come from Agent rendering. Typed/paste input and
+  -- focus changes restart the inactivity delay.
   attention.key_namespace = nvim.on_key(function(_, typed)
     if typed ~= "" then
       nvim.schedule(function()
@@ -301,6 +316,11 @@ function M.new(options)
     end,
     desc = "Track Neovim activity for LouiseLM Attention",
   })
+  local observed, observe_error = paste_dispatcher:subscribe(attention)
+  if not observed then
+    attention:dispose()
+    return nil, observe_error
+  end
   return attention
 end
 
@@ -560,6 +580,7 @@ function Attention:dispose()
   self.disposed = true
   nvim.api.nvim_del_augroup_by_id(self.autocmd_group)
   nvim.on_key(nil, self.key_namespace)
+  self.paste_dispatcher:unsubscribe(self)
   self.queue = {}
   self.entries = {}
   if self.client ~= nil then

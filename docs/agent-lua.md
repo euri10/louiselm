@@ -75,7 +75,22 @@ Prefer APIs in this order:
 4. Ex-command strings only as a last resort
 
 Never use private `vim._*` APIs. Do not monkey-patch globals or Neovim APIs,
-mutate `package.path` at runtime, or depend on deprecated APIs.
+mutate `package.path` at runtime, or depend on deprecated APIs, except for
+Attention's documented `vim.paste` activity hook below.
+
+Attention may wrap Neovim's documented `vim.paste` hook solely to restart its
+inactivity delay. Count every invocation, including each streamed chunk, as
+activity; scripted `nvim_paste()` calls count too. Do not inspect, copy, log,
+or retain the `lines` payload.
+
+Use one explicitly owned dispatcher for all active Attention controllers, not
+one wrapper per controller. Pass the same `lines` and `phase` to the previously
+installed handler, return its result unchanged, and preserve its error behavior.
+Disposal must release each controller, preserve the delegation chain, and
+restore the previous handler only while the dispatcher still owns `vim.paste`;
+never overwrite a later replacement. Repeated controller setup and disposal
+must not accumulate wrappers. This exception grants no other global or Neovim
+API patch authority.
 
 - Around 44 modules reference Neovim nowhere — the schema, workflow-definition,
   routing, permission, skills, and doc-generator layers. That is what lets them

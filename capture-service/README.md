@@ -236,11 +236,16 @@ and authentication details are in `docs/broker-lifecycle.md`.
 ## Optional Android push
 
 For Neovim-created Attention items, delivery becomes eligible after 30 seconds
-without keyboard/mouse input or focus returning to Neovim. This delay is shared
-across Sessions: actively using another Session postpones delivery, while Agent
-output and programmatic cursor movement do not. Viewing a completed Session or
-starting its next prompt clears its pending turn alert. Eligibility is distinct
-from FCM submission and eventual phone delivery.
+without keyboard/mouse input, paste input, or focus returning to Neovim. Each
+`nvim_paste()` call, including scripted calls and streamed chunks, restarts the
+delay; paste content is not inspected or retained by Attention. This delay is
+shared across Sessions: actively using another Session postpones delivery,
+while Agent output and programmatic cursor movement do not. Viewing a completed
+Session or starting its next prompt clears its pending turn alert. Eligibility
+is distinct from FCM submission and eventual phone delivery.
+
+A later plugin that replaces `vim.paste` without delegating to the installed
+handler bypasses paste activity detection; Attention does not overwrite it.
 
 With push explicitly enabled, `serve` submits eligible Attention generations to every active
 paired device with a registered Firebase Installation ID (FID). The inbox remains available without

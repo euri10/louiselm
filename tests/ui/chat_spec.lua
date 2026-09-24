@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
+local AttentionPaste = require("louiselm.ui.attention_paste")
 local Usage = require("louiselm.routing.usage")
 local Workflow = require("louiselm.routing")
 local Runs = require("louiselm.workflow")
@@ -11,6 +12,14 @@ local T = MiniTest.new_set()
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
+
+local function paste_owner()
+  local owner = AttentionPaste.new()
+  MiniTest.finally(function()
+    owner:dispose()
+  end)
+  return owner
+end
 
 local function connected_run_client()
   return {
@@ -299,13 +308,38 @@ T["chat"]["schedules recording failures and ignores queued notices after Disposa
 end
 
 T["chat"]["leaves durable Attention unconstructed unless explicitly enabled"] = function()
+  local original_paste = nvim.paste
   for _, options in ipairs({ {}, { attention = false }, { attention = true } }) do
+    if options.attention then
+      options.attention_paste = paste_owner()
+    end
     local chat = assert(Chat.new(fake_api(), options))
     MiniTest.finally(function()
       chat:dispose()
     end)
     MiniTest.expect.equality(chat.attention ~= nil, options.attention == true)
+    if not options.attention then
+      MiniTest.expect.equality(nvim.paste, original_paste)
+    end
   end
+end
+
+T["chat"]["rejects missing or disposed paste ownership without leaking listeners"] = function()
+  local original_paste = nvim.paste
+  local listeners = nvim.on_key()
+  local focus_listeners = #nvim.api.nvim_get_autocmds({ event = "FocusGained" })
+  local chat, err = Chat.new(fake_api(), { attention = true })
+  MiniTest.expect.equality(chat, nil)
+  MiniTest.expect.equality(err, "chat attention requires a shared paste dispatcher")
+
+  local owner = paste_owner()
+  owner:dispose()
+  chat, err = Chat.new(fake_api(), { attention = true, attention_paste = owner })
+  MiniTest.expect.equality(chat, nil)
+  MiniTest.expect.equality(err, "Attention paste dispatcher is disposed")
+  MiniTest.expect.equality(nvim.paste, original_paste)
+  MiniTest.expect.equality(nvim.on_key(), listeners)
+  MiniTest.expect.equality(#nvim.api.nvim_get_autocmds({ event = "FocusGained" }), focus_listeners)
 end
 
 T["chat"]["can attach without starting Markdown tree-sitter"] = function()
@@ -330,7 +364,8 @@ T["chat"]["cold-Parks through an admitted Run with live claims"] = function()
   -- Agent has nothing durable to `session/load` back before that.
   session.state.current_turn = 1
   session.client = { agent_capabilities = { loadSession = true } }
-  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  local chat =
+    assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true, attention_paste = paste_owner() }))
   -- This fixture starts after the authenticated Run service readiness handshake.
   rawset(chat.recovery, "resume_client", connected_run_client())
   rawset(chat.recovery, "resume_controller", {
@@ -391,7 +426,8 @@ T["chat"]["reuses the admitted Run id after a cold Park write fails"] = function
   session.state.working_dir = "/tmp/project"
   session.state.current_turn = 1
   session.client = { agent_capabilities = { loadSession = true } }
-  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  local chat =
+    assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true, attention_paste = paste_owner() }))
   rawset(chat.recovery, "resume_client", connected_run_client())
   rawset(chat.recovery, "resume_controller", {
     dispose = function()
@@ -457,7 +493,8 @@ end
 T["chat"]["retained Park resume focuses its existing history without replacing the view"] = function()
   local session = fake_session("retained-session", "codex")
   session.state.acp_session_id = "retained-acp"
-  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  local chat =
+    assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true, attention_paste = paste_owner() }))
   local original_select = nvim.ui.select
   local original_notify = nvim.notify
   local messages = {}
@@ -528,7 +565,8 @@ T["chat"]["reconstructs the Run and preserves replay after cold resume"] = funct
     end
     return session
   end
-  local chat = assert(Chat.new(api, { workflows = true, attention = true, beads = true }))
+  local chat =
+    assert(Chat.new(api, { workflows = true, attention = true, beads = true, attention_paste = paste_owner() }))
   local original_list = WorkflowService.list
   local original_read_capability = RunClient.read_operator_capability
   local original_connect = RunClient.connect
@@ -800,7 +838,8 @@ T["chat"]["reconciles service Parks into live Runs and bounded operator state"] 
   end
   local run = assert(Runs.new_run({ id = "11111111-2222-4333-8444-555555555555" }))
   assert(run:adopt_session(session))
-  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  local chat =
+    assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true, attention_paste = paste_owner() }))
   assert(chat:attach(session))
 
   local original_list = WorkflowService.list
@@ -881,7 +920,8 @@ T["chat"]["reconciles service Parks into live Runs and bounded operator state"] 
 end
 
 T["chat"]["reports cold Park list errors instead of announcing an empty list"] = function()
-  local chat = assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true }))
+  local chat =
+    assert(Chat.new(fake_api(), { workflows = true, attention = true, beads = true, attention_paste = paste_owner() }))
   local read, connect, list, notify =
     RunClient.read_operator_capability, RunClient.connect, WorkflowService.list, nvim.notify
   local messages = {}
@@ -3768,7 +3808,7 @@ T["chat"]["clears Session Attention when closing an active session"] = function(
   local first = fake_session("session-1", "claude")
   first.state.status = "waiting_permission"
   first.state.acp_session_id = "acp-session"
-  local chat = assert(Chat.new(fake_api(), { attention = true }))
+  local chat = assert(Chat.new(fake_api(), { attention = true, attention_paste = paste_owner() }))
   assert(chat:attach(first))
   local seen_session_id
   chat.attention.session_disposed = function(_, session_id)
@@ -4275,7 +4315,7 @@ T["chat"]["ordinary resume clears failure only after successful attached load"] 
       ready_callback = callback
       return restored
     end
-    local chat = assert(Chat.new(api, { attention = true }))
+    local chat = assert(Chat.new(api, { attention = true, attention_paste = paste_owner() }))
     local original_select = nvim.ui.select
     local original_notify = nvim.notify
     MiniTest.finally(function()
@@ -5161,7 +5201,7 @@ T["chat"]["confirms Session close without replacing its permission picker"] = fu
   local first = fake_session("session-1", "opencode")
   first.state.status = "waiting_permission"
   first.state.acp_session_id = "acp-session"
-  local chat = assert(Chat.new(fake_api(), { attention = true }))
+  local chat = assert(Chat.new(fake_api(), { attention = true, attention_paste = paste_owner() }))
   assert(chat:attach(first))
   local buffer = chat:buffer()
   local request, run_scheduled, pickers, responses = permission_harness()
@@ -7541,7 +7581,7 @@ end
 T["chat"]["marks a directly focused session buffer as seen"] = function()
   local session = fake_session("session-1", "claude")
   session.state.acp_session_id = "acp-session"
-  local chat = assert(Chat.new(fake_api(), { attention = true }))
+  local chat = assert(Chat.new(fake_api(), { attention = true, attention_paste = paste_owner() }))
   assert(chat:attach(session))
 
   local seen = {}

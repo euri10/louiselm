@@ -2,6 +2,7 @@ local MiniTest = require("mini.test")
 local AttentionClient = require("louiselm.workflow.attention_client")
 local RunClient = require("louiselm.workflow.run_client")
 local Attention = require("louiselm.ui.attention")
+local AttentionPaste = require("louiselm.ui.attention_paste")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -11,11 +12,13 @@ local T = MiniTest.new_set()
 T["resuming in a fresh controller durably clears only that Session failure"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
+  local paste_dispatcher = AttentionPaste.new()
   local attention
   MiniTest.finally(function()
     if attention ~= nil then
       attention:dispose()
     end
+    paste_dispatcher:dispose()
     RunClient.read_operator_capability = original_read
     AttentionClient.connect = original_connect
   end)
@@ -49,7 +52,11 @@ T["resuming in a fresh controller durably clears only that Session failure"] = f
     connected = on_snapshot
     return fake
   end
-  attention = Attention.new({ socket_path = "/tmp/attention.sock", capability_path = "/tmp/operator-capability" })
+  attention = assert(Attention.new({
+    socket_path = "/tmp/attention.sock",
+    capability_path = "/tmp/operator-capability",
+    paste_dispatcher = paste_dispatcher,
+  }))
   attention:session_resumed("resumed")
   MiniTest.expect.equality(#retained, 6)
   MiniTest.expect.equality(type(connected), "function")
@@ -66,7 +73,13 @@ end
 T["emits unseen turns only after inactivity and clears when seen"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
+  local paste_dispatcher = AttentionPaste.new()
+  local attention
   MiniTest.finally(function()
+    if attention ~= nil then
+      attention:dispose()
+    end
+    paste_dispatcher:dispose()
     RunClient.read_operator_capability = original_read
     AttentionClient.connect = original_connect
   end)
@@ -122,9 +135,10 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
   end
 
   local scheduled = {}
-  local attention = Attention.new({
+  attention = assert(Attention.new({
     socket_path = "/tmp/attention.sock",
     capability_path = "/tmp/operator-capability",
+    paste_dispatcher = paste_dispatcher,
     schedule = function(_, callback)
       scheduled[#scheduled + 1] = callback
     end,
@@ -134,7 +148,7 @@ T["emits unseen turns only after inactivity and clears when seen"] = function()
     on_error = function(message)
       error(message)
     end,
-  })
+  }))
   local state = {
     status = "ready",
     agent = "codex",
@@ -169,7 +183,13 @@ end
 T["deduplicates typed conditions and clears their authoritative transitions"] = function()
   local original_read = RunClient.read_operator_capability
   local original_connect = AttentionClient.connect
+  local paste_dispatcher = AttentionPaste.new()
+  local attention
   MiniTest.finally(function()
+    if attention ~= nil then
+      attention:dispose()
+    end
+    paste_dispatcher:dispose()
     RunClient.read_operator_capability = original_read
     AttentionClient.connect = original_connect
   end)
@@ -226,9 +246,10 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
   end
 
   local scheduled = {}
-  local attention = Attention.new({
+  attention = assert(Attention.new({
     socket_path = "/tmp/attention.sock",
     capability_path = "/tmp/operator-capability",
+    paste_dispatcher = paste_dispatcher,
     schedule = function(_, callback)
       scheduled[#scheduled + 1] = callback
     end,
@@ -238,7 +259,7 @@ T["deduplicates typed conditions and clears their authoritative transitions"] = 
     on_error = function(message)
       error(message)
     end,
-  })
+  }))
   local state = {
     status = "error",
     acp_session_id = "session-1",

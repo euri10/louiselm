@@ -180,7 +180,8 @@ messages, but ignore unknown optional fields from newer peers.
 - Never log tokens, environments, prompts, tool payloads, or sensitive data by
   default.
 - Do not execute generated Lua or use `load`, `loadstring`, the `debug` library,
-  LuaJIT FFI, or global/package monkey-patching.
+  LuaJIT FFI, or global/package monkey-patching except Attention's `vim.paste`
+  hook; see [Lua policy](docs/agent-lua.md).
 - Use `dofile` only for trusted project development files when a module cannot.
 
 ## Editing and completion

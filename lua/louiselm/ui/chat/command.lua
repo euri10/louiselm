@@ -10,6 +10,7 @@ local Abandonment = require("louiselm.ui.abandonment")
 local Workflow = require("louiselm.routing")
 local Paths = require("louiselm.paths")
 local Config = require("louiselm.config")
+local AttentionPaste = require("louiselm.ui.attention_paste")
 
 local M = {}
 local configured ---@type table?
@@ -322,6 +323,7 @@ function M.register()
     dispose_registered = nil
   end
   local chat
+  local attention_paste = AttentionPaste.new()
   local usage ---@type louiselm.ui.UsageView?
   local attention_view ---@type louiselm.ui.AttentionView?
   local inline
@@ -413,7 +415,7 @@ function M.register()
       nvim.notify("louiselm: " .. (workflow_error or "could not initialize workflow routing"), nvim.log.levels.ERROR)
       return nil
     end
-    chat = assert(require("louiselm.ui.chat").new(sessions, {
+    local new_chat, chat_error = require("louiselm.ui.chat").new(sessions, {
       agents = names,
       skills = skills,
       skill_paths = configured and configured.skills and configured.skills.paths or nil,
@@ -421,9 +423,19 @@ function M.register()
       instructions_context = instructions_context,
       workflow = workflow,
       attention = Config.enabled(configured, "attention"),
+      attention_paste = attention_paste,
       workflows = Config.enabled(configured, "workflows"),
       beads = Config.enabled(configured, "beads"),
-    }))
+    })
+    if new_chat == nil then
+      local disposed, dispose_error = sessions:dispose()
+      report_error(chat_error)
+      if not disposed then
+        report_error(dispose_error)
+      end
+      return nil
+    end
+    chat = new_chat
     -- The command registration owns the one interactive UI and its global option.
     -- Headless APIs and independently constructed Chat objects leave options alone.
     restore_mousemove = nvim.o.mousemoveevent
@@ -952,6 +964,7 @@ function M.register()
       inline:dispose()
       inline = nil
     end
+    attention_paste:dispose()
   end
   return true
 end

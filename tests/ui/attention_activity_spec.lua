@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Attention = require("louiselm.ui.attention")
+local AttentionPaste = require("louiselm.ui.attention_paste")
 local AttentionClient = require("louiselm.workflow.attention_client")
 local RunClient = require("louiselm.workflow.run_client")
 local Buffer = require("louiselm.ui.chat.buffer")
@@ -11,11 +12,13 @@ local T = MiniTest.new_set()
 -- Advance the eligibility clock independently of scheduled socket acknowledgements.
 local function fixture()
   local original_read, original_connect = RunClient.read_operator_capability, AttentionClient.connect
+  local paste_dispatcher = AttentionPaste.new()
   local attention
   MiniTest.finally(function()
     if attention ~= nil then
       attention:dispose()
     end
+    paste_dispatcher:dispose()
     RunClient.read_operator_capability, AttentionClient.connect = original_read, original_connect
   end)
   local clock, timers, eligible = 0, {}, {}
@@ -57,14 +60,15 @@ local function fixture()
     end)
     return client
   end
-  attention = Attention.new({
+  attention = assert(Attention.new({
+    paste_dispatcher = paste_dispatcher,
     schedule = function(delay, callback)
       timers[#timers + 1] = { due = clock + delay, run = callback }
     end,
     on_error = function(message)
       error(message)
     end,
-  })
+  }))
   local function settle()
     local drained = false
     nvim.schedule(function()
@@ -155,6 +159,63 @@ T["real input elsewhere delays eligibility once without stale timer rearming"] =
   nvim.api.nvim_exec_autocmds("FocusGained", {})
   f.advance(30000)
   MiniTest.expect.equality(#f.eligible, 1)
+end
+
+T["scripted paste delays eligibility by thirty seconds"] = function()
+  local original_buffer = nvim.api.nvim_get_current_buf()
+  local paste_buffer = nvim.api.nvim_create_buf(false, true)
+  MiniTest.finally(function()
+    if nvim.api.nvim_buf_is_valid(original_buffer) then
+      nvim.api.nvim_set_current_buf(original_buffer)
+    end
+    if nvim.api.nvim_buf_is_valid(paste_buffer) then
+      nvim.api.nvim_buf_delete(paste_buffer, { force = true })
+    end
+  end)
+  nvim.api.nvim_set_current_buf(paste_buffer)
+
+  local f = fixture()
+  f.ready("unseen")
+  f.advance(10000)
+  nvim.api.nvim_paste("fixture", true, -1)
+  f.settle()
+  f.advance(29999)
+  MiniTest.expect.equality(f.eligible, {})
+  f.advance(1)
+  MiniTest.expect.equality(f.eligible, { { session_id = "unseen", value = true, at_ms = 40000 } })
+end
+
+T["each streamed paste chunk restarts the inactivity delay"] = function()
+  local original_buffer = nvim.api.nvim_get_current_buf()
+  local paste_buffer = nvim.api.nvim_create_buf(false, true)
+  MiniTest.finally(function()
+    if nvim.api.nvim_buf_is_valid(original_buffer) then
+      nvim.api.nvim_set_current_buf(original_buffer)
+    end
+    if nvim.api.nvim_buf_is_valid(paste_buffer) then
+      nvim.api.nvim_buf_delete(paste_buffer, { force = true })
+    end
+  end)
+  nvim.api.nvim_set_current_buf(paste_buffer)
+
+  local f = fixture()
+  f.ready("unseen")
+  local function paste(phase)
+    nvim.api.nvim_paste("fixture", true, phase)
+    f.settle()
+  end
+
+  f.advance(10000)
+  paste(1)
+  f.advance(10000)
+  paste(2)
+  f.advance(10000)
+  MiniTest.expect.equality(f.eligible, {})
+  paste(3)
+  f.advance(29999)
+  MiniTest.expect.equality(f.eligible, {})
+  f.advance(1)
+  MiniTest.expect.equality(f.eligible, { { session_id = "unseen", value = true, at_ms = 60000 } })
 end
 
 T["focus activity delays permission conditions by exactly thirty seconds"] = function()

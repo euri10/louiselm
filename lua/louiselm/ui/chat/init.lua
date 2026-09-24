@@ -25,6 +25,7 @@ local nvim = vim
 ---@field instructions_context? louiselm.ui.ContextItem Project instructions resource link queued only for brand-new sessions.
 ---@field workflow? louiselm.routing.Coordinator Phase-aware routing coordinator.
 ---@field attention? boolean Explicit durable Attention opt-in; defaults to false.
+---@field attention_paste? louiselm.ui.AttentionPaste Shared paste dispatcher required when Attention is enabled.
 ---@field workflows? boolean Explicit workflow Run opt-in; defaults to false.
 ---@field beads? boolean Explicit Beads integration opt-in; defaults to false.
 ---@field markdown_highlighting? boolean Whether chat buffers start Markdown tree-sitter highlighting; defaults to true.
@@ -1378,6 +1379,7 @@ function M.new(api, options)
         and key ~= "instructions_context"
         and key ~= "workflow"
         and key ~= "attention"
+        and key ~= "attention_paste"
         and key ~= "workflows"
         and key ~= "beads"
         and key ~= "markdown_highlighting"
@@ -1432,6 +1434,17 @@ function M.new(api, options)
   if usage == nil then
     return nil, usage_error
   end
+  local attention
+  if options ~= nil and options.attention == true then
+    if options.attention_paste == nil then
+      return nil, "chat attention requires a shared paste dispatcher"
+    end
+    local attention_error
+    attention, attention_error = Attention.new({ paste_dispatcher = options.attention_paste })
+    if attention == nil then
+      return nil, attention_error
+    end
+  end
   setup_highlights()
   local chat = setmetatable({
     api = api,
@@ -1445,7 +1458,7 @@ function M.new(api, options)
     markdown_highlighting = markdown_highlighting,
     start_insert_on_switch = start_insert_on_switch,
     workflow = options and options.workflow,
-    attention = options and options.attention == true and Attention.new() or nil,
+    attention = attention,
     usage = usage,
     views = {},
     view_order = {},
