@@ -223,10 +223,13 @@ fn validate_generation(
         if quarantine.schema != quarantine::QUARANTINE_SCHEMA {
             return Err(ViewError::Refused("unknown_quarantine_schema"));
         }
-        if quarantine.excludes_everything
-            || !quarantine::partition(Some(quarantine), &record.payload.member_digests())
-                .1
-                .is_empty()
+        if !quarantine::partition(
+            Some(quarantine),
+            &record.generation,
+            &record.payload.member_digests(),
+        )
+        .1
+        .is_empty()
         {
             return Err(ViewError::Refused("generation_quarantined"));
         }

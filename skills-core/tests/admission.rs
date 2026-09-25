@@ -16,14 +16,14 @@
 mod support;
 
 use louiselm_skills::{
-    Policy,
+    Policy, Store,
     admission::{self, AdmissionError, AdmissionMember, AdmissionRequest},
     dossier::ReviewDepth,
     generation::GenerationState,
     quarantine,
     signer::SshKeygenSigner,
     sshsig::SkPolicy,
-    trust::{Role, TrustStore},
+    trust::{Role, TrustError, TrustStore},
     witness::{GitWitness, Witness},
 };
 use support::{Fixture, SshKey, write_file};
@@ -805,6 +805,179 @@ fn quarantine_narrows_the_current_generation_without_the_token() {
         error.to_string().contains("Generation"),
         "the refusal names what would widen authority: {error}",
     );
+}
+
+#[test]
+fn quarantine_all_yields_only_to_a_newly_admitted_generation() {
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let first = ceremony
+        .admit(
+            &[(ceremony.skill("first"), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("first admission succeeds");
+    admission::witness(&store, &first.digest(), &ceremony.witness(), 1)
+        .expect("first witnessing succeeds");
+    admission::activate(&store, &first.digest(), 2).expect("first activation succeeds");
+
+    let second_member = ceremony.skill("replacement");
+    let second = ceremony
+        .admit(
+            &[(second_member.clone(), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("replacement admission succeeds");
+    admission::witness(&store, &second.digest(), &ceremony.witness(), 3)
+        .expect("replacement witnessing succeeds");
+
+    quarantine::exclude_everything(&store, "supply incident", 4)
+        .expect("the active Generation is quarantined while its replacement is pending");
+    assert_eq!(
+        admission::status(&store).expect("status is readable").state,
+        Some(GenerationState::Quarantined),
+    );
+
+    let reopened = Store::open_existing(store.root()).expect("the store reopens after quarantine");
+    admission::activate(&reopened, &second.digest(), 5)
+        .expect("replacement activation succeeds after restart");
+
+    let status = admission::status(&reopened).expect("replacement status is readable");
+    assert_eq!(status.state, Some(GenerationState::Current));
+    assert_eq!(status.effective_members, vec![second_member.to_string()]);
+    assert!(status.excluded_members.is_empty());
+
+    let rollback = admission::activate(&reopened, &first.digest(), 6)
+        .expect_err("the quarantined predecessor cannot be restored");
+    assert!(matches!(rollback, AdmissionError::Rollback { .. }));
+    assert!(matches!(
+        quarantine::clear(&reopened, 7),
+        Err(quarantine::QuarantineError::WouldWiden(_))
+    ));
+
+    let quarantine = quarantine::load(&reopened)
+        .expect("quarantine is readable")
+        .expect("quarantine remains durable");
+    let (effective, excluded) = quarantine::partition(
+        Some(&quarantine),
+        &first.generation,
+        &first.payload.member_digests(),
+    );
+    assert!(effective.is_empty());
+    assert_eq!(excluded, first.payload.member_digests());
+}
+
+#[test]
+fn quarantine_all_requires_a_current_generation() {
+    let ceremony = Ceremony::new();
+
+    let error = quarantine::exclude_everything(&ceremony.fixture.store(), "incident", 1)
+        .expect_err("there is no Generation to quarantine");
+
+    assert!(matches!(
+        error,
+        quarantine::QuarantineError::NoCurrentGeneration
+    ));
+}
+
+#[test]
+fn quarantine_all_and_activation_serialize_to_one_exact_generation() {
+    use std::sync::Barrier;
+
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let first = ceremony
+        .admit(
+            &[(ceremony.skill("first"), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("first admission succeeds");
+    admission::witness(&store, &first.digest(), &ceremony.witness(), 1)
+        .expect("first witnessing succeeds");
+    admission::activate(&store, &first.digest(), 2).expect("first activation succeeds");
+    let second = ceremony
+        .admit(
+            &[(ceremony.skill("second"), ReviewDepth::Read)],
+            &ceremony.primary,
+        )
+        .expect("second admission succeeds");
+    admission::witness(&store, &second.digest(), &ceremony.witness(), 3)
+        .expect("second witnessing succeeds");
+
+    let barrier = Barrier::new(3);
+    let (activation, quarantined) = std::thread::scope(|scope| {
+        let activation = scope.spawn(|| {
+            barrier.wait();
+            admission::activate(&store, &second.digest(), 5)
+        });
+        let quarantine = scope.spawn(|| {
+            barrier.wait();
+            quarantine::exclude_everything(&store, "concurrent incident", 5)
+        });
+        barrier.wait();
+        (
+            activation.join().expect("activation thread completes"),
+            quarantine.join().expect("quarantine thread completes"),
+        )
+    });
+    match (activation, quarantined) {
+        (Ok(_), Ok(_)) => {}
+        (Ok(_), Err(quarantine::QuarantineError::CurrentGeneration { source }))
+            if matches!(*source, AdmissionError::Trust(TrustError::Busy(_))) =>
+        {
+            quarantine::exclude_everything(&store, "concurrent incident retry", 6)
+                .expect("quarantine retries after activation releases the lock");
+        }
+        (Err(AdmissionError::Trust(TrustError::Busy(_))), Ok(_)) => {
+            admission::activate(&store, &second.digest(), 6)
+                .expect("activation retries after quarantine releases the lock");
+        }
+        _ => panic!("concurrent Admission must either serialize or refuse one mutation as busy"),
+    }
+
+    let quarantine = quarantine::load(&store)
+        .expect("quarantine is readable")
+        .expect("quarantine was recorded");
+    assert_eq!(quarantine.excluded_generations.len(), 1);
+    let excluded = &quarantine.excluded_generations[0];
+    assert!(
+        excluded == &first.generation || excluded == &second.generation,
+        "the quarantine binds one Generation current at its serialization point"
+    );
+    let status = admission::status(&store).expect("status remains readable");
+    assert_eq!(
+        status.state,
+        Some(if excluded == &second.generation {
+            GenerationState::Quarantined
+        } else {
+            GenerationState::Current
+        })
+    );
+}
+
+#[test]
+fn quarantine_schema_rejects_unknown_fields_and_versions() {
+    let ceremony = Ceremony::new();
+    let store = ceremony.fixture.store();
+    let path = store.root().join("quarantine.json");
+    let quarantine =
+        quarantine::exclude(&store, &[], "incident", 1).expect("a valid quarantine is written");
+    let mut value = serde_json::to_value(quarantine).expect("quarantine serializes");
+
+    value["unexpected"] = serde_json::json!(true);
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(matches!(
+        quarantine::load(&store),
+        Err(quarantine::QuarantineError::Malformed(_))
+    ));
+
+    value.as_object_mut().unwrap().remove("unexpected");
+    value["schema"] = serde_json::json!("louiselm.skills.quarantine/unknown");
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(matches!(
+        quarantine::load(&store),
+        Err(quarantine::QuarantineError::Malformed(_))
+    ));
 }
 
 #[test]

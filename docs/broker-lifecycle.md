@@ -751,9 +751,11 @@ running Sessions. On its 1 s idle tick, each Session worker reads the operator's
 (`/etc/louiselm-broker-admission.json`), with the same ownership and mode checks
 as Admission evidence. It checks the quarantine against the Generation pinned
 by the Session's signed Launch receipt. When an excluded package is a member,
-or everything is excluded, the worker writes the quarantine marker, revokes
-command and tool authority, then Parks the Session as the Park-only
-`skill-quarantine` caller. Other Sessions keep running. Unreadable evidence
+or that exact Generation is listed for complete exclusion, the worker writes
+the quarantine marker, revokes command and tool authority, then Parks the
+Session as the Park-only `skill-quarantine` caller. A newly activated Generation
+does not remove that marker or restore an existing Session. Other Sessions keep
+running. Unreadable evidence
 immediately counts as reaching the Session. Invalid installed source configuration
 closes the broker channel, invoking the supervisor's broker-loss containment.
 Without an installed

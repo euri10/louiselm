@@ -978,9 +978,9 @@ fn quarantine_command(options: &Options) -> Result<i32, CliError> {
             if let Some(quarantine) = quarantine::load(&store)? {
                 report(options, &quarantine, |quarantine| {
                     let mut lines = vec![format!(
-                        "excluded {} package(s), everything={}",
+                        "excluded {} package(s), {} complete Generation(s)",
                         quarantine.excluded.len(),
-                        quarantine.excludes_everything
+                        quarantine.excluded_generations.len()
                     )];
                     lines.extend(
                         quarantine

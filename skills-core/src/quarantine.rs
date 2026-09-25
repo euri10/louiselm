@@ -19,17 +19,18 @@ use thiserror::Error;
 use crate::store::Store;
 
 /// The quarantine schema this build reads and writes.
-pub const QUARANTINE_SCHEMA: &str = "louiselm.skills.quarantine/1";
+pub const QUARANTINE_SCHEMA: &str = "louiselm.skills.quarantine/2";
 
-/// The active narrowing of the current Generation.
+/// The durable emergency narrowing of admitted supply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Quarantine {
     /// Schema identifier.
     pub schema: String,
-    /// Package digests excluded from the current Generation.
+    /// Package digests excluded wherever they are admitted.
     pub excluded: Vec<String>,
-    /// Whether every member is excluded, however the Generation changes.
-    pub excludes_everything: bool,
+    /// Generations whose complete membership is excluded, sorted and unique.
+    pub excluded_generations: Vec<String>,
     /// Why, recorded for the operator who has to undo it deliberately.
     pub reasons: Vec<String>,
     /// When the narrowing was last widened in scope.
@@ -50,6 +51,16 @@ pub enum QuarantineError {
     /// The quarantine file on disk is unreadable.
     #[error("quarantine is malformed: {0}")]
     Malformed(String),
+    /// The current Generation could not be resolved before quarantining it.
+    #[error("current Skill Generation could not be read: {source}")]
+    CurrentGeneration {
+        /// Admission failure that prevented a trustworthy binding.
+        #[source]
+        source: Box<crate::admission::AdmissionError>,
+    },
+    /// There is no Generation for an all-members quarantine to bind.
+    #[error("quarantine all requires a current Skill Generation")]
+    NoCurrentGeneration,
     /// The caller asked to widen authority.
     #[error(
         "quarantine only narrows authority; admit a new Skill Generation to restore {0} package(s)"
@@ -73,9 +84,15 @@ pub fn load(store: &Store) -> Result<Option<Quarantine>, QuarantineError> {
             });
         }
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| QuarantineError::Malformed(error.to_string()))
+    let quarantine: Quarantine = serde_json::from_slice(&bytes)
+        .map_err(|error| QuarantineError::Malformed(error.to_string()))?;
+    if quarantine.schema != QUARANTINE_SCHEMA {
+        return Err(QuarantineError::Malformed(format!(
+            "unknown schema '{}'",
+            quarantine.schema
+        )));
+    }
+    Ok(Some(quarantine))
 }
 
 /// Excludes `packages` from the current Generation, immediately.
@@ -94,6 +111,10 @@ pub fn exclude(
         .map(|quarantine| quarantine.excluded.iter().cloned().collect::<BTreeSet<_>>())
         .unwrap_or_default();
     excluded.extend(packages.iter().cloned());
+    let excluded_generations = existing
+        .as_ref()
+        .map(|quarantine| quarantine.excluded_generations.clone())
+        .unwrap_or_default();
     let mut reasons = existing
         .as_ref()
         .map(|quarantine| quarantine.reasons.clone())
@@ -105,7 +126,7 @@ pub fn exclude(
     let quarantine = Quarantine {
         schema: QUARANTINE_SCHEMA.to_owned(),
         excluded: excluded.into_iter().collect(),
-        excludes_everything: existing.is_some_and(|quarantine| quarantine.excludes_everything),
+        excluded_generations,
         reasons,
         declared_at_ms,
     };
@@ -113,17 +134,55 @@ pub fn exclude(
     Ok(quarantine)
 }
 
-/// Excludes every member of whatever Generation is current.
+/// Excludes every member of the current Generation.
 ///
 /// # Errors
-/// Returns quarantine read/JSON or persistence errors.
+/// Returns Admission, quarantine read/JSON or persistence errors. Refuses when
+/// no Generation is current.
 pub fn exclude_everything(
     store: &Store,
     reason: &str,
     declared_at_ms: u64,
 ) -> Result<Quarantine, QuarantineError> {
-    let mut quarantine = exclude(store, &[], reason, declared_at_ms)?;
-    quarantine.excludes_everything = true;
+    let (_locked, current) = crate::admission::locked_current(store).map_err(|source| {
+        QuarantineError::CurrentGeneration {
+            source: Box::new(source),
+        }
+    })?;
+    let generation = current
+        .ok_or(QuarantineError::NoCurrentGeneration)?
+        .generation;
+    let existing = load(store)?;
+    let excluded = existing
+        .as_ref()
+        .map(|quarantine| quarantine.excluded.clone())
+        .unwrap_or_default();
+    let mut excluded_generations = existing
+        .as_ref()
+        .map(|quarantine| {
+            quarantine
+                .excluded_generations
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    excluded_generations.insert(generation);
+    let mut reasons = existing
+        .as_ref()
+        .map(|quarantine| quarantine.reasons.clone())
+        .unwrap_or_default();
+    let reason = crate::scan::escape(reason);
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
+    let quarantine = Quarantine {
+        schema: QUARANTINE_SCHEMA.to_owned(),
+        excluded,
+        excluded_generations: excluded_generations.into_iter().collect(),
+        reasons,
+        declared_at_ms,
+    };
     write(store, &quarantine)?;
     Ok(quarantine)
 }
@@ -136,7 +195,7 @@ pub fn clear(store: &Store, _at_ms: u64) -> Result<(), QuarantineError> {
     let quarantine = load(store)?;
     let count = quarantine
         .as_ref()
-        .map(|quarantine| quarantine.excluded.len())
+        .map(|quarantine| quarantine.excluded.len() + quarantine.excluded_generations.len())
         .unwrap_or_default();
     Err(QuarantineError::WouldWiden(count))
 }
@@ -145,12 +204,17 @@ pub fn clear(store: &Store, _at_ms: u64) -> Result<(), QuarantineError> {
 #[must_use]
 pub fn partition(
     quarantine: Option<&Quarantine>,
+    generation: &str,
     members: &[String],
 ) -> (Vec<String>, Vec<String>) {
     let Some(quarantine) = quarantine else {
         return (members.to_vec(), Vec::new());
     };
-    if quarantine.excludes_everything {
+    if quarantine
+        .excluded_generations
+        .iter()
+        .any(|excluded| excluded == generation)
+    {
         return (Vec::new(), members.to_vec());
     }
     let excluded = quarantine.excluded.iter().collect::<BTreeSet<_>>();

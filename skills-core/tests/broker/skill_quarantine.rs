@@ -3,7 +3,7 @@
 
 use super::*;
 use louiselm_skills::{
-    Policy, Store,
+    Digest, Policy, Store,
     admission::{self, AdmissionMember, AdmissionRequest},
     broker::{BrokerSession, admission_source::AdmissionSource, lifecycle::LifecycleStore},
     dossier::ReviewDepth,
@@ -13,6 +13,7 @@ use louiselm_skills::{
     signer::SshKeygenSigner,
     sshsig::SkPolicy,
     trust::TrustStore,
+    witness::GitWitness,
 };
 use std::os::unix::fs::PermissionsExt;
 
@@ -46,8 +47,6 @@ fn supply() -> Supply {
         1000,
     )
     .unwrap();
-    // Test-only trusted provenance, with real software-key Admission.
-    fs::write(store.root().join("provenance.json"), br#"{"schema":"louiselm.skills.store-provenance/1","trusted":true,"created_by_release":"fixture"}"#).unwrap();
     let mut packages = ["member", "outsider"].map(|name| {
         let candidate = keys.candidate(name);
         support::write_file(
@@ -75,6 +74,16 @@ fn supply() -> Supply {
         },
     )
     .unwrap();
+    let witness = GitWitness::new(
+        &keys.witness_remote(),
+        "skill-generations",
+        &keys.path("witness-work"),
+    );
+    admission::witness(&store, &record.digest(), &witness, 4500).unwrap();
+    admission::activate(&store, &record.digest(), 5000).unwrap();
+    // Test-only installed source provenance, after the development fixture has
+    // completed its real software-key Admission.
+    fs::write(store.root().join("provenance.json"), br#"{"schema":"louiselm.skills.store-provenance/1","trusted":true,"created_by_release":"fixture"}"#).unwrap();
     skill_requests::protect_fixture_directories(store.root());
     let [member, outsider] = packages.each_mut().map(|digest| digest.to_string());
     Supply {
@@ -221,12 +230,23 @@ fn quarantine_of_a_pinned_member_revokes_then_parks_only_that_session() {
 }
 
 #[test]
-fn excluding_everything_reaches_every_session() {
+fn excluding_everything_reaches_only_sessions_pinned_to_that_generation() {
     let supply = supply();
     let mut live = launched(supply.root.path(), &supply.generation);
+    let replacement_root = supply.root.path().join("replacement-session");
+    fs::create_dir(&replacement_root).unwrap();
+    let mut replacement = launched(
+        &replacement_root,
+        &Digest::of(b"replacement-generation").to_string(),
+    );
     quarantine::exclude_everything(&supply.store, "incident", 5000).unwrap();
     live.settle_and_park(&supply.source);
     assert!(live.quarantined());
+    assert_eq!(
+        replacement.settle_quietly(Some(&supply.source)).unwrap(),
+        None
+    );
+    assert!(!replacement.quarantined());
 }
 
 #[test]

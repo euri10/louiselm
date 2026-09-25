@@ -130,7 +130,11 @@ impl AdmissionSource {
         if quarantine.schema != quarantine::QUARANTINE_SCHEMA {
             return Err(BrokerError::InvalidGrant);
         }
-        if quarantine.excludes_everything {
+        if quarantine
+            .excluded_generations
+            .iter()
+            .any(|excluded| excluded == generation)
+        {
             return Ok(QuarantineReach::Affected);
         }
         if quarantine.excluded.is_empty() {
@@ -139,11 +143,12 @@ impl AdmissionSource {
             });
         }
         let store = self.trusted_store()?;
-        let generation = Digest::parse(generation).map_err(|_| BrokerError::InvalidGrant)?;
-        let members = admission::linked_generation_members(&store, &self.trust_domain, &generation)
-            .map_err(BrokerError::AdmissionEvidence)?;
+        let parsed_generation = Digest::parse(generation).map_err(|_| BrokerError::InvalidGrant)?;
+        let members =
+            admission::linked_generation_members(&store, &self.trust_domain, &parsed_generation)
+                .map_err(BrokerError::AdmissionEvidence)?;
         Ok(
-            if quarantine::partition(Some(&quarantine), &members)
+            if quarantine::partition(Some(&quarantine), generation, &members)
                 .1
                 .is_empty()
             {

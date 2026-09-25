@@ -86,6 +86,12 @@ quarantine all --reason TEXT
 quarantine show
 ```
 
+`quarantine all` binds the Generation that is current when the command runs.
+Sessions pinned to that Generation remain quarantined, while a newly witnessed
+and activated higher-sequence Generation may supply clean new Sessions. Package
+digest exclusions continue to apply to any Generation that contains those exact
+bytes. Quarantine cannot be cleared in place.
+
 Except for `preflight`, `workspace` and local-only `recovery`, commands accept `--store DIR`,
 `--policy FILE --policy-digest D`, and `--robot-json`. Recovery requires an
 explicit store; `status` returns public JSON, while setup/change/reset require

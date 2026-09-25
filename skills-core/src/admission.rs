@@ -659,9 +659,11 @@ pub fn status(store: &Store) -> Result<GenerationStatus, AdmissionError> {
         .collect::<Vec<_>>();
 
     let (effective_members, excluded_members) = match in_force {
-        Some(record) => {
-            quarantine::partition(quarantine.as_ref(), &record.payload.member_digests())
-        }
+        Some(record) => quarantine::partition(
+            quarantine.as_ref(),
+            &record.generation,
+            &record.payload.member_digests(),
+        ),
         None => (Vec::new(), Vec::new()),
     };
     let state = in_force.map(|record| {
