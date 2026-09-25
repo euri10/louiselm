@@ -43,6 +43,8 @@ android {
     lint {
         abortOnError = true
         warningsAsErrors = true
+        // Toolchain upgrades are deliberate; a new Gradle release is not an app defect.
+        disable.add("AndroidGradlePluginVersion")
     }
 }
 

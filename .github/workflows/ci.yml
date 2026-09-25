@@ -168,7 +168,9 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
           systemctl --user show-environment >/dev/null
       - name: Prepare the pinned guest with build dependencies
-        run: ./scripts/launcher-vm prepare
+        run: |
+          install -d -m 700 "${XDG_CACHE_HOME:-$HOME/.cache}"
+          ./scripts/launcher-vm prepare
       - name: Exercise the embedded object with restricted guest networking
         run: |
           ./scripts/launcher-vm start
