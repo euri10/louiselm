@@ -10,37 +10,53 @@ nvim.opt.rtp:prepend(root)
 
 local ApiAppendix = require("louiselm.docs.api_appendix")
 
-local tmp_directory = nvim.fn.tempname()
-assert(nvim.fn.mkdir(tmp_directory, "p") == 1)
+-- LuaLS 3.19.1 `--doc` races its own config load and exits 0 either way, so
+-- an export is only trusted after `verify_export`. A refused export is
+-- regenerated; the comparison below is unchanged (louiselm-qbr.9.9.7.1).
+local ATTEMPTS = 3
 
-local result = nvim
-  .system({
-    "lua-language-server",
-    "--doc=" .. root,
-    "--doc_out_path=" .. tmp_directory,
-    "--logpath=" .. tmp_directory .. "/log",
-  }, { text = true })
-  :wait()
+---@return table[]? entries
+---@return string? err
+local function export()
+  local tmp_directory = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(tmp_directory, "p") == 1)
 
-if result.code ~= 0 then
-  io.stderr:write("lua-language-server --doc failed:\n" .. (result.stderr or "") .. "\n")
-  os.exit(1)
+  local result = nvim
+    .system({
+      "lua-language-server",
+      "--doc=" .. root,
+      "--doc_out_path=" .. tmp_directory,
+      "--logpath=" .. tmp_directory .. "/log",
+    }, { text = true })
+    :wait()
+
+  if result.code ~= 0 then
+    return nil, "lua-language-server --doc failed:\n" .. (result.stderr or "")
+  end
+
+  local doc_json_path = tmp_directory .. "/doc.json"
+  if nvim.fn.filereadable(doc_json_path) == 0 then
+    return nil, "lua-language-server did not produce doc.json at " .. doc_json_path
+  end
+
+  local entries = nvim.json.decode(table.concat(nvim.fn.readfile(doc_json_path), "\n"))
+  local sound, export_error = ApiAppendix.verify_export(entries)
+  if not sound then
+    return nil, "lua-language-server --doc export rejected: " .. (export_error or "")
+  end
+  return entries
 end
 
-local doc_json_path = tmp_directory .. "/doc.json"
-if nvim.fn.filereadable(doc_json_path) == 0 then
-  io.stderr:write("lua-language-server did not produce doc.json at " .. doc_json_path .. "\n")
-  os.exit(1)
+local entries, export_error
+for attempt = 1, ATTEMPTS do
+  entries, export_error = export()
+  if entries then
+    break
+  end
+  io.stderr:write(string.format("export attempt %d/%d: %s\n", attempt, ATTEMPTS, export_error))
 end
 
-local raw = table.concat(nvim.fn.readfile(doc_json_path), "\n")
-local entries = nvim.json.decode(raw)
-
--- A truncated export renders as a well-formed but shorter appendix, which
--- reads downstream as a stale doc/api.md rather than as a broken export.
-local sound, export_error = ApiAppendix.verify_export(entries)
-if not sound then
-  io.stderr:write("lua-language-server --doc export rejected: " .. (export_error or "") .. "\n")
+if not entries then
   io.stderr:write("doc/api.md was not compared or rewritten; re-run the generator.\n")
   os.exit(1)
 end

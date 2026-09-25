@@ -145,7 +145,17 @@ end
 ---well-formed appendix, so `--check` blames `doc/api.md` for being stale and
 ---a plain run silently overwrites it with a shorter document. CI job
 ---104941880259 produced its whole export in 2.5s where the passing job on a
----slower runner took 6.0s (louiselm-qbr.9.9.7.1).
+---slower runner took 6.0s; that job's diff was never recovered, so truncation
+---there is a hypothesis (louiselm-qbr.9.9.7.1).
+---
+---The failure that was captured (CI run 35958957156, 2026-09-24) is a
+---different one: every entry present, but aliases rendered by name instead of
+---expanded. LuaLS 3.19.1's `--doc` sets `Lua.hover.expandAlias = false` only on
+---its fallback config scope, while the workspace folder's config (default
+---true) is loaded asynchronously. Whichever is in place when the export is
+---rendered wins. A by-name export loses every alias body (an alias's own view
+---becomes its name), so it is refused here rather than pinned: pinning false
+---would be deterministic but would drop that documentation.
 ---
 ---The check is per file because that is the granularity the exporter
 ---truncates at: LuaLS either reached a file and emitted all of its types or
@@ -188,6 +198,19 @@ function M.verify_export(entries, sections)
         faults[#faults + 1] = string.format("%s (%s) is documented by no entry", file, section.title)
       end
     end
+  end
+
+  local unexpanded = 0
+  for _, entry in ipairs(entries) do
+    for _, define in ipairs(entry.defines or {}) do
+      if define.type == "doc.alias" and define.view == entry.name then
+        unexpanded = unexpanded + 1
+      end
+    end
+  end
+  if unexpanded > 0 then
+    faults[#faults + 1] =
+      string.format("%d aliases were exported by name, not expanded (hover.expandAlias had not loaded)", unexpanded)
   end
 
   if #faults == 0 then

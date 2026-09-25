@@ -185,13 +185,21 @@ this generator reads the schema and writes annotations, the opposite of
 A generator that shells out to an external exporter must validate that
 export before trusting its exit status. An incomplete export can render as a
 well-formed but shorter artifact: `--check` reports stale documentation, while
-an unchecked write can discard valid entries. The original CI mismatch in
-`louiselm-qbr.9.9.7.1` remains unexplained: its differing export was not retained,
-and a shorter runtime alone does not prove a workspace-loading race. LuaLS
-3.19.1 explicitly waits for workspace readiness; preserve the export, logs and
-unified diff on recurrence. Independently of that unresolved cause, check a
-property the export cannot plausibly lose, fail with the exporter named, and
-leave the artifact untouched.
+an unchecked write can discard valid entries. Check a property the export
+cannot plausibly lose, fail with the exporter named, and leave the artifact
+untouched.
+
+An export can also be complete but rendered in the wrong mode. The captured
+`louiselm-qbr.9.9.7.1` recurrence (CI run 35958957156) had every entry, but its
+aliases were rendered by name. LuaLS 3.19.1 `--doc` sets `hover.expandAlias` to
+false only on its fallback config scope. It loads the folder config, where the
+default is true, asynchronously, so either value can apply at render time.
+Replaying `hover.expandAlias=false` through `--configpath` reproduced the CI diff
+line for line. The gate therefore rejects an alias whose view is its own name,
+and the generator retries the export (three attempts). Do not pin the setting
+to false instead: the export is then deterministic, but every alias body is
+lost. When a tool races its own configuration, prove the mechanism by forcing
+the setting before you choose a fix.
 
 Check it at the granularity the exporter truncates at. This gate first asked
 only that each curated *section* hold an entry, but LuaLS truncates per file:

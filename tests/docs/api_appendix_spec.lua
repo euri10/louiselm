@@ -245,6 +245,38 @@ T["api_appendix"]["verify_export rejects an export that covers every section but
   MiniTest.expect.equality(message:find("lua/gadgets/facade.lua", 1, true), nil)
 end
 
+local function alias_entry(name, view)
+  return {
+    name = name,
+    type = "type",
+    defines = { { file = "lua/widgets/init.lua", start = { 9 }, type = "doc.alias", view = view } },
+  }
+end
+
+T["api_appendix"]["verify_export rejects aliases exported by name instead of expanded"] = function()
+  -- LuaLS 3.19.1 renders an alias as its own name when its expandAlias config
+  -- had not loaded yet (CI run 35958957156); the alias body is then lost.
+  local ok, err = ApiAppendix.verify_export({
+    class_entry("widgets.Widget", "lua/widgets/init.lua"),
+    class_entry("gadgets.Gadget", "lua/gadgets/init.lua"),
+    alias_entry("widgets.Mode", "widgets.Mode"),
+  }, SECTIONS)
+
+  MiniTest.expect.equality(ok, false)
+  MiniTest.expect.equality((err or ""):find("1 aliases were exported by name", 1, true) ~= nil, true)
+end
+
+T["api_appendix"]["verify_export accepts expanded aliases"] = function()
+  local ok, err = ApiAppendix.verify_export({
+    class_entry("widgets.Widget", "lua/widgets/init.lua"),
+    class_entry("gadgets.Gadget", "lua/gadgets/init.lua"),
+    alias_entry("widgets.Mode", '"fast"|"slow"'),
+  }, SECTIONS)
+
+  MiniTest.expect.equality(ok, true)
+  MiniTest.expect.equality(err, nil)
+end
+
 T["api_appendix"]["verify_export accepts a curated file declared to export no entries"] = function()
   local entries = {
     class_entry("widgets.Widget", "lua/widgets/init.lua"),
