@@ -81,7 +81,7 @@ fn run_br_shim_brokers_generation_and_passes_reads_through() {
     assert!(generated.status.success());
     assert_eq!(
         fs::read_to_string(&recorded).expect("generated arguments"),
-        "run\ngenerate\n--command\nq\n--\ncaptured\nidea\n"
+        "--require-interface=1\nrun\ngenerate\n--command\nq\n--\ncaptured\nidea\n"
     );
 
     let read = Command::new(&shim)
