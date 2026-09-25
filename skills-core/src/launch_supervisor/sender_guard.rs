@@ -99,6 +99,17 @@ pub struct SenderGuard {
 }
 
 impl SenderGuard {
+    /// Exact resources whose release the installed certifier must prove.
+    pub(crate) fn conformance_map_ids(&self) -> Result<Vec<u32>, GuardError> {
+        self.maps
+            .values()
+            .map(|map| {
+                map.info()
+                    .map(|info| info.info.id)
+                    .map_err(|_| GuardError::Unavailable)
+            })
+            .collect()
+    }
     /// Enrolls at the production measured exec stop before the runtime can run.
     /// # Errors
     /// Returns the sandbox's startup/cleanup failure when enrollment is refused.

@@ -139,8 +139,7 @@ impl BrokerService {
             {
                 return Err(WaiverError::StalePlan.into());
             }
-            if condition.is_none()
-                || condition == Some(Condition::ContainmentFailure)
+            if condition.is_none_or(|condition| !condition.is_waivable())
                 || current.is_none_or(|current| {
                     current.observed_at_ms > now
                         || now.saturating_sub(current.observed_at_ms) >= 5_000

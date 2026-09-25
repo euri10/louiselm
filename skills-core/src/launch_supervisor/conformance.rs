@@ -4,7 +4,7 @@ use super::{LaunchAuthorization, SupervisorError};
 use crate::{
     conformance::{
         admission::{self, Admission, Enforcement, Request, Waiver},
-        installed::{CertificateStore, measure},
+        installed::{CertificateStore, CertificationError, measure},
     },
     launch_receipt::ConformanceEvidence,
     launcher_install::{LauncherConfig, LauncherPaths},
@@ -61,15 +61,9 @@ pub(super) fn inspect_current(
         crate::launcher_install::require_session_policy(paths, config)
             .map_err(|_| SupervisorError::ConformanceUnavailable)?;
     }
-    let host =
-        measure(paths, config, deadline).map_err(|_| SupervisorError::ConformanceUnavailable)?;
+    let host = measure(paths, config, deadline).map_err(|error| measurement_error(&error))?;
     let status = CertificateStore::inspect(&paths.state_root.join("conformance"), &host)
         .map_err(|_| SupervisorError::ConformanceUnavailable)?;
-    if !status.history.failures.is_empty() {
-        return Err(SupervisorError::ConformanceRefused(
-            admission::Condition::ContainmentFailure,
-        ));
-    }
     if Instant::now() >= deadline {
         return Err(SupervisorError::ConformanceUnavailable);
     }
@@ -139,4 +133,13 @@ pub(super) fn inspect_current(
         evidence,
         report_bytes,
     })
+}
+
+fn measurement_error(error: &CertificationError) -> SupervisorError {
+    match error {
+        CertificationError::GuardUnavailable => {
+            SupervisorError::ConformanceRefused(admission::Condition::GuardUnavailable)
+        }
+        _ => SupervisorError::ConformanceUnavailable,
+    }
 }

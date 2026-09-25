@@ -192,7 +192,23 @@ impl Fixture {
             completed: true,
             cleanup: Cleanup::Confirmed,
         };
-        assert_eq!(report.result().unwrap(), ReportResult::Passed);
+        // This component matrix retains all 46 original attacks. The installed
+        // certifier additionally runs the production Sender guard; this fixture
+        // must not invent that observation to claim a complete host report.
+        let mut actual: Vec<_> = report
+            .checks
+            .iter()
+            .map(|check| check.name.as_str())
+            .collect();
+        let mut expected: Vec<_> = louiselm_skills::conformance::REQUIRED_CHECKS
+            .iter()
+            .copied()
+            .filter(|name| *name != louiselm_skills::conformance::SENDER_GUARD_CHECK)
+            .collect();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+        assert_eq!(report.result().unwrap(), ReportResult::Incomplete);
         println!(
             "HOSTILE_REPORT:{}",
             String::from_utf8(report.canonical_bytes().unwrap()).unwrap()

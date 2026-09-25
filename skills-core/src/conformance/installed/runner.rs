@@ -129,6 +129,15 @@ pub fn certify(
     let current = measure(paths, &fixture.config, deadline);
     if current.as_ref().ok() != Some(&before) || fixture.check_deadline().is_err() {
         fixture.report.completed = false;
+        if let Some(check) = fixture
+            .report
+            .checks
+            .iter_mut()
+            .find(|check| check.name == crate::conformance::SENDER_GUARD_CHECK)
+        {
+            check.confined =
+                Outcome::Error("guard measurements changed or certification interrupted".into());
+        }
     }
     let certificate = Certificate::new(before, fixture.report.clone())?;
     store.finish(&certificate)?;
@@ -235,6 +244,21 @@ impl Fixture {
     }
 
     fn run(&mut self, store: &mut CertificateStore) -> Result<()> {
+        let (check, cleanup) = super::guard_probe::run(
+            self.path("runtime/probe"),
+            self.root.clone(),
+            self.identity(0)?.uid,
+            self.identity(2)?.uid,
+            self.deadline,
+        );
+        self.report.checks.push(check);
+        if cleanup == Cleanup::Unconfirmed {
+            self.report.cleanup = cleanup;
+        }
+        store.observe(&self.report)?;
+        if cleanup == Cleanup::Unconfirmed {
+            return Err(CertificationError::Invalid);
+        }
         checks::filesystem(self, store)?;
         #[cfg(test)]
         if CANCEL_AFTER_FIRST_GROUP.with(|cancel| cancel.replace(false)) {

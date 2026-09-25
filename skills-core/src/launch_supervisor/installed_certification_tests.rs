@@ -46,6 +46,15 @@ fn privileged_installed_certification_owns_probes_and_retains_exact_evidence() {
         eprintln!("unsupported host correctly refused; no installed certification claimed");
         return;
     }
+    if std::env::var_os("LOUISELM_EXPECT_GUARD_UNAVAILABLE").is_some() {
+        assert!(
+            matches!(result, Err(CertificationError::GuardUnavailable)),
+            "{result:?}"
+        );
+        assert!(!paths.state_root.join("conformance").exists());
+        assert_unsupported_guard(&paths, &config, deadline);
+        return;
+    }
     let certificate = result.unwrap();
     assert_eq!(
         certificate.observations.result().unwrap(),
@@ -54,6 +63,16 @@ fn privileged_installed_certification_owns_probes_and_retains_exact_evidence() {
         certificate.observations
     );
     let host = measure(&paths, &config, deadline).unwrap();
+    assert_guard_measurements(&host);
+    assert!(
+        certificate
+            .observations
+            .checks
+            .iter()
+            .any(|check| check.name == crate::conformance::SENDER_GUARD_CHECK
+                && check.control == crate::conformance::Outcome::Allowed
+                && matches!(check.confined, crate::conformance::Outcome::Denied(_)))
+    );
     assert!(certificate.is_current(&host));
     let status = CertificateStore::inspect(&paths.state_root.join("conformance"), &host).unwrap();
     assert!(!status.pending);
@@ -85,7 +104,105 @@ fn privileged_installed_certification_owns_probes_and_retains_exact_evidence() {
             .certificate
             .is_none()
     );
+    verify_guard_load_refusal(&paths, &config, deadline, parent);
     verify_interrupted_cleanup(&paths, deadline, parent);
+}
+
+fn assert_guard_measurements(host: &crate::conformance::installed::HostSnapshot) {
+    for (key, path) in [
+        (
+            "library/libbpf.so.1",
+            "/usr/lib/x86_64-linux-gnu/libbpf.so.1",
+        ),
+        ("/sys/kernel/btf/vmlinux", "/sys/kernel/btf/vmlinux"),
+        ("/sys/kernel/security/lsm", "/sys/kernel/security/lsm"),
+    ] {
+        assert_eq!(
+            host.inputs.get(key),
+            Some(&Digest::of(&fs::read(path).unwrap()).to_string())
+        );
+    }
+}
+
+fn assert_unsupported_guard(paths: &LauncherPaths, config: &LauncherConfig, deadline: Instant) {
+    let inspect = crate::launch_supervisor::conformance::inspect;
+    let mut authorization = authorization(config);
+    for attendance in [Attendance::Interactive, Attendance::Unattended] {
+        approve_waiver(&mut authorization, Condition::Stale);
+        authorization.conformance.attendance = attendance;
+        if attendance == Attendance::Unattended {
+            authorization.conformance.waiver = None;
+        }
+        assert_eq!(
+            inspect(paths, config, &authorization, 1000, deadline).err(),
+            Some(SupervisorError::ConformanceRefused(
+                Condition::GuardUnavailable
+            ))
+        );
+    }
+    let mut ordinary = config.clone();
+    ordinary.conformance = Enforcement::default();
+    authorization.conformance = crate::launch_protocol::ConformanceAuthorization::default();
+    assert_eq!(
+        inspect(paths, &ordinary, &authorization, 1000, deadline)
+            .unwrap()
+            .evidence,
+        crate::launch_receipt::ConformanceEvidence::Unevaluated
+    );
+}
+
+fn verify_guard_load_refusal(
+    paths: &LauncherPaths,
+    config: &LauncherConfig,
+    deadline: Instant,
+    parent: u32,
+) {
+    crate::conformance::installed::REFUSE_GUARD_LOAD.with(|refuse| refuse.set(true));
+    let certificate = certify(paths, deadline, parent).unwrap();
+    let check = certificate
+        .observations
+        .checks
+        .iter()
+        .find(|check| check.name == crate::conformance::SENDER_GUARD_CHECK)
+        .unwrap();
+    assert_eq!(
+        check.confined,
+        crate::conformance::Outcome::Error("Sender guard platform unavailable".into())
+    );
+    assert_eq!(
+        certificate.observations.cleanup,
+        crate::conformance::Cleanup::Confirmed
+    );
+    let mut authorization = authorization(config);
+    for attendance in [Attendance::Interactive, Attendance::Unattended] {
+        approve_waiver(&mut authorization, Condition::Stale);
+        authorization.conformance.attendance = attendance;
+        if attendance == Attendance::Unattended {
+            authorization.conformance.waiver = None;
+        }
+        assert_eq!(
+            crate::launch_supervisor::conformance::inspect(
+                paths,
+                config,
+                &authorization,
+                1000,
+                deadline
+            )
+            .err(),
+            Some(SupervisorError::ConformanceRefused(
+                Condition::GuardUnavailable
+            ))
+        );
+    }
+    // Restore through another real certifier run before cancellation testing.
+    assert_eq!(
+        certify(paths, deadline, parent)
+            .unwrap()
+            .observations
+            .result()
+            .unwrap(),
+        ReportResult::Passed
+    );
 }
 
 fn authorization(config: &LauncherConfig) -> LaunchAuthorization {
@@ -186,20 +303,17 @@ fn verify_interrupted_cleanup(paths: &LauncherPaths, deadline: Instant, parent: 
     let inspect = crate::launch_supervisor::conformance::inspect;
     assert_eq!(
         inspect(paths, &config, &authorization, 1000, deadline).err(),
-        Some(SupervisorError::ConformanceRefused(Condition::Stale))
+        Some(SupervisorError::ConformanceRefused(
+            Condition::GuardUnavailable
+        ))
     );
     approve_waiver(&mut authorization, Condition::Stale);
-    let waived = inspect(paths, &config, &authorization, 1000, deadline).unwrap();
     assert_eq!(
-        waived.evidence,
-        crate::launch_receipt::ConformanceEvidence::Waived {
-            condition: Condition::Stale,
-            report_digest: Some(cancelled.observations.digest().unwrap().to_string()),
-        }
-    );
-    assert_eq!(
-        waived.report_bytes,
-        Some(cancelled.observations.canonical_bytes().unwrap())
+        inspect(paths, &config, &authorization, 1000, deadline).err(),
+        Some(SupervisorError::ConformanceRefused(
+            Condition::GuardUnavailable
+        )),
+        "cancellation invalidates the guard measurement boundary even with a waiver"
     );
     for slot in 0..3 {
         crate::launcher_install::acquire_identity(paths, slot)

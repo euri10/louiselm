@@ -50,6 +50,12 @@ fn certified(host: HostSnapshot) -> Certificate {
     Certificate::new(host, passing_report()).unwrap()
 }
 
+fn incomplete(host: HostSnapshot) -> Certificate {
+    let mut report = passing_report();
+    report.checks.remove(0);
+    Certificate::new(host, report).unwrap()
+}
+
 const SESSION: &str = "session-fixture";
 
 fn unwaived(attendance: Attendance) -> Request<'static> {
@@ -69,6 +75,88 @@ fn status(certificate: Option<Certificate>) -> CertificateStatus {
 }
 
 #[test]
+fn missing_sender_guard_proof_is_never_waivable() {
+    let measured = host();
+    let waiver = Waiver {
+        session_id: SESSION.into(),
+        condition: Condition::GuardUnavailable,
+    };
+    for attendance in [Attendance::Interactive, Attendance::Unattended] {
+        assert_eq!(
+            evaluate(&status(None), &measured, &waived(attendance, &waiver)),
+            Admission::Refused(Condition::GuardUnavailable)
+        );
+        let mut report = passing_report();
+        report
+            .checks
+            .retain(|check| check.name != crate::conformance::SENDER_GUARD_CHECK);
+        assert_eq!(
+            evaluate(
+                &status(Some(Certificate::new(measured.clone(), report).unwrap())),
+                &measured,
+                &waived(attendance, &waiver)
+            ),
+            Admission::Refused(Condition::GuardUnavailable)
+        );
+    }
+}
+
+#[test]
+fn failed_guard_observations_and_changed_measured_bytes_refuse_every_waiver() {
+    let measured = host();
+    for condition in [
+        Condition::Missing,
+        Condition::Stale,
+        Condition::Incomplete,
+        Condition::GuardUnavailable,
+    ] {
+        let waiver = Waiver {
+            session_id: SESSION.into(),
+            condition,
+        };
+        for attendance in [Attendance::Interactive, Attendance::Unattended] {
+            for outcome in [
+                Outcome::Allowed,
+                Outcome::Error("production load failed".into()),
+            ] {
+                let mut report = passing_report();
+                report
+                    .checks
+                    .iter_mut()
+                    .find(|check| check.name == crate::conformance::SENDER_GUARD_CHECK)
+                    .unwrap()
+                    .confined = outcome;
+                assert_eq!(
+                    evaluate(
+                        &status(Some(Certificate::new(measured.clone(), report).unwrap())),
+                        &measured,
+                        &waived(attendance, &waiver)
+                    ),
+                    Admission::Refused(Condition::GuardUnavailable)
+                );
+            }
+            for input in [
+                "launcher",
+                "loader",
+                "library/libbpf.so.1",
+                "/sys/kernel/btf/vmlinux",
+                "/sys/kernel/security/lsm",
+            ] {
+                let retained = status(Some(certified(measured.clone())));
+                let mut changed = measured.clone();
+                changed
+                    .inputs
+                    .insert(input.into(), Digest::of(b"changed").to_string());
+                assert_eq!(
+                    evaluate(&retained, &changed, &waived(attendance, &waiver)),
+                    Admission::Refused(Condition::GuardUnavailable)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn current_passing_evidence_admits_and_binds_the_exact_report_digest() {
     let measured = host();
     let status = status(Some(certified(measured.clone())));
@@ -81,7 +169,7 @@ fn current_passing_evidence_admits_and_binds_the_exact_report_digest() {
 }
 
 #[test]
-fn a_changed_measured_input_makes_retained_evidence_stale() {
+fn a_changed_measured_input_invalidates_guard_support() {
     let certified_host = host();
     let status = status(Some(certified(certified_host.clone())));
     let mut measured = certified_host;
@@ -91,13 +179,13 @@ fn a_changed_measured_input_makes_retained_evidence_stale() {
 
     assert_eq!(
         evaluate(&status, &measured, &unwaived(Attendance::Unattended)),
-        Admission::Refused(Condition::Stale),
+        Admission::Refused(Condition::GuardUnavailable),
         "a version label cannot stand in for unchanged bytes"
     );
 }
 
 #[test]
-fn a_reboot_makes_retained_evidence_stale() {
+fn a_reboot_requires_current_guard_support() {
     let certified_host = host();
     let status = status(Some(certified(certified_host.clone())));
     let mut measured = certified_host;
@@ -105,22 +193,22 @@ fn a_reboot_makes_retained_evidence_stale() {
 
     assert_eq!(
         evaluate(&status, &measured, &unwaived(Attendance::Unattended)),
-        Admission::Refused(Condition::Stale)
+        Admission::Refused(Condition::GuardUnavailable)
     );
 }
 
 #[test]
-fn absent_evidence_is_waivable_only_when_an_operator_is_present() {
+fn absent_evidence_cannot_prove_required_guard_support() {
     let measured = host();
     let status = status(None);
 
     assert_eq!(
         evaluate(&status, &measured, &unwaived(Attendance::Interactive)),
-        Admission::Waivable(Condition::Missing)
+        Admission::Refused(Condition::GuardUnavailable)
     );
     assert_eq!(
         evaluate(&status, &measured, &unwaived(Attendance::Unattended)),
-        Admission::Refused(Condition::Missing),
+        Admission::Refused(Condition::GuardUnavailable),
         "unattended Runs never waive"
     );
 }
@@ -133,12 +221,12 @@ fn an_interrupted_attempt_is_incomplete_and_never_a_pass() {
 
     assert_eq!(
         evaluate(&status, &measured, &unwaived(Attendance::Interactive)),
-        Admission::Waivable(Condition::Incomplete),
+        Admission::Refused(Condition::GuardUnavailable),
         "an unfinished attempt cannot ride on an older certificate"
     );
     assert_eq!(
         evaluate(&status, &measured, &unwaived(Attendance::Unattended)),
-        Admission::Refused(Condition::Incomplete)
+        Admission::Refused(Condition::GuardUnavailable)
     );
 }
 
@@ -189,32 +277,9 @@ fn waived(attendance: Attendance, waiver: &Waiver) -> Request<'_> {
 #[test]
 fn an_explicit_waiver_admits_the_exact_condition_it_names() {
     let measured = host();
-    let status = status(None);
-    let waiver = Waiver {
-        session_id: SESSION.into(),
-        condition: Condition::Missing,
-    };
-
-    assert_eq!(
-        evaluate(
-            &status,
-            &measured,
-            &waived(Attendance::Interactive, &waiver)
-        ),
-        Admission::Waived {
-            condition: Condition::Missing,
-            report_digest: None,
-        },
-        "the waived launch records the actual evidence status"
-    );
-}
-
-#[test]
-fn a_waiver_binds_the_stale_report_it_rode_past() {
-    let certified_host = host();
-    let status = status(Some(certified(certified_host.clone())));
-    let mut measured = certified_host;
-    measured.boot_id = "00000000-0000-0000-0000-000000000002".into();
+    let certificate = incomplete(measured.clone());
+    let digest = certificate.observations.digest().unwrap().to_string();
+    let status = status(Some(certificate));
     let waiver = Waiver {
         session_id: SESSION.into(),
         condition: Condition::Stale,
@@ -228,7 +293,33 @@ fn a_waiver_binds_the_stale_report_it_rode_past() {
         ),
         Admission::Waived {
             condition: Condition::Stale,
-            report_digest: Some(passing_report().digest().unwrap().to_string()),
+            report_digest: Some(digest),
+        },
+        "the waived launch records the actual evidence status"
+    );
+}
+
+#[test]
+fn a_waiver_binds_the_stale_report_it_rode_past() {
+    let certified_host = host();
+    let certificate = incomplete(certified_host.clone());
+    let digest = certificate.observations.digest().unwrap().to_string();
+    let status = status(Some(certificate));
+    let measured = certified_host;
+    let waiver = Waiver {
+        session_id: SESSION.into(),
+        condition: Condition::Stale,
+    };
+
+    assert_eq!(
+        evaluate(
+            &status,
+            &measured,
+            &waived(Attendance::Interactive, &waiver)
+        ),
+        Admission::Waived {
+            condition: Condition::Stale,
+            report_digest: Some(digest),
         },
         "an auditor must reach the exact evidence the waiver bypassed"
     );
@@ -237,8 +328,7 @@ fn a_waiver_binds_the_stale_report_it_rode_past() {
 #[test]
 fn a_waiver_never_covers_a_condition_it_did_not_name() {
     let measured = host();
-    let mut status = status(None);
-    status.pending = true;
+    let status = status(Some(incomplete(measured.clone())));
     let waiver = Waiver {
         session_id: SESSION.into(),
         condition: Condition::Missing,
@@ -250,18 +340,18 @@ fn a_waiver_never_covers_a_condition_it_did_not_name() {
             &measured,
             &waived(Attendance::Interactive, &waiver)
         ),
-        Admission::Waivable(Condition::Incomplete),
-        "approving absent evidence does not approve an interrupted attempt"
+        Admission::Waivable(Condition::Stale),
+        "approving absent evidence does not approve an incomplete report"
     );
 }
 
 #[test]
 fn a_waiver_is_scoped_to_the_session_that_authorized_it() {
     let measured = host();
-    let status = status(None);
+    let status = status(Some(incomplete(measured.clone())));
     let waiver = Waiver {
         session_id: "another-session".into(),
-        condition: Condition::Missing,
+        condition: Condition::Stale,
     };
 
     assert_eq!(
@@ -270,7 +360,7 @@ fn a_waiver_is_scoped_to_the_session_that_authorized_it() {
             &measured,
             &waived(Attendance::Interactive, &waiver)
         ),
-        Admission::Waivable(Condition::Missing),
+        Admission::Waivable(Condition::Stale),
         "a waiver cannot be replayed into a different Session"
     );
 }
@@ -278,15 +368,15 @@ fn a_waiver_is_scoped_to_the_session_that_authorized_it() {
 #[test]
 fn an_unattended_run_cannot_present_a_waiver() {
     let measured = host();
-    let status = status(None);
+    let status = status(Some(incomplete(measured.clone())));
     let waiver = Waiver {
         session_id: SESSION.into(),
-        condition: Condition::Missing,
+        condition: Condition::Stale,
     };
 
     assert_eq!(
         evaluate(&status, &measured, &waived(Attendance::Unattended, &waiver)),
-        Admission::Refused(Condition::Missing),
+        Admission::Refused(Condition::Stale),
         "unattended Runs never waive, even holding an operator's waiver"
     );
 }

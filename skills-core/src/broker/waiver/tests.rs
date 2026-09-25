@@ -100,11 +100,13 @@ fn unattended_and_containment_failures_cannot_be_planned() {
         Err(WaiverError::Unattended)
     );
     context.attendance = Attendance::Interactive;
-    context.condition = Condition::ContainmentFailure;
-    assert_eq!(
-        validate_plan(&context, &proposal(), 100),
-        Err(WaiverError::NotWaivable)
-    );
+    for condition in [Condition::ContainmentFailure, Condition::GuardUnavailable] {
+        context.condition = condition;
+        assert_eq!(
+            validate_plan(&context, &proposal(), 100),
+            Err(WaiverError::NotWaivable)
+        );
+    }
 }
 
 #[test]

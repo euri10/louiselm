@@ -61,6 +61,11 @@ fn main() -> ExitCode {
                 .map(|()| 0)
                 .map_err(|_| "probe failed")
         }
+        Some(value) if value == OsStr::new("__conformance-guard-probe") => {
+            louiselm_skills::conformance::installed::serve_guard_probe()
+                .map(|()| 0)
+                .map_err(|_| "guard probe failed")
+        }
         _ => Err("expected exactly 'run', 'prepare', 'certify' or root-only 'cleanup'"),
     };
     match result {

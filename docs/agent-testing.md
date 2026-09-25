@@ -88,6 +88,10 @@ UIDs and network namespaces, helper and cross-Session descriptor denial, invalid
 handoff, refused upstream acknowledgements, uncertain cleanup, stale sockets,
 broker crash and zero-survivor cleanup. Both arguments may
 name a clean Cargo `debug/deps` directory with exactly one matching test executable.
+The job also runs the existing installed-certification fixture inside the guest.
+It requires the production Sender guard observation, measured libbpf/BTF/LSM
+bytes, actual loader refusal after removing the probe thread's capabilities,
+non-waivable guard admission, cancellation and uncertain-cleanup refusals.
 
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both

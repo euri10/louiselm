@@ -20,12 +20,14 @@ pub mod preparation;
 pub const REPORT_SCHEMA: &str = "louiselm.conformance.observations/1";
 /// Maximum encoded observation report size.
 pub const MAX_REPORT_BYTES: usize = 128 * 1024;
+/// Fixed installed proof of production Sender guard enforcement.
+pub const SENDER_GUARD_CHECK: &str = "sender-guard";
 
-/// Required hostile matrix: 45 named attacks and whole-tree lifecycle.
+/// Required hostile matrix: 45 named attacks, whole-tree lifecycle and Sender guard.
 ///
 /// Other acceptance gates (registry, startup and relay composition) still run
 /// independently. Completing this inventory alone never certifies their paths.
-pub const REQUIRED_CHECKS: [&str; 46] = [
+pub const REQUIRED_CHECKS: [&str; 47] = [
     "operator-home",
     "symlink-operator-home",
     "operator-checkout",
@@ -72,6 +74,7 @@ pub const REQUIRED_CHECKS: [&str; 46] = [
     "own-channel-second",
     "foreign-channel-second",
     "lifecycle",
+    SENDER_GUARD_CHECK,
 ];
 
 /// Environment in which the trusted producer made observations.

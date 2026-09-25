@@ -104,10 +104,19 @@ The worker leases three available identities from the existing pool, avoiding
 occupied or poisoned slots. All files, target processes, socket services and
 network endpoints are test-owned. It changes only its own network namespace;
 there are no desktop-service requests, real credentials, host-wide settings,
-caller-selected commands or new privileged daemon. The complete 46-check
+caller-selected commands or new privileged daemon. The complete 47-check
 inventory and production Bubblewrap/lifecycle mechanics are required. The guest
 gate now imports the same probe implementation; service doubles exchange a fixed
 harmless sentinel, not real D-Bus/Docker protocol messages.
+
+The additional `sender-guard` observation loads the embedded production object
+through system libbpf, enrolls owned runtime/broker processes, and checks an
+allowed runtime send, pre-activation and foreign-sender denials, an allowed
+upstream write, and kernel denial of that same upstream after runtime loss.
+Cleanup closes every peer/socket and verifies that the owned BPF map IDs are
+gone after the private pin namespace exits. The earlier 46-check guest matrix
+still checks its exact inventory, but its report is incomplete for this expanded
+host contract. Guest reports cannot become installed certificates.
 
 ### Measured boundary
 
@@ -128,6 +137,15 @@ refuse certification; there is no force/skip option. The exact profile lives in
 - Running kernel notes, release/version, command line, taint, loaded module
   names, LSM/cgroup-controller state and the enumerated isolation-relevant
   sysctls. Optional inputs bind presence separately from their bytes.
+- Required kernel BTF bytes and the active BPF LSM list. The measured launcher
+  binds its embedded guard; the actual resolved `libbpf.so.1` bytes are required.
+
+Absent, failed or changed Sender guard evidence returns `guard_unavailable`
+through conformance admission. No interactive or unattended waiver covers it;
+restore support and recertify. Other incomplete conformance observations remain
+waivable only when the same current host report proves the guard and cleanup.
+Ordinary pre-cutover Sessions remain unevaluated and do not acquire a Verified
+claim or a new permission prompt.
 
 Inputs are measured before and after the probes. A changed input prevents a
 passing certificate, including when all individual probes succeeded. These are

@@ -15,7 +15,7 @@ pub(crate) fn validate_admission_history(
 ) -> Result<(), ProtocolError> {
     match admission {
         ConformanceEvidence::Waived {
-            condition: Condition::ContainmentFailure,
+            condition: Condition::ContainmentFailure | Condition::GuardUnavailable,
             ..
         }
         | ConformanceEvidence::Waived {
@@ -161,7 +161,7 @@ impl ConformanceAuthorization {
                 || waiver.operator_uid == 0
                 || waiver.operator_uid != controller_uid
                 || waiver.expires_at_ms <= now_ms
-                || waiver.condition == Condition::ContainmentFailure
+                || !waiver.condition.is_waivable()
             {
                 return Err(invalid());
             }

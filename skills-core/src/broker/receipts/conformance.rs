@@ -159,6 +159,15 @@ pub(in crate::broker) fn validate_report(
     if matches!(
         admission,
         ConformanceEvidence::Waived {
+            condition: Condition::GuardUnavailable,
+            ..
+        }
+    ) {
+        return Err(refusal("guard_unavailable_cannot_be_waived"));
+    }
+    if matches!(
+        admission,
+        ConformanceEvidence::Waived {
             condition: Condition::ContainmentFailure,
             ..
         }

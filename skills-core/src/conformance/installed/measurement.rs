@@ -99,8 +99,14 @@ pub fn measure(
     );
     kernel_inputs(&mut inputs, deadline)?;
     loader_configuration(&mut inputs, deadline)?;
+    // The launcher digest binds the embedded guard. Resolve its actual system
+    // dependencies through the same fixed loader used by the installed profile.
+    dependencies(launcher.as_path(), deadline, &mut inputs)
+        .map_err(|_| CertificationError::GuardUnavailable)?;
+    if !inputs.contains_key("library/libbpf.so.1") {
+        return Err(CertificationError::GuardUnavailable);
+    }
     for executable in [
-        launcher.as_path(),
         config.bwrap_path.as_path(),
         paths.getent.as_path(),
         paths.ssh_keygen.as_path(),
@@ -136,6 +142,25 @@ fn kernel_inputs(
     inputs: &mut BTreeMap<String, String>,
     deadline: Instant,
 ) -> Result<(), CertificationError> {
+    let btf = read_bounded(Path::new("/sys/kernel/btf/vmlinux"), 128 * 1024 * 1024)
+        .map_err(|_| CertificationError::GuardUnavailable)?;
+    let lsm = read_bounded(Path::new("/sys/kernel/security/lsm"), 4096)
+        .map_err(|_| CertificationError::GuardUnavailable)?;
+    if btf.is_empty()
+        || !lsm
+            .split(|byte| *byte == b',')
+            .any(|name| name == b"bpf" || name == b"bpf\n")
+    {
+        return Err(CertificationError::GuardUnavailable);
+    }
+    inputs.insert(
+        "/sys/kernel/btf/vmlinux".into(),
+        Digest::of(&btf).to_string(),
+    );
+    inputs.insert(
+        "/sys/kernel/security/lsm".into(),
+        Digest::of(&lsm).to_string(),
+    );
     inputs.insert(
         "kernel".into(),
         Digest::of(&read_bounded(Path::new("/sys/kernel/notes"), 1024 * 1024)?).to_string(),
@@ -153,7 +178,7 @@ fn kernel_inputs(
         "/proc/sys/user/max_user_namespaces",
         "/sys/fs/cgroup/cgroup.controllers",
         "/proc/sys/fs/suid_dumpable",
-        "/sys/kernel/security/lsm",
+        "/proc/sys/kernel/unprivileged_bpf_disabled",
     ] {
         check_deadline(deadline)?;
         inputs.insert(path.into(), optional_digest(Path::new(path))?);

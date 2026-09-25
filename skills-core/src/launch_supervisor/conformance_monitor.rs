@@ -116,7 +116,7 @@ impl Monitor {
             };
             if self.containment_failed
                 || condition != waiver.condition
-                || condition == Condition::ContainmentFailure
+                || !condition.is_waivable()
                 || current.observed_at_ms > now_ms
                 || now_ms.saturating_sub(current.observed_at_ms) >= 5_000
             {

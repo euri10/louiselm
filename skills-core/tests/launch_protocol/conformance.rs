@@ -134,6 +134,7 @@ fn conformance_waivers_bind_exact_authenticated_launch_and_exclusive_expiry() {
         "operator",
         "root",
         "condition",
+        "guard",
         "digest",
         "unattended",
     ] {
@@ -145,6 +146,7 @@ fn conformance_waivers_bind_exact_authenticated_launch_and_exclusive_expiry() {
             "operator" => waiver.operator_uid = 1001,
             "root" => waiver.operator_uid = 0,
             "condition" => waiver.condition = Condition::ContainmentFailure,
+            "guard" => waiver.condition = Condition::GuardUnavailable,
             "digest" => waiver.receipt_digest = "not-a-receipt".into(),
             "unattended" => changed.conformance.attendance = Attendance::Unattended,
             _ => unreachable!(),

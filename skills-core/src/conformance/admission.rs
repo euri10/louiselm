@@ -48,6 +48,16 @@ pub enum Condition {
     Incomplete,
     /// An observed containment failure is retained for this host.
     ContainmentFailure,
+    /// Required production Sender guard enforcement is absent or no longer proved.
+    GuardUnavailable,
+}
+
+impl Condition {
+    /// Whether an explicit interactive waiver may cover this condition.
+    #[must_use]
+    pub const fn is_waivable(self) -> bool {
+        matches!(self, Self::Missing | Self::Stale | Self::Incomplete)
+    }
 }
 
 /// An operator's explicit approval of one condition for one Session.
@@ -113,8 +123,33 @@ pub fn evaluate(
     measured: &HostSnapshot,
     request: &Request<'_>,
 ) -> Admission {
+    if status
+        .history
+        .failures
+        .iter()
+        .any(|failure| failure.check == super::SENDER_GUARD_CHECK)
+    {
+        return Admission::Refused(Condition::GuardUnavailable);
+    }
     if !status.history.failures.is_empty() {
         return Admission::Refused(Condition::ContainmentFailure);
+    }
+    // Guard support cannot borrow old observations, another host's proof, or
+    // a waiver for missing evidence. An otherwise incomplete report can still
+    // carry this exact completed probe, preserving unrelated waiver policy.
+    if status.pending
+        || !status.certificate.as_ref().is_some_and(|certificate| {
+            certificate.canonical_bytes().is_ok()
+                && &certificate.host == measured
+                && certificate.observations.cleanup == super::Cleanup::Confirmed
+                && certificate.observations.checks.iter().any(|check| {
+                    check.name == super::SENDER_GUARD_CHECK
+                        && check.control == super::Outcome::Allowed
+                        && matches!(check.confined, super::Outcome::Denied(_))
+                })
+        })
+    {
+        return Admission::Refused(Condition::GuardUnavailable);
     }
     let retained = status
         .certificate

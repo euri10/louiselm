@@ -12,7 +12,11 @@ use super::preparation::uuid;
 use super::{Report, ReportError, ReportResult, Scope};
 use crate::Digest;
 
+mod guard_probe;
 mod measurement;
+#[cfg(test)]
+pub(crate) use guard_probe::REFUSE_GUARD_LOAD;
+pub use guard_probe::serve_peer as serve_guard_probe;
 #[doc(hidden)]
 pub mod probes;
 mod runner;
@@ -149,6 +153,11 @@ pub enum CertificationError {
     /// The fixed initial platform/dependency profile cannot be measured.
     #[error("unsupported or unmeasurable host certification profile")]
     Unsupported,
+    /// Production Sender guard inputs or its system loader are unavailable.
+    #[error(
+        "Sender guard unavailable; restore BPF LSM, kernel BTF and system libbpf, then certify"
+    )]
+    GuardUnavailable,
     /// Another attempt owns the store, or an old attempt has unresolved cleanup.
     #[error("certification busy or interrupted; inspect retained attempt and identity leases")]
     Pending,

@@ -181,6 +181,19 @@ jobs:
             /var/tmp/louiselm-skills-target/debug/deps
           ./scripts/launcher-vm exec sudo -n python3 /var/tmp/scripts/test-sender-guard-handoff.py \
             /var/tmp/louiselm-skills-target/debug/deps /var/tmp/louiselm-skills-target/debug/deps
+      - name: Exercise installed conformance with the production guard
+        run: |
+          ./scripts/launcher-vm exec bash -ceu '
+            export PATH=/home/vm/.cargo/bin:/usr/bin:/bin CARGO_NET_OFFLINE=true
+            export CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target CARGO_PROFILE_DEV_DEBUG=line-tables-only
+            library_test=$(cargo test --manifest-path /home/vm/skills-core/Cargo.toml --lib --all-features --locked --no-run --message-format=json |
+              jq -r '\''select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'\'')
+            test -x "$library_test"
+            sudo -n env LOUISELM_REQUIRE_CERTIFICATION=1 timeout 240 unshare --net -- \
+              /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture'\'' bash "$library_test"
+            sudo -n env LOUISELM_REQUIRE_CERTIFICATION=1 LOUISELM_EXPECT_GUARD_UNAVAILABLE=1 timeout 60 unshare --mount --net --propagation private -- \
+              /bin/bash -c '\''umask 022; mount --bind /dev/null /sys/kernel/btf/vmlinux; exec "$1" launch_supervisor::system::installed_tests::certification::privileged_installed_certification_owns_probes_and_retains_exact_evidence --exact --nocapture'\'' bash "$library_test"
+          '
       - name: Dispose the guest
         if: always()
         run: |

@@ -167,7 +167,7 @@ fn validate_plan(context: &Context, proposal: &Proposal, now_ms: u64) -> Result<
     if context.attendance != Attendance::Interactive {
         return Err(WaiverError::Unattended);
     }
-    if context.condition == Condition::ContainmentFailure {
+    if !context.condition.is_waivable() {
         return Err(WaiverError::NotWaivable);
     }
     if !super::is_record_identifier(&proposal.request_id)
