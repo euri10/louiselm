@@ -68,6 +68,10 @@ merging. Do not squash them under a release-driving title. Directory exclusions
 and the exception list must be reviewed when adding a new component or tooling
 file. Keep Conventional Commits on main (squash with the reviewed PR title).
 
+The audit skips only `5865438`, a VM-tooling commit already on protected `main`
+whose `fix(vm)` subject cannot be amended there. This does not change Release
+Please's classification of that historical commit or exempt later commits.
+
 Breaking notes must explain the upgrade and name required enabled-companion
 updates. They do not authorize compatibility shims. The version gate refuses
 1.x, including an explicit `Release-As: 1.0.0`; a maintainer stability decision

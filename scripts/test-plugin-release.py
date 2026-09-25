@@ -215,6 +215,12 @@ class CapturePublication(unittest.TestCase):
 
 
 class CommitPolicy(unittest.TestCase):
+    def test_protected_history_exception_does_not_relax_commit_policy(self):
+        excluded = json.loads(Path("release-please-config.json").read_text())["packages"]["."]["exclude-paths"]
+        with self.assertRaises(ValueError):
+            policy.validate("fix(vm): archive Provider disclosure fixture", ["scripts/launcher-vm", ".beads/issues.jsonl"], excluded)
+        policy.main()
+
     def test_root_companion_and_site_files_cannot_drive_releases(self):
         for filename in policy.NON_PLUGIN_FILES:
             policy.validate("build: update tool", [filename], ["site"])

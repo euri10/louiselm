@@ -25,6 +25,8 @@ NON_PLUGIN_FILES = {
 
 # This convention applies prospectively, independently of release-note history.
 AUDIT_BASELINE = "c905fdafa60370d1a07e6853bba741cce9da9870"
+# Already on protected main on both remotes; neither permits correcting its subject.
+PROTECTED_HISTORY_EXCEPTION = "58654387a856659201063d8586333336aa208798"
 
 
 def validate(message, files, excluded):
@@ -44,6 +46,8 @@ def main(baseline=AUDIT_BASELINE):
     excluded = config["packages"]["."]["exclude-paths"]
     commits = subprocess.check_output(["git", "rev-list", f"{baseline}..HEAD"], text=True).splitlines()
     for sha in commits:
+        if sha == PROTECTED_HISTORY_EXCEPTION:
+            continue
         message = subprocess.check_output(["git", "show", "-s", "--format=%B", sha], text=True)
         files = subprocess.check_output(["git", "diff-tree", "--no-commit-id", "--name-only", "--first-parent", "-m", "-r", sha], text=True).splitlines()
         try:
