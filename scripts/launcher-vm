@@ -188,7 +188,8 @@ case $action in
     git -C "$project_root" archive HEAD skills-core docs/recovery-ceremony.md \
       tests/fixtures/verified_posture_v1.json tests/fixtures/provider_config.json \
       tests/fixtures/preflight_v1.json tests/fixtures/preflight_request_v2.json \
-      tests/fixtures/broker_attention_projection.json | guest tar -x -C /home/vm
+      tests/fixtures/broker_attention_projection.json \
+      tests/fixtures/provider_metadata_disclosure.json | guest tar -x -C /home/vm
     guest /home/vm/.cargo/bin/cargo fetch --manifest-path /home/vm/skills-core/Cargo.toml --locked
     guest env CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target CARGO_BUILD_JOBS=2 \
       CARGO_PROFILE_DEV_DEBUG=line-tables-only \
