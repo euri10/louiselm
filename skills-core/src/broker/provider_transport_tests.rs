@@ -109,7 +109,7 @@ fn request() -> ProviderRequest {
 fn run(response: &[u8]) -> (Result<UpstreamResponse, BrokerError>, Wire) {
     let wire = Arc::new(Mutex::new(Wire::default()));
     let client = ureq::Agent::with_parts(
-        config(),
+        config(Duration::from_mins(1)),
         FakeConnector {
             response: response.to_vec(),
             wire: Arc::clone(&wire),

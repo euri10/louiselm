@@ -4,7 +4,10 @@
 //! key and sets `Authorization`; the confined runtime never sends or sees it.
 //! Unlike that proxy, the destination comes from the grant, never the request.
 
-use std::{io::Read, time::Duration};
+use std::{
+    io::Read,
+    time::{Duration, Instant},
+};
 
 use super::BrokerError;
 use crate::{
@@ -25,7 +28,10 @@ pub struct UpstreamResponse {
 /// External-I/O boundary for one admitted attempt, shared by real and fake upstreams.
 ///
 /// Called only after the Run unit is durably spent. Implementations must use
-/// exactly the granted destination, never follow a redirect, and never retry.
+/// exactly the granted destination, never follow a redirect, never retry, and
+/// bound the whole exchange, body included, by `deadline` so no read blocks
+/// past the permission's expiry. The broker also refuses every body read after
+/// `deadline` itself; this bound is what unblocks a stalled read.
 pub trait ProviderTransport: Send + Sync {
     /// Sends one request and returns once response headers arrive.
     ///
@@ -37,6 +43,7 @@ pub trait ProviderTransport: Send + Sync {
         approved: &ApprovedProviderRequests,
         bearer: &str,
         request: &ProviderRequest,
+        deadline: Instant,
     ) -> Result<UpstreamResponse, BrokerError>;
 }
 
@@ -50,9 +57,10 @@ impl ProviderTransport for HttpsProviderTransport {
         approved: &ApprovedProviderRequests,
         bearer: &str,
         request: &ProviderRequest,
+        deadline: Instant,
     ) -> Result<UpstreamResponse, BrokerError> {
         let client = ureq::Agent::with_parts(
-            config(),
+            config(deadline.saturating_duration_since(Instant::now())),
             ureq::unversioned::transport::DefaultConnector::default(),
             resolver(approved)?,
         );
@@ -60,7 +68,7 @@ impl ProviderTransport for HttpsProviderTransport {
     }
 }
 
-fn config() -> ureq::config::Config {
+fn config(remaining: Duration) -> ureq::config::Config {
     ureq::Agent::config_builder()
         .https_only(true)
         .proxy(None)
@@ -73,6 +81,7 @@ fn config() -> ureq::config::Config {
         .timeout_recv_response(Some(Duration::from_mins(5)))
         // Long reasoning streams; the Run's expiry remains the outer bound.
         .timeout_recv_body(Some(Duration::from_hours(1)))
+        .timeout_global(Some(remaining))
         .build()
 }
 

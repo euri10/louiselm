@@ -110,6 +110,7 @@ impl ProviderTransport for FakeUpstream {
         approved: &ApprovedProviderRequests,
         bearer: &str,
         request: &ProviderRequest,
+        _deadline: std::time::Instant,
     ) -> Result<UpstreamResponse, BrokerError> {
         self.calls.lock().unwrap().push((
             approved.upstream.clone(),
@@ -664,4 +665,75 @@ fn sessions_without_provider_permission_are_never_held() {
         None
     );
     assert_eq!(fixture.service.provider_hold("run-1").unwrap(), None);
+}
+
+#[test]
+fn a_stream_still_running_at_expiry_is_cut_locally_keeping_what_arrived() {
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let upstream = FakeUpstream::replying(200);
+    let (chunks, stream) = mpsc::channel();
+    *upstream.stream.lock().unwrap() = Some(stream);
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    // Admitted 2 s before the permission's 30 000 ms expiry: wide enough that a
+    // loaded runner still relays the first chunk in time.
+    let admitted_at = 28_000;
+    thread::scope(|scope| {
+        let fixture = &mut fixture;
+        let upstream = &upstream;
+        let endpoint = scope.spawn(move || {
+            serve_provider_connection(server, HOST.into(), |request| {
+                thread::scope(|inner| {
+                    let (peer, current) = (&fixture.peer, &fixture.current);
+                    let answer =
+                        inner.spawn(move || lifecycle::answer_one_status_query(peer, current));
+                    let result = fixture.service.serve_provider_request(
+                        &mut fixture.session,
+                        &fixture.credentials,
+                        upstream,
+                        request,
+                        admitted_at,
+                        verify_fixture_signature,
+                    );
+                    answer.join().unwrap();
+                    result
+                })
+            })
+        });
+        client.write_all(&frame()).unwrap();
+        // One request only: an uncut relay then ends the connection cleanly.
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        chunks.send(b"event: before\n\n".to_vec()).unwrap();
+        let head = read_until(&mut client, b"event: before");
+        // The upstream is still streaming when the permission expires.
+        thread::sleep(Duration::from_millis(2_500));
+        chunks.send(b"event: after\n\n".to_vec()).unwrap();
+        // End the upstream too, so an uncut relay fails here instead of hanging.
+        drop(chunks);
+        let mut tail = Vec::new();
+        client.read_to_end(&mut tail).unwrap();
+        let all = [head, tail].concat();
+        assert!(!all.windows(12).any(|w| w == b"event: after"));
+        // No terminating chunk: the runtime sees an incomplete outcome.
+        assert!(!all.ends_with(b"0\r\n\r\n"));
+        assert!(matches!(
+            endpoint.join().unwrap(),
+            Err(BrokerError::ProviderUnavailable)
+        ));
+    });
+    // One attempt, still spent; nothing retried or refunded.
+    assert_eq!(upstream.calls(), 1);
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 1);
+    // The worker's next tick holds the Run for expiry and Parks it.
+    fixture.settle_and_park(30_000).unwrap();
+    assert_eq!(
+        fixture
+            .service
+            .provider_hold("run-1")
+            .unwrap()
+            .map(|hold| hold.reason),
+        Some(HoldReason::Expired)
+    );
 }

@@ -734,8 +734,14 @@ Session too. It queues one `RunParked` Attention item per Run, and Parks its own
 Session through the ordinary lifecycle owner as `LifecycleCaller::ProviderBudget`,
 which may only Park Sessions of its own Run. While the hold stands, Resume is
 refused and withheld from status. Only an operator extension lifts it
-(`louiselm-qbr.5.1.3.2.3.3`). Cutting a stream still running at expiry is
-`louiselm-qbr.5.1.3.2.3.2`.
+(`louiselm-qbr.5.1.3.2.3.3`).
+
+A stream still running at the earliest permission or launch expiry is cut
+locally. The upstream exchange is bounded by that deadline (`timeout_global`),
+and the broker refuses every body read from then on. Chunks already relayed stay
+with the runtime, and the connection ends without its terminating chunk. The
+unit stays spent and nothing is retried. The next tick holds the Run for expiry
+and Parks it. A local cut is not proof that the Provider stopped.
 
 Not yet enabled: placing
 the listener in a Session's network namespace behind the kernel sender guard

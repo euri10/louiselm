@@ -6,7 +6,10 @@
 //! rechecked after that storage I/O, and only then does the upstream attempt
 //! start. No permit leaves the owner turn.
 
-use std::time::Instant;
+use std::{
+    io::{self, Read},
+    time::{Duration, Instant},
+};
 
 use super::{
     BrokerError, BrokerService, BrokerSession,
@@ -45,7 +48,8 @@ impl BrokerService {
     /// once the Run's total is spent. After a unit is spent, an expiry or channel
     /// loss discovered before the attempt, an unreachable upstream, or a rejected
     /// key ([`ErrorCode::CredentialUnavailable`]) keeps that unit spent; nothing
-    /// is retried.
+    /// is retried. The returned body fails every read from the earliest
+    /// permission or launch expiry on, cutting a stream still in flight.
     pub fn serve_provider_request<F>(
         &self,
         session: &mut BrokerSession,
@@ -118,12 +122,23 @@ impl BrokerService {
         if !live(elapsed()) || session.channel().is_closed() {
             return Err(self.expired(run_id, permission, elapsed()));
         }
-        let response = credentials.with_secret(&handle, |bearer| {
-            transport.send(permission, bearer, request)
+        // The earliest expiry, as a monotonic instant: wall-clock steps cannot
+        // stretch an admitted stream past its permission.
+        let expires_at_ms = permission
+            .expires_at_ms
+            .min(authorization.expires_at_ms)
+            .min(approved.expires_at_ms);
+        let deadline = clock + Duration::from_millis(expires_at_ms.saturating_sub(now_ms));
+        let mut response = credentials.with_secret(&handle, |bearer| {
+            transport.send(permission, bearer, request, deadline)
         })??;
         if matches!(response.status, 401 | 403) {
             return Err(ProtocolError::new(ErrorCode::CredentialUnavailable, None, None).into());
         }
+        response.body = Box::new(ExpiringBody {
+            inner: response.body,
+            deadline,
+        });
         Ok(response)
     }
 
@@ -282,5 +297,30 @@ fn hold_refusal(reason: HoldReason) -> BrokerError {
     match reason {
         HoldReason::Exhausted => BrokerError::ProviderBudgetExhausted,
         HoldReason::Expired => BrokerError::Expired,
+    }
+}
+
+/// Upstream body cut locally at the permission's expiry.
+///
+/// Bytes read before the deadline were already relayed and stay with the
+/// runtime; anything arriving later is dropped and the read fails, so the relay
+/// ends without its terminating chunk. A local cut is not proof the Provider
+/// stopped, and the spent unit is never refunded.
+struct ExpiringBody {
+    inner: Box<dyn Read + Send>,
+    deadline: Instant,
+}
+
+impl Read for ExpiringBody {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let expired = || io::Error::new(io::ErrorKind::TimedOut, "Provider permission expired");
+        if Instant::now() >= self.deadline {
+            return Err(expired());
+        }
+        let count = self.inner.read(buffer)?;
+        if Instant::now() >= self.deadline {
+            return Err(expired());
+        }
+        Ok(count)
     }
 }
