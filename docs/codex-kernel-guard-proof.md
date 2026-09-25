@@ -1,5 +1,111 @@
 # Stock Codex kernel-guard feasibility
 
+## Production loader and per-Session upstream ownership
+
+`louiselm-qbr.5.1.3.2.4.2`, design confirmed in `louiselm-8a8id`:
+the root per-Session Launch supervisor now owns the Rust loader and kernel
+enrollment mechanics. This is not production Provider activation, subscription
+authentication or installed-host certification. `Brokered` remains refused.
+The historical experiments below retain their original scope and results.
+
+The narrow `launch_supervisor::sender_guard` module loads only
+`SENDER_GUARD_OBJECT`, attaches all six required programs and protects their
+pins in a private, read-only bpffs mount namespace. Eight maps include the new
+per-socket upstream storage. `libbpf-rs = 0.25.0` and
+`libbpf-sys = 1.5.1` have default features disabled. `cargo tree -e features -i
+libbpf-sys` shows no vendored/static features; `readelf -d` on the actual Rust
+test executable records `NEEDED: libbpf.so.1`. The host prerequisite was supplied
+by the maintainer; no libbpf sources are bundled.
+
+### Enrollment and loss
+
+1. Authenticate and retain the install-authorized, non-root broker channel.
+   Loading pins that exact broker and supervisor lifetime, but creates no endpoint.
+2. Bind one loopback endpoint, reserve its port **only in its retained network
+   namespace**, and leave policy absent. Pre-activation sends fail closed.
+3. At the existing measured exec stop, register the exact runtime's pidfd, then
+   freeze runtime/broker task grants, owners, loss latch and endpoint reservation.
+   Enrollment failure kills the still-stopped workload through the existing
+   sandbox cleanup path. It cannot run first and enroll later.
+4. Send typed `SenderGuardEnrolled` evidence over the retained authenticated
+   `SeqpacketChannel`. It names the complete Session/Run/revision/deadline, guard
+   namespace identity and runtime/broker PIDs. The broker must validate and retain
+   it before request processing; successful sending alone is not a receipt ACK.
+   The handoff task `.4.3` owns that receiver and descriptor protocol.
+5. Activation requires completed enrollment, a sent owner response and the exact
+   live scope. A revision must increase; the broker authorizes its new deadline.
+   It revokes and shuts down old sockets and requires a new owner response.
+
+After enrollment, the LSM intentionally denies cross-process executable procfs
+reads, even from the supervisor. `KernelProcess` therefore retains the frozen
+task/loss map handles as its lifetime proof: exact pidfd, unrevoked runtime
+grant, live loss latch, and pidfd liveness before/after observation. It never
+falls back to procfs or reenrolls. The unguarded identity path is unchanged.
+The VM test first reproduced `EACCES` on the old post-enrollment identity check;
+the kernel-proof path preserves identity validity and permanently refuses
+runtime exec/exit or owner loss.
+
+### Upstream and cleanup contract
+
+The shared unprivileged Control broker chooses the authorized destination and
+owns TLS, credentials, request framing and admission. The root supervisor only
+connects and registers that exact socket in `BPF_MAP_TYPE_SK_STORAGE` before
+authenticated descriptor handoff. No Provider request bytes are sent by the
+loader; no BPF descriptor or writable map authority is transferred to the broker.
+Each upstream socket belongs permanently to one Session/Run/revision. There is
+no cross-Session pool, socket reassignment or recovery enrollment API. Local
+map tokens are not truncated Session hashes: each object owns its own full
+Rust scope and isolated maps.
+
+The send hook checks the current broker task, socket binding, current endpoint
+revision/listener/deadline and kernel loss latch at the actual upstream write.
+Supervisor death/exec, runtime exit/exec and broker loss invalidate authority
+without a userspace heartbeat. A cached admission cannot bypass it. Other
+Sessions and ordinary sockets to the same remote address/port remain usable.
+The new namespace-qualified reservation deliberately replaces the old fixture's
+host-global port denial: a socket in another namespace is unrelated, while a
+sender moved away from its original socket's namespace remains denied. The
+updated binding fixture retains that distinction as a regression contract.
+
+Every handoff bundles the socket plus pin-namespace and network-namespace
+leases. Accepted connections and partial transfers must retain those leases
+until their last usable socket is closed. Pins are never explicitly unlinked
+or unmounted during disposal. The supervisor retains upstream socket copies
+for shutdown, bounded at 128 concurrent sockets; callers retire completed
+connections by exact kernel cookie. Revision change and revoke shut down all
+copies, including active streams. No retry or budget refund is implied.
+
+`SystemRunningAgent::start_guarded` retains the loader with the existing Session
+lifecycle. Disposal revokes before stopping the process tree, closes its own
+endpoint after descendant cleanup, and maps uncertainty to `CleanupUnproven` so
+the existing identity lease is poisoned. The handoff owner must close its
+endpoint/accepted descriptors before completing Session disposal; `.4.3` owns
+that coordination. A broker restart/replacement requires a fresh Session for
+Provider networking; a surviving broker may reattach within existing grace,
+without new task enrollment. `.4.5` owns production HTTPS integration and
+activation and must preserve these ordering/lifetime requirements.
+
+### Loader gate
+
+`scripts/test-sender-guard-loader.py` runs the production Rust loader only in
+the disposable KVM. Two distinct-UID runtimes share one distinct-UID broker
+and one synthetic upstream address. The gate checks real authenticated
+enrollment, absent-policy denial, frozen maps/protected pins, helper and
+cross-Session denials, stale scope and no reenrollment, and kernel identity
+checks after enrollment. Eight scenarios cover supervisor death/exec between
+admission and write, runtime exit/exec, revision replacement, broker crash,
+socket retirement and disposal. Each preserves unaffected-Session and unrelated
+traffic controls; all child processes and eight-map inventories must disappear.
+No real Account, Provider, TLS secret or installed Agent settings are used.
+
+The `sender-guard-vm` CI job requires this gate and all four existing embedded
+ownership variants. The latter retain their missing-hook and explicit detach
+negative controls. See `docs/launcher-vm.md` for commands and isolated cache
+ownership; never run these loaders with desktop sudo. Unprivileged artifact,
+exec-stop cleanup and protocol tests remain in the complete skills-core suite.
+
+## Historical feasibility evidence
+
 `louiselm-qbr.5.1.3.9`, 2026-09-21: **the complete stock ACP composition
 passes in a disposable guest; no installed cutover or Verified certification**.
 The maintainer selected stock Codex and authorized a bounded disposable-VM

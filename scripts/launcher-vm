@@ -179,7 +179,7 @@ case $action in
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     guest sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       bubblewrap build-essential pkg-config libssl-dev jq git curl ca-certificates strace \
-      clang linux-libc-dev libbpf1 python3 iproute2
+      clang linux-libc-dev libbpf-dev libelf-dev python3 iproute2
     scp "${ssh_options[@]}" -P 22554 -- "$(command -v rustup)" vm@127.0.0.1:/home/vm/rustup-init
     guest chmod 700 /home/vm/rustup-init
     guest /home/vm/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.97.1 --component rustfmt,clippy

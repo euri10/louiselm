@@ -1237,6 +1237,7 @@ impl ProcessMembership for SystemProcessMembership {
 
 /// Production lifecycle/relay adapter for an already-confined running Session.
 pub struct SystemRunningAgent {
+    sender_guard: Option<super::sender_guard::SenderGuard>,
     cache_worker: Option<super::cache_download::Worker>,
     workspace: Option<super::workspace::SessionWorkspace>,
     tools: Option<super::tool_execution::ToolExecutor>,
@@ -1257,6 +1258,7 @@ impl SystemRunningAgent {
     #[must_use]
     pub fn new(session: SandboxedSession) -> Self {
         Self {
+            sender_guard: None,
             cache_worker: None,
             workspace: None,
             session: Arc::new(Mutex::new(session)),
@@ -1268,6 +1270,29 @@ impl SystemRunningAgent {
             verification_storage: None,
             verification_worker: None,
         }
+    }
+
+    /// Enrolls the measured runtime before releasing its exec stop and retains
+    /// enforcement through process-tree disposal. Does not activate Brokered.
+    /// Run only on the privileged launch worker. The authenticated handoff owner
+    /// must close endpoint copies/leases before completing Session disposal.
+    /// # Errors
+    /// Returns startup or cleanup uncertainty; the outer identity owner must
+    /// poison the lease on `CleanupUnproven`, as with ordinary sandbox disposal.
+    pub fn start_guarded(
+        prepared: PreparedSession,
+        mut guard: super::sender_guard::SenderGuard,
+    ) -> Result<Self, SupervisorError> {
+        let session = guard.start(prepared).map_err(map_sandbox)?;
+        let mut running = Self::new(session);
+        running.sender_guard = Some(guard);
+        Ok(running)
+    }
+
+    /// Guard mechanics for the authenticated handoff/request worker. The caller
+    /// still owns broker admission; possession does not activate an endpoint.
+    pub fn sender_guard(&mut self) -> Option<&mut super::sender_guard::SenderGuard> {
+        self.sender_guard.as_mut()
     }
 
     fn join_recovery(&mut self) -> Result<(), SupervisorError> {
@@ -1612,6 +1637,10 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
+        let guard = self
+            .sender_guard
+            .as_mut()
+            .map_or(Ok(()), super::sender_guard::SenderGuard::revoke);
         let cache = self
             .cache_worker
             .as_mut()
@@ -1627,6 +1656,13 @@ impl RunningAgent for SystemRunningAgent {
             .dispose()
             .map(|_| ())
             .map_err(map_sandbox);
+        let guard_closed = if process.is_ok() && tools.is_ok() && verification.is_ok() {
+            self.sender_guard
+                .as_mut()
+                .map_or(Ok(()), super::sender_guard::SenderGuard::dispose)
+        } else {
+            Err(super::sender_guard::GuardError::Cleanup)
+        };
         let sealed = if process.is_ok() && tools.is_ok() && verification.is_ok() {
             self.recovery
                 .as_ref()
@@ -1634,7 +1670,9 @@ impl RunningAgent for SystemRunningAgent {
         } else {
             Err(super::recovery::RecoveryError::NotParked)
         };
-        if cache.is_err()
+        if guard.is_err()
+            || guard_closed.is_err()
+            || cache.is_err()
             || verification.is_err()
             || recovery.is_err()
             || relay.is_err()

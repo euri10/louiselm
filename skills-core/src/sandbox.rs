@@ -1112,7 +1112,14 @@ impl PreparedSession {
     ///
     /// # Errors
     /// Returns `Refused` after disposal, startup-gate failure after disposing the failed prepared tree, or `CleanupUnproven` if zero survivors cannot be established.
-    pub fn start(mut self) -> Result<SandboxedSession, SandboxError> {
+    pub fn start(self) -> Result<SandboxedSession, SandboxError> {
+        self.start_with_enrollment(|_| Ok(()))
+    }
+
+    pub(crate) fn start_with_enrollment(
+        mut self,
+        enroll: impl FnOnce(&crate::launch_transport::KernelProcess) -> io::Result<()>,
+    ) -> Result<SandboxedSession, SandboxError> {
         let mut gate = self.startup_gate.take().ok_or_else(|| {
             SandboxError::Refused("prepared Session is already disposed".to_owned())
         })?;
@@ -1135,6 +1142,7 @@ impl PreparedSession {
                 &authentication.executable,
                 authentication.uid,
                 authentication.gid,
+                enroll,
             ) {
                 Ok(identity) => {
                     if let Some(session) = self.session.as_mut() {

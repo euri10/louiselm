@@ -155,7 +155,7 @@ def object_ids(guard):
     lib = guard.lib
     lib.bpf_obj_get_info_by_fd.argtypes = [C.c_int, C.c_void_p, C.POINTER(C.c_uint32)]
     result = []
-    for name in ("tasks", "connections", "policy", "ports", "listeners", "owners", "lost"):
+    for name in ("tasks", "connections", "policy", "ports", "listeners", "owners", "lost", "upstreams"):
         info, size = (C.c_uint32 * 2)(), C.c_uint32(8)
         assert lib.bpf_obj_get_info_by_fd(guard.map_fd(name), C.byref(info), C.byref(size)) == 0
         result.append(info[1])
@@ -488,7 +488,7 @@ def main():
         if namespace is not None:
             os.close(namespace)
     assert_maps_released(ready["maps"])
-    report["cleanup"] = "children reaped; endpoint/accepted socket closed; all seven owned kernel maps absent"
+    report["cleanup"] = "children reaped; endpoint/accepted socket closed; all eight owned kernel maps absent"
     print(json.dumps({"verdict": "OWNERSHIP_COMPONENT_PASS_NOT_VERIFIED",
                       "kernel": os.uname().release, "results": report,
                       # Existing conformance vocabulary; this single component

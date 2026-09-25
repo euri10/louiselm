@@ -11,7 +11,10 @@ shown, and it guarantees that the bytes shown are the bytes that were captured.
 ## Building the Sender guard
 
 Building this crate requires Linux x86_64, Clang with the BPF backend, and
-Linux UAPI development headers (`clang` and `linux-libc-dev` on Debian/Ubuntu).
+Linux UAPI development headers, and system libbpf/libelf development libraries
+(`clang linux-libc-dev libbpf-dev libelf-dev pkg-config` on Debian/Ubuntu).
+The approved `libbpf-rs`/`libbpf-sys` dependencies have default features disabled;
+the executable links `libbpf.so.1`, never a bundled/static libbpf.
 `build.rs` compiles `src/launch_supervisor/sender_guard/lifecycle.bpf.c` and its
 shared binding source into a little-endian BPF object. Cargo tracks both the
 source directory and the fixed UAPI include trees. Compiler failures fail the
@@ -26,11 +29,16 @@ object is committed or installed separately.
 `python3 scripts/test-sender-guard-build.py` (from the repository root) checks
 rebuilds and compiler errors. The artifact gate is
 `python3 scripts/test-sender-guard.py skills-core/target/debug/louiselm-launch`;
-it checks the actual embedded object, including the six program/seven map
+it checks the actual embedded object, including the six program/eight map
 inventory and BTF data. The privileged
 [VM gate](../docs/launcher-vm.md#embedded-sender-guard) consumes those same bytes.
-The production loader and activation remain separate tasks; `Brokered` still
-refuses, and these component checks do not confer Verified posture.
+The production `launch_supervisor::sender_guard::SenderGuard` loader owns
+enrollment, protected pins and socket lifetime. `SystemRunningAgent::start_guarded`
+enrolls at the measured exec stop and revokes before process-tree disposal.
+It does not activate networking: authenticated descriptor handoff and production
+Provider integration remain separate tasks. `Brokered` still refuses; these
+component checks do not confer Verified posture. See the
+[ownership contract](../docs/codex-kernel-guard-proof.md#production-loader-and-per-session-upstream-ownership).
 
 ## Commands
 

@@ -71,7 +71,13 @@ existing ownership/loss proofs on those exact bytes, including the actual
 upstream-write race; it requires the disposable launcher KVM, never desktop
 sudo. The `sender-guard-vm` CI job provisions that guest and requires the gate.
 Missing KVM/BPF-LSM/BTF is failure, not a skipped pass. These checks do not
-certify production guard loading or installed-host acceptance.
+certify installed-host acceptance. Production guard loading additionally runs
+`python3 scripts/test-sender-guard-loader.py <library-test-executable>` as root
+only inside that disposable guest. It uses the real Rust loader, authenticated
+enrollment channel and kernel sockets; eight scenarios cover loss at actual
+upstream write, cross-Session isolation, frozen enrollment and complete cleanup.
+The same CI job requires both gates. A skipped ignored Rust fixture is not a
+loader pass, and neither gate enables Brokered or certifies a desktop Session.
 
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both

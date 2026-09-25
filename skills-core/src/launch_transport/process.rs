@@ -8,9 +8,13 @@ use std::{
     fs, io,
     os::fd::{AsRawFd, OwnedFd},
     os::unix::fs::MetadataExt,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
+use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use super::KernelCredentials;
@@ -28,6 +32,13 @@ pub struct KernelProcess {
     // Keep the measured inode allocated even after a later exec replaces it.
     _executable: fs::File,
     revoked: AtomicBool,
+    guard: OnceLock<GuardLifetime>,
+}
+
+#[derive(Debug)]
+struct GuardLifetime {
+    tasks: MapHandle,
+    lost: MapHandle,
 }
 
 impl PartialEq for KernelProcess {
@@ -39,6 +50,27 @@ impl PartialEq for KernelProcess {
 impl Eq for KernelProcess {}
 
 impl KernelProcess {
+    pub(crate) fn pidfd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.pidfd)
+    }
+
+    // Called only at the measured exec stop, after enrollment has been frozen.
+    // The LSM denies subsequent procfs executable reads, including by root.
+    // Its task storage instead permanently revokes on exec, and its loss latch
+    // covers all owners. Never fall back to procfs after this binding.
+    pub(crate) fn bind_sender_guard(&self, tasks: &MapHandle, lost: &MapHandle) -> io::Result<()> {
+        let guard = GuardLifetime {
+            tasks: MapHandle::try_from(tasks).map_err(io::Error::other)?,
+            lost: MapHandle::try_from(lost).map_err(io::Error::other)?,
+        };
+        self.guard
+            .set(guard)
+            .map_err(|_| io::Error::other("Sender guard already bound"))?;
+        if !self.valid()? {
+            return Err(io::Error::other("Sender guard runtime lost"));
+        }
+        Ok(())
+    }
     pub(crate) fn from_exec_stop(
         credentials: KernelCredentials,
         pidfd: OwnedFd,
@@ -53,6 +85,7 @@ impl KernelProcess {
             executable_inode: expected.ino(),
             _executable: executable,
             revoked: AtomicBool::new(false),
+            guard: OnceLock::new(),
         };
         if let Some(reason) = process.observe()? {
             return Err(io::Error::other(reason));
@@ -93,6 +126,24 @@ impl KernelProcess {
             return Ok(Some(format!(
                 "Agent process {pid} exited before executable observation"
             )));
+        }
+        if let Some(guard) = self.guard.get() {
+            let expected: Vec<_> = [1_u64, 1, 1, 0]
+                .into_iter()
+                .flat_map(u64::to_ne_bytes)
+                .collect();
+            let grant = guard
+                .tasks
+                .lookup(&self.pidfd.as_raw_fd().to_ne_bytes(), MapFlags::ANY)
+                .map_err(io::Error::other)?;
+            let lost = guard
+                .lost
+                .lookup(&0_u32.to_ne_bytes(), MapFlags::ANY)
+                .map_err(io::Error::other)?;
+            return Ok((grant.as_deref() != Some(expected.as_slice())
+                || lost.as_deref() != Some(&0_u32.to_ne_bytes())
+                || !self.alive()?)
+            .then(|| "Sender guard runtime authority lost".into()));
         }
         let executable = match fs::metadata(format!("/proc/{pid}/exe")) {
             Ok(metadata) => metadata,

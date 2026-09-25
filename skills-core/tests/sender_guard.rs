@@ -5,6 +5,16 @@
 use std::process::Command;
 
 #[test]
+fn embedded_guard_has_socket_scoped_upstream_authority() {
+    let object = libbpf_rs::ObjectBuilder::default()
+        .open_memory(louiselm_skills::launch_supervisor::SENDER_GUARD_OBJECT)
+        .unwrap();
+    let maps: Vec<_> = object.maps().map(|map| map.name().to_owned()).collect();
+    assert!(maps.iter().any(|name| name == "upstreams"));
+    // No privileges or BPF load are needed to inspect the embedded ABI.
+}
+
+#[test]
 fn launcher_exports_its_embedded_bpf_object_without_privilege() {
     let output = Command::new(env!("CARGO_BIN_EXE_louiselm-launch"))
         .arg("__sender-guard-object")

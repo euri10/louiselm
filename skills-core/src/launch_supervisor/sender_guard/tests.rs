@@ -1,0 +1,291 @@
+//! Deterministic fixture driver; invoked only by the disposable-VM gate.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "Test fixtures abort on setup failure and assert exact refusals."
+)]
+
+use super::*;
+use crate::launch_transport::{CredentialPin, KernelCredentials, SeqpacketConnector};
+use serde_json::{Value, json};
+use std::{
+    io::{BufRead, IoSlice, Write},
+    os::unix::{fs::PermissionsExt, net::UnixListener, process::CommandExt},
+    path::Path,
+    sync::mpsc,
+};
+
+fn emit(value: &Value) {
+    println!("GUARD_FIXTURE {value}");
+    std::io::stdout().flush().unwrap();
+}
+
+fn read(lines: &mut impl Iterator<Item = std::io::Result<String>>) -> Value {
+    serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+}
+
+fn number(value: &Value, key: &str) -> u32 {
+    value[key].as_u64().unwrap().try_into().unwrap()
+}
+
+#[test]
+fn invalid_scope_is_refused_before_any_platform_effect() {
+    for (session, run, revision, deadline) in [
+        ("", "run", 1, u64::MAX),
+        ("session", "run", 0, u64::MAX),
+        ("session", "run", 1, 1),
+    ] {
+        assert_eq!(
+            validate_scope(&GuardScope {
+                session_id: session.into(),
+                run_id: run.into(),
+                revision,
+                deadline_ns: deadline
+            }),
+            Err(GuardError::Authority)
+        );
+    }
+}
+
+#[test]
+fn enrollment_response_round_trips_and_rejects_malformed_scope() {
+    let mut response = ProtocolResponse {
+        schema: RESPONSE_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "enrolled".into(),
+        result: ResponseResult::SenderGuardEnrolled {
+            enrollment: GuardEnrollment {
+                scope: GuardScope {
+                    session_id: "s".into(),
+                    run_id: "r".into(),
+                    revision: 1,
+                    deadline_ns: 100,
+                },
+                guard_id: 1,
+                runtime_pid: 2,
+                broker_pid: 3,
+            },
+        },
+    };
+    response.validate().unwrap();
+    assert_eq!(
+        serde_json::from_slice::<ProtocolResponse>(&response.canonical_bytes()).unwrap(),
+        response
+    );
+    if let ResponseResult::SenderGuardEnrolled { enrollment } = &mut response.result {
+        enrollment.scope.revision = 0;
+    }
+    assert_eq!(
+        response.validate().unwrap_err().code,
+        crate::launch_protocol::ErrorCode::InvalidRequest
+    );
+}
+
+#[test]
+#[ignore = "requires scripts/test-sender-guard-loader.py in disposable KVM"]
+fn production_loader_worker() {
+    assert_eq!(
+        std::process::Command::new("systemd-detect-virt")
+            .arg("--vm")
+            .output()
+            .unwrap()
+            .stdout,
+        b"kvm\n"
+    );
+    assert!(rustix::process::geteuid().is_root());
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let setup = read(&mut lines);
+    let connector = SeqpacketConnector::new().unwrap();
+    let (sent, ready) = mpsc::channel();
+    connector
+        .connect(
+            Path::new(setup["broker"].as_str().unwrap()),
+            CredentialPin::Identity {
+                uid: 4_020_010,
+                gid: 4_020_010,
+            },
+            Box::new(move |result| sent.send(result).unwrap()),
+        )
+        .unwrap();
+    let broker = ready.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let scope = GuardScope {
+        session_id: setup["session"].as_str().unwrap().into(),
+        run_id: "fixture-run".into(),
+        revision: 1,
+        deadline_ns: u64::try_from(now.tv_sec).unwrap() * 1_000_000_000 + 300_000_000_000,
+    };
+    let mut guard = SenderGuard::load(scope.clone(), broker).unwrap();
+    let endpoint = guard.bind_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+    let pid = number(&setup, "runtime");
+    // The driver owns and has waited for this exact stopped child. Construct
+    // the same measured lifetime pin used at the production exec stop.
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+    let pin = pidfd_open(
+        Pid::from_raw(i32::try_from(pid).unwrap()).unwrap(),
+        PidfdFlags::empty(),
+    )
+    .unwrap();
+    let executable = File::open(setup["executable"].as_str().unwrap()).unwrap();
+    let runtime = KernelProcess::from_exec_stop(
+        KernelCredentials {
+            pid,
+            uid: number(&setup, "uid"),
+            gid: number(&setup, "uid"),
+        },
+        pin,
+        &executable,
+    )
+    .unwrap();
+    assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
+    guard.enroll_at_exec_stop(&runtime).unwrap();
+    assert!(
+        runtime.valid().unwrap(),
+        "enrolled runtime must retain its kernel identity proof"
+    );
+    assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
+    assert_eq!(
+        guard.enroll_at_exec_stop(&runtime),
+        Err(GuardError::Enrollment)
+    );
+    guard
+        .announce_enrollment("guard-enrolled".into(), Duration::from_secs(5))
+        .unwrap();
+    let ids: Vec<_> = guard
+        .maps
+        .values()
+        .map(|map| map.info().unwrap().info.id)
+        .collect();
+    emit(&json!({"ready":true,"port":endpoint.socket.local_addr().unwrap().port(),"maps":ids}));
+    serve_actions(&mut guard, &runtime, scope, lines);
+}
+
+fn serve_actions(
+    guard: &mut SenderGuard,
+    runtime: &KernelProcess,
+    mut scope: GuardScope,
+    lines: impl Iterator<Item = std::io::Result<String>>,
+) {
+    for line in lines {
+        let action: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        match action["op"].as_str().unwrap() {
+            "activate" => {
+                guard.activate(&scope).unwrap();
+                emit(&json!({"activated":true}));
+            }
+            "connect" => {
+                handoff_socket(guard, &scope, &action);
+            }
+            "protected" => {
+                assert_eq!(
+                    std::fs::remove_file("/sys/fs/bpf/endpoint_send")
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(30)
+                );
+                for name in ["tasks", "owners", "lost", "ports"] {
+                    let map = guard.map(name).unwrap();
+                    let key = vec![0; map.key_size().try_into().unwrap()];
+                    let value = vec![0; map.value_size().try_into().unwrap()];
+                    assert_eq!(
+                        map.update(&key, &value, MapFlags::ANY).unwrap_err().kind(),
+                        libbpf_rs::ErrorKind::PermissionDenied
+                    );
+                }
+                emit(&json!({"protected":true}));
+            }
+            "stale" => {
+                let mut stale = scope.clone();
+                stale.session_id = "other".into();
+                assert_eq!(guard.activate(&stale), Err(GuardError::Authority));
+                stale = scope.clone();
+                stale.run_id = "other".into();
+                assert_eq!(guard.activate(&stale), Err(GuardError::Authority));
+                stale = scope.clone();
+                stale.revision += 1;
+                assert_eq!(guard.activate(&stale), Err(GuardError::Authority));
+                emit(&json!({"stale_refused":true}));
+            }
+            "revise" => {
+                scope.revision += 1;
+                // Deadline authorization belongs to broker policy. The loader
+                // binds the replacement scope, not an invented policy ceiling.
+                scope.deadline_ns += 1_000_000_000;
+                guard.revise(scope.clone()).unwrap();
+                assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
+                guard
+                    .announce_enrollment("guard-revised".into(), Duration::from_secs(5))
+                    .unwrap();
+                emit(&json!({"revised":true}));
+            }
+            "lost" => {
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                while guard.live().is_ok() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert_eq!(guard.activate(&scope), Err(GuardError::Lost));
+                assert!(!runtime.valid().unwrap());
+                assert_eq!(
+                    guard.enroll_at_exec_stop(runtime),
+                    Err(GuardError::Enrollment)
+                );
+                emit(&json!({"lost":true}));
+            }
+            "retire" => {
+                let cookie = action["cookie"].as_u64().unwrap();
+                guard.retire_upstream(&scope, cookie).unwrap();
+                assert_eq!(
+                    guard.retire_upstream(&scope, cookie),
+                    Err(GuardError::Socket)
+                );
+                emit(&json!({"retired":true}));
+            }
+            "exec" => {
+                let error = std::process::Command::new("/bin/sleep").arg("60").exec();
+                panic!("exec failed: {error}");
+            }
+            "close" => {
+                guard.dispose().unwrap();
+                guard.dispose().unwrap();
+                assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
+                break;
+            }
+            other => panic!("unknown test operation {other}"),
+        }
+    }
+}
+
+fn handoff_socket(guard: &mut SenderGuard, scope: &GuardScope, action: &Value) {
+    let socket = guard
+        .connect_upstream(
+            scope,
+            action["address"].as_str().unwrap().parse().unwrap(),
+            Duration::from_secs(3),
+        )
+        .unwrap();
+    let path = action["handoff"].as_str().unwrap();
+    let listener = UnixListener::bind(path).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666)).unwrap();
+    emit(&json!({"handoff":true}));
+    let (channel, _) = listener.accept().unwrap();
+    let peer = rustix::net::sockopt::socket_peercred(&channel).unwrap();
+    assert_eq!(
+        KernelCredentials::from(peer),
+        guard.broker.peer_credentials()
+    );
+    let fds = socket.descriptors();
+    let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
+    let mut ancillary = rustix::net::SendAncillaryBuffer::new(&mut space);
+    assert!(ancillary.push(rustix::net::SendAncillaryMessage::ScmRights(&fds)));
+    rustix::net::sendmsg(
+        &channel,
+        &[IoSlice::new(b"G")],
+        &mut ancillary,
+        rustix::net::SendFlags::NOSIGNAL,
+    )
+    .unwrap();
+    emit(&json!({"connected":true,"cookie":socket.cookie().unwrap()}));
+}

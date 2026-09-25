@@ -82,10 +82,10 @@ class BindingGuard(Guard):
     def reserve(self, server):
         key, reserved = C.c_uint32(server.server_port), C.c_uint32()
         if self.lib.bpf_map_lookup_elem(self.map_fd("ports"), C.byref(key), C.byref(reserved)) == 0:
-            assert reserved.value == 1
+            assert reserved.value == os.fstat(self.namespace).st_ino
             return
         assert C.get_errno() == errno.ENOENT
-        self.put("ports", key, C.c_uint32(1))
+        self.put("ports", key, C.c_uint32(os.fstat(self.namespace).st_ino))
 
     def publish(self, server, launch=1, session=101, run=201, revision=1, deadline=None):
         self.reserve(server)
@@ -436,7 +436,8 @@ def main():
         assert not alias.seen
         report["address_alias"] = "denied"
 
-        # Same tuple in another live network namespace has no authority. Keep
+        # Same tuple in another namespace is unrelated traffic (louiselm-8a8id).
+        # It gains no authority to our endpoint. Keep
         # namespace fds open so an inode cannot be recycled during the binding.
         keeper = subprocess.Popen([sys.executable, __file__, "--netns-endpoint", str(old_port)],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
@@ -450,8 +451,8 @@ def main():
             guard.enroll(foreign, 4, 104, 201, sys.executable)
             guard.publish(replacement_endpoint.server, launch=4, session=104, revision=4)
             open_connection(foreign, replacement_endpoint)
-            assert not request(foreign, {"op": "send"})["accepted"]
-            report["other_socket_namespace"] = "same address/port connected; send denied"
+            assert request(foreign, {"op": "send"})["accepted"]
+            report["other_socket_namespace"] = "unrelated namespace unaffected at the same address/port"
 
             mover = spawn((namespace,), uid=0)
             children.append(mover)

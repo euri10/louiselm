@@ -8,6 +8,8 @@ use std::{collections::BTreeSet, fmt};
 use serde::{Deserialize, Serialize};
 
 mod command;
+mod sender_guard;
+pub use sender_guard::{GuardEnrollment, GuardScope};
 pub(crate) mod conformance;
 mod conformance_update;
 pub use conformance::{
@@ -1761,6 +1763,11 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Post-enrollment evidence from the original authenticated supervisor.
+    SenderGuardEnrolled {
+        /// Exact evidence, never sufficient without the authenticated channel.
+        enrollment: GuardEnrollment,
+    },
     /// Exact current-policy update accepted without resuming the Session.
     WaiverChanged {
         /// Authenticated echo of the exact applied decision.
@@ -1881,6 +1888,7 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
+            ResponseResult::SenderGuardEnrolled { enrollment } => enrollment.validate(),
             ResponseResult::WaiverChanged { change } => {
                 change.validate()?;
                 if change.request_id != self.request_id {

@@ -84,10 +84,11 @@ impl Trace {
         expected: &fs::File,
         uid: u32,
         gid: u32,
+        enroll: impl FnOnce(&KernelProcess) -> io::Result<()>,
     ) -> io::Result<Arc<KernelProcess>> {
         let agent = self.stop_at_exec()?;
         verify_credentials(agent.as_raw_nonzero().get().unsigned_abs(), uid, gid)?;
-        self.pin_executable(agent, expected, uid, gid)
+        self.pin_executable(agent, expected, uid, gid, enroll)
     }
 
     fn stop_at_exec(&mut self) -> io::Result<Pid> {
@@ -113,6 +114,7 @@ impl Trace {
         expected: &fs::File,
         uid: u32,
         gid: u32,
+        enroll: impl FnOnce(&KernelProcess) -> io::Result<()>,
     ) -> io::Result<Arc<KernelProcess>> {
         let host_pid = agent.as_raw_nonzero().get().unsigned_abs();
         // The trace stop prevents exec/exit/reuse while the kernel pin and
@@ -132,6 +134,7 @@ impl Trace {
             duplicate,
             expected,
         )?;
+        enroll(&identity)?;
         self.detach(agent)?;
         Ok(Arc::new(identity))
     }
@@ -397,6 +400,7 @@ mod tests {
             expected,
             rustix::process::getuid().as_raw(),
             rustix::process::getgid().as_raw(),
+            |_| Ok(()),
         )
     }
 
@@ -453,6 +457,7 @@ mod tests {
                 &expected_file,
                 rustix::process::getuid().as_raw(),
                 rustix::process::getgid().as_raw(),
+                |_| Ok(()),
             )
             .unwrap_err();
         fixture.wait();
@@ -467,6 +472,38 @@ mod tests {
                 observed.ino()
             )
         );
+    }
+
+    #[test]
+    fn enrollment_failure_is_before_detach_and_kills_the_workload() {
+        let (mut fixture, mut trace, _) = Fixture::prepare();
+        fixture.release();
+        let agent = trace.stop_at_exec().unwrap();
+        let mut called = false;
+        let error = trace
+            .pin_executable(
+                agent,
+                &fs::File::open("/bin/sleep").unwrap(),
+                rustix::process::getuid().as_raw(),
+                rustix::process::getgid().as_raw(),
+                |process| {
+                    called = true;
+                    assert!(process.valid().unwrap());
+                    let status =
+                        fs::read_to_string(format!("/proc/{}/status", process.credentials().pid))
+                            .unwrap();
+                    assert!(
+                        status.lines().any(|line| line.starts_with("State:\tt")),
+                        "enrollment runs at the tracing stop"
+                    );
+                    Err(io::Error::other("synthetic enrollment refusal"))
+                },
+            )
+            .unwrap_err();
+        assert!(called);
+        assert_eq!(error.to_string(), "synthetic enrollment refusal");
+        fixture.wait();
+        assert!(pidfd_open(agent, PidfdFlags::empty()).is_err());
     }
 
     #[test]

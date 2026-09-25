@@ -148,7 +148,7 @@ jobs:
       - run: bash -n scripts/launcher-vm && ./scripts/test-launcher-vm.sh
 
   sender-guard-vm:
-    name: Embedded Sender guard (disposable KVM)
+    name: Sender guard object and loader (disposable KVM)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -172,10 +172,12 @@ jobs:
       - name: Exercise the embedded object with restricted guest networking
         run: |
           ./scripts/launcher-vm start
-          git archive HEAD scripts/test-sender-guard.py scripts/probes/codex-kernel-guard |
+          git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/probes/codex-kernel-guard |
             ./scripts/launcher-vm exec tar -x -C /home/vm
           ./scripts/launcher-vm exec python3 /home/vm/scripts/test-sender-guard.py \
             --disposable-vm /var/tmp/louiselm-skills-target/debug/louiselm-launch
+          ./scripts/launcher-vm exec sudo -n python3 /home/vm/scripts/test-sender-guard-loader.py \
+            /var/tmp/louiselm-skills-target/debug/deps
       - name: Dispose the guest
         if: always()
         run: |
@@ -438,7 +440,7 @@ jobs:
         run: |
           # This gate also builds skills-core and its embedded Sender guard.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang linux-libc-dev
+          sudo apt-get install -y --no-install-recommends clang linux-libc-dev libbpf-dev libelf-dev
           python3 ../scripts/test-skill-requests
 
       - name: Test installed broker Attention provisioning across identities
@@ -480,7 +482,7 @@ jobs:
       - name: Install Linux sandbox test tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap strace clang linux-libc-dev
+          sudo apt-get install -y --no-install-recommends bubblewrap strace clang linux-libc-dev libbpf-dev libelf-dev
           # Noble can deny capabilities inside an unprivileged user namespace;
           # this ephemeral runner exists specifically to exercise that path.
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then

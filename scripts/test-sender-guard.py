@@ -13,7 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 PROBES = ROOT / "scripts/probes/codex-kernel-guard"
 PROGRAMS = {"endpoint_send", "invalidate_exec", "protect_runtime", "invalidate_listener", "owner_exit", "owner_exec"}
-MAPS = {"tasks", "connections", "policy", "ports", "listeners", "owners", "lost"}
+MAPS = {"tasks", "connections", "policy", "ports", "listeners", "owners", "lost", "upstreams"}
 
 
 def inspect(path):

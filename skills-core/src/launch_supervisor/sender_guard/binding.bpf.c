@@ -31,7 +31,9 @@ struct {
     TYPE(key, __u32);
     TYPE(value, struct binding);
 } policy SEC(".maps");
-/* Reserved ports never become unguarded when a binding is absent/revoked. */
+/* The value pins applicability to the retained Session network namespace.
+ * Another namespace using the same port is unrelated, not an unauthorized
+ * sender to this endpoint. Absence of policy still denies in our namespace. */
 struct {
     FIELD(type, BPF_MAP_TYPE_HASH);
     FIELD(max_entries, 16);
@@ -118,7 +120,8 @@ static __attribute__((always_inline)) int binding_send(__u64 *ctx)
     if (family != 2 && family != 10)
         return 0;
     __u32 port = __builtin_bswap16(sk->__sk_common.skc_dport);
-    if (!lookup(&ports, &port))
+    __u32 *namespace = lookup(&ports, &port);
+    if (!namespace || *namespace != sk->__sk_common.skc_net.net->ns.inum)
         return 0;
     /* HASH updates publish one immutable record. Never mutate it in place. */
     struct binding *rule = lookup(&policy, &port);

@@ -219,31 +219,42 @@ The nonprivileged wrapper contract is checked by
 
 ## Embedded Sender guard
 
-The `Embedded Sender guard (disposable KVM)` CI job prepares this same pinned
-guest and runs the following gate. Fresh preparation includes `clang`,
-`linux-libc-dev`, `libbpf1`, Python 3 and `iproute2`; an older immutable prepared
+The `Sender guard object and loader (disposable KVM)` CI job prepares this same pinned
+guest and runs both gates below. Fresh preparation includes `clang`,
+`linux-libc-dev`, `libbpf-dev`, `libelf-dev`, Python 3 and `iproute2`; an older immutable prepared
 image must be refreshed using the separate cache-root procedure above.
 
 ```sh
 ./scripts/launcher-vm start
-git archive HEAD scripts/test-sender-guard.py scripts/probes/codex-kernel-guard |
+git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/probes/codex-kernel-guard |
   ./scripts/launcher-vm exec tar -x -C /home/vm
 ./scripts/launcher-vm exec python3 /home/vm/scripts/test-sender-guard.py \
   --disposable-vm /var/tmp/louiselm-skills-target/debug/louiselm-launch
+./scripts/launcher-vm exec sudo -n python3 /home/vm/scripts/test-sender-guard-loader.py \
+  /var/tmp/louiselm-skills-target/debug/deps
 ./scripts/launcher-vm stop
 ```
 
 Preparation builds the launcher from the archived crate. Transfer and rebuild
 explicitly selected changed sources when testing uncommitted work. The gate
 extracts the object from that launcher without privilege, checks its six
-programs, seven maps and BTF data, then loads those bytes using the existing
+programs, eight maps and BTF data, then loads those bytes using the existing
 ownership probe and system libbpf inside the guest. It also compiles the
 binding-only missing-owner-hook negative control from the shared source.
 
 All four ownership variants are required: owner death at the actual upstream
 write, death before admission, owner exec with orderly close, and broker crash.
 They retain helper-denial positive controls, protected pins/frozen maps and
-confirmed cleanup. The launcher embeds the object but does not yet load it in
-production; a passing result is component evidence, not installed conformance
-or a Verified Session. The host needs no root access, account key or Provider
+confirmed cleanup. The second gate invokes the production Rust loader through
+the library-test executable, with distinct-UID broker/runtime fixtures and real
+authenticated enrollment responses. It checks two Sessions sharing an upstream,
+helper denials, runtime/supervisor exit and exec, broker crash, revision,
+connection retirement and disposal. A cached admission cannot cross loss at the
+actual write. All owned map IDs must disappear after cleanup. A directory
+argument requires exactly one library-test executable; an exact path can be
+used for transferred local builds.
+
+Production Provider activation remains separate; a passing result is component
+evidence, not installed conformance or a Verified Session. The host needs no
+root access, account key or Provider
 connection. Missing KVM/BPF-LSM/BTF or failed probes fail the gate, never skip.

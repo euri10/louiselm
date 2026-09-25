@@ -62,6 +62,7 @@ mod workspace;
 pub use tool_helper::HelperPrincipal;
 pub use tool_integration::ToolIsolationEvidence;
 mod relay;
+pub mod sender_guard;
 mod stdio;
 mod system;
 
