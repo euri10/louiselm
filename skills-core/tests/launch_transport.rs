@@ -9,8 +9,9 @@
 #![cfg(target_os = "linux")]
 
 use std::{
+    fs::File,
     io::{Read, Write},
-    os::fd::OwnedFd,
+    os::fd::{AsFd, OwnedFd},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -201,6 +202,50 @@ fn receive_packet(channel: &SeqpacketChannel) -> Result<AuthenticatedPacket, Tra
         let _ = complete.send(received);
     }))?;
     wait(result)
+}
+
+#[test]
+fn guarded_handoff_keeps_exact_three_descriptors_with_authenticated_packet() {
+    use launch_protocol::{GuardEnrollment, GuardScope};
+    let pair = connected_pair(process_pin());
+    let descriptor = File::open("/dev/null").unwrap();
+    let response = ProtocolResponse {
+        schema: RESPONSE_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "guard-handoff".into(),
+        result: ResponseResult::SenderGuardEnrolled {
+            enrollment: GuardEnrollment {
+                scope: GuardScope {
+                    session_id: "session-1".into(),
+                    run_id: "run-1".into(),
+                    revision: 1,
+                    deadline_ns: u64::MAX,
+                },
+                guard_id: 1,
+                runtime_pid: 2,
+                broker_pid: current_credentials().pid,
+                address: "127.0.0.1:12345".parse().unwrap(),
+                listener_cookie: 1,
+                network_id: 1,
+            },
+        },
+    };
+    let (complete, result) = mpsc::sync_channel(1);
+    pair.client
+        .send_descriptors(
+            response.canonical_bytes(),
+            [descriptor.as_fd(); 3],
+            Box::new(move |sent| {
+                complete.send(sent).unwrap();
+            }),
+        )
+        .unwrap();
+    wait(result).unwrap();
+    drop(descriptor);
+    let packet = receive_packet(&pair.server).unwrap();
+    assert_eq!(packet.peer_credentials, current_credentials());
+    assert_eq!(packet.message_credentials, current_credentials());
+    assert_eq!(packet.descriptors.unwrap().len(), 3);
 }
 
 struct ConnectedPair {

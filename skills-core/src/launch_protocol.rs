@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 mod command;
 mod sender_guard;
-pub use sender_guard::{GuardEnrollment, GuardScope};
+pub use sender_guard::{GuardEnrollment, GuardScope, GuardUpstream};
 pub(crate) mod conformance;
 mod conformance_update;
 pub use conformance::{
@@ -1763,9 +1763,34 @@ pub fn transition(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseResult {
+    /// Supervisor-created guarded socket, accompanied by three descriptors.
+    SenderGuardUpstream {
+        /// Exact socket and immutable endpoint binding.
+        socket: GuardUpstream,
+    },
+    /// Broker retained the connected socket and namespace leases.
+    SenderGuardUpstreamAccepted {
+        /// Exact socket being acknowledged.
+        socket: GuardUpstream,
+    },
     /// Post-enrollment evidence from the original authenticated supervisor.
     SenderGuardEnrolled {
         /// Exact evidence, never sufficient without the authenticated channel.
+        enrollment: GuardEnrollment,
+    },
+    /// Broker retained and validated the exact listener and namespace leases.
+    SenderGuardAccepted {
+        /// Exact enrollment being acknowledged.
+        enrollment: GuardEnrollment,
+    },
+    /// Supervisor revoked authority and requires closure of all broker copies.
+    SenderGuardClosing {
+        /// Exact endpoint whose descriptor ownership must end.
+        enrollment: GuardEnrollment,
+    },
+    /// Broker closed the endpoint and all accepted connections before replying.
+    SenderGuardClosed {
+        /// Exact closed ownership, never a successful send standing for cleanup.
         enrollment: GuardEnrollment,
     },
     /// Exact current-policy update accepted without resuming the Session.
@@ -1880,6 +1905,10 @@ impl ProtocolResponse {
     ///
     /// # Errors
     /// Rejects oversized/invalid response headers, invalid nested payloads, or mismatched correlation identifiers.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One closed result dispatch validates each response variant; nested operation validation stays on its own type."
+    )]
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self.canonical_bytes().len() > MAX_PROTOCOL_MESSAGE_BYTES {
             return Err(ProtocolError::new(ErrorCode::MessageTooLarge, None, None));
@@ -1888,7 +1917,12 @@ impl ProtocolResponse {
         validate_version(self.protocol_version)?;
         validate_identifier(&self.request_id)?;
         match &self.result {
-            ResponseResult::SenderGuardEnrolled { enrollment } => enrollment.validate(),
+            ResponseResult::SenderGuardUpstream { socket }
+            | ResponseResult::SenderGuardUpstreamAccepted { socket } => socket.validate(),
+            ResponseResult::SenderGuardEnrolled { enrollment }
+            | ResponseResult::SenderGuardAccepted { enrollment }
+            | ResponseResult::SenderGuardClosing { enrollment }
+            | ResponseResult::SenderGuardClosed { enrollment } => enrollment.validate(),
             ResponseResult::WaiverChanged { change } => {
                 change.validate()?;
                 if change.request_id != self.request_id {

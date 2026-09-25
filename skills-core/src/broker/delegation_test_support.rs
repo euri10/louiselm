@@ -130,6 +130,7 @@ impl Peer {
             packet: LauncherPacket::Request(ProtocolMessage::ToolExecution(request)),
             peer_credentials: self.credentials(),
             message_credentials: self.credentials(),
+            descriptors: None,
         }
     }
     pub fn receive_real_packet(&mut self) -> AuthenticatedPacket {

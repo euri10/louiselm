@@ -23,13 +23,11 @@ use rustix::{
 };
 use thiserror::Error;
 
-use crate::launch_protocol::{
-    GuardEnrollment, GuardScope, PROTOCOL_VERSION, ProtocolResponse, RESPONSE_SCHEMA,
-    ResponseResult,
-};
+use crate::launch_protocol::{GuardEnrollment, GuardScope};
 use crate::launch_transport::{KernelProcess, SeqpacketChannel};
 
 mod binding;
+mod handoff;
 mod sockets;
 use binding::Rule;
 pub use sockets::GuardedSocket;
@@ -38,6 +36,13 @@ use sockets::shutdown;
 mod namespace;
 use namespace::PinNamespace;
 
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "Privileged fixture aborts on protocol/setup failure."
+)]
+mod launch_fixture;
 #[cfg(test)]
 mod tests;
 
@@ -68,8 +73,8 @@ pub enum GuardError {
 }
 
 struct Endpoint {
-    _listener: TcpListener,
-    _network: File,
+    listener: TcpListener,
+    network: File,
     rule: Rule,
 }
 
@@ -79,16 +84,18 @@ struct Endpoint {
 /// process through the endpoint leases. Disposal must close broker endpoints
 /// and descendants before the supervisor releases its identity lease.
 pub struct SenderGuard {
+    // Declaration order is Drop order: no retained socket may outlive pins.
+    endpoint: Option<Endpoint>,
+    upstreams: BTreeMap<u64, TcpStream>,
     maps: BTreeMap<String, MapHandle>,
-    pins: PinNamespace,
     scope: GuardScope,
     broker: SeqpacketChannel,
     broker_pin: OwnedFd,
-    endpoint: Option<Endpoint>,
     enrolled: bool,
     announced: bool,
+    handoff: Option<GuardEnrollment>,
     runtime_pid: u32,
-    upstreams: BTreeMap<u64, TcpStream>,
+    pins: PinNamespace,
 }
 
 impl SenderGuard {
@@ -186,6 +193,7 @@ impl SenderGuard {
             endpoint: None,
             enrolled: false,
             announced: false,
+            handoff: None,
             runtime_pid: 0,
             upstreams: BTreeMap::new(),
         };
@@ -248,8 +256,8 @@ impl SenderGuard {
             network: network.try_clone().map_err(|_| GuardError::Socket)?,
         };
         self.endpoint = Some(Endpoint {
-            _listener: listener,
-            _network: network,
+            listener,
+            network,
             rule,
         });
         Ok(result)
@@ -262,6 +270,15 @@ impl SenderGuard {
     ) -> Result<(), GuardError> {
         if self.enrolled || self.endpoint.is_none() {
             return Err(GuardError::Enrollment);
+        }
+        let network = File::open(format!("/proc/{}/ns/net", process.credentials().pid))
+            .map_err(|_| GuardError::Enrollment)?;
+        if self
+            .endpoint
+            .as_ref()
+            .is_none_or(|endpoint| namespace_id(&network) != Ok(endpoint.rule.namespace))
+        {
+            return Err(GuardError::Authority);
         }
         self.live()?;
         self.principal(process.pidfd(), 1)?;
@@ -277,52 +294,6 @@ impl SenderGuard {
         self.enrolled = true;
         self.runtime_pid = process.credentials().pid;
         self.live()
-    }
-
-    /// Sends exact post-enrollment evidence on the retained authenticated channel.
-    /// The broker must retain this response before enabling request processing.
-    /// # Errors
-    /// Refuses incomplete enrollment, lost authority, invalid correlation or failed delivery.
-    pub fn announce_enrollment(
-        &mut self,
-        request_id: String,
-        timeout: Duration,
-    ) -> Result<(), GuardError> {
-        self.check_scope(&self.scope)?;
-        if !self.enrolled {
-            return Err(GuardError::Enrollment);
-        }
-        let response = ProtocolResponse {
-            schema: RESPONSE_SCHEMA.into(),
-            protocol_version: PROTOCOL_VERSION,
-            request_id,
-            result: ResponseResult::SenderGuardEnrolled {
-                enrollment: GuardEnrollment {
-                    scope: self.scope.clone(),
-                    guard_id: self.pins.id()?,
-                    runtime_pid: self.runtime_pid,
-                    broker_pid: self.broker.peer_credentials().pid,
-                },
-            },
-        };
-        response.validate().map_err(|_| GuardError::Authority)?;
-        let (sent, completion) = std::sync::mpsc::sync_channel(1);
-        self.broker
-            .send(
-                response.canonical_bytes(),
-                Box::new(move |result| {
-                    // A timed-out caller has already refused activation.
-                    let _ = sent.send(result);
-                }),
-            )
-            .map_err(|_| GuardError::Lost)?;
-        completion
-            .recv_timeout(timeout)
-            .map_err(|_| GuardError::Lost)?
-            .map_err(|_| GuardError::Lost)?;
-        self.live()?;
-        self.announced = true;
-        Ok(())
     }
 
     /// Publishes the endpoint after enrollment and the authenticated owner response.
@@ -386,6 +357,7 @@ impl SenderGuard {
     /// Cleanup uncertainty prevents identity reuse and retains owned resources.
     pub fn dispose(&mut self) -> Result<(), GuardError> {
         self.revoke()?;
+        self.close_handoff(Duration::from_secs(5))?;
         self.endpoint = None;
         Ok(())
     }
@@ -406,6 +378,7 @@ impl SenderGuard {
         }
         self.live()?;
         self.revoke()?;
+        self.close_handoff(Duration::from_secs(5))?;
         let endpoint = self.endpoint.as_mut().ok_or(GuardError::Enrollment)?;
         endpoint.rule.revision = scope.revision;
         endpoint.rule.deadline = scope.deadline_ns;

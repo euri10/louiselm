@@ -149,6 +149,9 @@ impl BrokerService {
             sequence = next;
         }
         Ok(BrokerSession {
+            provider_listener: None,
+            provider_revision: None,
+            provider_sockets: std::collections::BTreeMap::new(),
             posture_evidence: self.retain_launch_posture(&authorization, verify)?,
             require_cold_recovery: pending.require_cold_recovery,
             recovery_admitted_until: None,

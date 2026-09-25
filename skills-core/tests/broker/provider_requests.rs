@@ -23,6 +23,9 @@ use std::{
     sync::Mutex,
 };
 
+#[path = "provider_handoff.rs"]
+mod handoff;
+
 const SECRET: &str = "sk-synthetic-broker-only-0000";
 const HOST: &str = "127.0.0.1:40773";
 

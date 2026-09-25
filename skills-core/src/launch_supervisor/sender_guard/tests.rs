@@ -7,6 +7,7 @@
 )]
 
 use super::*;
+use crate::launch_protocol::{PROTOCOL_VERSION, ProtocolResponse, RESPONSE_SCHEMA, ResponseResult};
 use crate::launch_transport::{CredentialPin, KernelCredentials, SeqpacketConnector};
 use serde_json::{Value, json};
 use std::{
@@ -25,7 +26,7 @@ fn read(lines: &mut impl Iterator<Item = std::io::Result<String>>) -> Value {
     serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
 }
 
-fn number(value: &Value, key: &str) -> u32 {
+pub(super) fn number(value: &Value, key: &str) -> u32 {
     value[key].as_u64().unwrap().try_into().unwrap()
 }
 
@@ -65,6 +66,9 @@ fn enrollment_response_round_trips_and_rejects_malformed_scope() {
                 guard_id: 1,
                 runtime_pid: 2,
                 broker_pid: 3,
+                address: "127.0.0.1:12345".parse().unwrap(),
+                listener_cookie: 1,
+                network_id: 1,
             },
         },
     };
@@ -110,16 +114,24 @@ fn production_loader_worker() {
         )
         .unwrap();
     let broker = ready.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    let current = super::launch_fixture::launch(&broker, &setup);
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
     let scope = GuardScope {
         session_id: setup["session"].as_str().unwrap().into(),
-        run_id: "fixture-run".into(),
-        revision: 1,
+        run_id: current
+            .as_ref()
+            .map_or_else(|| "fixture-run".into(), |status| status.run_id.clone()),
+        revision: current
+            .as_ref()
+            .map_or(1, |status| status.envelope_revision),
         deadline_ns: u64::try_from(now.tv_sec).unwrap() * 1_000_000_000 + 300_000_000_000,
     };
     let mut guard = SenderGuard::load(scope.clone(), broker).unwrap();
-    let endpoint = guard.bind_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let pid = number(&setup, "runtime");
+    let network = File::open(format!("/proc/{pid}/ns/net")).unwrap();
+    let endpoint = guard
+        .bind_in_namespace(&network, "127.0.0.1:0".parse().unwrap())
+        .unwrap();
     // The driver owns and has waited for this exact stopped child. Construct
     // the same measured lifetime pin used at the production exec stop.
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
@@ -151,33 +163,85 @@ fn production_loader_worker() {
         guard.enroll_at_exec_stop(&runtime),
         Err(GuardError::Enrollment)
     );
-    guard
-        .announce_enrollment("guard-enrolled".into(), Duration::from_secs(5))
-        .unwrap();
     let ids: Vec<_> = guard
         .maps
         .values()
         .map(|map| map.info().unwrap().info.id)
         .collect();
+    if setup["invalid_handoff"].as_bool().unwrap_or(false) {
+        guard.endpoint.as_mut().unwrap().rule.listener += 1;
+        assert!(matches!(
+            guard.announce_enrollment("guard-enrolled", Duration::from_secs(5)),
+            Err(GuardError::Lost)
+        ));
+        assert!(!guard.announced);
+        emit(&json!({"refused":true,"maps":ids}));
+        return;
+    }
+    guard
+        .announce_enrollment("guard-enrolled", Duration::from_secs(5))
+        .unwrap();
     emit(&json!({"ready":true,"port":endpoint.socket.local_addr().unwrap().port(),"maps":ids}));
-    serve_actions(&mut guard, &runtime, scope, lines);
+    serve_actions(&mut guard, &runtime, scope, lines, current.as_ref());
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One fixture opcode dispatcher keeps the externally driven lifecycle sequence visible."
+)]
 fn serve_actions(
     guard: &mut SenderGuard,
     runtime: &KernelProcess,
     mut scope: GuardScope,
     lines: impl Iterator<Item = std::io::Result<String>>,
+    current: Option<&crate::launch_protocol::SupervisorStatus>,
 ) {
     for line in lines {
         let action: Value = serde_json::from_str(&line.unwrap()).unwrap();
         match action["op"].as_str().unwrap() {
+            "status" => {
+                super::launch_fixture::status(&guard.broker, current.unwrap());
+                emit(&json!({"status":true}));
+            }
+            "revoke" => {
+                guard.revoke().unwrap();
+                emit(&json!({"revoked":true}));
+            }
             "activate" => {
                 guard.activate(&scope).unwrap();
                 emit(&json!({"activated":true}));
             }
             "connect" => {
                 handoff_socket(guard, &scope, &action);
+            }
+            "transfer" => {
+                emit(&json!({"handoff":true}));
+                let result = guard.handoff_upstream(
+                    &scope,
+                    action["address"].as_str().unwrap().parse().unwrap(),
+                    "guard-upstream",
+                    Duration::from_secs(5),
+                );
+                if action["refused"].as_bool().unwrap_or(false) {
+                    assert!(result.is_err());
+                    assert!(
+                        guard
+                            .map("policy")
+                            .unwrap()
+                            .lookup(
+                                &guard.endpoint.as_ref().unwrap().rule.port.to_ne_bytes(),
+                                MapFlags::ANY,
+                            )
+                            .unwrap()
+                            .is_none(),
+                        "failed handoff retained active endpoint policy"
+                    );
+                    assert_eq!(guard.dispose(), Err(GuardError::Cleanup));
+                    emit(&json!({"refused":true}));
+                    continue;
+                }
+                let cookie = result.unwrap();
+                emit(&json!({"connected":true,"cookie":cookie}));
             }
             "protected" => {
                 assert_eq!(
@@ -217,7 +281,7 @@ fn serve_actions(
                 guard.revise(scope.clone()).unwrap();
                 assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
                 guard
-                    .announce_enrollment("guard-revised".into(), Duration::from_secs(5))
+                    .announce_enrollment("guard-revised", Duration::from_secs(5))
                     .unwrap();
                 emit(&json!({"revised":true}));
             }
@@ -250,7 +314,10 @@ fn serve_actions(
             "close" => {
                 guard.dispose().unwrap();
                 guard.dispose().unwrap();
-                assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
+                assert!(matches!(
+                    guard.activate(&scope),
+                    Err(GuardError::Enrollment | GuardError::Lost)
+                ));
                 break;
             }
             other => panic!("unknown test operation {other}"),

@@ -46,6 +46,55 @@ impl GuardedSocket<TcpListener> {
 }
 
 impl SenderGuard {
+    /// Places the loopback listener in the exact blocked Session namespace.
+    /// The namespace leader must still belong to its proved process tree.
+    /// A scoped worker enters only that network namespace and exits after bind;
+    /// the supervisor keeps its original network namespace for upstream sockets.
+    /// # Errors
+    /// Refuses foreign/unproved Sessions, inaccessible namespaces or bind failure.
+    pub fn bind_session_endpoint(
+        &mut self,
+        prepared: &crate::sandbox::PreparedSession,
+        address: SocketAddr,
+    ) -> Result<GuardedSocket<TcpListener>, GuardError> {
+        if prepared.session_id() != self.scope.session_id {
+            return Err(GuardError::Authority);
+        }
+        let leader = prepared.sandbox_leader_pid().ok_or(GuardError::Authority)?;
+        if !prepared
+            .processes()
+            .map_err(|_| GuardError::Authority)?
+            .contains(&leader)
+        {
+            return Err(GuardError::Authority);
+        }
+        let network =
+            File::open(format!("/proc/{leader}/ns/net")).map_err(|_| GuardError::Socket)?;
+        self.bind_in_namespace(&network, address)
+    }
+
+    pub(super) fn bind_in_namespace(
+        &mut self,
+        network: &File,
+        address: SocketAddr,
+    ) -> Result<GuardedSocket<TcpListener>, GuardError> {
+        std::thread::scope(|threads| {
+            std::thread::Builder::new()
+                .name("louiselm-guard-bind".into())
+                .spawn_scoped(threads, || {
+                    rustix::thread::move_into_link_name_space(
+                        network.as_fd(),
+                        Some(rustix::thread::LinkNameSpaceType::Network),
+                    )
+                    .map_err(|_| GuardError::Socket)?;
+                    self.bind_endpoint(address)
+                })
+                .map_err(|_| GuardError::Socket)?
+                .join()
+                .map_err(|_| GuardError::Socket)?
+        })
+    }
+
     /// Connects and registers one broker-approved destination before descriptor handoff.
     /// No TLS/request bytes are sent here. Call only after broker request admission;
     /// this method performs mechanics and never chooses a destination or retries.

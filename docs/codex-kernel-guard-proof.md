@@ -27,12 +27,13 @@ by the maintainer; no libbpf sources are bundled.
    freeze runtime/broker task grants, owners, loss latch and endpoint reservation.
    Enrollment failure kills the still-stopped workload through the existing
    sandbox cleanup path. It cannot run first and enroll later.
-4. Send typed `SenderGuardEnrolled` evidence over the retained authenticated
-   `SeqpacketChannel`. It names the complete Session/Run/revision/deadline, guard
-   namespace identity and runtime/broker PIDs. The broker must validate and retain
-   it before request processing; successful sending alone is not a receipt ACK.
-   The handoff task `.4.3` owns that receiver and descriptor protocol.
-5. Activation requires completed enrollment, a sent owner response and the exact
+4. Transfer typed `SenderGuardEnrolled` evidence and exactly three descriptors
+   over the retained authenticated `SeqpacketChannel`: listener, pin namespace,
+   network namespace. The broker validates the signed launch runtime, full
+   Session/Run/revision/deadline, original broker PID, namespace types/inodes,
+   address and listener cookie. It retains ownership before echoing the exact
+   `SenderGuardAccepted` response. Sending alone never permits activation.
+5. Activation requires completed enrollment, an acknowledged handoff and the exact
    live scope. A revision must increase; the broker authorizes its new deadline.
    It revokes and shuts down old sockets and requires a new owner response.
 
@@ -79,8 +80,8 @@ copies, including active streams. No retry or budget refund is implied.
 lifecycle. Disposal revokes before stopping the process tree, closes its own
 endpoint after descendant cleanup, and maps uncertainty to `CleanupUnproven` so
 the existing identity lease is poisoned. The handoff owner must close its
-endpoint/accepted descriptors before completing Session disposal; `.4.3` owns
-that coordination. A broker restart/replacement requires a fresh Session for
+endpoint/accepted descriptors before completing Session disposal. A broker
+restart/replacement requires a fresh Session for
 Provider networking; a surviving broker may reattach within existing grace,
 without new task enrollment. `.4.5` owns production HTTPS integration and
 activation and must preserve these ordering/lifetime requirements.
@@ -103,6 +104,48 @@ ownership variants. The latter retain their missing-hook and explicit detach
 negative controls. See `docs/launcher-vm.md` for commands and isolated cache
 ownership; never run these loaders with desktop sudo. Unprivileged artifact,
 exec-stop cleanup and protocol tests remain in the complete skills-core suite.
+
+### Authenticated socket handoff
+
+`louiselm-qbr.5.1.3.2.4.3` supplies the production handoff boundary.
+`bind_session_endpoint` obtains the blocked Session's verified namespace leader,
+checks its process-tree membership, and binds on a scoped thread which enters
+only that network namespace. Enrollment checks the measured runtime's namespace
+against the retained listener. No route, namespace change in the broker, or
+credential in Session state is introduced.
+
+The control transport accepts rights only on the two typed guard transfers,
+with exactly three close-on-exec descriptors and ordinary per-packet credential
+authentication. A `BrokerSession` owns its accepted listener. Its serving method
+uses the existing HTTP parser, durable request admission and streaming relay;
+accepted sockets stay within that serialized worker and close before it can
+acknowledge disposal. Reusing a retired endpoint revision is refused.
+
+`handoff_upstream` creates and guards one already-admitted destination, transfers
+the socket on the same channel and waits for an exact acknowledgement. The Rust
+receiver checks the stored Provider destination, Session enrollment, connected
+peer, cookie and both leases. `GuardedUpstream` carries those leases through
+reads/writes and shuts down every duplicate on drop. A retained upstream owner
+prevents a closure acknowledgement, even after shutdown. The supervisor still
+retires its copy by cookie; failed acknowledgements revoke all socket authority,
+close the channel and deny reuse.
+
+Revision/disposal revokes first, then exchanges `SenderGuardClosing` /
+`SenderGuardClosed` for the exact enrollment before releasing the endpoint.
+No reply means cleanup is unproved unless the original broker's pidfd proves
+process death. Losing a channel to a living broker never proves descriptor
+closure. Owned sockets drop before the pin namespace, including guard Drop.
+
+`scripts/test-sender-guard-handoff.py` exercises these production boundaries in
+the disposable KVM with two runtime UIDs, a separate broker UID, separate empty
+network namespaces, offline Provider responses and synthetic signed launch/status
+fixtures. It checks successful parser/admission/relay and spent units, inherited
+helper and cross-Session socket transfers, guarded upstream handoff, stale writes,
+invalid listener cookies, refused upstream acknowledgements, uncertain cleanup,
+broker crash and final process/map cleanup. CI requires it alongside the loader
+gate. This is component evidence: `.4.5` still owns the
+stock runtime configuration, guarded HTTPS transport composition and global
+Brokered activation. The installed launch entrypoint still refuses Brokered.
 
 ## Historical feasibility evidence
 

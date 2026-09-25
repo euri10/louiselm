@@ -79,6 +79,16 @@ upstream write, cross-Session isolation, frozen enrollment and complete cleanup.
 The same CI job requires both gates. A skipped ignored Rust fixture is not a
 loader pass, and neither gate enables Brokered or certifies a desktop Session.
 
+Sender guard handoff changes additionally run
+`python3 scripts/test-sender-guard-handoff.py <library-test-executable> <broker-test-executable>`
+as root only in that disposable guest. This required CI gate uses the production
+authenticated descriptor channel, Rust broker receiver, request admission and
+relay with offline runtime/upstream and receipt/status doubles. It checks distinct
+UIDs and network namespaces, helper and cross-Session descriptor denial, invalid
+handoff, refused upstream acknowledgements, uncertain cleanup, stale sockets,
+broker crash and zero-survivor cleanup. Both arguments may
+name a clean Cargo `debug/deps` directory with exactly one matching test executable.
+
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both
 crates' existing integration-test targets and connects separate broker and

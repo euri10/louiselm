@@ -172,12 +172,15 @@ jobs:
       - name: Exercise the embedded object with restricted guest networking
         run: |
           ./scripts/launcher-vm start
-          git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/probes/codex-kernel-guard |
-            ./scripts/launcher-vm exec tar -x -C /home/vm
-          ./scripts/launcher-vm exec python3 /home/vm/scripts/test-sender-guard.py \
+          git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/test-sender-guard-handoff.py scripts/probes/codex-kernel-guard \
+            skills-core/src/launch_supervisor/sender_guard/binding.bpf.c skills-core/src/launch_supervisor/sender_guard/lifecycle.bpf.c |
+            ./scripts/launcher-vm exec tar -x -C /var/tmp
+          ./scripts/launcher-vm exec python3 /var/tmp/scripts/test-sender-guard.py \
             --disposable-vm /var/tmp/louiselm-skills-target/debug/louiselm-launch
-          ./scripts/launcher-vm exec sudo -n python3 /home/vm/scripts/test-sender-guard-loader.py \
+          ./scripts/launcher-vm exec sudo -n python3 /var/tmp/scripts/test-sender-guard-loader.py \
             /var/tmp/louiselm-skills-target/debug/deps
+          ./scripts/launcher-vm exec sudo -n python3 /var/tmp/scripts/test-sender-guard-handoff.py \
+            /var/tmp/louiselm-skills-target/debug/deps /var/tmp/louiselm-skills-target/debug/deps
       - name: Dispose the guest
         if: always()
         run: |

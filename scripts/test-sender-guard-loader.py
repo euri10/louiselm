@@ -61,6 +61,7 @@ def broker(path):
     listener.listen(8)
     listener.settimeout(5)
     channels, sockets, leases = [], [], []
+    endpoints = {}
     emit({"ready": True})
     for line in sys.stdin:
         action = json.loads(line)
@@ -73,14 +74,41 @@ def broker(path):
             channel = channels[action.get("channel", -1)]
             peer = array.array("i", channel.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             assert peer[0] == action["owner"] and peer[1] == 0
-            evidence = json.loads(channel.recv(65536))
+            raw, ancillary, flags, _ = channel.recvmsg(65536, socket.CMSG_SPACE(12))
+            assert not flags and len(ancillary) == 1
+            level, kind, rights = ancillary[0]
+            assert (level, kind) == (socket.SOL_SOCKET, socket.SCM_RIGHTS)
+            descriptors = array.array("i", rights)
+            assert len(descriptors) == 3
+            endpoint = socket.socket(fileno=descriptors[0])
+            evidence = json.loads(raw)
             result = evidence["result"]
             assert result["kind"] == "sender_guard_enrolled", result
             result = result["enrollment"]
             assert result["broker_pid"] == os.getpid()
             assert result["scope"]["session_id"] == action["session"]
             assert result["scope"]["revision"] == action.get("revision", 1)
+            assert os.fstat(descriptors[1]).st_ino == result["guard_id"]
+            assert os.fstat(descriptors[2]).st_ino == result["network_id"]
+            assert int.from_bytes(endpoint.getsockopt(socket.SOL_SOCKET, 57, 8), sys.byteorder) == result["listener_cookie"]
+            index = action.get("channel", len(channels) - 1)
+            assert index not in endpoints
+            endpoints[index] = (endpoint, descriptors[1:])
+            evidence["result"]["kind"] = "sender_guard_accepted"
+            channel.send(json.dumps(evidence, separators=(",", ":")).encode())
             emit({"enrolled": True})
+        elif op == "close_endpoint":
+            index = action["channel"]
+            channel = channels[index]
+            evidence = json.loads(channel.recv(65536))
+            assert evidence["result"]["kind"] == "sender_guard_closing"
+            endpoint, references = endpoints.pop(index)
+            endpoint.close()
+            for fd in references:
+                os.close(fd)
+            evidence["result"]["kind"] = "sender_guard_closed"
+            channel.send(json.dumps(evidence, separators=(",", ":")).encode())
+            emit({"endpoint_closed": True})
         elif op == "take":
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
                 channel.connect(action["path"])
@@ -120,6 +148,10 @@ def broker(path):
                 result = attempt()
             emit(result)
         elif op == "close":
+            for endpoint, references in endpoints.values():
+                endpoint.close()
+                for fd in references:
+                    os.close(fd)
             for connection in sockets + channels:
                 connection.close()
             for fd in leases:
@@ -202,11 +234,12 @@ def scenario(executable, variant):
                 owner = spawn([executable, "--exact", WORKER, "--ignored", "--nocapture"])
                 send(owner, {"broker": broker_path, "session": f"session-{index}",
                     "runtime": agent.pid, "uid": UID + index, "executable": sys.executable})
+                send(peer, {"op": "enrollment", "owner": owner.pid, "session": f"session-{index}"})
                 ready = receive(owner, True)
                 assert ready["ready"]
                 maps.extend(ready["maps"])
                 leases.append(os.open(f"/proc/{owner.pid}/ns/mnt", os.O_RDONLY))
-                assert request(peer, {"op": "enrollment", "owner": owner.pid, "session": f"session-{index}"})["enrolled"]
+                assert receive(peer)["enrolled"]
                 assert request(owner, {"op": "protected"}, True)["protected"]
                 assert request(owner, {"op": "stale"}, True)["stale_refused"]
                 os.kill(agent.pid, signal.SIGCONT)
@@ -247,9 +280,13 @@ def scenario(executable, variant):
                 send(runtimes[0], {"op": "exec"})
                 assert request(owners[0], {"op": "lost"}, True)["lost"]
             elif variant == "revision":
-                assert request(owners[0], {"op": "revise"}, True)["revised"]
-                assert request(peer, {"op": "enrollment", "new": False, "channel": 0,
-                    "owner": owners[0].pid, "session": "session-0", "revision": 2})["enrolled"]
+                send(peer, {"op": "close_endpoint", "channel": 0})
+                send(owners[0], {"op": "revise"})
+                assert receive(peer)["endpoint_closed"]
+                send(peer, {"op": "enrollment", "new": False, "channel": 0,
+                    "owner": owners[0].pid, "session": "session-0", "revision": 2})
+                assert receive(owners[0], True)["revised"]
+                assert receive(peer)["enrolled"]
                 assert request(owners[0], {"op": "activate"}, True)["activated"]
             elif variant == "broker-crash":
                 peer.kill()
@@ -259,7 +296,9 @@ def scenario(executable, variant):
             elif variant == "retire":
                 assert request(owners[0], {"op": "retire", "cookie": cookies[0]}, True)["retired"]
             elif variant == "dispose":
+                send(peer, {"op": "close_endpoint", "channel": 0})
                 send(owners[0], {"op": "close"})
+                assert receive(peer)["endpoint_closed"]
                 assert owners[0].wait(5) == 0
             else:
                 owners[0].kill()

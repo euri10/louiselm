@@ -137,6 +137,18 @@ impl BrokerService {
     {
         self.require_trusted_history(session, verify)?;
         match &packet.packet {
+            LauncherPacket::Response(response)
+                if matches!(response.result, ResponseResult::SenderGuardClosing { .. }) =>
+            {
+                Self::close_provider_listener(session, packet)?;
+                Ok(false)
+            }
+            LauncherPacket::Response(response)
+                if matches!(response.result, ResponseResult::SenderGuardEnrolled { .. }) =>
+            {
+                self.accept_provider_listener(session, packet, now_ms, verify)?;
+                Ok(false)
+            }
             LauncherPacket::ConformanceUpdate(update) => {
                 if packet.peer_credentials != session.channel().peer_credentials()
                     || packet.message_credentials != packet.peer_credentials

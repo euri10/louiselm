@@ -11,10 +11,10 @@ pub use process::KernelProcess;
 
 use std::{
     fmt,
-    io::IoSliceMut,
+    io::{IoSlice, IoSliceMut},
     mem::MaybeUninit,
     os::{
-        fd::{OwnedFd, RawFd},
+        fd::{BorrowedFd, OwnedFd, RawFd},
         unix::{ffi::OsStrExt, net::UnixStream},
     },
     panic::{AssertUnwindSafe, catch_unwind},
@@ -35,8 +35,9 @@ use rustix::{
     io::{Errno, FdFlags, fcntl_dupfd_cloexec, fcntl_getfd, fcntl_setfd},
     net::{
         AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags,
-        SendFlags, Shutdown, SocketAddrUnix, SocketFlags, SocketType, UCred, accept_with, bind,
-        connect, getsockname, listen, recvmsg, send, shutdown, socket_with,
+        SendAncillaryBuffer, SendAncillaryMessage, SendFlags, Shutdown, SocketAddrUnix,
+        SocketFlags, SocketType, UCred, accept_with, bind, connect, getsockname, listen, recvmsg,
+        send, sendmsg, shutdown, socket_with,
         sockopt::{
             set_socket_passcred, set_socket_recv_buffer_size, set_socket_send_buffer_size,
             socket_acceptconn, socket_domain, socket_passcred, socket_peercred,
@@ -160,7 +161,7 @@ pub enum LauncherPacket {
 }
 
 /// One protocol packet accompanied by both kernel credential observations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct AuthenticatedPacket {
     /// Exact packet bytes received from the socket.
     pub bytes: Vec<u8>,
@@ -170,6 +171,8 @@ pub struct AuthenticatedPacket {
     pub peer_credentials: KernelCredentials,
     /// Sender attached to this packet through `SCM_CREDENTIALS`.
     pub message_credentials: KernelCredentials,
+    /// Exactly three owned descriptors on a Sender guard handoff; absent on ordinary packets.
+    pub descriptors: Option<[OwnedFd; 3]>,
 }
 
 /// Stable failures at the launcher transport boundary.
@@ -234,7 +237,7 @@ pub enum TransportError {
     /// A non-empty packet arrived without kernel credentials.
     #[error("launcher packet credentials were missing")]
     MissingCredentials,
-    /// A packet carried ancillary data other than one credentials record.
+    /// A packet carried ancillary data outside credentials and an exact guard handoff.
     #[error("launcher packet carried unexpected ancillary data")]
     UnexpectedAncillary,
     /// Ancillary data did not fit the fixed receive buffer.
@@ -356,6 +359,7 @@ fn is_disconnected(error: Errno) -> bool {
 
 struct SendCommand {
     packet: Result<Vec<u8>, TransportError>,
+    descriptors: Option<[OwnedFd; 3]>,
     completion: TransportCompletion<()>,
 }
 
@@ -532,7 +536,53 @@ impl SeqpacketChannel {
             return Err(TransportError::Closed);
         };
         commands
-            .try_send(SendCommand { packet, completion })
+            .try_send(SendCommand {
+                packet,
+                descriptors: None,
+                completion,
+            })
+            .map_err(map_send_admission)
+    }
+
+    /// Queues a Sender guard response and its socket and two namespace leases.
+    /// The worker owns duplicates until the atomic packet send finishes; success
+    /// means delivery to the kernel, not acceptance by the broker.
+    /// # Errors
+    /// Refuses descriptor duplication, full/closed queue or invalid packet.
+    pub fn send_descriptors(
+        &self,
+        bytes: Vec<u8>,
+        descriptors: [BorrowedFd<'_>; 3],
+        completion: TransportCompletion<()>,
+    ) -> Result<(), TransportError> {
+        let descriptors = descriptors
+            .map(|fd| {
+                fd.try_clone_to_owned()
+                    .map_err(|_| TransportError::SocketFailed)
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| TransportError::SocketFailed)?;
+        let packet = if bytes.is_empty() {
+            Err(TransportError::EmptyPacket)
+        } else if bytes.len() > MAX_PACKET_BYTES {
+            Err(TransportError::PacketTooLarge)
+        } else {
+            Ok(bytes)
+        };
+        let commands = lock(&self.inner.core.send_commands);
+        if self.inner.core.is_closed() {
+            return Err(TransportError::Closed);
+        }
+        commands
+            .as_ref()
+            .ok_or(TransportError::Closed)?
+            .try_send(SendCommand {
+                packet,
+                descriptors: Some(descriptors),
+                completion,
+            })
             .map_err(map_send_admission)
     }
 
@@ -636,7 +686,7 @@ fn send_loop(fd: OwnedFd, commands: Receiver<SendCommand>, core: Arc<ChannelCore
             .pin
             .check_lifetime()
             .and(command.packet)
-            .and_then(|bytes| send_one(&fd, &bytes));
+            .and_then(|bytes| send_one(&fd, &bytes, command.descriptors.as_ref()));
         let fatal = result.is_err();
         if core.finish(command.completion, result, fatal) {
             drain_sends(&commands);
@@ -651,12 +701,41 @@ fn drain_sends(commands: &Receiver<SendCommand>) {
     }
 }
 
-fn send_one(fd: &OwnedFd, bytes: &[u8]) -> Result<(), TransportError> {
+fn send_one(
+    fd: &OwnedFd,
+    bytes: &[u8],
+    descriptors: Option<&[OwnedFd; 3]>,
+) -> Result<(), TransportError> {
     debug_assert!(!bytes.is_empty());
     debug_assert!(bytes.len() <= MAX_PACKET_BYTES);
-    let _ = decode_packet(bytes)?;
+    let packet = decode_packet(bytes)?;
+    if descriptors.is_some()
+        && !matches!(
+            packet,
+            LauncherPacket::Response(ref response)
+                if matches!(response.result, crate::launch_protocol::ResponseResult::SenderGuardEnrolled { .. } | crate::launch_protocol::ResponseResult::SenderGuardUpstream { .. })
+        )
+    {
+        return Err(TransportError::UnexpectedAncillary);
+    }
     let sent = loop {
-        match send(fd, bytes, SendFlags::NOSIGNAL) {
+        let result = if let Some(descriptors) = descriptors {
+            let fds = descriptors.each_ref().map(std::os::fd::AsFd::as_fd);
+            let mut space = [MaybeUninit::uninit(); cmsg_space!(ScmRights(3))];
+            let mut ancillary = SendAncillaryBuffer::new(&mut space);
+            if !ancillary.push(SendAncillaryMessage::ScmRights(&fds)) {
+                return Err(TransportError::SendFailed);
+            }
+            sendmsg(
+                fd,
+                &[IoSlice::new(bytes)],
+                &mut ancillary,
+                SendFlags::NOSIGNAL,
+            )
+        } else {
+            send(fd, bytes, SendFlags::NOSIGNAL)
+        };
+        match result {
             Err(Errno::INTR) => {}
             Err(error) if is_disconnected(error) => return Err(TransportError::Disconnected),
             Err(_) => return Err(TransportError::SendFailed),
@@ -747,6 +826,7 @@ fn receive_one(
 
     let mut credentials = None;
     let mut unexpected_ancillary = false;
+    let mut descriptors = Vec::new();
     for message in ancillary.drain() {
         match message {
             RecvAncillaryMessage::ScmCredentials(found) => {
@@ -758,8 +838,7 @@ fn receive_one(
                 }
             }
             RecvAncillaryMessage::ScmRights(rights) => {
-                rights.for_each(drop);
-                unexpected_ancillary = true;
+                rights.for_each(|fd| descriptors.push(fd));
             }
             _ => unexpected_ancillary = true,
         }
@@ -790,11 +869,27 @@ fn receive_one(
     }
     bytes.truncate(received.bytes);
     let packet = decode_packet(&bytes)?;
+    let descriptors = if descriptors.is_empty() {
+        None
+    } else if matches!(
+        packet,
+        LauncherPacket::Response(ref response)
+            if matches!(response.result, crate::launch_protocol::ResponseResult::SenderGuardEnrolled { .. } | crate::launch_protocol::ResponseResult::SenderGuardUpstream { .. })
+    ) {
+        Some(
+            descriptors
+                .try_into()
+                .map_err(|_| TransportError::UnexpectedAncillary)?,
+        )
+    } else {
+        return Err(TransportError::UnexpectedAncillary);
+    };
     Ok(AuthenticatedPacket {
         bytes,
         packet,
         peer_credentials,
         message_credentials,
+        descriptors,
     })
 }
 

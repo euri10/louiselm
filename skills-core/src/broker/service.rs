@@ -61,6 +61,10 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// or process cleanup has completed. Listener lifetime is independent.
 #[must_use = "Dropping the Session owner closes its supervisor connection."]
 pub struct BrokerSession {
+    pub(in crate::broker) provider_listener: Option<super::provider_listener::ProviderListener>,
+    pub(in crate::broker) provider_revision: Option<u64>,
+    pub(in crate::broker) provider_sockets:
+        std::collections::BTreeMap<u64, std::sync::Weak<super::provider_socket::SocketLease>>,
     pub(in crate::broker) posture_evidence: super::posture::LaunchPostureEvidence,
     require_cold_recovery: bool,
     pub(in crate::broker) recovery_admitted_until: Option<Instant>,
@@ -111,11 +115,21 @@ impl BrokerSession {
     /// Closes the supervisor transport immediately; repeated calls are harmless.
     pub fn close(&self) {
         self.channel.close();
+        for socket in self
+            .provider_sockets
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+        {
+            // Closing a failed Session grants no cleanup ACK. Leases remain
+            // attached to surviving owners; the supervisor must revoke on loss.
+            let _ = socket.shutdown();
+        }
     }
 }
 
 impl Drop for BrokerSession {
     fn drop(&mut self) {
+        self.provider_listener = None;
         self.close();
     }
 }
@@ -647,6 +661,9 @@ impl BrokerService {
         check_conformance_waiver(&authorization, now_ms, clock)?;
         send(channel, ack.canonical_bytes())?;
         Ok(BrokerSession {
+            provider_listener: None,
+            provider_revision: None,
+            provider_sockets: std::collections::BTreeMap::new(),
             posture_evidence,
             require_cold_recovery: pending.require_cold_recovery,
             recovery_admitted_until: None,
@@ -795,7 +812,7 @@ impl BrokerService {
 }
 
 /// Builds one correlated response for the supervisor.
-fn response(request_id: &str, result: ResponseResult) -> Vec<u8> {
+pub(super) fn response(request_id: &str, result: ResponseResult) -> Vec<u8> {
     ProtocolResponse {
         schema: RESPONSE_SCHEMA.to_owned(),
         protocol_version: PROTOCOL_VERSION,
