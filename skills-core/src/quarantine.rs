@@ -160,14 +160,40 @@ pub fn partition(
         .partition(|member| !excluded.contains(member))
 }
 
+/// Replaces the quarantine atomically and durably.
+///
+/// The Control broker reads this file from running Sessions' workers and treats
+/// unreadable content as reaching every Session, so a reader must never see a
+/// half-written file (`louiselm-d6fv.6.5.1`).
 fn write(store: &Store, quarantine: &Quarantine) -> Result<(), QuarantineError> {
+    use std::{io::Write, os::unix::fs::PermissionsExt};
     let path = path(store);
     let bytes = serde_json::to_vec(quarantine)
         .map_err(|error| QuarantineError::Malformed(error.to_string()))?;
-    fs::write(&path, bytes).map_err(|source| QuarantineError::Io {
+    let failed = |source| QuarantineError::Io {
         path: path.display().to_string(),
         source,
-    })
+    };
+    let root = store.root();
+    let mut staged = tempfile::Builder::new()
+        .prefix(".quarantine-")
+        .tempfile_in(root)
+        .map_err(failed)?;
+    // The mode a plain write gave it; a shared store narrows it to 0640.
+    staged
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o644))
+        .map_err(failed)?;
+    crate::store::share_evidence(&fs::File::open(root).map_err(failed)?, staged.as_file())
+        .map_err(failed)?;
+    staged
+        .write_all(&bytes)
+        .and_then(|()| staged.as_file().sync_all())
+        .map_err(failed)?;
+    staged.persist(&path).map_err(|error| failed(error.error))?;
+    fs::File::open(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(failed)
 }
 
 fn path(store: &Store) -> PathBuf {

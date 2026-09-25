@@ -228,6 +228,9 @@ impl RetainedConformance {
                     .observed_at_ms
                     .saturating_add(CONFORMANCE_FRESHNESS_MS);
         let input = match &self.update.check {
+            _ if quarantined => {
+                DimensionInput::failed(dimension, FailureCode::Quarantined, references)
+            }
             ConformanceCheck::Current {
                 evidence: ConformanceEvidence::Certified { .. },
             } if current => DimensionInput::verified(dimension, references),

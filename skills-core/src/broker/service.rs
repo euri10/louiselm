@@ -68,6 +68,7 @@ pub struct BrokerSession {
     launch_head: ReceiptHead,
     channel: SeqpacketChannel,
     pub(in crate::broker) commands: Option<super::commands::CommandAuthority>,
+    pub(in crate::broker) skill_quarantine: crate::broker::skill_quarantine::SkillQuarantineWatch,
 }
 
 impl BrokerSession {
@@ -653,6 +654,7 @@ impl BrokerService {
             launch_head: broker_head,
             channel: channel.clone(),
             commands,
+            skill_quarantine: crate::broker::skill_quarantine::SkillQuarantineWatch::default(),
         })
     }
 

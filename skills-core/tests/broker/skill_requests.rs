@@ -308,7 +308,7 @@ fn assert_verified_admission(observe: &mut dyn FnMut(&Outbox)) {
     observe(&outbox);
 }
 
-fn protect_fixture_directories(root: &Path) {
+pub(super) fn protect_fixture_directories(root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
     for entry in fs::read_dir(root).unwrap() {

@@ -159,6 +159,7 @@ impl BrokerService {
             },
             channel: channel.clone(),
             commands: None,
+            skill_quarantine: crate::broker::skill_quarantine::SkillQuarantineWatch::default(),
         })
     }
 

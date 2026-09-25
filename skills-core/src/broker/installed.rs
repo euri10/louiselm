@@ -76,6 +76,47 @@ impl InstalledBroker {
             None => result,
         }
     }
+    /// Quarantines and Parks a Session the operator's skill quarantine reaches,
+    /// reading the installed Admission source. See
+    /// [`BrokerService::settle_skill_quarantine`].
+    ///
+    /// # Errors
+    /// Refuses a misconfigured Admission source, then returns storage, evidence,
+    /// transport, verification or lifecycle failures.
+    pub fn settle_skill_quarantine(
+        &self,
+        session: &mut BrokerSession,
+    ) -> Result<Option<SignedReceipt>, BrokerError> {
+        let source = super::admission_source::AdmissionSource::installed().map_err(|error| {
+            session.close();
+            BrokerError::Storage(error)
+        })?;
+        if source.as_ref().is_some_and(|source| {
+            source.operator_uid != self.verifier.config().operator_uid
+                || source.broker_uid != self.verifier.config().broker_uid
+        }) {
+            session.close();
+            return Err(BrokerError::ControllerMismatch);
+        }
+        let mut verification_failure = None;
+        let result = self.service.settle_skill_quarantine(
+            session,
+            source.as_ref(),
+            now_ms()?,
+            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                Ok(()) => true,
+                Err(error) => {
+                    verification_failure = Some(error);
+                    false
+                }
+            },
+        );
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
+
     /// Lifts a held Run's Provider budget with an operator extension.
     /// See [`BrokerService::extend_provider_budget`].
     ///

@@ -414,6 +414,7 @@ impl Queries {
             let mut posture_check = Instant::now();
             let mut posture_unavailable = false;
             let mut provider_hold_unavailable = false;
+            let mut skill_quarantine_unavailable = false;
             loop {
                 if Instant::now() >= posture_check {
                     report_transition(
@@ -425,6 +426,11 @@ impl Queries {
                         broker.settle_provider_hold(session).is_ok(),
                         &mut provider_hold_unavailable,
                         "louiselm-control: Provider budget hold not settled; retrying",
+                    );
+                    report_transition(
+                        broker.settle_skill_quarantine(session).is_ok(),
+                        &mut skill_quarantine_unavailable,
+                        "louiselm-control: skill quarantine not settled; retrying",
                     );
                     posture_check = Instant::now() + Duration::from_secs(1);
                 }

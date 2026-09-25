@@ -133,6 +133,15 @@ impl BrokerSession {
         result
     }
 
+    /// True once command revocation was requested for this Session; a second
+    /// request would be refused and close the channel.
+    #[must_use]
+    pub fn command_revocation_requested(&self) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(CommandAuthority::revocation_requested)
+    }
+
     /// True only after the supervisor proved cancellation and its ACK was audited.
     #[must_use]
     pub fn command_revocation_complete(&self) -> bool {

@@ -72,6 +72,12 @@ T["renders durable conditions read-only and ignores queued frames after close"] 
   assert(not lines:find(item.reason, 1, true))
   MiniTest.expect.equality(nvim.bo[view.buffer].modifiable, false)
   MiniTest.expect.equality(pipe.writes, {})
+  item.code = "quarantined"
+  send({ item })
+  assert(nvim.wait(1000, function()
+    return table.concat(nvim.api.nvim_buf_get_lines(view.buffer, 0, -1, false), "\n"):find("quarantined", 1, true)
+      ~= nil
+  end))
   send({})
   assert(nvim.wait(1000, function()
     return table.concat(nvim.api.nvim_buf_get_lines(view.buffer, 0, -1, false), "\n"):find("No unresolved", 1, true)

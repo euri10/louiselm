@@ -631,6 +631,9 @@ continuous conformance assertion. Current terminal/disconnected/quarantined
 state, or a clock preceding the recorded check, cannot keep that proof verified;
 the original check time and evidence remain inspectable as `invalidated`, with
 the typed reason `evidence_invalidated` rather than `evidence_missing`.
+Emergency quarantine instead uses `quarantined` for the evidence it invalidates,
+with a next action to inspect the quarantine, admit trusted replacement skills
+and start a new Session. Status never lifts the marker or authorizes Resume.
 The canonical status boundary rejects a live-state claim against a terminal
 durable receipt even when its head digest matches. Mechanical progress may
 precede a new receipt; terminal history can never be undone by a status reply.
@@ -724,6 +727,21 @@ Park outcome proves the mechanical transition. The durable quarantine marker
 prevents subsequent Resume. Failed revocation or uncertain transport closes the
 connection; that closure alone does not prove process cleanup.
 
+A skill quarantine (`louiselm-skills quarantine exclude|all`) also reaches
+running Sessions. On its 1 s idle tick, each Session worker reads the operator's
+`quarantine.json` through the installed Admission source
+(`/etc/louiselm-broker-admission.json`), with the same ownership and mode checks
+as Admission evidence. It checks the quarantine against the Generation pinned
+by the Session's signed Launch receipt. When an excluded package is a member,
+or everything is excluded, the worker writes the quarantine marker, revokes
+command and tool authority, then Parks the Session as the Park-only
+`skill-quarantine` caller. Other Sessions keep running. Unreadable evidence
+immediately counts as reaching the Session. Invalid installed source configuration
+closes the broker channel, invoking the supervisor's broker-loss containment.
+Without an installed
+Admission source, no skill quarantine is observable here and running Sessions
+are unaffected. Markers written for other causes are left to their owners.
+
 ## Ordered Attention projection
 
 The broker owns an `Outbox` under its authorization state directory. Producers
@@ -731,6 +749,11 @@ bind normalized conditions to authenticated Session/Run identities and retain
 one operation UUID for each unresolved condition. A later failure after
 resolution needs a fresh operation UUID. Repeated enqueue identities require
 identical changes.
+
+Quarantine projects one `skill_unverified` item with code `quarantined` per
+Session, replacing its per-dimension posture items. This also works after
+restart without retained supply evidence, or while Park is still pending.
+Repeated ticks retain the item's identity; Session/Run termination clears it.
 
 `AttentionEndpoint` publishes directly to capture-service through the local
 Attention socket. It checks the receiver's kernel UID before sending the

@@ -52,6 +52,7 @@ internal enum class AttentionCode {
     PROVIDER_DISCLOSURE_MISSING,
     EVIDENCE_MISSING,
     EVIDENCE_INVALIDATED,
+    QUARANTINED,
     UNKNOWN_FAILURE,
     ;
 
@@ -69,6 +70,7 @@ internal enum class AttentionCode {
             "provider_disclosure_missing" -> PROVIDER_DISCLOSURE_MISSING
             "evidence_missing" -> EVIDENCE_MISSING
             "evidence_invalidated" -> EVIDENCE_INVALIDATED
+            "quarantined" -> QUARANTINED
             "unknown_failure" -> UNKNOWN_FAILURE
             else -> throw IllegalArgumentException("attention code is unsupported")
         }

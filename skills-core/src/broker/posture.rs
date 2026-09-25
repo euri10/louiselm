@@ -106,6 +106,7 @@ impl BrokerService {
             session.authorization(),
             &posture,
             waiting,
+            quarantined,
             now,
             &self.attention,
         )
@@ -301,7 +302,15 @@ impl LaunchPostureEvidence {
             inputs.push(if current {
                 DimensionInput::verified(dimension, evidence)
             } else {
-                DimensionInput::failed(dimension, FailureCode::EvidenceInvalidated, evidence)
+                DimensionInput::failed(
+                    dimension,
+                    if quarantined {
+                        FailureCode::Quarantined
+                    } else {
+                        FailureCode::EvidenceInvalidated
+                    },
+                    evidence,
+                )
             });
             freshness[index] = EvidenceFreshness {
                 basis: if current {

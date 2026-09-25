@@ -53,6 +53,7 @@ impl RetainedSupply {
                 ) && supervisor.broker_connection == BrokerConnection::Connected));
         let result = match &self.dimensions[index] {
             Ok(reference) if current => Ok(reference),
+            Ok(_) if quarantined => Err(FailureCode::Quarantined),
             Ok(_) => Err(FailureCode::EvidenceInvalidated),
             Err(code) => Err(*code),
         };

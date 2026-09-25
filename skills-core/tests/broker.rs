@@ -72,6 +72,8 @@ mod buffered_requests;
 mod lifecycle;
 #[path = "broker/provider_requests.rs"]
 mod provider_requests;
+#[path = "broker/skill_quarantine.rs"]
+mod skill_quarantine;
 #[path = "broker/skill_requests.rs"]
 mod skill_requests;
 
@@ -551,6 +553,11 @@ fn payload(
 
 /// The sequence-zero Launch receipt for a consumed authorization.
 fn launch_receipt(authorization: &LaunchAuthorization) -> SignedReceipt {
+    pinned_launch_receipt(authorization, &Digest::of(b"generation").to_string())
+}
+
+/// The sequence-zero Launch receipt pinning an exact Skill Generation.
+fn pinned_launch_receipt(authorization: &LaunchAuthorization, generation: &str) -> SignedReceipt {
     signed(payload(
         authorization,
         &authorization.request_id,
@@ -566,7 +573,7 @@ fn launch_receipt(authorization: &LaunchAuthorization) -> SignedReceipt {
                 conformance: ConformanceEvidence::Unevaluated,
                 launch_request_digest: authorization.request_digest.clone(),
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
-                skill_generation_id: Digest::of(b"generation").to_string(),
+                skill_generation_id: generation.to_owned(),
                 session_input_manifest_id: Digest::of(b"input").to_string(),
                 isolation_contract: "louiselm.isolation/1".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),
@@ -854,9 +861,20 @@ fn fake_supervisor_for(
     now_ms: u64,
     uid: u32,
 ) -> (LaunchAuthorization, SeqpacketChannel) {
+    fake_supervisor_pinned(socket, request, now_ms, uid, &request.skill_generation_id)
+}
+
+/// Launches a fake Session whose signed Launch receipt pins `generation`.
+fn fake_supervisor_pinned(
+    socket: &Path,
+    request: &LaunchRequest,
+    now_ms: u64,
+    uid: u32,
+    generation: &str,
+) -> (LaunchAuthorization, SeqpacketChannel) {
     let (authorization, channel) = supervisor_authorization_for(socket, request, now_ms, uid);
 
-    let launch = launch_receipt(&authorization);
+    let launch = pinned_launch_receipt(&authorization, generation);
     settle(|complete| channel.send(launch.canonical_bytes(), complete));
     let acknowledgement = expect_acknowledgement(&channel);
     assert_eq!(acknowledgement.sequence, 0);

@@ -24,7 +24,7 @@
 
 mod linked;
 mod transaction;
-pub use linked::{admit_linked, verify_linked};
+pub use linked::{admit_linked, linked_generation_members, verify_linked};
 
 use std::{fs, io, path::PathBuf};
 

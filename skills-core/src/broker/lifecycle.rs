@@ -51,6 +51,14 @@ pub enum LifecycleCaller {
         /// Held Run.
         run_id: String,
     },
+    /// The broker itself, stopping a Session a skill quarantine reaches.
+    ///
+    /// May only Park, and only Sessions of this Run. Constructed on the Session's
+    /// own broker worker after its quarantine marker is durable; never from a peer.
+    SkillQuarantine {
+        /// Quarantined Session's Run.
+        run_id: String,
+    },
     /// An Agent capability channel has no lifecycle authority.
     Agent,
 }
@@ -102,7 +110,7 @@ impl LifecycleCaller {
                     && action != LifecycleAction::Resume
                     && descendants.iter().any(|entry| entry == target_session)
             }
-            Self::ProviderBudget { run_id } => {
+            Self::ProviderBudget { run_id } | Self::SkillQuarantine { run_id } => {
                 run_id == target_run && action == LifecycleAction::Park
             }
             Self::Agent => false,
@@ -158,6 +166,7 @@ impl LifecycleCaller {
             Self::Operator { uid } => format!("operator:{uid}"),
             Self::Coordinator { session_id, .. } => format!("coordinator:{session_id}"),
             Self::ProviderBudget { .. } => "provider-budget".into(),
+            Self::SkillQuarantine { .. } => "skill-quarantine".into(),
             Self::Agent => "agent".into(),
         }
     }

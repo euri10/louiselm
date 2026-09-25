@@ -271,6 +271,21 @@ fn session_kind_clear_preserves_other_unresolved_conditions() {
     );
 }
 
+#[test]
+fn quarantined_code_survives_durable_attention_round_trip() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let store = AttentionStore::new(temporary.path(), None).expect("store");
+    let mut value = serde_json::to_value(draft()).expect("draft");
+    value["kind"] = serde_json::json!("skill_unverified");
+    value["code"] = serde_json::json!("quarantined");
+    value["stage"] = serde_json::Value::Null;
+    let condition: AttentionDraft = serde_json::from_value(value).expect("quarantine code");
+    store.upsert(condition).expect("persist quarantine");
+    let reopened = AttentionStore::new(temporary.path(), None).expect("reopen");
+    let snapshot = serde_json::to_value(reopened.snapshot().expect("snapshot")).expect("json");
+    assert_eq!(snapshot["items"][0]["code"], "quarantined");
+}
+
 fn key() -> AttentionKey {
     AttentionKey {
         subject_kind: AttentionSubjectKind::Session,

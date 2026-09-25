@@ -250,6 +250,11 @@ excluded packages drop out of the current Generation the moment the file is
 written. It only ever narrows. Giving authority back requires a newly admitted
 Generation, so `quarantine clear` refuses by design rather than becoming a way
 to re-enable quarantined supply without a touch.
+Running Sessions pinned to a Generation the quarantine reaches are quarantined
+and Parked by the Control broker
+([broker lifecycle](../docs/broker-lifecycle.md#lifecycle-authority)). The
+file is replaced atomically, because the broker treats unreadable content as
+reaching every Session.
 
 ### What v1 trusts
 

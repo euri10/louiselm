@@ -45,6 +45,7 @@ pub mod provider_transport;
 pub mod receipts;
 pub mod recovery;
 pub mod service;
+pub mod skill_quarantine;
 mod skill_request_service;
 mod skill_requests;
 mod state_identity;

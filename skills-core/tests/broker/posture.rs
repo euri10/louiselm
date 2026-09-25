@@ -214,8 +214,9 @@ fn quarantine_invalidates_current_runtime_without_rewriting_admission() {
             assert_eq!(current.freshness.basis, FreshnessBasis::Invalidated);
             assert_eq!(
                 serde_json::to_value(current.failure_code).unwrap(),
-                "evidence_invalidated"
+                "quarantined"
             );
+            assert_eq!(current.next_action.id, "replace_quarantined_session");
             assert_eq!(
                 old.freshness.last_verified_at_ms,
                 current.freshness.last_verified_at_ms

@@ -199,6 +199,12 @@ impl CommandAuthority {
         Ok(self.message(request_id, CommandOperation::Revoke))
     }
 
+    /// True once revocation was requested, whether or not it is enforced yet.
+    #[must_use]
+    pub fn revocation_requested(&self) -> bool {
+        self.revocation.is_some()
+    }
+
     /// True only after authenticated supervisor enforcement and durable audit.
     #[must_use]
     pub fn revocation_complete(&self) -> bool {

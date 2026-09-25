@@ -34,6 +34,7 @@ local codes = {
   provider_disclosure_missing = true,
   evidence_missing = true,
   evidence_invalidated = true,
+  quarantined = true,
   unknown_failure = true,
 }
 

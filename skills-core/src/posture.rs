@@ -108,6 +108,7 @@ impl DimensionName {
             code,
             FailureCode::EvidenceMissing
                 | FailureCode::EvidenceInvalidated
+                | FailureCode::Quarantined
                 | FailureCode::AuditPersistenceUnavailable
                 | FailureCode::UnknownFailure
         ) {
@@ -265,6 +266,8 @@ pub enum FailureCode {
     EvidenceMissing,
     /// Retained proof no longer establishes the current dimension.
     EvidenceInvalidated,
+    /// Emergency quarantine has withdrawn this Session's authority.
+    Quarantined,
     /// A failure has no recognized typed diagnosis.
     UnknownFailure,
 }
@@ -285,6 +288,7 @@ impl FailureCode {
             Self::ProviderDisclosureMissing => "provider_disclosure_missing",
             Self::EvidenceMissing => "evidence_missing",
             Self::EvidenceInvalidated => "evidence_invalidated",
+            Self::Quarantined => "quarantined",
             Self::UnknownFailure => "unknown_failure",
         }
     }
@@ -683,6 +687,10 @@ pub(crate) fn next_action(failure: Option<FailureCode>) -> NextAction {
         Some(FailureCode::EvidenceInvalidated) => (
             "restore_trusted_evidence",
             "Resolve the source invalidation through its trusted owner; reading status cannot renew evidence or authorize Resume.",
+        ),
+        Some(FailureCode::Quarantined) => (
+            "replace_quarantined_session",
+            "Inspect the quarantine, admit trusted replacement skills and start a new Session; this Session cannot Resume.",
         ),
         Some(FailureCode::UnknownFailure) => (
             "inspect_unknown_failure",

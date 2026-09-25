@@ -97,6 +97,8 @@ pub enum AttentionCode {
     EvidenceMissing,
     /// Retained proof no longer establishes the current posture dimension.
     EvidenceInvalidated,
+    /// Emergency quarantine has withdrawn a Session's authority.
+    Quarantined,
     /// A failure has no recognized typed diagnosis.
     UnknownFailure,
 }

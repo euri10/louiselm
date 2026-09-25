@@ -344,10 +344,7 @@ fn existing_quarantine_owner_invalidates_supply_without_rewriting_admission() {
                 | DimensionName::NativeSupply
                 | DimensionName::ProviderDisclosure
         ) {
-            assert_eq!(
-                dimension.failure_code,
-                Some(FailureCode::EvidenceInvalidated)
-            );
+            assert_eq!(dimension.failure_code, Some(FailureCode::Quarantined));
             assert_eq!(dimension.freshness.last_verified_at_ms, Some(3000));
             assert!(!dimension.evidence.is_empty());
         }

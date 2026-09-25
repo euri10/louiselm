@@ -6,7 +6,7 @@ use super::attention::{
 use super::{BrokerError, lock, read_record, record_name, sync_directory};
 use crate::{
     launch_protocol::LaunchAuthorization,
-    posture::{DimensionName, DimensionState, Posture},
+    posture::{DimensionName, DimensionState, FailureCode, Posture},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -53,6 +53,7 @@ impl PostureAttention {
         auth: &LaunchAuthorization,
         posture: &Posture,
         waiting: bool,
+        quarantined: bool,
         now: u64,
         outbox: &Outbox,
     ) -> Result<(), BrokerError> {
@@ -64,7 +65,7 @@ impl PostureAttention {
             return Ok(());
         }
         let prior = self.read(&auth.session_id)?;
-        if prior.is_none() && !waiting {
+        if prior.is_none() && !waiting && !quarantined {
             return Ok(());
         }
         if prior.is_none() && self.records_locked()?.len() >= 4096 {
@@ -96,12 +97,27 @@ impl PostureAttention {
             .checked_add(1)
             .ok_or(BrokerError::InvalidGrant)?;
         for (index, (name, dimension)) in posture.dimensions.ordered().into_iter().enumerate() {
+            // Slot zero carries the one Session-wide quarantine condition.
+            // Clear prior per-dimension episodes through the same durable outbox.
+            if quarantined && index != 0 {
+                if let Some(condition) = record.conditions[index].take() {
+                    record.pending.push(ProjectionChange::Clear(condition));
+                }
+                continue;
+            }
             let previous = &record.conditions[index];
-            match dimension.state {
-                DimensionState::Failed if waiting || previous.is_some() => {
-                    let reason = AttentionReason::SkillUnverified(
-                        dimension.failure_code.ok_or(BrokerError::InvalidGrant)?,
-                    );
+            let state = if quarantined {
+                DimensionState::Failed
+            } else {
+                dimension.state
+            };
+            match state {
+                DimensionState::Failed if waiting || quarantined || previous.is_some() => {
+                    let reason = AttentionReason::SkillUnverified(if quarantined {
+                        FailureCode::Quarantined
+                    } else {
+                        dimension.failure_code.ok_or(BrokerError::InvalidGrant)?
+                    });
                     if previous.as_ref().is_some_and(|old| old.reason == reason) {
                         continue;
                     }

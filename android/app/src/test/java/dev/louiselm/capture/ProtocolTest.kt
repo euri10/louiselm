@@ -10,6 +10,14 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun quarantinedAttentionSnapshotIsAccepted() {
+        val result = parseAttentionResponse(invalidatedAttentionPayload.replace("evidence_invalidated", "quarantined"))
+        assertTrue(result is AttentionFetch.Success)
+        val item = (result as AttentionFetch.Success).snapshot.items.single()
+        assertEquals("QUARANTINED", item.code?.name)
+    }
+
+    @Test
     fun invalidatedEvidenceSnapshotIsAcceptedButUnknownCodesAreRejected() {
         val result = parseAttentionResponse(invalidatedAttentionPayload)
         assertTrue(result is AttentionFetch.Success)

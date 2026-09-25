@@ -99,6 +99,40 @@ pub fn verify_linked(
     Ok(Some(record.generation))
 }
 
+/// Reads the verified package members of one stored Generation without writing.
+///
+/// Same read-only shared trust lock as [`verify_linked`]: never creates files,
+/// repairs activation or changes an Instruction view. The broker uses it to
+/// decide which live Sessions a skill quarantine reaches.
+/// # Errors
+/// Refuses unsettled recovery, unknown trust or domain, an absent, malformed or
+/// unverifiable record, or unreadable storage.
+pub fn linked_generation_members(
+    store: &Store,
+    domain: &str,
+    generation: &Digest,
+) -> Result<Vec<String>, AdmissionError> {
+    let locked = LockedTrust::read_only(store)?;
+    if store
+        .root()
+        .join("activation.pending.json")
+        .try_exists()
+        .map_err(|source| io_error(store.root(), source))?
+    {
+        return Err(AdmissionError::Chain("activation recovery required".into()));
+    }
+    let trust = locked.load()?.ok_or(TrustError::NotBootstrapped)?;
+    if trust.trust_domain != domain {
+        return Err(AdmissionError::Chain(
+            "Admission trust domain mismatch".into(),
+        ));
+    }
+    let record = super::load_unlocked(store, generation)?;
+    verify_record(store, &record, &trust)?;
+    locked.confirm()?;
+    Ok(record.payload.member_digests())
+}
+
 pub(super) fn find(
     store: &Store,
     operation: &str,

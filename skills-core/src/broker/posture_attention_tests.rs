@@ -90,7 +90,9 @@ fn dimensions_keep_identity_until_exact_resolution_and_restart_preserves_order()
     let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
     let auth = authorization();
     let failed = posture(&auth, DimensionState::Failed, FailureCode::EvidenceMissing);
-    store.observe(&auth, &failed, true, 100, &outbox).unwrap();
+    store
+        .observe(&auth, &failed, true, false, 100, &outbox)
+        .unwrap();
     let first = drain(&outbox);
     assert_eq!(first.len(), 6);
     let record = store.read("session").unwrap().unwrap();
@@ -99,10 +101,14 @@ fn dimensions_keep_identity_until_exact_resolution_and_restart_preserves_order()
     drop(store);
     let store = PostureAttention::open(&path).unwrap();
     store.reconcile(&outbox).unwrap();
-    store.observe(&auth, &failed, true, 101, &outbox).unwrap();
+    store
+        .observe(&auth, &failed, true, false, 101, &outbox)
+        .unwrap();
     assert!(drain(&outbox).is_empty());
     let waived = posture(&auth, DimensionState::Waived, FailureCode::WitnessMissing);
-    store.observe(&auth, &waived, true, 102, &outbox).unwrap();
+    store
+        .observe(&auth, &waived, true, false, 102, &outbox)
+        .unwrap();
     let changes = drain(&outbox);
     assert_eq!(changes.len(), 2);
     let ProjectionChange::Upsert(updated) = &changes[0] else {
@@ -116,11 +122,13 @@ fn dimensions_keep_identity_until_exact_resolution_and_restart_preserves_order()
     );
     assert_eq!(changes[1], ProjectionChange::Clear(isolation.clone()));
     assert!(matches!(
-        store.observe(&auth, &failed, true, 101, &outbox),
+        store.observe(&auth, &failed, true, false, 101, &outbox),
         Err(BrokerError::InvalidGrant)
     ));
     assert!(drain(&outbox).is_empty());
-    store.observe(&auth, &failed, true, 103, &outbox).unwrap();
+    store
+        .observe(&auth, &failed, true, false, 103, &outbox)
+        .unwrap();
     let newer = store.read("session").unwrap().unwrap().conditions[3]
         .clone()
         .unwrap();
@@ -132,7 +140,7 @@ fn dimensions_keep_identity_until_exact_resolution_and_restart_preserves_order()
         FailureCode::EvidenceMissing,
     );
     store
-        .observe(&auth, &verified, false, 104, &outbox)
+        .observe(&auth, &verified, false, false, 104, &outbox)
         .unwrap();
     assert_eq!(drain(&outbox), vec![ProjectionChange::Clear(newer)]);
     assert_eq!(
@@ -160,7 +168,7 @@ fn pending_projection_survives_storage_outage_and_terminal_subjects_never_reopen
     fs::rename(outbox_path.join("entries"), outbox_path.join("retained")).unwrap();
     fs::write(outbox_path.join("entries"), b"fixture unavailable").unwrap();
     assert!(matches!(
-        store.observe(&auth, &failed, true, 100, &outbox),
+        store.observe(&auth, &failed, true, false, 100, &outbox),
         Err(BrokerError::Storage(_))
     ));
     assert_eq!(store.read("session").unwrap().unwrap().pending.len(), 6);
@@ -172,7 +180,9 @@ fn pending_projection_survives_storage_outage_and_terminal_subjects_never_reopen
     assert_eq!(drain(&outbox).len(), 6);
     store.end("session", &outbox).unwrap();
     assert_eq!(drain(&outbox).len(), 6);
-    store.observe(&auth, &failed, true, 101, &outbox).unwrap();
+    store
+        .observe(&auth, &failed, true, false, 101, &outbox)
+        .unwrap();
     assert!(drain(&outbox).is_empty());
     store.end_run(&auth.run_id, &outbox).unwrap();
     let mut sibling = auth.clone();
@@ -182,7 +192,9 @@ fn pending_projection_survives_storage_outage_and_terminal_subjects_never_reopen
         DimensionState::Failed,
         FailureCode::EvidenceMissing,
     );
-    store.observe(&sibling, &late, true, 102, &outbox).unwrap();
+    store
+        .observe(&sibling, &late, true, false, 102, &outbox)
+        .unwrap();
     assert!(store.read("late-sibling").unwrap().is_none());
     assert!(drain(&outbox).is_empty());
     let mut malformed = serde_json::to_value(store.read("session").unwrap().unwrap()).unwrap();
@@ -221,6 +233,7 @@ fn session_end_preserves_siblings_and_run_end_preserves_other_runs() {
                     FailureCode::EvidenceMissing,
                 ),
                 true,
+                false,
                 100,
                 &outbox,
             )
@@ -245,4 +258,76 @@ fn session_end_preserves_siblings_and_run_end_preserves_other_runs() {
     assert!(!store.read(&other.session_id).unwrap().unwrap().ended);
     store.reconcile(&outbox).unwrap();
     assert!(drain(&outbox).is_empty());
+}
+
+#[test]
+fn quarantine_replaces_dimension_items_and_survives_restart_without_duplicates() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("posture");
+    let store = PostureAttention::open(&path).unwrap();
+    let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+    let auth = authorization();
+    let failed = posture(&auth, DimensionState::Failed, FailureCode::EvidenceMissing);
+    store
+        .observe(&auth, &failed, true, false, 100, &outbox)
+        .unwrap();
+    assert_eq!(drain(&outbox).len(), 6);
+    store
+        .observe(&auth, &failed, true, true, 101, &outbox)
+        .unwrap();
+    let changes = drain(&outbox);
+    assert_eq!(
+        changes
+            .iter()
+            .filter(|change| matches!(change, ProjectionChange::Clear(_)))
+            .count(),
+        5
+    );
+    let upserts = changes
+        .iter()
+        .filter(|change| matches!(change, ProjectionChange::Upsert(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let [ProjectionChange::Upsert(condition)] = upserts.as_slice() else {
+        panic!("one quarantine item");
+    };
+    assert_eq!(
+        condition.reason,
+        AttentionReason::SkillUnverified(FailureCode::Quarantined)
+    );
+    let store = PostureAttention::open(&path).unwrap();
+    store.reconcile(&outbox).unwrap();
+    store
+        .observe(&auth, &failed, true, true, 102, &outbox)
+        .unwrap();
+    assert!(drain(&outbox).is_empty());
+    assert_eq!(
+        store
+            .read("session")
+            .unwrap()
+            .unwrap()
+            .conditions
+            .iter()
+            .flatten()
+            .count(),
+        1
+    );
+    store.end("session", &outbox).unwrap();
+    assert_eq!(drain(&outbox).len(), 1);
+}
+
+#[test]
+fn quarantine_needs_no_retained_evidence_or_completed_park_to_raise_attention() {
+    let root = tempfile::tempdir().unwrap();
+    let store = PostureAttention::open(&root.path().join("posture")).unwrap();
+    let outbox = Outbox::open(&root.path().join("outbox")).unwrap();
+    let auth = authorization();
+    let missing = posture(&auth, DimensionState::Failed, FailureCode::EvidenceMissing);
+    store
+        .observe(&auth, &missing, false, true, 100, &outbox)
+        .unwrap();
+    let changes = drain(&outbox);
+    assert!(
+        matches!(changes.as_slice(), [ProjectionChange::Upsert(condition)] if condition.reason == AttentionReason::SkillUnverified(FailureCode::Quarantined))
+    );
 }
