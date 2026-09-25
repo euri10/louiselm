@@ -179,10 +179,17 @@ jobs:
             ./scripts/launcher-vm exec tar -x -C /var/tmp
           ./scripts/launcher-vm exec python3 /var/tmp/scripts/test-sender-guard.py \
             --disposable-vm /var/tmp/louiselm-skills-target/debug/louiselm-launch
+          library_test=$(./scripts/launcher-vm exec bash -ceu '
+            export PATH=/home/vm/.cargo/bin:/usr/bin:/bin CARGO_NET_OFFLINE=true
+            export CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target CARGO_PROFILE_DEV_DEBUG=line-tables-only
+            cargo test --manifest-path /home/vm/skills-core/Cargo.toml --lib --all-features --locked --no-run --message-format=json |
+              jq -r '\''select(.reason == "compiler-artifact" and .target.name == "louiselm_skills" and .profile.test) | .executable // empty'\''
+          ')
+          test -n "$library_test"
           ./scripts/launcher-vm exec sudo -n python3 /var/tmp/scripts/test-sender-guard-loader.py \
-            /var/tmp/louiselm-skills-target/debug/deps
+            "$library_test"
           ./scripts/launcher-vm exec sudo -n python3 /var/tmp/scripts/test-sender-guard-handoff.py \
-            /var/tmp/louiselm-skills-target/debug/deps /var/tmp/louiselm-skills-target/debug/deps
+            "$library_test" /var/tmp/louiselm-skills-target/debug/deps
       - name: Exercise installed conformance with the production guard
         run: |
           ./scripts/launcher-vm exec bash -ceu '
