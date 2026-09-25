@@ -57,8 +57,9 @@ fn with_policy(model: &str, effort: Option<&str>) -> ProviderRequest {
     request
 }
 
-fn approval(max_run_requests: u32) -> ApprovedProviderRequests {
+pub(super) fn approval(max_run_requests: u32) -> ApprovedProviderRequests {
     ApprovedProviderRequests {
+        disclosure_profile: louiselm_skills::provider_request::disclosure::profile_digest(),
         provider: "openai".into(),
         upstream: "https://api.openai.com/v1/responses".into(),
         addresses: vec!["192.0.2.1".parse().unwrap()],
@@ -241,6 +242,151 @@ impl Fixture {
             .map(|_| ())
             .unwrap_err()
     }
+}
+
+#[test]
+fn posture_discloses_the_retained_profile_without_metadata_values() {
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let status = thread::scope(|scope| {
+        let (peer, current) = (&fixture.peer, &fixture.current);
+        let answer = scope.spawn(move || lifecycle::answer_one_status_query(peer, current));
+        let status = fixture
+            .service
+            .session_status(
+                &mut fixture.session,
+                &LifecycleCaller::Operator {
+                    uid: CONTROLLER_UID,
+                },
+                2500,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        answer.join().unwrap();
+        status
+    });
+    let notice = &status.posture.provider_disclosure_notice;
+    assert!(notice.contains(&approval(5).disclosure_profile));
+    assert!(notice.contains("codex-responses-metadata/1"));
+    assert!(notice.contains("cross-Run linkage"));
+    assert!(!notice.contains(SECRET));
+    // Metadata approval alone does not prove the complete input disclosure.
+    assert_eq!(
+        status.posture.dimensions[5].state,
+        louiselm_skills::posture::DimensionState::Failed
+    );
+    status.posture.validate().unwrap();
+}
+
+#[test]
+fn disclosure_permission_survives_restart_without_upgrade_or_replay() {
+    let root = TempDir::new().unwrap();
+    let request = request("profile-restart");
+    let mut grant = grant(&request);
+    grant.provider_requests = Some(approval(5));
+    let store = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    let expected = store.authorize(&grant, 1000).unwrap();
+    drop(store);
+    let store = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    store.consume(&request, CONTROLLER_UID, 2000).unwrap();
+    assert_eq!(
+        store
+            .consumed_for_session(&request.session_id)
+            .unwrap()
+            .unwrap()
+            .provider_requests,
+        expected.provider_requests
+    );
+    drop(store);
+    let store = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    assert_eq!(
+        store
+            .consumed_for_session(&request.session_id)
+            .unwrap()
+            .unwrap()
+            .provider_requests,
+        expected.provider_requests
+    );
+    assert!(matches!(
+        store.consume(&request, CONTROLLER_UID, 2100),
+        Err(BrokerError::UnknownAuthorization)
+    ));
+    for digest in [String::new(), Digest::of(b"changed-profile").to_string()] {
+        grant.provider_requests.as_mut().unwrap().disclosure_profile = digest;
+        assert!(matches!(
+            store.authorize(&grant, 2200),
+            Err(BrokerError::InvalidGrant)
+        ));
+    }
+    grant.provider_requests = Some(approval(5));
+    assert!(matches!(
+        store.authorize(&grant, 2200),
+        Err(BrokerError::DuplicateAuthorization)
+    ));
+    // A separately authorized launch may use the supported profile, through
+    // the same controller API (no additional human-prompt requirement).
+    grant.request = super::request("fresh-profile-authorization");
+    assert_eq!(
+        store.authorize(&grant, 2300).unwrap().provider_requests,
+        expected.provider_requests
+    );
+}
+
+#[test]
+fn changed_durable_profile_cannot_authorize_an_upstream_request() {
+    let mut fixture = fixture(Some(approval(5)), None);
+    let upstream = FakeUpstream::replying(200);
+    let path = fs::read_dir(fixture.root.path().join("authorizations/consumed"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["authorization"]["provider_requests"]["disclosure_profile"] =
+        Digest::of(b"previous-profile").to_string().into();
+    fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(
+        matches!(fixture.refuse(&upstream, 2500), BrokerError::Policy(error) if error.code == ErrorCode::ProviderDisclosureDenied)
+    );
+    assert_eq!(upstream.calls(), 0);
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 0);
+}
+
+#[test]
+fn metadata_is_rechecked_before_credentials_budget_or_upstream() {
+    let mut fixture = fixture(Some(approval(5)), None);
+    let upstream = FakeUpstream::replying(200);
+    let mut changed_body = parsed();
+    changed_body.body = body("gpt-5.6-luna")
+        .replace(
+            r#""client_metadata":{}"#,
+            r#""client_metadata":{"unreviewed":"private"}"#,
+        )
+        .into_bytes();
+    let mut changed_header = parsed();
+    changed_header
+        .headers
+        .push(("x-unreviewed".into(), "private".into()));
+    for request in [changed_body, changed_header] {
+        let error = fixture
+            .service
+            .serve_provider_request(
+                &mut fixture.session,
+                &fixture.credentials,
+                &upstream,
+                &request,
+                2500,
+                verify_fixture_signature,
+            )
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(error, BrokerError::Policy(ref error) if error.code == ErrorCode::ProviderDisclosureDenied)
+        );
+        assert!(!error.to_string().contains("private"));
+    }
+    assert_eq!(upstream.calls(), 0);
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 0);
 }
 
 #[test]

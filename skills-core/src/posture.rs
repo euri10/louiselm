@@ -79,9 +79,13 @@ impl DimensionName {
     pub(crate) const fn accepts_evidence(self, kind: EvidenceKind) -> bool {
         match self {
             Self::ManagedSupply => matches!(kind, EvidenceKind::SkillGeneration),
-            Self::NativeSupply | Self::ProviderDisclosure => {
+            Self::NativeSupply => {
                 matches!(kind, EvidenceKind::SessionInputManifest)
             }
+            Self::ProviderDisclosure => matches!(
+                kind,
+                EvidenceKind::SessionInputManifest | EvidenceKind::ProviderMetadataProfile
+            ),
             Self::Runtime => matches!(
                 kind,
                 EvidenceKind::RuntimeMeasurement | EvidenceKind::ReleaseManifest
@@ -100,7 +104,10 @@ impl DimensionName {
     pub(crate) const fn accepts_primary_evidence(self, kind: EvidenceKind) -> bool {
         // A retained observation report lacks current host measurements and
         // failure history. It can explain admission, never prove currentness.
-        !matches!(kind, EvidenceKind::ConformanceReport) && self.accepts_evidence(kind)
+        !matches!(
+            kind,
+            EvidenceKind::ConformanceReport | EvidenceKind::ProviderMetadataProfile
+        ) && self.accepts_evidence(kind)
     }
 
     pub(crate) const fn accepts_failure(self, code: FailureCode) -> bool {
@@ -174,6 +181,8 @@ impl Requirement {
 #[derive(Clone, Copy, Debug, Ord, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
+    /// Exact metadata profile approved in retained broker authorization.
+    ProviderMetadataProfile,
     /// A hardware-authorized, witnessed Skill Generation.
     SkillGeneration,
     /// The complete Session-input manifest.
@@ -201,6 +210,7 @@ impl EvidenceKind {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::ProviderMetadataProfile => "provider_metadata_profile",
             Self::SkillGeneration => "skill_generation",
             Self::SessionInputManifest => "session_input_manifest",
             Self::RuntimeMeasurement => "runtime_measurement",
@@ -355,6 +365,20 @@ pub struct DimensionInput {
 }
 
 impl DimensionInput {
+    /// Adds the broker-retained profile; it supplements, never replaces, input evidence.
+    pub(crate) fn provider_profile(mut self, profile: &str) -> Result<Self, PostureError> {
+        if profile == crate::provider_request::disclosure::profile_digest() {
+            self.evidence.push(EvidenceRef::new(
+                EvidenceKind::ProviderMetadataProfile,
+                profile,
+            )?);
+        } else {
+            self.state = DimensionState::Failed;
+            self.failure_code = Some(FailureCode::ProviderDisclosureMissing);
+        }
+        Ok(self)
+    }
+
     /// State that trusted evidence satisfies one dimension.
     #[must_use]
     pub fn verified(dimension: DimensionName, evidence: Vec<EvidenceRef>) -> Self {
@@ -518,7 +542,14 @@ impl Posture {
             session_id: session_id.to_owned(),
             run_id: run_id.to_owned(),
             state,
-            provider_disclosure_notice: PROVIDER_DISCLOSURE_NOTICE.to_owned(),
+            provider_disclosure_notice: provider_notice(
+                dimensions
+                    .provider_disclosure
+                    .evidence
+                    .iter()
+                    .filter(|e| e.kind == EvidenceKind::ProviderMetadataProfile)
+                    .map(|e| e.id.as_str()),
+            )?,
             embedded_instructions_notice: EMBEDDED_INSTRUCTIONS_NOTICE.to_owned(),
             dimensions,
         })
@@ -529,6 +560,23 @@ impl Posture {
     pub const fn is_fully_verified(&self) -> bool {
         matches!(self.state, PostureState::FullyVerified)
     }
+}
+
+pub(crate) fn provider_notice<'a>(
+    mut profiles: impl Iterator<Item = &'a str>,
+) -> Result<String, PostureError> {
+    let Some(profile) = profiles.next() else {
+        return Ok(PROVIDER_DISCLOSURE_NOTICE.to_owned());
+    };
+    let invalid = || PostureError::Identifier {
+        field: "metadata profile",
+        reason: "unsupported or contradictory approval",
+    };
+    if profiles.next().is_some() {
+        return Err(invalid());
+    }
+    let notice = crate::provider_request::disclosure::notice(profile).map_err(|_| invalid())?;
+    Ok(format!("{PROVIDER_DISCLOSURE_NOTICE} {notice}"))
 }
 
 /// A malformed or contradictory posture input.

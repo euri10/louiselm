@@ -45,7 +45,9 @@ impl BrokerService {
     /// Refuses without spending a unit when the launch grants no valid Provider
     /// permission ([`BrokerError::InvalidGrant`], [`BrokerError::Expired`]), the
     /// request names a Model or effort outside the grant
-    /// ([`ErrorCode::CapabilityDenied`]), the credential is not configured, or
+    /// ([`ErrorCode::CapabilityDenied`]), the approved metadata profile differs
+    /// or request metadata is unreviewed ([`ErrorCode::ProviderDisclosureDenied`]),
+    /// the credential is not configured, or
     /// the Session is not running with an
     /// enabled channel. Refuses with [`BrokerError::ProviderBudgetExhausted`]
     /// once the Run's total is spent. After a unit is spent, an expiry or channel
@@ -89,6 +91,10 @@ impl BrokerService {
         let live = |at: u64| {
             permission.valid(at) && at < authorization.expires_at_ms && at < approved.expires_at_ms
         };
+        if permission.disclosure_profile != crate::provider_request::disclosure::profile_digest() {
+            return Err(ProtocolError::new(ErrorCode::ProviderDisclosureDenied, None, None).into());
+        }
+        request.validate_disclosure()?;
         let run_id = authorization.run_id.as_str();
         if let Some(hold) = self.provider_requests.held(run_id)? {
             return Err(hold_refusal(hold.reason));

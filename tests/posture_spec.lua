@@ -65,4 +65,28 @@ T["rejects malformed or contradictory controller output"] = function()
   end
 end
 
+T["metadata disclosure matches shared Rust evidence and safe notice"] = function()
+  local metadata =
+    nvim.json.decode(table.concat(nvim.fn.readfile("tests/fixtures/provider_metadata_disclosure.json"), "\n"))
+  local record = nvim.json.decode(fixture())
+  record.provider_disclosure_notice = metadata.notice
+  local evidence = record.dimensions.provider_disclosure.evidence
+  evidence[#evidence + 1] = { kind = metadata.kind, id = metadata.id }
+  local posture, err = Posture.decode(nvim.json.encode(record))
+  MiniTest.expect.equality(err, nil)
+  assert(posture)
+  local items = assert(Posture.health_items(posture))
+  MiniTest.expect.equality(items[#items - 1].message, metadata.notice)
+
+  record.provider_disclosure_notice = metadata.notice .. " Anonymous."
+  MiniTest.expect.equality(Posture.decode(nvim.json.encode(record)), nil)
+  record.provider_disclosure_notice = metadata.notice
+  evidence[#evidence].id = "sha256:" .. string.rep("a", 64)
+  MiniTest.expect.equality(Posture.decode(nvim.json.encode(record)), nil)
+  evidence[#evidence].id = metadata.id
+  record.dimensions.provider_disclosure.evidence = { evidence[#evidence] }
+  -- Metadata approval alone cannot establish full disclosure.
+  MiniTest.expect.equality(Posture.decode(nvim.json.encode(record)), nil)
+end
+
 return T

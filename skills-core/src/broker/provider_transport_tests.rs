@@ -81,6 +81,7 @@ impl Transport for FakeStream {
 
 fn approved() -> ApprovedProviderRequests {
     ApprovedProviderRequests {
+        disclosure_profile: crate::provider_request::disclosure::profile_digest(),
         provider: "openai".into(),
         upstream: "https://api.openai.com/v1/responses".into(),
         addresses: vec!["192.0.2.1".parse().unwrap()],

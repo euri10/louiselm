@@ -53,6 +53,8 @@ local PROVIDER_DISCLOSURE_NOTICE =
   "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment."
 local EMBEDDED_INSTRUCTIONS_NOTICE =
   "Instructions embedded in the measured executable are part of runtime trust, not admitted Skill supply."
+local METADATA_NOTICE =
+  "Reviewed client metadata is forwarded unchanged to the approved Provider, including stable installation and Session/thread/turn identifiers and client runtime settings. Stable identifiers permit cross-Run linkage. This is not anonymity."
 local DIMENSIONS = {
   "managed_supply",
   "native_supply",
@@ -67,6 +69,7 @@ for _, name in ipairs(DIMENSIONS) do
 end
 
 local EVIDENCE = {
+  provider_metadata_profile = true,
   skill_generation = true,
   session_input_manifest = true,
   runtime_measurement = true,
@@ -218,7 +221,11 @@ local function validate_evidence(dimension_name, dimension)
     end
     if evidence.kind == "waiver_receipt" then
       waiver = true
-    elseif evidence.kind ~= "audit_receipt" and PRIMARY_EVIDENCE[dimension_name][evidence.kind] ~= true then
+    elseif
+      evidence.kind ~= "audit_receipt"
+      and not (dimension_name == "provider_disclosure" and evidence.kind == "provider_metadata_profile")
+      and PRIMARY_EVIDENCE[dimension_name][evidence.kind] ~= true
+    then
       return false, dimension_name .. ".evidence contains an incompatible kind"
     end
     primary = primary or PRIMARY_EVIDENCE[dimension_name][evidence.kind] == true
@@ -288,9 +295,6 @@ local function validate(posture)
   if not valid_identifier(posture.session_id) or not valid_identifier(posture.run_id) then
     return false, "Verified posture subject identifiers are invalid"
   end
-  if posture.provider_disclosure_notice ~= PROVIDER_DISCLOSURE_NOTICE then
-    return false, "Provider disclosure notice is missing or altered"
-  end
   if posture.embedded_instructions_notice ~= EMBEDDED_INSTRUCTIONS_NOTICE then
     return false, "Embedded instruction disclosure is missing or altered"
   end
@@ -317,6 +321,20 @@ local function validate(posture)
     end
     has_failed = has_failed or posture.dimensions[name].state == "failed"
     has_waived = has_waived or posture.dimensions[name].state == "waived"
+  end
+  local notice = PROVIDER_DISCLOSURE_NOTICE
+  local profile_seen = false
+  for _, evidence in ipairs(posture.dimensions.provider_disclosure.evidence) do
+    if evidence.kind == "provider_metadata_profile" then
+      if profile_seen or #evidence.id ~= 71 or not evidence.id:match("^sha256:[0-9a-f]+$") then
+        return false, "Provider metadata profile is invalid or repeated"
+      end
+      profile_seen = true
+      notice = notice .. " Metadata profile codex-responses-metadata/1 (" .. evidence.id .. "). " .. METADATA_NOTICE
+    end
+  end
+  if posture.provider_disclosure_notice ~= notice then
+    return false, "Provider disclosure notice is missing or altered"
   end
   local expected_state = has_failed and "unverified" or (has_waived and "waived" or "fully_verified")
   if posture.state ~= expected_state then

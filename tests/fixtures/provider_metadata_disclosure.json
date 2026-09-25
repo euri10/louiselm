@@ -1,0 +1,5 @@
+{
+  "kind": "provider_metadata_profile",
+  "id": "sha256:4eead338cff2ced8dcef1b6deee992d5621da09f86bb390cc1507122aec474a8",
+  "notice": "Plaintext intentionally sent to a cloud Provider is visible to that Provider despite local containment. Metadata profile codex-responses-metadata/1 (sha256:4eead338cff2ced8dcef1b6deee992d5621da09f86bb390cc1507122aec474a8). Reviewed client metadata is forwarded unchanged to the approved Provider, including stable installation and Session/thread/turn identifiers and client runtime settings. Stable identifiers permit cross-Run linkage. This is not anonymity."
+}

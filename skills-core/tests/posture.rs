@@ -322,6 +322,51 @@ fn evidence_identifiers_cannot_carry_paths_or_hostile_text() {
 }
 
 #[test]
+fn metadata_disclosure_has_shared_safe_human_and_robot_presentation() {
+    use louiselm_skills::provider_request::disclosure;
+    let shared: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/provider_metadata_disclosure.json"
+    ))
+    .unwrap();
+    assert_eq!(shared["id"], disclosure::profile_digest());
+    assert_eq!(shared["kind"], EvidenceKind::ProviderMetadataProfile.name());
+    let mut inputs = verified_inputs();
+    inputs[5] = DimensionInput::verified(
+        DimensionName::ProviderDisclosure,
+        vec![
+            evidence(EvidenceKind::SessionInputManifest, "manifest-1"),
+            evidence(
+                EvidenceKind::ProviderMetadataProfile,
+                &disclosure::profile_digest(),
+            ),
+        ],
+    );
+    let posture = Posture::evaluate(SESSION_ID, RUN_ID, inputs).unwrap();
+    assert_eq!(
+        posture.provider_disclosure_notice,
+        shared["notice"].as_str().unwrap()
+    );
+    assert!(render::posture(&posture).contains(shared["notice"].as_str().unwrap()));
+    let robot: serde_json::Value =
+        serde_json::from_str(&robot::payload(&posture).unwrap()).unwrap();
+    assert_eq!(robot["provider_disclosure_notice"], shared["notice"]);
+    for references in [
+        vec![evidence(
+            EvidenceKind::ProviderMetadataProfile,
+            &disclosure::profile_digest(),
+        )],
+        vec![
+            evidence(EvidenceKind::SessionInputManifest, "manifest-1"),
+            evidence(EvidenceKind::ProviderMetadataProfile, "unsupported"),
+        ],
+    ] {
+        let mut inputs = verified_inputs();
+        inputs[5] = DimensionInput::verified(DimensionName::ProviderDisclosure, references);
+        assert!(Posture::evaluate(SESSION_ID, RUN_ID, inputs).is_err());
+    }
+}
+
+#[test]
 fn the_shared_fixture_is_the_robot_view_and_drives_the_human_view() {
     let posture = fixture_posture();
     let expected: serde_json::Value = serde_json::from_str(include_str!(

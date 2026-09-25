@@ -33,6 +33,22 @@ def shape(value, depth=0):
     return type(value).__name__
 
 
+def metadata_shape(value):
+    """Expose structure of JSON-encoded metadata, never its leaf values."""
+    if isinstance(value, dict):
+        return {key: metadata_shape(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return {"list": len(value), "items": [metadata_shape(item) for item in value]}
+    if isinstance(value, str):
+        try:
+            nested = json.loads(value)
+        except ValueError:
+            return shape(value)
+        if isinstance(nested, (dict, list)):
+            return {"json_string": metadata_shape(nested)}
+    return shape(value)
+
+
 def sse(text):
     item = {"type": "message", "id": "msg_probe", "role": "assistant", "status": "completed",
             "content": [{"type": "output_text", "text": text, "annotations": []}]}
@@ -71,6 +87,8 @@ def experiment(model, effort):
             try:
                 body = json.loads(raw)
                 record["body_shape"] = shape(body)
+                record["metadata_shape"] = metadata_shape(body.get("client_metadata"))
+                record["turn_header_shape"] = metadata_shape(self.headers.get("x-codex-turn-metadata"))
                 record["policy"] = {key: body[key] for key in POLICY_FIELDS if key in body}
             except (ValueError, UnicodeDecodeError):
                 record["body_shape"] = "not-json (compressed or binary)"

@@ -721,9 +721,26 @@ the configured Provider id, the exact HTTPS `upstream` URL
 non-refundable `max_run_requests` shared by every Session of the Run, the
 sorted `models` a request may name, the `max_effort` ceiling for
 `reasoning.effort` (`none` < `minimal` < `low` < `medium` < `high` < `xhigh`
-< `max`), and an expiry. Absence denies every request. A request naming another
+< `max`), an expiry, and the exact `disclosure_profile` digest. Absence denies every request. A request naming another
 Model, stating a higher or unknown effort, or stating none is refused with
 `CapabilityDenied` before any unit is spent.
+
+`disclosure_profile` binds the consumed `src/provider_request/disclosure.json`
+bytes (`codex-responses-metadata/1`, observed offline with Codex 0.156.1).
+There is no deserialization default or automatic profile upgrade. The existing
+permission flow uses `ApprovedProviderRequests::disclosure_notice()` to display
+the safe version/digest and stable-ID/cross-Run-linkage warning; auto-approval
+remains supported. Profile changes require fresh authorization, not a budget
+extension. Reviewed metadata is forwarded unchanged, not anonymized.
+
+Framing and broker admission validate metadata types, bounds and closed field
+sets, including `client_metadata` and JSON encoded inside turn metadata headers
+and body fields. Unknown nested fields, duplicate keys and malformed values
+produce `ProviderDisclosureDenied` before credentials, budget or upstream I/O.
+The denial never contains metadata values. Trusted status retains the approved
+profile as supplemental `provider_disclosure` evidence and renders the same safe
+notice; metadata approval alone cannot verify the complete input disclosure.
+These component gates do not enable Brokered operation (`louiselm-qbr.5.1.3.2.4.5`).
 
 `provider_endpoint::serve_provider_connection` accepts only the Responses
 request shape stock Codex was observed to send (reviewed headers and top-level

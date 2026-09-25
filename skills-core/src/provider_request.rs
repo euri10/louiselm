@@ -10,6 +10,7 @@ use std::{fmt, net::IpAddr};
 
 use serde::{Deserialize, Serialize};
 
+pub mod disclosure;
 mod framing;
 
 pub use framing::Frames;
@@ -59,6 +60,9 @@ impl ReasoningEffort {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovedProviderRequests {
+    /// Exact reviewed metadata profile digest approved through the existing policy.
+    /// No default: old or omitted disclosure approval cannot authorize requests.
+    pub disclosure_profile: String,
     /// Configured Provider whose broker-held credential authenticates requests.
     pub provider: String,
     /// Exact HTTPS URL the broker sends every admitted request to.
@@ -79,6 +83,14 @@ pub struct ApprovedProviderRequests {
 }
 
 impl ApprovedProviderRequests {
+    /// Displays the exact metadata scope through the existing permission flow.
+    /// Does not authorize, auto-upgrade a profile, or require a human prompt.
+    /// # Errors
+    /// Refuses unsupported or missing profile approval without echoing its value.
+    pub fn disclosure_notice(&self) -> Result<String, crate::launch_protocol::ProtocolError> {
+        disclosure::notice(&self.disclosure_profile)
+    }
+
     /// Checks bounded scope, destination and lifetime without external effects.
     #[must_use]
     pub fn valid(&self, now_ms: u64) -> bool {
@@ -102,6 +114,7 @@ impl ApprovedProviderRequests {
         unique.sort_unstable();
         unique.dedup();
         provider
+            && self.disclosure_profile == disclosure::profile_digest()
             && upstream
             && self.upstream.len() <= 2048
             && !self.addresses.is_empty()
@@ -149,6 +162,17 @@ pub struct ProviderRequest {
     pub headers: Vec<(String, String)>,
     /// Exact JSON body to forward upstream.
     pub body: Vec<u8>,
+}
+
+impl ProviderRequest {
+    /// Validates metadata at the broker entrypoint, including manually built requests.
+    /// Does not rewrite or retain any metadata values.
+    /// # Errors
+    /// Refuses unreviewed or malformed metadata with a safe typed disclosure error.
+    pub fn validate_disclosure(&self) -> Result<(), crate::launch_protocol::ProtocolError> {
+        framing::policy_fields(&self.body)?;
+        disclosure::validate(&self.body, &self.headers)
+    }
 }
 
 impl fmt::Debug for ProviderRequest {

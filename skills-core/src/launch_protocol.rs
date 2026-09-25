@@ -259,6 +259,8 @@ pub enum ErrorCode {
     IdentityAssignmentInvalid,
     /// A configured Provider credential is missing, unreadable, or unusable.
     CredentialUnavailable,
+    /// Request metadata or its exact approved disclosure profile is unreviewed.
+    ProviderDisclosureDenied,
     /// An exact broker effect is outside its explicit grant, role, lifetime or budget.
     CapabilityDenied,
 }
@@ -2356,6 +2358,11 @@ fn error_metadata(code: ErrorCode) -> (&'static str, bool, NextAction) {
         ),
         ErrorCode::CredentialUnavailable => (
             "configured Provider credential is unavailable",
+            false,
+            NextAction::ContactOperator,
+        ),
+        ErrorCode::ProviderDisclosureDenied => (
+            "Provider metadata disclosure refused; review the supported profile and authorize its exact digest",
             false,
             NextAction::ContactOperator,
         ),

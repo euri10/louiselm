@@ -38,7 +38,8 @@ const LOCAL: [&str; 3] = [
     "x-openai-internal-codex-responses-lite",
 ];
 
-/// Reviewed top-level request fields; nested content passes through unchanged.
+/// Reviewed top-level request fields; content passes through unchanged after
+/// policy and metadata validation.
 const FIELDS: [&str; 11] = [
     "model",
     "input",
@@ -101,6 +102,8 @@ impl Frames {
     /// # Errors
     /// Returns [`ErrorCode::InvalidRequest`] for any unreviewed method, target,
     /// header, encoding or field, and for every later call on this parser.
+    /// Returns [`ErrorCode::ProviderDisclosureDenied`] for malformed or
+    /// unreviewed metadata within the accepted frame.
     pub fn next_request(&mut self) -> Result<Option<ProviderRequest>, ProtocolError> {
         if self.poisoned {
             return Err(invalid());
@@ -193,6 +196,7 @@ impl Frames {
         }
         let body = self.buffer[end..end + length].to_vec();
         let (model, effort) = policy_fields(&body)?;
+        super::disclosure::validate(&body, &forwarded)?;
         self.buffer.drain(..end + length);
         Ok(Some(ProviderRequest {
             model,
@@ -203,7 +207,7 @@ impl Frames {
     }
 }
 
-fn policy_fields(body: &[u8]) -> Result<(String, Option<String>), ProtocolError> {
+pub(super) fn policy_fields(body: &[u8]) -> Result<(String, Option<String>), ProtocolError> {
     // serde_json keeps the last duplicate key; a duplicated policy field could
     // then mean different things to the broker and to the upstream parser.
     let object: Map<String, Value> = serde_json::from_slice(body).map_err(|_| invalid())?;

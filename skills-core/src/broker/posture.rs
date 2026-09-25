@@ -21,6 +21,7 @@ pub(super) struct LaunchPostureEvidence {
     checked_at_ms: Option<u64>,
     launch_receipt_id: String,
     supply: Option<supply::RetainedSupply>,
+    provider_profile: Option<String>,
     pub(super) conformance_admission: ConformanceEvidence,
     conformance_report: Option<EvidenceRef>,
     pub(super) current_conformance: Option<super::current_conformance::RetainedConformance>,
@@ -178,7 +179,21 @@ impl BrokerService {
         let (waiver_revision, waiver) = self.waivers.decision(authorization)?;
         let mut current_authorization = authorization.clone();
         current_authorization.conformance.waiver = waiver;
+        let approved = self
+            .authorizations()
+            .consumed_for_session(&authorization.session_id)?
+            .ok_or(BrokerError::UnknownAuthorization)?;
+        if approved.authorization_id != authorization.authorization_id
+            || approved.request_digest != authorization.request_digest
+            || approved.envelope_revision != authorization.envelope_revision
+            || approved.run_id != authorization.run_id
+        {
+            return Err(BrokerError::RequestMismatch);
+        }
         Ok(LaunchPostureEvidence {
+            provider_profile: approved
+                .provider_requests
+                .map(|permission| permission.disclosure_profile),
             waiver_revision,
             current_conformance: match self
                 .receipts()
@@ -277,16 +292,27 @@ impl LaunchPostureEvidence {
                 && let Some((input, validity)) =
                     supply.dimension(dimension, supervisor, quarantined, now_ms)
             {
-                inputs.push(input);
+                inputs.push(if dimension == DimensionName::ProviderDisclosure {
+                    match &self.provider_profile {
+                        Some(profile) => input.provider_profile(profile)?,
+                        None => input,
+                    }
+                } else {
+                    input
+                });
                 freshness[index] = validity;
                 continue;
             }
             if dimension != DimensionName::Runtime || self.checked_at_ms.is_none() {
-                inputs.push(DimensionInput::failed(
-                    dimension,
-                    FailureCode::EvidenceMissing,
-                    vec![],
-                ));
+                let input = DimensionInput::failed(dimension, FailureCode::EvidenceMissing, vec![]);
+                inputs.push(if dimension == DimensionName::ProviderDisclosure {
+                    match &self.provider_profile {
+                        Some(profile) => input.provider_profile(profile)?,
+                        None => input,
+                    }
+                } else {
+                    input
+                });
                 continue;
             }
             // This is the launch proof's limited lifetime basis, not a new

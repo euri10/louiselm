@@ -608,6 +608,24 @@ the worker's authorized request and exact sequence-zero receipt. Foreign,
 future, duplicate-time and out-of-order results cannot replace retained facts.
 Missing inputs or proof leave the relevant dimensions unverified.
 
+Brokered Provider permission additionally binds the digest of the consumed
+`skills-core/src/provider_request/disclosure.json` metadata profile. The broker
+retains that identity from its durable authorization at launch or authenticated
+reattachment, never from status JSON. A supported profile supplements the
+Session-input manifest evidence as `provider_metadata_profile`; it cannot prove
+complete disclosure on its own. Unsupported or empty approval fails disclosure.
+Ordinary Sessions without a Provider request permission keep their existing
+manifest-based disclosure behavior.
+
+The existing notice in human, robot and Session status views identifies the
+profile version and exact digest, warns about stable identifiers and cross-Run
+linkage, and explicitly makes no anonymity claim. It includes no metadata
+values. Controllers use `ApprovedProviderRequests::disclosure_notice()` for the
+same safe permission text and bind `disclosure_profile` through the existing
+permission policy, including operator-selected auto-approval. Updating profile
+bytes requires fresh authorization; budget extensions never update the profile.
+This does not enable Brokered operation or introduce a separate approval prompt.
+
 Only references, typed outcomes and observation times enter retained posture;
 raw manifests, Provider configuration and instruction contents do not. A later
 failed check keeps that dimension's last successful reference/time while

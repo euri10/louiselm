@@ -7,7 +7,7 @@ use crate::{
     dossier::NextAction,
     posture::{
         self, DimensionName, DimensionState, EMBEDDED_INSTRUCTIONS_NOTICE, EvidenceKind,
-        FailureCode, PROVIDER_DISCLOSURE_NOTICE, Posture, PostureState, Requirement,
+        FailureCode, Posture, PostureState, Requirement,
     },
 };
 
@@ -131,7 +131,16 @@ impl PostureStatus {
     /// freshness or actions, and modified fixed disclosure statements.
     pub fn validate(&self) -> Result<(), ProtocolError> {
         let invalid = || ProtocolError::new(ErrorCode::InvalidRequest, None, None);
-        if self.provider_disclosure_notice != PROVIDER_DISCLOSURE_NOTICE
+        let notice = posture::provider_notice(
+            self.dimensions
+                .iter()
+                .filter(|d| d.dimension == DimensionName::ProviderDisclosure)
+                .flat_map(|d| &d.evidence)
+                .filter(|e| e.kind == EvidenceKind::ProviderMetadataProfile)
+                .map(|e| e.id.as_str()),
+        )
+        .map_err(|_| invalid())?;
+        if self.provider_disclosure_notice != notice
             || self.embedded_instructions_notice != EMBEDDED_INSTRUCTIONS_NOTICE
         {
             return Err(invalid());

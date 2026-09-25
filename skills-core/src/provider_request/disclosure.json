@@ -1,0 +1,50 @@
+{
+  "id": "codex-responses-metadata/1",
+  "max_string_bytes": 4096,
+  "max_turn_bytes": 8192,
+  "prompt_cache_key": "string",
+  "headers": {
+    "accept": "string",
+    "content-type": "string",
+    "originator": "string",
+    "user-agent": "string",
+    "session-id": "string",
+    "thread-id": "string",
+    "x-client-request-id": "string",
+    "x-codex-beta-features": "string",
+    "x-codex-window-id": "string",
+    "x-codex-turn-metadata": "turn"
+  },
+  "client_metadata": {
+    "root_turn_id": "string",
+    "thread_id": "string",
+    "session_id": "string",
+    "x-codex-window-id": "string",
+    "turn_id": "string",
+    "x-codex-turn-metadata": "turn",
+    "x-codex-installation-id": "string"
+  },
+  "turn_metadata": {
+    "installation_id": "string",
+    "session_id": "string",
+    "thread_id": "string",
+    "agent_name": "string",
+    "turn_id": "string",
+    "window_id": "string",
+    "window_number": "unsigned",
+    "context_window_id": "string",
+    "request_kind": "string",
+    "root_turn_id": "string",
+    "thread_source": "string",
+    "turn_trigger": "string",
+    "sandbox": "string",
+    "sandbox_mode": "string",
+    "auto_review_enabled": "boolean",
+    "node_repl_auto_review_required": "boolean",
+    "node_repl_disabled": "boolean",
+    "turn_started_at_unix_ms": "unsigned",
+    "analytics_enabled": "boolean",
+    "model": "string",
+    "reasoning_effort": "string"
+  }
+}

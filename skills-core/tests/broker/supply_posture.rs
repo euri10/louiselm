@@ -35,10 +35,50 @@ fn launch_supply_connections(
     AuthenticatedInputs,
     thread::JoinHandle<()>,
 ) {
+    launch_supply_profile(supply, connections, None)
+}
+
+fn launch_supply_profile(
+    supply: &Supply,
+    connections: Vec<BrokerConnection>,
+    profile: Option<&str>,
+) -> (
+    TempDir,
+    BrokerService,
+    BrokerSession,
+    AuthenticatedInputs,
+    thread::JoinHandle<()>,
+) {
     let root = TempDir::new().unwrap();
     let socket = root.path().join("control.sock");
     let request = supply.discovery.request.clone();
-    let service = lifecycle::bound_service(root.path(), &socket, &request);
+    let auth_root = root.path().join("authorizations");
+    let authorizations = AuthorizationStore::open(&auth_root, pool(4)).unwrap();
+    let mut approved = grant(&request);
+    approved.provider_requests = profile.map(|_| super::provider_requests::approval(5));
+    authorizations.authorize(&approved, 1000).unwrap();
+    if let Some(profile) = profile {
+        // Model durable approval from a previous build with a different profile.
+        // Only this synthetic fixture's record is changed, before retention.
+        let path = fs::read_dir(auth_root.join("pending"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["provider_requests"]["disclosure_profile"] = profile.into();
+        fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+    let service = BrokerService::bind(
+        &socket,
+        authorizations,
+        ReceiptStore::open(&root.path().join("receipts"), trusted_release()).unwrap(),
+        AuditLog::open(&root.path().join("audit")).unwrap(),
+        local_pin(),
+    )
+    .unwrap();
     let manifest = supply.discovery.manifest.clone();
     let isolation = supply.discovery.isolation.clone();
     let (sent, received) = mpsc::sync_channel(1);
@@ -97,6 +137,67 @@ fn launch_supply_connections(
         .unwrap();
     let bound = received.recv_timeout(Duration::from_secs(5)).unwrap();
     (root, service, session, bound, peer)
+}
+
+#[test]
+fn complete_disclosure_requires_the_exact_retained_metadata_profile_when_permitted() {
+    use louiselm_skills::provider_request::disclosure;
+    let digest = disclosure::profile_digest();
+    for profile in [
+        None,
+        Some(digest.as_str()),
+        Some("changed-profile"),
+        Some(""),
+    ] {
+        let supply = Supply::new();
+        let (_root, service, mut session, bound, peer) =
+            launch_supply_profile(&supply, vec![BrokerConnection::Connected], profile);
+        let proof =
+            louiselm_skills::discovery::DiscoveryProof::verify(&bound, &supply.discovery.runtime)
+                .unwrap();
+        let evidence = SupplyEvidence::derive(
+            bound.request(),
+            &supply.discovery.fixture.store(),
+            &Policy::embedded(),
+            &supply.registry,
+            Some(&bound),
+            Some(&proof),
+            3000,
+        )
+        .unwrap();
+        service
+            .retain_supply_posture(&mut session, evidence, 3000)
+            .unwrap();
+        let status = service
+            .session_status(
+                &mut session,
+                &LifecycleCaller::Operator {
+                    uid: CONTROLLER_UID,
+                },
+                4000,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        peer.join().unwrap();
+        let disclosure = &status.posture.dimensions[5];
+        if profile.is_none() || profile == Some(digest.as_str()) {
+            assert_eq!(disclosure.state, DimensionState::Verified);
+        } else {
+            assert_eq!(disclosure.state, DimensionState::Failed);
+            assert_eq!(
+                disclosure.failure_code,
+                Some(FailureCode::ProviderDisclosureMissing)
+            );
+        }
+        assert_eq!(
+            status
+                .posture
+                .provider_disclosure_notice
+                .contains("Metadata profile"),
+            profile == Some(digest.as_str())
+        );
+        status.posture.validate().unwrap();
+    }
 }
 
 #[test]

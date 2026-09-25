@@ -172,6 +172,7 @@ fn request_debug_output_never_contains_prompt_content() {
 
 fn approved() -> ApprovedProviderRequests {
     ApprovedProviderRequests {
+        disclosure_profile: disclosure::profile_digest(),
         provider: "openai".into(),
         upstream: "https://api.openai.com/v1/responses".into(),
         addresses: vec!["192.0.2.1".parse().unwrap()],
@@ -180,6 +181,132 @@ fn approved() -> ApprovedProviderRequests {
         max_effort: ReasoningEffort::High,
         expires_at_ms: 2000,
     }
+}
+
+#[test]
+fn metadata_profile_rejects_unreviewed_nested_fields() {
+    let payload = body("gpt-5.6-luna").replace(
+        r#""client_metadata":{"session_id":"s"}"#,
+        r#""client_metadata":{"session_id":"s","unreviewed":"secret"}"#,
+    );
+    let wire = format!(
+        "POST /v1/responses HTTP/1.1\r\naccept: text/event-stream\r\ncontent-type: application/json\r\nhost: {HOST}\r\ncontent-length: {}\r\n\r\n{payload}",
+        payload.len()
+    );
+    let mut frames = Frames::new(HOST.into());
+    frames.feed(wire.as_bytes()).unwrap();
+    assert_eq!(
+        frames.next_request().unwrap_err().code,
+        ErrorCode::ProviderDisclosureDenied
+    );
+}
+
+#[test]
+fn metadata_profile_refuses_ambiguous_or_malformed_values() {
+    for metadata in [
+        "null",
+        "[]",
+        r#"{"session_id":7}"#,
+        r#"{"session_id":""}"#,
+        r#"{"session_id":"a","session_id":"b"}"#,
+        r#"{"session_id":{"hidden":"value"}}"#,
+        r#"{"session_id":"line\nbreak"}"#,
+        r#"{"x-codex-turn-metadata":"{\"unknown\":true}"}"#,
+        r#"{"x-codex-turn-metadata":"{\"analytics_enabled\":\"true\"}"}"#,
+        r#"{"x-codex-turn-metadata":"{\"window_number\":-1}"}"#,
+        r#"{"x-codex-turn-metadata":"{\"turn_id\":\"a\",\"turn_id\":\"b\"}"}"#,
+        r#"{"x-codex-turn-metadata":{}}"#,
+    ] {
+        let payload = body("m").replace(r#"{"session_id":"s"}"#, metadata);
+        let mut parser = frames();
+        parser.feed(&frame(&payload)).unwrap();
+        assert_eq!(
+            parser.next_request().unwrap_err().code,
+            ErrorCode::ProviderDisclosureDenied,
+            "{metadata}"
+        );
+    }
+    let payload = body("m").replace(
+        r#""session_id":"s""#,
+        &format!(r#""session_id":"{}""#, "s".repeat(4097)),
+    );
+    let mut parser = frames();
+    parser.feed(&frame(&payload)).unwrap();
+    assert_eq!(
+        parser.next_request().unwrap_err().code,
+        ErrorCode::ProviderDisclosureDenied
+    );
+}
+
+#[test]
+fn metadata_profile_bounds_the_top_level_cache_identifier() {
+    for value in ["null", "7", "{}", r#""line\nbreak""#] {
+        let payload = body("m").replace(
+            r#""prompt_cache_key":"00000000-0000-0000-0000-000000000000""#,
+            &format!(r#""prompt_cache_key":{value}"#),
+        );
+        let mut parser = frames();
+        parser.feed(&frame(&payload)).unwrap();
+        assert_eq!(
+            parser.next_request().unwrap_err().code,
+            ErrorCode::ProviderDisclosureDenied
+        );
+    }
+}
+
+#[test]
+fn observed_metadata_is_forwarded_byte_for_byte() {
+    // Shape captured offline by probe-codex-request-shape.py, Codex 0.156.1,
+    // 2026-09-25 (louiselm-qbr.11.1); all values here are synthetic.
+    let turn = r#"{"installation_id":"i","session_id":"s","thread_id":"t","agent_name":"codex","turn_id":"u","window_id":"w","window_number":1,"context_window_id":"c","request_kind":"test","root_turn_id":"r","thread_source":"exec","turn_trigger":"user","sandbox":"enabled","sandbox_mode":"read-only","auto_review_enabled":true,"node_repl_auto_review_required":false,"node_repl_disabled":true,"turn_started_at_unix_ms":1,"analytics_enabled":false,"model":"m","reasoning_effort":"high"}"#;
+    let metadata = serde_json::json!({
+        "root_turn_id":"r", "thread_id":"t", "session_id":"s",
+        "x-codex-window-id":"w", "turn_id":"u",
+        "x-codex-turn-metadata":turn, "x-codex-installation-id":"i"
+    });
+    let payload = body("m").replace(r#"{"session_id":"s"}"#, &metadata.to_string());
+    let wire = String::from_utf8(frame(&payload)).unwrap().replace(
+        "x-codex-turn-metadata: {}",
+        &format!("x-codex-turn-metadata: {turn}"),
+    );
+    let mut parser = frames();
+    parser.feed(wire.as_bytes()).unwrap();
+    let request = parser.next_request().unwrap().unwrap();
+    assert_eq!(request.body, payload.as_bytes());
+    assert!(
+        request
+            .headers
+            .contains(&("x-codex-turn-metadata".into(), turn.into()))
+    );
+    request.validate_disclosure().unwrap();
+}
+
+#[test]
+fn permission_requires_the_exact_profile_without_a_deserialization_default() {
+    let original = approved();
+    let notice = original.disclosure_notice().unwrap();
+    assert!(notice.contains(&original.disclosure_profile));
+    assert!(notice.contains(disclosure::NOTICE));
+    let mut value = serde_json::to_value(&original).unwrap();
+    value.as_object_mut().unwrap().remove("disclosure_profile");
+    assert!(serde_json::from_value::<ApprovedProviderRequests>(value).is_err());
+    for digest in [
+        "",
+        "codex-responses-metadata/1",
+        &crate::Digest::of(b"other profile").to_string(),
+    ] {
+        let mut changed = original.clone();
+        changed.disclosure_profile = digest.into();
+        assert!(!changed.valid(1000));
+        assert_eq!(
+            changed.disclosure_notice().unwrap_err().code,
+            ErrorCode::ProviderDisclosureDenied
+        );
+    }
+    assert_eq!(
+        disclosure::profile_id().unwrap(),
+        "codex-responses-metadata/1"
+    );
 }
 
 #[test]
