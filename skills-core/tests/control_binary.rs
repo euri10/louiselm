@@ -28,7 +28,7 @@ fn validates_verbs_confirmation_and_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', or 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json'"
+                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'"
             }),
             "{error}"
         );
@@ -55,6 +55,39 @@ fn waiver_refusals_are_typed_and_do_not_echo_private_input() {
             error,
             serde_json::json!({
                 "schema": "louiselm.conformance-waiver-error/1",
+                "error": "invalid_request", "next_action": "check_request"
+            })
+        );
+    }
+}
+
+#[test]
+fn provider_extension_refusals_are_typed_before_any_broker_exchange() {
+    for arguments in [
+        vec!["provider-extend"],
+        vec![
+            "provider-extend",
+            "../private-input",
+            "ext-1",
+            "2",
+            "--json",
+        ],
+        vec!["provider-extend", "session", "ext-1", "many", "--json"],
+        vec!["provider-extend", "session", "ext-1", "2", "soon", "--json"],
+        vec!["provider-extend", "session", "ext-1", "2"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+            .args(arguments)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(
+            error,
+            serde_json::json!({
+                "schema": "louiselm.provider-extension-error/1",
                 "error": "invalid_request", "next_action": "check_request"
             })
         );

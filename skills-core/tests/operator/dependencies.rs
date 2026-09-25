@@ -13,8 +13,9 @@ fn dependency_operator_requires_exact_durable_batch_acknowledgement() {
         let server = OperatorServer::bind(&path, uid).unwrap();
         let ids = vec![Digest::of(b"candidate").to_string()];
         let expected = ids.clone();
-        let worker = thread::spawn(move || {
-            server
+        let worker =
+            thread::spawn(move || {
+                server
                 .serve_once(
                     |session_id, approve| {
                         assert_eq!(session_id, "session");
@@ -34,9 +35,10 @@ fn dependency_operator_requires_exact_durable_batch_acknowledgement() {
                     |_, _| panic!("not Beads control"),
                     |_, _| panic!("not retention control"),
                     |_, _, _| panic!("not waiver control"),
-                )
+|_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
+)
                 .unwrap();
-        });
+            });
         assert_eq!(
             dependencies(&path, uid, "session", Some(ids), Duration::from_secs(2)).is_ok(),
             confirm

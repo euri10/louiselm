@@ -6,7 +6,9 @@
 //!
 //! Exhaustion or expiry also writes a Run-wide hold beside the records. The
 //! hold stops every Session of the Run and withdraws Resume until an explicit
-//! operator extension; nothing in this module ever removes it.
+//! operator extension lifts it. Holds and extensions are numbered generations
+//! and never removed: extension `n` lifts hold `n`, and a later exhaustion
+//! writes hold `n + 1`.
 
 use std::{
     fs,
@@ -16,7 +18,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{BrokerError, lock, read_record, sync_directory, write_new_record};
+use super::{
+    BrokerError, lock,
+    provider_extension::{Extension, ExtensionError, ExtensionRequest},
+    read_record, sync_directory, write_new_record,
+};
 use crate::{Digest, provider_request::MAX_RUN_REQUESTS};
 
 #[derive(Serialize, Deserialize)]
@@ -60,7 +66,7 @@ pub(super) struct ProviderLedger {
 
 impl ProviderLedger {
     pub(super) fn open(root: &Path) -> Result<Self, BrokerError> {
-        for directory in ["runs", "holds"] {
+        for directory in ["runs", "holds", "extensions"] {
             fs::create_dir_all(root.join(directory)).map_err(BrokerError::Storage)?;
         }
         sync_directory(root)?;
@@ -93,6 +99,7 @@ impl ProviderLedger {
             fs::create_dir(&directory).map_err(BrokerError::Storage)?;
             sync_directory(&self.root.join("runs"))?;
         }
+        let total = total(max_run_requests, &self.extensions_locked(run_id)?)?;
         let spent = count(&directory)?;
         if spent > 0 {
             let first: Reservation =
@@ -101,7 +108,7 @@ impl ProviderLedger {
                 return Err(BrokerError::InvalidGrant);
             }
         }
-        if spent >= max_run_requests {
+        if spent >= total {
             return Err(BrokerError::ProviderBudgetExhausted);
         }
         write_new_record(
@@ -139,15 +146,17 @@ impl ProviderLedger {
         now_ms: u64,
     ) -> Result<ProviderHold, BrokerError> {
         let _guard = lock(&self.writing);
-        let path = self.hold_path(run_id);
+        let directory = self.directory("holds", run_id);
+        let path = directory.join(format!("{}.json", self.extensions_locked(run_id)?.len()));
         if let Some(existing) = read_hold(run_id, &path)? {
             // A previous call may have failed after creation but before fsync.
             fs::File::open(&path)
                 .and_then(|file| file.sync_all())
                 .map_err(BrokerError::Storage)?;
-            sync_directory(&self.root.join("holds"))?;
+            sync_directory(&directory)?;
             return Ok(existing);
         }
+        self.create(&directory)?;
         let hold = ProviderHold {
             run_id: run_id.into(),
             reason,
@@ -157,22 +166,107 @@ impl ProviderLedger {
         Ok(hold)
     }
 
-    /// The Run's hold, when one was recorded.
+    /// The Run's current hold, when one stands unlifted.
     pub(super) fn held(&self, run_id: &str) -> Result<Option<ProviderHold>, BrokerError> {
         let _guard = lock(&self.writing);
-        read_hold(run_id, &self.hold_path(run_id))
+        self.held_locked(run_id)
     }
 
-    fn hold_path(&self, run_id: &str) -> PathBuf {
+    /// Durably appends an extension lifting the Run's current hold.
+    ///
+    /// A retry with the same `request_id` and fields returns the recorded
+    /// extension, even after the hold it lifted is gone. `check` sees the
+    /// current hold, the extensions so far and the units spent, and decides the
+    /// operator policy under the same lock as the append.
+    pub(super) fn extend(
+        &self,
+        run_id: &str,
+        request: &ExtensionRequest,
+        operator_uid: u32,
+        now_ms: u64,
+        check: impl FnOnce(&ProviderHold, &[Extension], u32) -> Result<(), ExtensionError>,
+    ) -> Result<Extension, BrokerError> {
+        let _guard = lock(&self.writing);
+        let prior = self.extensions_locked(run_id)?;
+        if let Some(recorded) = prior
+            .iter()
+            .find(|extension| extension.request.request_id == request.request_id)
+        {
+            return if recorded.request == *request && recorded.operator_uid == operator_uid {
+                Ok(recorded.clone())
+            } else {
+                Err(ExtensionError::Conflict.into())
+            };
+        }
+        let hold = self.held_locked(run_id)?.ok_or(ExtensionError::NotHeld)?;
+        let run = self.run_directory(run_id);
+        let spent = if run.exists() { count(&run)? } else { 0 };
+        check(&hold, &prior, spent)?;
+        let directory = self.directory("extensions", run_id);
+        self.create(&directory)?;
+        let extension = Extension {
+            run_id: run_id.into(),
+            request: request.clone(),
+            operator_uid,
+            approved_at_ms: now_ms,
+            lifts: hold,
+        };
+        write_new_record(&directory.join(format!("{}.json", prior.len())), &extension)?;
+        Ok(extension)
+    }
+
+    /// Every extension of the Run, oldest first.
+    pub(super) fn extensions(&self, run_id: &str) -> Result<Vec<Extension>, BrokerError> {
+        let _guard = lock(&self.writing);
+        self.extensions_locked(run_id)
+    }
+
+    fn held_locked(&self, run_id: &str) -> Result<Option<ProviderHold>, BrokerError> {
+        let generation = self.extensions_locked(run_id)?.len();
+        read_hold(
+            run_id,
+            &self
+                .directory("holds", run_id)
+                .join(format!("{generation}.json")),
+        )
+    }
+
+    /// Reads the contiguous extension records, each bound to the hold it lifted.
+    fn extensions_locked(&self, run_id: &str) -> Result<Vec<Extension>, BrokerError> {
+        let directory = self.directory("extensions", run_id);
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let holds = self.directory("holds", run_id);
+        (0..count(&directory)?)
+            .map(|index| {
+                let extension: Extension = read_record(&directory.join(format!("{index}.json")))?
+                    .ok_or(BrokerError::InvalidGrant)?;
+                let lifted = read_hold(run_id, &holds.join(format!("{index}.json")))?;
+                if extension.run_id != run_id || lifted.as_ref() != Some(&extension.lifts) {
+                    return Err(BrokerError::InvalidGrant);
+                }
+                Ok(extension)
+            })
+            .collect()
+    }
+
+    fn create(&self, directory: &Path) -> Result<(), BrokerError> {
+        if !directory.exists() {
+            fs::create_dir(directory).map_err(BrokerError::Storage)?;
+            sync_directory(directory.parent().unwrap_or(&self.root))?;
+        }
+        Ok(())
+    }
+
+    fn directory(&self, kind: &str, run_id: &str) -> PathBuf {
         self.root
-            .join("holds")
-            .join(format!("{}.json", Digest::of(run_id.as_bytes()).hex()))
+            .join(kind)
+            .join(Digest::of(run_id.as_bytes()).hex())
     }
 
     fn run_directory(&self, run_id: &str) -> PathBuf {
-        self.root
-            .join("runs")
-            .join(Digest::of(run_id.as_bytes()).hex())
+        self.directory("runs", run_id)
     }
 }
 
@@ -182,6 +276,17 @@ fn read_hold(run_id: &str, path: &Path) -> Result<Option<ProviderHold>, BrokerEr
         return Err(BrokerError::InvalidGrant);
     }
     Ok(hold)
+}
+
+/// The Run's total: the grant plus every extension, never above the ceiling.
+pub(super) fn total(max_run_requests: u32, extensions: &[Extension]) -> Result<u32, BrokerError> {
+    extensions
+        .iter()
+        .try_fold(max_run_requests, |total, extension| {
+            total.checked_add(extension.request.additional_requests)
+        })
+        .filter(|total| *total <= MAX_RUN_REQUESTS)
+        .ok_or(BrokerError::InvalidGrant)
 }
 
 /// Counts attempt records, refusing anything but the contiguous `N.json` names

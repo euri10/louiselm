@@ -86,6 +86,11 @@ enum Request {
         session_id: String,
         request: super::waiver::Request,
     },
+    #[serde(rename = "louiselm.operator-provider-extension/1")]
+    ProviderExtension {
+        session_id: String,
+        request: super::provider_extension::ExtensionRequest,
+    },
     #[serde(rename = "louiselm.operator-dependencies/1")]
     Dependencies {
         session_id: String,
@@ -110,6 +115,47 @@ enum Request {
         operation_id: String,
         outcome: Option<SkillRequestOutcome>,
     },
+}
+
+/// A bounded authenticated Provider budget extension exchange.
+///
+/// # Errors
+/// Transport errors are distinct from typed broker policy refusals in the result.
+pub fn provider_extension(
+    path: &Path,
+    broker_uid: u32,
+    session_id: &str,
+    request: &super::provider_extension::ExtensionRequest,
+    timeout: Duration,
+) -> Result<
+    Result<super::provider_extension::ExtensionOutcome, super::provider_extension::ExtensionError>,
+    InspectError,
+> {
+    validate_subject(session_id)?;
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::ProviderExtension {
+            session_id: session_id.into(),
+            request: request.clone(),
+        },
+        timeout,
+    )?;
+    let reply: Result<
+        super::provider_extension::ExtensionOutcome,
+        super::provider_extension::ExtensionError,
+    > = serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if serde_json::to_vec(&reply).map_err(|_| InspectError::StatusUnavailable)? != bytes {
+        return Err(InspectError::StatusUnavailable);
+    }
+    if let Ok(outcome) = &reply
+        && (outcome.schema != super::provider_extension::OUTCOME_SCHEMA
+            || outcome.session_id != session_id
+            || outcome.extension.request != *request)
+    {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(reply)
 }
 
 /// A bounded authenticated conformance-waiver exchange.
@@ -585,6 +631,14 @@ impl OperatorServer {
             &super::waiver::Request,
             Instant,
         ) -> Result<super::waiver::Outcome, super::waiver::WaiverError>,
+        extension: impl FnOnce(
+            &str,
+            &super::provider_extension::ExtensionRequest,
+            Instant,
+        ) -> Result<
+            super::provider_extension::ExtensionOutcome,
+            super::provider_extension::ExtensionError,
+        >,
     ) -> io::Result<()> {
         let (mut stream, _) = self.listener.accept()?;
         let deadline = Instant::now() + TIMEOUT;
@@ -607,6 +661,14 @@ impl OperatorServer {
                 } => {
                     validate_subject(&session_id)?;
                     serde_json::to_vec(&waiver(&session_id, &request, deadline))
+                        .map_err(|_| InspectError::StatusUnavailable)
+                }
+                Request::ProviderExtension {
+                    session_id,
+                    request,
+                } => {
+                    validate_subject(&session_id)?;
+                    serde_json::to_vec(&extension(&session_id, &request, deadline))
                         .map_err(|_| InspectError::StatusUnavailable)
                 }
                 Request::Dependencies {

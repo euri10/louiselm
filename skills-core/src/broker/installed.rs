@@ -76,6 +76,29 @@ impl InstalledBroker {
             None => result,
         }
     }
+    /// Lifts a held Run's Provider budget with an operator extension.
+    /// See [`BrokerService::extend_provider_budget`].
+    ///
+    /// # Errors
+    /// Returns the typed refusal; storage failures are `Unavailable`.
+    pub fn extend_provider_budget(
+        &self,
+        session: &BrokerSession,
+        uid: u32,
+        request: &super::provider_extension::ExtensionRequest,
+    ) -> Result<
+        super::provider_extension::ExtensionOutcome,
+        super::provider_extension::ExtensionError,
+    > {
+        use super::provider_extension::ExtensionError;
+        let now = now_ms().map_err(|_| ExtensionError::Unavailable)?;
+        self.service
+            .extend_provider_budget(session, uid, request, now)
+            .map_err(|error| match error {
+                BrokerError::ProviderExtension(error) => error,
+                _ => ExtensionError::Unavailable,
+            })
+    }
     /// Handle a pending launch's operator decision using only protected preparation evidence.
     /// No launcher or Agent is started by this operation.
     /// # Errors

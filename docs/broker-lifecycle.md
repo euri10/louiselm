@@ -1080,6 +1080,34 @@ five-minute review window does not shorten a running Session's approved waiver.
 Pre-cutover Sessions have no measured failure to waive. Installing the new fixed
 `prepare` command and desktop activation remain explicit operator work.
 
+## Provider budget holds and extensions
+
+When a Run spends its last brokered Provider request, or its Provider
+permission expires, the broker records a durable Run-wide hold. Every Session of
+that Run is refused further requests and is Parked on its worker's next 1 s tick.
+One `run_parked` Attention item names the Run. While the hold stands, Resume is
+refused and is not offered in status. Nothing lifts a hold automatically.
+
+The Session's controller lifts it from the installed operator socket:
+
+```sh
+louiselm-control provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json
+```
+
+`REQUESTS` adds units to the Run's shared total. `EXPIRES_AT_MS` optionally moves
+the Provider permission's exclusive expiry later. It must be in the future and
+never past the launch's own expiry; a later expiry needs a new launch. Only
+interactive Sessions can be extended. The extension must leave a unit unspent and
+an expiry in the future, or nothing is recorded (`insufficient`).
+`REQUEST_ID` is a retry identity: repeating the same request returns the recorded
+extension, and reusing it with other values is a `conflict`. Extensions are
+append-only under `provider-requests/extensions/`. Each one lifts exactly one hold
+and clears its Attention item.
+
+An extension never resumes work. Resume the Session explicitly afterwards; a
+later exhaustion or expiry records a new hold that needs a new extension. Spent
+units, including requests whose outcome is unknown, are never refunded.
+
 ## Verification
 
 `skills-core/tests/operator.rs` covers UID refusal before lookup, malformed and

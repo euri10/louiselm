@@ -1,5 +1,8 @@
 //! Operator CLI and daemon routing into the one owning Session worker.
 
+use louiselm_skills::broker::provider_extension::{
+    ExtensionError, ExtensionOutcome, ExtensionRequest,
+};
 use louiselm_skills::{
     broker::{
         BrokerError, BrokerSession, InstalledBroker,
@@ -135,6 +138,11 @@ struct Query {
 
 enum WorkerQuery {
     Status(Query),
+    ProviderExtension {
+        expires: Instant,
+        request: ExtensionRequest,
+        reply: SyncSender<Result<ExtensionOutcome, ExtensionError>>,
+    },
     Waiver {
         expires: Instant,
         request: louiselm_skills::broker::waiver::Request,
@@ -213,6 +221,7 @@ impl Queries {
                         |id, request, deadline| {
                             owner.waiver_request(&broker, id, request, deadline)
                         },
+                        |id, request, deadline| owner.provider_extension(id, request, deadline),
                     ) {
                         if error.kind() == io::ErrorKind::Interrupted {
                             continue;
@@ -251,6 +260,33 @@ impl Queries {
             BrokerError::Waiver(error) => error,
             _ => WaiverError::Unavailable,
         })
+    }
+
+    fn provider_extension(
+        &self,
+        id: &str,
+        request: &ExtensionRequest,
+        deadline: Instant,
+    ) -> Result<ExtensionOutcome, ExtensionError> {
+        let expires = deadline.min(Instant::now() + QUERY_TIMEOUT);
+        let sender = self
+            .sessions
+            .lock()
+            .map_err(|_| ExtensionError::Unavailable)?
+            .get(id)
+            .cloned()
+            .ok_or(ExtensionError::Unknown)?;
+        let (reply, receive) = mpsc::sync_channel(1);
+        sender
+            .try_send(WorkerQuery::ProviderExtension {
+                expires,
+                request: request.clone(),
+                reply,
+            })
+            .map_err(|_| ExtensionError::Unavailable)?;
+        receive
+            .recv_timeout(expires.saturating_duration_since(Instant::now()))
+            .map_err(|_| ExtensionError::Unavailable)?
     }
 
     fn inspect(
@@ -305,6 +341,57 @@ impl Queries {
             .map_err(|_| WaiverError::Unavailable)?
     }
 
+    /// Answers one operator query on the Session's own worker turn.
+    fn answer(&self, broker: &InstalledBroker, session: &mut BrokerSession, query: WorkerQuery) {
+        match query {
+            WorkerQuery::Waiver {
+                expires,
+                request,
+                reply,
+            } => {
+                if Instant::now() < expires {
+                    let result = broker
+                        .waiver_control(session, self.operator_uid, &request)
+                        .map_err(|error| match error {
+                            BrokerError::Waiver(error) => error,
+                            _ => louiselm_skills::broker::waiver::WaiverError::Unavailable,
+                        });
+                    // A disconnected operator can inspect the durable result later.
+                    let _ = reply.send(result);
+                }
+            }
+            WorkerQuery::ProviderExtension {
+                expires,
+                request,
+                reply,
+            } => {
+                if Instant::now() < expires {
+                    // A disconnected operator can retry the same request later.
+                    let _ = reply.send(broker.extend_provider_budget(
+                        session,
+                        self.operator_uid,
+                        &request,
+                    ));
+                }
+            }
+            WorkerQuery::Status(query) => {
+                if Instant::now() < query.expires {
+                    let result = broker.session_status(
+                        session,
+                        &LifecycleCaller::Operator {
+                            uid: self.operator_uid,
+                        },
+                    );
+                    // This query is observational. Client timeout/disconnect
+                    // cannot cancel another operation or renew authority.
+                    let _ = query
+                        .reply
+                        .send(result.map_err(|_| InspectError::StatusUnavailable));
+                }
+            }
+        }
+    }
+
     pub(super) fn run_session(
         &self,
         broker: &InstalledBroker,
@@ -342,41 +429,7 @@ impl Queries {
                     posture_check = Instant::now() + Duration::from_secs(1);
                 }
                 if let Ok(query) = requests.try_recv() {
-                    match query {
-                        WorkerQuery::Waiver {
-                            expires,
-                            request,
-                            reply,
-                        } => {
-                            if Instant::now() < expires {
-                                let result = broker
-                                    .waiver_control(session, self.operator_uid, &request)
-                                    .map_err(|error| {
-                                        match error {
-                                BrokerError::Waiver(error) => error,
-                                _ => louiselm_skills::broker::waiver::WaiverError::Unavailable,
-                            }
-                                    });
-                                // A disconnected operator can inspect the durable result later.
-                                let _ = reply.send(result);
-                            }
-                        }
-                        WorkerQuery::Status(query) => {
-                            if Instant::now() < query.expires {
-                                let result = broker.session_status(
-                                    session,
-                                    &LifecycleCaller::Operator {
-                                        uid: self.operator_uid,
-                                    },
-                                );
-                                // This query is observational. Client timeout/disconnect
-                                // cannot cancel another operation or renew authority.
-                                let _ = query
-                                    .reply
-                                    .send(result.map_err(|_| InspectError::StatusUnavailable));
-                            }
-                        }
-                    }
+                    self.answer(broker, session, query);
                     if session.channel().is_closed() {
                         return Err(BrokerError::Transport(TransportError::Closed));
                     }

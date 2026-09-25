@@ -8,9 +8,11 @@ use louiselm_skills::{
         lifecycle::LifecycleCaller,
         provider_credentials::ProviderCredentialStore,
         provider_endpoint::serve_provider_connection,
+        provider_extension::{ExtensionError, ExtensionRequest},
         provider_requests::HoldReason,
         provider_transport::{ProviderTransport, UpstreamResponse},
     },
+    conformance::admission::Attendance,
     launch_protocol::{ChannelState, LifecycleAction, NextAction, SupervisorStatus},
     launch_receipt::{SessionState, SignedReceipt},
     provider_request::{ApprovedProviderRequests, Frames, ProviderRequest, ReasoningEffort},
@@ -158,6 +160,14 @@ fn credentials(root: &Path, provider: Option<&str>) -> ProviderCredentialStore {
 }
 
 fn fixture(permission: Option<ApprovedProviderRequests>, provider: Option<&str>) -> Fixture {
+    attended_fixture(permission, provider, Attendance::Unattended)
+}
+
+fn attended_fixture(
+    permission: Option<ApprovedProviderRequests>,
+    provider: Option<&str>,
+    attendance: Attendance,
+) -> Fixture {
     let root = TempDir::new().unwrap();
     let socket = root.path().join("broker.sock");
     let request = request("provider-requests");
@@ -165,6 +175,7 @@ fn fixture(permission: Option<ApprovedProviderRequests>, provider: Option<&str>)
         AuthorizationStore::open(&root.path().join("authorizations"), pool(4)).unwrap();
     let mut approved = grant(&request);
     approved.provider_requests = permission;
+    approved.conformance.attendance = attendance;
     authorizations.authorize(&approved, 1000).unwrap();
     let service = BrokerService::bind(
         &socket,
@@ -736,4 +747,220 @@ fn a_stream_still_running_at_expiry_is_cut_locally_keeping_what_arrived() {
             .map(|hold| hold.reason),
         Some(HoldReason::Expired)
     );
+}
+
+fn extension(
+    request_id: &str,
+    additional_requests: u32,
+    expires_at_ms: Option<u64>,
+) -> ExtensionRequest {
+    ExtensionRequest {
+        request_id: request_id.into(),
+        additional_requests,
+        expires_at_ms,
+    }
+}
+
+impl Fixture {
+    fn extend(
+        &self,
+        request: &ExtensionRequest,
+        uid: u32,
+        now_ms: u64,
+    ) -> Result<louiselm_skills::broker::provider_extension::ExtensionOutcome, ExtensionError> {
+        self.service
+            .extend_provider_budget(&self.session, uid, request, now_ms)
+            .map_err(|error| match error {
+                BrokerError::ProviderExtension(error) => error,
+                other => panic!("{other:?}"),
+            })
+    }
+
+    /// The operator Resumes the Parked Session; the fake supervisor then runs it.
+    fn resume(&mut self, parked: &SignedReceipt, now_ms: u64) -> SignedReceipt {
+        let parked_status = self.parked(parked);
+        let mut resume = lifecycle::park(self.session.authorization());
+        resume.request_id = format!("resume-{}", parked.payload.sequence);
+        resume.action = LifecycleAction::Resume;
+        resume.expected_state = SessionState::Parked;
+        resume.expected_receipt_sequence = Some(parked.payload.sequence);
+        let receipt = thread::scope(|scope| {
+            let (peer, parked_status) = (&self.peer, &parked_status);
+            let supervisor =
+                scope.spawn(move || lifecycle::drive_lifecycle_peer(peer, parked_status));
+            let receipt = self
+                .service
+                .request_lifecycle(
+                    &mut self.session,
+                    &LifecycleCaller::Operator {
+                        uid: CONTROLLER_UID,
+                    },
+                    &resume,
+                    now_ms,
+                    verify_fixture_signature,
+                )
+                .unwrap();
+            assert_eq!(receipt, supervisor.join().unwrap());
+            receipt
+        });
+        let head = louiselm_skills::launch_receipt::ReceiptHead {
+            sequence: receipt.payload.sequence,
+            digest: receipt.digest().to_string(),
+        };
+        self.current.launcher_head = Some(head.clone());
+        self.current.broker_head = Some(head);
+        receipt
+    }
+
+    /// Spends the Run's only unit, is refused once and parks.
+    fn exhaust_and_park(&mut self, upstream: &FakeUpstream) -> SignedReceipt {
+        self.admit(upstream, 2500).unwrap();
+        let _ = self.admit(upstream, 2600);
+        self.settle_and_park(2700).unwrap()
+    }
+}
+
+#[test]
+fn only_an_operator_extension_lifts_the_hold_and_it_never_resumes() {
+    let mut fixture = attended_fixture(Some(approval(1)), Some("openai"), Attendance::Interactive);
+    let upstream = FakeUpstream::replying(200);
+    // Nothing to lift before a hold exists.
+    assert_eq!(
+        fixture.extend(&extension("ext-1", 2, None), CONTROLLER_UID, 2400),
+        Err(ExtensionError::NotHeld)
+    );
+    let receipt = fixture.exhaust_and_park(&upstream);
+    assert_eq!(fixture.attention_entries(), 1);
+    // Units that would not lift the exhaustion record nothing.
+    assert_eq!(
+        fixture.extend(&extension("ext-0", 0, None), CONTROLLER_UID, 2800),
+        Err(ExtensionError::Insufficient)
+    );
+    let outcome = fixture
+        .extend(&extension("ext-1", 2, None), CONTROLLER_UID, 2800)
+        .unwrap();
+    assert_eq!(
+        (outcome.total_requests, outcome.spent, outcome.expires_at_ms),
+        (3, 1, 30_000)
+    );
+    assert_eq!(fixture.service.provider_hold("run-1").unwrap(), None);
+    // The Attention item is cleared, not deleted: one Upsert, one Clear.
+    assert_eq!(fixture.attention_entries(), 2);
+    // An exact retry answers the recorded extension; a changed one conflicts.
+    assert_eq!(
+        fixture
+            .extend(&extension("ext-1", 2, None), CONTROLLER_UID, 9999)
+            .unwrap()
+            .extension,
+        outcome.extension
+    );
+    assert_eq!(
+        fixture.extend(&extension("ext-1", 5, None), CONTROLLER_UID, 2900),
+        Err(ExtensionError::Conflict)
+    );
+    // Still Parked: the operator is now offered Resume, and must send it.
+    let parked = fixture.parked(&receipt);
+    let operator = LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    };
+    let status = thread::scope(|scope| {
+        let (peer, parked) = (&fixture.peer, &parked);
+        let supervisor = scope.spawn(move || lifecycle::answer_one_status_query(peer, parked));
+        let status = fixture
+            .service
+            .session_status(
+                &mut fixture.session,
+                &operator,
+                2900,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        supervisor.join().unwrap();
+        status
+    });
+    assert!(status.allowed_actions.contains(&LifecycleAction::Resume));
+    assert_eq!(status.state, SessionState::Parked);
+}
+
+#[test]
+fn extended_units_are_spent_then_a_new_hold_needs_a_new_extension() {
+    let mut fixture = attended_fixture(Some(approval(1)), Some("openai"), Attendance::Interactive);
+    let upstream = FakeUpstream::replying(200);
+    let first = fixture.exhaust_and_park(&upstream);
+    fixture
+        .extend(&extension("ext-1", 1, None), CONTROLLER_UID, 2800)
+        .unwrap();
+    // The operator Resumes; the Session spends the new unit.
+    fixture.resume(&first, 2900);
+    fixture.admit(&upstream, 3000).unwrap();
+    assert!(matches!(
+        fixture.admit(&upstream, 3100).map(|_| ()).unwrap_err(),
+        BrokerError::ProviderBudgetExhausted
+    ));
+    let second = fixture.service.provider_hold("run-1").unwrap().unwrap();
+    assert!(second.held_at_ms >= 3100);
+    // A fresh Park identity and Attention item for the new hold.
+    let again = fixture.settle_and_park(3200).unwrap();
+    assert_ne!(again.payload.request_id, first.payload.request_id);
+    assert_eq!(fixture.attention_entries(), 3);
+    assert_eq!(upstream.calls(), 2);
+    assert_eq!(fixture.service.provider_requests_spent("run-1").unwrap(), 2);
+}
+
+#[test]
+fn an_expired_run_needs_a_later_expiry_within_the_launch() {
+    let mut permission = approval(5);
+    permission.expires_at_ms = 20_000;
+    let mut fixture = attended_fixture(Some(permission), Some("openai"), Attendance::Interactive);
+    let parked = fixture.settle_and_park(20_000).unwrap();
+    for (request, refusal) in [
+        (extension("ext-1", 3, None), ExtensionError::Insufficient),
+        (
+            extension("ext-2", 0, Some(20_000)),
+            ExtensionError::ExpiryOutOfRange,
+        ),
+        // The launch itself expires at 30 000 ms.
+        (
+            extension("ext-3", 0, Some(30_001)),
+            ExtensionError::ExpiryOutOfRange,
+        ),
+    ] {
+        assert_eq!(
+            fixture.extend(&request, CONTROLLER_UID, 20_100),
+            Err(refusal)
+        );
+    }
+    let outcome = fixture
+        .extend(&extension("ext-4", 0, Some(25_000)), CONTROLLER_UID, 20_100)
+        .unwrap();
+    assert_eq!(outcome.expires_at_ms, 25_000);
+    fixture.resume(&parked, 20_200);
+    let upstream = FakeUpstream::replying(200);
+    fixture.admit(&upstream, 21_000).unwrap();
+    // The extended expiry is enforced exactly like the granted one.
+    assert!(matches!(
+        fixture.refuse(&upstream, 25_000),
+        BrokerError::Expired
+    ));
+    assert_eq!(upstream.calls(), 1);
+}
+
+#[test]
+fn only_the_controller_of_an_attended_session_may_extend() {
+    let upstream = FakeUpstream::replying(200);
+    let mut attended = attended_fixture(Some(approval(1)), Some("openai"), Attendance::Interactive);
+    attended.exhaust_and_park(&upstream);
+    assert_eq!(
+        attended.extend(&extension("ext-1", 1, None), CONTROLLER_UID + 1, 2800),
+        Err(ExtensionError::WrongOperator)
+    );
+    let mut unattended = fixture(Some(approval(1)), Some("openai"));
+    unattended.exhaust_and_park(&upstream);
+    assert_eq!(
+        unattended.extend(&extension("ext-1", 1, None), CONTROLLER_UID, 2800),
+        Err(ExtensionError::Unattended)
+    );
+    for held in [&attended, &unattended] {
+        assert!(held.service.provider_hold("run-1").unwrap().is_some());
+    }
 }

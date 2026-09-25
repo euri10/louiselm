@@ -392,6 +392,7 @@ fn installed_linked_admission_server() {
                 |_, _| Err(InspectError::StatusUnavailable),
                 |_, _| Err(InspectError::StatusUnavailable),
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     }

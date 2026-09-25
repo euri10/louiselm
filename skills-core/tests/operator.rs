@@ -10,6 +10,8 @@ use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
 
 #[path = "operator/dependencies.rs"]
 mod dependencies;
+#[path = "operator/provider_extension.rs"]
+mod provider_extension;
 #[path = "operator/waiver.rs"]
 mod waiver;
 
@@ -39,8 +41,9 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
             outcome: BeadsReconciliation::NotApplied,
             evidence_digest: Digest::of(b"requested evidence").to_string(),
         };
-        let worker = thread::spawn(move || {
-            server
+        let worker =
+            thread::spawn(move || {
+                server
                 .serve_once(
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session lookup"),
@@ -81,9 +84,10 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
                     },
                     |_, _| panic!("not retention control"),
                     |_, _, _| panic!("not waiver control"),
-                )
+|_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
+)
                 .unwrap();
-        });
+            });
         let result = beads_mutation(
             &path,
             uid,
@@ -139,6 +143,7 @@ fn beads_operator_request_reaches_authenticated_control() {
                 },
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     });
@@ -182,6 +187,7 @@ fn wrong_uid_is_refused_before_session_lookup() {
                 |_, _| panic!("unauthenticated Beads control"),
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     });
@@ -211,6 +217,7 @@ fn unknown_session_has_typed_error_and_client_checks_broker_identity() {
                 |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     });
@@ -272,13 +279,14 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
     let uid = rustix::process::geteuid().as_raw();
     let id = "12345678-1234-4234-8234-123456789abc";
     let server = OperatorServer::bind(&path, uid).unwrap();
-    let worker = thread::spawn(move || {
-        for expected in [
-            None,
-            Some(SkillRequestOutcome::Rejected),
-            Some(SkillRequestOutcome::Cancelled),
-        ] {
-            server
+    let worker =
+        thread::spawn(move || {
+            for expected in [
+                None,
+                Some(SkillRequestOutcome::Rejected),
+                Some(SkillRequestOutcome::Cancelled),
+            ] {
+                server
                 .serve_once(
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session inspection"),
@@ -298,10 +306,11 @@ fn skill_decisions_use_the_same_authenticated_operator_endpoint() {
                     |_, _| panic!("unexpected Beads control"),
                     |_, _| panic!("unexpected retention control"),
                     |_, _, _| panic!("not waiver control"),
-                )
+|_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
+)
                 .unwrap();
-        }
-    });
+            }
+        });
     for outcome in [
         None,
         Some(SkillRequestOutcome::Rejected),
@@ -353,6 +362,7 @@ fn conformance_inspection_distinguishes_an_unknown_session() {
                 |_, _| panic!("not a Beads decision"),
                 |_, _| panic!("not a retention decision"),
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     });
@@ -396,6 +406,9 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                     |_, _| panic!("invalid Beads control"),
                     |_, _| panic!("unexpected retention control"),
                     |_, _, _| panic!("not waiver control"),
+                    |_, _, _| {
+                        Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown)
+                    },
                 )
                 .unwrap();
         }
@@ -408,6 +421,7 @@ fn malformed_frames_never_lookup_and_do_not_stop_the_listener() {
                 |_, _| panic!("unexpected Beads control"),
                 |_, _| panic!("unexpected retention control"),
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     });

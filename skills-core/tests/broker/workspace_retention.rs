@@ -50,6 +50,7 @@ fn retention_operator_path_survives_restart_and_reports_quarantine_without_paylo
                         .map_err(|_| InspectError::StatusUnavailable)
                 },
                 |_, _, _| panic!("not waiver control"),
+                |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
             )
             .unwrap();
     });

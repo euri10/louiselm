@@ -733,8 +733,14 @@ idle tick calls `settle_provider_hold`. It records an expiry hold for an idle
 Session too. It queues one `RunParked` Attention item per Run, and Parks its own
 Session through the ordinary lifecycle owner as `LifecycleCaller::ProviderBudget`,
 which may only Park Sessions of its own Run. While the hold stands, Resume is
-refused and withheld from status. Only an operator extension lifts it
-(`louiselm-qbr.5.1.3.2.3.3`).
+refused and withheld from status. Only an operator extension lifts it:
+`BrokerService::extend_provider_budget`, reached through
+`louiselm-control provider-extend` (see
+[broker lifecycle](../docs/broker-lifecycle.md#provider-budget-holds-and-extensions)).
+Holds and extensions are numbered generations under `provider-requests/`, and
+extension `n` lifts hold `n`. The Run's total is the grant plus every extension.
+A later extended expiry replaces the grant's expiry, but never passes the
+launch's own expiry.
 
 A stream still running at the earliest permission or launch expiry is cut
 locally. The upstream exchange is bounded by that deadline (`timeout_global`),

@@ -96,7 +96,8 @@ fn operator_reads_exact_large_report_or_absence_without_a_live_supervisor() {
                         |_, _| panic!("inspection changes no Beads state"),
                         |_, _| panic!("inspection changes no retention state"),
                         |_, _, _| panic!("inspection changes no waiver"),
-                    )
+|_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
+)
                     .unwrap();
             }
             (service, authorization)

@@ -38,6 +38,7 @@ mod posture_attention;
 pub mod promotion;
 pub mod provider_credentials;
 pub mod provider_endpoint;
+pub mod provider_extension;
 pub mod provider_requests;
 mod provider_service;
 pub mod provider_transport;
@@ -93,6 +94,9 @@ pub enum BrokerError {
     /// An exact operator waiver request was refused.
     #[error("{0}")]
     Waiver(#[from] waiver::WaiverError),
+    /// An operator Provider extension was refused by policy.
+    #[error("{0}")]
+    ProviderExtension(#[from] provider_extension::ExtensionError),
     /// Installed tracker provisioning is present but cannot safely enable writes.
     #[error("broker tracker configuration: {0}")]
     TrackerConfiguration(&'static str),

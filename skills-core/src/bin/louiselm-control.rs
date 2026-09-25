@@ -22,6 +22,8 @@ mod attention;
 mod dependencies;
 #[path = "control/inspection.rs"]
 mod inspection;
+#[path = "control/provider_extension.rs"]
+mod provider_extension;
 #[path = "control/waiver.rs"]
 mod waiver;
 
@@ -29,6 +31,12 @@ fn main() -> ExitCode {
     let collected: Vec<_> = std::env::args_os().skip(1).collect();
     if collected.first().is_some_and(|verb| verb == "waiver") {
         return ExitCode::from(waiver::cli(&collected[1..]));
+    }
+    if collected
+        .first()
+        .is_some_and(|verb| verb == "provider-extend")
+    {
+        return ExitCode::from(provider_extension::cli(&collected[1..]));
     }
     if collected.first().is_some_and(|verb| verb == "dependencies") {
         return ExitCode::from(dependencies::cli(&collected[1..]));
@@ -54,7 +62,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', or 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
         ),
     };
     match result {

@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use crate::broker::provider_extension::{Extension, ExtensionError, ExtensionRequest};
 use std::{sync::Arc, thread};
 
 fn ledger() -> (tempfile::TempDir, ProviderLedger) {
@@ -120,4 +121,62 @@ fn the_first_hold_wins_survives_restart_and_stays_per_run() {
     // The hold lives beside the attempt records, never among them.
     reopened.reserve("run-a", "s", 5, 11).unwrap();
     assert_eq!(reopened.spent("run-a").unwrap(), 1);
+}
+
+fn lift(ledger: &ProviderLedger, id: &str, units: u32) -> Result<Extension, BrokerError> {
+    ledger.extend(
+        "run-a",
+        &ExtensionRequest {
+            request_id: id.into(),
+            additional_requests: units,
+            expires_at_ms: None,
+        },
+        7,
+        20,
+        |_, _, _| Ok(()),
+    )
+}
+
+#[test]
+fn extensions_lift_one_hold_generation_raise_the_total_and_survive_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("provider-requests");
+    let ledger = ProviderLedger::open(&path).unwrap();
+    ledger.reserve("run-a", "s", 1, 10).unwrap();
+    let first = ledger.hold("run-a", HoldReason::Exhausted, 11).unwrap();
+    assert_eq!(lift(&ledger, "ext-1", 2).unwrap().lifts, first);
+    assert_eq!(ledger.held("run-a").unwrap(), None);
+    let reopened = ProviderLedger::open(&path).unwrap();
+    assert_eq!(reopened.extensions("run-a").unwrap().len(), 1);
+    assert_eq!(reopened.reserve("run-a", "s", 1, 21).unwrap(), 1);
+    assert_eq!(reopened.reserve("run-a", "s", 1, 22).unwrap(), 2);
+    assert!(matches!(
+        reopened.reserve("run-a", "s", 1, 23),
+        Err(BrokerError::ProviderBudgetExhausted)
+    ));
+    // The next hold is a new generation; the lifted one is never rewritten.
+    let second = reopened.hold("run-a", HoldReason::Exhausted, 24).unwrap();
+    assert_ne!(second, first);
+    assert_eq!(reopened.held("run-a").unwrap(), Some(second));
+}
+
+#[test]
+fn an_extension_needs_a_standing_hold_and_a_tampered_record_fails_closed() {
+    let (root, ledger) = ledger();
+    assert!(matches!(
+        lift(&ledger, "ext-1", 1),
+        Err(BrokerError::ProviderExtension(ExtensionError::NotHeld))
+    ));
+    ledger.hold("run-a", HoldReason::Expired, 11).unwrap();
+    lift(&ledger, "ext-1", 1).unwrap();
+    let holds = std::fs::read_dir(root.path().join("provider-requests/holds"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    // Rewriting the lifted hold breaks the binding: nothing re-grants units.
+    std::fs::remove_file(holds.join("0.json")).unwrap();
+    assert!(ledger.extensions("run-a").is_err());
+    assert!(ledger.reserve("run-a", "s", 5, 12).is_err());
 }

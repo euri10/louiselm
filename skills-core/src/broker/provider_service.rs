@@ -17,19 +17,22 @@ use super::{
         AttentionCondition, AttentionReason, AttentionSubject, ProjectionChange, canonical_uuid,
         condition_id,
     },
+    is_record_identifier,
     lifecycle::LifecycleCaller,
     provider_credentials::ProviderCredentialStore,
-    provider_requests::{HoldReason, ProviderHold},
+    provider_extension::{ExtensionError, ExtensionOutcome, ExtensionRequest, OUTCOME_SCHEMA},
+    provider_requests::{HoldReason, ProviderHold, total},
 };
 use crate::{
     broker::provider_transport::{ProviderTransport, UpstreamResponse},
+    conformance::admission::Attendance,
     launch::PROTOCOL_VERSION,
     launch_protocol::{
         ChannelState, ErrorCode, LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest,
         ProtocolError,
     },
     launch_receipt::{SessionState, SignedReceipt},
-    provider_request::{ApprovedProviderRequests, ProviderRequest},
+    provider_request::{ApprovedProviderRequests, MAX_RUN_REQUESTS, ProviderRequest},
 };
 
 impl BrokerService {
@@ -76,10 +79,13 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
-        let permission = approved
-            .provider_requests
-            .as_ref()
-            .ok_or(BrokerError::InvalidGrant)?;
+        let permission = &self.extended(
+            &authorization.run_id,
+            approved
+                .provider_requests
+                .as_ref()
+                .ok_or(BrokerError::InvalidGrant)?,
+        )?;
         let live = |at: u64| {
             permission.valid(at) && at < authorization.expires_at_ms && at < approved.expires_at_ms
         };
@@ -172,6 +178,7 @@ impl BrokerService {
         else {
             return Ok(None);
         };
+        let permission = self.extended(&authorization.run_id, &permission)?;
         let hold = match self.provider_requests.held(&authorization.run_id)? {
             Some(hold) => hold,
             None if now_ms >= permission.expires_at_ms => {
@@ -233,34 +240,114 @@ impl BrokerService {
         session_id: &str,
         hold: &ProviderHold,
     ) -> Result<(), BrokerError> {
-        // Legacy Run names cannot be an Attention subject; the Session carries it.
-        let subject = if canonical_uuid(&hold.run_id) {
-            AttentionSubject::Run(hold.run_id.clone())
-        } else {
-            AttentionSubject::Session(session_id.to_owned())
-        };
-        let subject_key = match &subject {
-            AttentionSubject::Run(id) => format!("run:{id}"),
-            AttentionSubject::Session(id) => format!("session:{id}"),
-        };
-        let identity = format!(
-            "provider-hold:{}:{}:{subject_key}",
-            hold.run_id, hold.held_at_ms
-        );
-        self.attention.enqueue(
-            &format!(
-                "provider-hold-{}",
-                &crate::Digest::of(identity.as_bytes()).hex()[..48]
-            ),
-            ProjectionChange::Upsert(AttentionCondition {
-                linked_run_id: None,
-                subject,
-                operation_id: condition_id(identity.as_bytes()),
-                created_at_ms: hold.held_at_ms,
-                reason: AttentionReason::RunParked,
-            }),
-        )?;
+        let (mutation_id, condition) = hold_condition(session_id, hold);
+        self.attention
+            .enqueue(&mutation_id, ProjectionChange::Upsert(condition))?;
         Ok(())
+    }
+
+    /// Lifts the Run's Provider budget hold with an operator extension.
+    ///
+    /// Run on the Session's broker worker. Only the Session's controller may
+    /// extend, and only for an interactive Session. The extension adds units to
+    /// the Run's shared total and may move the Provider permission's expiry
+    /// later, never past the launch's own expiry; afterwards the Run must have
+    /// a unit left and an expiry in the future, or nothing is recorded. The
+    /// Attention item is cleared. The Session stays Parked until the operator
+    /// Resumes it. Retrying the same request returns the recorded extension.
+    ///
+    /// # Errors
+    /// Returns [`BrokerError::ProviderExtension`] for policy refusals, or
+    /// storage and Attention failures.
+    pub fn extend_provider_budget(
+        &self,
+        session: &BrokerSession,
+        operator_uid: u32,
+        request: &ExtensionRequest,
+        now_ms: u64,
+    ) -> Result<ExtensionOutcome, BrokerError> {
+        let authorization = session.authorization();
+        if operator_uid != authorization.controller_uid {
+            return Err(ExtensionError::WrongOperator.into());
+        }
+        if authorization.conformance.attendance != Attendance::Interactive {
+            return Err(ExtensionError::Unattended.into());
+        }
+        if !is_record_identifier(&request.request_id)
+            || request.additional_requests > MAX_RUN_REQUESTS
+        {
+            return Err(ExtensionError::InvalidRequest.into());
+        }
+        let approved = self
+            .authorizations()
+            .consumed_for_session(&authorization.session_id)?
+            .ok_or(ExtensionError::Unknown)?;
+        let granted = approved
+            .provider_requests
+            .as_ref()
+            .ok_or(ExtensionError::NotHeld)?;
+        let launch_expiry = authorization.expires_at_ms.min(approved.expires_at_ms);
+        let run_id = authorization.run_id.as_str();
+        let extension = self.provider_requests.extend(
+            run_id,
+            request,
+            operator_uid,
+            now_ms,
+            |_hold, prior, spent| {
+                let total = total(granted.max_run_requests, prior)
+                    .ok()
+                    .and_then(|total| total.checked_add(request.additional_requests))
+                    .filter(|total| *total <= MAX_RUN_REQUESTS)
+                    .ok_or(ExtensionError::InvalidRequest)?;
+                if let Some(expiry) = request.expires_at_ms
+                    && (expiry <= now_ms || expiry > launch_expiry)
+                {
+                    return Err(ExtensionError::ExpiryOutOfRange);
+                }
+                let expiry = request
+                    .expires_at_ms
+                    .or_else(|| prior.iter().rev().find_map(|e| e.request.expires_at_ms))
+                    .unwrap_or(granted.expires_at_ms);
+                // Lifting a hold the Run would immediately hit again is not an extension.
+                if spent >= total || expiry <= now_ms {
+                    return Err(ExtensionError::Insufficient);
+                }
+                Ok(())
+            },
+        )?;
+        let (mutation_id, condition) = hold_condition(&authorization.session_id, &extension.lifts);
+        self.attention.enqueue(
+            &format!("{mutation_id}-lifted"),
+            ProjectionChange::Clear(condition),
+        )?;
+        let extensions = self.provider_requests.extensions(run_id)?;
+        Ok(ExtensionOutcome {
+            schema: OUTCOME_SCHEMA.into(),
+            session_id: authorization.session_id.clone(),
+            total_requests: total(granted.max_run_requests, &extensions)?,
+            spent: self.provider_requests.spent(run_id)?,
+            expires_at_ms: self.extended(run_id, granted)?.expires_at_ms,
+            extension,
+        })
+    }
+
+    /// The grant with the latest operator-extended expiry applied.
+    fn extended(
+        &self,
+        run_id: &str,
+        granted: &ApprovedProviderRequests,
+    ) -> Result<ApprovedProviderRequests, BrokerError> {
+        let mut permission = granted.clone();
+        if let Some(expiry) = self
+            .provider_requests
+            .extensions(run_id)?
+            .iter()
+            .rev()
+            .find_map(|extension| extension.request.expires_at_ms)
+        {
+            permission.expires_at_ms = expiry;
+        }
+        Ok(permission)
     }
 
     /// Records an expiry hold when the Provider permission itself lapsed.
@@ -323,4 +410,35 @@ impl Read for ExpiringBody {
         }
         Ok(count)
     }
+}
+
+/// The Attention identity and condition of one hold, the same from every Session.
+fn hold_condition(session_id: &str, hold: &ProviderHold) -> (String, AttentionCondition) {
+    // Legacy Run names cannot be an Attention subject; the Session carries it.
+    let subject = if canonical_uuid(&hold.run_id) {
+        AttentionSubject::Run(hold.run_id.clone())
+    } else {
+        AttentionSubject::Session(session_id.to_owned())
+    };
+    let subject_key = match &subject {
+        AttentionSubject::Run(id) => format!("run:{id}"),
+        AttentionSubject::Session(id) => format!("session:{id}"),
+    };
+    let identity = format!(
+        "provider-hold:{}:{}:{subject_key}",
+        hold.run_id, hold.held_at_ms
+    );
+    (
+        format!(
+            "provider-hold-{}",
+            &crate::Digest::of(identity.as_bytes()).hex()[..48]
+        ),
+        AttentionCondition {
+            linked_run_id: None,
+            subject,
+            operation_id: condition_id(identity.as_bytes()),
+            created_at_ms: hold.held_at_ms,
+            reason: AttentionReason::RunParked,
+        },
+    )
 }

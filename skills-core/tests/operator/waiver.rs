@@ -73,6 +73,9 @@ fn approval_reply_requires_the_exact_receipt_and_session() {
                         assert_eq!(*request, expected);
                         Ok(outcome)
                     },
+                    |_, _, _| {
+                        Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown)
+                    },
                 )
                 .unwrap();
         });
