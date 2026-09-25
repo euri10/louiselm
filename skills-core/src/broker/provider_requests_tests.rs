@@ -101,3 +101,23 @@ fn unexpected_ledger_entries_fail_closed() {
     assert!(ledger.reserve("run-a", "s", 5, 10).is_err());
     assert!(ledger.spent("run-a").is_err());
 }
+
+#[test]
+fn the_first_hold_wins_survives_restart_and_stays_per_run() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("provider-requests");
+    let ledger = ProviderLedger::open(&path).unwrap();
+    assert_eq!(ledger.held("run-a").unwrap(), None);
+    let first = ledger.hold("run-a", HoldReason::Exhausted, 10).unwrap();
+    // A sibling observing expiry later cannot rewrite the recorded cause or time.
+    assert_eq!(
+        ledger.hold("run-a", HoldReason::Expired, 99).unwrap(),
+        first
+    );
+    let reopened = ProviderLedger::open(&path).unwrap();
+    assert_eq!(reopened.held("run-a").unwrap(), Some(first));
+    assert_eq!(reopened.held("run-b").unwrap(), None);
+    // The hold lives beside the attempt records, never among them.
+    reopened.reserve("run-a", "s", 5, 11).unwrap();
+    assert_eq!(reopened.spent("run-a").unwrap(), 1);
+}

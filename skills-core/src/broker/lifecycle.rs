@@ -43,6 +43,14 @@ pub enum LifecycleCaller {
         /// Exclusive absolute expiry; request retries never renew it.
         expires_at_ms: u64,
     },
+    /// The broker itself, stopping a Run whose Provider budget ran out or expired.
+    ///
+    /// May only Park, and only Sessions of this Run. Constructed on the Session's
+    /// own broker worker after a durable hold is recorded; never from a peer.
+    ProviderBudget {
+        /// Held Run.
+        run_id: String,
+    },
     /// An Agent capability channel has no lifecycle authority.
     Agent,
 }
@@ -94,6 +102,9 @@ impl LifecycleCaller {
                     && action != LifecycleAction::Resume
                     && descendants.iter().any(|entry| entry == target_session)
             }
+            Self::ProviderBudget { run_id } => {
+                run_id == target_run && action == LifecycleAction::Park
+            }
             Self::Agent => false,
         }
     }
@@ -101,8 +112,9 @@ impl LifecycleCaller {
     /// Lifecycle actions this caller may request against `launch` right now.
     ///
     /// The result is the mechanically valid transitions out of `state`, narrowed
-    /// by this caller's scope and by a durable quarantine marker, which withdraws
-    /// Resume while leaving every unrelated action intact. Ascending and
+    /// by this caller's scope and by `resume_withheld` (a durable quarantine
+    /// marker or Provider budget hold), which withdraws Resume while leaving
+    /// every unrelated action intact. Ascending and
     /// duplicate-free, so
     /// [`SessionStatus::compose`](crate::launch_protocol::SessionStatus::compose)
     /// accepts it directly.
@@ -114,7 +126,7 @@ impl LifecycleCaller {
         &self,
         launch: &LaunchAuthorization,
         state: SessionState,
-        quarantined: bool,
+        resume_withheld: bool,
         now_ms: u64,
     ) -> Vec<LifecycleAction> {
         let mut actions: Vec<LifecycleAction> = [
@@ -125,7 +137,7 @@ impl LifecycleCaller {
         ]
         .into_iter()
         .filter(|action| transition(state, *action).is_ok())
-        .filter(|action| !(quarantined && *action == LifecycleAction::Resume))
+        .filter(|action| !(resume_withheld && *action == LifecycleAction::Resume))
         .filter(|action| {
             self.allows(
                 &launch.session_id,
@@ -145,6 +157,7 @@ impl LifecycleCaller {
         match self {
             Self::Operator { uid } => format!("operator:{uid}"),
             Self::Coordinator { session_id, .. } => format!("coordinator:{session_id}"),
+            Self::ProviderBudget { .. } => "provider-budget".into(),
             Self::Agent => "agent".into(),
         }
     }

@@ -38,7 +38,7 @@ mod posture_attention;
 pub mod promotion;
 pub mod provider_credentials;
 pub mod provider_endpoint;
-mod provider_requests;
+pub mod provider_requests;
 mod provider_service;
 pub mod provider_transport;
 pub mod receipts;

@@ -724,8 +724,20 @@ Upstream `401`/`403` is a typed `CredentialUnavailable` refusal; nothing is
 retried and a spent unit is never refunded. The response streams back as it
 arrives.
 
-Not yet enabled: Park/Attention on exhaustion and expiry is
-`louiselm-qbr.5.1.3.2.3`, and placing
+The first exhausted reservation or lapsed Provider permission writes a durable
+Run-wide hold under `provider-requests/holds/`. The first writer's reason and
+time stay fixed. Every later request from any Session of the Run is refused
+before any supervisor exchange. The wire answer is a validated `CapabilityDenied`
+`ProtocolError` (not retryable, `contact_operator`). Each Session worker's 1 s
+idle tick calls `settle_provider_hold`. It records an expiry hold for an idle
+Session too. It queues one `RunParked` Attention item per Run, and Parks its own
+Session through the ordinary lifecycle owner as `LifecycleCaller::ProviderBudget`,
+which may only Park Sessions of its own Run. While the hold stands, Resume is
+refused and withheld from status. Only an operator extension lifts it
+(`louiselm-qbr.5.1.3.2.3.3`). Cutting a stream still running at expiry is
+`louiselm-qbr.5.1.3.2.3.2`.
+
+Not yet enabled: placing
 the listener in a Session's network namespace behind the kernel sender guard
 `louiselm-qbr.5.1.3.2.4`. Until then the sandbox refuses `Brokered` network
 and nothing in production serves the endpoint. The Verified-launch gate

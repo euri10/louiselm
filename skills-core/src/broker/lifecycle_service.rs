@@ -94,6 +94,18 @@ impl BrokerService {
                 )
                 .into());
             }
+            // Only an operator extension lifts a Provider budget hold; Resume
+            // alone would hand the Run back a budget it no longer has.
+            if request.action == crate::launch_protocol::LifecycleAction::Resume
+                && self.provider_requests.held(&request.run_id)?.is_some()
+            {
+                return Err(crate::launch_protocol::ProtocolError::new(
+                    crate::launch_protocol::ErrorCode::InvalidRequest,
+                    None,
+                    None,
+                )
+                .into());
+            }
             let status = self.supervisor_status(session, &mut verify)?;
             let receipts = self.receipts.chain(&session.authorization.session_id)?;
             let disposition = self.lifecycle.prepare(
@@ -281,12 +293,21 @@ impl BrokerService {
             let quarantined = self
                 .lifecycle
                 .is_quarantined(&session.authorization.session_id)?;
+            let held = self
+                .provider_requests
+                .held(&session.authorization.run_id)?
+                .is_some();
             // A pending operation and an advertised action contradict each other;
             // the status schema rejects the pair, so offer nothing while one runs.
             let actions = if status.pending_operation.is_some() {
                 Vec::new()
             } else {
-                caller.allowed_actions(&session.authorization, status.state, quarantined, now_ms)
+                caller.allowed_actions(
+                    &session.authorization,
+                    status.state,
+                    quarantined || held,
+                    now_ms,
+                )
             };
             let posture = session
                 .posture_evidence

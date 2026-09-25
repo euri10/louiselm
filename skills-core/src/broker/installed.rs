@@ -50,6 +50,32 @@ impl InstalledBroker {
                 self.verifier.verify(key, payload, signature).is_ok()
             })
     }
+    /// Parks a Session whose Run's Provider budget is held, with installed
+    /// receipt verification. See [`BrokerService::settle_provider_hold`].
+    ///
+    /// # Errors
+    /// Returns storage, Attention, transport, verification or lifecycle failures.
+    pub fn settle_provider_hold(
+        &self,
+        session: &mut BrokerSession,
+    ) -> Result<Option<SignedReceipt>, BrokerError> {
+        let mut verification_failure = None;
+        let result =
+            self.service
+                .settle_provider_hold(session, now_ms()?, |key, payload, signature| {
+                    match self.verifier.verify(key, payload, signature) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            verification_failure = Some(error);
+                            false
+                        }
+                    }
+                });
+        match verification_failure {
+            Some(error) => Err(BrokerError::Verification(error)),
+            None => result,
+        }
+    }
     /// Handle a pending launch's operator decision using only protected preparation evidence.
     /// No launcher or Agent is started by this operation.
     /// # Errors

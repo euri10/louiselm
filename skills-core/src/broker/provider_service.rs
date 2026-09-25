@@ -9,13 +9,24 @@
 use std::time::Instant;
 
 use super::{
-    BrokerError, BrokerService, BrokerSession, provider_credentials::ProviderCredentialStore,
+    BrokerError, BrokerService, BrokerSession,
+    attention::{
+        AttentionCondition, AttentionReason, AttentionSubject, ProjectionChange, canonical_uuid,
+        condition_id,
+    },
+    lifecycle::LifecycleCaller,
+    provider_credentials::ProviderCredentialStore,
+    provider_requests::{HoldReason, ProviderHold},
 };
 use crate::{
     broker::provider_transport::{ProviderTransport, UpstreamResponse},
-    launch_protocol::{ChannelState, ErrorCode, ProtocolError},
-    launch_receipt::SessionState,
-    provider_request::ProviderRequest,
+    launch::PROTOCOL_VERSION,
+    launch_protocol::{
+        ChannelState, ErrorCode, LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest,
+        ProtocolError,
+    },
+    launch_receipt::{SessionState, SignedReceipt},
+    provider_request::{ApprovedProviderRequests, ProviderRequest},
 };
 
 impl BrokerService {
@@ -68,8 +79,12 @@ impl BrokerService {
         let live = |at: u64| {
             permission.valid(at) && at < authorization.expires_at_ms && at < approved.expires_at_ms
         };
+        let run_id = authorization.run_id.as_str();
+        if let Some(hold) = self.provider_requests.held(run_id)? {
+            return Err(hold_refusal(hold.reason));
+        }
         if !live(now_ms) {
-            return Err(BrokerError::Expired);
+            return Err(self.expired(run_id, permission, now_ms));
         }
         if !permission.permits(&request.model, request.effort.as_deref()) {
             return Err(ProtocolError::new(ErrorCode::CapabilityDenied, None, None).into());
@@ -84,17 +99,24 @@ impl BrokerService {
             return Err(BrokerError::InvalidGrant);
         }
         if !live(elapsed()) || session.channel().is_closed() {
-            return Err(BrokerError::Expired);
+            return Err(self.expired(run_id, permission, elapsed()));
         }
-        self.provider_requests.reserve(
-            &authorization.run_id,
+        match self.provider_requests.reserve(
+            run_id,
             &authorization.session_id,
             permission.max_run_requests,
             elapsed(),
-        )?;
+        ) {
+            Err(BrokerError::ProviderBudgetExhausted) => {
+                self.provider_requests
+                    .hold(run_id, HoldReason::Exhausted, elapsed())?;
+                return Err(BrokerError::ProviderBudgetExhausted);
+            }
+            other => other?,
+        };
         // The unit is spent. Storage I/O cannot extend expiry or a lost channel.
         if !live(elapsed()) || session.channel().is_closed() {
-            return Err(BrokerError::Expired);
+            return Err(self.expired(run_id, permission, elapsed()));
         }
         let response = credentials.with_secret(&handle, |bearer| {
             transport.send(permission, bearer, request)
@@ -105,6 +127,147 @@ impl BrokerService {
         Ok(response)
     }
 
+    /// Parks this Session and raises the Run's Attention item once its Provider
+    /// budget is held, recording an expiry hold first when the permission lapsed.
+    ///
+    /// Run on the Session's broker worker, on its idle tick and after a refused
+    /// Provider request, so every Session of a held Run parks itself without any
+    /// cross-worker signal. Returns the Park receipt when this call parked the
+    /// Session, and `None` when there is no hold, no Provider permission, or the
+    /// Session is not Running. Idempotent: the Attention item and the Park
+    /// request derive their identities from the durable hold.
+    ///
+    /// # Errors
+    /// Returns storage, Attention, transport, verification or lifecycle policy
+    /// failures; the hold stays recorded and the next tick retries.
+    pub fn settle_provider_hold<F>(
+        &self,
+        session: &mut BrokerSession,
+        now_ms: u64,
+        mut verify: F,
+    ) -> Result<Option<SignedReceipt>, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        let authorization = session.authorization().clone();
+        let Some(permission) = self
+            .authorizations()
+            .consumed_for_session(&authorization.session_id)?
+            .and_then(|approved| approved.provider_requests)
+        else {
+            return Ok(None);
+        };
+        let hold = match self.provider_requests.held(&authorization.run_id)? {
+            Some(hold) => hold,
+            None if now_ms >= permission.expires_at_ms => {
+                self.provider_requests
+                    .hold(&authorization.run_id, HoldReason::Expired, now_ms)?
+            }
+            None => return Ok(None),
+        };
+        self.raise_hold_attention(&authorization.session_id, &hold)?;
+        let status = self.supervisor_status(session, &mut verify)?;
+        if status.state != SessionState::Running || status.pending_operation.is_some() {
+            return Ok(None);
+        }
+        let observed = status.broker_head.as_ref().map(|head| head.sequence);
+        // One request identity per hold and observed head: a retry after an
+        // uncertain send repeats the same bytes, a changed head is a new request.
+        let request_id = format!(
+            "provider-hold-{}",
+            &crate::Digest::of(
+                format!(
+                    "{}:{}:{}:{observed:?}",
+                    hold.run_id, authorization.session_id, hold.held_at_ms
+                )
+                .as_bytes()
+            )
+            .hex()[..48]
+        );
+        let request = LifecycleRequest {
+            schema: LIFECYCLE_REQUEST_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            authorization_id: request_id.clone(),
+            request_id,
+            session_id: authorization.session_id.clone(),
+            run_id: authorization.run_id.clone(),
+            action: LifecycleAction::Park,
+            expected_state: SessionState::Running,
+            expected_receipt_sequence: observed,
+            envelope_revision: authorization.envelope_revision,
+        };
+        let caller = LifecycleCaller::ProviderBudget {
+            run_id: authorization.run_id,
+        };
+        self.request_lifecycle(session, &caller, &request, now_ms, verify)
+            .map(Some)
+    }
+
+    /// The Run's durable Provider budget hold, when one was recorded.
+    ///
+    /// # Errors
+    /// Returns [`BrokerError::Storage`] or [`BrokerError::InvalidGrant`] when
+    /// the hold record is unreadable or names another Run.
+    pub fn provider_hold(&self, run_id: &str) -> Result<Option<ProviderHold>, BrokerError> {
+        self.provider_requests.held(run_id)
+    }
+
+    /// One Attention item per held Run, identical from every Session.
+    fn raise_hold_attention(
+        &self,
+        session_id: &str,
+        hold: &ProviderHold,
+    ) -> Result<(), BrokerError> {
+        // Legacy Run names cannot be an Attention subject; the Session carries it.
+        let subject = if canonical_uuid(&hold.run_id) {
+            AttentionSubject::Run(hold.run_id.clone())
+        } else {
+            AttentionSubject::Session(session_id.to_owned())
+        };
+        let subject_key = match &subject {
+            AttentionSubject::Run(id) => format!("run:{id}"),
+            AttentionSubject::Session(id) => format!("session:{id}"),
+        };
+        let identity = format!(
+            "provider-hold:{}:{}:{subject_key}",
+            hold.run_id, hold.held_at_ms
+        );
+        self.attention.enqueue(
+            &format!(
+                "provider-hold-{}",
+                &crate::Digest::of(identity.as_bytes()).hex()[..48]
+            ),
+            ProjectionChange::Upsert(AttentionCondition {
+                linked_run_id: None,
+                subject,
+                operation_id: condition_id(identity.as_bytes()),
+                created_at_ms: hold.held_at_ms,
+                reason: AttentionReason::RunParked,
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Records an expiry hold when the Provider permission itself lapsed.
+    ///
+    /// Launch-authorization expiry belongs to the lifecycle owners, not this
+    /// budget, so it refuses without holding the Run.
+    fn expired(
+        &self,
+        run_id: &str,
+        permission: &ApprovedProviderRequests,
+        at_ms: u64,
+    ) -> BrokerError {
+        if at_ms >= permission.expires_at_ms
+            && let Err(error) = self
+                .provider_requests
+                .hold(run_id, HoldReason::Expired, at_ms)
+        {
+            return error;
+        }
+        BrokerError::Expired
+    }
+
     /// Units the Run has spent, including attempts whose outcome is unknown.
     ///
     /// # Errors
@@ -112,5 +275,12 @@ impl BrokerService {
     /// the durable ledger is unreadable or holds unexpected entries.
     pub fn provider_requests_spent(&self, run_id: &str) -> Result<u32, BrokerError> {
         self.provider_requests.spent(run_id)
+    }
+}
+
+fn hold_refusal(reason: HoldReason) -> BrokerError {
+    match reason {
+        HoldReason::Exhausted => BrokerError::ProviderBudgetExhausted,
+        HoldReason::Expired => BrokerError::Expired,
     }
 }

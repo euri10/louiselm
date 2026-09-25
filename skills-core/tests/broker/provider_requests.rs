@@ -5,11 +5,14 @@ use super::*;
 use louiselm_skills::{
     broker::{
         BrokerSession,
+        lifecycle::LifecycleCaller,
         provider_credentials::ProviderCredentialStore,
         provider_endpoint::serve_provider_connection,
+        provider_requests::HoldReason,
         provider_transport::{ProviderTransport, UpstreamResponse},
     },
-    launch_protocol::SupervisorStatus,
+    launch_protocol::{ChannelState, LifecycleAction, NextAction, SupervisorStatus},
+    launch_receipt::{SessionState, SignedReceipt},
     provider_request::{ApprovedProviderRequests, Frames, ProviderRequest, ReasoningEffort},
 };
 use std::{
@@ -431,6 +434,7 @@ fn endpoint_refuses_malformed_or_denied_requests_with_a_typed_error() {
             BrokerError::ProviderBudgetExhausted,
         ),
         (frame(), "403", BrokerError::ProviderBudgetExhausted),
+        (frame(), "403", BrokerError::Expired),
         (
             frame(),
             "403",
@@ -453,9 +457,211 @@ fn endpoint_refuses_malformed_or_denied_requests_with_a_typed_error() {
         client.read_to_end(&mut response).unwrap();
         let text = String::from_utf8(response).unwrap();
         assert!(text.starts_with(&format!("HTTP/1.1 {expected} ")), "{text}");
-        assert!(text.contains("\"code\""), "{text}");
+        let (_, body) = text.split_once("\r\n\r\n").unwrap();
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        let error: ProtocolError = serde_json::from_value(body["error"].clone()).unwrap();
+        error.validate().unwrap();
+        if expected == "403" {
+            // Budget and expiry refusals are final for the runtime: only an
+            // operator extension changes the answer, so nothing retries.
+            assert_eq!(error.code, ErrorCode::CapabilityDenied);
+            assert!(!error.retryable);
+            assert_eq!(error.next_action, NextAction::ContactOperator);
+        }
         drop(client);
         let _ = endpoint.join().unwrap();
         assert_eq!(upstream.calls(), 0);
     }
+}
+
+impl Fixture {
+    /// Settles the hold while the fake supervisor answers its status query and
+    /// then serves the Park request, as the Session worker's idle tick would.
+    fn settle_and_park(&mut self, now_ms: u64) -> Option<SignedReceipt> {
+        thread::scope(|scope| {
+            let (peer, current) = (&self.peer, &self.current);
+            let supervisor = scope.spawn(move || {
+                lifecycle::answer_one_status_query(peer, current);
+                lifecycle::drive_lifecycle_peer(peer, current)
+            });
+            let receipt = self
+                .service
+                .settle_provider_hold(&mut self.session, now_ms, verify_fixture_signature)
+                .unwrap();
+            assert_eq!(receipt.as_ref(), Some(&supervisor.join().unwrap()));
+            receipt
+        })
+    }
+
+    fn attention_entries(&self) -> usize {
+        fs::read_dir(
+            self.root
+                .path()
+                .join("authorizations/attention-outbox/entries"),
+        )
+        .unwrap()
+        .count()
+    }
+
+    fn parked(&self, receipt: &SignedReceipt) -> SupervisorStatus {
+        let mut parked = self.current.clone();
+        let head = louiselm_skills::launch_receipt::ReceiptHead {
+            sequence: receipt.payload.sequence,
+            digest: receipt.digest().to_string(),
+        };
+        parked.state = SessionState::Parked;
+        parked.channel_state = ChannelState::Revoked;
+        parked.launcher_head = Some(head.clone());
+        parked.broker_head = Some(head);
+        parked
+    }
+}
+
+#[test]
+fn exhaustion_holds_the_run_parks_the_session_and_raises_one_attention_item() {
+    let mut fixture = fixture(Some(approval(1)), Some("openai"));
+    let upstream = FakeUpstream::replying(200);
+    fixture.admit(&upstream, 2500).unwrap();
+    assert!(matches!(
+        fixture.admit(&upstream, 2600).map(|_| ()).unwrap_err(),
+        BrokerError::ProviderBudgetExhausted
+    ));
+    let hold = fixture.service.provider_hold("run-1").unwrap().unwrap();
+    assert_eq!(hold.reason, HoldReason::Exhausted);
+    // Held: refused before any supervisor exchange or upstream attempt.
+    assert!(matches!(
+        fixture.refuse(&upstream, 2700),
+        BrokerError::ProviderBudgetExhausted
+    ));
+    assert_eq!(upstream.calls(), 1);
+    assert_eq!(fixture.attention_entries(), 0);
+
+    let receipt = fixture.settle_and_park(2800).unwrap();
+    assert!(matches!(
+        receipt.payload.outcome,
+        louiselm_skills::launch_receipt::ReceiptOutcome::Park { .. }
+    ));
+    assert_eq!(
+        fixture
+            .service
+            .receipts()
+            .stored_bytes("provider-requests")
+            .unwrap()
+            .last(),
+        Some(&receipt.canonical_bytes())
+    );
+    assert_eq!(fixture.attention_entries(), 1);
+
+    // The next tick sees the Session Parked: the same Attention item, no new Park.
+    let parked = fixture.parked(&receipt);
+    thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let parked = &parked;
+        let supervisor = scope.spawn(move || lifecycle::answer_one_status_query(peer, parked));
+        assert_eq!(
+            fixture
+                .service
+                .settle_provider_hold(&mut fixture.session, 3800, verify_fixture_signature)
+                .unwrap(),
+            None
+        );
+        supervisor.join().unwrap();
+    });
+    assert_eq!(fixture.attention_entries(), 1);
+    assert_eq!(fixture.service.provider_hold("run-1").unwrap(), Some(hold));
+}
+
+#[test]
+fn a_held_run_cannot_be_resumed_or_offered_resume() {
+    let mut fixture = fixture(Some(approval(1)), Some("openai"));
+    let upstream = FakeUpstream::replying(200);
+    fixture.admit(&upstream, 2500).unwrap();
+    let _ = fixture.admit(&upstream, 2600);
+    let receipt = fixture.settle_and_park(2700).unwrap();
+    let operator = LifecycleCaller::Operator {
+        uid: CONTROLLER_UID,
+    };
+    let mut resume = lifecycle::park(fixture.session.authorization());
+    resume.request_id = "resume-1".into();
+    resume.action = LifecycleAction::Resume;
+    resume.expected_state = SessionState::Parked;
+    resume.expected_receipt_sequence = Some(receipt.payload.sequence);
+    // Refused before any supervisor exchange: no peer answers here.
+    assert!(matches!(
+        fixture
+            .service
+            .request_lifecycle(&mut fixture.session, &operator, &resume, 2800, verify_fixture_signature)
+            .unwrap_err(),
+        BrokerError::Policy(error) if error.code == ErrorCode::InvalidRequest
+    ));
+    let parked = fixture.parked(&receipt);
+    let status = thread::scope(|scope| {
+        let peer = &fixture.peer;
+        let parked = &parked;
+        let supervisor = scope.spawn(move || lifecycle::answer_one_status_query(peer, parked));
+        let status = fixture
+            .service
+            .session_status(
+                &mut fixture.session,
+                &operator,
+                2800,
+                verify_fixture_signature,
+            )
+            .unwrap();
+        supervisor.join().unwrap();
+        status
+    });
+    assert!(!status.allowed_actions.contains(&LifecycleAction::Resume));
+    assert!(status.allowed_actions.contains(&LifecycleAction::Disposal));
+}
+
+#[test]
+fn permission_expiry_holds_the_run_with_or_without_a_request() {
+    let upstream = FakeUpstream::replying(200);
+    let mut requested = fixture(Some(approval(5)), Some("openai"));
+    assert!(matches!(
+        requested.refuse(&upstream, 30_000),
+        BrokerError::Expired
+    ));
+    assert_eq!(
+        requested
+            .service
+            .provider_hold("run-1")
+            .unwrap()
+            .map(|hold| (hold.reason, hold.held_at_ms)),
+        Some((HoldReason::Expired, 30_000))
+    );
+
+    // An idle Session is parked by its tick once the permission lapses.
+    let mut idle = fixture(Some(approval(5)), Some("openai"));
+    assert_eq!(
+        idle.service
+            .settle_provider_hold(&mut idle.session, 29_999, verify_fixture_signature)
+            .unwrap(),
+        None
+    );
+    assert_eq!(idle.service.provider_hold("run-1").unwrap(), None);
+    idle.settle_and_park(30_000).unwrap();
+    assert_eq!(
+        idle.service
+            .provider_hold("run-1")
+            .unwrap()
+            .map(|hold| hold.reason),
+        Some(HoldReason::Expired)
+    );
+    assert_eq!(idle.attention_entries(), 1);
+    assert_eq!(upstream.calls(), 0);
+}
+
+#[test]
+fn sessions_without_provider_permission_are_never_held() {
+    let mut fixture = fixture(None, Some("openai"));
+    assert_eq!(
+        fixture
+            .service
+            .settle_provider_hold(&mut fixture.session, 1_000_000, verify_fixture_signature)
+            .unwrap(),
+        None
+    );
+    assert_eq!(fixture.service.provider_hold("run-1").unwrap(), None);
 }

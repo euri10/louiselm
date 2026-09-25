@@ -326,18 +326,19 @@ impl Queries {
         let result = (|| {
             let mut posture_check = Instant::now();
             let mut posture_unavailable = false;
+            let mut provider_hold_unavailable = false;
             loop {
                 if Instant::now() >= posture_check {
-                    match broker.project_posture_attention(session) {
-                        Ok(()) => posture_unavailable = false,
-                        Err(_) if !posture_unavailable => {
-                            eprintln!(
-                                "louiselm-control: posture Attention unavailable; retained conditions unchanged"
-                            );
-                            posture_unavailable = true;
-                        }
-                        Err(_) => (),
-                    }
+                    report_transition(
+                        broker.project_posture_attention(session).is_ok(),
+                        &mut posture_unavailable,
+                        "louiselm-control: posture Attention unavailable; retained conditions unchanged",
+                    );
+                    report_transition(
+                        broker.settle_provider_hold(session).is_ok(),
+                        &mut provider_hold_unavailable,
+                        "louiselm-control: Provider budget hold not settled; retrying",
+                    );
                     posture_check = Instant::now() + Duration::from_secs(1);
                 }
                 if let Ok(query) = requests.try_recv() {
@@ -423,6 +424,16 @@ fn request_status(
     receive
         .recv_timeout(expires.saturating_duration_since(Instant::now()))
         .map_err(|_| InspectError::StatusUnavailable)?
+}
+
+/// Reports a recurring upkeep failure once per failing stretch, not every tick.
+fn report_transition(succeeded: bool, failing: &mut bool, message: &str) {
+    if succeeded {
+        *failing = false;
+    } else if !*failing {
+        eprintln!("{message}");
+        *failing = true;
+    }
 }
 
 #[cfg(test)]
