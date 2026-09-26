@@ -26,6 +26,7 @@ fn authorization() -> LaunchAuthorization {
         identity_slot: 0,
         assigned_uid: 2000,
         assigned_gid: 2000,
+        provider_expires_at_ms: None,
         expires_at_ms: 50_000,
         broker_loss_grace_ms: 5000,
     }

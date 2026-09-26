@@ -42,7 +42,7 @@ use crate::{
     },
     launch_transport::{KernelCredentials, KernelProcess},
     launcher_install::Identity,
-    registry::Registry,
+    registry::{NetworkPolicy, Registry},
     sandbox::{Channel, ConfinementPlan},
 };
 
@@ -486,6 +486,15 @@ pub trait PreparedAgent {
     /// # Errors
     /// Returns a startup-gate failure, or `CleanupUnproven` if the failed prepared tree cannot be proved empty.
     fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError>;
+
+    /// Releases a Brokered tree only after production Sender guard enrollment.
+    /// An implementation without that exact path must dispose and refuse.
+    /// # Errors
+    /// Returns isolation or cleanup failure when guarded startup is unavailable.
+    fn start_brokered(mut self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
+        self.dispose()?;
+        Err(SupervisorError::IsolationRejected)
+    }
 
     /// Disposes the blocked tree and proves it empty.
     ///
@@ -1033,6 +1042,22 @@ fn run_launch(
     };
     resolution.plan.channels.push(capability_channel.clone());
     let receipt_channels = resolution.plan.channels.clone();
+    let brokered = resolution.plan.network == NetworkPolicy::Brokered;
+    if brokered {
+        let checked_at_ms = now_ms.saturating_add(
+            u64::try_from(validation_clock.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+        if authorization
+            .provider_expires_at_ms
+            .is_none_or(|expiry| checked_at_ms >= expiry)
+        {
+            capability.close();
+            return Err(release_identity(
+                identity,
+                SupervisorError::AuthorizationRejected,
+            ));
+        }
+    }
 
     let prepared = match inner.platform.prepare(request, resolution.plan) {
         Ok(prepared) => prepared,
@@ -1103,6 +1128,14 @@ fn run_launch(
         Ok(value) => value,
         Err(error) => return Err(cleanup_prepared(prepared, capability, identity, error)),
     };
+    if brokered && !matches!(conformance.evidence, ConformanceEvidence::Certified { .. }) {
+        return Err(cleanup_prepared(
+            prepared,
+            capability,
+            identity,
+            SupervisorError::ConformanceUnavailable,
+        ));
+    }
     let conformance_clock = inner.timer.now();
     let conformance_clock_ms = now_ms
         .saturating_add(u64::try_from(validation_clock.elapsed().as_millis()).unwrap_or(u64::MAX));
@@ -1151,7 +1184,11 @@ fn run_launch(
         return Err(cleanup_prepared(prepared, capability, identity, error));
     }
 
-    let running = match prepared.start() {
+    let running = match if brokered {
+        prepared.start_brokered()
+    } else {
+        prepared.start()
+    } {
         Ok(running) => running,
         Err(error) => {
             capability.close();

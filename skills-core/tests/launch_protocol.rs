@@ -131,9 +131,20 @@ fn launch_authorization(request: &LaunchRequest) -> LaunchAuthorization {
         identity_slot: 3,
         assigned_uid: 200_003,
         assigned_gid: 300_003,
+        provider_expires_at_ms: None,
         expires_at_ms: 2_000,
         broker_loss_grace_ms: MAX_BROKER_LOSS_GRACE_MS,
     }
+}
+
+#[test]
+fn launch_authorization_carries_a_bounded_provider_deadline() {
+    let request = launch_request();
+    let mut value = serde_json::to_value(launch_authorization(&request)).unwrap();
+    value["provider_expires_at_ms"] = serde_json::json!(1_500);
+    let authorization = serde_json::from_value::<LaunchAuthorization>(value)
+        .expect("the broker must send the narrower Provider deadline");
+    assert!(authorization.validate_for(&request, 1_000, 1_000).is_ok());
 }
 
 fn broker_reconnect(request_id: &str) -> BrokerReconnect {

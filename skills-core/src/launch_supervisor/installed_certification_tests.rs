@@ -222,6 +222,7 @@ fn authorization(config: &LauncherConfig) -> LaunchAuthorization {
         identity_slot: 0,
         assigned_uid: AGENT_UID,
         assigned_gid: AGENT_UID,
+        provider_expires_at_ms: None,
         expires_at_ms: u64::MAX,
         broker_loss_grace_ms: 5000,
     }

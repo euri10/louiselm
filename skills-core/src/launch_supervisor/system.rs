@@ -1599,17 +1599,28 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn park(&mut self) -> Result<(), MechanicFailure> {
-        self.cache_worker
+        let guard = self
+            .sender_guard
+            .as_mut()
+            .map_or(Ok(()), super::sender_guard::SenderGuard::revoke);
+        let cache = self
+            .cache_worker
             .as_mut()
             .map_or(Ok(()), super::cache_download::Worker::join)
-            .map_err(|_| MechanicFailure::Ambiguous)?;
-        self.cancel_verification()
-            .map_err(|_| MechanicFailure::Ambiguous)?;
-        apply_mechanic(
+            .map_err(|_| MechanicFailure::Ambiguous);
+        let verification = self
+            .cancel_verification()
+            .map_err(|_| MechanicFailure::Ambiguous);
+        let parked = apply_mechanic(
             &self.session,
             Some(SandboxMechanicalState::Parked),
             SandboxedSession::park,
-        )
+        );
+        if guard.is_err() || cache.is_err() || verification.is_err() {
+            Err(MechanicFailure::Ambiguous)
+        } else {
+            parked
+        }
     }
 
     fn resume(&mut self) -> Result<(), MechanicFailure> {

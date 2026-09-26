@@ -75,6 +75,9 @@ or unmounted during disposal. The supervisor retains upstream socket copies
 for shutdown, bounded at 128 concurrent sockets; callers retire completed
 connections by exact kernel cookie. Revision change and revoke shut down all
 copies, including active streams. No retry or budget refund is implied.
+Park revokes this authority too. A warm Resume retains the Session but cannot
+reactivate its old revision: the broker must authorize a newer revision and
+acknowledge a fresh guard handoff before Provider networking resumes.
 
 `SystemRunningAgent::start_guarded` retains the loader with the existing Session
 lifecycle. Disposal revokes before stopping the process tree, closes its own

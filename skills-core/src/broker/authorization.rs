@@ -175,6 +175,7 @@ impl PendingAuthorization {
             identity_slot: self.identity.slot,
             assigned_uid: self.identity.uid,
             assigned_gid: self.identity.gid,
+            provider_expires_at_ms: self.provider_requests.as_ref().map(|p| p.expires_at_ms),
             expires_at_ms: self.expires_at_ms,
             broker_loss_grace_ms: self.broker_loss_grace_ms,
         }

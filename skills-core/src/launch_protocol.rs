@@ -956,6 +956,10 @@ pub struct LaunchAuthorization {
     pub assigned_uid: u32,
     /// Host GID assigned to the Session.
     pub assigned_gid: u32,
+    /// Provider permission expiry, when this launch permits brokered requests.
+    /// The supervisor uses only the tighter of this and launch expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_expires_at_ms: Option<u64>,
     /// Exclusive millisecond expiry; `now >= expires_at_ms` is expired.
     pub expires_at_ms: u64,
     /// Signed fail-closed interval allowed for authenticated broker reattachment.
@@ -984,6 +988,7 @@ impl LaunchAuthorization {
         if self.controller_uid == 0
             || self.assigned_uid == 0
             || self.assigned_gid == 0
+            || self.provider_expires_at_ms == Some(0)
             || self.expires_at_ms == 0
             || self.broker_loss_grace_ms > MAX_BROKER_LOSS_GRACE_MS
         {

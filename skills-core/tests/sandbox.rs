@@ -1208,6 +1208,31 @@ fn spawn_refuses_a_plan_with_anything_but_denied_network() {
 }
 
 #[test]
+fn brokered_preparation_stays_blocked_without_sender_guard() {
+    let fixture = Fixture::new();
+    let mut confinement = plan(&fixture, "brokered-prepared", "#!/bin/sh\ntrue\n");
+    confinement.network = NetworkPolicy::Brokered;
+    let backend = BubblewrapBackend::new().with_bootstrap(Path::new(BOOTSTRAP));
+
+    let prepared = backend
+        .prepare(&confinement)
+        .expect("brokered confinement may be prepared behind its startup gate");
+    assert!(
+        prepared
+            .evidence()
+            .dimensions
+            .iter()
+            .any(
+                |dimension| dimension.dimension == Dimension::NetworkDenial && !dimension.satisfied
+            )
+    );
+    let error = prepared
+        .start()
+        .expect_err("an unguarded start must never release a brokered Session");
+    assert!(matches!(error, SandboxError::Refused(ref reason) if reason.contains("Sender guard")));
+}
+
+#[test]
 fn a_missing_backend_program_is_reported_clearly() {
     let backend = BubblewrapBackend::at(Path::new("/definitely/not/a/real/bwrap"))
         .with_bootstrap(Path::new(BOOTSTRAP));

@@ -336,17 +336,20 @@ impl SenderGuard {
     /// # Errors
     /// A failed revoke/shutdown is cleanup uncertainty, never permission to reuse.
     pub fn revoke(&mut self) -> Result<(), GuardError> {
+        // A revoked enrollment must never activate the same revision again.
+        // revise() closes this handoff and requires a fresh broker response.
+        self.announced = false;
         let mut failed = false;
         if let Some(endpoint) = &self.endpoint {
             let key = endpoint.rule.port.to_ne_bytes();
-            let map = self.map("policy")?;
-            if map
-                .lookup(&key, MapFlags::ANY)
-                .map_err(|_| GuardError::Cleanup)?
-                .is_some()
-            {
-                map.delete(&key).map_err(|_| GuardError::Cleanup)?;
-            }
+            failed = match self.map("policy") {
+                Ok(map) => match map.lookup(&key, MapFlags::ANY) {
+                    Ok(Some(_)) => map.delete(&key).is_err(),
+                    Ok(None) => false,
+                    Err(_) => true,
+                },
+                Err(_) => true,
+            };
         }
         for socket in self.upstreams.values() {
             if shutdown(socket).is_err() {

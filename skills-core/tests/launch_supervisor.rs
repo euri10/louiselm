@@ -2219,6 +2219,7 @@ fn setup(
         identity_slot: expected_identity.slot,
         assigned_uid: expected_identity.uid,
         assigned_gid: expected_identity.gid,
+        provider_expires_at_ms: None,
         expires_at_ms: NOW_MS + 1_000,
         broker_loss_grace_ms: BROKER_LOSS_GRACE_MS,
     };
@@ -3089,6 +3090,68 @@ fn conformance_refusal_cleans_prepared_tree_without_starting_or_signing() {
     let events = event_snapshot(&setup.events);
     assert!(events.iter().any(|event| event == "agent.dispose"));
     assert!(events.iter().any(|event| event == "identity.release"));
+}
+
+fn brokered_setup(provider_expires_at_ms: Option<u64>) -> Setup {
+    let mut setup = setup(
+        true,
+        |authorization| authorization.provider_expires_at_ms = provider_expires_at_ms,
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    write_file(
+        &setup.fixture.path("registry/envelopes.json"),
+        r#"{"schema":"louiselm.launch.registry/1","entries":[{"id":"denied","network":"brokered","description":"Brokered Provider requests."}]}"#,
+    );
+    setup.registry = Arc::new(Registry::open(&setup.fixture.path("registry")).unwrap());
+    setup.supervisor = setup.fresh_supervisor();
+    setup
+}
+
+#[test]
+fn brokered_launch_refuses_without_a_live_provider_deadline() {
+    for expiry in [None, Some(NOW_MS)] {
+        let setup = brokered_setup(expiry);
+        let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+        assert!(matches!(
+            receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+            Err(SupervisorError::AuthorizationRejected)
+        ));
+        assert!(setup.signer.payloads().is_empty());
+        assert!(!lock(&setup.platform.agent).started);
+    }
+}
+
+#[test]
+fn brokered_launch_refuses_unevaluated_host_conformance() {
+    let setup = brokered_setup(Some(NOW_MS + 1_000));
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    assert!(matches!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+        Err(SupervisorError::ConformanceUnavailable)
+    ));
+    assert!(setup.signer.payloads().is_empty());
+    assert!(!lock(&setup.platform.agent).started);
+}
+
+#[test]
+fn brokered_launch_refuses_when_platform_has_no_guarded_start() {
+    let setup = brokered_setup(Some(NOW_MS + 1_000));
+    lock(&setup.platform.state).conformance_report = Some(b"current host report".to_vec());
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    assert!(matches!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
+        Err(SupervisorError::IsolationRejected)
+    ));
+    assert!(!lock(&setup.platform.agent).started);
+    assert!(
+        event_snapshot(&setup.events)
+            .iter()
+            .any(|event| event == "agent.dispose")
+    );
 }
 
 #[test]

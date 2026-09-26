@@ -511,6 +511,7 @@ pub struct PreparedSession {
     session: Option<SandboxedSession>,
     startup_gate: Option<HostIdentityGate>,
     authentication: Option<PendingAgentIdentity>,
+    network: NetworkPolicy,
 }
 
 #[derive(Debug)]
@@ -1112,7 +1113,13 @@ impl PreparedSession {
     ///
     /// # Errors
     /// Returns `Refused` after disposal, startup-gate failure after disposing the failed prepared tree, or `CleanupUnproven` if zero survivors cannot be established.
-    pub fn start(self) -> Result<SandboxedSession, SandboxError> {
+    pub fn start(mut self) -> Result<SandboxedSession, SandboxError> {
+        if self.network == NetworkPolicy::Brokered {
+            self.dispose()?;
+            return Err(SandboxError::Refused(
+                "Brokered Session requires Sender guard enrollment".to_owned(),
+            ));
+        }
         self.start_with_enrollment(|_| Ok(()))
     }
 
@@ -1675,11 +1682,6 @@ impl BubblewrapBackend {
         reason = "preflight_cgroup rejects HostIdentity without a cgroup before any spawn; the local Option is never cleared."
     )]
     pub fn prepare(&self, plan: &ConfinementPlan) -> Result<PreparedSession, SandboxError> {
-        if plan.network != NetworkPolicy::Denied {
-            return Err(SandboxError::Refused(
-                "this build confines only Sessions with no network; brokered egress belongs to the control service".to_owned(),
-            ));
-        }
         let host_identity = if let IdentityPlan::HostIdentity { uid, gid } = plan.identity {
             if !rustix::process::geteuid().is_root() {
                 return Err(SandboxError::Refused(
@@ -1936,6 +1938,7 @@ impl BubblewrapBackend {
                 }),
                 _ => None,
             },
+            network: plan.network,
         })
     }
 
@@ -2017,7 +2020,10 @@ impl BubblewrapBackend {
                 dimension: Dimension::NetworkDenial,
                 satisfied: network == NetworkPolicy::Denied,
                 mechanism: "network namespace".to_owned(),
-                detail: "The Session has an empty network namespace with no route out.".to_owned(),
+                detail: match network {
+                    NetworkPolicy::Denied => "The Session has an empty network namespace with no route out.",
+                    NetworkPolicy::Brokered => "The Session has an isolated network namespace with no route out; guarded loopback requires separate enrollment.",
+                }.to_owned(),
             },
             DimensionEvidence {
                 dimension: Dimension::Identity,
@@ -2657,6 +2663,7 @@ mod tests {
             session: Some(test_session("disposed-before-start", fixture.path(), None)),
             startup_gate: Some(HostIdentityGate::new().expect("startup gate opens")),
             authentication: None,
+            network: NetworkPolicy::Denied,
         };
 
         prepared

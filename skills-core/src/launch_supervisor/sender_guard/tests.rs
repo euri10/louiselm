@@ -205,6 +205,7 @@ fn serve_actions(
             }
             "revoke" => {
                 guard.revoke().unwrap();
+                assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
                 emit(&json!({"revoked":true}));
             }
             "activate" => {

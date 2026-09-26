@@ -245,6 +245,23 @@ impl Fixture {
 }
 
 #[test]
+fn consumed_launch_carries_only_its_approved_provider_deadline() {
+    let with_permission = fixture(Some(approval(5)), Some("openai"));
+    assert_eq!(
+        with_permission
+            .session
+            .authorization()
+            .provider_expires_at_ms,
+        Some(30_000)
+    );
+    let ordinary = fixture(None, None);
+    assert_eq!(
+        ordinary.session.authorization().provider_expires_at_ms,
+        None
+    );
+}
+
+#[test]
 fn posture_discloses_the_retained_profile_without_metadata_values() {
     let mut fixture = fixture(Some(approval(5)), Some("openai"));
     let status = thread::scope(|scope| {
