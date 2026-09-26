@@ -18,7 +18,10 @@ pub(super) enum QuarantineReach {
         quarantine: Option<Digest>,
     },
     /// An excluded package is a member, or everything is excluded.
-    Affected,
+    Affected {
+        /// Digest of the exact quarantine bytes that reached this Generation.
+        quarantine: Digest,
+    },
 }
 
 /// Protected source selected by the administrator, not an Agent or CLI request.
@@ -135,7 +138,7 @@ impl AdmissionSource {
             .iter()
             .any(|excluded| excluded == generation)
         {
-            return Ok(QuarantineReach::Affected);
+            return Ok(QuarantineReach::Affected { quarantine: digest });
         }
         if quarantine.excluded.is_empty() {
             return Ok(QuarantineReach::Unaffected {
@@ -156,7 +159,7 @@ impl AdmissionSource {
                     quarantine: Some(digest),
                 }
             } else {
-                QuarantineReach::Affected
+                QuarantineReach::Affected { quarantine: digest }
             },
         )
     }

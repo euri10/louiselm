@@ -5,9 +5,15 @@ use super::*;
 use louiselm_skills::{
     Digest, Policy, Store,
     admission::{self, AdmissionMember, AdmissionRequest},
-    broker::{BrokerSession, admission_source::AdmissionSource, lifecycle::LifecycleStore},
+    broker::{
+        BrokerSession, admission_source::AdmissionSource, lifecycle::LifecycleStore,
+        skill_quarantine::TaintSource,
+    },
     dossier::ReviewDepth,
-    launch_protocol::{ChannelState, CommandOperation, SupervisorStatus},
+    launch_protocol::{
+        ChannelState, CommandOperation, PendingAction, PendingOperation, PendingPhase,
+        SupervisorStatus,
+    },
     launch_receipt::SignedReceipt,
     quarantine,
     signer::SshKeygenSigner,
@@ -162,15 +168,19 @@ impl Live {
     fn settle_and_park(&mut self, source: &AdmissionSource) -> SignedReceipt {
         thread::scope(|scope| {
             let (peer, mut current) = (&self.peer, self.current.clone());
+            let revoked = self.session.command_revocation_complete();
             let supervisor = scope.spawn(move || {
-                let packet = settle(|complete| peer.receive(complete));
-                let LauncherPacket::Request(ProtocolMessage::Command(mut message)) = packet.packet
-                else {
-                    panic!("command revocation before Park")
-                };
-                assert!(matches!(message.operation, CommandOperation::Revoke));
-                message.operation = CommandOperation::Revoked { enforced: true };
-                settle(|complete| peer.send(message.canonical_bytes(), complete));
+                if !revoked {
+                    let packet = settle(|complete| peer.receive(complete));
+                    let LauncherPacket::Request(ProtocolMessage::Command(mut message)) =
+                        packet.packet
+                    else {
+                        panic!("command revocation before Park")
+                    };
+                    assert!(matches!(message.operation, CommandOperation::Revoke));
+                    message.operation = CommandOperation::Revoked { enforced: true };
+                    settle(|complete| peer.send(message.canonical_bytes(), complete));
+                }
                 current.channel_state = ChannelState::Revoked;
                 lifecycle::answer_one_status_query(peer, &current);
                 lifecycle::drive_lifecycle_peer(peer, &current)
@@ -192,6 +202,42 @@ impl Live {
 
     fn quarantined(&self) -> bool {
         self.lifecycle.is_quarantined("quarantined").unwrap()
+    }
+
+    fn settle_while_park_is_pending(&mut self, source: &AdmissionSource) {
+        thread::scope(|scope| {
+            let (peer, mut current) = (&self.peer, self.current.clone());
+            let supervisor = scope.spawn(move || {
+                let packet = settle(|complete| peer.receive(complete));
+                let LauncherPacket::Request(ProtocolMessage::Command(mut message)) = packet.packet
+                else {
+                    panic!("command revocation before status")
+                };
+                assert!(matches!(message.operation, CommandOperation::Revoke));
+                message.operation = CommandOperation::Revoked { enforced: true };
+                settle(|complete| peer.send(message.canonical_bytes(), complete));
+                current.channel_state = ChannelState::Revoked;
+                current.pending_operation = Some(PendingOperation {
+                    request_id: "pending-park".into(),
+                    action: PendingAction::Park,
+                    phase: PendingPhase::Applying,
+                });
+                lifecycle::answer_one_status_query(peer, &current);
+            });
+            assert_eq!(
+                self.service
+                    .settle_skill_quarantine(
+                        &mut self.session,
+                        Some(source),
+                        3000,
+                        verify_fixture_signature
+                    )
+                    .unwrap(),
+                None
+            );
+            supervisor.join().unwrap();
+        });
+        self.current.channel_state = ChannelState::Revoked;
     }
 }
 
@@ -218,6 +264,7 @@ fn quarantine_of_a_pinned_member_revokes_then_parks_only_that_session() {
         6000,
     )
     .unwrap();
+    let source_digest = Digest::of(&fs::read(supply.store.root().join("quarantine.json")).unwrap());
     let receipt = live.settle_and_park(&supply.source);
     assert!(matches!(
         receipt.payload.outcome,
@@ -225,8 +272,51 @@ fn quarantine_of_a_pinned_member_revokes_then_parks_only_that_session() {
     ));
     assert!(live.quarantined());
     assert!(live.session.command_revocation_complete());
+    let taint = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    assert_eq!(taint.skill_generation_id, supply.generation);
+    assert_eq!(
+        taint.source,
+        TaintSource::Quarantine {
+            digest: source_digest.to_string()
+        }
+    );
+    assert_eq!(taint.detected_at_ms, 3000);
+    assert_eq!(
+        taint.park_receipt.as_ref().unwrap().digest,
+        receipt.digest().to_string()
+    );
+    assert!(!format!("{taint:?}").contains("quarantined"));
+    assert_eq!(
+        live.service
+            .audit()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.decision == AuditDecision::SessionOutputTainted)
+            .count(),
+        1
+    );
     // Settled: later ticks do nothing, with no supervisor exchange.
     assert_eq!(live.settle_quietly(Some(&supply.source)).unwrap(), None);
+    assert_eq!(
+        live.service
+            .inspect("quarantined")
+            .unwrap()
+            .unwrap()
+            .output_taint,
+        Some(taint)
+    );
+    assert!(
+        LifecycleStore::open(&supply.root.path().join("authorizations/lifecycle"))
+            .unwrap()
+            .is_quarantined("quarantined")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -258,6 +348,132 @@ fn unreadable_quarantine_immediately_fails_closed() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     live.settle_and_park(&supply.source);
     assert!(live.quarantined());
+    let taint = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    assert_eq!(taint.source, TaintSource::EvidenceUnreadable);
+    assert!(taint.park_receipt.is_some());
+}
+
+#[test]
+fn missing_or_corrupt_taint_after_detection_refuses_inspection_and_capabilities() {
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    quarantine::exclude_everything(&supply.store, "incident", 5000).unwrap();
+    live.settle_and_park(&supply.source);
+    let path = supply
+        .root
+        .path()
+        .join("authorizations/lifecycle/quarantined/session-taint.json");
+    fs::write(&path, b"{}").unwrap();
+    assert!(live.lifecycle.is_quarantined("quarantined").is_err());
+    assert!(live.service.inspect("quarantined").is_err());
+    fs::remove_file(&path).unwrap();
+    assert!(live.lifecycle.is_quarantined("quarantined").is_err());
+    assert!(live.service.inspect("quarantined").is_err());
+}
+
+#[test]
+fn taint_persists_before_park_and_later_links_the_signed_receipt() {
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    quarantine::exclude_everything(&supply.store, "incident", 5000).unwrap();
+    live.settle_while_park_is_pending(&supply.source);
+    assert!(live.quarantined());
+    let before = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    assert!(before.park_receipt.is_none());
+
+    let receipt = live.settle_and_park(&supply.source);
+    let after = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    assert_eq!(after.digest, before.digest);
+    assert_eq!(after.detected_at_ms, before.detected_at_ms);
+    assert_eq!(
+        after.park_receipt.unwrap().digest,
+        receipt.digest().to_string()
+    );
+}
+
+#[test]
+fn prior_quarantine_does_not_hide_a_later_skill_taint() {
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    live.lifecycle.quarantine("quarantined").unwrap();
+    quarantine::exclude_everything(&supply.store, "incident", 5000).unwrap();
+    live.settle_and_park(&supply.source);
+    assert!(
+        live.service
+            .inspect("quarantined")
+            .unwrap()
+            .unwrap()
+            .output_taint
+            .is_some()
+    );
+    fs::remove_file(
+        supply
+            .root
+            .path()
+            .join("authorizations/lifecycle/quarantined/session-taint.json"),
+    )
+    .unwrap();
+    assert!(live.lifecycle.is_quarantined("quarantined").is_err());
+}
+
+#[test]
+fn failed_park_keeps_taint_without_claiming_a_signed_receipt() {
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    quarantine::exclude_everything(&supply.store, "incident", 5000).unwrap();
+    thread::scope(|scope| {
+        let peer = &live.peer;
+        let supervisor = scope.spawn(move || {
+            let packet = settle(|complete| peer.receive(complete));
+            let LauncherPacket::Request(ProtocolMessage::Command(mut message)) = packet.packet
+            else {
+                panic!("command revocation before Park")
+            };
+            assert!(matches!(message.operation, CommandOperation::Revoke));
+            message.operation = CommandOperation::Revoked { enforced: true };
+            settle(|complete| peer.send(message.canonical_bytes(), complete));
+            peer.close();
+        });
+        assert!(
+            live.service
+                .settle_skill_quarantine(
+                    &mut live.session,
+                    Some(&supply.source),
+                    3000,
+                    verify_fixture_signature,
+                )
+                .is_err()
+        );
+        supervisor.join().unwrap();
+    });
+    assert!(live.quarantined());
+    assert!(live.session.channel().is_closed());
+    let taint = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    assert!(taint.park_receipt.is_none());
 }
 
 #[test]

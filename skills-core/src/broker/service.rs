@@ -161,6 +161,8 @@ pub struct SessionInspection {
     pub start_evidence: Option<StartEvidence>,
     /// What this caller can establish about the completed launch/channel.
     pub launch: LaunchObservation,
+    /// Immutable Session output taint, excluding the subject's identity.
+    pub output_taint: Option<super::skill_quarantine::SessionTaintProjection>,
 }
 
 /// Initial launch acknowledgement and locally owned transport observation.
@@ -196,6 +198,30 @@ pub struct BrokerService {
 }
 
 impl BrokerService {
+    pub(super) fn audit_session_taint(
+        &self,
+        authorization: &LaunchAuthorization,
+        now_ms: u64,
+    ) -> Result<(), BrokerError> {
+        if self
+            .audit
+            .find(|entry| {
+                entry.session_id == authorization.session_id
+                    && entry.decision == AuditDecision::SessionOutputTainted
+            })?
+            .is_none()
+        {
+            self.audit.record(&AuditEntry {
+                at_ms: now_ms,
+                session_id: authorization.session_id.clone(),
+                run_id: authorization.run_id.clone(),
+                authorization_id: authorization.authorization_id.clone(),
+                identity_slot: authorization.identity_slot,
+                decision: AuditDecision::SessionOutputTainted,
+            })?;
+        }
+        Ok(())
+    }
     pub(in crate::broker) fn command_audit(&self) -> Arc<AuditLog> {
         Arc::clone(&self.audit)
     }
@@ -311,6 +337,31 @@ impl BrokerService {
             self.receipts
                 .inspection_chain(&authorization.launch_authorization()),
         )?;
+        self.lifecycle.is_quarantined(session_id)?;
+        let output_taint = self.lifecycle.skill_taint(session_id)?;
+        if output_taint.as_ref().is_some_and(|taint| {
+            taint.run_id() != authorization.run_id
+                || chain
+                    .first()
+                    .and_then(|receipt| match &receipt.payload.outcome {
+                        ReceiptOutcome::Launch { evidence, .. } => {
+                            Some(evidence.skill_generation_id.as_str())
+                        }
+                        _ => None,
+                    })
+                    != Some(taint.generation())
+        }) {
+            return Err(super::corrupt(
+                "Session output taint conflicts with signed launch",
+            ));
+        }
+        let output_taint = output_taint
+            .map(|taint| {
+                self.lifecycle
+                    .skill_quarantine_park(&chain)
+                    .map(|park| taint.projection(park))
+            })
+            .transpose()?;
         let head = chain.last();
         let last_failure = self
             .audit()?
@@ -350,6 +401,7 @@ impl BrokerService {
                     _ => None,
                 }),
             launch: LaunchObservation::DurableOnly,
+            output_taint,
         }))
     }
 

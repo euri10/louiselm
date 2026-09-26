@@ -103,6 +103,8 @@ pub enum AuditDecision {
     },
     /// The Agent channel and every delegated grant became unusable.
     CapabilitiesRevoked,
+    /// Immutable Session output taint was recorded; the record holds its digest.
+    SessionOutputTainted,
     /// Broker stopped approvals; supervisor enforcement is still pending.
     CapabilitiesRevocationRequested,
     /// A spent effect has no known actual outcome and must not be retried.

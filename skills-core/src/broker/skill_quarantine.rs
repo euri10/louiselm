@@ -17,14 +17,140 @@
 use super::{
     BrokerError, BrokerService, BrokerSession,
     admission_source::{AdmissionSource, QuarantineReach},
+    corrupt, is_record_identifier,
     lifecycle::LifecycleCaller,
 };
 use crate::{
     Digest,
     launch::PROTOCOL_VERSION,
-    launch_protocol::{LIFECYCLE_REQUEST_SCHEMA, LifecycleAction, LifecycleRequest},
-    launch_receipt::{ReceiptOutcome, SessionState, SignedReceipt},
+    launch_protocol::{
+        LIFECYCLE_REQUEST_SCHEMA, LaunchAuthorization, LifecycleAction, LifecycleRequest,
+    },
+    launch_receipt::{ReceiptHead, ReceiptOutcome, SessionState, SignedReceipt},
 };
+use serde::{Deserialize, Serialize};
+
+pub(super) const SESSION_TAINT_SCHEMA: &str = "louiselm.session-taint/1";
+
+/// Closed, safe source of a Session output taint. No operator reason is retained.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaintSource {
+    /// Exact operator quarantine bytes that reached the pinned Generation.
+    Quarantine {
+        /// SHA-256 digest of the exact trusted quarantine file bytes.
+        digest: String,
+    },
+    /// Source evidence was unavailable or invalid, so reach could not be disproved.
+    EvidenceUnreadable,
+}
+
+/// Durable, immutable broker provenance for a quarantined Session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SessionTaint {
+    schema: String,
+    session_id: String,
+    run_id: String,
+    skill_generation_id: String,
+    source: TaintSource,
+    detected_at_ms: u64,
+    digest: String,
+}
+
+/// Secret-free taint projection returned by broker inspection for one subject.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionTaintProjection {
+    /// Digest of the immutable canonical taint body.
+    pub digest: String,
+    /// Generation pinned by the Session's signed launch receipt.
+    pub skill_generation_id: String,
+    /// Exact quarantine digest or a closed unreadable-evidence code.
+    pub source: TaintSource,
+    /// First broker detection time in Unix milliseconds.
+    pub detected_at_ms: u64,
+    /// Later signed quarantine Park, when it was durably stored.
+    pub park_receipt: Option<ReceiptHead>,
+}
+
+impl SessionTaint {
+    pub(super) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub(super) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    pub(super) fn generation(&self) -> &str {
+        &self.skill_generation_id
+    }
+
+    pub(super) fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    pub(super) fn new(
+        authorization: &LaunchAuthorization,
+        generation: &str,
+        source: TaintSource,
+        detected_at_ms: u64,
+    ) -> Result<Self, BrokerError> {
+        let mut record = Self {
+            schema: SESSION_TAINT_SCHEMA.into(),
+            session_id: authorization.session_id.clone(),
+            run_id: authorization.run_id.clone(),
+            skill_generation_id: generation.into(),
+            source,
+            detected_at_ms,
+            digest: String::new(),
+        };
+        record.digest = record.body_digest()?.to_string();
+        record.validate(&authorization.session_id)?;
+        Ok(record)
+    }
+
+    fn body_digest(&self) -> Result<Digest, BrokerError> {
+        let bytes = serde_json::to_vec(&(
+            &self.schema,
+            &self.session_id,
+            &self.run_id,
+            &self.skill_generation_id,
+            &self.source,
+            self.detected_at_ms,
+        ))
+        .map_err(|_| BrokerError::InvalidGrant)?;
+        Ok(Digest::of(&bytes))
+    }
+
+    pub(super) fn validate(&self, session_id: &str) -> Result<(), BrokerError> {
+        if self.schema != SESSION_TAINT_SCHEMA
+            || self.session_id != session_id
+            || !is_record_identifier(&self.session_id)
+            || !is_record_identifier(&self.run_id)
+            || Digest::parse(&self.skill_generation_id).is_err()
+            || self.detected_at_ms == 0
+            || match &self.source {
+                TaintSource::Quarantine { digest } => Digest::parse(digest).is_err(),
+                TaintSource::EvidenceUnreadable => false,
+            }
+            || self.digest != self.body_digest()?.to_string()
+        {
+            return Err(corrupt("Session output taint is invalid"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn projection(&self, park_receipt: Option<ReceiptHead>) -> SessionTaintProjection {
+        SessionTaintProjection {
+            digest: self.digest.clone(),
+            skill_generation_id: self.skill_generation_id.clone(),
+            source: self.source.clone(),
+            detected_at_ms: self.detected_at_ms,
+            park_receipt,
+        }
+    }
+}
 
 /// Per-Session worker state; lost on restart, which only repeats a check.
 #[derive(Debug, Default)]
@@ -70,17 +196,28 @@ impl BrokerService {
         // Reach is decided first even for an already-marked Session: this path
         // acts only on Sessions the skill quarantine reaches, leaving markers
         // written for other causes (history, reconnect) to their owners.
-        match self.skill_quarantine_reach(session, source) {
+        let reach = self.skill_quarantine_reach(session, source);
+        let taint_source = match reach {
             Ok(QuarantineReach::Unaffected { quarantine }) => {
                 session.skill_quarantine.clear = quarantine;
                 return Ok(None);
             }
-            // An evidence failure cannot prove this Session unaffected. The
-            // durable marker and Park below are the explicit fail-closed outcome.
-            Ok(QuarantineReach::Affected) | Err(_) => {}
+            Ok(QuarantineReach::Affected { quarantine }) => TaintSource::Quarantine {
+                digest: quarantine.to_string(),
+            },
+            // An evidence failure cannot prove this Session unaffected.
+            Err(_) => TaintSource::EvidenceUnreadable,
+        };
+        if let Some(generation) = session.skill_quarantine.generation.as_deref() {
+            let taint = SessionTaint::new(&authorization, generation, taint_source, now_ms)?;
+            // This durable record is the capability refusal, even when Park fails.
+            self.lifecycle.record_skill_taint(&taint)?;
+            self.audit_session_taint(&authorization, now_ms)?;
+        } else {
+            // An unreadable launch chain cannot supply a trustworthy pinned
+            // Generation. Keep the earlier fail-closed quarantine behavior.
+            self.lifecycle.quarantine(&authorization.session_id)?;
         }
-        // Idempotent; the marker alone already refuses every capability service.
-        self.lifecycle.quarantine(&authorization.session_id)?;
         // Capabilities close before the Park; a second request would be refused.
         if session.commands.is_some() && !session.command_revocation_requested() {
             session.revoke_commands(&format!(

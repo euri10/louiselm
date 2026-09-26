@@ -1,7 +1,8 @@
 //! Durable broker lifecycle authorization, independent of supervisor mechanics.
 
 use super::{
-    BrokerError, corrupt, is_record_identifier, lock, read_record, sync_directory, write_new_record,
+    BrokerError, corrupt, is_record_identifier, lock, read_record, skill_quarantine::SessionTaint,
+    sync_directory, write_new_record,
 };
 use crate::{
     Digest,
@@ -179,6 +180,15 @@ struct AcceptedRequest {
     caller: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum QuarantineMarker {
+    Generic { schema: String },
+    SkillTaint { schema: String, digest: String },
+}
+
+const QUARANTINE_MARKER_SCHEMA: &str = "louiselm.quarantine-marker/1";
+
 /// Durable request identities owned by one broker instance.
 ///
 /// The broker holds one instance for its state directory. Its mutex serializes
@@ -311,15 +321,158 @@ impl LifecycleStore {
         let _guard = lock(&self.preparing);
         let directory = self.root.join(session_id);
         let path = directory.join("quarantined.json");
-        if self.is_quarantined(session_id)? {
-            fs::File::open(path)
+        self.is_quarantined(session_id)?;
+        if self.marker(session_id)?.is_some() {
+            fs::File::open(&path)
                 .and_then(|file| file.sync_all())
                 .map_err(BrokerError::Storage)?;
             return sync_directory(&directory);
         }
         fs::create_dir_all(&directory).map_err(BrokerError::Storage)?;
         sync_directory(&self.root)?;
-        write_new_record(&path, &true)
+        write_new_record(
+            &path,
+            &QuarantineMarker::Generic {
+                schema: QUARANTINE_MARKER_SCHEMA.into(),
+            },
+        )
+    }
+
+    /// Writes one immutable Session output taint before skill capability refusal.
+    /// A pre-existing quarantine for another cause does not suppress the taint.
+    /// # Errors
+    /// Refuses conflicting, corrupt or unavailable durable evidence.
+    pub(super) fn record_skill_taint(&self, taint: &SessionTaint) -> Result<(), BrokerError> {
+        taint.validate(taint.session_id())?;
+        let _guard = lock(&self.preparing);
+        let directory = self.root.join(taint.session_id());
+        let path = directory.join("session-taint.json");
+        if let Some(existing) = self.skill_taint(taint.session_id())? {
+            if existing.run_id() != taint.run_id() || existing.generation() != taint.generation() {
+                return Err(corrupt("Session output taint conflicts with launch"));
+            }
+            fs::File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(BrokerError::Storage)?;
+            sync_directory(&directory)?;
+        } else {
+            fs::create_dir_all(&directory).map_err(BrokerError::Storage)?;
+            sync_directory(&self.root)?;
+            write_new_record(&path, taint)?;
+        }
+        let reference = QuarantineMarker::SkillTaint {
+            schema: QUARANTINE_MARKER_SCHEMA.into(),
+            digest: self
+                .skill_taint(taint.session_id())?
+                .ok_or_else(|| corrupt("Session output taint disappeared"))?
+                .digest()
+                .into(),
+        };
+        let marker = directory.join("quarantined.json");
+        match self.marker(taint.session_id())? {
+            None => write_new_record(&marker, &reference)?,
+            Some(QuarantineMarker::Generic { .. }) => {
+                // Another cause already owns the marker. An independent durable
+                // reference still detects loss of the later skill taint.
+                let path = directory.join("session-taint-reference.json");
+                if self.taint_reference(taint.session_id())?.is_none() {
+                    write_new_record(&path, &reference)?;
+                }
+            }
+            Some(QuarantineMarker::SkillTaint { digest, .. }) if digest == taint.digest() => (),
+            Some(QuarantineMarker::SkillTaint { .. }) => {
+                return Err(corrupt(
+                    "quarantine marker conflicts with Session output taint",
+                ));
+            }
+        }
+        self.is_quarantined(taint.session_id()).map(|_| ())
+    }
+
+    pub(super) fn skill_taint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionTaint>, BrokerError> {
+        if !is_record_identifier(session_id) {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let taint: Option<SessionTaint> =
+            read_record(&self.root.join(session_id).join("session-taint.json"))?;
+        if let Some(taint) = &taint {
+            taint.validate(session_id)?;
+        }
+        Ok(taint)
+    }
+
+    fn marker(&self, session_id: &str) -> Result<Option<QuarantineMarker>, BrokerError> {
+        Self::read_marker(&self.root.join(session_id).join("quarantined.json"))
+    }
+
+    fn taint_reference(&self, session_id: &str) -> Result<Option<QuarantineMarker>, BrokerError> {
+        Self::read_marker(
+            &self
+                .root
+                .join(session_id)
+                .join("session-taint-reference.json"),
+        )
+    }
+
+    fn read_marker(path: &Path) -> Result<Option<QuarantineMarker>, BrokerError> {
+        let marker: Option<QuarantineMarker> = read_record(path)?;
+        if let Some(marker) = &marker {
+            match marker {
+                QuarantineMarker::Generic { schema }
+                | QuarantineMarker::SkillTaint { schema, .. }
+                    if schema != QUARANTINE_MARKER_SCHEMA =>
+                {
+                    return Err(corrupt("quarantine marker is invalid"));
+                }
+                QuarantineMarker::SkillTaint { digest, .. } if Digest::parse(digest).is_err() => {
+                    return Err(corrupt("quarantine marker digest is invalid"));
+                }
+                _ => (),
+            }
+        }
+        Ok(marker)
+    }
+
+    pub(super) fn skill_quarantine_park(
+        &self,
+        receipts: &[SignedReceipt],
+    ) -> Result<Option<crate::launch_receipt::ReceiptHead>, BrokerError> {
+        for receipt in receipts.iter().rev() {
+            let ReceiptOutcome::Park {
+                authority: ReceiptAuthority::Authorized(authorization),
+            } = &receipt.payload.outcome
+            else {
+                continue;
+            };
+            let path = self
+                .root
+                .join(&receipt.payload.session_id)
+                .join("requests")
+                .join(format!(
+                    "{}.json",
+                    Digest::of(authorization.request_id.as_bytes()).hex()
+                ));
+            let Some(accepted): Option<AcceptedRequest> = read_record(&path)? else {
+                continue;
+            };
+            if accepted.caller == "skill-quarantine"
+                && accepted.request.session_id == receipt.payload.session_id
+                && accepted.request.run_id == receipt.payload.run_id
+                && accepted.request.request_id == authorization.request_id
+                && accepted.request.authorization_id == authorization.authorization_id
+                && Digest::of(&accepted.request.canonical_bytes()).to_string()
+                    == authorization.request_digest
+            {
+                return Ok(Some(crate::launch_receipt::ReceiptHead {
+                    sequence: receipt.payload.sequence,
+                    digest: receipt.digest().to_string(),
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// Whether broker-owned quarantine still prohibits capability enablement.
@@ -330,11 +483,23 @@ impl LifecycleStore {
         if !is_record_identifier(session_id) {
             return Err(BrokerError::InvalidGrant);
         }
-        match read_record(&self.root.join(session_id).join("quarantined.json"))? {
-            None => Ok(false),
-            Some(true) => Ok(true),
-            Some(false) => Err(corrupt("quarantine marker is invalid")),
+        let taint = self.skill_taint(session_id)?;
+        let marker = self.marker(session_id)?;
+        let reference = self.taint_reference(session_id)?;
+        for record in [&marker, &reference] {
+            match record {
+                Some(QuarantineMarker::SkillTaint { digest, .. })
+                    if taint.as_ref().map(SessionTaint::digest) != Some(digest.as_str()) =>
+                {
+                    return Err(corrupt("Session output taint is missing or contradictory"));
+                }
+                _ => (),
+            }
         }
+        if matches!(reference, Some(QuarantineMarker::Generic { .. })) {
+            return Err(corrupt("Session output taint reference is invalid"));
+        }
+        Ok(marker.is_some() || taint.is_some())
     }
 
     /// Persists one correlated supervisor refusal before returning it to a caller.
