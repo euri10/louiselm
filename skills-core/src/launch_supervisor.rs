@@ -1292,26 +1292,20 @@ fn run_launch(
             return Err(cleanup_running(running, capability, identity, error));
         }
     };
-
-    // An acknowledgement may have been in flight when authority was revoked.
-    // Recheck before publishing launch success, even when its receipt is durable.
-    if let Err(error) = await_key_authority(inner) {
-        return Err(cleanup_running(running, capability, identity, error));
-    }
-    if let Err(error) = check_conformance_waiver(&authorization, now_ms, validation_clock) {
-        return Err(cleanup_running(running, capability, identity, error));
-    }
-
-    if let Some(process) = agent_process
-        && process.valid().ok() != Some(true)
-    {
-        return Err(cleanup_running(
-            running,
-            capability,
-            identity,
-            SupervisorError::AgentIdentityRejected,
-        ));
-    }
+    let signer = Arc::clone(&inner.signer);
+    let timeout = inner.timeout;
+    let startup_authorization = authorization.clone();
+    let startup = Box::new(move |_: &mut lifecycle::SessionResources| {
+        // The ACK may have been in flight when authority was revoked.
+        await_key_authority_parts(&signer, timeout)?;
+        check_conformance_waiver(&startup_authorization, now_ms, validation_clock)?;
+        if let Some(process) = agent_process
+            && process.valid().ok() != Some(true)
+        {
+            return Err(SupervisorError::AgentIdentityRejected);
+        }
+        Ok(())
+    });
     let monitor = lifecycle::conformance_monitor::Monitor::new(
         Some((Arc::clone(&inner.platform), authorization)),
         conformance_clock_ms,
@@ -1332,6 +1326,7 @@ fn run_launch(
         inner.timeout,
         Arc::clone(&inner.timer),
         Duration::from_millis(u64::from(broker_loss_grace_ms)),
+        startup,
     )
 }
 
@@ -1352,12 +1347,19 @@ fn check_conformance_waiver(
 }
 
 fn await_key_authority(inner: &SupervisorInner) -> Result<(), SupervisorError> {
+    await_key_authority_parts(&inner.signer, inner.timeout)
+}
+
+fn await_key_authority_parts(
+    signer: &Arc<dyn LaunchSigner>,
+    timeout: Duration,
+) -> Result<(), SupervisorError> {
     let (sender, receiver) = mpsc::sync_channel(1);
-    inner.signer.check_authority(Box::new(move |result| {
+    signer.check_authority(Box::new(move |result| {
         let _ = sender.try_send(result);
     }))?;
     receiver
-        .recv_timeout(inner.timeout)
+        .recv_timeout(timeout)
         .map_err(|_| SupervisorError::SigningUnavailable)?
 }
 

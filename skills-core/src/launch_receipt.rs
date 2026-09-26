@@ -74,6 +74,8 @@ pub struct Authorization {
 pub enum ReceiptCause {
     /// The durable sequence-zero launch receipt was acknowledged.
     LaunchAcknowledged,
+    /// Launch finalization failed after the Start receipt became durable.
+    LaunchFinalizationFailed,
     /// The authenticated Control broker disconnected.
     BrokerLost,
     /// The owning controller disappeared.
@@ -394,6 +396,7 @@ impl ReceiptPayload {
                                 | ReceiptCause::AcknowledgementFailed
                                 | ReceiptCause::RelayFailed
                                 | ReceiptCause::AgentIdentityLost
+                                | ReceiptCause::LaunchFinalizationFailed
                         }
                         | ReceiptAuthority::ProcessExited { .. }
                 ) =>

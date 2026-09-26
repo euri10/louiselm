@@ -1205,6 +1205,7 @@ struct AgentState {
     relayed_input: Vec<u8>,
     running_events: Option<RunningAgentEvents>,
     hold_relay_quiescence: bool,
+    relay_start_fails: bool,
     relay_quiescence: Option<SupervisorCompletion<()>>,
 }
 
@@ -1424,6 +1425,9 @@ impl RunningAgent for FakeRunningAgent {
         complete: RunningAgentEvents,
     ) -> Result<(), SupervisorError> {
         record(&self.events, "agent.relay");
+        if lock(&self.state).relay_start_fails {
+            return Err(SupervisorError::RelayFailed);
+        }
         let state = Arc::clone(&self.state);
         let output_bytes = self.output.clone();
         let stopped = Arc::clone(&self.relay_stopped);
@@ -8780,6 +8784,84 @@ fn every_running_receipt_failure_disposes_the_started_tree_once() {
         );
         assert_eq!(completion_count.load(Ordering::SeqCst), 1);
     }
+}
+
+#[test]
+fn post_start_authority_loss_records_containment_before_launch_fails() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    setup.signer.authority_valid.store(false, Ordering::SeqCst);
+    setup.broker.acknowledge();
+
+    assert_eq!(
+        receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .unwrap()
+            .err()
+            .expect("post-Start withdrawal must fail launch"),
+        SupervisorError::SigningUnavailable,
+    );
+    assert_eq!(setup.broker.receipts().len(), 2);
+    assert!(
+        !lock(&setup.signer.containments).is_empty(),
+        "the acknowledged Running receipt needs a durable containment outcome",
+    );
+}
+
+#[test]
+fn post_start_relay_failure_acks_terminal_before_launch_fails() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    lock(&setup.platform.agent).relay_start_fails = true;
+    let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
+    setup.broker.wait_for_append(0);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_append(1);
+    setup.broker.acknowledge();
+    setup.broker.wait_for_session_receipt(0);
+    assert!(
+        receiver.try_recv().is_err(),
+        "terminal ACK must precede failure"
+    );
+    let terminal = SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(0)).unwrap();
+    assert_eq!(terminal.payload.resulting_state, SessionState::Terminal);
+    assert!(matches!(
+        terminal.payload.outcome,
+        ReceiptOutcome::Disposal {
+            authority: ReceiptAuthority::Cause {
+                cause: ReceiptCause::LaunchFinalizationFailed
+            }
+        }
+    ));
+    setup.broker.wait_for_session_request();
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::ReceiptAcknowledgement(
+            setup.broker.session_receipt_acknowledgement(0),
+        ));
+    assert_eq!(
+        receiver
+            .recv_timeout(CALLBACK_TIMEOUT)
+            .unwrap()
+            .err()
+            .expect("relay startup failure must fail launch"),
+        SupervisorError::RelayFailed,
+    );
+    assert!(lock(&setup.platform.agent).disposed);
 }
 
 #[derive(Clone, Copy, Debug)]

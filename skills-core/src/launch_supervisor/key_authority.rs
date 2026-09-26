@@ -68,7 +68,7 @@ impl SessionOwner {
         }
     }
 
-    fn withdraw_key_authority(&mut self) {
+    pub(super) fn withdraw_key_authority(&mut self) {
         self.key_authority.withdrawn = true;
         self.widening_blocked = true;
         self.commands.closed = true;

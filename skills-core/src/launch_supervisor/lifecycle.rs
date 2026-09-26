@@ -57,6 +57,8 @@ pub(super) struct SessionResources {
     conformance: conformance_monitor::Monitor,
 }
 
+type StartupCheck = Box<dyn FnOnce(&mut SessionResources) -> Result<(), SupervisorError> + Send>;
+
 impl SessionResources {
     pub(super) fn new(
         process: Box<dyn RunningAgent>,
@@ -126,6 +128,10 @@ impl LaunchedSession {
         clippy::expect_used,
         reason = "run_launch hands off only after collecting durable genesis and start receipts."
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The one-shot owner handoff keeps launch authorities and startup validation explicit."
+    )]
     pub(super) fn new(
         resources: SessionResources,
         signer: Arc<dyn LaunchSigner>,
@@ -134,6 +140,7 @@ impl LaunchedSession {
         timeout: Duration,
         timer: Arc<dyn SupervisorTimer>,
         broker_loss_grace: Duration,
+        startup: StartupCheck,
     ) -> Result<(Self, mpsc::Receiver<()>), SupervisorError> {
         debug_assert!(!receipts.is_empty());
         let receipt = receipts
@@ -160,7 +167,7 @@ impl LaunchedSession {
                 // including during unwinding, so the spawning coordinator stays alive.
                 let _coordinator_lifetime = coordinator_lifetime;
                 let mut owner = owner;
-                let result = owner.run(attachment, &ready_sender);
+                let result = owner.run(attachment, &ready_sender, startup);
                 // Terminal cleanup must not join a callback blocked on
                 // a receiver that the owner will never service again.
                 let (_, disconnected) = mpsc::sync_channel(1);
@@ -189,14 +196,15 @@ impl LaunchedSession {
                 },
                 owner_finished,
             )),
-            Ok(Err(error)) => {
-                let _ = worker.join();
-                Err(error)
-            }
-            Err(_) => {
-                let _ = worker.join();
-                Err(SupervisorError::WorkerUnavailable)
-            }
+            Ok(Err(error)) => match worker.join() {
+                Ok(Err(SupervisorError::AuthorizationRejected) | Ok(_)) => Err(error),
+                Ok(Err(owner_error)) => Err(owner_error),
+                Err(_) => Err(SupervisorError::WorkerUnavailable),
+            },
+            Err(_) => match worker.join() {
+                Ok(Err(error)) => Err(error),
+                _ => Err(SupervisorError::WorkerUnavailable),
+            },
         }
     }
 
@@ -465,6 +473,42 @@ enum TerminalEvent {
     ProcessExited(ProcessExitClassification),
     AgentIdentityLost,
     RelayFailed,
+    LaunchFinalizationFailed,
+}
+
+impl TerminalEvent {
+    fn receipt_details(self) -> (&'static str, ReceiptAuthority, Result<i32, SupervisorError>) {
+        match self {
+            Self::ProcessExited(classification) => (
+                "exit",
+                ReceiptAuthority::ProcessExited { classification },
+                Ok(i32::from(
+                    classification != ProcessExitClassification::Success,
+                )),
+            ),
+            Self::RelayFailed => (
+                "relay-failed",
+                ReceiptAuthority::Cause {
+                    cause: ReceiptCause::RelayFailed,
+                },
+                Err(SupervisorError::RelayFailed),
+            ),
+            Self::AgentIdentityLost => (
+                "agent-identity-lost",
+                ReceiptAuthority::Cause {
+                    cause: ReceiptCause::AgentIdentityLost,
+                },
+                Err(SupervisorError::AgentIdentityRejected),
+            ),
+            Self::LaunchFinalizationFailed => (
+                "launch-finalization-failed",
+                ReceiptAuthority::Cause {
+                    cause: ReceiptCause::LaunchFinalizationFailed,
+                },
+                Err(SupervisorError::AuthorizationRejected),
+            ),
+        }
+    }
 }
 
 struct QueuedTerminalEvent {
@@ -619,19 +663,30 @@ impl SessionOwner {
         &mut self,
         controller: mpsc::Receiver<RelayStdio>,
         ready: &mpsc::SyncSender<Result<(), SupervisorError>>,
+        startup: StartupCheck,
     ) -> Result<i32, SupervisorError> {
-        if let Err(error) = self.start_relay(controller) {
-            let _ = ready.send(Err(error.clone()));
-            return Err(error);
+        let startup_failure = startup(&mut self.resources)
+            .and_then(|()| self.start_relay(controller))
+            .err();
+        if startup_failure == Some(SupervisorError::SigningUnavailable) {
+            self.withdraw_key_authority();
+        } else {
+            self.arm_broker_receive();
+            self.arm_agent_receive();
+            self.check_key_authority();
+            self.maintain_conformance();
+            if startup_failure.is_some() {
+                self.begin_terminal_event(TerminalEvent::LaunchFinalizationFailed);
+            } else {
+                let _ = ready.send(Ok(()));
+            }
         }
-        self.arm_broker_receive();
-        self.arm_agent_receive();
-        self.check_key_authority();
-        self.maintain_conformance();
-        let _ = ready.send(Ok(()));
         loop {
             self.maintain_conformance();
             if let Some(result) = self.finished.take() {
+                if let Some(error) = startup_failure.as_ref() {
+                    let _ = ready.send(Err(error.clone()));
+                }
                 return result;
             }
             let wait = if self.resources.conformance.enabled {
@@ -648,6 +703,17 @@ impl SessionOwner {
             };
             self.maintain_conformance();
             if self.key_authority.withdrawn {
+                if startup_failure.is_some() {
+                    if let OwnerEvent::KeyContainmentRecorded(result) = &event {
+                        self.key_containment_recorded(result);
+                        self.finished = Some(
+                            self.resources
+                                .cleanup()
+                                .and(Err(SupervisorError::SigningUnavailable)),
+                        );
+                    }
+                    continue;
+                }
                 self.handle_withdrawn_key(&event);
                 if let Some(result) = self.finished.take() {
                     return result;
@@ -763,6 +829,9 @@ impl SessionOwner {
             self.collect_verification();
             self.collect_tool_result();
             if let Some(result) = self.finished.take() {
+                if let Some(error) = startup_failure.as_ref() {
+                    let _ = ready.send(Err(error.clone()));
+                }
                 return result;
             }
         }
@@ -1353,29 +1422,7 @@ impl SessionOwner {
             self.request_finish(Err(SupervisorError::CleanupUnproven));
             return;
         };
-        let (event_id, authority, finish) = match event {
-            TerminalEvent::ProcessExited(classification) => (
-                "exit",
-                ReceiptAuthority::ProcessExited { classification },
-                Ok(i32::from(
-                    classification != ProcessExitClassification::Success,
-                )),
-            ),
-            TerminalEvent::RelayFailed => (
-                "relay-failed",
-                ReceiptAuthority::Cause {
-                    cause: ReceiptCause::RelayFailed,
-                },
-                Err(SupervisorError::RelayFailed),
-            ),
-            TerminalEvent::AgentIdentityLost => (
-                "agent-identity-lost",
-                ReceiptAuthority::Cause {
-                    cause: ReceiptCause::AgentIdentityLost,
-                },
-                Err(SupervisorError::AgentIdentityRejected),
-            ),
-        };
+        let (event_id, authority, finish) = event.receipt_details();
         let request_id = format!("{event_id}-{}", head.digest().hex());
         let request = LifecycleRequest {
             schema: LIFECYCLE_REQUEST_SCHEMA.to_owned(),
