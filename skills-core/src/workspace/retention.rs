@@ -19,6 +19,7 @@ pub fn cleanup_expired(
 }
 
 use super::WorkspaceError;
+use crate::workspace::provenance::OutputProvenance;
 use crate::{Digest, launch::LaunchRequest, session_manifest::SessionInputManifest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -143,6 +144,8 @@ pub struct RetentionInspection {
     pub record: RetentionRecord,
     /// Current broker quarantine; retained evidence does not clear this state.
     pub quarantined: bool,
+    /// Current output provenance, recomputed from canonical broker state.
+    pub output_provenance: OutputProvenance,
 }
 
 impl RetentionRecord {

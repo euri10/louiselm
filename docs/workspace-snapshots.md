@@ -174,6 +174,12 @@ The durable inspection record preserves exact manifest/source/base/cache,
 Generation, runtime, signed launch/start, isolation, bundle/export, verification,
 and promotion references without raw source, prompts, environment or tool payloads.
 `quarantined` reports the current broker state separately from historical pointers.
+`output_provenance` is recomputed from the canonical broker Session taint on every
+inspection. A later skill quarantine marks all output from that Session, including
+earlier exports and promotions, with the same safe taint digest. Other quarantine
+or unavailable provenance is `unknown`, not a clean claim. The projection contains
+only its schema, stable code, taint digest and clean-review references; it omits
+Session identity and source content.
 `primary_evidence` is `not_checked` before cleanup (not proof of readability),
 `cleanup_incomplete` after deletion begins, and `removed` after successful cleanup.
 Neither durable references nor successful deletion imply secure erasure, restored
@@ -204,7 +210,14 @@ refused. All other regular files, including ignored and newly created files,
 participate. Inspect the bundle for sensitive content before sharing it.
 
 The canonical `louiselm.workspace.bundle/1` record binds the normalized base
-digest and complete final inventory. Its digest therefore binds additions,
+digest, complete final inventory and portable output provenance. Standalone
+exports embed `unknown`: byte identity cannot establish a producing Session.
+Missing or detached provenance is refused, even when a caller selects the new
+record digest. A derived verification job carries the same projection in its
+digest-bound job record; independent command success cannot change it to clean.
+The broker rechecks the producing Session's current taint before any promotion
+effect, so a quarantine discovered after export still refuses promotion.
+The bundle digest binds additions,
 deletions, binary bytes and executable-bit changes. `files/` contains only added
 or modified files; unchanged files come from the exact snapshot during apply.
 Empty directories and permission bits other than executable intent are omitted.
@@ -297,7 +310,7 @@ Session writers, and exclude concurrent writers while inspecting. Later executio
 must use a separate confined copy, not mutate this retained input artifact.
 
 Both commands emit `louiselm.workspace.verification-preview/1` with state
-`prepared`, job/snapshot/bundle/base/result/plan digests and command count. Human
+`prepared`, job/snapshot/bundle/base/result/plan digests, output provenance and command count. Human
 output uses the same identities. Neither output includes raw commands, arguments,
 source payloads or paths. Exit `0` means preparation or integrity inspection
 completed, never that verification passed; exit `1` means refusal or failure.
@@ -358,7 +371,9 @@ Completed. Completed means observations and whole-Session cleanup are recorded,
 not that commands passed: inspect `record.execution.commands_passed()`. Absent or
 uncertain outcomes remain Unknown across restart, and spent launches are never
 automatically replayed. Quarantine of either producer or verifier invalidates
-applicability on subsequent reads. Evidence binds exact job/plan/bundle identities;
+applicability on subsequent reads. The Quarantined status includes the current
+producer output provenance, including its canonical taint digest when available.
+Evidence binds exact job/plan/bundle identities;
 it grants no promotion, installed approval or Verified cutover.
 
 A correlated supervisor refusal still permits an explicit Disposal on that
@@ -384,8 +399,8 @@ daemon. The controller supplies the installed broker UID from trusted configurat
 Both endpoints check kernel peer credentials. Agent/helper roles cannot approve a
 promotion, and deserializing a request or verification record grants no authority.
 
-`PromotionRequest` binds the canonical verification-record digest, verifier
-Session, complete job/snapshot/base/bundle/result/plan identities, destination
+`PromotionRequest` binds the canonical verification-record digest, producer and
+verifier Sessions, complete job/snapshot/base/bundle/result/plan identities, destination
 device/inode/owner, unique request ID and an absolute expiry of at most five
 minutes. Identify the selected checkout with `DestinationIdentity::inspect`;
 preparation reopens and checks that exact object. Broker admission requires all
@@ -427,7 +442,10 @@ an explicitly partial result; completed writes are never described as rolled bac
 The operator journal retains numbered `intent` and `done` observations plus
 `complete.json` only after complete readback/synchronization. Broker
 `promotion_status` reports `NotRequested`, `Unknown` with granted/completed counts,
-or `Completed`. A missing acknowledgement remains uncertain across restart.
+or `Completed`. Unknown and Completed include the producer's current output
+provenance. A late quarantine changes that provenance but never rewrites a
+completed effect. Missing provenance is reported as unknown while the historical
+effect count remains visible. A missing acknowledgement remains uncertain across restart.
 Reusing the exact request returns only its recorded historical status; changed
 request bytes refuse, and neither endpoint automatically repeats writes. Inspect
 both journals after an interruption and preserve the partial checkout before

@@ -61,6 +61,7 @@ fn evidence() -> VerificationExecution {
             base_digest: Digest::of(b"base").to_string(),
             result_digest: Digest::of(b"result").to_string(),
             plan_digest: Digest::of(b"plan").to_string(),
+            output_provenance: louiselm_skills::workspace::provenance::OutputProvenance::unknown(),
             command_count: 2,
         },
         integration_digest: Digest::of(b"integration").to_string(),
@@ -99,6 +100,10 @@ fn exact_operation_roundtrips_but_same_session_stale_head_and_open_fields_refuse
 fn every_required_step_and_cleanup_are_necessary_and_responses_are_correlated() {
     let evidence = evidence();
     assert!(evidence.commands_passed());
+    let mut falsely_clean = evidence.clone();
+    falsely_clean.job.output_provenance.code =
+        louiselm_skills::workspace::provenance::OutputProvenanceCode::Untainted;
+    assert!(falsely_clean.validate().is_err());
     for mutation in 0..7 {
         let mut failed = evidence.clone();
         match mutation {

@@ -179,6 +179,7 @@ fn denied_client(root: &Path, index: usize) {
     let request = PromotionRequest {
         schema: "louiselm.workspace.promotion/1".into(),
         request_id: format!("denied-{index}"),
+        producer_session_id: record.producer.request.launch.session_id.clone(),
         verifier_session_id: format!("verifier-{index}"),
         verification_digest: Digest::of(&serde_json::to_vec(&record).unwrap()).to_string(),
         job: record.execution.job,
@@ -208,6 +209,7 @@ fn installed_promotion_operator() {
     let request = PromotionRequest {
         schema: "louiselm.workspace.promotion/1".into(),
         request_id: "promote-good".into(),
+        producer_session_id: record.producer.request.launch.session_id.clone(),
         verifier_session_id: "verifier-0".into(),
         verification_digest: Digest::of(&serde_json::to_vec(&record).unwrap()).to_string(),
         job: record.execution.job,

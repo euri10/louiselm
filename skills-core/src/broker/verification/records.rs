@@ -128,7 +128,11 @@ impl BrokerService {
         if self.lifecycle.is_quarantined(session_id)?
             || self.lifecycle.is_quarantined(producer_session_id)?
         {
-            return Ok(VerificationStatus::Quarantined);
+            return Ok(VerificationStatus::Quarantined {
+                output_provenance: self
+                    .workspace_output_provenance_for_session(producer_session_id)
+                    .unwrap_or_else(|_| crate::workspace::provenance::OutputProvenance::unknown()),
+            });
         }
         let Some(record) =
             read_record::<VerificationRecord>(&directory.join(format!("result-{name}")))?

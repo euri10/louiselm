@@ -38,11 +38,19 @@ impl BrokerService {
         };
         if !record.execution.commands_passed()
             || record.execution.job != request.job
+            || record.producer.request.launch.session_id != request.producer_session_id
             || Digest::of(&serde_json::to_vec(&record).map_err(|_| BrokerError::InvalidGrant)?)
                 .to_string()
                 != request.verification_digest
         {
             return Err(BrokerError::RequestMismatch);
+        }
+        if self
+            .workspace_output_provenance(&record.producer.request.launch)?
+            .code
+            != crate::workspace::provenance::OutputProvenanceCode::Untainted
+        {
+            return Err(BrokerError::ReceiptUnauthorized);
         }
         for verification in [&record.producer.request, &record.execution.request] {
             let authorization = self

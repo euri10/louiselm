@@ -164,7 +164,9 @@ impl PromotionClient {
             },
         )?;
         let Reply::Finished {
-            status: PromotionStatus::Completed { result: observed },
+            status: PromotionStatus::Completed {
+                result: observed, ..
+            },
         } = transfer::receive(&mut self.stream)?
         else {
             return Err(WorkspaceError::Invalid(

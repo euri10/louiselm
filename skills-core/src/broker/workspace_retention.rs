@@ -6,6 +6,7 @@ use crate::{
     launch::LaunchRequest,
     workspace::{
         filesystem,
+        provenance::OutputProvenance,
         retention::{EvidenceReferences, InputReferences, RetentionInspection, Store},
     },
 };
@@ -67,9 +68,45 @@ impl BrokerService {
             record
         };
         Ok(RetentionInspection {
+            output_provenance: self.workspace_output_provenance(&record.launch)?,
             record,
             quarantined: self.lifecycle.is_quarantined(session_id)?,
         })
+    }
+
+    pub(super) fn workspace_output_provenance(
+        &self,
+        launch: &LaunchRequest,
+    ) -> Result<OutputProvenance, BrokerError> {
+        let authorization = self
+            .authorizations()
+            .consumed_for_session(&launch.session_id)?
+            .ok_or(BrokerError::UnknownAuthorization)?;
+        if authorization.request_digest != launch.digest().to_string() {
+            return Err(BrokerError::RequestMismatch);
+        }
+        let quarantined = self.lifecycle.is_quarantined(&launch.session_id)?;
+        let taint = self.lifecycle.skill_taint(&launch.session_id)?;
+        if let Some(taint) = taint {
+            if taint.run_id() != launch.run_id || taint.generation() != launch.skill_generation_id {
+                return Err(super::corrupt(
+                    "Session output taint conflicts with workspace launch",
+                ));
+            }
+            Ok(OutputProvenance::tainted(taint.digest()))
+        } else if quarantined {
+            Ok(OutputProvenance::unknown())
+        } else {
+            Ok(OutputProvenance::untainted())
+        }
+    }
+
+    pub(super) fn workspace_output_provenance_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<OutputProvenance, BrokerError> {
+        let record = self.authorizations().retention_store()?.read(session_id)?;
+        self.workspace_output_provenance(&record.launch)
     }
 
     pub(super) fn retain_workspace_inputs(

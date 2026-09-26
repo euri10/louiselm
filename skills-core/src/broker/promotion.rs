@@ -7,6 +7,7 @@ use crate::{
     Digest,
     workspace::{
         promotion::{ApplicationResult, DestinationIdentity},
+        provenance::OutputProvenance,
         verification::JobPreview,
     },
 };
@@ -21,6 +22,8 @@ pub struct PromotionRequest {
     pub schema: String,
     /// Single-use operation identity, retained across retries and restarts.
     pub request_id: String,
+    /// Original Session whose workspace bytes are being promoted.
+    pub producer_session_id: String,
     /// Distinct verifier whose canonical evidence is selected.
     pub verifier_session_id: String,
     /// Digest of the canonical complete verification record.
@@ -36,7 +39,11 @@ pub struct PromotionRequest {
 impl PromotionRequest {
     pub(crate) fn validate(&self) -> Result<(), BrokerError> {
         record_name(&self.request_id)?;
+        record_name(&self.producer_session_id)?;
         record_name(&self.verifier_session_id)?;
+        if self.producer_session_id == self.verifier_session_id {
+            return Err(BrokerError::InvalidGrant);
+        }
         Digest::parse(&self.verification_digest).map_err(|_| BrokerError::InvalidGrant)?;
         for value in [
             &self.job.job_digest,
@@ -51,6 +58,9 @@ impl PromotionRequest {
         if self.job.schema != "louiselm.workspace.verification-preview/1"
             || self.job.state != "prepared"
             || !(1..=32).contains(&self.job.command_count)
+            || self.job.output_provenance.code
+                != crate::workspace::provenance::OutputProvenanceCode::Unknown
+            || self.job.output_provenance.validate().is_err()
         {
             return Err(BrokerError::InvalidGrant);
         }
@@ -76,11 +86,15 @@ pub enum PromotionStatus {
         granted_steps: usize,
         /// Effects acknowledged as synchronized by the authenticated applicator.
         completed_steps: usize,
+        /// Current provenance of the original producer's workspace output.
+        output_provenance: OutputProvenance,
     },
     /// Exact synchronized outcome from the authenticated operator applicator.
     Completed {
         /// Historical effect evidence; subsequent quarantine does not undo writes.
         result: ApplicationResult,
+        /// Historical writes remain complete even when later quarantine taints them.
+        output_provenance: OutputProvenance,
     },
 }
 
@@ -130,6 +144,11 @@ impl BrokerService {
         if request.request_id != id {
             return Err(BrokerError::RequestMismatch);
         }
+        // Inspection must preserve the effect count even if the producer's
+        // provenance evidence has since become unavailable.
+        let output_provenance = self
+            .workspace_output_provenance_for_session(&request.producer_session_id)
+            .unwrap_or_else(|_| OutputProvenance::unknown());
         let mut granted = 0;
         let mut completed = 0;
         // At most one effect per removed or resulting file, each with two records.
@@ -166,11 +185,15 @@ impl BrokerService {
             if !result.complete || result.completed_steps != completed || completed != granted {
                 return Err(BrokerError::InvalidGrant);
             }
-            Ok(PromotionStatus::Completed { result })
+            Ok(PromotionStatus::Completed {
+                result,
+                output_provenance,
+            })
         } else {
             Ok(PromotionStatus::Unknown {
                 granted_steps: granted,
                 completed_steps: completed,
+                output_provenance,
             })
         }
     }

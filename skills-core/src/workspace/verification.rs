@@ -12,6 +12,7 @@ use super::{
     MAX_RECORD_BYTES, WorkspaceError, bundle, entries, filesystem, tree, validate_inventory,
     validate_path,
 };
+use crate::workspace::provenance::{OutputProvenance, OutputProvenanceCode};
 use crate::{Digest, ManifestEntry};
 
 #[cfg(test)]
@@ -92,6 +93,7 @@ struct Job {
     bundle_digest: String,
     base_digest: String,
     plan_digest: String,
+    output_provenance: OutputProvenance,
     files: Vec<ManifestEntry>,
 }
 
@@ -115,6 +117,8 @@ pub struct JobPreview {
     pub result_digest: String,
     /// Digest of the exact plan bytes, including whitespace.
     pub plan_digest: String,
+    /// Provenance inherited from the exact bundle, never verification authority.
+    pub output_provenance: OutputProvenance,
     /// Number of required commands; their contents are deliberately omitted.
     pub command_count: usize,
 }
@@ -130,6 +134,7 @@ impl Job {
             base_digest: self.base_digest.clone(),
             result_digest: Digest::of(&serde_json::to_vec(&self.files)?).to_string(),
             plan_digest: self.plan_digest.clone(),
+            output_provenance: self.output_provenance.clone(),
             command_count: plan.commands.len(),
         })
     }
@@ -180,6 +185,7 @@ pub fn prepare(
         bundle_digest: preview.bundle_digest,
         base_digest: preview.base_digest,
         plan_digest: plan_digest.to_string(),
+        output_provenance: preview.output_provenance,
         files: inventory,
     };
     let record = serde_json::to_vec(&job)?;
@@ -235,6 +241,12 @@ pub(crate) fn load(job: &Path, expected: &Digest) -> Result<LoadedJob, Workspace
     ] {
         Digest::parse(digest)
             .map_err(|_| WorkspaceError::Invalid("invalid verification identity"))?;
+    }
+    job.output_provenance.validate()?;
+    if job.output_provenance.code == OutputProvenanceCode::Untainted {
+        return Err(WorkspaceError::Invalid(
+            "verification job cannot claim clean provenance",
+        ));
     }
     validate_inventory(&job.files)?;
     let bytes = read(&root, "plan.json", MAX_PLAN_BYTES)?;

@@ -13,6 +13,7 @@ use super::{
     MAX_FILE_BYTES, MAX_RECORD_BYTES, SnapshotRecord, SourceFiles, WorkspaceError, entries,
     filesystem, load_snapshot, tree, validate_inventory,
 };
+use crate::workspace::provenance::{OutputProvenance, OutputProvenanceCode};
 use crate::{Digest, ManifestEntry};
 
 const SCHEMA: &str = "louiselm.workspace.bundle/1";
@@ -22,6 +23,7 @@ const SCHEMA: &str = "louiselm.workspace.bundle/1";
 struct BundleRecord {
     schema: String,
     base_digest: String,
+    output_provenance: OutputProvenance,
     files: Vec<ManifestEntry>,
 }
 
@@ -36,6 +38,8 @@ pub struct BundlePreview {
     pub base_digest: String,
     /// Normalized final inventory digest; no verification authority.
     pub result_digest: String,
+    /// Portable provenance is unknown until a trusted broker checks its producer.
+    pub output_provenance: OutputProvenance,
     /// Final regular file count.
     pub file_count: usize,
     /// Final content byte count.
@@ -53,6 +57,12 @@ impl BundleRecord {
         if self.schema != SCHEMA || self.base_digest != base.preview()?.base_digest {
             return Err(WorkspaceError::Invalid(
                 "unsupported bundle or baseline digest mismatch",
+            ));
+        }
+        self.output_provenance.validate()?;
+        if self.output_provenance.code == OutputProvenanceCode::Untainted {
+            return Err(WorkspaceError::Invalid(
+                "bundle cannot claim clean provenance",
             ));
         }
         validate_inventory(&self.files)
@@ -74,6 +84,7 @@ impl BundleRecord {
             bundle_digest: Digest::of(&serde_json::to_vec(self)?).to_string(),
             base_digest: self.base_digest.clone(),
             result_digest: Digest::of(&serde_json::to_vec(&self.files)?).to_string(),
+            output_provenance: self.output_provenance.clone(),
             file_count: self.files.len(),
             total_bytes: self.files.iter().map(|file| file.size).sum(),
             added: Vec::new(),
@@ -127,6 +138,7 @@ pub fn export(
     let record = BundleRecord {
         schema: SCHEMA.to_owned(),
         base_digest: base.preview()?.base_digest,
+        output_provenance: OutputProvenance::unknown(),
         files: entries(&files),
     };
     record.validate(&base)?;

@@ -18,6 +18,7 @@ use crate::{
     },
     launch_receipt::{ReceiptHead, ReceiptOutcome, SessionState},
     launch_transport::LauncherPacket,
+    workspace::provenance::OutputProvenance,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -46,8 +47,11 @@ pub enum VerificationStatus {
     NotRequested,
     /// Authority was spent but complete authenticated cleanup evidence is absent.
     Unknown,
-    /// Either producer or verifier has been quarantined.
-    Quarantined,
+    /// Producer or verifier quarantine invalidates the job's applicability.
+    Quarantined {
+        /// Current producer output provenance; unknown when its binding is unavailable.
+        output_provenance: OutputProvenance,
+    },
     /// The observed command prefix and verifier disposal have durable actual outcomes.
     Completed(Box<VerificationRecord>),
 }

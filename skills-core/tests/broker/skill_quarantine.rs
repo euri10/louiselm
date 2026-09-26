@@ -7,14 +7,14 @@ use louiselm_skills::{
     admission::{self, AdmissionMember, AdmissionRequest},
     broker::{
         BrokerSession, admission_source::AdmissionSource, lifecycle::LifecycleStore,
-        skill_quarantine::TaintSource,
+        skill_quarantine::TaintSource, verification::VerificationStatus,
     },
     dossier::ReviewDepth,
     launch_protocol::{
         ChannelState, CommandOperation, PendingAction, PendingOperation, PendingPhase,
-        SupervisorStatus,
+        SupervisorStatus, VERIFICATION_SCHEMA, VerificationOperation, VerificationRequest,
     },
-    launch_receipt::SignedReceipt,
+    launch_receipt::{ReceiptHead, SignedReceipt},
     quarantine,
     signer::SshKeygenSigner,
     sshsig::SkPolicy,
@@ -320,6 +320,149 @@ fn quarantine_of_a_pinned_member_revokes_then_parks_only_that_session() {
 }
 
 #[test]
+fn workspace_provenance_covers_prior_output_after_restart_and_verification() {
+    use louiselm_skills::workspace::provenance::OutputProvenanceCode;
+
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    let uid = live.session.authorization().controller_uid;
+    let before = live
+        .service
+        .workspace_retention(uid, "quarantined", None)
+        .unwrap();
+    assert_eq!(
+        before.output_provenance.code,
+        OutputProvenanceCode::Untainted
+    );
+    quarantine::exclude_everything(&supply.store, "compromised", 6000).unwrap();
+    live.settle_and_park(&supply.source);
+    let taint = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    let restarted = verification::reopen(supply.root.path(), "restarted.sock");
+    let retained = restarted
+        .workspace_retention(uid, "quarantined", None)
+        .unwrap();
+    assert_eq!(
+        retained.output_provenance.code,
+        OutputProvenanceCode::SessionOutputTainted
+    );
+    assert_eq!(
+        retained.output_provenance.taint_digest.as_deref(),
+        Some(taint.digest.as_str())
+    );
+    let portable = serde_json::to_value(&retained.output_provenance).unwrap();
+    assert_eq!(portable.as_object().unwrap().len(), 4);
+    assert!(!portable.to_string().contains("quarantined"));
+    assert!(!portable.to_string().contains("compromised"));
+
+    let verifier = request("verifier");
+    consumed_authorization(supply.root.path(), &verifier);
+    let directory = supply.root.path().join("authorizations/verification");
+    fs::create_dir_all(&directory).unwrap();
+    let intent = VerificationRequest {
+        schema: VERIFICATION_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "verify-tainted".into(),
+        launch: verifier,
+        head: ReceiptHead {
+            sequence: 1,
+            digest: Digest::of(b"head").to_string(),
+        },
+        expires_at_ms: 30_000,
+        operation: VerificationOperation::Run {
+            producer_session_id: "quarantined".into(),
+            export_request_id: "export".into(),
+            export_digest: Digest::of(b"export").to_string(),
+            job_digest: Digest::of(b"job").to_string(),
+        },
+    };
+    fs::write(
+        directory.join("intent-verifier.json"),
+        intent.canonical_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(
+        restarted.verification_status("verifier").unwrap(),
+        VerificationStatus::Quarantined { output_provenance }
+            if output_provenance.taint_digest.as_deref() == Some(taint.digest.as_str())
+    ));
+}
+
+#[test]
+fn completed_promotion_remains_visible_when_its_producer_becomes_tainted() {
+    use louiselm_skills::broker::promotion::PromotionStatus;
+    use louiselm_skills::workspace::provenance::OutputProvenanceCode;
+
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    let mut promotion = promotion::selection();
+    promotion.producer_session_id = "quarantined".into();
+    promotion.request_id = "historical".into();
+    let journal = supply
+        .root
+        .path()
+        .join("authorizations/promotions/historical");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(
+        journal.join("request.json"),
+        serde_json::to_vec(&promotion).unwrap(),
+    )
+    .unwrap();
+    fs::write(journal.join("0.grant"), b"0").unwrap();
+    fs::write(journal.join("0.done"), b"0").unwrap();
+    fs::write(
+        journal.join("result.json"),
+        serde_json::to_vec(&louiselm_skills::workspace::promotion::ApplicationResult {
+            complete: true,
+            completed_steps: 1,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        live.service.promotion_status("historical").unwrap(),
+        PromotionStatus::Completed { output_provenance, .. }
+            if output_provenance.code == OutputProvenanceCode::Untainted
+    ));
+
+    quarantine::exclude_everything(&supply.store, "compromised", 6000).unwrap();
+    live.settle_and_park(&supply.source);
+    let digest = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap()
+        .digest;
+    let restarted = verification::reopen(supply.root.path(), "restarted.sock");
+    assert!(matches!(
+        restarted.promotion_status("historical").unwrap(),
+        PromotionStatus::Completed { output_provenance, result }
+            if result.complete && result.completed_steps == 1
+                && output_provenance.taint_digest.as_deref() == Some(digest.as_str())
+    ));
+    fs::write(
+        supply
+            .root
+            .path()
+            .join("authorizations/lifecycle/quarantined/session-taint.json"),
+        b"{}",
+    )
+    .unwrap();
+    assert!(matches!(
+        restarted.promotion_status("historical").unwrap(),
+        PromotionStatus::Completed { output_provenance, result }
+            if result.complete && output_provenance.code == OutputProvenanceCode::Unknown
+    ));
+}
+
+#[test]
 fn excluding_everything_reaches_only_sessions_pinned_to_that_generation() {
     let supply = supply();
     let mut live = launched(supply.root.path(), &supply.generation);
@@ -372,6 +515,15 @@ fn missing_or_corrupt_taint_after_detection_refuses_inspection_and_capabilities(
     fs::write(&path, b"{}").unwrap();
     assert!(live.lifecycle.is_quarantined("quarantined").is_err());
     assert!(live.service.inspect("quarantined").is_err());
+    assert!(
+        live.service
+            .workspace_retention(
+                live.session.authorization().controller_uid,
+                "quarantined",
+                None
+            )
+            .is_err()
+    );
     fs::remove_file(&path).unwrap();
     assert!(live.lifecycle.is_quarantined("quarantined").is_err());
     assert!(live.service.inspect("quarantined").is_err());

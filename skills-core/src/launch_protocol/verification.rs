@@ -248,6 +248,10 @@ fn validate_job(job: &JobPreview) -> Result<(), ProtocolError> {
     ] {
         validate_digest(digest)?;
     }
+    job.output_provenance.validate().map_err(|_| invalid())?;
+    if job.output_provenance.code == crate::workspace::provenance::OutputProvenanceCode::Untainted {
+        return Err(invalid());
+    }
     Ok(())
 }
 

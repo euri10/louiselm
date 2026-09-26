@@ -68,10 +68,10 @@ fn spent_without_actual_evidence_is_unknown_after_restart_and_quarantine() {
             .unwrap()
             .quarantine(tainted)
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             restarted.verification_status("verifier").unwrap(),
-            VerificationStatus::Quarantined
-        );
+            VerificationStatus::Quarantined { .. }
+        ));
     }
 }
 

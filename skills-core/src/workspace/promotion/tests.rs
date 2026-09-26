@@ -172,6 +172,7 @@ fn transfer_rejects_changed_bytes_manifests_and_oversized_frames() {
         result_digest: Digest::of(&serde_json::to_vec(&entries(&changes.files)).unwrap())
             .to_string(),
         plan_digest: digest,
+        output_provenance: crate::workspace::provenance::OutputProvenance::unknown(),
         command_count: 1,
     };
     let mut wire = Vec::new();
