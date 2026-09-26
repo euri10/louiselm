@@ -92,14 +92,17 @@ never overwrite a later replacement. Repeated controller setup and disposal
 must not accumulate wrappers. This exception grants no other global or Neovim
 API patch authority.
 
-- Around 44 modules reference Neovim nowhere — the schema, workflow-definition,
+- Around 40 modules reference Neovim nowhere — the schema, workflow-definition,
   routing, permission, skills, and doc-generator layers. That is what lets them
-  be tested as pure logic. Do not introduce the first `vim.*` call into such a
-  module to replace a local helper: swapping a six-line `trim` for `vim.trim`
+  be tested as pure logic. Do not introduce the first `vim` reference into such
+  a module to replace a local helper: swapping a six-line `trim` for `vim.trim`
   buys nothing and costs the module its independence. Check with
-  `grep -L 'local nvim = vim' <file>` before reaching for the stdlib in an
-  unfamiliar file. Where a module already uses Neovim, prefer `vim.*` over a
-  hand-rolled equivalent (`louiselm-stdlib-helper-cleanup-kw5m`).
+  `grep -Lw vim <file>` before reaching for the stdlib in an unfamiliar file;
+  a file is Neovim-free only if it prints. Do not grep for the
+  `local nvim = vim` alias alone — some modules reach Neovim through a lazy
+  `local function nvim() return vim end` accessor instead. Where a module
+  already uses Neovim, prefer `vim.*` over a hand-rolled equivalent
+  (`louiselm-stdlib-helper-cleanup-kw5m`).
 - Never block Neovim's main loop with waits, polling, sleeps, or heavy work.
 - Spawn processes with `vim.system()` and argument arrays, never shell-built
   command strings, `os.execute`, or `io.popen`.
