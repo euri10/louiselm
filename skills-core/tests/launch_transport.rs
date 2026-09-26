@@ -120,7 +120,7 @@ fn signed_receipt() -> SignedReceipt {
                 runtime_measurement_digest: digest("runtime"),
                 skill_generation_id: digest("generation"),
                 session_input_manifest_id: digest("input"),
-                isolation_contract: "louiselm.isolation/1".to_owned(),
+                isolation_contract: "louiselm.isolation/2".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),
                 kernel_identity: "linux-6_18".to_owned(),
                 isolation_evidence_digest: digest("isolation"),

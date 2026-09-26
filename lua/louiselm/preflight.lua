@@ -123,7 +123,7 @@ local function identity(field, value)
     return false
   end
   if field == "isolation_contract" then
-    return value == "louiselm.isolation/1"
+    return value == "louiselm.isolation/2"
   end
   if field == "envelope_revision" then
     return type(value) == "string"

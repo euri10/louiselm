@@ -51,6 +51,17 @@ fn complete_evidence() -> IsolationEvidence {
 }
 
 #[test]
+fn network_contract_names_the_ambient_boundary_not_a_blanket_denial() {
+    assert_eq!(CONTRACT_VERSION, "louiselm.isolation/2");
+    assert_eq!(Dimension::NetworkBoundary.name(), "network_boundary");
+    assert!(
+        Dimension::NetworkBoundary
+            .requirement()
+            .contains("ambient network route")
+    );
+}
+
+#[test]
 fn every_dimension_must_be_covered_before_anything_is_verified() {
     complete_evidence()
         .check()
@@ -59,11 +70,11 @@ fn every_dimension_must_be_covered_before_anything_is_verified() {
     let mut missing = complete_evidence();
     missing
         .dimensions
-        .retain(|evidence| evidence.dimension != Dimension::NetworkDenial);
+        .retain(|evidence| evidence.dimension != Dimension::NetworkBoundary);
 
     match missing.check().expect_err("missing evidence fails closed") {
         IsolationFailure::Missing(dimensions) => {
-            assert_eq!(dimensions, vec![Dimension::NetworkDenial]);
+            assert_eq!(dimensions, vec![Dimension::NetworkBoundary]);
         }
         other => panic!("unexpected failure: {other}"),
     }
@@ -94,7 +105,7 @@ fn a_dimension_that_is_reported_unsatisfied_fails_closed() {
 fn evidence_that_contradicts_itself_is_refused_rather_than_resolved() {
     let mut contradictory = complete_evidence();
     contradictory.dimensions.push(DimensionEvidence {
-        dimension: Dimension::NetworkDenial,
+        dimension: Dimension::NetworkBoundary,
         satisfied: false,
         mechanism: "other".to_owned(),
         detail: "a second, disagreeing answer".to_owned(),
@@ -105,7 +116,7 @@ fn evidence_that_contradicts_itself_is_refused_rather_than_resolved() {
         .expect_err("two answers for one dimension fail closed")
     {
         IsolationFailure::Contradictory(dimensions) => {
-            assert_eq!(dimensions, vec![Dimension::NetworkDenial]);
+            assert_eq!(dimensions, vec![Dimension::NetworkBoundary]);
         }
         other => panic!("unexpected failure: {other}"),
     }
@@ -118,11 +129,11 @@ fn duplicate_agreeing_evidence_is_refused() {
         duplicate
             .dimensions
             .iter_mut()
-            .find(|evidence| evidence.dimension == Dimension::NetworkDenial)
-            .expect("network denial is covered")
+            .find(|evidence| evidence.dimension == Dimension::NetworkBoundary)
+            .expect("network boundary is covered")
             .satisfied = satisfied;
         duplicate.dimensions.push(DimensionEvidence {
-            dimension: Dimension::NetworkDenial,
+            dimension: Dimension::NetworkBoundary,
             satisfied,
             mechanism: "other".to_owned(),
             detail: "a second, agreeing answer".to_owned(),
@@ -134,10 +145,10 @@ fn duplicate_agreeing_evidence_is_refused() {
         results,
         [
             Err(IsolationFailure::Contradictory(vec![
-                Dimension::NetworkDenial,
+                Dimension::NetworkBoundary,
             ])),
             Err(IsolationFailure::Contradictory(vec![
-                Dimension::NetworkDenial,
+                Dimension::NetworkBoundary,
             ])),
         ],
     );

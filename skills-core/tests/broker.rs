@@ -575,7 +575,7 @@ fn pinned_launch_receipt(authorization: &LaunchAuthorization, generation: &str) 
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
                 skill_generation_id: generation.to_owned(),
                 session_input_manifest_id: Digest::of(b"input").to_string(),
-                isolation_contract: "louiselm.isolation/1".to_owned(),
+                isolation_contract: "louiselm.isolation/2".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),
                 kernel_identity: "linux-6_12".to_owned(),
                 isolation_evidence_digest: Digest::of(b"isolation").to_string(),

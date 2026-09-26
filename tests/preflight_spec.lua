@@ -25,6 +25,24 @@ T["consumes the producing Rust fixture and presents proposed inputs separately"]
   MiniTest.expect.equality(text:find("network_scope: comparison unresolved", 1, true) ~= nil, true)
 end
 
+T["accepts only the current isolation contract identity"] = function()
+  local value = nvim.json.decode(fixture())
+  for _, proposed in ipairs(value.proposed) do
+    if proposed.field == "isolation_contract" then
+      proposed.value = "louiselm.isolation/2"
+    end
+  end
+  local preview, err = Preflight.decode(nvim.json.encode(value))
+  MiniTest.expect.equality(err, nil)
+  assert(preview ~= nil)
+  for _, proposed in ipairs(value.proposed) do
+    if proposed.field == "isolation_contract" then
+      proposed.value = "louiselm.isolation/1"
+    end
+  end
+  MiniTest.expect.equality(Preflight.decode(nvim.json.encode(value)), nil)
+end
+
 T["rejects unsafe identities and contradictory presentation claims"] = function()
   local mutations = {
     function(value)

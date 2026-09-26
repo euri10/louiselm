@@ -65,7 +65,7 @@ pub(super) fn launch(channel: &SeqpacketChannel, setup: &Value) -> Option<Superv
                 runtime_measurement_digest: Digest::of(b"runtime").to_string(),
                 skill_generation_id: Digest::of(b"generation").to_string(),
                 session_input_manifest_id: Digest::of(b"input").to_string(),
-                isolation_contract: "louiselm.isolation/1".into(),
+                isolation_contract: "louiselm.isolation/2".into(),
                 isolation_backend_id: "bubblewrap-0_12".into(),
                 kernel_identity: "linux-6_12".into(),
                 isolation_evidence_digest: Digest::of(b"isolation").to_string(),

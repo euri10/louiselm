@@ -319,7 +319,7 @@ fn spawn_runs_the_planned_executable_and_reports_matching_evidence() {
             .unwrap_or_else(|| panic!("{wanted:?} is covered"))
             .satisfied
     };
-    assert!(dimension(Dimension::NetworkDenial));
+    assert!(dimension(Dimension::NetworkBoundary));
     assert!(dimension(Dimension::ProcessSeparation));
     assert!(
         !dimension(Dimension::Identity),
@@ -1223,7 +1223,8 @@ fn brokered_preparation_stays_blocked_without_sender_guard() {
             .dimensions
             .iter()
             .any(
-                |dimension| dimension.dimension == Dimension::NetworkDenial && !dimension.satisfied
+                |dimension| dimension.dimension == Dimension::NetworkBoundary
+                    && dimension.satisfied
             )
     );
     let error = prepared

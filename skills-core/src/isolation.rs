@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The isolation contract version this build implements.
-pub const CONTRACT_VERSION: &str = "louiselm.isolation/1";
+pub const CONTRACT_VERSION: &str = "louiselm.isolation/2";
 
 /// One property a confined Session must have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -34,8 +34,8 @@ pub enum Dimension {
     ProcessInheritance,
     /// Which sockets and IPC endpoints the Session can reach.
     IpcAccess,
-    /// Whether the Session can reach the network.
-    NetworkDenial,
+    /// Whether the Session has an ambient route or only launcher-created local endpoints.
+    NetworkBoundary,
     /// Whether the Session runs as an identity of its own.
     Identity,
     /// Whether the whole process tree can be frozen and disposed of.
@@ -52,7 +52,7 @@ impl Dimension {
         Dimension::ProcessSeparation,
         Dimension::ProcessInheritance,
         Dimension::IpcAccess,
-        Dimension::NetworkDenial,
+        Dimension::NetworkBoundary,
         Dimension::Identity,
         Dimension::Lifecycle,
         Dimension::Evidence,
@@ -67,7 +67,7 @@ impl Dimension {
             Self::ProcessSeparation => "process_separation",
             Self::ProcessInheritance => "process_inheritance",
             Self::IpcAccess => "ipc_access",
-            Self::NetworkDenial => "network_denial",
+            Self::NetworkBoundary => "network_boundary",
             Self::Identity => "identity",
             Self::Lifecycle => "lifecycle",
             Self::Evidence => "evidence",
@@ -93,7 +93,9 @@ impl Dimension {
             Self::IpcAccess => {
                 "The Session reaches no socket except the channels the launcher created."
             }
-            Self::NetworkDenial => "The Session has no network of its own and no route out.",
+            Self::NetworkBoundary => {
+                "The Session has no ambient network route; only launcher-created local endpoints can be reachable."
+            }
             Self::Identity => "The Session runs under an identity distinct from the operator.",
             Self::Lifecycle => {
                 "The whole process tree can be frozen and disposed of, with no survivors."

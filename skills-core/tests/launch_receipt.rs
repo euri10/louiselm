@@ -55,7 +55,7 @@ fn launch_evidence() -> LaunchEvidence {
         runtime_measurement_digest: digest("runtime"),
         skill_generation_id: digest("generation"),
         session_input_manifest_id: digest("input"),
-        isolation_contract: "louiselm.isolation/1".to_owned(),
+        isolation_contract: "louiselm.isolation/2".to_owned(),
         isolation_backend_id: "bubblewrap-0_12".to_owned(),
         kernel_identity: "linux-6_18".to_owned(),
         isolation_evidence_digest: digest("isolation"),
@@ -230,7 +230,7 @@ fn payload_and_signed_envelope_have_one_canonical_encoding() {
                 "\"runtime_measurement_digest\":\"{}\",",
                 "\"skill_generation_id\":\"{}\",",
                 "\"session_input_manifest_id\":\"{}\",",
-                "\"isolation_contract\":\"louiselm.isolation/1\",",
+                "\"isolation_contract\":\"louiselm.isolation/2\",",
                 "\"isolation_backend_id\":\"bubblewrap-0_12\",",
                 "\"kernel_identity\":\"linux-6_18\",",
                 "\"isolation_evidence_digest\":\"{}\",",
@@ -621,7 +621,7 @@ fn payload_validation_rejects_each_contradictory_shape() {
 
     let mut wrong_contract = launch.payload.clone();
     if let ReceiptOutcome::Launch { evidence, .. } = &mut wrong_contract.outcome {
-        evidence.isolation_contract = "louiselm.isolation/2".to_owned();
+        evidence.isolation_contract = "louiselm.isolation/1".to_owned();
     }
     assert!(matches!(
         wrong_contract.validate(),

@@ -44,7 +44,7 @@ fn parked() -> (Harness, RecoveryRequest) {
             runtime_measurement_digest: Digest::of(b"runtime").to_string(),
             skill_generation_id: launch.skill_generation_id.clone(),
             session_input_manifest_id: launch.session_input_manifest_id.clone(),
-            isolation_contract: "louiselm.isolation/1".into(),
+            isolation_contract: "louiselm.isolation/2".into(),
             isolation_backend_id: "fixture".into(),
             kernel_identity: "fixture".into(),
             isolation_evidence_digest: Digest::of(b"isolation").to_string(),

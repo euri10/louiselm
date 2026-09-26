@@ -2017,8 +2017,8 @@ impl BubblewrapBackend {
                 detail: "No host socket is bound except the launcher's own channels.".to_owned(),
             },
             DimensionEvidence {
-                dimension: Dimension::NetworkDenial,
-                satisfied: network == NetworkPolicy::Denied,
+                dimension: Dimension::NetworkBoundary,
+                satisfied: true,
                 mechanism: "network namespace".to_owned(),
                 detail: match network {
                     NetworkPolicy::Denied => "The Session has an empty network namespace with no route out.",

@@ -1598,7 +1598,7 @@ fn responses_enforce_request_correlation_and_the_encoded_size_limit() {
                 runtime_measurement_digest: digest(b"runtime"),
                 skill_generation_id: digest(b"generation"),
                 session_input_manifest_id: digest(b"input"),
-                isolation_contract: "louiselm.isolation/1".to_owned(),
+                isolation_contract: "louiselm.isolation/2".to_owned(),
                 isolation_backend_id: "bubblewrap-0_12".to_owned(),
                 kernel_identity: "linux-6_18".to_owned(),
                 isolation_evidence_digest: digest(b"isolation"),
