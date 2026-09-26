@@ -1194,7 +1194,6 @@ pub struct SystemLaunchPlatform {
     config: LauncherConfig,
     backend: BubblewrapBackend,
     timeout: Duration,
-    guarded_start_allowed: bool,
 }
 
 impl SystemLaunchPlatform {
@@ -1277,7 +1276,6 @@ impl SystemLaunchPlatform {
             config,
             backend,
             timeout,
-            guarded_start_allowed: false,
         })
     }
 }
@@ -1497,7 +1495,6 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 verification,
                 workspace: None,
                 sender_guard: None,
-                guarded_start_allowed: self.guarded_start_allowed,
             }))
         })();
         match result {
@@ -1544,7 +1541,6 @@ struct SystemPreparedAgent {
     verification: Arc<super::verification::Storage>,
     workspace: Option<super::workspace::SessionWorkspace>,
     sender_guard: Option<(super::sender_guard::SenderGuard, GuardScope)>,
-    guarded_start_allowed: bool,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -1594,7 +1590,7 @@ impl PreparedAgent for SystemPreparedAgent {
         scope: GuardScope,
         broker: SeqpacketChannel,
     ) -> Result<(), SupervisorError> {
-        if !self.guarded_start_allowed || self.sender_guard.is_some() {
+        if self.sender_guard.is_some() {
             return Err(SupervisorError::IsolationRejected);
         }
         let mut guard =
@@ -1715,7 +1711,7 @@ impl SystemRunningAgent {
     }
 
     /// Enrolls the measured runtime before releasing its exec stop and retains
-    /// enforcement through process-tree disposal. Does not activate Brokered.
+    /// enforcement through process-tree disposal.
     /// Run only on the privileged launch worker. The authenticated handoff owner
     /// must close endpoint copies/leases before completing Session disposal.
     /// # Errors

@@ -125,7 +125,9 @@ fn production_loader_worker() {
         revision: current
             .as_ref()
             .map_or(1, |status| status.envelope_revision),
-        deadline_ns: u64::try_from(now.tv_sec).unwrap() * 1_000_000_000 + 300_000_000_000,
+        deadline_ns: u64::try_from(now.tv_sec).unwrap() * 1_000_000_000
+            + u64::try_from(now.tv_nsec).unwrap()
+            + setup["deadline_ms"].as_u64().unwrap_or(300_000) * 1_000_000,
     };
     let mut guard = SenderGuard::load(scope.clone(), broker).unwrap();
     let pid = number(&setup, "runtime");

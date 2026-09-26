@@ -228,7 +228,6 @@ fn privileged_measured_agent_owns_isolated_tool_lifecycle() {
             "fixture".to_owned(),
         ),
         timeout: Duration::from_secs(5),
-        guarded_start_allowed: false,
     };
     let mut request = LaunchRequest {
         schema: REQUEST_SCHEMA.to_owned(),

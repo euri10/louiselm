@@ -4,8 +4,9 @@
 
 `louiselm-qbr.5.1.3.2.4.2`, design confirmed in `louiselm-8a8id`:
 the root per-Session Launch supervisor now owns the Rust loader and kernel
-enrollment mechanics. This is not production Provider activation, subscription
-authentication or installed-host certification. `Brokered` remains refused.
+enrollment mechanics. Loader evidence alone does not establish production
+Provider activation, subscription authentication or installed-host certification.
+Public Brokered activation uses the full installed composition gate below.
 The historical experiments below retain their original scope and results.
 
 The narrow `launch_supervisor::sender_guard` module loads only
@@ -160,9 +161,10 @@ invalid listener cookies, refused upstream acknowledgements, uncertain cleanup,
 broker crash and final process/map cleanup. CI requires it alongside the loader
 gate. The installed offline fixture additionally serves two pipelined requests
 through guarded HTTPS and refuses unapproved Model, metadata and exhausted
-budget requests without an extra upstream socket. `.4.5` still owns stock
-runtime configuration and global Brokered activation; the public installed
-launch entrypoint still refuses Brokered.
+budget requests without an extra upstream socket. The public installed
+launch entrypoint now reaches this guarded path only with an approved Provider
+permission and current non-waivable conformance. This does not certify the
+maintainer's installed host or the separate Verified launch gate.
 
 ## Historical feasibility evidence
 

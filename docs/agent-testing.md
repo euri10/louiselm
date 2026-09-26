@@ -74,8 +74,8 @@ Missing KVM/BPF-LSM/BTF is failure, not a skipped pass. These checks do not
 certify installed-host acceptance. Production guard loading additionally runs
 `python3 scripts/test-sender-guard-loader.py <library-test-executable>` as root
 only inside that disposable guest. It uses the real Rust loader, authenticated
-enrollment channel and kernel sockets; eight scenarios cover loss at actual
-upstream write, cross-Session isolation, frozen enrollment and complete cleanup.
+enrollment channel and kernel sockets; nine scenarios cover loss and expiry at
+actual upstream writes, cross-Session isolation, frozen enrollment and complete cleanup.
 The same CI job requires both gates. A skipped ignored Rust fixture is not a
 loader pass, and neither gate enables Brokered or certifies a desktop Session.
 
@@ -92,6 +92,10 @@ The job also runs the existing installed-certification fixture inside the guest.
 It requires the production Sender guard observation, measured libbpf/BTF/LSM
 bytes, actual loader refusal after removing the probe thread's capabilities,
 non-waivable guard admission, cancellation and uncertain-cleanup refusals.
+Its installed Brokered composition cases also require guarded Start, Park,
+disposal, loss/uncertain-close containment and two pipelined HTTPS Provider
+requests over supervisor-created sockets; a fixture-only component pass is not
+evidence that the production launcher constructor enables Brokered.
 
 Broker Skill Admission request changes also run
 `python3 scripts/test-skill-requests` from the repository root. It builds both

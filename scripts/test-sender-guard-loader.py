@@ -233,7 +233,8 @@ def scenario(executable, variant):
                 assert os.WIFSTOPPED(os.waitpid(agent.pid, os.WUNTRACED)[1])
                 owner = spawn([executable, "--exact", WORKER, "--ignored", "--nocapture"])
                 send(owner, {"broker": broker_path, "session": f"session-{index}",
-                    "runtime": agent.pid, "uid": UID + index, "executable": sys.executable})
+                    "runtime": agent.pid, "uid": UID + index, "executable": sys.executable,
+                    "deadline_ms": 8000 if variant == "expiry" and index == 0 else 300000})
                 send(peer, {"op": "enrollment", "owner": owner.pid, "session": f"session-{index}"})
                 ready = receive(owner, True)
                 assert ready["ready"]
@@ -295,6 +296,11 @@ def scenario(executable, variant):
                     assert request(owner, {"op": "lost"}, True)["lost"]
             elif variant == "retire":
                 assert request(owners[0], {"op": "retire", "cookie": cookies[0]}, True)["retired"]
+            elif variant == "expiry":
+                assert request(runtimes[0], {"op": "connect", "port": ports[0]})["connected"]
+                assert request(runtimes[0], {"op": "send"})["sent"]
+                time.sleep(8.5)
+                assert request(runtimes[0], {"op": "send"}) == {"sent": False, "errno": errno.EPERM}
             elif variant == "dispose":
                 send(peer, {"op": "close_endpoint", "channel": 0})
                 send(owners[0], {"op": "close"})
@@ -351,7 +357,7 @@ def main():
         candidates = [path for path in executable.glob("louiselm_skills-*") if path.is_file() and os.access(path, os.X_OK)]
         assert len(candidates) == 1, "expected one library-test executable in clean target directory"
         executable = candidates[0]
-    for variant in ("owner-death", "exec", "runtime-exit", "runtime-exec", "revision", "broker-crash", "retire", "dispose"):
+    for variant in ("owner-death", "exec", "runtime-exit", "runtime-exec", "revision", "broker-crash", "retire", "expiry", "dispose"):
         scenario(str(executable), variant)
     print("PRODUCTION_SENDER_GUARD_COMPONENT_PASS_NOT_VERIFIED", flush=True)
 

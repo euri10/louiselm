@@ -251,27 +251,32 @@ pub(super) fn park_and_dispose(broker: &InstalledBroker, session: &mut BrokerSes
 
 #[test]
 fn privileged_installed_brokered_guard_start_and_disposal() {
-    installed_guard_case(false, false, false, false);
+    installed_guard_case(false, false, false, false, false);
 }
 
 #[test]
 fn privileged_installed_brokered_guard_lost_close_ack_poison() {
-    installed_guard_case(true, false, false, false);
+    installed_guard_case(true, false, false, false, false);
 }
 
 #[test]
 fn privileged_installed_brokered_guard_park_closes_before_receipt() {
-    installed_guard_case(false, true, false, false);
+    installed_guard_case(false, true, false, false, false);
 }
 
 #[test]
 fn privileged_installed_brokered_guard_broker_outage_poison() {
-    installed_guard_case(false, false, true, false);
+    installed_guard_case(false, false, true, false, false);
 }
 
 #[test]
 fn privileged_installed_brokered_provider_stream() {
-    installed_guard_case(false, true, false, true);
+    installed_guard_case(false, true, false, true, false);
+}
+
+#[test]
+fn privileged_installed_brokered_without_provider_permission_refuses() {
+    installed_guard_case(false, false, false, false, true);
 }
 
 #[expect(
@@ -282,7 +287,13 @@ fn privileged_installed_brokered_provider_stream() {
     clippy::fn_params_excessive_bools,
     reason = "Independent fault flags select one installed fixture case."
 )]
-fn installed_guard_case(hold_close_ack: bool, park: bool, broker_outage: bool, provider: bool) {
+fn installed_guard_case(
+    hold_close_ack: bool,
+    park: bool,
+    broker_outage: bool,
+    provider: bool,
+    no_permission: bool,
+) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
         eprintln!("requires disposable root and a current installed guard certificate");
         return;
@@ -294,7 +305,9 @@ fn installed_guard_case(hold_close_ack: bool, park: bool, broker_outage: bool, p
         .tempdir_in("/var/lib")
         .unwrap();
     let (paths, mut config, registry_root) = install_fixture_with_slots(root.path(), 3);
-    fs::write(root.path().join("brokered"), b"").unwrap();
+    if !no_permission {
+        fs::write(root.path().join("brokered"), b"").unwrap();
+    }
     let tls_server = provider.then(|| start_provider_upstream(root.path()));
     if let Some((port, _)) = &tls_server {
         super::provider_credentials::provision_empty_state(root.path());
@@ -336,12 +349,11 @@ fn installed_guard_case(hold_close_ack: bool, park: bool, broker_outage: bool, p
         certificate.observations
     );
 
-    let (mut broker_child, lines) = broker_process(root.path(), None);
+    let (mut broker_child, lines) = broker_process(root.path(), no_permission.then_some("refuse"));
     marker(&lines, "BROKER_READY");
     let mut platform =
         SystemLaunchPlatform::new(paths.clone(), config.clone(), Duration::from_secs(5)).unwrap();
     platform.registry_root = registry_root.clone();
-    platform.guarded_start_allowed = true;
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
@@ -369,10 +381,21 @@ fn installed_guard_case(hold_close_ack: bool, park: bool, broker_outage: bool, p
             Box::new(move |outcome| sent.send(outcome).unwrap()),
         )
         .unwrap();
-    let session = result
-        .recv_timeout(Duration::from_secs(30))
-        .unwrap()
-        .unwrap();
+    let launched = result.recv_timeout(Duration::from_secs(30)).unwrap();
+    if no_permission {
+        assert!(matches!(
+            launched,
+            Err(SupervisorError::AuthorizationRejected)
+        ));
+        marker(&lines, "BROKER_REJECTED");
+        assert!(broker_child.0.wait().unwrap().success());
+        crate::launcher_install::acquire_identity(&paths, 0)
+            .unwrap()
+            .release()
+            .unwrap();
+        return;
+    }
+    let session = launched.unwrap();
     marker(&lines, "BROKER_GUARD_ACKED");
     let agent_pid: u32 = marker(&lines, "BROKER_RUNNING ")
         .split_whitespace()
@@ -432,6 +455,17 @@ fn installed_guard_case(hold_close_ack: bool, park: bool, broker_outage: bool, p
             invalid_disclosure.contains("provider_disclosure_denied"),
             "{invalid_disclosure}"
         );
+        let invalid_host = provider_exchange(
+            &mut controller_peer_input,
+            &mut controller_peer_output,
+            address,
+            "bad-host",
+        );
+        assert!(
+            invalid_host.starts_with("HTTP/1.1 400 Bad Request"),
+            "{invalid_host}"
+        );
+        assert!(invalid_host.contains("invalid_request"), "{invalid_host}");
         let answer = provider_exchange(
             &mut controller_peer_input,
             &mut controller_peer_output,
@@ -500,7 +534,9 @@ fn provider_exchange(
     writeln!(input, "\x1b{address} {variant}").unwrap();
     input.flush().unwrap();
     let mut marker = [0];
-    output.read_exact(&mut marker).unwrap();
+    output
+        .read_exact(&mut marker)
+        .unwrap_or_else(|error| panic!("{variant} fixture response: {error}"));
     assert_eq!(marker, [0x1b]);
     let mut length = [0; 4];
     output.read_exact(&mut length).unwrap();

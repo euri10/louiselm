@@ -199,7 +199,7 @@ pub struct RuntimeMeasurement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicy {
-    /// No network of any kind. The only value a verified launch accepts in v1.
+    /// No network of any kind.
     Denied,
     /// Brokered egress, which the control service owns (louiselm-qbr.5.1).
     Brokered,

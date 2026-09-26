@@ -33,6 +33,7 @@ pub(super) fn exchange(input: &mut impl BufRead, output: &mut impl Write) -> io:
             r#"{"model":"fixture-model","input":[],"reasoning":{"effort":"low"},"stream":true}"#,
             1,
         ),
+        "bad-host" => ("", 1),
         "bad-model" => (
             r#"{"model":"unapproved-model","input":[],"reasoning":{"effort":"low"},"stream":true}"#,
             1,
@@ -43,8 +44,13 @@ pub(super) fn exchange(input: &mut impl BufRead, output: &mut impl Write) -> io:
         ),
         _ => return Err(io::Error::other("unknown Provider fixture variant")),
     };
+    let host = if variant == "bad-host" {
+        "unapproved.invalid".to_owned()
+    } else {
+        address.to_string()
+    };
     let frame = format!(
-        "POST /v1/responses HTTP/1.1\r\nhost: {address}\r\naccept: text/event-stream\r\ncontent-type: application/json\r\nsession-id: fixture\r\ncontent-length: {}\r\n\r\n{body}",
+        "POST /v1/responses HTTP/1.1\r\nhost: {host}\r\naccept: text/event-stream\r\ncontent-type: application/json\r\nsession-id: fixture\r\ncontent-length: {}\r\n\r\n{body}",
         body.len(),
     );
     connection.write_all(frame.repeat(count).as_bytes())?;

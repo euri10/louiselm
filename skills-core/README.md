@@ -35,9 +35,9 @@ inventory and BTF data. The privileged
 The production `launch_supervisor::sender_guard::SenderGuard` loader owns
 enrollment, protected pins and socket lifetime. `SystemRunningAgent::start_guarded`
 enrolls at the measured exec stop and revokes before process-tree disposal.
-It does not activate networking: authenticated descriptor handoff and production
-Provider integration remain separate tasks. `Brokered` still refuses; these
-component checks do not confer Verified posture. See the
+The public launcher admits Brokered only through that guarded startup and the
+Control broker's Provider permission; direct unguarded sandbox start still
+refuses Brokered. These checks do not confer Verified posture. See the
 [ownership contract](../docs/codex-kernel-guard-proof.md#production-loader-and-per-session-upstream-ownership).
 
 ## Commands
@@ -754,7 +754,8 @@ produce `ProviderDisclosureDenied` before credentials, budget or upstream I/O.
 The denial never contains metadata values. Trusted status retains the approved
 profile as supplemental `provider_disclosure` evidence and renders the same safe
 notice; metadata approval alone cannot verify the complete input disclosure.
-These component gates do not enable Brokered operation (`louiselm-qbr.5.1.3.2.4.5`).
+The disclosure checks are one part of Brokered admission, not an independent
+permission to enable it.
 
 `provider_endpoint::serve_provider_connection` accepts only the Responses
 request shape stock Codex was observed to send (reviewed headers and top-level
@@ -797,10 +798,12 @@ with the runtime, and the connection ends without its terminating chunk. The
 unit stays spent and nothing is retried. The next tick holds the Run for expiry
 and Parks it. A local cut is not proof that the Provider stopped.
 
-Not yet enabled: placing
-the listener in a Session's network namespace behind the kernel sender guard
-`louiselm-qbr.5.1.3.2.4`. Until then the sandbox refuses `Brokered` network
-and nothing in production serves the endpoint. The Verified-launch gate
+The installed broker places the listener in the Session's network namespace
+behind the kernel Sender guard. The production launch path requires current
+non-waivable conformance, an approved Provider permission, measured runtime
+enrollment and exact listener acknowledgement before allowing the runtime to
+proceed. Direct `PreparedSession::start` remains fail-closed for Brokered; only
+the guarded supervisor path can release it. The separate Verified-launch gate
 remains `louiselm-qbr.5.1.3.3`.
 
 The existing closed receipt/audit schemas exclude credential fields. The
