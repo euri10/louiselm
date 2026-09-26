@@ -4,19 +4,24 @@ umask 077
 
 die() { echo "launcher-vm: $*" >&2; exit 1; }
 usage() {
-  echo 'Usage: launcher-vm {plan|start} [--yubikey BUS:ADDR] | {prepare|status|logs|stop|terminal|forward PORT|reset --discard|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
+  echo 'Usage: launcher-vm {plan|start} [--yubikey BUS:ADDR|--provider-egress] | {prepare|status|logs|stop|terminal|forward PORT|reset --discard|exec COMMAND...|put FILE GUEST_PATH|get GUEST_PATH FILE}'
 }
 action=${1:-help}
 shift || true
-yubikey_bus= yubikey_addr= browser_port=
+yubikey_bus= yubikey_addr= browser_port= network_restrict=on network_mode=restricted
 case $action in
   help|--help|-h) usage; exit 0 ;;
   plan|start)
     if [[ $# != 0 ]]; then
-      [[ $# == 2 && $1 == --yubikey && $2 =~ ^([0-9]{1,3}):([0-9]{1,3})$ ]] || { usage >&2; exit 64; }
-      yubikey_bus=$((10#${BASH_REMATCH[1]}))
-      yubikey_addr=$((10#${BASH_REMATCH[2]}))
-      (( yubikey_bus >= 1 && yubikey_bus <= 255 && yubikey_addr >= 1 && yubikey_addr <= 255 )) || { usage >&2; exit 64; }
+      if [[ $# == 1 && $1 == --provider-egress ]]; then
+        network_restrict=off
+        network_mode=provider-egress
+      else
+        [[ $# == 2 && $1 == --yubikey && $2 =~ ^([0-9]{1,3}):([0-9]{1,3})$ ]] || { usage >&2; exit 64; }
+        yubikey_bus=$((10#${BASH_REMATCH[1]}))
+        yubikey_addr=$((10#${BASH_REMATCH[2]}))
+        (( yubikey_bus >= 1 && yubikey_bus <= 255 && yubikey_addr >= 1 && yubikey_addr <= 255 )) || { usage >&2; exit 64; }
+      fi
     fi
     ;;
   prepare|status|logs|stop|terminal) [[ $# == 0 ]] || { usage >&2; exit 64; } ;;
@@ -70,12 +75,13 @@ qemu_args() {
     --property=Nice=10 --property=UMask=0077)
 }
 if [[ $action == plan ]]; then
-  qemu_args "$state/run.qcow2" on
+  qemu_args "$state/run.qcow2" "$network_restrict"
   qemu_json=$(printf '%s\n' "${qemu[@]}" | jq -R . | jq -s .)
   service_json=$(printf '%s\n' "${service[@]}" | jq -R 'sub("^--property="; "")' | jq -s .)
   jq -n --arg state "$state" --arg url "$image_url" --arg sha "$image_sha" \
     --argjson qemu "$qemu_json" --argjson systemd "$service_json" \
-    '{schema:"louiselm.launcher-vm.plan/1",state_dir:$state,network:"restricted",image_url:$url,image_sha512:$sha,qemu:$qemu,systemd:$systemd}'
+    --arg network "$network_mode" \
+    '{schema:"louiselm.launcher-vm.plan/1",state_dir:$state,network:$network,image_url:$url,image_sha512:$sha,qemu:$qemu,systemd:$systemd}'
   exit 0
 fi
 
@@ -206,10 +212,7 @@ case $action in
     ;;
   start)
     [[ -f $state/prepared.qcow2 ]] || die 'run prepare first'
-    if active; then
-      [[ -z $yubikey_bus ]] || die 'stop the VM before explicitly attaching the selected YubiKey'
-      wait_ready; exit 0
-    fi
+    active && die 'VM already running; stop it before selecting a network mode'
     stopped
     if [[ -n $yubikey_bus ]]; then
       printf -v yubikey_device '/dev/bus/usb/%03d/%03d' "$yubikey_bus" "$yubikey_addr"
@@ -221,7 +224,7 @@ case $action in
     [[ -f $state/run.qcow2 ]] || qemu-img create -f qcow2 -F qcow2 -b "$state/prepared.qcow2" "$state/run.qcow2"
     [[ -f $state/run.qcow2.vars.fd ]] || install -m 600 -- "$state/prepared.qcow2.vars.fd" "$state/run.qcow2.vars.fd"
     trap 'stop_vm' EXIT
-    start_image "$state/run.qcow2" on
+    start_image "$state/run.qcow2" "$network_restrict"
     if [[ -n $yubikey_bus ]]; then
       guest sh -c '
         test -d /sys/bus/usb/devices || { echo "guest kernel has no USB bus; USB-capable guest kernel required" >&2; exit 1; }

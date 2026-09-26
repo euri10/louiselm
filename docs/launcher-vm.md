@@ -31,6 +31,14 @@ production relay/loss composition. It is a component gate, not installed authori
 - `prepare` temporarily allows guest egress to install distro packages and
   Rust 1.97.1. Normal `start` uses QEMU `restrict=on`: guest-originated traffic
   cannot reach the host or outside networks. Explicit host-to-guest SSH remains.
+- `start --provider-egress` is an explicit opt-in for the live Provider
+  acceptance in `louiselm-qbr.5.1.3.13`. It allows outbound networking from
+  the whole guest, not just the broker. The confined Session must still prove
+  that its own network namespace has no ambient route. Use it only with a fresh
+  disposable overlay and a dedicated capped API project; stop the VM and remove
+  the credential-bearing overlay after the run. `plan --provider-egress` shows
+  the exact QEMU mode before startup. This option cannot be combined with
+  YubiKey passthrough or added to an already running guest.
 - A VM is not a zero-risk guarantee: the host kernel, KVM, QEMU, and firmware
   remain trusted. No host security setting is weakened by this procedure.
 
@@ -45,8 +53,10 @@ the existing host rustup executable provisions the pinned guest toolchain.
 
 ```sh
 ./scripts/launcher-vm plan                  # JSON argv, limits, image pin; no effects
+./scripts/launcher-vm plan --provider-egress # inspect explicit live-API network mode
 ./scripts/launcher-vm prepare               # one-time download and guest provisioning
 ./scripts/launcher-vm start                 # restricted network; bounded SSH readiness
+./scripts/launcher-vm start --provider-egress # live-API guest only, fresh overlay
 ./scripts/launcher-vm status                # JSON systemd state and limits
 ./scripts/launcher-vm exec uname -a          # stdout/stderr + original exit status
 ./scripts/launcher-vm put ./file /home/vm/file

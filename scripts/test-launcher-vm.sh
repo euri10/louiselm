@@ -23,6 +23,17 @@ jq -e '
   ([.qemu[] | select(test("virtfs|virtiofs|usb-host|recovery-usb|u2f|pcap|vhost-vsock|guestfwd|/dev/sd"))] | length) == 0
 ' <<<"$plan" >/dev/null
 
+# Real Provider acceptance opts the guest into egress; normal starts stay offline.
+provider_plan=$(bash "$vm" plan --provider-egress)
+jq -e '
+  .network == "provider-egress" and
+  (.qemu | index("user,id=net0,restrict=off,hostfwd=tcp:127.0.0.1:22554-:22")) != null and
+  ([.qemu[] | select(test("guestfwd|virtfs|virtiofs|vhost-vsock"))] | length) == 0
+' <<<"$provider_plan" >/dev/null
+if bash "$vm" plan --provider-egress --yubikey 003:002 >/dev/null 2>&1; then
+  echo 'accepted simultaneous Provider egress and hardware passthrough' >&2; exit 1
+fi
+
 # Recovery access is explicit and pins both the address and the known token.
 recovery_plan=$(bash "$vm" plan --yubikey 003:002)
 jq -e '
@@ -89,6 +100,12 @@ export VM_TEST_ACTIVE=1 VM_TEST_LOAD=loaded VM_TEST_SSH_ARGS="$test_dir/ssh-args
 touch "$test_dir/cache/louiselm-launcher-vm/prepared.qcow2"
 if bash "$vm" start --yubikey 003:002 >/dev/null 2>&1; then
   echo 'accepted hardware attachment to active VM' >&2; exit 1
+fi
+if bash "$vm" start --provider-egress >/dev/null 2>&1; then
+  echo 'accepted network-mode change to active VM' >&2; exit 1
+fi
+if bash "$vm" start >/dev/null 2>&1; then
+  echo 'accepted ambiguous network mode on active VM' >&2; exit 1
 fi
 if bash "$vm" reset --discard >/dev/null 2>&1; then
   echo 'reset accepted a live unit' >&2; exit 1
