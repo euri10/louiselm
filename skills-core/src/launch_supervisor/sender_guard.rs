@@ -48,7 +48,7 @@ mod launch_fixture;
 mod tests;
 
 /// Sanitized guard failures; libbpf diagnostics are disabled at this boundary.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum GuardError {
     /// Required privilege, namespaces, BPF LSM, BTF or embedded hooks are unavailable.
     #[error("Sender guard platform unavailable")]
@@ -169,6 +169,21 @@ impl Drop for SenderGuard {
 }
 
 impl SenderGuard {
+    /// Uses a checkpoint-reconciled channel to prove closure after an uncertain ACK.
+    /// It does not re-enroll the runtime or activate a revoked revision.
+    pub(crate) fn close_on_reconnected_channel(
+        &mut self,
+        channel: SeqpacketChannel,
+        timeout: Duration,
+    ) -> Result<(), GuardError> {
+        if channel.is_closed() || channel.peer_credentials() != self.broker.peer_credentials() {
+            return Err(GuardError::Authority);
+        }
+        self.broker = channel;
+        self.live()?;
+        self.close_handoff(timeout)
+    }
+
     /// Exact resources whose release the installed certifier must prove.
     pub(crate) fn conformance_map_ids(&self) -> Result<Vec<u32>, GuardError> {
         self.maps
@@ -455,6 +470,34 @@ impl SenderGuard {
         self.revoke()?;
         self.close_handoff(Duration::from_secs(5))?;
         self.endpoint = None;
+        Ok(())
+    }
+
+    /// Uses the lifecycle channel's single reader after the owner has armed it.
+    /// The broker closure ACK must prove no descriptor lease survives.
+    pub(crate) fn dispose_with_broker(
+        &mut self,
+        broker: &dyn super::LaunchBroker,
+        timeout: Duration,
+    ) -> Result<(), GuardError> {
+        self.revoke()?;
+        self.close_handoff_with_broker(broker, timeout)?;
+        self.endpoint = None;
+        Ok(())
+    }
+
+    pub(crate) fn close_handoff_with_broker(
+        &mut self,
+        broker: &dyn super::LaunchBroker,
+        timeout: Duration,
+    ) -> Result<(), GuardError> {
+        if let Some(enrollment) = self.handoff.clone() {
+            broker
+                .close_sender_guard(enrollment, timeout)
+                .map_err(|_| GuardError::Cleanup)?;
+            self.handoff = None;
+            self.announced = false;
+        }
         Ok(())
     }
 

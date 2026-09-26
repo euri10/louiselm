@@ -31,8 +31,8 @@ use crate::{
     isolation::{CONTRACT_VERSION, IsolationEvidence},
     launch::{LaunchRequest, MAX_REQUEST_BYTES, resolve},
     launch_protocol::{
-        BrokerReconnect, ControllerLossAcknowledgement, ControllerLossSettlement,
-        IdentityExhaustion, LaunchAuthorization, ProtocolMessage, ProtocolResponse,
+        BrokerReconnect, ControllerLossAcknowledgement, ControllerLossSettlement, GuardEnrollment,
+        GuardScope, IdentityExhaustion, LaunchAuthorization, ProtocolMessage, ProtocolResponse,
         ReceiptAcknowledgement, ReceiptDisposition,
     },
     launch_receipt::{
@@ -40,7 +40,7 @@ use crate::{
         RECEIPT_SCHEMA, ReceiptAuthority, ReceiptCause, ReceiptHead, ReceiptOutcome,
         ReceiptPayload, SIGNED_RECEIPT_SCHEMA, SessionState, SignedReceipt,
     },
-    launch_transport::{KernelCredentials, KernelProcess},
+    launch_transport::{KernelCredentials, KernelProcess, SeqpacketChannel},
     launcher_install::Identity,
     registry::{NetworkPolicy, Registry},
     sandbox::{Channel, ConfinementPlan},
@@ -194,6 +194,25 @@ pub struct AgentAuthentication {
 
 /// Broker operations needed by the one-shot launch transaction.
 pub trait LaunchBroker: Send + Sync {
+    /// Clones the original authenticated Session channel for pre-receive guard handoff.
+    /// # Errors
+    /// Refuses brokers without an installed guarded-transport path.
+    fn sender_guard_channel(&self) -> Result<SeqpacketChannel, SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
+    /// Closes a handed-off guard through the Session's single authenticated
+    /// receive owner. The broker must prove all descriptor leases are gone.
+    /// # Errors
+    /// Refuses an unavailable, mismatched or unacknowledged closure.
+    fn close_sender_guard(
+        &self,
+        _enrollment: GuardEnrollment,
+        _timeout: Duration,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::CleanupUnproven)
+    }
+
     /// Publish current facts on the owning authenticated Session channel.
     /// # Errors
     /// Refuses unavailable transport; later send failures arrive through `complete`.
@@ -487,6 +506,17 @@ pub trait PreparedAgent {
     /// Returns a startup-gate failure, or `CleanupUnproven` if the failed prepared tree cannot be proved empty.
     fn start(self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError>;
 
+    /// Prepares the stopped runtime's guard and isolated endpoint before release.
+    /// # Errors
+    /// Refuses unavailable or incomplete installed enforcement.
+    fn prepare_sender_guard(
+        &mut self,
+        _scope: GuardScope,
+        _broker: SeqpacketChannel,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
     /// Releases a Brokered tree only after production Sender guard enrollment.
     /// An implementation without that exact path must dispose and refuse.
     /// # Errors
@@ -505,6 +535,34 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Completes the exact guarded listener handoff after the signed Start ACK.
+    /// # Errors
+    /// Refuses absent or failed broker acknowledgement or guard activation.
+    fn finish_guarded_start(
+        &mut self,
+        _request_id: &str,
+        _head: &ReceiptHead,
+        _broker: Arc<dyn LaunchBroker>,
+        _timeout: Duration,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
+    /// Narrows Sender guard policy independently of any pending socket handoff.
+    /// Called before lifecycle mechanics; unguarded Agents have nothing to revoke.
+    /// # Errors
+    /// Returns cleanup uncertainty if policy or retained sockets cannot be narrowed.
+    fn revoke_guard(&self) -> Result<(), SupervisorError> {
+        Ok(())
+    }
+
+    /// Proves broker descriptor closure after revocation and before Park receipt.
+    /// # Errors
+    /// An uncertain ACK must withhold the signed Park outcome.
+    fn close_guard_handoff(&mut self) -> Result<(), SupervisorError> {
+        Ok(())
+    }
+
     /// Publishes exact broker-approved archive bytes into this Session's cache asynchronously.
     /// The owner must join this worker before disposing the Session. Publication
     /// uses the existing local revocation gate; unsupported adapters refuse.
@@ -1059,7 +1117,7 @@ fn run_launch(
         }
     }
 
-    let prepared = match inner.platform.prepare(request, resolution.plan) {
+    let mut prepared = match inner.platform.prepare(request, resolution.plan) {
         Ok(prepared) => prepared,
         Err(error) => {
             capability.close();
@@ -1184,6 +1242,16 @@ fn run_launch(
         return Err(cleanup_prepared(prepared, capability, identity, error));
     }
 
+    if brokered {
+        let guard = guard_scope(&authorization, now_ms, validation_clock).and_then(|scope| {
+            let channel = inner.broker.sender_guard_channel()?;
+            prepared.prepare_sender_guard(scope, channel)
+        });
+        if let Err(error) = guard {
+            return Err(cleanup_prepared(prepared, capability, identity, error));
+        }
+    }
+
     let running = match if brokered {
         prepared.start_brokered()
     } else {
@@ -1295,7 +1363,12 @@ fn run_launch(
     let signer = Arc::clone(&inner.signer);
     let timeout = inner.timeout;
     let startup_authorization = authorization.clone();
-    let startup = Box::new(move |_: &mut lifecycle::SessionResources| {
+    let guard_request_id = format!("guard-{}", receipt.digest().hex());
+    let start_head = ReceiptHead {
+        sequence: receipt.payload.sequence,
+        digest: receipt.digest().to_string(),
+    };
+    let startup = Box::new(move |resources: &mut lifecycle::SessionResources| {
         // The ACK may have been in flight when authority was revoked.
         await_key_authority_parts(&signer, timeout)?;
         check_conformance_waiver(&startup_authorization, now_ms, validation_clock)?;
@@ -1303,6 +1376,9 @@ fn run_launch(
             && process.valid().ok() != Some(true)
         {
             return Err(SupervisorError::AgentIdentityRejected);
+        }
+        if brokered {
+            resources.finish_guarded_start(&guard_request_id, &start_head, timeout)?;
         }
         Ok(())
     });
@@ -1344,6 +1420,42 @@ fn check_conformance_waiver(
             now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX)),
         )
         .map_err(|_| SupervisorError::AuthorizationRejected)
+}
+
+fn guard_scope(
+    authorization: &LaunchAuthorization,
+    now_ms: u64,
+    clock: Instant,
+) -> Result<GuardScope, SupervisorError> {
+    let expires_at_ms = authorization
+        .provider_expires_at_ms
+        .ok_or(SupervisorError::AuthorizationRejected)?
+        .min(authorization.expires_at_ms);
+    let current_ms =
+        now_ms.saturating_add(u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+    // Separate process clocks and callback latency can make the broker's later
+    // wall-to-monotonic ceiling slightly shorter. Expire early, never late.
+    let remaining_ms = expires_at_ms
+        .checked_sub(current_ms)
+        .and_then(|remaining| remaining.checked_sub(1_000))
+        .filter(|remaining| *remaining > 0)
+        .ok_or(SupervisorError::AuthorizationRejected)?;
+    let monotonic = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let monotonic_ns = u64::try_from(monotonic.tv_sec)
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .and_then(|seconds| seconds.checked_add(u64::try_from(monotonic.tv_nsec).ok()?))
+        .ok_or(SupervisorError::IsolationRejected)?;
+    let deadline_ns = remaining_ms
+        .checked_mul(1_000_000)
+        .and_then(|remaining| monotonic_ns.checked_add(remaining))
+        .ok_or(SupervisorError::IsolationRejected)?;
+    Ok(GuardScope {
+        session_id: authorization.session_id.clone(),
+        run_id: authorization.run_id.clone(),
+        revision: authorization.envelope_revision,
+        deadline_ns,
+    })
 }
 
 fn await_key_authority(inner: &SupervisorInner) -> Result<(), SupervisorError> {

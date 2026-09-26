@@ -1194,6 +1194,8 @@ impl CapabilityGate for FakeCapabilityGate {
     reason = "Independent failure injections and observed effects must be independently selectable in this test double."
 )]
 struct AgentState {
+    guard_enabled: bool,
+    guard_revoke_fails: bool,
     hold_tool: bool,
     tool_completion:
         Option<SupervisorCompletion<louiselm_skills::launch_protocol::ToolExecutionResult>>,
@@ -1375,6 +1377,21 @@ fn run_fake_relay(
 }
 
 impl RunningAgent for FakeRunningAgent {
+    fn revoke_guard(&self) -> Result<(), SupervisorError> {
+        let (enabled, fails) = {
+            let state = lock(&self.state);
+            (state.guard_enabled, state.guard_revoke_fails)
+        };
+        if enabled {
+            record(&self.events, "agent.guard_revoke");
+        }
+        if fails {
+            Err(SupervisorError::CleanupUnproven)
+        } else {
+            Ok(())
+        }
+    }
+
     fn launch_helper(
         &mut self,
         _request: louiselm_skills::launch_protocol::CommandMessage,
@@ -3141,15 +3158,20 @@ fn brokered_launch_refuses_unevaluated_host_conformance() {
 
 #[test]
 fn brokered_launch_refuses_when_platform_has_no_guarded_start() {
-    let setup = brokered_setup(Some(NOW_MS + 1_000));
+    let setup = brokered_setup(Some(NOW_MS + 5_000));
+    lock(&setup.broker.state)
+        .authorization
+        .as_mut()
+        .unwrap()
+        .expires_at_ms = NOW_MS + 5_000;
     lock(&setup.platform.state).conformance_report = Some(b"current host report".to_vec());
     let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
     setup.broker.wait_for_append(0);
     setup.broker.acknowledge();
-    assert!(matches!(
-        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
-        Err(SupervisorError::IsolationRejected)
-    ));
+    assert_eq!(
+        receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap().err(),
+        Some(SupervisorError::IsolationRejected)
+    );
     assert!(!lock(&setup.platform.agent).started);
     assert!(
         event_snapshot(&setup.events)
@@ -3925,6 +3947,91 @@ fn park_attempts_every_narrowing_mechanic_and_never_receipts_partial_success() {
 
         finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
     }
+}
+
+#[test]
+fn park_revokes_guard_before_freezing_and_disposal() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    lock(&setup.platform.agent).guard_enabled = true;
+    let (controller_input, relay_receiver, relay_worker, _) =
+        park_launched_session(&setup, session);
+    let events = event_snapshot(&setup.events);
+    let revoke = events
+        .iter()
+        .position(|event| event == "agent.guard_revoke")
+        .expect("guard revocation is attempted");
+    let freeze = events
+        .iter()
+        .position(|event| event == "agent.park")
+        .expect("process freeze is attempted");
+    assert!(revoke < freeze, "{events:?}");
+    finish_session_relay(&setup, controller_input, relay_receiver, relay_worker);
+    let events = event_snapshot(&setup.events);
+    let disposal = events
+        .iter()
+        .position(|event| event == "agent.dispose")
+        .expect("process disposal is attempted");
+    assert!(
+        events[..disposal]
+            .iter()
+            .filter(|event| *event == "agent.guard_revoke")
+            .count()
+            >= 2,
+        "terminal cleanup revokes independently: {events:?}"
+    );
+}
+
+#[test]
+fn failed_guard_revocation_still_freezes_but_never_receipts_park() {
+    let setup = setup(
+        true,
+        |_| {},
+        AppendBehavior::Hold,
+        PlatformBehavior::default(),
+        SUPERVISOR_TIMEOUT,
+    );
+    let session = complete_launch(&setup);
+    {
+        let mut agent = lock(&setup.platform.agent);
+        agent.guard_enabled = true;
+        agent.guard_revoke_fails = true;
+    }
+    let (controller_input, relay_receiver, relay_worker) = begin_session_relay(session);
+    setup.broker.wait_for_session_request();
+    let park = lifecycle_request(&setup, "guard-revoke-failure", "park-authorization", 1);
+    setup
+        .broker
+        .deliver_session_request(ProtocolMessage::Lifecycle(park.clone()));
+    let response = setup.broker.wait_for_session_response(&park.request_id, 0);
+    let ResponseResult::Error { error } = response.result else {
+        panic!("failed guard revocation must refuse Park receipt");
+    };
+    assert_eq!(error.code, ErrorCode::LifecycleMechanicUnavailable);
+    assert_eq!(setup.broker.session_receipt_count(), 0);
+    assert!(lock(&setup.platform.agent).parked);
+    let events = event_snapshot(&setup.events);
+    let revoke = events
+        .iter()
+        .position(|event| event == "agent.guard_revoke")
+        .expect("guard revoke attempted");
+    let freeze = events
+        .iter()
+        .position(|event| event == "agent.park")
+        .expect("freeze attempted after failed guard revoke");
+    assert!(revoke < freeze, "{events:?}");
+    drop(controller_input);
+    assert!(matches!(
+        relay_receiver.recv_timeout(CALLBACK_TIMEOUT),
+        Ok(Err(SupervisorError::CleanupUnproven))
+    ));
+    relay_worker.join().expect("terminal relay worker finishes");
 }
 
 #[test]

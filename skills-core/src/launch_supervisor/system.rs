@@ -25,6 +25,7 @@ pub(super) mod grant_test_support;
 
 use std::{
     fs, io,
+    net::SocketAddr,
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, mpsc},
@@ -36,11 +37,12 @@ use crate::{
     Digest,
     launch::LaunchRequest,
     launch_protocol::{
-        BrokerReconnect, ControllerLossAcknowledgement, ControllerLossSettlement,
-        LaunchAuthorization, ProtocolMessage, ProtocolResponse, ReceiptAcknowledgement,
-        ResponseResult,
+        BROKER_RECONNECT_SCHEMA, BrokerReconnect, ControllerLossAcknowledgement,
+        ControllerLossSettlement, GuardEnrollment, GuardScope, LaunchAuthorization,
+        PROTOCOL_VERSION, ProtocolMessage, ProtocolResponse, RESPONSE_SCHEMA,
+        ReceiptAcknowledgement, ResponseResult,
     },
-    launch_receipt::ProcessExitClassification,
+    launch_receipt::{ProcessExitClassification, ReceiptHead},
     launch_transport::{
         AuthenticatedPacket, BoundSeqpacketListener, CredentialPin, KernelProcess, LauncherPacket,
         SeqpacketChannel, SeqpacketConnector, SeqpacketListener, TransportError,
@@ -82,6 +84,49 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn map_transport(_: TransportError) -> SupervisorError {
     SupervisorError::BrokerUnavailable
+}
+
+fn map_guard(error: super::sender_guard::GuardError) -> SupervisorError {
+    if error == super::sender_guard::GuardError::Cleanup {
+        SupervisorError::CleanupUnproven
+    } else {
+        SupervisorError::IsolationRejected
+    }
+}
+
+fn reconnect_guard_channel(
+    broker: &dyn LaunchBroker,
+    scope: &GuardScope,
+    head: &ReceiptHead,
+    timeout: Duration,
+) -> Result<SeqpacketChannel, SupervisorError> {
+    let offer = BrokerReconnect {
+        schema: BROKER_RECONNECT_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: format!("guard-reconnect-{}", head.digest),
+        session_id: scope.session_id.clone(),
+        run_id: scope.run_id.clone(),
+        envelope_revision: scope.revision,
+        sequence: head.sequence,
+        receipt_digest: head.digest.clone(),
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    broker.reconnect_session(
+        offer.clone(),
+        Box::new(move |result| {
+            let _ = sender.try_send(result);
+        }),
+    )?;
+    let answer = if let Ok(answer) = receiver.recv_timeout(timeout) {
+        answer?
+    } else {
+        broker.cancel_reconnect();
+        return Err(SupervisorError::BrokerTimeout);
+    };
+    if answer != offer {
+        return Err(SupervisorError::AcknowledgementMismatch);
+    }
+    broker.sender_guard_channel()
 }
 
 /// Connects to the install-pinned broker, directly or through its root service manager.
@@ -134,6 +179,8 @@ struct SeqpacketLaunchBrokerState {
     reconnect_generation: u64,
     reconnect: Option<PendingBrokerReconnect>,
     controller_loss_pending: Option<PendingControllerLossSettlement>,
+    guard_close_pending: Option<PendingGuardClosure>,
+    session_receive_armed: bool,
 }
 
 struct PendingBrokerReconnect {
@@ -145,6 +192,11 @@ struct PendingBrokerReconnect {
 struct PendingControllerLossSettlement {
     request: ControllerLossSettlement,
     complete: SupervisorCompletion<ControllerLossAcknowledgement>,
+}
+
+struct PendingGuardClosure {
+    enrollment: GuardEnrollment,
+    complete: SupervisorCompletion<()>,
 }
 
 impl SeqpacketLaunchBroker {
@@ -163,6 +215,8 @@ impl SeqpacketLaunchBroker {
                 reconnect_generation: 0,
                 reconnect: None,
                 controller_loss_pending: None,
+                guard_close_pending: None,
+                session_receive_armed: false,
             })),
         }
     }
@@ -174,6 +228,26 @@ impl SeqpacketLaunchBroker {
             .as_ref()
             .ok_or(SupervisorError::BrokerUnavailable)?;
         Ok(state.channel.clone())
+    }
+
+    fn guard_close_result(
+        packet: &AuthenticatedPacket,
+        pending: &PendingGuardClosure,
+    ) -> Result<(), SupervisorError> {
+        let LauncherPacket::Response(response) = &packet.packet else {
+            return Err(SupervisorError::CleanupUnproven);
+        };
+        if response.request_id == "guard-close"
+            && response.result
+                == (ResponseResult::SenderGuardClosed {
+                    enrollment: pending.enrollment.clone(),
+                })
+            && packet.descriptors.is_none()
+        {
+            Ok(())
+        } else {
+            Err(SupervisorError::CleanupUnproven)
+        }
     }
 
     fn transact<T>(
@@ -265,8 +339,18 @@ impl SeqpacketLaunchBroker {
                 let packet = match received.map_err(map_transport) {
                     Ok(packet) => packet,
                     Err(error) => {
-                        let pending = lock(&state).controller_loss_pending.take();
-                        if let Some(pending) = pending {
+                        let (controller, guard) = {
+                            let mut state = lock(&state);
+                            state.session_receive_armed = false;
+                            (
+                                state.controller_loss_pending.take(),
+                                state.guard_close_pending.take(),
+                            )
+                        };
+                        if let Some(pending) = controller {
+                            (pending.complete)(Err(error.clone()));
+                        }
+                        if let Some(pending) = guard {
                             (pending.complete)(Err(error.clone()));
                         }
                         if let Some(complete) = lock(&completion).take() {
@@ -275,6 +359,7 @@ impl SeqpacketLaunchBroker {
                         return;
                     }
                 };
+                let no_descriptors = packet.descriptors.is_none();
                 if let LauncherPacket::Response(response) = packet.packet {
                     let pending = lock(&state).controller_loss_pending.take();
                     if let Some(pending) = pending {
@@ -296,11 +381,37 @@ impl SeqpacketLaunchBroker {
                             Arc::clone(&completion),
                         ) && let Some(complete) = lock(&completion).take()
                         {
+                            lock(&state).session_receive_armed = false;
+                            complete(Err(error));
+                        }
+                        return;
+                    }
+                    let pending = lock(&state).guard_close_pending.take();
+                    if let Some(pending) = pending {
+                        let result = match response.result {
+                            ResponseResult::SenderGuardClosed { enrollment }
+                                if response.request_id == "guard-close"
+                                    && enrollment == pending.enrollment
+                                    && no_descriptors =>
+                            {
+                                Ok(())
+                            }
+                            _ => Err(SupervisorError::CleanupUnproven),
+                        };
+                        (pending.complete)(result);
+                        if let Err(error) = Self::arm_session_receive(
+                            Arc::clone(&state),
+                            &next_channel,
+                            Arc::clone(&completion),
+                        ) && let Some(complete) = lock(&completion).take()
+                        {
+                            lock(&state).session_receive_armed = false;
                             complete(Err(error));
                         }
                         return;
                     }
                     if let Some(complete) = lock(&completion).take() {
+                        lock(&state).session_receive_armed = false;
                         complete(Err(SupervisorError::BrokerUnavailable));
                     }
                     return;
@@ -315,6 +426,7 @@ impl SeqpacketLaunchBroker {
                     }
                 };
                 if let Some(complete) = lock(&completion).take() {
+                    lock(&state).session_receive_armed = false;
                     complete(result);
                 }
             }))
@@ -346,6 +458,7 @@ impl SeqpacketLaunchBroker {
             match (result, candidate) {
                 (Ok(response), Some(candidate)) if state.connector.is_some() => {
                     replaced = Some(std::mem::replace(&mut state.channel, candidate));
+                    state.session_receive_armed = false;
                     (pending.complete, Ok(response))
                 }
                 (Ok(_), candidate) => {
@@ -369,6 +482,92 @@ impl SeqpacketLaunchBroker {
 }
 
 impl LaunchBroker for SeqpacketLaunchBroker {
+    fn sender_guard_channel(&self) -> Result<SeqpacketChannel, SupervisorError> {
+        self.current_channel()
+    }
+
+    fn close_sender_guard(
+        &self,
+        enrollment: GuardEnrollment,
+        timeout: Duration,
+    ) -> Result<(), SupervisorError> {
+        enrollment
+            .validate()
+            .map_err(|_| SupervisorError::CleanupUnproven)?;
+        let request = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "guard-close".into(),
+            result: ResponseResult::SenderGuardClosing {
+                enrollment: enrollment.clone(),
+            },
+        };
+        request
+            .validate()
+            .map_err(|_| SupervisorError::CleanupUnproven)?;
+        let (sent, received) = mpsc::sync_channel(1);
+        let (channel, direct_receive) = {
+            let mut state = lock(&self.state);
+            if state.connector.is_none()
+                || state.guard_close_pending.is_some()
+                || state.controller_loss_pending.is_some()
+            {
+                return Err(SupervisorError::CleanupUnproven);
+            }
+            state.guard_close_pending = Some(PendingGuardClosure {
+                enrollment,
+                complete: Box::new(move |result| {
+                    let _ = sent.try_send(result);
+                }),
+            });
+            (state.channel.clone(), !state.session_receive_armed)
+        };
+        if direct_receive {
+            let callback_state = Arc::clone(&self.state);
+            let callback_channel = channel.clone();
+            if channel
+                .receive(Box::new(move |received| {
+                    let pending = lock(&callback_state).guard_close_pending.take();
+                    if let Some(pending) = pending {
+                        let result = received
+                            .map_err(map_transport)
+                            .and_then(|packet| Self::guard_close_result(&packet, &pending));
+                        (pending.complete)(result);
+                    } else {
+                        callback_channel.close();
+                    }
+                }))
+                .is_err()
+            {
+                lock(&self.state).guard_close_pending.take();
+                return Err(SupervisorError::CleanupUnproven);
+            }
+        }
+        let callback_state = Arc::clone(&self.state);
+        if channel
+            .send(
+                request.canonical_bytes(),
+                Box::new(move |result| {
+                    if result.is_err()
+                        && let Some(pending) = lock(&callback_state).guard_close_pending.take()
+                    {
+                        (pending.complete)(Err(SupervisorError::CleanupUnproven));
+                    }
+                }),
+            )
+            .is_err()
+        {
+            lock(&self.state).guard_close_pending.take();
+            return Err(SupervisorError::CleanupUnproven);
+        }
+        if let Ok(result) = received.recv_timeout(timeout) {
+            result
+        } else {
+            lock(&self.state).guard_close_pending.take();
+            Err(SupervisorError::CleanupUnproven)
+        }
+    }
+
     fn send_conformance(
         &self,
         update: crate::launch_protocol::ConformanceUpdate,
@@ -617,11 +816,23 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         &self,
         complete: SupervisorCompletion<ProtocolMessage>,
     ) -> Result<(), SupervisorError> {
-        Self::arm_session_receive(
+        let channel = self.current_channel()?;
+        {
+            let mut state = lock(&self.state);
+            if state.session_receive_armed || state.guard_close_pending.is_some() {
+                return Err(SupervisorError::BrokerUnavailable);
+            }
+            state.session_receive_armed = true;
+        }
+        let result = Self::arm_session_receive(
             Arc::clone(&self.state),
-            &self.current_channel()?,
+            &channel,
             Arc::new(Mutex::new(Some(complete))),
-        )
+        );
+        if result.is_err() {
+            lock(&self.state).session_receive_armed = false;
+        }
+        result
     }
 
     fn send_session_receipt(
@@ -670,13 +881,15 @@ impl LaunchBroker for SeqpacketLaunchBroker {
     }
 
     fn close(&self) {
-        let (connector, channel, reconnect, controller_loss_pending) = {
+        let (connector, channel, reconnect, controller_loss_pending, guard_close_pending) = {
             let mut state = lock(&self.state);
+            state.session_receive_armed = false;
             (
                 state.connector.take(),
                 state.channel.clone(),
                 state.reconnect.take(),
                 state.controller_loss_pending.take(),
+                state.guard_close_pending.take(),
             )
         };
         channel.close();
@@ -689,6 +902,9 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         drop(connector);
         if let Some(pending) = controller_loss_pending {
             (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+        }
+        if let Some(pending) = guard_close_pending {
+            (pending.complete)(Err(SupervisorError::CleanupUnproven));
         }
     }
 }
@@ -824,6 +1040,7 @@ pub struct SystemLaunchPlatform {
     config: LauncherConfig,
     backend: BubblewrapBackend,
     timeout: Duration,
+    guarded_start_allowed: bool,
 }
 
 impl SystemLaunchPlatform {
@@ -906,6 +1123,7 @@ impl SystemLaunchPlatform {
             config,
             backend,
             timeout,
+            guarded_start_allowed: false,
         })
     }
 }
@@ -1124,6 +1342,8 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 recovery,
                 verification,
                 workspace: None,
+                sender_guard: None,
+                guarded_start_allowed: self.guarded_start_allowed,
             }))
         })();
         match result {
@@ -1169,6 +1389,8 @@ struct SystemPreparedAgent {
     recovery: Arc<super::recovery::SessionStorage>,
     verification: Arc<super::verification::Storage>,
     workspace: Option<super::workspace::SessionWorkspace>,
+    sender_guard: Option<(super::sender_guard::SenderGuard, GuardScope)>,
+    guarded_start_allowed: bool,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -1213,11 +1435,67 @@ impl PreparedAgent for SystemPreparedAgent {
         Ok(Box::new(running))
     }
 
+    fn prepare_sender_guard(
+        &mut self,
+        scope: GuardScope,
+        broker: SeqpacketChannel,
+    ) -> Result<(), SupervisorError> {
+        if !self.guarded_start_allowed || self.sender_guard.is_some() {
+            return Err(SupervisorError::IsolationRejected);
+        }
+        let mut guard =
+            super::sender_guard::SenderGuard::load(scope.clone(), broker).map_err(map_guard)?;
+        let endpoint = match guard
+            .bind_session_endpoint(&self.prepared, SocketAddr::from(([127, 0, 0, 1], 40773)))
+        {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                guard
+                    .dispose()
+                    .map_err(|_| SupervisorError::CleanupUnproven)?;
+                return Err(map_guard(error));
+            }
+        };
+        drop(endpoint);
+        self.sender_guard = Some((guard, scope));
+        Ok(())
+    }
+
+    fn start_brokered(mut self: Box<Self>) -> Result<Box<dyn RunningAgent>, SupervisorError> {
+        let Some((guard, scope)) = self.sender_guard.take() else {
+            self.dispose()?;
+            return Err(SupervisorError::IsolationRejected);
+        };
+        let mut running = match SystemRunningAgent::start_guarded(self.prepared, guard) {
+            Ok(running) => running,
+            Err(error) => {
+                if let Some(workspace) = &self.workspace {
+                    workspace.seal()?;
+                }
+                return Err(error);
+            }
+        };
+        running.guard_scope = Some(scope);
+        running.tools = self.tools;
+        running.tool_isolation = self.tool_isolation;
+        running.recovery = Some(self.recovery);
+        running.verification_storage = Some(self.verification);
+        running.workspace = self.workspace;
+        Ok(Box::new(running))
+    }
+
     fn dispose(&mut self) -> Result<(), SupervisorError> {
-        self.prepared.dispose().map_err(map_sandbox)?;
-        self.workspace
+        let guard = self
+            .sender_guard
             .as_mut()
-            .map_or(Ok(()), super::workspace::SessionWorkspace::disposed)
+            .map_or(Ok(()), |(guard, _)| guard.dispose())
+            .map_err(map_guard);
+        let process = self.prepared.dispose().map_err(map_sandbox);
+        let workspace = self
+            .workspace
+            .as_mut()
+            .map_or(Ok(()), super::workspace::SessionWorkspace::disposed);
+        guard.and(process).and(workspace)
     }
 }
 
@@ -1238,6 +1516,9 @@ impl ProcessMembership for SystemProcessMembership {
 /// Production lifecycle/relay adapter for an already-confined running Session.
 pub struct SystemRunningAgent {
     sender_guard: Option<super::sender_guard::SenderGuard>,
+    guard_scope: Option<GuardScope>,
+    guard_revoker: Option<super::sender_guard::GuardRevoker>,
+    guard_broker: Option<Arc<dyn LaunchBroker>>,
     cache_worker: Option<super::cache_download::Worker>,
     workspace: Option<super::workspace::SessionWorkspace>,
     tools: Option<super::tool_execution::ToolExecutor>,
@@ -1259,6 +1540,9 @@ impl SystemRunningAgent {
     pub fn new(session: SandboxedSession) -> Self {
         Self {
             sender_guard: None,
+            guard_scope: None,
+            guard_revoker: None,
+            guard_broker: None,
             cache_worker: None,
             workspace: None,
             session: Arc::new(Mutex::new(session)),
@@ -1286,6 +1570,20 @@ impl SystemRunningAgent {
         let session = guard.start(prepared).map_err(map_sandbox)?;
         let mut running = Self::new(session);
         running.sender_guard = Some(guard);
+        running.guard_revoker = match running
+            .sender_guard
+            .as_ref()
+            .map(super::sender_guard::SenderGuard::revoker)
+        {
+            Some(Ok(revoker)) => Some(revoker),
+            _ => {
+                return Err(if running.dispose().is_ok() {
+                    SupervisorError::IsolationRejected
+                } else {
+                    SupervisorError::CleanupUnproven
+                });
+            }
+        };
         Ok(running)
     }
 
@@ -1344,6 +1642,69 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn finish_guarded_start(
+        &mut self,
+        request_id: &str,
+        head: &ReceiptHead,
+        broker: Arc<dyn LaunchBroker>,
+        timeout: Duration,
+    ) -> Result<(), SupervisorError> {
+        let scope = self
+            .guard_scope
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?
+            .clone();
+        let guard = self
+            .sender_guard
+            .as_mut()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        if let Err(error) = guard.announce_enrollment(request_id, timeout) {
+            self.guard_revoker
+                .as_ref()
+                .ok_or(SupervisorError::CleanupUnproven)?
+                .revoke()
+                .map_err(|_| SupervisorError::CleanupUnproven)?;
+            let deadline = Instant::now()
+                .checked_add(timeout)
+                .ok_or(SupervisorError::CleanupUnproven)?;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(SupervisorError::CleanupUnproven);
+                }
+                let channel = reconnect_guard_channel(broker.as_ref(), &scope, head, remaining)?;
+                match guard.close_on_reconnected_channel(channel, remaining) {
+                    Ok(()) => return Err(map_guard(error)),
+                    Err(super::sender_guard::GuardError::Cleanup) => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return Err(SupervisorError::CleanupUnproven),
+                }
+            }
+        }
+        self.guard_broker = Some(broker);
+        guard.activate(&scope).map_err(map_guard)?;
+        Ok(())
+    }
+
+    fn revoke_guard(&self) -> Result<(), SupervisorError> {
+        self.guard_revoker.as_ref().map_or(Ok(()), |revoker| {
+            revoker
+                .revoke()
+                .map_err(|_| SupervisorError::CleanupUnproven)
+        })
+    }
+
+    fn close_guard_handoff(&mut self) -> Result<(), SupervisorError> {
+        match (self.sender_guard.as_mut(), self.guard_broker.as_ref()) {
+            (Some(guard), Some(broker)) => guard
+                .close_handoff_with_broker(broker.as_ref(), Duration::from_secs(5))
+                .map_err(map_guard),
+            (None, _) => Ok(()),
+            (Some(_), None) => Err(SupervisorError::CleanupUnproven),
+        }
+    }
+
     fn store_dependency(
         &mut self,
         digest: Digest,
@@ -1599,10 +1960,7 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn park(&mut self) -> Result<(), MechanicFailure> {
-        let guard = self
-            .sender_guard
-            .as_mut()
-            .map_or(Ok(()), super::sender_guard::SenderGuard::revoke);
+        let guard = self.revoke_guard();
         let cache = self
             .cache_worker
             .as_mut()
@@ -1624,6 +1982,11 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn resume(&mut self) -> Result<(), MechanicFailure> {
+        if self.sender_guard.is_some() {
+            // A revoked revision cannot be reused; fresh broker authority and
+            // handoff must precede any guarded warm Resume.
+            return Err(MechanicFailure::Parked);
+        }
         self.cancel_verification()
             .map_err(|_| MechanicFailure::Ambiguous)?;
         self.join_recovery()
@@ -1648,10 +2011,7 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn dispose(&mut self) -> Result<(), SupervisorError> {
-        let guard = self
-            .sender_guard
-            .as_mut()
-            .map_or(Ok(()), super::sender_guard::SenderGuard::revoke);
+        let guard = self.revoke_guard();
         let cache = self
             .cache_worker
             .as_mut()
@@ -1668,9 +2028,13 @@ impl RunningAgent for SystemRunningAgent {
             .map(|_| ())
             .map_err(map_sandbox);
         let guard_closed = if process.is_ok() && tools.is_ok() && verification.is_ok() {
-            self.sender_guard
-                .as_mut()
-                .map_or(Ok(()), super::sender_guard::SenderGuard::dispose)
+            match (self.sender_guard.as_mut(), self.guard_broker.as_ref()) {
+                (Some(guard), Some(broker)) => {
+                    guard.dispose_with_broker(broker.as_ref(), Duration::from_secs(5))
+                }
+                (Some(guard), None) => guard.dispose(),
+                (None, _) => Ok(()),
+            }
         } else {
             Err(super::sender_guard::GuardError::Cleanup)
         };
@@ -3104,6 +3468,164 @@ mod tests {
                 .expect("logical receive remains armed after demultiplexing")
                 .expect("later request authenticates"),
             ProtocolMessage::Status(after),
+        );
+    }
+
+    fn guard_enrollment() -> GuardEnrollment {
+        GuardEnrollment {
+            scope: GuardScope {
+                session_id: "session".into(),
+                run_id: "run".into(),
+                revision: 1,
+                deadline_ns: u64::MAX,
+            },
+            guard_id: 1,
+            runtime_pid: 2,
+            broker_pid: 3,
+            address: "127.0.0.1:40773".parse().expect("fixture address"),
+            listener_cookie: 4,
+            network_id: 5,
+        }
+    }
+
+    #[test]
+    fn guard_close_ack_uses_the_armed_session_reader() {
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let broker = Arc::new(broker);
+        let request = arm_broker_receive(&broker);
+        let enrollment = guard_enrollment();
+        let (sent, completed) = mpsc::sync_channel(1);
+        let closing = Arc::clone(&broker);
+        let expected = enrollment.clone();
+        let waiter = thread::spawn(move || {
+            sent.send(closing.close_sender_guard(expected, Duration::from_secs(2)))
+                .expect("closure result received");
+        });
+        let offered = receive_packet(&server);
+        let LauncherPacket::Response(response) = offered.packet else {
+            panic!("guard closure must use a typed response");
+        };
+        assert_eq!(
+            response.result,
+            ResponseResult::SenderGuardClosing {
+                enrollment: enrollment.clone()
+            }
+        );
+        let accepted = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "guard-close".into(),
+            result: ResponseResult::SenderGuardClosed { enrollment },
+        };
+        send_packet(&server, accepted.canonical_bytes());
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("closure completes"),
+            Ok(())
+        );
+        waiter.join().expect("closure worker joins");
+        assert!(
+            request.try_recv().is_err(),
+            "guard ACK is not a lifecycle request"
+        );
+        let status = status_request("after-guard-close");
+        send_packet(&server, status.canonical_bytes());
+        assert_eq!(
+            request
+                .recv_timeout(Duration::from_secs(2))
+                .expect("ordinary request remains armed")
+                .expect("ordinary request authenticates"),
+            ProtocolMessage::Status(status)
+        );
+    }
+
+    #[test]
+    fn guard_close_ack_is_received_when_the_owner_is_between_requests() {
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let broker = Arc::new(broker);
+        let enrollment = guard_enrollment();
+        let (sent, completed) = mpsc::sync_channel(1);
+        let closing = Arc::clone(&broker);
+        let expected = enrollment.clone();
+        let waiter = thread::spawn(move || {
+            sent.send(closing.close_sender_guard(expected, Duration::from_secs(2)))
+                .expect("closure result received");
+        });
+        let offered = receive_packet(&server);
+        let LauncherPacket::Response(response) = offered.packet else {
+            panic!("guard closure must use a typed response");
+        };
+        assert_eq!(
+            response.result,
+            ResponseResult::SenderGuardClosing {
+                enrollment: enrollment.clone()
+            }
+        );
+        send_packet(
+            &server,
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "guard-close".into(),
+                result: ResponseResult::SenderGuardClosed { enrollment },
+            }
+            .canonical_bytes(),
+        );
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("closure completes"),
+            Ok(())
+        );
+        waiter.join().expect("closure worker joins");
+        let receive = arm_broker_receive(&broker);
+        let status = status_request("after-direct-guard-close");
+        send_packet(&server, status.canonical_bytes());
+        assert_eq!(
+            receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("ordinary request follows guard ACK")
+                .expect("ordinary request authenticates"),
+            ProtocolMessage::Status(status)
+        );
+    }
+
+    #[test]
+    fn guard_close_rejects_an_uncorrelated_ack() {
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let broker = Arc::new(broker);
+        let request = arm_broker_receive(&broker);
+        let enrollment = guard_enrollment();
+        let (sent, completed) = mpsc::sync_channel(1);
+        let closing = Arc::clone(&broker);
+        let expected = enrollment.clone();
+        let waiter = thread::spawn(move || {
+            sent.send(closing.close_sender_guard(expected, Duration::from_secs(2)))
+                .expect("closure result received");
+        });
+        let offered = receive_packet(&server);
+        assert!(matches!(offered.packet, LauncherPacket::Response(_)));
+        send_packet(
+            &server,
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "wrong-close".into(),
+                result: ResponseResult::SenderGuardClosed { enrollment },
+            }
+            .canonical_bytes(),
+        );
+        assert_eq!(
+            completed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("wrong ACK refuses promptly"),
+            Err(SupervisorError::CleanupUnproven)
+        );
+        waiter.join().expect("closure worker joins");
+        assert!(
+            request.try_recv().is_err(),
+            "wrong ACK cannot become a request"
         );
     }
 

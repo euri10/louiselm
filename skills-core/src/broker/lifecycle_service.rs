@@ -132,6 +132,10 @@ impl BrokerService {
             loop {
                 let packet = receive(&session.channel)?;
                 if let LauncherPacket::Response(response) = &packet.packet {
+                    if matches!(response.result, ResponseResult::SenderGuardClosing { .. }) {
+                        self.close_provider_listener(session, packet)?;
+                        continue;
+                    }
                     if response.request_id != request.request_id {
                         return Err(BrokerError::InvalidGrant);
                     }

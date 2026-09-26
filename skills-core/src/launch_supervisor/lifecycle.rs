@@ -60,6 +60,22 @@ pub(super) struct SessionResources {
 type StartupCheck = Box<dyn FnOnce(&mut SessionResources) -> Result<(), SupervisorError> + Send>;
 
 impl SessionResources {
+    pub(super) fn finish_guarded_start(
+        &mut self,
+        request_id: &str,
+        head: &ReceiptHead,
+        timeout: Duration,
+    ) -> Result<(), SupervisorError> {
+        let broker = self
+            .broker
+            .as_ref()
+            .ok_or(SupervisorError::BrokerUnavailable)?;
+        self.process
+            .as_mut()
+            .ok_or(SupervisorError::IsolationRejected)?
+            .finish_guarded_start(request_id, head, Arc::clone(broker), timeout)
+    }
+
     pub(super) fn new(
         process: Box<dyn RunningAgent>,
         capability: Box<dyn CapabilityGate>,
@@ -77,6 +93,10 @@ impl SessionResources {
     }
 
     fn terminate_session(&mut self) -> Result<(), SupervisorError> {
+        let guard_result = self
+            .process
+            .as_ref()
+            .map_or(Ok(()), |process| process.revoke_guard());
         if let Some(mut capability) = self.capability.take() {
             capability.close();
         }
@@ -88,9 +108,9 @@ impl SessionResources {
             self.process = None;
         }
         let Some(identity) = self.identity.take() else {
-            return process_result;
+            return guard_result.and(process_result);
         };
-        if process_result.is_ok() {
+        if guard_result.is_ok() && process_result.is_ok() {
             identity.release()
         } else {
             let _ = identity.poison();
@@ -2286,22 +2306,39 @@ impl SessionOwner {
     }
 
     fn attempt_park(&mut self) -> ParkResult {
-        match self
+        let guard = self
+            .resources
+            .process
+            .as_ref()
+            .map_or(Ok(()), |process| process.revoke_guard());
+        let parked = self
             .resources
             .process
             .as_mut()
-            .map_or(Err(MechanicFailure::Ambiguous), |process| process.park())
-        {
-            Ok(()) | Err(MechanicFailure::Parked) => {
+            .map_or(Err(MechanicFailure::Ambiguous), |process| process.park());
+        let closed = if guard.is_ok() && matches!(parked, Ok(()) | Err(MechanicFailure::Parked)) {
+            self.resources
+                .process
+                .as_mut()
+                .map_or(Err(SupervisorError::CleanupUnproven), |process| {
+                    process.close_guard_handoff()
+                })
+        } else {
+            Ok(())
+        };
+        match parked {
+            Ok(()) | Err(MechanicFailure::Parked) if guard.is_ok() && closed.is_ok() => {
                 self.state = SessionState::Parked;
                 ParkResult::Parked
+            }
+            Ok(()) | Err(MechanicFailure::Parked | MechanicFailure::Ambiguous) => {
+                ParkResult::Ambiguous
             }
             Err(MechanicFailure::Running) => {
                 self.state = SessionState::Running;
                 ParkResult::Running
             }
             Err(MechanicFailure::Terminal(classification)) => ParkResult::Terminal(classification),
-            Err(MechanicFailure::Ambiguous) => ParkResult::Ambiguous,
         }
     }
 

@@ -63,6 +63,9 @@ pub(super) mod workspace;
 #[path = "installed_provider_credentials_tests.rs"]
 mod provider_credentials;
 
+#[path = "installed_guard_tests.rs"]
+mod guard;
+
 struct BrokerAccount;
 
 impl BrokerAccount {
@@ -175,6 +178,15 @@ fn request() -> LaunchRequest {
         skill_generation_id: Digest::of(b"fixture-generation").to_string(),
         session_input_manifest_id: workspace::fixture_manifest().digest().to_string(),
     }
+}
+
+fn fixture_expiry(root: &Path, now_ms: u64) -> u64 {
+    now_ms
+        + if root.join("cold-resume").exists() || root.join("brokered").exists() {
+            120_000
+        } else {
+            30_000
+        }
 }
 
 fn write_json(path: &Path, value: &impl serde::Serialize) {
@@ -333,6 +345,10 @@ fn install_fixture_at(
     (fixture_paths, config, registry)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "One installed broker worker preserves the ordered launch and lifecycle protocol across fixture variants."
+)]
 #[test]
 fn installed_broker_worker() {
     let Some(root) = std::env::var_os("LOUISELM_BROKER_FIXTURE") else {
@@ -364,16 +380,11 @@ fn installed_broker_worker() {
             dependencies: None,
             skill_requests: None,
             beads_mutations: None,
-            provider_requests: None,
+            provider_requests: root.join("brokered").exists().then(|| guard::approval(now)),
             require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,
-            expires_at_ms: now
-                + if root.join("cold-resume").exists() {
-                    120_000
-                } else {
-                    30_000
-                },
+            expires_at_ms: fixture_expiry(&root, now),
             broker_loss_grace_ms: 500,
             commands: Some(ApprovedCommands {
                 command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
@@ -405,6 +416,10 @@ fn installed_broker_worker() {
         return;
     }
     let mut session = launched.unwrap();
+    if root.join("brokered").exists() {
+        assert!(!broker.step(&mut session).unwrap());
+        println!("BROKER_GUARD_ACKED");
+    }
     let inspection = broker.inspect_active(&session).unwrap();
     assert_eq!(inspection.broker_head.unwrap().sequence, 1);
     assert!(inspection.launch_evidence.is_some());
@@ -415,6 +430,20 @@ fn installed_broker_worker() {
     let proof = inspection.start_evidence.unwrap();
     assert_eq!(proof.assigned_uid, AGENT_UID);
     println!("BROKER_RUNNING {}", proof.agent_pid);
+    if root.join("guard-close-no-ack").exists() {
+        println!("BROKER_GUARD_HELD");
+        thread::sleep(Duration::from_secs(8));
+        assert_eq!(
+            broker.inspect("session").unwrap().unwrap().state,
+            crate::launch_receipt::SessionState::Running
+        );
+        println!("BROKER_NO_TERMINAL");
+        return;
+    }
+    if root.join("guard-park").exists() {
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid);
+        return;
+    }
     if root.join("key-revocation").exists() {
         while broker.step(&mut session).is_ok() {}
         assert!(broker.key_revocation("session").unwrap().is_some());
@@ -424,7 +453,9 @@ fn installed_broker_worker() {
         println!("BROKER_REVOKED");
         return;
     }
-    recovery::controller_registers(&broker, &mut session, config.operator_uid);
+    if !root.join("brokered").exists() {
+        recovery::controller_registers(&broker, &mut session, config.operator_uid);
+    }
     while !broker.step(&mut session).unwrap() {}
     assert_eq!(
         broker.inspect("session").unwrap().unwrap().state,
