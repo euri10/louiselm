@@ -119,7 +119,7 @@ def scenario(library, broker_tests, variant):
             ready = gate.receive(peer, True)
             assert ready["ready"]
             owners, runtimes, ports = [], [], []
-            for index in range(1 if variant == "invalid" else 2):
+            for index in range(1 if variant in ("invalid", "connect-race", "queue-race", "ack-race") else 2):
                 namespace = f"lh-{os.getpid()}-{index}"
                 subprocess.run(["ip", "netns", "add", namespace], check=True)
                 namespaces.append(namespace)
@@ -159,6 +159,24 @@ def scenario(library, broker_tests, variant):
                 served = gate.receive(peer, True)
                 assert served["served"] and served["calls"] == index + 1 and served["spent"] == index + 1
                 assert gate.request(agent, {"op": "read"})["response"]
+                if variant in ("connect-race", "queue-race", "ack-race"):
+                    gate.send(owner, {"op": "transfer-race", "address": destination, "stage": variant.split("-")[0]})
+                    assert gate.receive(owner, True)["held"]
+                    gate.send(owner, {"op": "revoke"})
+                    assert gate.receive(owner, True)["revoked"]
+                    if variant != "connect-race":
+                        gate.send(peer, {"op": "upstream", "index": index})
+                        assert gate.receive(peer, True)["taken"] == index
+                    assert gate.receive(owner, True)["refused"]
+                    observed, _ = upstream.accept()
+                    observers.append(observed)
+                    if variant != "connect-race":
+                        assert not gate.request(peer, {"op": "send", "index": index}, True)["sent"]
+                    assert gate.request(agent, {"op": "write", "port": port}) == {"sent": False, "errno": errno.EPERM}
+                    owners.append(owner)
+                    runtimes.append(agent)
+                    ports.append(port)
+                    continue
                 gate.send(owner, {"op": "transfer", "address": destination})
                 assert gate.receive(owner, True)["handoff"]
                 gate.send(peer, {"op": "upstream", "index": index})
@@ -172,7 +190,14 @@ def scenario(library, broker_tests, variant):
                 owners.append(owner)
                 runtimes.append(agent)
                 ports.append(port)
-            if variant != "invalid":
+            if variant in ("connect-race", "queue-race", "ack-race"):
+                peer.kill()
+                peer.wait(5)
+                runtimes[0].kill()
+                runtimes[0].wait(5)
+                gate.send(owners[0], {"op": "close"})
+                assert owners[0].wait(5) == 0, owners[0].stderr.read()[-4000:]
+            elif variant != "invalid":
                 # Transfer a Session-0 connected socket into the enrolled Session-1
                 # process. Its own valid grant cannot authorize this namespace/socket.
                 assert gate.request(runtimes[0], {"op": "connect", "port": ports[0]})["connected"]
@@ -241,7 +266,7 @@ def main():
     assert "bpf" in Path("/sys/kernel/security/lsm").read_text().split(",")
     library = executable(args.library_tests, "louiselm_skills-*")
     broker_tests = executable(args.broker_tests, "broker-*")
-    for variant in ("normal", "invalid", "broker-crash", "partial"):
+    for variant in ("normal", "invalid", "broker-crash", "partial", "connect-race", "queue-race", "ack-race"):
         scenario(library, broker_tests, variant)
     print("PRODUCTION_HANDOFF_COMPONENT_PASS_NOT_VERIFIED", flush=True)
 

@@ -133,6 +133,13 @@ prevents a closure acknowledgement, even after shutdown. The supervisor still
 retires its copy by cookie; failed acknowledgements revoke all socket authority,
 close the channel and deny reuse.
 
+A revision-bound `GuardRevoker` can delete policy and shut down retained sockets
+without waiting for connect, descriptor delivery or the broker ACK. Registration
+and activation hold only its short state lock; a late ACK cannot restore the
+revoked revision. The disposable handoff gate races revocation at all three
+stages and rejects a stale handle after revision replacement. This is a
+component seam: `.4.5` must still connect it to the production lifecycle owner.
+
 Revision/disposal revokes first, then exchanges `SenderGuardClosing` /
 `SenderGuardClosed` for the exact enrollment before releasing the endpoint.
 No reply means cleanup is unproved unless the original broker's pidfd proves

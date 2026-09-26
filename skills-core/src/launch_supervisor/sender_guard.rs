@@ -13,6 +13,7 @@ use std::{
         fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
         unix::fs::MetadataExt,
     },
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -78,6 +79,67 @@ struct Endpoint {
     rule: Rule,
 }
 
+struct Revocable {
+    upstreams: BTreeMap<u64, TcpStream>,
+    policy: MapHandle,
+    port: Option<u32>,
+    revision: u64,
+    revoked: bool,
+    // An outstanding revoker may outlive SenderGuard while a socket is closing.
+    _pins: File,
+}
+
+impl Revocable {
+    fn revoke(&mut self) -> Result<(), GuardError> {
+        self.revoked = true;
+        let mut failed = self.port.is_some_and(|port| {
+            let key = port.to_ne_bytes();
+            match self.policy.lookup(&key, MapFlags::ANY) {
+                Ok(Some(_)) => self.policy.delete(&key).is_err(),
+                Ok(None) => false,
+                Err(_) => true,
+            }
+        });
+        for socket in self.upstreams.values() {
+            if shutdown(socket).is_err() {
+                failed = true;
+            }
+        }
+        if failed {
+            Err(GuardError::Cleanup)
+        } else {
+            self.upstreams.clear();
+            Ok(())
+        }
+    }
+}
+
+/// Revision-bound revocation authority for a lifecycle owner that must not
+/// wait for a socket connect, descriptor send or broker acknowledgement.
+/// Retain it only through that revision's handoff and disposal.
+pub struct GuardRevoker {
+    state: Arc<Mutex<Revocable>>,
+    revision: u64,
+}
+
+impl GuardRevoker {
+    /// Deletes the endpoint policy and shuts down every retained upstream copy.
+    /// A handle from an older revision cannot affect its replacement.
+    /// # Errors
+    /// Reports stale authority or unproven map/socket cleanup.
+    pub fn revoke(&self) -> Result<(), GuardError> {
+        // Even a poisoned mutex must attempt the kernel narrowing operation.
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision != self.revision {
+            return Err(GuardError::Authority);
+        }
+        state.revoke()
+    }
+}
+
 /// Privileged owner of one Session's guard. There is no recovery enrollment API.
 ///
 /// Protected pins are never unlinked/unmounted by Drop. They survive this
@@ -86,7 +148,7 @@ struct Endpoint {
 pub struct SenderGuard {
     // Declaration order is Drop order: no retained socket may outlive pins.
     endpoint: Option<Endpoint>,
-    upstreams: BTreeMap<u64, TcpStream>,
+    revocation: Arc<Mutex<Revocable>>,
     maps: BTreeMap<String, MapHandle>,
     scope: GuardScope,
     broker: SeqpacketChannel,
@@ -96,6 +158,14 @@ pub struct SenderGuard {
     handoff: Option<GuardEnrollment>,
     runtime_pid: u32,
     pins: PinNamespace,
+}
+
+impl Drop for SenderGuard {
+    fn drop(&mut self) {
+        // An independent revoker may still retain the map and socket leases.
+        // Dropping the owner must narrow them before that last handle exits.
+        let _ = self.revoke();
+    }
 }
 
 impl SenderGuard {
@@ -181,7 +251,7 @@ impl SenderGuard {
         }
         rustix::mount::mount_remount("/sys/fs/bpf", MountFlags::RDONLY, "")
             .map_err(|_| GuardError::Unavailable)?;
-        let maps = object
+        let maps: BTreeMap<String, MapHandle> = object
             .maps()
             .map(|map| {
                 let name = map
@@ -195,6 +265,16 @@ impl SenderGuard {
                 ))
             })
             .collect::<Result<_, GuardError>>()?;
+        let policy = MapHandle::try_from(maps.get("policy").ok_or(GuardError::Enrollment)?)
+            .map_err(|_| GuardError::Enrollment)?;
+        let revocation = Arc::new(Mutex::new(Revocable {
+            upstreams: BTreeMap::new(),
+            policy,
+            port: None,
+            revision: scope.revision,
+            revoked: false,
+            _pins: pins.lease()?,
+        }));
         let guard = Self {
             maps,
             pins,
@@ -206,7 +286,7 @@ impl SenderGuard {
             announced: false,
             handoff: None,
             runtime_pid: 0,
-            upstreams: BTreeMap::new(),
+            revocation,
         };
         guard.put(
             "lost",
@@ -271,6 +351,7 @@ impl SenderGuard {
             network,
             rule,
         });
+        self.revocable()?.port = Some(u32::from(address.port()));
         Ok(result)
     }
 
@@ -317,18 +398,38 @@ impl SenderGuard {
             return Err(GuardError::Enrollment);
         }
         let endpoint = self.endpoint.as_ref().ok_or(GuardError::Enrollment)?;
+        let state = self.revocable()?;
+        if state.revoked || state.revision != scope.revision {
+            return Err(GuardError::Authority);
+        }
         self.put(
             "listeners",
             &endpoint.rule.listener.to_ne_bytes(),
             &1_u32.to_ne_bytes(),
             MapFlags::ANY,
         )?;
-        self.put(
-            "policy",
-            &endpoint.rule.port.to_ne_bytes(),
-            &endpoint.rule.bytes(),
-            MapFlags::ANY,
-        )
+        state
+            .policy
+            .update(
+                &endpoint.rule.port.to_ne_bytes(),
+                &endpoint.rule.bytes(),
+                MapFlags::ANY,
+            )
+            .map_err(|_| GuardError::Enrollment)
+    }
+
+    /// Gives the lifecycle owner an independent, revision-bound narrowing path.
+    /// It may revoke while this guard waits for an upstream handoff ACK.
+    /// # Errors
+    /// Refuses a guard without a measured runtime and bound endpoint.
+    pub fn revoker(&self) -> Result<GuardRevoker, GuardError> {
+        if !self.enrolled || self.endpoint.is_none() {
+            return Err(GuardError::Enrollment);
+        }
+        Ok(GuardRevoker {
+            state: Arc::clone(&self.revocation),
+            revision: self.scope.revision,
+        })
     }
 
     /// Revokes before closing retained socket copies. Broker copies still require
@@ -339,29 +440,10 @@ impl SenderGuard {
         // A revoked enrollment must never activate the same revision again.
         // revise() closes this handoff and requires a fresh broker response.
         self.announced = false;
-        let mut failed = false;
-        if let Some(endpoint) = &self.endpoint {
-            let key = endpoint.rule.port.to_ne_bytes();
-            failed = match self.map("policy") {
-                Ok(map) => match map.lookup(&key, MapFlags::ANY) {
-                    Ok(Some(_)) => map.delete(&key).is_err(),
-                    Ok(None) => false,
-                    Err(_) => true,
-                },
-                Err(_) => true,
-            };
-        }
-        for socket in self.upstreams.values() {
-            if shutdown(socket).is_err() {
-                failed = true;
-            }
-        }
-        if failed {
-            Err(GuardError::Cleanup)
-        } else {
-            self.upstreams.clear();
-            Ok(())
-        }
+        self.revocation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revoke()
     }
 
     /// Revokes sockets and closes the supervisor's endpoint copy. Call after
@@ -396,6 +478,10 @@ impl SenderGuard {
         let endpoint = self.endpoint.as_mut().ok_or(GuardError::Enrollment)?;
         endpoint.rule.revision = scope.revision;
         endpoint.rule.deadline = scope.deadline_ns;
+        let mut state = self.revocable()?;
+        state.revision = scope.revision;
+        state.revoked = false;
+        drop(state);
         self.scope = scope;
         self.announced = false;
         Ok(())
@@ -425,6 +511,10 @@ impl SenderGuard {
 
     fn map(&self, name: &str) -> Result<&MapHandle, GuardError> {
         self.maps.get(name).ok_or(GuardError::Enrollment)
+    }
+
+    fn revocable(&self) -> Result<MutexGuard<'_, Revocable>, GuardError> {
+        self.revocation.lock().map_err(|_| GuardError::Cleanup)
     }
 
     fn put(&self, name: &str, key: &[u8], value: &[u8], flags: MapFlags) -> Result<(), GuardError> {

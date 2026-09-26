@@ -6,6 +6,7 @@
     reason = "Test fixtures abort on setup failure and assert exact refusals."
 )]
 
+use super::handoff::HandoffStage;
 use super::*;
 use crate::launch_protocol::{PROTOCOL_VERSION, ProtocolResponse, RESPONSE_SCHEMA, ResponseResult};
 use crate::launch_transport::{CredentialPin, KernelCredentials, SeqpacketConnector};
@@ -193,10 +194,10 @@ fn serve_actions(
     guard: &mut SenderGuard,
     runtime: &KernelProcess,
     mut scope: GuardScope,
-    lines: impl Iterator<Item = std::io::Result<String>>,
+    mut lines: impl Iterator<Item = std::io::Result<String>>,
     current: Option<&crate::launch_protocol::SupervisorStatus>,
 ) {
-    for line in lines {
+    while let Some(line) = lines.next() {
         let action: Value = serde_json::from_str(&line.unwrap()).unwrap();
         match action["op"].as_str().unwrap() {
             "status" => {
@@ -244,6 +245,45 @@ fn serve_actions(
                 let cookie = result.unwrap();
                 emit(&json!({"connected":true,"cookie":cookie}));
             }
+            "transfer-race" => {
+                let revoker = guard.revoker().unwrap();
+                let destination = action["address"].as_str().unwrap().parse().unwrap();
+                let stage = match action["stage"].as_str().unwrap() {
+                    "connect" => HandoffStage::Connected,
+                    "queue" => HandoffStage::Queued,
+                    "ack" => HandoffStage::AckWait,
+                    other => panic!("unknown handoff stage {other}"),
+                };
+                std::thread::scope(|threads| {
+                    let (entered, ready) = mpsc::sync_channel(1);
+                    let (resume, released) = mpsc::sync_channel(1);
+                    let transfer_scope = scope.clone();
+                    let guard_ref = &mut *guard;
+                    let transfer = threads.spawn(move || {
+                        guard_ref.handoff_upstream_with(
+                            &transfer_scope,
+                            destination,
+                            "guard-upstream",
+                            Duration::from_secs(5),
+                            move |at| {
+                                if at == stage {
+                                    entered.send(()).unwrap();
+                                    released.recv().unwrap();
+                                }
+                            },
+                        )
+                    });
+                    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+                    emit(&json!({"held":true}));
+                    let command = read(&mut lines);
+                    assert_eq!(command["op"], "revoke");
+                    revoker.revoke().unwrap();
+                    emit(&json!({"revoked":true}));
+                    resume.send(()).unwrap();
+                    assert!(transfer.join().unwrap().is_err());
+                    emit(&json!({"refused":true}));
+                });
+            }
             "protected" => {
                 assert_eq!(
                     std::fs::remove_file("/sys/fs/bpf/endpoint_send")
@@ -275,6 +315,7 @@ fn serve_actions(
                 emit(&json!({"stale_refused":true}));
             }
             "revise" => {
+                let stale = guard.revoker().unwrap();
                 scope.revision += 1;
                 // Deadline authorization belongs to broker policy. The loader
                 // binds the replacement scope, not an invented policy ceiling.
@@ -284,6 +325,7 @@ fn serve_actions(
                 guard
                     .announce_enrollment("guard-revised", Duration::from_secs(5))
                     .unwrap();
+                assert_eq!(stale.revoke(), Err(GuardError::Authority));
                 emit(&json!({"revised":true}));
             }
             "lost" => {

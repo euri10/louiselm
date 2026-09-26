@@ -106,26 +106,58 @@ impl SenderGuard {
         destination: SocketAddr,
         timeout: Duration,
     ) -> Result<GuardedSocket<TcpStream>, GuardError> {
+        self.connect_upstream_with(scope, destination, timeout, || {})
+    }
+
+    pub(super) fn connect_upstream_with(
+        &mut self,
+        scope: &GuardScope,
+        destination: SocketAddr,
+        timeout: Duration,
+        after_connect: impl FnOnce(),
+    ) -> Result<GuardedSocket<TcpStream>, GuardError> {
         self.check_scope(scope)?;
         // Bound retained descriptors even if the handoff consumer stops retiring
         // completed connections. This is a mechanics limit, not request policy.
-        if self.upstreams.len() >= 128 {
-            return Err(GuardError::Capacity);
-        }
         let endpoint = self.endpoint.as_ref().ok_or(GuardError::Enrollment)?;
         let key = endpoint.rule.port.to_ne_bytes();
-        if self
-            .map("policy")?
+        {
+            let state = self.revocable()?;
+            if state.revoked || state.revision != scope.revision {
+                return Err(GuardError::Authority);
+            }
+            if state.upstreams.len() >= 128 {
+                return Err(GuardError::Capacity);
+            }
+            if state
+                .policy
+                .lookup(&key, MapFlags::ANY)
+                .map_err(|_| GuardError::Enrollment)?
+                .is_none()
+            {
+                return Err(GuardError::Enrollment);
+            }
+        }
+        let network = File::open("/proc/thread-self/ns/net").map_err(|_| GuardError::Socket)?;
+        let socket =
+            TcpStream::connect_timeout(&destination, timeout).map_err(|_| GuardError::Socket)?;
+        after_connect();
+        self.check_scope(scope)?;
+        let mut state = self.revocable()?;
+        if state.revoked || state.revision != scope.revision {
+            return Err(GuardError::Authority);
+        }
+        if state.upstreams.len() >= 128 {
+            return Err(GuardError::Capacity);
+        }
+        if state
+            .policy
             .lookup(&key, MapFlags::ANY)
             .map_err(|_| GuardError::Enrollment)?
             .is_none()
         {
             return Err(GuardError::Enrollment);
         }
-        let network = File::open("/proc/thread-self/ns/net").map_err(|_| GuardError::Socket)?;
-        let socket =
-            TcpStream::connect_timeout(&destination, timeout).map_err(|_| GuardError::Socket)?;
-        self.check_scope(scope)?;
         let rule = Rule::new(
             scope,
             2,
@@ -146,7 +178,7 @@ impl SenderGuard {
         let pins = self.pins.lease()?;
         let cookie =
             rustix::net::sockopt::socket_cookie(&socket).map_err(|_| GuardError::Socket)?;
-        self.upstreams.insert(cookie, retained);
+        state.upstreams.insert(cookie, retained);
         Ok(GuardedSocket {
             socket,
             pins,
@@ -161,9 +193,10 @@ impl SenderGuard {
     /// Refuses foreign/stale scope, an unknown cookie or unproven shutdown.
     pub fn retire_upstream(&mut self, scope: &GuardScope, cookie: u64) -> Result<(), GuardError> {
         self.check_scope(scope)?;
-        let socket = self.upstreams.get(&cookie).ok_or(GuardError::Socket)?;
+        let mut state = self.revocable()?;
+        let socket = state.upstreams.get(&cookie).ok_or(GuardError::Socket)?;
         shutdown(socket)?;
-        self.upstreams.remove(&cookie);
+        state.upstreams.remove(&cookie);
         Ok(())
     }
 }

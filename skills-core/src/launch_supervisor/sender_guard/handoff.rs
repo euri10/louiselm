@@ -8,6 +8,13 @@ use crate::launch_transport::LauncherPacket;
 use std::sync::mpsc;
 use std::{net::SocketAddr, os::fd::AsFd, time::Duration};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum HandoffStage {
+    Connected,
+    Queued,
+    AckWait,
+}
+
 impl SenderGuard {
     /// Connects one already-admitted broker destination and transfers the guarded
     /// socket and both leases on the original authenticated channel. No TLS or
@@ -22,12 +29,25 @@ impl SenderGuard {
         request_id: &str,
         timeout: Duration,
     ) -> Result<u64, GuardError> {
+        self.handoff_upstream_with(scope, destination, request_id, timeout, |_| {})
+    }
+
+    pub(super) fn handoff_upstream_with(
+        &mut self,
+        scope: &GuardScope,
+        destination: SocketAddr,
+        request_id: &str,
+        timeout: Duration,
+        progress: impl Fn(HandoffStage),
+    ) -> Result<u64, GuardError> {
         let enrollment = self
             .handoff
             .clone()
             .filter(|_| self.announced)
             .ok_or(GuardError::Enrollment)?;
-        let socket = self.connect_upstream(scope, destination, timeout)?;
+        let socket = self.connect_upstream_with(scope, destination, timeout, || {
+            progress(HandoffStage::Connected);
+        })?;
         let cookie = socket.cookie()?;
         let evidence = crate::launch_protocol::GuardUpstream {
             enrollment,
@@ -54,17 +74,27 @@ impl SenderGuard {
             )
             .map_err(|_| GuardError::Lost)
             .and_then(|()| {
+                progress(HandoffStage::Queued);
                 completion
                     .recv_timeout(timeout)
                     .map_err(|_| GuardError::Lost)?
                     .map_err(|_| GuardError::Lost)
             })
             .and_then(|()| {
+                progress(HandoffStage::AckWait);
                 self.receive_ack(
                     request_id,
                     &ResponseResult::SenderGuardUpstreamAccepted { socket: evidence },
                     timeout,
                 )
+            })
+            .and_then(|()| {
+                let state = self.revocable()?;
+                if state.revoked || state.revision != scope.revision {
+                    Err(GuardError::Authority)
+                } else {
+                    Ok(())
+                }
             });
         if result.is_err() {
             self.broker.close();
@@ -146,6 +176,11 @@ impl SenderGuard {
         }
         result?;
         self.live()?;
+        let state = self.revocable()?;
+        if state.revoked || state.revision != self.scope.revision {
+            return Err(GuardError::Authority);
+        }
+        drop(state);
         self.announced = true;
         Ok(())
     }
