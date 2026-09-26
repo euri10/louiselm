@@ -110,15 +110,13 @@ impl ToolIsolationEvidence {
         {
             return Err(SupervisorError::AgentIdentityRejected);
         }
-        let executable = fs::metadata(format!("/proc/{}/exe", process.credentials().pid))
-            .map_err(|_| SupervisorError::AgentIdentityRejected)?;
+        let executable = process.executable_identity();
         if self.contract != CONTRACT
             || self.session_id != request.session_id
             || self.release_id != release_id
             || self.backend_digest != backend_digest
             || self.executable_digest != measured.executable_sha256
-            || self.executable_device != executable.dev()
-            || self.executable_inode != executable.ino()
+            || (self.executable_device, self.executable_inode) != executable
             || authentication.credentials != process.credentials()
             || !process
                 .valid()

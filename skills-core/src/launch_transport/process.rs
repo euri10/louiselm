@@ -99,6 +99,12 @@ impl KernelProcess {
         self.credentials
     }
 
+    /// Device/inode measured at the exec stop and pinned for this process life.
+    /// `valid()` must also hold when this identity grants continuing authority.
+    pub(crate) fn executable_identity(&self) -> (u64, u64) {
+        (self.executable_device, self.executable_inode)
+    }
+
     /// Checks the pinned lifetime and executable without waiting for process exit.
     ///
     /// Call on an I/O worker: executable metadata reads may perform filesystem I/O.
