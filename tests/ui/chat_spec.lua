@@ -1520,6 +1520,62 @@ T["chat"]["submits only the prompt region after malformed assistant markdown"] =
   })
 end
 
+T["chat"]["streams after undo removes completed reasoning folds"] = MiniTest.new_set({
+  parametrize = { { false, 6 }, { true, 6 }, { false, 30 } },
+})
+T["chat"]["streams after undo removes completed reasoning folds"]["preserves the draft"] = function(redo, draft_count)
+  -- louiselm-wbgpr: screenshot 20260926_1730_1920x1200_1790436653.png.
+  -- Synthetic text; the reported ordering is streaming, edits, undo/redo, more output.
+  local first = fake_session("session-1", "codex")
+  local chat = assert(Chat.new(fake_api()))
+  MiniTest.finally(function()
+    chat:dispose()
+  end)
+  assert(chat:attach(first))
+  local buffer = assert(chat:buffer())
+  local draft, prompt = {}, {}
+  for index = 1, draft_count do
+    prompt[index] = "draft " .. index
+    draft[index] = "> " .. prompt[index]
+  end
+  nvim.api.nvim_buf_set_lines(buffer, -2, -1, false, draft)
+  nvim.cmd("let &undolevels = &undolevels")
+  local before = nvim.fn.undotree().seq_cur
+
+  local function emit(kind, text)
+    local timer = assert(nvim.uv.new_timer())
+    local delivered = false
+    timer:start(0, 0, function()
+      timer:close()
+      assert(nvim.in_fast_event())
+      first:emit({ type = kind, session_id = "session-1", data = { text = text } })
+      nvim.schedule(function()
+        delivered = true
+      end)
+    end)
+    assert(nvim.wait(1000, function()
+      return delivered
+    end, 1))
+  end
+  emit("thought_chunk", "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight")
+  emit("chunk", "old answer")
+  nvim.cmd("let &undolevels = &undolevels")
+  local after = nvim.fn.undotree().seq_cur
+  nvim.cmd("undo " .. before)
+  if redo then
+    nvim.cmd("undo " .. after)
+    nvim.cmd("undo " .. before)
+  end
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, -#draft - 1, -1, false), draft)
+
+  emit("thought_chunk", "new reasoning")
+  emit("chunk", "new answer")
+  MiniTest.expect.equality(nvim.tbl_contains(buffer_lines(buffer), "new answer"), true)
+  MiniTest.expect.equality(nvim.api.nvim_buf_get_lines(buffer, -#draft - 1, -1, false), draft)
+  assert(chat:submit())
+  MiniTest.expect.equality(first.prompts, { table.concat(prompt, "\n") })
+end
+
 T["chat"]["renders later events after undo shifts the prompt boundary"] = function()
   local first = fake_session("session-1", "codex")
   local chat = assert(Chat.new(fake_api()))

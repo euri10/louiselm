@@ -28,6 +28,59 @@ local function new_buffer(options)
   return owner
 end
 
+T["reasoning folds follow edits and survive undo redo before showing again"] = function()
+  local owner = new_buffer()
+  owner:append({ "preceding line", "another line" })
+  owner:render({ type = "thought_chunk", session_id = "buffer-test", data = { text = "first\nsecond" } })
+  owner:render({ type = "chunk", session_id = "buffer-test", data = { text = "answer" } })
+  local original = buffer_lines(owner.buffer)
+  nvim.cmd("let &undolevels = &undolevels")
+  nvim.api.nvim_buf_set_lines(owner.buffer, 5, 7, false, {})
+  nvim.cmd("let &undolevels = &undolevels")
+  for _, action in ipairs({ "edited", "undo", "redo" }) do
+    if action ~= "edited" then
+      nvim.cmd(action)
+    end
+    nvim.cmd("normal! zE")
+    owner:show(owner.window, false)
+    local header = action == "undo" and 8 or 6
+    MiniTest.expect.equality(nvim.fn.foldclosed(header), header)
+    MiniTest.expect.equality(nvim.fn.foldclosedend(header), header + 2)
+    nvim.api.nvim_win_set_cursor(owner.window, { 5, 0 })
+    nvim.api.nvim_feedkeys("]x", "mx", false)
+    MiniTest.expect.equality(nvim.api.nvim_get_current_line(), "[thinking]")
+    if action == "undo" then
+      MiniTest.expect.equality(buffer_lines(owner.buffer), original)
+    end
+  end
+end
+
+T["tool and compaction updates retain their rows after transcript edits"] = function()
+  local owner = new_buffer()
+  owner:append({ "removed line" })
+  owner:render({
+    type = "tool_call_started",
+    session_id = "buffer-test",
+    data = { toolCallId = "read", title = "Read" },
+  })
+  owner:compaction({ id = "compact", status = "in_progress" })
+  owner:replace_prompt("draft\nstill draft")
+  nvim.api.nvim_buf_set_lines(owner.buffer, 5, 6, false, {})
+  owner:show(owner.window, false)
+  nvim.api.nvim_win_set_cursor(owner.window, { 6, 0 })
+  MiniTest.expect.equality(owner:tool_at_cursor(), "read")
+  nvim.api.nvim_win_set_cursor(owner.window, { 7, 0 })
+  MiniTest.expect.equality(owner:compaction_at_cursor(), "compact")
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = { toolCallId = "read", status = "completed" },
+  })
+  MiniTest.expect.equality(owner:compaction({ id = "compact", status = "completed" }), false)
+  MiniTest.expect.equality(buffer_lines(owner.buffer)[6], "[tool] read: Read (completed)")
+  MiniTest.expect.equality(owner:prompt_text(), "draft\nstill draft")
+end
+
 T["prompt focus preserves the prefix while typing"] = MiniTest.new_set({
   parametrize = {
     { "enter", "", "" },

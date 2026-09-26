@@ -27,8 +27,10 @@ local nvim = vim
 ---@field package trailing_blank boolean Whether the line at `transcript_tail` is already a blank separator, counted as part of `transcript_tail` itself; meaningful only while `last_block_kind == "prose"`, since a completed prose block is the only thing that always leaves one behind.
 ---@field package tool_lines table<string, integer> Zero-based rendered tool lines by ID.
 ---@field package tool_ids table<integer, string> Tool-call IDs by zero-based rendered line.
+---@field package tool_marks table<string, integer> Undo-restored tool row anchors by ID.
 ---@field package compaction_lines table<string, integer> Compaction rows by ID, separate from tool IDs.
 ---@field package compaction_ids table<integer, string> Compaction IDs by zero-based rendered line.
+---@field package compaction_marks table<string, integer> Undo-restored compaction row anchors by ID.
 ---@field package tool_statuses table<string, string> Latest tool status by ID.
 ---@field package tool_titles table<string, string> Tool titles by ID.
 ---@field package context_folds louiselm.ui.ContextFold[] Submitted context fold ranges in this live buffer.
@@ -37,6 +39,7 @@ local nvim = vim
 ---@field package tool_fold_counts table<integer, integer> Number of tool folds installed in each window.
 ---@field package tool_fold_run louiselm.ui.ToolFoldRun? Contiguous rendered tool paragraph awaiting a boundary.
 ---@field package thought_folds louiselm.ui.ThoughtFold[] Reasoning fold ranges in this live buffer.
+---@field package fold_namespace integer Undo-restored anchors for completed fold ranges.
 ---@field package thought_run louiselm.ui.ThoughtFoldRun? Contiguous reasoning paragraph awaiting a boundary; first is its header line, last its final content line.
 ---@field package queue_mark integer? Extmark showing queued prompt state.
 ---@field package queue_namespace integer Extmark namespace for queued prompt state.
@@ -67,6 +70,7 @@ local nvim = vim
 ---@class louiselm.ui.ContextFold
 ---@field first integer Zero-based first folded line.
 ---@field last integer Zero-based last folded line.
+---@field mark? integer Undo-restored range extmark.
 
 ---@class louiselm.ui.ToolFoldRun
 ---@field first integer Zero-based first rendered tool line.
@@ -75,6 +79,7 @@ local nvim = vim
 ---@class louiselm.ui.ToolFold
 ---@field first integer Zero-based first folded line.
 ---@field last integer Zero-based last folded line.
+---@field mark? integer Undo-restored range extmark.
 
 ---@class louiselm.ui.ThoughtFoldRun
 ---@field first integer Zero-based rendered reasoning header line.
@@ -83,6 +88,7 @@ local nvim = vim
 ---@class louiselm.ui.ThoughtFold
 ---@field first integer Zero-based first folded line.
 ---@field last integer Zero-based last folded line.
+---@field mark? integer Undo-restored range extmark.
 
 local M = {}
 local Buffer = {}
@@ -107,11 +113,24 @@ local function field(value, name)
   return nil
 end
 
----@param buffer integer
+---@param view louiselm.ui.ChatBuffer
+---@param line integer
+local function mark_prompt(view, line)
+  view.prompt_line = line
+  view.prompt_mark = nvim.api.nvim_buf_set_extmark(view.buffer, view.prompt_namespace, line, 0, {
+    id = view.prompt_mark,
+    right_gravity = false,
+  })
+end
+
+---@param view louiselm.ui.ChatBuffer
 ---@param line integer
 ---@param value string
-local function set_line(buffer, line, value)
-  nvim.api.nvim_buf_set_lines(buffer, line, line + 1, false, { value })
+local function set_line(view, line, value)
+  nvim.api.nvim_buf_set_lines(view.buffer, line, line + 1, false, { value })
+  -- Replacing the row immediately above a left-gravity mark moves it back.
+  -- This renderer-owned write keeps the prompt on its original row.
+  mark_prompt(view, view.prompt_line)
 end
 
 ---Update diagnostic header values from a Session snapshot.
@@ -133,6 +152,67 @@ function Buffer:header(state)
   end
 end
 
+-- Anchor only after the fold's text exists. Neovim moves and restores the
+-- range through edits/undo; Lua's original line numbers cannot do that.
+---@param view louiselm.ui.ChatBuffer
+---@param fold louiselm.ui.ContextFold|louiselm.ui.ToolFold|louiselm.ui.ThoughtFold
+local function anchor_fold(view, fold)
+  fold.mark = nvim.api.nvim_buf_set_extmark(view.buffer, view.fold_namespace, fold.first, 0, {
+    end_row = fold.last + 1,
+    end_col = 0,
+    right_gravity = true,
+    end_right_gravity = false,
+    invalidate = true,
+  })
+end
+
+---@param view louiselm.ui.ChatBuffer
+---@param fold louiselm.ui.ContextFold|louiselm.ui.ToolFold|louiselm.ui.ThoughtFold
+---@return boolean valid
+local function resolve_fold(view, fold)
+  if fold.mark == nil then
+    return false
+  end
+  local position = nvim.api.nvim_buf_get_extmark_by_id(view.buffer, view.fold_namespace, fold.mark, { details = true })
+  local details = position[3]
+  if details == nil or details.invalid or details.end_row == nil then
+    return false
+  end
+  fold.first, fold.last = position[1], details.end_row - 1
+  return fold.first < fold.last and fold.last < nvim.api.nvim_buf_line_count(view.buffer)
+end
+
+---@param view louiselm.ui.ChatBuffer
+---@param marks table<string, integer>
+---@param id string
+---@param line integer
+local function anchor_row(view, marks, id, line)
+  marks[id] = nvim.api.nvim_buf_set_extmark(view.buffer, view.fold_namespace, line, 0, {
+    id = marks[id],
+    end_row = line + 1,
+    end_col = 0,
+    right_gravity = true,
+    end_right_gravity = false,
+    invalidate = true,
+  })
+end
+
+---@param view louiselm.ui.ChatBuffer
+---@param marks table<string, integer>
+---@return table<string, integer> lines
+---@return table<integer, string> ids
+local function resolve_rows(view, marks)
+  local lines, ids = {}, {}
+  for id, mark in pairs(marks) do
+    local position = nvim.api.nvim_buf_get_extmark_by_id(view.buffer, view.fold_namespace, mark, { details = true })
+    local details = position[3]
+    if details ~= nil and not details.invalid and position[1] < view.prompt_line then
+      lines[id], ids[position[1]] = position[1], id
+    end
+  end
+  return lines, ids
+end
+
 ---@param view louiselm.ui.ChatBuffer
 ---@param win integer
 ---@param folds louiselm.ui.ContextFold[]
@@ -147,7 +227,9 @@ local function apply_incremental_folds(view, win, folds, counts)
   nvim.api.nvim_win_call(win, function()
     for index = applied + 1, #folds do
       local fold = folds[index]
-      nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+      if resolve_fold(view, fold) then
+        nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
+      end
     end
   end)
   counts[win] = #folds
@@ -167,7 +249,9 @@ local function close_tool_fold_run(view)
       fold_first = fold_first or line
     elseif fold_first ~= nil then
       if line - fold_first > 1 then
-        view.tool_folds[#view.tool_folds + 1] = { first = fold_first, last = line - 1 }
+        local fold = { first = fold_first, last = line - 1 }
+        anchor_fold(view, fold)
+        view.tool_folds[#view.tool_folds + 1] = fold
         added = true
       end
       fold_first = nil
@@ -199,7 +283,7 @@ local function apply_thought_folds(view, win)
   nvim.api.nvim_set_option_value("foldenable", true, { win = win })
   nvim.api.nvim_win_call(win, function()
     for _, fold in ipairs(view.thought_folds) do
-      if nvim.fn.foldlevel(fold.first + 1) == 0 then
+      if resolve_fold(view, fold) and nvim.fn.foldlevel(fold.first + 1) == 0 then
         nvim.api.nvim_cmd({ cmd = "fold", range = { fold.first + 1, fold.last + 1 } }, {})
       end
     end
@@ -219,7 +303,9 @@ local function close_thought_fold_run(view)
     return
   end
   if run.last > run.first then
-    view.thought_folds[#view.thought_folds + 1] = { first = run.first, last = run.last }
+    local fold = { first = run.first, last = run.last }
+    anchor_fold(view, fold)
+    view.thought_folds[#view.thought_folds + 1] = fold
     apply_thought_folds(view, view.window)
   end
   view.thought_run = nil
@@ -272,6 +358,7 @@ end
 ---@return integer line_count
 local function replace_submitted_prompt(view, text, contexts)
   local lines = {}
+  local previous_folds = #view.context_folds
   if #contexts > 0 then
     local labels = {}
     for index, item in ipairs(contexts) do
@@ -311,28 +398,18 @@ local function replace_submitted_prompt(view, text, contexts)
     lines[#lines + 1] = "> " .. line
   end
   nvim.api.nvim_buf_set_lines(view.buffer, view.prompt_line, -1, false, lines)
+  for index = previous_folds + 1, #view.context_folds do
+    anchor_fold(view, view.context_folds[index])
+  end
   mark_submitted_prompt(view, first_prompt_line, view.prompt_line + #lines)
   apply_incremental_folds(view, view.window, view.context_folds, view.fold_counts)
   return #lines
 end
 
 ---@param view louiselm.ui.ChatBuffer
----@param line integer
-local function mark_prompt(view, line)
-  view.prompt_line = line
-  view.prompt_mark = nvim.api.nvim_buf_set_extmark(view.buffer, view.prompt_namespace, line, 0, {
-    id = view.prompt_mark,
-    right_gravity = false,
-  })
-end
-
----@param view louiselm.ui.ChatBuffer
 ---@return integer line
 local function current_prompt_line(view)
-  local position = nvim.api.nvim_buf_get_extmark_by_id(view.buffer, view.prompt_namespace, view.prompt_mark, {})
-  if #position == 2 then
-    view.prompt_line = position[1]
-  end
+  view:reconcile()
   return view.prompt_line
 end
 
@@ -340,17 +417,21 @@ end
 ---@param self louiselm.ui.ChatBuffer
 function Buffer:reconcile()
   -- Undo restores the extmark but not these Lua-side indexes.
-  if self.prompt_line < nvim.api.nvim_buf_line_count(self.buffer) then
+  local position = nvim.api.nvim_buf_get_extmark_by_id(self.buffer, self.prompt_namespace, self.prompt_mark, {})
+  if #position ~= 2 or position[1] == self.prompt_line then
     return
   end
-  local prompt_line = current_prompt_line(self)
-  self.transcript_tail = prompt_line - 1
+  self.prompt_line = position[1]
+  self.transcript_tail = self.prompt_line - 1
   self.response_tail = nil
   self.response_started = false
   self.last_block_kind = nil
   self.trailing_blank = false
   self.thought_run = nil
   self.tool_fold_run = nil
+  -- Retain surviving row identities without letting late updates hit the draft.
+  self.tool_lines, self.tool_ids = resolve_rows(self, self.tool_marks)
+  self.compaction_lines, self.compaction_ids = resolve_rows(self, self.compaction_marks)
 end
 
 ---Read the editable prompt after resolving its undo-restored extmark.
@@ -523,9 +604,11 @@ local function navigation_targets(view, kind)
   local thinking_lines = {}
   local thinking_starts = {}
   for _, fold in ipairs(view.thought_folds) do
-    thinking_starts[fold.first] = true
-    for line = fold.first, fold.last do
-      thinking_lines[line] = true
+    if resolve_fold(view, fold) then
+      thinking_starts[fold.first] = true
+      for line = fold.first, fold.last do
+        thinking_lines[line] = true
+      end
     end
   end
   local run = view.thought_run
@@ -711,7 +794,8 @@ function Buffer:compaction(entity)
     .. ") — :LouiselmInspectTool"
   local line = view.compaction_lines[entity.id]
   if line ~= nil then
-    set_line(view.buffer, line, text)
+    set_line(view, line, text)
+    anchor_row(view, view.compaction_marks, entity.id, line)
     return false
   else
     close_thought_fold_run(view)
@@ -719,6 +803,7 @@ function Buffer:compaction(entity)
     line = insert_transcript(view, { text })
     view.compaction_lines[entity.id] = line
     view.compaction_ids[line] = entity.id
+    anchor_row(view, view.compaction_marks, entity.id, line)
     view.response_tail = nil
     view.response_started = false
     view.last_block_kind = nil
@@ -872,7 +957,7 @@ function Buffer:render(event, replay_active, continuing_prompt)
       local line_text = "[tool] " .. detail .. " (started)"
       local existing_line = view.tool_lines[id]
       if existing_line ~= nil and existing_line < nvim.api.nvim_buf_line_count(view.buffer) then
-        set_line(view.buffer, existing_line, line_text)
+        set_line(view, existing_line, line_text)
       else
         local lines = { line_text }
         if view.last_block_kind == "prose" and not view.trailing_blank then
@@ -899,7 +984,7 @@ function Buffer:render(event, replay_active, continuing_prompt)
       local line = view.tool_lines[id]
       local rendered_line
       if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
-        set_line(view.buffer, line, "[tool] " .. detail)
+        set_line(view, line, "[tool] " .. detail)
         rendered_line = line
       else
         local lines = { "[tool] " .. detail }
@@ -932,6 +1017,10 @@ function Buffer:render(event, replay_active, continuing_prompt)
       else
         view.pending_terminal_completion = completion_text
       end
+    end
+    local tool_line = view.tool_lines[id]
+    if tool_line ~= nil then
+      anchor_row(view, view.tool_marks, id, tool_line)
     end
     view.response_tail = nil
     view.response_started = false
@@ -990,6 +1079,7 @@ end
 ---@param window integer Normal window chosen by Chat.
 ---@param start_insert boolean Whether to enter Insert mode when a UI is attached.
 function Buffer:show(window, start_insert)
+  self:reconcile()
   self.window = window
   nvim.api.nvim_set_current_win(window)
   nvim.api.nvim_win_set_buf(window, self.buffer)
@@ -1056,8 +1146,10 @@ function M.new(state, options)
     trailing_blank = false,
     tool_lines = {},
     tool_ids = {},
+    tool_marks = {},
     compaction_lines = {},
     compaction_ids = {},
+    compaction_marks = {},
     tool_statuses = {},
     tool_titles = {},
     context_folds = {},
@@ -1066,6 +1158,7 @@ function M.new(state, options)
     tool_fold_counts = {},
     tool_fold_run = nil,
     thought_folds = {},
+    fold_namespace = nvim.api.nvim_create_namespace("louiselm.chat.folds"),
     thought_run = nil,
     queue_mark = nil,
     queue_namespace = nvim.api.nvim_create_namespace("louiselm.chat.queued_prompt"),
