@@ -515,7 +515,15 @@ expiry, exhausted budgets, quarantine and project changes still refuse writes.
 The authenticated operator endpoint exposes `operator::beads_mutation` and the
 `louiselm.operator-beads/1` request: `operation_id` plus an optional `decision`.
 Inspection works after Session loss and returns original request/project digests,
-the unchanged outcome, or the exact escalation. To reconcile `Unknown` or `Failed`,
+the unchanged outcome, or the exact escalation. For mutation records it also
+derives current Session output provenance from broker-owned taint evidence:
+`session_output_tainted` means Session-authored mutation content needs operator
+review, while `unknown` means missing or corrupt evidence must not be treated as
+clean. This projection contains a taint digest but no Session identity or payload;
+the original broker audit fact and canonical Beads bytes are unchanged.
+`louiselm-control beads inspect OPERATION_UUID --json` exposes the read-only
+inspection, also available by inspecting that UUID in the Neovim Provenance view.
+To reconcile `Unknown` or `Failed`,
 first inspect canonical Beads state and independently retained request/evidence.
 If that establishes what happened, submit `reconcile` with `applied` or
 `not_applied` and the canonical SHA-256 `evidence_digest`. The broker adds an

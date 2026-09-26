@@ -152,6 +152,25 @@ function M.from_broker(value, session_id)
   return M.unknown()
 end
 
+---Validate the broker's portable output projection for a Beads mutation.
+---@param source unknown
+---@return louiselm.OutputProvenance
+function M.from_broker_output(source)
+  if not exact(source, PROJECTION_KEYS) or source.schema ~= BROKER_SCHEMA then
+    return M.unknown()
+  end
+  if type(source.clean_review_refs) ~= "table" or next(source.clean_review_refs) ~= nil then
+    return M.unknown()
+  end
+  if source.code == "session_output_tainted" and digest(source.taint_digest) then
+    return projection("session_output_tainted", source.taint_digest)
+  end
+  if (source.code == "untainted" or source.code == "unknown") and source.taint_digest == nvim.NIL then
+    return projection(source.code)
+  end
+  return M.unknown()
+end
+
 ---@param session_id string
 ---@param callback fun(payload: string?)
 ---@return fun() cancel

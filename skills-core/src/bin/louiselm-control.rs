@@ -18,6 +18,8 @@ use louiselm_skills::{
 
 #[path = "control/attention.rs"]
 mod attention;
+#[path = "control/beads.rs"]
+mod beads;
 #[path = "control/dependencies.rs"]
 mod dependencies;
 #[path = "control/inspection.rs"]
@@ -44,6 +46,9 @@ fn main() -> ExitCode {
     if collected.first().is_some_and(|verb| verb == "session") {
         return ExitCode::from(inspection::cli(&collected[1..]));
     }
+    if collected.first().is_some_and(|verb| verb == "beads") {
+        return ExitCode::from(beads::cli(&collected[1..]));
+    }
     if collected
         .first()
         .is_some_and(|verb| verb == "skill-request")
@@ -62,7 +67,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
         ),
     };
     match result {

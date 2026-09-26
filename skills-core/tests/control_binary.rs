@@ -28,9 +28,44 @@ fn validates_verbs_confirmation_and_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'"
+                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'"
             }),
             "{error}"
+        );
+    }
+}
+
+#[test]
+fn beads_inspection_cli_refuses_mutating_forms_before_broker_exchange() {
+    use louiselm_skills::broker::operator::InspectError;
+    for arguments in [
+        vec![
+            "beads",
+            "reconcile",
+            "12345678-1234-4234-8234-123456789abc",
+            "--json",
+        ],
+        vec![
+            "beads",
+            "inspect",
+            "12345678-1234-4234-8234-123456789abc",
+            "--json",
+            "apply",
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_louiselm-control"))
+            .args(arguments)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(InspectError::InvalidRequest.exit_code()))
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            output.stderr,
+            InspectError::InvalidRequest.canonical_bytes()
         );
     }
 }

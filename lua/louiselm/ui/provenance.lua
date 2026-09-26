@@ -50,6 +50,19 @@ local function sha_at_cursor(line, column)
   return only_match_at(matches, column)
 end
 
+---@param line string
+---@param column integer
+---@return string? operation_id
+local function mutation_at_cursor(line, column)
+  local matches = {}
+  for start_index, value in line:gmatch("()([0-9a-f%-]+)") do
+    if Sources.valid_operation_id(value) then
+      matches[#matches + 1] = { start_index = start_index, value = value, length = #value }
+    end
+  end
+  return only_match_at(matches, column)
+end
+
 ---@param value string
 ---@return boolean
 local function valid_issue_id(value)
@@ -111,6 +124,12 @@ end
 ---@return string? sha
 local function current_sha(buffer)
   return current_token(buffer, sha_at_cursor)
+end
+
+---@param buffer integer
+---@return string? operation_id
+local function current_mutation(buffer)
+  return current_token(buffer, mutation_at_cursor)
 end
 
 ---@param buffer integer
@@ -385,6 +404,60 @@ local function show_commit(sha, options)
   )
   if not started then
     return false, start_error and start_error.message or "could not start git"
+  end
+  return true
+end
+
+---@param mutation louiselm.provenance.BeadsMutation
+---@return string[] lines
+local function mutation_lines(mutation)
+  local provenance = mutation.output_provenance
+  local lines = {
+    "# Beads mutation " .. mutation.operation_id,
+    "",
+    "Broker audit fact (unchanged):",
+    "- Original outcome: " .. mutation.outcome,
+    "- Request digest: " .. mutation.request_digest,
+    "- Project digest: " .. mutation.project_digest,
+    "",
+    "Session-authored mutation content:",
+  }
+  if provenance.code == "session_output_tainted" then
+    lines[#lines + 1] = "- Tainted across the Session lifetime; operator review required"
+    lines[#lines + 1] = "- Taint digest: " .. provenance.taint_digest
+  elseif provenance.code == "untainted" then
+    lines[#lines + 1] = "- No Session output taint currently recorded"
+  else
+    lines[#lines + 1] = "- Unknown: missing or corrupt taint evidence; do not treat content as clean"
+  end
+  lines[#lines + 1] = "- Completed effects remain in canonical Beads; inspection never rolls them back"
+  return lines
+end
+
+---@param operation_id string
+---@param options louiselm.ui.ProvenanceOptions
+---@return boolean started
+---@return string? error_message
+local function show_mutation(operation_id, options)
+  if options.beads ~= true then
+    return false, "Beads is disabled; set beads.enabled = true and run :checkhealth louiselm"
+  end
+  local started, start_error = Sources.beads_mutation(operation_id, function(mutation, source_error)
+    if options.is_active ~= nil and not options.is_active() then
+      return
+    end
+    if mutation == nil or source_error ~= nil then
+      report_error(options, "could not read broker Beads mutation inspection")
+      return
+    end
+    local opened, open_error =
+      open_provenance("louiselm://provenance/mutation/" .. operation_id, mutation_lines(mutation))
+    if not opened then
+      report_error(options, "could not display Provenance: " .. (open_error or "unknown error"))
+    end
+  end)
+  if not started then
+    return false, start_error and start_error.message or "could not start broker inspection"
   end
   return true
 end
@@ -842,7 +915,7 @@ function M.show_decisions(options)
   return true
 end
 
----Inspect the commit SHA, Beads issue, or Session under the cursor or prompt for one.
+---Inspect a commit, Beads issue or mutation, or Session under the cursor or prompt for one.
 ---@param buffer integer Source buffer.
 ---@param options? louiselm.ui.ProvenanceOptions Lookup and lifecycle callbacks.
 ---@return boolean started Whether a lookup started or an SHA prompt was opened.
@@ -864,6 +937,10 @@ function M.inspect(buffer, options)
   if options.on_error ~= nil and type(options.on_error) ~= "function" then
     return false, "Provenance on_error must be a function"
   end
+  local operation_id = current_mutation(buffer)
+  if operation_id ~= nil then
+    return show_mutation(operation_id, options)
+  end
   local sha = current_sha(buffer)
   if sha ~= nil then
     return show_commit(sha, options)
@@ -876,11 +953,18 @@ function M.inspect(buffer, options)
   if issue_id ~= nil then
     return show_issue(issue_id, options)
   end
-  nvim.ui.input({ prompt = "Commit SHA, Beads issue id, or Session id: " }, function(value)
+  nvim.ui.input({ prompt = "Commit SHA, Beads issue/operation id, or Session id: " }, function(value)
     if value == nil or (options.is_active ~= nil and not options.is_active()) then
       return
     end
     local prompted_sha = normalize_session_id(nvim.trim(value))
+    if Sources.valid_operation_id(prompted_sha) then
+      local _, lookup_error = show_mutation(prompted_sha, options)
+      if lookup_error ~= nil then
+        report_error(options, lookup_error)
+      end
+      return
+    end
     if valid_sha(prompted_sha) then
       local _, lookup_error = show_commit(prompted_sha, options)
       if lookup_error ~= nil then
@@ -902,7 +986,7 @@ function M.inspect(buffer, options)
       end
       return
     end
-    report_error(options, "enter a valid commit SHA or Beads issue id")
+    report_error(options, "enter a valid commit SHA, Beads issue/operation id, or Session id")
   end)
   return true
 end

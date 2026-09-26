@@ -309,7 +309,7 @@ Commands                                                   *louiselm-commands*
     Arguments: none
 
 :LouiselmInspectProvenance                        *:LouiselmInspectProvenance*
-    Inspect commit or issue Provenance under the cursor
+    Inspect commit, issue, mutation, or Session Provenance under the cursor
     Arguments: none
 
 :LouiselmInspectTool                                    *:LouiselmInspectTool*

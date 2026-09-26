@@ -5,14 +5,19 @@ use super::*;
 use louiselm_skills::{
     Digest, Policy, Store,
     admission::{self, AdmissionMember, AdmissionRequest},
+    beads_mutation::{
+        ApprovedBeadsMutations, BeadsEffect, BeadsInspectionDetail, BeadsMutationKind,
+        BeadsMutationOutcome, BeadsMutationRequest, BeadsRole,
+    },
     broker::{
         BrokerSession, admission_source::AdmissionSource, lifecycle::LifecycleStore,
         skill_quarantine::TaintSource, verification::VerificationStatus,
     },
     dossier::ReviewDepth,
     launch_protocol::{
-        ChannelState, CommandOperation, PendingAction, PendingOperation, PendingPhase,
-        SupervisorStatus, VERIFICATION_SCHEMA, VerificationOperation, VerificationRequest,
+        COMMAND_SCHEMA, ChannelState, CommandMessage, CommandOperation, PendingAction,
+        PendingOperation, PendingPhase, SupervisorStatus, VERIFICATION_SCHEMA,
+        VerificationOperation, VerificationRequest,
     },
     launch_receipt::{ReceiptHead, SignedReceipt},
     quarantine,
@@ -118,12 +123,28 @@ struct Live {
 
 /// A running Session pinned to `generation`, with command authority granted.
 fn launched(root: &Path, generation: &str) -> Live {
+    launched_with_beads(root, generation, false)
+}
+
+fn launched_with_beads(root: &Path, generation: &str, beads: bool) -> Live {
     let socket = root.join("broker.sock");
     let mut request = request("quarantined");
     request.skill_generation_id = generation.into();
     let authorizations = AuthorizationStore::open(&root.join("authorizations"), pool(4)).unwrap();
-    authorizations.authorize(&grant(&request), 1000).unwrap();
-    let service = BrokerService::bind(
+    let mut approval = grant(&request);
+    if beads {
+        approval.beads_mutations = Some(ApprovedBeadsMutations {
+            role: BeadsRole::Worker,
+            effects: vec![BeadsEffect::CommentAdd],
+            project_digest: Digest::of(root.join("workspace").as_os_str().as_encoded_bytes())
+                .to_string(),
+            issue_ids: vec!["test-1".into()],
+            max_mutations: 2,
+            expires_at_ms: 60_000,
+        });
+    }
+    authorizations.authorize(&approval, 1000).unwrap();
+    let mut service = BrokerService::bind(
         &socket,
         authorizations,
         ReceiptStore::open(&root.join("receipts"), trusted_release()).unwrap(),
@@ -131,6 +152,19 @@ fn launched(root: &Path, generation: &str) -> Live {
         local_pin(),
     )
     .unwrap();
+    if beads {
+        let workspace = root.join("workspace");
+        fs::create_dir_all(workspace.join(".beads")).unwrap();
+        fs::write(workspace.join(".beads/beads.db"), []).unwrap();
+        let program = Path::new("/bin/true");
+        service
+            .configure_beads_tracker(
+                &workspace,
+                program,
+                &Digest::of(&fs::read(program).unwrap()),
+            )
+            .unwrap();
+    }
     let peer = thread::spawn(move || fake_supervisor(&socket, &request, 2000));
     let session = service
         .serve_launch(2000, verify_fixture_signature)
@@ -151,6 +185,49 @@ fn launched(root: &Path, generation: &str) -> Live {
 }
 
 impl Live {
+    fn add_comment(&mut self, request_id: &str) -> CommandOperation {
+        let auth = self.session.authorization();
+        let message = CommandMessage {
+            schema: COMMAND_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: format!("relay-{request_id}"),
+            session_id: auth.session_id.clone(),
+            run_id: auth.run_id.clone(),
+            envelope_revision: auth.envelope_revision,
+            operation: CommandOperation::BeadsMutation {
+                request: BeadsMutationRequest {
+                    request_id: request_id.into(),
+                    required: false,
+                    kind: BeadsMutationKind::CommentAdd {
+                        issue_id: "test-1".into(),
+                        text: "prior Session-authored content".into(),
+                    },
+                },
+            },
+        };
+        thread::scope(|scope| {
+            let peer = &self.peer;
+            let status = self.current.clone();
+            let worker = scope.spawn(move || {
+                settle(|done| peer.send(message.canonical_bytes(), done));
+                lifecycle::answer_one_status_query(peer, &status);
+                let LauncherPacket::Request(ProtocolMessage::Command(reply)) =
+                    settle(|done| peer.receive(done)).packet
+                else {
+                    panic!("Beads mutation reply")
+                };
+                reply.operation
+            });
+            assert!(
+                !self
+                    .service
+                    .step(&mut self.session, 3000, None, verify_fixture_signature)
+                    .unwrap()
+            );
+            worker.join().unwrap()
+        })
+    }
+
     /// A settle that must decide without any supervisor exchange.
     fn settle_quietly(
         &mut self,
@@ -239,6 +316,108 @@ impl Live {
         });
         self.current.channel_state = ChannelState::Revoked;
     }
+}
+
+fn assert_unknown_beads_provenance(service: &BrokerService, uid: u32, operation_id: &str) {
+    use louiselm_skills::workspace::provenance::OutputProvenanceCode;
+    let inspection = service
+        .beads_mutation_control(uid, operation_id, None)
+        .unwrap();
+    let BeadsInspectionDetail::Mutation {
+        output_provenance, ..
+    } = inspection.detail
+    else {
+        panic!("mutation inspection expected")
+    };
+    assert_eq!(output_provenance.code, OutputProvenanceCode::Unknown);
+}
+
+#[test]
+fn completed_beads_mutation_keeps_audit_and_gains_taint_on_inspection() {
+    use louiselm_skills::workspace::provenance::OutputProvenanceCode;
+    let supply = supply();
+    let mut live = launched_with_beads(supply.root.path(), &supply.generation, true);
+    let uid = live.session.authorization().controller_uid;
+    let CommandOperation::BeadsMutationResult { status } = live.add_comment("prior-comment") else {
+        panic!("completed Beads mutation expected")
+    };
+    assert_eq!(status.outcome, BeadsMutationOutcome::Completed);
+    let before = live
+        .service
+        .beads_mutation_control(uid, &status.operation_id, None)
+        .unwrap();
+    let BeadsInspectionDetail::Mutation {
+        request_digest,
+        output_provenance,
+        ..
+    } = &before.detail
+    else {
+        panic!("mutation inspection expected")
+    };
+    assert_eq!(output_provenance.code, OutputProvenanceCode::Untainted);
+    let original_digest = request_digest.clone();
+    let ledger = supply
+        .root
+        .path()
+        .join("authorizations/beads-mutations/requests");
+    let record = fs::read_dir(&ledger)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original_record = fs::read(&record).unwrap();
+    let original_database = fs::read(supply.root.path().join("workspace/.beads/beads.db")).unwrap();
+    quarantine::exclude_everything(&supply.store, "compromised", 6000).unwrap();
+    live.settle_and_park(&supply.source);
+    let taint = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap();
+    let restarted = verification::reopen(supply.root.path(), "beads-restart.sock");
+    let after = restarted
+        .beads_mutation_control(uid, &status.operation_id, None)
+        .unwrap();
+    let BeadsInspectionDetail::Mutation {
+        request_digest,
+        status: after_status,
+        output_provenance,
+        ..
+    } = &after.detail
+    else {
+        panic!("mutation inspection expected")
+    };
+    assert_eq!(request_digest, &original_digest);
+    assert_eq!(after_status.outcome, BeadsMutationOutcome::Completed);
+    assert_eq!(
+        output_provenance.code,
+        OutputProvenanceCode::SessionOutputTainted
+    );
+    assert_eq!(
+        output_provenance.taint_digest.as_deref(),
+        Some(taint.digest.as_str())
+    );
+    assert_eq!(fs::read(&record).unwrap(), original_record);
+    assert_eq!(
+        fs::read(supply.root.path().join("workspace/.beads/beads.db")).unwrap(),
+        original_database
+    );
+    let portable = serde_json::to_string(output_provenance).unwrap();
+    assert!(!portable.contains("quarantined"));
+    assert!(!portable.contains("prior Session-authored content"));
+
+    let taint_record = supply
+        .root
+        .path()
+        .join("authorizations/lifecycle/quarantined/session-taint.json");
+    fs::write(&taint_record, b"corrupt").unwrap();
+    assert_unknown_beads_provenance(&restarted, uid, &status.operation_id);
+    fs::remove_file(taint_record).unwrap();
+    assert_unknown_beads_provenance(&restarted, uid, &status.operation_id);
+    assert_eq!(fs::read(&record).unwrap(), original_record);
 }
 
 #[test]

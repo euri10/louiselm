@@ -41,9 +41,8 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
             outcome: BeadsReconciliation::NotApplied,
             evidence_digest: Digest::of(b"requested evidence").to_string(),
         };
-        let worker =
-            thread::spawn(move || {
-                server
+        let worker = thread::spawn(move || {
+            server
                 .serve_once(
                     |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                     |_, _| panic!("not Session lookup"),
@@ -64,6 +63,7 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
                                     operation_id: id.into(),
                                     outcome: BeadsMutationOutcome::Unknown,
                                 },
+                                output_provenance: louiselm_skills::workspace::provenance::OutputProvenance::unknown(),
                                 resolution: (scenario != "missing").then(|| BeadsResolution {
                                     outcome: if scenario == "wrong-conclusion" {
                                         BeadsReconciliation::Applied
@@ -87,7 +87,7 @@ fn beads_client_requires_the_exact_requested_decision_in_its_reply() {
 |_, _, _| Err(louiselm_skills::broker::provider_extension::ExtensionError::Unknown),
 )
                 .unwrap();
-            });
+        });
         let result = beads_mutation(
             &path,
             uid,
@@ -137,6 +137,8 @@ fn beads_operator_request_reaches_authenticated_control() {
                                 operation_id: id.into(),
                                 outcome: BeadsMutationOutcome::Unknown,
                             },
+                            output_provenance:
+                                louiselm_skills::workspace::provenance::OutputProvenance::unknown(),
                             resolution: None,
                         },
                     })

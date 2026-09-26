@@ -35,6 +35,7 @@
 ---@field comments? louiselm.provenance.Comment[] Human-authored Beads comments.
 
 local M = {}
+local OutputProvenance = require("louiselm.output_provenance")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -44,6 +45,7 @@ local FIELD_SEPARATOR = string.char(0)
 local LOG_FORMAT = "%H%x00%B%x00%x1e"
 local HISTORY_SINCE = "2026-08-10"
 local HISTORY_LIMIT = "500"
+local BROKER_COMMAND = "/usr/local/lib/louiselm/current/bin/louiselm-control"
 
 ---@param code string
 ---@param message string
@@ -52,6 +54,64 @@ local HISTORY_LIMIT = "500"
 ---@return louiselm.provenance.SourceError
 local function make_error(code, message, detail, exit_code)
   return { code = code, message = message, detail = detail, exit_code = exit_code }
+end
+
+---@param value unknown
+---@return boolean
+function M.valid_operation_id(value)
+  return type(value) == "string"
+    and value:match("^[0-9a-f]+%-[0-9a-f]+%-[0-9a-f]+%-[0-9a-f]+%-[0-9a-f]+$") ~= nil
+    and #value == 36
+    and value:sub(9, 9) == "-"
+    and value:sub(14, 14) == "-"
+    and value:sub(19, 19) == "-"
+    and value:sub(24, 24) == "-"
+end
+
+---@class louiselm.provenance.BeadsMutation
+---@field operation_id string
+---@field outcome "completed"|"failed"|"unknown"
+---@field project_digest string
+---@field request_digest string
+---@field output_provenance louiselm.OutputProvenance
+
+---Parse only broker audit facts and a safe Session-output projection.
+---@param output string
+---@param operation_id string
+---@return louiselm.provenance.BeadsMutation? mutation
+---@return louiselm.provenance.SourceError? error_value
+function M.parse_beads_mutation(output, operation_id)
+  local ok, decoded = pcall(nvim.json.decode, output)
+  local detail = ok and type(decoded) == "table" and decoded.detail or nil
+  local status = type(detail) == "table" and detail.status or nil
+  local outcome = type(status) == "table" and status.outcome or nil
+  if type(outcome) == "table" and type(outcome.failed) == "table" then
+    outcome = "failed"
+  end
+  local function digest(value)
+    return type(value) == "string" and #value == 71 and value:match("^sha256:[0-9a-f]+$") ~= nil
+  end
+  if
+    not M.valid_operation_id(operation_id)
+    or type(detail) ~= "table"
+    or decoded.operation_id ~= operation_id
+    or detail.kind ~= "mutation"
+    or type(status) ~= "table"
+    or status.operation_id ~= operation_id
+    or (outcome ~= "completed" and outcome ~= "failed" and outcome ~= "unknown")
+    or not digest(detail.project_digest)
+    or not digest(detail.request_digest)
+  then
+    return nil, make_error("invalid_beads_mutation", "broker returned malformed Beads mutation inspection")
+  end
+  return {
+    operation_id = operation_id,
+    outcome = outcome,
+    project_digest = detail.project_digest,
+    request_digest = detail.request_digest,
+    output_provenance = OutputProvenance.from_broker_output(detail.output_provenance),
+  },
+    nil
 end
 
 ---@param output string
@@ -369,8 +429,16 @@ end
 ---@return louiselm.provenance.SourceError? error_value
 local function run_source(cwd, command, failure_message, parse, callback)
   local source = command[1]
-  local call_ok, handle_or_error = pcall(nvim.system, command, { cwd = cwd, text = true }, function(result)
+  local options = { cwd = cwd, text = true }
+  if source == BROKER_COMMAND then
+    options.clear_env, options.env, options.timeout = true, {}, 30000
+  end
+  local call_ok, handle_or_error = pcall(nvim.system, command, options, function(result)
     nvim.schedule(function()
+      if source == BROKER_COMMAND and #(result.stdout or "") > 1048576 then
+        callback(nil, make_error("broker_output_too_large", "broker mutation inspection exceeded the output limit"))
+        return
+      end
       if result.code ~= 0 then
         local detail = nvim.trim(result.stderr or "")
         callback(nil, make_error(source .. "_failed", failure_message, detail ~= "" and detail or nil, result.code))
@@ -476,6 +544,29 @@ function M.beads_issue(cwd, bead_id, callback)
   return run_source(cwd, { "br", "show", bead_id, "--json" }, "br issue lookup failed", function(output)
     return M.parse_beads_issue(output, bead_id)
   end, callback)
+end
+
+---Inspect an authenticated broker mutation without reading canonical Beads bytes.
+---@param operation_id string
+---@param callback fun(mutation: louiselm.provenance.BeadsMutation?, error_value: louiselm.provenance.SourceError?)
+---@return boolean started
+---@return louiselm.provenance.SourceError? error_value
+function M.beads_mutation(operation_id, callback)
+  if not M.valid_operation_id(operation_id) then
+    return false, make_error("invalid_operation_id", "invalid Beads operation UUID")
+  end
+  if type(callback) ~= "function" then
+    return false, make_error("invalid_callback", "Beads mutation source requires a callback")
+  end
+  return run_source(
+    "/",
+    { BROKER_COMMAND, "beads", "inspect", operation_id, "--json" },
+    "broker mutation lookup failed",
+    function(output)
+      return M.parse_beads_mutation(output, operation_id)
+    end,
+    callback
+  )
 end
 
 ---Collect all Beads issues and their actor fields.

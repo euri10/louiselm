@@ -4,11 +4,12 @@ use super::*;
 mod effects;
 use louiselm_skills::{
     beads_mutation::{
-        ApprovedBeadsMutations, BeadsMutationKind, BeadsMutationOutcome, BeadsMutationRequest,
-        BeadsMutationStatus,
+        ApprovedBeadsMutations, BeadsInspectionDetail, BeadsMutationKind, BeadsMutationOutcome,
+        BeadsMutationRequest, BeadsMutationStatus,
     },
     broker::{BrokerSession, lifecycle::LifecycleStore},
     launch_protocol::{COMMAND_SCHEMA, CommandMessage, CommandOperation},
+    workspace::provenance::OutputProvenanceCode,
 };
 
 fn permission(issue: &str) -> ApprovedBeadsMutations {
@@ -207,6 +208,16 @@ fn completed_comment_replays_and_changed_content_is_refused() {
     let mut query = query(session.authorization(), "test-1");
     let first = accepted(exchange(&service, &mut session, &peer, &query, true));
     assert_eq!(first.outcome, BeadsMutationOutcome::Completed);
+    let before = service
+        .beads_mutation_control(CONTROLLER_UID, &first.operation_id, None)
+        .unwrap();
+    let BeadsInspectionDetail::Mutation {
+        output_provenance, ..
+    } = before.detail
+    else {
+        panic!("expected mutation inspection")
+    };
+    assert_eq!(output_provenance.code, OutputProvenanceCode::Untainted);
     assert_eq!(
         accepted(exchange(&service, &mut session, &peer, &query, true)),
         first
@@ -215,6 +226,31 @@ fn completed_comment_replays_and_changed_content_is_refused() {
         && let BeadsMutationKind::CommentAdd { text, .. } = &mut request.kind
     {
         *text = "different".into();
+    }
+    assert!(matches!(
+        exchange(&service, &mut session, &peer, &query, true),
+        CommandOperation::BeadsMutationRefused { .. }
+    ));
+    LifecycleStore::open(&root.path().join("authorizations/lifecycle"))
+        .unwrap()
+        .quarantine(&query.session_id)
+        .unwrap();
+    let uncertain = service
+        .beads_mutation_control(CONTROLLER_UID, &first.operation_id, None)
+        .unwrap();
+    let BeadsInspectionDetail::Mutation {
+        output_provenance,
+        status,
+        ..
+    } = uncertain.detail
+    else {
+        panic!("expected mutation inspection")
+    };
+    assert_eq!(status.outcome, BeadsMutationOutcome::Completed);
+    assert_eq!(output_provenance.code, OutputProvenanceCode::Unknown);
+    query.request_id = "relay-late".into();
+    if let CommandOperation::BeadsMutation { request } = &mut query.operation {
+        request.request_id = "late-comment".into();
     }
     assert!(matches!(
         exchange(&service, &mut session, &peer, &query, true),

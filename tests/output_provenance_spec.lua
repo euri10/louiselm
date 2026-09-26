@@ -62,6 +62,17 @@ T["unmanaged is explicit; missing or malformed broker metadata stays unknown"] =
   MiniTest.expect.equality(Provenance.from_broker(bad, "broker-session").code, "unknown")
 end
 
+T["Beads broker projection rejects contradictory clean claims"] = function()
+  local source = nvim.json.decode(broker_record("untainted", nil, false)).output_provenance
+  MiniTest.expect.equality(Provenance.from_broker_output(source).code, "untainted")
+  source.taint_digest = "sha256:" .. string.rep("a", 64)
+  MiniTest.expect.equality(Provenance.from_broker_output(source).code, "unknown")
+  source.code = "session_output_tainted"
+  MiniTest.expect.equality(Provenance.from_broker_output(source).code, "session_output_tainted")
+  source.clean_review_refs = { "unsupported" }
+  MiniTest.expect.equality(Provenance.from_broker_output(source).code, "unknown")
+end
+
 T["detached or malformed Markdown metadata never reads as clean"] = function()
   local body = "# Session transcript\n\n## User\n\nunchanged words\n"
   local marked = Provenance.markdown(body, Provenance.initial({ kind = "not_managed" }))

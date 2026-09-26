@@ -9,6 +9,7 @@ use crate::{
         BeadsControlDecision, BeadsInspection, BeadsInspectionDetail, BeadsResolution,
     },
     broker::attention::{Outbox, ProjectionChange},
+    workspace::provenance::OutputProvenance,
 };
 
 impl BeadsMutations {
@@ -76,6 +77,7 @@ impl BeadsMutations {
                     project_digest: record.project_digest.clone(),
                     request_digest: record.request_digest.clone(),
                     status: record.status(outcome),
+                    output_provenance: OutputProvenance::unknown(),
                     resolution,
                 },
             );

@@ -190,6 +190,85 @@ end
 
 T["issue Provenance"] = MiniTest.new_set()
 
+T["Beads mutation Provenance"] = MiniTest.new_set()
+
+T["Beads mutation Provenance"]["does not query the broker when Beads is disabled"] = function()
+  local buffer = source_buffer("operation 12345678-1234-4234-8234-123456789abc", 15)
+  local calls = fake_system()
+  local started, message = Provenance.inspect(buffer)
+  MiniTest.expect.equality(started, false)
+  MiniTest.expect.equality(assert(message):find("beads.enabled = true", 1, true) ~= nil, true)
+  MiniTest.expect.equality(#calls, 0)
+end
+
+T["Beads mutation Provenance"]["separates immutable audit fact from later Session taint"] = function()
+  local operation_id = "12345678-1234-4234-8234-123456789abc"
+  local digest = "sha256:" .. string.rep("a", 64)
+  local buffer = source_buffer("operation " .. operation_id, 15)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer, { beads = true }))
+  MiniTest.expect.equality(calls[1].command, {
+    "/usr/local/lib/louiselm/current/bin/louiselm-control",
+    "beads",
+    "inspect",
+    operation_id,
+    "--json",
+  })
+  MiniTest.expect.equality(calls[1].options.clear_env, true)
+  finish_call(
+    calls,
+    1,
+    nvim.json.encode({
+      operation_id = operation_id,
+      session_id = "private-session",
+      detail = {
+        kind = "mutation",
+        project_digest = digest,
+        request_digest = digest,
+        status = { operation_id = operation_id, outcome = "completed" },
+        output_provenance = {
+          schema = "louiselm.workspace.output-provenance/1",
+          code = "session_output_tainted",
+          taint_digest = digest,
+          clean_review_refs = {},
+        },
+      },
+    })
+  )
+  local lines = table.concat(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), "\n")
+  MiniTest.expect.equality(lines:find("Original outcome: completed", 1, true) ~= nil, true)
+  MiniTest.expect.equality(
+    lines:find("Tainted across the Session lifetime; operator review required", 1, true) ~= nil,
+    true
+  )
+  MiniTest.expect.equality(lines:find("never rolls them back", 1, true) ~= nil, true)
+  MiniTest.expect.equality(lines:find("private-session", 1, true), nil)
+end
+
+T["Beads mutation Provenance"]["malformed taint projection is unknown, not clean"] = function()
+  local operation_id = "12345678-1234-4234-8234-123456789abc"
+  local digest = "sha256:" .. string.rep("a", 64)
+  local buffer = source_buffer("operation " .. operation_id, 15)
+  local calls = fake_system()
+  assert(Provenance.inspect(buffer, { beads = true }))
+  finish_call(
+    calls,
+    1,
+    nvim.json.encode({
+      operation_id = operation_id,
+      detail = {
+        kind = "mutation",
+        project_digest = digest,
+        request_digest = digest,
+        status = { operation_id = operation_id, outcome = "completed" },
+        output_provenance = { code = "untainted" },
+      },
+    })
+  )
+  local lines = table.concat(nvim.api.nvim_buf_get_lines(nvim.api.nvim_get_current_buf(), 0, -1, false), "\n")
+  MiniTest.expect.equality(lines:find("Unknown: missing or corrupt taint evidence", 1, true) ~= nil, true)
+end
+
 T["issue Provenance"]["rejects disabled Beads operations before spawning tools"] = function()
   local buffer = source_buffer("louiselm-kpod", 3)
   local calls = fake_system()

@@ -3,9 +3,10 @@
 use super::service::send;
 use super::{BrokerError, BrokerService, BrokerSession, beads_mutation::Binding};
 use crate::{
-    beads_mutation::BeadsMutationRequest,
+    beads_mutation::{BeadsInspectionDetail, BeadsMutationRequest},
     launch_protocol::{ChannelState, CommandMessage, CommandOperation, ErrorCode},
     launch_receipt::SessionState,
+    workspace::provenance::OutputProvenance,
 };
 
 impl BrokerService {
@@ -21,13 +22,35 @@ impl BrokerService {
         operation_id: &str,
         decision: Option<&crate::beads_mutation::BeadsControlDecision>,
     ) -> Result<crate::beads_mutation::BeadsInspection, BrokerError> {
-        self.beads_mutations.control(
+        let mut inspection = self.beads_mutations.control(
             operator_uid,
             operation_id,
             decision,
             super::now_ms()?,
             &self.attention,
-        )
+        )?;
+        if let BeadsInspectionDetail::Mutation {
+            output_provenance, ..
+        } = &mut inspection.detail
+        {
+            *output_provenance =
+                self.beads_output_provenance(&inspection.session_id, &inspection.run_id);
+        }
+        Ok(inspection)
+    }
+
+    fn beads_output_provenance(&self, session_id: &str, run_id: &str) -> OutputProvenance {
+        // Inspection remains available when lifecycle evidence is damaged, but never claims clean.
+        match (
+            self.lifecycle.is_quarantined(session_id),
+            self.lifecycle.skill_taint(session_id),
+        ) {
+            (Ok(_), Ok(Some(taint))) if taint.run_id() == run_id => {
+                OutputProvenance::tainted(taint.digest())
+            }
+            (Ok(false), Ok(None)) => OutputProvenance::untainted(),
+            _ => OutputProvenance::unknown(),
+        }
     }
 
     /// Enables mutation mediation for one trusted canonical project and exact `br` bytes.

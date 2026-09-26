@@ -2,6 +2,7 @@
 use super::{
     BeadsEscalation, BeadsMutationOutcome, BeadsMutationStatus, canonical_uuid, identifier,
 };
+use crate::workspace::provenance::OutputProvenance;
 use serde::{Deserialize, Serialize};
 
 /// An operator's conclusion from independently inspecting canonical Beads evidence.
@@ -68,6 +69,8 @@ pub enum BeadsInspectionDetail {
         request_digest: String,
         /// Original broker observation; reconciliation never changes its outcome.
         status: BeadsMutationStatus,
+        /// Current trust in Session-authored content, derived from broker taint evidence.
+        output_provenance: OutputProvenance,
         /// Optional explicit operator attestation, never an automatic retry.
         resolution: Option<BeadsResolution>,
     },
@@ -108,11 +111,13 @@ impl BeadsInspection {
                     project_digest,
                     request_digest,
                     status,
+                    output_provenance,
                     resolution,
                 } => {
                     digest_valid(project_digest)
                         && digest_valid(request_digest)
                         && status.valid()
+                        && output_provenance.validate().is_ok()
                         && status.operation_id == self.operation_id
                         && resolution.as_ref().is_none_or(|value| {
                             status.outcome != BeadsMutationOutcome::Completed
