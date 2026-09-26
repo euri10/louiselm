@@ -14,7 +14,7 @@ use std::os::unix::{
 };
 
 const OPERATOR: &str = "launch_supervisor::system::installed_tests::verification::promotion::installed_promotion_operator";
-const ATTEMPTS: usize = 9;
+const ATTEMPTS: usize = 8;
 
 pub(super) fn prepare(root: &Path, uid: u32) {
     let channel = root.join("promotion-channel");
@@ -44,14 +44,6 @@ pub(super) fn broker_round(broker: &InstalledBroker, producer: &mut BrokerSessio
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o666)).unwrap();
     println!("PROMOTION_READY");
     for attempt in 0..ATTEMPTS {
-        if attempt == 8 {
-            crate::broker::lifecycle::LifecycleStore::open(
-                &root.join("state/authorizations/lifecycle"),
-            )
-            .unwrap()
-            .quarantine("verifier-0")
-            .unwrap();
-        }
         let (stream, _) = listener.accept().unwrap();
         let result = broker.serve_promotion(producer, stream);
         if (6..=7).contains(&attempt) {
@@ -66,6 +58,53 @@ pub(super) fn broker_round(broker: &InstalledBroker, producer: &mut BrokerSessio
     assert!(matches!(
         broker.promotion_status("promote-good").unwrap(),
         PromotionStatus::Completed { .. }
+    ));
+}
+
+pub(super) fn broker_tainted_round(
+    broker: &InstalledBroker,
+    producer: &mut BrokerSession,
+    root: &Path,
+) {
+    let record: VerificationRecord = serde_json::from_slice(
+        &fs::read(root.join("state/authorizations/verification/result-verifier-0.json")).unwrap(),
+    )
+    .unwrap();
+    broker
+        .mark_promotion_fixture_taint(
+            producer.authorization(),
+            &record.producer.request.launch.skill_generation_id,
+        )
+        .unwrap();
+    let socket = root.join("promotion-channel/tainted-socket");
+    let listener = UnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o666)).unwrap();
+    println!("TAINTED_PROMOTION_READY");
+    for attempt in 0..4 {
+        if attempt == 3 {
+            crate::broker::lifecycle::LifecycleStore::open(
+                &root.join("state/authorizations/lifecycle"),
+            )
+            .unwrap()
+            .quarantine("verifier-0")
+            .unwrap();
+        }
+        let (stream, _) = listener.accept().unwrap();
+        let result = broker.serve_promotion(producer, stream);
+        if (1..=2).contains(&attempt) {
+            assert!(matches!(result.unwrap(), PromotionStatus::Completed { .. }));
+        } else {
+            assert!(
+                result.is_err(),
+                "unapproved or tainted verifier must refuse"
+            );
+        }
+    }
+    assert!(matches!(
+        broker.promotion_status("promote-reviewed").unwrap(),
+        PromotionStatus::Completed { output_provenance, .. }
+            if output_provenance.code == crate::workspace::provenance::OutputProvenanceCode::SessionOutputTainted
+                && output_provenance.clean_review_refs.len() == 1
     ));
 }
 
@@ -119,6 +158,28 @@ pub(super) fn operator_round(root: &Path, uid: u32) {
         let mode = transfer.unwrap().metadata().unwrap().mode();
         assert_eq!(mode & 0o022, 0, "broker cannot modify transferred bytes");
     }
+}
+
+pub(super) fn operator_tainted_round(root: &Path, uid: u32) {
+    assert!(
+        Command::new("/usr/bin/setpriv")
+            .args([
+                "--reuid",
+                &uid.to_string(),
+                "--regid",
+                &uid.to_string(),
+                "--clear-groups"
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .args([OPERATOR, "--exact", "--nocapture"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LOUISELM_PROMOTION_FIXTURE", root)
+            .env("LOUISELM_PROMOTION_TAINTED", "1")
+            .status()
+            .unwrap()
+            .success()
+    );
 }
 
 pub(super) fn broker_denial(
@@ -202,6 +263,10 @@ fn installed_promotion_operator() {
         denied_client(&root, index.parse().unwrap());
         return;
     }
+    if std::env::var_os("LOUISELM_PROMOTION_TAINTED").is_some() {
+        tainted_client(&root);
+        return;
+    }
     let record: VerificationRecord =
         serde_json::from_slice(&fs::read(root.join("promotion-evidence.json")).unwrap()).unwrap();
     let checkout = root.join("operator-checkout");
@@ -258,13 +323,60 @@ fn installed_promotion_operator() {
             status: PromotionStatus::Completed { .. }
         }
     ));
+}
+
+fn tainted_client(root: &Path) {
+    let record: VerificationRecord =
+        serde_json::from_slice(&fs::read(root.join("promotion-evidence.json")).unwrap()).unwrap();
+    let journal = root.join("operator-journal");
     let second = journal.join("second-checkout");
     fs::create_dir(&second).unwrap();
     fs::set_permissions(&second, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut request = PromotionRequest {
+        schema: "louiselm.workspace.promotion/1".into(),
+        request_id: "review-refused".into(),
+        producer_session_id: record.producer.request.launch.session_id.clone(),
+        verifier_session_id: "verifier-0".into(),
+        verification_digest: Digest::of(&serde_json::to_vec(&record).unwrap()).to_string(),
+        job: record.execution.job,
+        destination: DestinationIdentity::inspect(&second).unwrap(),
+        expires_at_ms: clock_ms() + 120_000,
+    };
+    let stream = UnixStream::connect(root.join("promotion-channel/tainted-socket")).unwrap();
+    let client =
+        PromotionClient::prepare(stream, BROKER_UID, request.clone(), &second, &journal).unwrap();
+    assert!(client.tainted_review().is_some());
+    assert!(client.commit().is_err());
+    assert!(!second.join("effect").exists());
+
+    request.request_id = "promote-reviewed".into();
+    let stream = UnixStream::connect(root.join("promotion-channel/tainted-socket")).unwrap();
+    let client =
+        PromotionClient::prepare(stream, BROKER_UID, request.clone(), &second, &journal).unwrap();
+    let approval = client.tainted_review().unwrap().digest().unwrap();
+    let result = client.commit_tainted(&approval).unwrap();
+    assert_eq!(
+        result.output_provenance.clean_review_refs.as_slice(),
+        std::slice::from_ref(&approval)
+    );
+    assert!(result.output_provenance.taint_digest.is_some());
+    assert_eq!(fs::read(second.join("effect")).unwrap(), b"authorized");
+    let mut stream = UnixStream::connect(root.join("promotion-channel/tainted-socket")).unwrap();
+    transfer::send(&mut stream, &request).unwrap();
+    assert!(matches!(
+        transfer::receive::<Reply>(&mut stream).unwrap(),
+        Reply::Finished {
+            status: PromotionStatus::Completed { .. }
+        }
+    ));
+
+    let third = journal.join("quarantined-checkout");
+    fs::create_dir(&third).unwrap();
+    fs::set_permissions(&third, fs::Permissions::from_mode(0o700)).unwrap();
     let mut quarantined = request;
     quarantined.request_id = "quarantined".into();
-    quarantined.destination = DestinationIdentity::inspect(&second).unwrap();
-    let stream = UnixStream::connect(root.join("promotion-channel/socket")).unwrap();
-    assert!(PromotionClient::prepare(stream, BROKER_UID, quarantined, &second, &journal).is_err());
-    assert!(!second.join("effect").exists());
+    quarantined.destination = DestinationIdentity::inspect(&third).unwrap();
+    let stream = UnixStream::connect(root.join("promotion-channel/tainted-socket")).unwrap();
+    assert!(PromotionClient::prepare(stream, BROKER_UID, quarantined, &third, &journal).is_err());
+    assert!(!third.join("effect").exists());
 }

@@ -7,7 +7,7 @@ pub use client::PromotionClient;
 pub(crate) use transfer::copy_transfer;
 
 use super::{SourceFiles, WorkspaceError, entries, tree, validate_inventory};
-use crate::{Digest, ManifestEntry};
+use crate::{Digest, ManifestEntry, workspace::provenance::OutputProvenance};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -102,6 +102,8 @@ pub struct ApplicationResult {
     pub complete: bool,
     /// Fully synchronized file effects acknowledged locally.
     pub completed_steps: usize,
+    /// Historical output provenance and any exact-use review, never cleared by approval.
+    pub output_provenance: OutputProvenance,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -163,6 +165,7 @@ impl Destination {
         &self,
         changes: &Changes,
         journal: &Path,
+        output_provenance: OutputProvenance,
         mut authorize: impl FnMut(StepEvent) -> Result<(), WorkspaceError>,
     ) -> Result<ApplicationResult, WorkspaceError> {
         self.check(&changes.baseline)?;
@@ -214,6 +217,7 @@ impl Destination {
         let result = ApplicationResult {
             complete: true,
             completed_steps: changes.steps(),
+            output_provenance,
         };
         super::filesystem::write_file(
             &journal.join("complete.json"),

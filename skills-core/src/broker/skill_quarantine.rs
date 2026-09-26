@@ -32,6 +32,23 @@ use serde::{Deserialize, Serialize};
 
 pub(super) const SESSION_TAINT_SCHEMA: &str = "louiselm.session-taint/1";
 
+#[cfg(test)]
+impl super::InstalledBroker {
+    pub(crate) fn mark_promotion_fixture_taint(
+        &self,
+        authorization: &LaunchAuthorization,
+        generation: &str,
+    ) -> Result<(), BrokerError> {
+        let taint = SessionTaint::new(
+            authorization,
+            generation,
+            TaintSource::EvidenceUnreadable,
+            6000,
+        )?;
+        self.service.lifecycle.record_skill_taint(&taint)
+    }
+}
+
 /// Closed, safe source of a Session output taint. No operator reason is retained.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

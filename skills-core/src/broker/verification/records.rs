@@ -8,8 +8,20 @@ use super::{
 
 impl BrokerService {
     pub(super) fn validate_export(&self, evidence: &VerificationExport) -> Result<(), BrokerError> {
+        self.validate_export_with_history(evidence, false)
+    }
+
+    fn validate_export_with_history(
+        &self,
+        evidence: &VerificationExport,
+        historical: bool,
+    ) -> Result<(), BrokerError> {
         evidence.validate()?;
-        self.verification_binding(&evidence.request)?;
+        if historical {
+            self.verification_binding_historical(&evidence.request)?;
+        } else {
+            self.verification_binding(&evidence.request)?;
+        }
         self.verification_integration(&evidence.request, &evidence.integration_digest)
     }
 
@@ -24,9 +36,10 @@ impl BrokerService {
         Ok(())
     }
 
-    pub(super) fn verification_producer(
+    pub(super) fn verification_producer_with_history(
         &self,
         request: &VerificationRequest,
+        historical: bool,
     ) -> Result<VerificationExport, BrokerError> {
         let VerificationOperation::Run {
             producer_session_id,
@@ -40,9 +53,13 @@ impl BrokerService {
         let producer: VerificationExport =
             read_record(&self.export_path(producer_session_id, export_request_id)?)?
                 .ok_or(BrokerError::InvalidGrant)?;
-        self.validate_export(&producer)?;
+        self.validate_export_with_history(&producer, historical)?;
         let verifier = self.verification_binding(request)?;
-        let source = self.verification_binding(&producer.request)?;
+        let source = if historical {
+            self.verification_binding_historical(&producer.request)?
+        } else {
+            self.verification_binding(&producer.request)?
+        };
         if producer.request.launch.session_id != *producer_session_id
             || producer.request.request_id != *export_request_id
             || producer.digest()?.to_string() != *export_digest
@@ -56,19 +73,32 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
+        if historical {
+            use crate::workspace::provenance::OutputProvenanceCode;
+            if self
+                .workspace_output_provenance(&producer.request.launch)?
+                .code
+                != OutputProvenanceCode::SessionOutputTainted
+                || self.workspace_output_provenance(&request.launch)?.code
+                    != OutputProvenanceCode::Untainted
+            {
+                return Err(BrokerError::ReceiptUnauthorized);
+            }
+        }
         Ok(producer)
     }
 
-    pub(super) fn validate_execution(
+    pub(super) fn validate_execution_with_history(
         &self,
         request: &VerificationRequest,
         producer: &VerificationExport,
         evidence: &VerificationExecution,
+        historical: bool,
     ) -> Result<(), BrokerError> {
         evidence.validate()?;
         if evidence.request != *request
             || evidence.job != producer.job
-            || self.verification_producer(request)? != *producer
+            || self.verification_producer_with_history(request, historical)? != *producer
         {
             return Err(BrokerError::RequestMismatch);
         }
@@ -79,8 +109,21 @@ impl BrokerService {
         &self,
         record: &VerificationRecord,
     ) -> Result<(), BrokerError> {
+        self.validate_verification_record_with_history(record, false)
+    }
+
+    pub(super) fn validate_verification_record_with_history(
+        &self,
+        record: &VerificationRecord,
+        historical: bool,
+    ) -> Result<(), BrokerError> {
         let request = &record.execution.request;
-        self.validate_execution(request, &record.producer, &record.execution)?;
+        self.validate_execution_with_history(
+            request,
+            &record.producer,
+            &record.execution,
+            historical,
+        )?;
         let receipts = self.receipts().chain(&request.launch.session_id)?;
         if !receipts.last().is_some_and(|receipt| {
             receipt.payload.sequence == record.terminal_head.sequence
@@ -97,6 +140,24 @@ impl BrokerService {
             return Err(BrokerError::ReceiptUnauthorized);
         }
         Ok(())
+    }
+
+    pub(in crate::broker) fn tainted_verification_record(
+        &self,
+        session_id: &str,
+    ) -> Result<VerificationRecord, BrokerError> {
+        let name = record_name(session_id)?;
+        let directory = self.authorizations().root.join("verification");
+        let request =
+            read_record::<VerificationRequest>(&directory.join(format!("intent-{name}")))?
+                .ok_or(BrokerError::ReceiptUnauthorized)?;
+        let record = read_record::<VerificationRecord>(&directory.join(format!("result-{name}")))?
+            .ok_or(BrokerError::ReceiptUnauthorized)?;
+        if request.launch.session_id != session_id || record.execution.request != request {
+            return Err(BrokerError::RequestMismatch);
+        }
+        self.validate_verification_record_with_history(&record, true)?;
+        Ok(record)
     }
 
     /// Reads current normalized evidence; spent-but-incomplete work remains Unknown.

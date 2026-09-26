@@ -55,8 +55,9 @@ impl OutputProvenance {
         }
     }
 
-    /// Checks a portable projection before it can be propagated to another artifact.
-    /// This slice has no exact-use acceptance, so any review reference is refused.
+    /// Checks untrusted producer metadata before it can be propagated.
+    /// Review references are refused here; the broker validates its own exact-use
+    /// review record when publishing a promotion result.
     /// # Errors
     /// Refuses unsupported, contradictory or noncanonical metadata.
     pub fn validate(&self) -> Result<(), WorkspaceError> {

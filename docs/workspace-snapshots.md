@@ -405,9 +405,11 @@ device/inode/owner, unique request ID and an absolute expiry of at most five
 minutes. Identify the selected checkout with `DestinationIdentity::inspect`;
 preparation reopens and checks that exact object. Broker admission requires all
 verification commands to have passed, proven verifier disposal, a distinct
-producer, current unquarantined evidence and reverified installed receipt chains.
-The producer must still be at its exported Park receipt. A later producer
-lifecycle head requires a fresh export/verification selection.
+producer, a currently clean verifier and reverified installed receipt chains.
+The ordinary path requires an untainted producer still at its exported Park
+receipt. A later producer lifecycle head requires a fresh export/verification
+selection. For tainted output, the broker uses the retained exact export and
+canonical taint record; it never restores the producer's execution authority.
 
 The launcher accepts only a retained export ID and exact digests on its existing
 authenticated broker connection. It publishes validated snapshot/job bytes below
@@ -424,6 +426,16 @@ apart from root `.git`: dirty changes, untracked additions, symlinks, special fi
 and mode changes refuse rather than being merged. Git metadata is preserved;
 neither endpoint invokes Git, hooks, filters or candidate programs. A newly
 combined source result needs fresh confined verification.
+
+For tainted output, `prepare` also returns a `PromotionReview` binding the
+request, exact output digest, canonical taint digest, `workspace_promotion`
+action and destination identity. Ordinary `commit` refuses it. The trusted
+operator inspects the preview and calls `commit_tainted` with that review's
+digest. The broker checks the review at commit and before each file effect.
+A changed request, taint, verifier state, destination or review cannot reuse it.
+The durable request journal makes an interrupted attempt non-repeatable.
+Approval authorizes one use; it neither clears provenance nor grants a reusable
+permission.
 
 The caller must stop editor/build writers for the entire preview/commit operation.
 The advisory lock serializes cooperating promotion clients; it cannot freeze
@@ -446,6 +458,10 @@ or `Completed`. Unknown and Completed include the producer's current output
 provenance. A late quarantine changes that provenance but never rewrites a
 completed effect. Missing provenance is reported as unknown while the historical
 effect count remains visible. A missing acknowledgement remains uncertain across restart.
+For an approved tainted use, the operator's `complete.json` result and broker
+status retain the taint digest and exact review reference. Review metadata
+comes from the broker's durable record; untrusted producer metadata cannot
+claim that a review occurred.
 Reusing the exact request returns only its recorded historical status; changed
 request bytes refuse, and neither endpoint automatically repeats writes. Inspect
 both journals after an interruption and preserve the partial checkout before

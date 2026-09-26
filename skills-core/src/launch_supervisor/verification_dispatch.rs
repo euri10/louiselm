@@ -31,7 +31,9 @@ impl SessionOwner {
         };
         request.validate().is_ok() && correct_state
             && self.broker_connection == BrokerConnection::Connected && self.pending.is_none()
-            && !self.has_receipt_backlog() && !self.controller_loss_unresolved && !self.quarantined && !self.cleanup_unproven
+            && !self.has_receipt_backlog() && !self.controller_loss_unresolved
+            && (!self.quarantined || matches!(request.operation, VerificationOperation::Transfer { .. }))
+            && !self.cleanup_unproven
             && request.head == self.broker_head
             && request.launch.session_id == self.binding.session_id && request.launch.run_id == self.binding.run_id
             && request.launch.envelope_revision == self.binding.envelope_revision

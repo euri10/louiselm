@@ -599,6 +599,13 @@ fn completed_promotion_remains_visible_when_its_producer_becomes_tainted() {
         serde_json::to_vec(&louiselm_skills::workspace::promotion::ApplicationResult {
             complete: true,
             completed_steps: 1,
+            output_provenance: serde_json::from_value(serde_json::json!({
+                "schema": "louiselm.workspace.output-provenance/1",
+                "code": "untainted",
+                "taint_digest": null,
+                "clean_review_refs": []
+            }))
+            .unwrap(),
         })
         .unwrap(),
     )
@@ -639,6 +646,86 @@ fn completed_promotion_remains_visible_when_its_producer_becomes_tainted() {
         PromotionStatus::Completed { output_provenance, result }
             if result.complete && output_provenance.code == OutputProvenanceCode::Unknown
     ));
+}
+
+#[test]
+fn exact_tainted_review_remains_in_promotion_result_and_refuses_changed_binding() {
+    use louiselm_skills::{
+        broker::promotion::{PromotionReview, PromotionStatus},
+        workspace::{promotion::ApplicationResult, provenance::OutputProvenanceCode},
+    };
+
+    let supply = supply();
+    let mut live = launched(supply.root.path(), &supply.generation);
+    quarantine::exclude_everything(&supply.store, "compromised", 6000).unwrap();
+    live.settle_and_park(&supply.source);
+    let taint_digest = live
+        .service
+        .inspect("quarantined")
+        .unwrap()
+        .unwrap()
+        .output_taint
+        .unwrap()
+        .digest;
+    let mut request = promotion::selection();
+    request.producer_session_id = "quarantined".into();
+    request.request_id = "reviewed-once".into();
+    let mut review = PromotionReview {
+        schema: "louiselm.workspace.promotion-review/1".into(),
+        request_digest: Digest::of(&serde_json::to_vec(&request).unwrap()).to_string(),
+        output_digest: request.job.result_digest.clone(),
+        taint_digest: taint_digest.clone(),
+        action: "workspace_promotion".into(),
+        destination: request.destination,
+    };
+    let review_digest = review.digest().unwrap();
+    let journal = supply
+        .root
+        .path()
+        .join("authorizations/promotions/reviewed-once");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(
+        journal.join("request.json"),
+        serde_json::to_vec(&request).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        journal.join("review.json"),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
+    fs::write(journal.join("0.grant"), b"0").unwrap();
+    fs::write(journal.join("0.done"), b"0").unwrap();
+    let result = ApplicationResult {
+        complete: true,
+        completed_steps: 1,
+        output_provenance: serde_json::from_value(serde_json::json!({
+            "schema": "louiselm.workspace.output-provenance/1",
+            "code": "session_output_tainted",
+            "taint_digest": taint_digest,
+            "clean_review_refs": [review_digest.clone()]
+        }))
+        .unwrap(),
+    };
+    fs::write(
+        journal.join("result.json"),
+        serde_json::to_vec(&result).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        live.service.promotion_status("reviewed-once").unwrap(),
+        PromotionStatus::Completed { output_provenance, result: actual }
+            if actual == result
+                && output_provenance.code == OutputProvenanceCode::SessionOutputTainted
+                && output_provenance.clean_review_refs == [review_digest]
+    ));
+    review.destination.inode += 1;
+    fs::write(
+        journal.join("review.json"),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
+    assert!(live.service.promotion_status("reviewed-once").is_err());
 }
 
 #[test]

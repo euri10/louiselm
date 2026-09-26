@@ -31,7 +31,7 @@ impl BrokerService {
         F: FnMut(&str, &[u8], &str) -> bool,
     {
         self.authorize_verification(session, caller, request)?;
-        let producer = self.verification_producer(request)?;
+        let producer = self.verification_producer_with_history(request, false)?;
         let deadline = deadline(request, now_ms)?;
         let directory = self.verification_directory()?;
         let name = record_name(&request.launch.session_id)?;
@@ -56,7 +56,7 @@ impl BrokerService {
             let ResponseResult::VerificationExecution { evidence } = response else {
                 return Err(BrokerError::RequestMismatch);
             };
-            self.validate_execution(request, &producer, &evidence)?;
+            self.validate_execution_with_history(request, &producer, &evidence, false)?;
             // Record partial/nonzero outcomes before asking for whole-Session cleanup.
             write_new_record(&directory.join(format!("execution-{name}")), &evidence)?;
             self.verification_current(session, request, &mut verify)?;
@@ -67,7 +67,7 @@ impl BrokerService {
                 execution: evidence,
                 terminal_head,
             };
-            self.validate_verification_record(&record)?;
+            self.validate_verification_record_with_history(&record, false)?;
             if Instant::now() >= deadline {
                 return Err(BrokerError::Expired);
             }

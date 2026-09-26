@@ -3,7 +3,9 @@
 use super::{ApplicationResult, ChangePreview, Changes, Destination, StepEvent, transfer};
 use crate::{
     Digest,
-    broker::promotion::{OperatorMessage, PromotionRequest, PromotionStatus, Reply},
+    broker::promotion::{
+        OperatorMessage, PromotionRequest, PromotionReview, PromotionStatus, Reply,
+    },
     workspace::WorkspaceError,
 };
 use std::{
@@ -25,6 +27,7 @@ pub struct PromotionClient {
     request: PromotionRequest,
     destination: Destination,
     changes: Changes,
+    review: Option<PromotionReview>,
     journal: PathBuf,
     deadline: Instant,
 }
@@ -88,10 +91,16 @@ impl PromotionClient {
             .checked_add(transfer::remaining(request.expires_at_ms)?)
             .ok_or(WorkspaceError::Invalid("promotion deadline unavailable"))?;
         transfer::send(&mut stream, &request)?;
-        if !matches!(transfer::receive::<Reply>(&mut stream)?, Reply::Prepared) {
+        let Reply::Prepared { review } = transfer::receive::<Reply>(&mut stream)? else {
             return Err(WorkspaceError::Invalid(
                 "promotion already attempted; inspect broker status",
             ));
+        };
+        if review
+            .as_ref()
+            .is_some_and(|review| review.validate(&request).is_err())
+        {
+            return Err(WorkspaceError::Invalid("invalid promotion review"));
         }
         let changes = transfer::receive_changes(&mut stream, &request.job)?;
         destination.check(&changes.baseline)?;
@@ -100,6 +109,7 @@ impl PromotionClient {
             request,
             destination,
             changes,
+            review,
             journal,
             deadline,
         })
@@ -111,13 +121,52 @@ impl PromotionClient {
         &self.changes.preview
     }
 
+    /// Exact taint, output, action and destination review for an exceptional use.
+    /// The caller must present this to the operator before requesting its digest.
+    #[must_use]
+    pub const fn tainted_review(&self) -> Option<&PromotionReview> {
+        self.review.as_ref()
+    }
+
     /// Applies the approved preview, requiring a fresh broker permit for every effect.
     /// This consumes the handle even on failure; no automatic merge or replay occurs.
     /// Caller must keep all other checkout writers stopped throughout this operation.
     /// # Errors
     /// Refuses stale bytes, expiry or denied permits. Filesystem/persistence or
     /// connection failures may follow completed effects; inspect the retained journal.
-    pub fn commit(mut self) -> Result<ApplicationResult, WorkspaceError> {
+    pub fn commit(self) -> Result<ApplicationResult, WorkspaceError> {
+        if self.review.is_some() {
+            return Err(WorkspaceError::Invalid(
+                "tainted promotion requires exact operator review approval",
+            ));
+        }
+        self.commit_with_review(None)
+    }
+
+    /// Applies one tainted promotion after the operator approves the displayed review digest.
+    /// This consumes the handle and never stores a reusable approval.
+    /// # Errors
+    /// Refuses a missing, changed or unsolicited review digest and all ordinary commit failures.
+    pub fn commit_tainted(self, review_digest: &str) -> Result<ApplicationResult, WorkspaceError> {
+        let Some(review) = &self.review else {
+            return Err(WorkspaceError::Invalid("promotion is not tainted"));
+        };
+        if review
+            .digest()
+            .map_err(|_| WorkspaceError::Invalid("invalid promotion review"))?
+            != review_digest
+        {
+            return Err(WorkspaceError::Invalid(
+                "promotion review approval mismatch",
+            ));
+        }
+        self.commit_with_review(Some(review_digest.to_owned()))
+    }
+
+    fn commit_with_review(
+        mut self,
+        review_digest: Option<String>,
+    ) -> Result<ApplicationResult, WorkspaceError> {
         self.destination.check(&self.changes.baseline)?;
         transfer::remaining(self.request.expires_at_ms)?;
         if Instant::now() >= self.deadline {
@@ -128,35 +177,42 @@ impl PromotionClient {
             &mut self.stream,
             &OperatorMessage::Commit {
                 request_digest: digest,
+                review_digest,
             },
         )?;
-        let result = self
-            .destination
-            .apply(&self.changes, &self.journal, |event| {
-                let (index, begin) = match event {
-                    StepEvent::Begin { index } => (index, true),
-                    StepEvent::Done { index } => (index, false),
-                };
-                transfer::send(&mut self.stream, &OperatorMessage::Step { event })?;
-                let reply = transfer::receive::<Reply>(&mut self.stream)?;
-                let valid = match reply {
-                    Reply::Granted { index: n } => begin && n == index,
-                    Reply::Recorded { index: n } => !begin && n == index,
-                    _ => false,
-                };
-                if !valid {
-                    return Err(WorkspaceError::Invalid(
-                        "promotion effect acknowledgement mismatch",
-                    ));
-                }
-                if begin {
-                    transfer::remaining(self.request.expires_at_ms)?;
-                    if Instant::now() >= self.deadline {
-                        return Err(WorkspaceError::Invalid("promotion expired"));
+        let output_provenance = match &self.review {
+            Some(review) => review
+                .output_provenance()
+                .map_err(|_| WorkspaceError::Invalid("invalid promotion review"))?,
+            None => crate::workspace::provenance::OutputProvenance::untainted(),
+        };
+        let result =
+            self.destination
+                .apply(&self.changes, &self.journal, output_provenance, |event| {
+                    let (index, begin) = match event {
+                        StepEvent::Begin { index } => (index, true),
+                        StepEvent::Done { index } => (index, false),
+                    };
+                    transfer::send(&mut self.stream, &OperatorMessage::Step { event })?;
+                    let reply = transfer::receive::<Reply>(&mut self.stream)?;
+                    let valid = match reply {
+                        Reply::Granted { index: n } => begin && n == index,
+                        Reply::Recorded { index: n } => !begin && n == index,
+                        _ => false,
+                    };
+                    if !valid {
+                        return Err(WorkspaceError::Invalid(
+                            "promotion effect acknowledgement mismatch",
+                        ));
                     }
-                }
-                Ok(())
-            })?;
+                    if begin {
+                        transfer::remaining(self.request.expires_at_ms)?;
+                        if Instant::now() >= self.deadline {
+                            return Err(WorkspaceError::Invalid("promotion expired"));
+                        }
+                    }
+                    Ok(())
+                })?;
         transfer::send(
             &mut self.stream,
             &OperatorMessage::Complete {

@@ -177,13 +177,31 @@ impl BrokerService {
         &self,
         request: &VerificationRequest,
     ) -> Result<PendingAuthorization, BrokerError> {
+        let tainted_transfer = matches!(request.operation, VerificationOperation::Transfer { .. })
+            && self.workspace_output_provenance(&request.launch)?.code
+                == crate::workspace::provenance::OutputProvenanceCode::SessionOutputTainted;
+        self.verification_binding_with_history(request, tainted_transfer)
+    }
+
+    pub(super) fn verification_binding_historical(
+        &self,
+        request: &VerificationRequest,
+    ) -> Result<PendingAuthorization, BrokerError> {
+        self.verification_binding_with_history(request, true)
+    }
+
+    fn verification_binding_with_history(
+        &self,
+        request: &VerificationRequest,
+        historical: bool,
+    ) -> Result<PendingAuthorization, BrokerError> {
         request.validate()?;
         let launch = self
             .authorizations()
             .consumed_for_session(&request.launch.session_id)?
             .ok_or(BrokerError::UnknownAuthorization)?;
         if launch.request_digest != request.launch.digest().to_string()
-            || self.lifecycle.is_quarantined(&launch.session_id)?
+            || (!historical && self.lifecycle.is_quarantined(&launch.session_id)?)
         {
             return Err(BrokerError::RequestMismatch);
         }

@@ -117,6 +117,7 @@ fn installed_verification_worker() {
             config.operator_uid,
         );
     }
+    promotion::broker_tainted_round(&broker, &mut producer, &root);
     let disposal = lifecycle(
         &producer,
         LifecycleAction::Disposal,
@@ -554,6 +555,8 @@ fn privileged_installed_exact_job_verification() {
         );
         verifier.dispose().unwrap();
     }
+    marker(&lines, "TAINTED_PROMOTION_READY");
+    promotion::operator_tainted_round(root.path(), config.operator_uid);
     marker(&lines, "VERIFICATION_DONE");
     assert!(child.0.wait().unwrap().success());
     assert_eq!(

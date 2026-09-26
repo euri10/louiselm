@@ -31,7 +31,6 @@ impl Storage {
             != *export_digest
             || evidence.job.job_digest != *job_digest
             || evidence.request.launch != request.launch
-            || evidence.request.head != request.head
         {
             return Err(SupervisorError::AuthorizationRejected);
         }

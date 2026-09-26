@@ -1,7 +1,8 @@
 //! Original producer worker plus an authenticated operator stream, never host execution.
 
 use super::{
-    BrokerError, BrokerService, OperatorMessage, PromotionRequest, PromotionStatus, Reply,
+    BrokerError, BrokerService, OperatorMessage, PromotionRequest, PromotionReview,
+    PromotionStatus, Reply,
 };
 use crate::{
     Digest,
@@ -31,10 +32,24 @@ impl BrokerService {
         if request.destination.uid != uid {
             return Err(BrokerError::ControllerMismatch);
         }
-        let VerificationStatus::Completed(record) =
-            self.verification_status(&request.verifier_session_id)?
-        else {
-            return Err(BrokerError::ReceiptUnauthorized);
+        let provenance =
+            self.workspace_output_provenance_for_session(&request.producer_session_id)?;
+        let tainted = match provenance.code {
+            crate::workspace::provenance::OutputProvenanceCode::Untainted => false,
+            crate::workspace::provenance::OutputProvenanceCode::SessionOutputTainted => true,
+            crate::workspace::provenance::OutputProvenanceCode::Unknown => {
+                return Err(BrokerError::ReceiptUnauthorized);
+            }
+        };
+        let record = if tainted {
+            Box::new(self.tainted_verification_record(&request.verifier_session_id)?)
+        } else {
+            let VerificationStatus::Completed(record) =
+                self.verification_status(&request.verifier_session_id)?
+            else {
+                return Err(BrokerError::ReceiptUnauthorized);
+            };
+            record
         };
         if !record.execution.commands_passed()
             || record.execution.job != request.job
@@ -44,13 +59,6 @@ impl BrokerService {
                 != request.verification_digest
         {
             return Err(BrokerError::RequestMismatch);
-        }
-        if self
-            .workspace_output_provenance(&record.producer.request.launch)?
-            .code
-            != crate::workspace::provenance::OutputProvenanceCode::Untainted
-        {
-            return Err(BrokerError::ReceiptUnauthorized);
         }
         for verification in [&record.producer.request, &record.execution.request] {
             let authorization = self
@@ -64,11 +72,12 @@ impl BrokerService {
             }
             self.verified_history(&authorization.launch_authorization(), verify)?;
         }
-        if self
-            .receipts()
-            .head(&record.producer.request.launch.session_id)?
-            .as_ref()
-            != Some(&record.producer.request.head)
+        if !tainted
+            && self
+                .receipts()
+                .head(&record.producer.request.launch.session_id)?
+                .as_ref()
+                != Some(&record.producer.request.head)
         {
             return Err(BrokerError::ReceiptUnauthorized);
         }
@@ -80,7 +89,8 @@ impl BrokerService {
     /// kernel peer credentials are checked against canonical launch ownership.
     /// All I/O blocks this worker. Failure closes the stream and never retries effects.
     /// # Errors
-    /// Refuses foreign peers, stale/failed/tainted evidence, replay conflicts, expiry,
+    /// Refuses foreign peers, stale or failed evidence, taint without exact review,
+    /// replay conflicts, expiry,
     /// unsafe transfer bytes, lost transport and uncertain persistence/application.
     pub fn serve_promotion<F>(
         &self,
@@ -103,6 +113,10 @@ impl BrokerService {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One durable preview, approval and per-effect transaction shares the pinned request and stream."
+    )]
     fn promotion_transaction<F>(
         &self,
         producer: &mut BrokerSession,
@@ -144,13 +158,24 @@ impl BrokerService {
             return Err(BrokerError::RequestMismatch);
         }
         let changes = self.promotion_transfer(producer, &request, &record, verify)?;
-        transfer::send(operator, &Reply::Prepared)?;
+        self.promotion_evidence(&request, uid, verify)?;
+        let review = self.promotion_review(&request)?;
+        transfer::send(
+            operator,
+            &Reply::Prepared {
+                review: review.clone(),
+            },
+        )?;
         transfer::send_changes(operator, &changes, &request.job)?;
         let review_time = transfer::remaining(request.expires_at_ms)?;
         operator
             .set_read_timeout(Some(review_time))
             .map_err(BrokerError::Storage)?;
-        let OperatorMessage::Commit { request_digest } = transfer::receive(operator)? else {
+        let OperatorMessage::Commit {
+            request_digest,
+            review_digest,
+        } = transfer::receive(operator)?
+        else {
             return Err(BrokerError::InvalidGrant);
         };
         transfer::configure_stream(operator)?;
@@ -160,15 +185,26 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
+        match (&review, &review_digest) {
+            (Some(review), Some(approved)) if review.digest()? == *approved => (),
+            (None, None) => (),
+            _ => return Err(BrokerError::ReceiptUnauthorized),
+        }
         {
             let _guard = self.lifecycle.promotion_guard();
             transfer::remaining(request.expires_at_ms)?;
             self.promotion_evidence(&request, uid, verify)?;
+            if self.promotion_review(&request)? != review {
+                return Err(BrokerError::ReceiptUnauthorized);
+            }
             let parent = directory.parent().ok_or(BrokerError::InvalidGrant)?;
             fs::create_dir_all(parent).map_err(BrokerError::Storage)?;
             sync_directory(&self.authorizations().root)?;
             fs::create_dir(&directory).map_err(BrokerError::Storage)?;
             sync_directory(parent)?;
+            if let Some(review) = &review {
+                write_new_record(&directory.join("review.json"), review)?;
+            }
             write_new_record(&directory.join("request.json"), &request)?;
             for id in [
                 &request.verifier_session_id,
@@ -180,12 +216,27 @@ impl BrokerService {
             }
         }
         for index in 0..changes.steps() {
-            self.promotion_step(operator, &request, &directory, index, uid, verify)?;
+            self.promotion_step(
+                operator,
+                &request,
+                review.as_ref(),
+                &directory,
+                index,
+                uid,
+                verify,
+            )?;
         }
         let OperatorMessage::Complete { result } = transfer::receive(operator)? else {
             return Err(BrokerError::InvalidGrant);
         };
-        if !result.complete || result.completed_steps != changes.steps() {
+        let expected_provenance = match &review {
+            Some(review) => review.output_provenance()?,
+            None => crate::workspace::provenance::OutputProvenance::untainted(),
+        };
+        if !result.complete
+            || result.completed_steps != changes.steps()
+            || result.output_provenance != expected_provenance
+        {
             return Err(BrokerError::RequestMismatch);
         }
         write_new_record(&directory.join("result.json"), &result)?;
@@ -197,6 +248,24 @@ impl BrokerService {
             },
         )?;
         Ok(status)
+    }
+
+    fn promotion_review(
+        &self,
+        request: &PromotionRequest,
+    ) -> Result<Option<PromotionReview>, BrokerError> {
+        match self.workspace_output_provenance_for_session(&request.producer_session_id)? {
+            crate::workspace::provenance::OutputProvenance {
+                code: crate::workspace::provenance::OutputProvenanceCode::SessionOutputTainted,
+                taint_digest: Some(digest),
+                ..
+            } => Ok(Some(PromotionReview::new(request, &digest)?)),
+            crate::workspace::provenance::OutputProvenance {
+                code: crate::workspace::provenance::OutputProvenanceCode::Untainted,
+                ..
+            } => Ok(None),
+            _ => Err(BrokerError::ReceiptUnauthorized),
+        }
     }
 
     fn promotion_transfer<F>(
@@ -220,6 +289,10 @@ impl BrokerService {
                 export_digest: record.producer.digest()?.to_string(),
                 job_digest: request.job.job_digest.clone(),
             },
+            head: self
+                .receipts()
+                .head(&record.producer.request.launch.session_id)?
+                .ok_or(BrokerError::ReceiptUnauthorized)?,
             ..record.producer.request.clone()
         };
         self.verification_current(producer, &transfer_request, verify)?;
@@ -245,10 +318,15 @@ impl BrokerService {
         Ok(changes)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The exact review and request are rechecked with the stream, journal and verifier before each effect."
+    )]
     fn promotion_step<F>(
         &self,
         operator: &mut UnixStream,
         request: &PromotionRequest,
+        review: Option<&PromotionReview>,
         directory: &Path,
         index: usize,
         uid: u32,
@@ -272,6 +350,9 @@ impl BrokerService {
             let _guard = self.lifecycle.promotion_guard();
             transfer::remaining(request.expires_at_ms)?;
             self.promotion_evidence(request, uid, verify)?;
+            if self.promotion_review(request)?.as_ref() != review {
+                return Err(BrokerError::ReceiptUnauthorized);
+            }
             write_new_record(&directory.join(format!("{index}.grant")), &index)?;
         }
         transfer::send(operator, &Reply::Granted { index })?;

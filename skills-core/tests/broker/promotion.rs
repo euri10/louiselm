@@ -101,6 +101,13 @@ fn only_complete_matching_observations_can_be_reported_as_complete() {
     let result = ApplicationResult {
         complete: true,
         completed_steps: 1,
+        output_provenance: serde_json::from_value(serde_json::json!({
+            "schema": "louiselm.workspace.output-provenance/1",
+            "code": "untainted",
+            "taint_digest": null,
+            "clean_review_refs": []
+        }))
+        .unwrap(),
     };
     fs::write(
         directory.join("result.json"),

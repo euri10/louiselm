@@ -10,7 +10,7 @@ impl InstalledBroker {
     /// The operator client owns checkout writer exclusion and local effect recovery.
     /// # Errors
     /// Refuses wrong installed operator, invalid signatures/evidence, conflicts,
-    /// expiry, quarantine and unavailable transport or durable state.
+    /// expiry, unapproved taint, verifier quarantine and unavailable transport or durable state.
     pub fn serve_promotion(
         &self,
         producer: &mut BrokerSession,

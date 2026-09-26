@@ -33,7 +33,14 @@ fn application_preserves_git_and_applies_exact_add_modify_delete_and_mode() {
     let changes = Changes::new(entries(&before), after).unwrap();
     destination.check(&changes.baseline).unwrap();
     let journal = root.path().join("journal");
-    let result = destination.apply(&changes, &journal, |_| Ok(())).unwrap();
+    let result = destination
+        .apply(
+            &changes,
+            &journal,
+            super::super::provenance::OutputProvenance::untainted(),
+            |_| Ok(()),
+        )
+        .unwrap();
     assert!(result.complete);
     assert_eq!(fs::read(checkout.join("file")).unwrap(), b"after");
     assert_ne!(
@@ -51,7 +58,14 @@ fn application_preserves_git_and_applies_exact_add_modify_delete_and_mode() {
         b"must remain literal"
     );
     assert!(
-        destination.apply(&changes, &journal, |_| Ok(())).is_err(),
+        destination
+            .apply(
+                &changes,
+                &journal,
+                super::super::provenance::OutputProvenance::untainted(),
+                |_| Ok(())
+            )
+            .is_err(),
         "retry never repeats writes"
     );
 }
@@ -69,7 +83,12 @@ fn changed_baseline_and_late_change_refuse_without_overwriting_local_work() {
     assert!(destination.check(&changes.baseline).is_err());
     assert!(
         destination
-            .apply(&changes, &root.path().join("journal"), |_| Ok(()))
+            .apply(
+                &changes,
+                &root.path().join("journal"),
+                super::super::provenance::OutputProvenance::untainted(),
+                |_| Ok(())
+            )
             .is_err()
     );
     assert_eq!(fs::read(checkout.join("file")).unwrap(), b"local edit");
@@ -89,21 +108,35 @@ fn partial_application_keeps_completed_effects_and_refuses_replay() {
     )
     .unwrap();
     let journal = root.path().join("journal");
-    let result = destination.apply(&changes, &journal, |event| match event {
-        StepEvent::Begin { index: 1 } => Err(WorkspaceError::Invalid("injected revocation")),
-        StepEvent::Done { index: 0 } => {
-            assert_eq!(fs::read(checkout.join("a")).unwrap(), b"new");
-            Ok(())
-        }
-        _ => Ok(()),
-    });
+    let result = destination.apply(
+        &changes,
+        &journal,
+        super::super::provenance::OutputProvenance::untainted(),
+        |event| match event {
+            StepEvent::Begin { index: 1 } => Err(WorkspaceError::Invalid("injected revocation")),
+            StepEvent::Done { index: 0 } => {
+                assert_eq!(fs::read(checkout.join("a")).unwrap(), b"new");
+                Ok(())
+            }
+            _ => Ok(()),
+        },
+    );
     assert!(result.is_err());
     assert_eq!(fs::read(checkout.join("a")).unwrap(), b"new");
     assert_eq!(fs::read(checkout.join("b")).unwrap(), b"old");
     assert!(journal.join("0.done").exists());
     assert!(!journal.join("1.done").exists());
     assert!(!journal.join("complete.json").exists());
-    assert!(destination.apply(&changes, &journal, |_| Ok(())).is_err());
+    assert!(
+        destination
+            .apply(
+                &changes,
+                &journal,
+                super::super::provenance::OutputProvenance::untainted(),
+                |_| Ok(())
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -150,7 +183,12 @@ fn file_directory_transitions_and_empty_baseline_are_supported() {
         let changes = Changes::new(entries(&before), after).unwrap();
         assert!(
             destination
-                .apply(&changes, &root.path().join("journal"), |_| Ok(()))
+                .apply(
+                    &changes,
+                    &root.path().join("journal"),
+                    super::super::provenance::OutputProvenance::untainted(),
+                    |_| Ok(())
+                )
                 .unwrap()
                 .complete
         );
@@ -206,12 +244,17 @@ fn failed_effect_receipt_does_not_claim_the_applied_bytes_were_rolled_back() {
     let journal = root.path().join("journal");
     assert!(
         destination
-            .apply(&changes, &journal, |event| {
-                if matches!(event, StepEvent::Begin { index: 0 }) {
-                    fs::create_dir(journal.join("0.done")).unwrap();
+            .apply(
+                &changes,
+                &journal,
+                super::super::provenance::OutputProvenance::untainted(),
+                |event| {
+                    if matches!(event, StepEvent::Begin { index: 0 }) {
+                        fs::create_dir(journal.join("0.done")).unwrap();
+                    }
+                    Ok(())
                 }
-                Ok(())
-            })
+            )
             .is_err()
     );
     assert_eq!(fs::read(checkout.join("file")).unwrap(), b"after");
