@@ -345,6 +345,10 @@ enum OwnerEvent {
         connection_epoch: u64,
         result: Box<Result<ProtocolMessage, SupervisorError>>,
     },
+    GuardUpstreamFinished {
+        connection_epoch: u64,
+        result: Result<(), SupervisorError>,
+    },
     Signed {
         operation_epoch: u64,
         result: Result<String, SupervisorError>,
@@ -760,6 +764,17 @@ impl SessionOwner {
                     connection_epoch,
                     result,
                 } => self.handle_broker_event(connection_epoch, *result),
+                OwnerEvent::GuardUpstreamFinished {
+                    connection_epoch,
+                    result,
+                } => {
+                    if connection_epoch == self.connection_epoch
+                        && self.state == SessionState::Running
+                        && result.is_err()
+                    {
+                        self.lose_broker(SupervisorError::IsolationRejected);
+                    }
+                }
                 OwnerEvent::Signed {
                     operation_epoch,
                     result,
@@ -923,6 +938,28 @@ impl SessionOwner {
             }
         };
         match message {
+            ProtocolMessage::GuardSocketRequest(request) => {
+                if self
+                    .handle_guard_socket_request(connection_epoch, request)
+                    .is_err()
+                {
+                    self.lose_broker(SupervisorError::IsolationRejected);
+                    return;
+                }
+            }
+            ProtocolMessage::GuardSocketRetire(request) => {
+                if self
+                    .resources
+                    .process
+                    .as_mut()
+                    .ok_or(SupervisorError::IsolationRejected)
+                    .and_then(|process| process.retire_guarded_upstream(&request))
+                    .is_err()
+                {
+                    self.lose_broker(SupervisorError::CleanupUnproven);
+                    return;
+                }
+            }
             ProtocolMessage::WaiverChange(change) => self.handle_waiver_change(*change),
             ProtocolMessage::RecoveryRestore(request) => self.handle_restore(*request),
             ProtocolMessage::Recovery(request) => self.handle_recovery(request),
@@ -973,6 +1010,43 @@ impl SessionOwner {
         {
             self.arm_broker_receive();
         }
+    }
+
+    fn handle_guard_socket_request(
+        &mut self,
+        connection_epoch: u64,
+        request: crate::launch_protocol::GuardSocketRequest,
+    ) -> Result<(), SupervisorError> {
+        if self.state != SessionState::Running
+            || self.channel_state != ChannelState::Enabled
+            || self.pending.is_some()
+            || self.broker_connection != BrokerConnection::Connected
+        {
+            self.send_error(
+                request.request_id,
+                ProtocolError::new(
+                    ErrorCode::InvalidTransition,
+                    Some(self.state),
+                    Some(self.broker_head.sequence),
+                ),
+            );
+            return Ok(());
+        }
+        let sender = self.sender.clone();
+        self.resources
+            .process
+            .as_mut()
+            .ok_or(SupervisorError::IsolationRejected)?
+            .handoff_guarded_upstream(
+                &request,
+                self.timeout,
+                Box::new(move |result| {
+                    let _ = sender.send(OwnerEvent::GuardUpstreamFinished {
+                        connection_epoch,
+                        result,
+                    });
+                }),
+            )
     }
 
     #[expect(

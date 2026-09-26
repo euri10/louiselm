@@ -394,7 +394,7 @@ impl Queries {
 
     pub(super) fn run_session(
         &self,
-        broker: &InstalledBroker,
+        broker: &Arc<InstalledBroker>,
         session: &mut BrokerSession,
     ) -> Result<(), BrokerError> {
         let id = session.authorization().session_id.clone();
@@ -457,6 +457,7 @@ impl Queries {
                 if readable && broker.step(session)? {
                     return Ok(());
                 }
+                broker.drive_provider(session)?;
             }
         })();
         self.sessions

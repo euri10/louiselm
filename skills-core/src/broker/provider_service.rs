@@ -19,6 +19,7 @@ use super::{
     },
     is_record_identifier,
     lifecycle::LifecycleCaller,
+    provider_credentials::CredentialHandle,
     provider_credentials::ProviderCredentialStore,
     provider_extension::{ExtensionError, ExtensionOutcome, ExtensionRequest, OUTCOME_SCHEMA},
     provider_requests::{HoldReason, ProviderHold, total},
@@ -34,6 +35,40 @@ use crate::{
     launch_receipt::{SessionState, SignedReceipt},
     provider_request::{ApprovedProviderRequests, MAX_RUN_REQUESTS, ProviderRequest},
 };
+
+pub(super) struct AdmittedProviderRequest {
+    permission: ApprovedProviderRequests,
+    handle: CredentialHandle,
+    deadline: Instant,
+}
+
+impl AdmittedProviderRequest {
+    pub(super) fn permission(&self) -> &ApprovedProviderRequests {
+        &self.permission
+    }
+
+    pub(super) fn send(
+        &self,
+        credentials: &ProviderCredentialStore,
+        transport: &dyn ProviderTransport,
+        request: &ProviderRequest,
+    ) -> Result<UpstreamResponse, BrokerError> {
+        if Instant::now() >= self.deadline {
+            return Err(BrokerError::Expired);
+        }
+        let mut response = credentials.with_secret(&self.handle, |bearer| {
+            transport.send(&self.permission, bearer, request, self.deadline)
+        })??;
+        if matches!(response.status, 401 | 403) {
+            return Err(ProtocolError::new(ErrorCode::CredentialUnavailable, None, None).into());
+        }
+        response.body = Box::new(ExpiringBody {
+            inner: response.body,
+            deadline: self.deadline,
+        });
+        Ok(response)
+    }
+}
 
 impl BrokerService {
     /// Admits one complete Provider request and starts its upstream attempt.
@@ -62,8 +97,23 @@ impl BrokerService {
         transport: &dyn ProviderTransport,
         request: &ProviderRequest,
         now_ms: u64,
-        mut verify: F,
+        verify: F,
     ) -> Result<UpstreamResponse, BrokerError>
+    where
+        F: FnMut(&str, &[u8], &str) -> bool,
+    {
+        self.admit_provider_request(session, credentials, request, now_ms, verify)?
+            .send(credentials, transport, request)
+    }
+
+    pub(super) fn admit_provider_request<F>(
+        &self,
+        session: &mut BrokerSession,
+        credentials: &ProviderCredentialStore,
+        request: &ProviderRequest,
+        now_ms: u64,
+        mut verify: F,
+    ) -> Result<AdmittedProviderRequest, BrokerError>
     where
         F: FnMut(&str, &[u8], &str) -> bool,
     {
@@ -81,7 +131,7 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
-        let permission = &self.extended(
+        let permission = self.extended(
             &authorization.run_id,
             approved
                 .provider_requests
@@ -100,7 +150,7 @@ impl BrokerService {
             return Err(hold_refusal(hold.reason));
         }
         if !live(now_ms) {
-            return Err(self.expired(run_id, permission, now_ms));
+            return Err(self.expired(run_id, &permission, now_ms));
         }
         if !permission.permits(&request.model, request.effort.as_deref()) {
             return Err(ProtocolError::new(ErrorCode::CapabilityDenied, None, None).into());
@@ -115,7 +165,7 @@ impl BrokerService {
             return Err(BrokerError::InvalidGrant);
         }
         if !live(elapsed()) || session.channel().is_closed() {
-            return Err(self.expired(run_id, permission, elapsed()));
+            return Err(self.expired(run_id, &permission, elapsed()));
         }
         match self.provider_requests.reserve(
             run_id,
@@ -132,7 +182,7 @@ impl BrokerService {
         };
         // The unit is spent. Storage I/O cannot extend expiry or a lost channel.
         if !live(elapsed()) || session.channel().is_closed() {
-            return Err(self.expired(run_id, permission, elapsed()));
+            return Err(self.expired(run_id, &permission, elapsed()));
         }
         // The earliest expiry, as a monotonic instant: wall-clock steps cannot
         // stretch an admitted stream past its permission.
@@ -141,17 +191,11 @@ impl BrokerService {
             .min(authorization.expires_at_ms)
             .min(approved.expires_at_ms);
         let deadline = clock + Duration::from_millis(expires_at_ms.saturating_sub(now_ms));
-        let mut response = credentials.with_secret(&handle, |bearer| {
-            transport.send(permission, bearer, request, deadline)
-        })??;
-        if matches!(response.status, 401 | 403) {
-            return Err(ProtocolError::new(ErrorCode::CredentialUnavailable, None, None).into());
-        }
-        response.body = Box::new(ExpiringBody {
-            inner: response.body,
+        Ok(AdmittedProviderRequest {
+            permission,
+            handle,
             deadline,
-        });
-        Ok(response)
+        })
     }
 
     /// Parks this Session and raises the Run's Attention item once its Provider

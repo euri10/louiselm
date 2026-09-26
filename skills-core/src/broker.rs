@@ -43,6 +43,7 @@ mod provider_handoff;
 mod provider_listener;
 mod provider_ownership;
 mod provider_socket;
+mod provider_worker;
 pub use provider_socket::GuardedUpstream;
 pub mod provider_requests;
 mod provider_service;

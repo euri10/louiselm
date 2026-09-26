@@ -138,6 +138,12 @@ impl BrokerService {
         self.require_trusted_history(session, verify)?;
         match &packet.packet {
             LauncherPacket::Response(response)
+                if matches!(response.result, ResponseResult::SenderGuardUpstream { .. }) =>
+            {
+                self.finish_provider_handoff(session, packet, now_ms)?;
+                Ok(false)
+            }
+            LauncherPacket::Response(response)
                 if matches!(response.result, ResponseResult::SenderGuardClosing { .. }) =>
             {
                 self.close_provider_listener(session, packet)?;

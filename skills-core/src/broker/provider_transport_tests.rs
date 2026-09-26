@@ -5,8 +5,18 @@
 
 use super::*;
 use crate::provider_request::{Frames, ReasoningEffort};
+use crate::{
+    launch_protocol::{
+        GuardEnrollment, GuardScope, GuardUpstream, PROTOCOL_VERSION, ProtocolResponse,
+        RESPONSE_SCHEMA, ResponseResult,
+    },
+    launch_transport::{AuthenticatedPacket, KernelCredentials, LauncherPacket},
+};
 use std::{
+    fs::File,
     io::Cursor,
+    net::{TcpListener, TcpStream},
+    os::{fd::OwnedFd, unix::fs::MetadataExt},
     sync::{Arc, Mutex},
 };
 use ureq::unversioned::transport::{
@@ -110,7 +120,7 @@ fn request() -> ProviderRequest {
 fn run(response: &[u8]) -> (Result<UpstreamResponse, BrokerError>, Wire) {
     let wire = Arc::new(Mutex::new(Wire::default()));
     let client = ureq::Agent::with_parts(
-        config(Duration::from_mins(1)),
+        config(Duration::from_mins(1), None),
         FakeConnector {
             response: response.to_vec(),
             wire: Arc::clone(&wire),
@@ -182,4 +192,100 @@ fn upstream_status_is_reported_not_retried() {
         );
         assert_eq!(wire.targets.len(), 1);
     }
+}
+
+fn guarded_socket(listener: &TcpListener) -> GuardedUpstream {
+    let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let pins = File::open("/proc/self/ns/mnt").unwrap();
+    let network = File::open("/proc/self/ns/net").unwrap();
+    let destination = socket.peer_addr().unwrap();
+    let enrollment = GuardEnrollment {
+        scope: GuardScope {
+            session_id: "session".into(),
+            run_id: "run".into(),
+            revision: 1,
+            deadline_ns: u64::MAX,
+        },
+        guard_id: pins.metadata().unwrap().ino(),
+        runtime_pid: 123,
+        broker_pid: std::process::id(),
+        address: "127.0.0.1:40773".parse().unwrap(),
+        listener_cookie: 7,
+        network_id: network.metadata().unwrap().ino().try_into().unwrap(),
+    };
+    let evidence = GuardUpstream {
+        enrollment: enrollment.clone(),
+        destination,
+        socket_cookie: rustix::net::sockopt::socket_cookie(&socket).unwrap(),
+        network_id: enrollment.network_id,
+    };
+    let response = ProtocolResponse {
+        schema: RESPONSE_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "guard-upstream".into(),
+        result: ResponseResult::SenderGuardUpstream { socket: evidence },
+    };
+    let credentials = KernelCredentials {
+        pid: std::process::id(),
+        uid: 1000,
+        gid: 1000,
+    };
+    GuardedUpstream::adopt(
+        AuthenticatedPacket {
+            bytes: response.canonical_bytes(),
+            packet: LauncherPacket::Response(Box::new(response)),
+            descriptors: Some([
+                OwnedFd::from(socket),
+                OwnedFd::from(pins),
+                OwnedFd::from(network),
+            ]),
+            peer_credentials: credentials,
+            message_credentials: credentials,
+        },
+        credentials,
+        &enrollment,
+        "guard-upstream",
+        destination,
+        Arc::new(()),
+    )
+    .unwrap()
+}
+
+#[test]
+fn tls_attempt_uses_only_the_supplied_guarded_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let socket = guarded_socket(&listener);
+    let (mut peer, _) = listener.accept().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut permission = approved();
+    permission.upstream = format!(
+        "https://api.openai.com:{}/v1/responses",
+        listener.local_addr().unwrap().port()
+    );
+    permission.addresses = vec!["127.0.0.1".parse().unwrap()];
+    let transport = GuardedHttpsProviderTransport::new(socket);
+    let observer = std::thread::spawn(move || {
+        let mut header = [0; 3];
+        peer.read_exact(&mut header).unwrap();
+        header
+    });
+    assert!(matches!(
+        transport.send(
+            &permission,
+            SECRET,
+            &request(),
+            Instant::now() + Duration::from_secs(2)
+        ),
+        Err(BrokerError::ProviderUnavailable)
+    ));
+    assert_eq!(observer.join().unwrap(), [0x16, 0x03, 0x01]);
+    assert!(matches!(
+        transport.send(
+            &permission,
+            SECRET,
+            &request(),
+            Instant::now() + Duration::from_secs(2)
+        ),
+        Err(BrokerError::ProviderUnavailable)
+    ));
 }

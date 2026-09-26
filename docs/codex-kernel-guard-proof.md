@@ -119,26 +119,31 @@ credential in Session state is introduced.
 
 The control transport accepts rights only on the two typed guard transfers,
 with exactly three close-on-exec descriptors and ordinary per-packet credential
-authentication. A `BrokerSession` owns its accepted listener. Its serving method
-uses the existing HTTP parser, durable request admission and streaming relay;
-accepted sockets stay within that serialized worker and close before it can
-acknowledge disposal. Reusing a retired endpoint revision is refused.
+authentication. A `BrokerSession` owns its accepted listener and bounded work
+mailboxes. Each accepted connection has a network worker for HTTP framing,
+guarded HTTPS and streaming relay; only the serialized Session owner admits
+complete requests and sends authenticated socket requests. Accepted sockets
+keep independent namespace leases. Park shuts them down and waits for their
+release before a closure ACK. Reusing a retired endpoint revision is refused.
 
-`handoff_upstream` creates and guards one already-admitted destination, transfers
-the socket on the same channel and waits for an exact acknowledgement. The Rust
+The installed supervisor creates and guards one already-admitted destination on
+a bounded connect worker, transfers the socket on the same channel, and routes
+the exact acknowledgement through the Session channel's single reader. The Rust
 receiver checks the stored Provider destination, Session enrollment, connected
 peer, cookie and both leases. `GuardedUpstream` carries those leases through
 reads/writes and shuts down every duplicate on drop. A retained upstream owner
-prevents a closure acknowledgement, even after shutdown. The supervisor still
-retires its copy by cookie; failed acknowledgements revoke all socket authority,
+prevents a closure acknowledgement, even after shutdown. The broker sends a
+typed retirement notice only after its body owner closes; the supervisor then
+retires its copy by cookie. Failed acknowledgements revoke all socket authority,
 close the channel and deny reuse.
 
 A revision-bound `GuardRevoker` can delete policy and shut down retained sockets
 without waiting for connect, descriptor delivery or the broker ACK. Registration
 and activation hold only its short state lock; a late ACK cannot restore the
 revoked revision. The disposable handoff gate races revocation at all three
-stages and rejects a stale handle after revision replacement. This is a
-component seam: `.4.5` must still connect it to the production lifecycle owner.
+stages and rejects a stale handle after revision replacement. The installed
+lifecycle owner now connects this seam for guarded Start, Park and Disposal.
+Warm Resume remains fail-closed pending a separately authorized revision protocol.
 
 Revision/disposal revokes first, then exchanges `SenderGuardClosing` /
 `SenderGuardClosed` for the exact enrollment before releasing the endpoint.
@@ -153,9 +158,11 @@ fixtures. It checks successful parser/admission/relay and spent units, inherited
 helper and cross-Session socket transfers, guarded upstream handoff, stale writes,
 invalid listener cookies, refused upstream acknowledgements, uncertain cleanup,
 broker crash and final process/map cleanup. CI requires it alongside the loader
-gate. This is component evidence: `.4.5` still owns the
-stock runtime configuration, guarded HTTPS transport composition and global
-Brokered activation. The installed launch entrypoint still refuses Brokered.
+gate. The installed offline fixture additionally serves two pipelined requests
+through guarded HTTPS and refuses unapproved Model, metadata and exhausted
+budget requests without an extra upstream socket. `.4.5` still owns stock
+runtime configuration and global Brokered activation; the public installed
+launch entrypoint still refuses Brokered.
 
 ## Historical feasibility evidence
 

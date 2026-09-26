@@ -8,6 +8,8 @@
 mod beads;
 #[path = "tool_fixture/channel.rs"]
 mod channel;
+#[path = "tool_fixture/provider.rs"]
+mod provider;
 #[path = "tool_fixture/recovery.rs"]
 mod recovery;
 
@@ -40,6 +42,10 @@ fn run() -> io::Result<()> {
         }
         if byte[0] == 0x1c {
             beads::inspect(&mut output)?;
+            continue;
+        }
+        if byte[0] == 0x1b {
+            provider::exchange(&mut input, &mut output)?;
             continue;
         }
         if byte[0] != 0x1e {

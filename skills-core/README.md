@@ -760,10 +760,14 @@ These component gates do not enable Brokered operation (`louiselm-qbr.5.1.3.2.4.
 request shape stock Codex was observed to send (reviewed headers and top-level
 fields, `Host` equal to the endpoint's own authority, no `Authorization`,
 compression or chunked bodies; 32 MiB body bound). Each complete request goes to
-`BrokerService::serve_provider_request` on the Session's worker, which checks
-the grant, credential and live supervisor status, durably spends one Run unit
-under `provider-requests/`, rechecks expiry and channel after that write, and
-only then sends the request upstream with the broker-held key as the bearer.
+the Session owner for `BrokerService::admit_provider_request`, which checks the
+grant, credential and live supervisor status, durably spends one Run unit under
+`provider-requests/`, and rechecks expiry and channel after that write. The
+owner requests one supervisor-created guarded socket on its authenticated
+channel. Only after exact descriptor validation and ACK does the connection
+worker send TLS and the request with the broker-held key as the bearer; it has
+no ambient connector. Every accepted connection and upstream socket holds its
+namespace leases until closed, including during Park.
 Upstream `401`/`403` is a typed `CredentialUnavailable` refusal; nothing is
 retried and a spent unit is never refunded. The response streams back as it
 arrives.
@@ -771,7 +775,7 @@ arrives.
 The first exhausted reservation or lapsed Provider permission writes a durable
 Run-wide hold under `provider-requests/holds/`. The first writer's reason and
 time stay fixed. Every later request from any Session of the Run is refused
-before any supervisor exchange. The wire answer is a validated `CapabilityDenied`
+before any supervisor exchange. The HTTP 429 wire answer is a validated `CapabilityDenied`
 `ProtocolError` (not retryable, `contact_operator`). Each Session worker's 1 s
 idle tick calls `settle_provider_hold`. It records an expiry hold for an idle
 Session too. It queues one `RunParked` Attention item per Run, and Parks its own

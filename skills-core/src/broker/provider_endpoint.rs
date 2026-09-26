@@ -1,9 +1,8 @@
 //! Local HTTP/1.1 endpoint a confined runtime uses as its Responses `base_url`.
 //!
-//! Parses each complete request, hands it to `admit` (which runs on the
-//! Session's owning worker), and relays the upstream body as chunks arrive.
-//! Placing the listener inside the Session's network namespace is
-//! `louiselm-qbr.5.1.3.2.4`; until then nothing in production serves this.
+//! A per-connection network worker parses each complete request, sends it to
+//! the Session owner for fresh admission, then relays assigned upstream chunks.
+//! The owner never waits for a local runtime's incomplete frame or body read.
 
 use std::io::{Read, Write};
 
@@ -32,13 +31,13 @@ pub fn serve_provider_connection<S, A>(
 ) -> Result<(), BrokerError>
 where
     S: Read + Write,
-    A: FnMut(&ProviderRequest) -> Result<UpstreamResponse, BrokerError>,
+    A: FnMut(ProviderRequest) -> Result<UpstreamResponse, BrokerError>,
 {
     let mut frames = Frames::new(host);
     let mut buffer = vec![0; RELAY_CHUNK];
     loop {
         match frames.next_request() {
-            Ok(Some(request)) => match admit(&request) {
+            Ok(Some(request)) => match admit(request) {
                 Ok(response) => relay(&mut stream, response)?,
                 Err(error) => return refuse(&mut stream, &error),
             },
@@ -106,6 +105,10 @@ fn refuse<S: Write>(stream: &mut S, error: &BrokerError) -> Result<(), BrokerErr
         BrokerError::ProviderUnavailable => (
             502,
             ProtocolError::new(ErrorCode::BrokerUnavailable, None, None),
+        ),
+        BrokerError::ProviderBudgetExhausted => (
+            429,
+            ProtocolError::new(ErrorCode::CapabilityDenied, None, None),
         ),
         _ => (
             403,

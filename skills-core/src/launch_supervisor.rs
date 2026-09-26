@@ -194,6 +194,20 @@ pub struct AgentAuthentication {
 
 /// Broker operations needed by the one-shot launch transaction.
 pub trait LaunchBroker: Send + Sync {
+    /// Transfers one already-registered upstream on the Session's authenticated
+    /// channel. Its single receive owner reports the exact broker ACK.
+    /// # Errors
+    /// Refuses an unavailable channel, invalid evidence or concurrent handoff.
+    fn send_guarded_upstream(
+        &self,
+        _request_id: &str,
+        _socket: crate::launch_protocol::GuardUpstream,
+        _descriptors: [std::os::fd::BorrowedFd<'_>; 3],
+        _complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
     /// Clones the original authenticated Session channel for pre-receive guard handoff.
     /// # Errors
     /// Refuses brokers without an installed guarded-transport path.
@@ -535,6 +549,29 @@ pub trait PreparedAgent {
 
 /// A running Agent process tree with opaque ACP stdio.
 pub trait RunningAgent: Send {
+    /// Creates and transfers one broker-admitted guarded upstream socket.
+    /// Connect and ACK wait must not block lifecycle revocation.
+    /// # Errors
+    /// Refuses a stale enrollment, connect, transfer or acknowledgement.
+    fn handoff_guarded_upstream(
+        &mut self,
+        _request: &crate::launch_protocol::GuardSocketRequest,
+        _timeout: Duration,
+        _complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
+    /// Retires one broker-closed socket without changing the current authority.
+    /// # Errors
+    /// Refuses an unknown or foreign socket.
+    fn retire_guarded_upstream(
+        &mut self,
+        _request: &crate::launch_protocol::GuardSocketRetire,
+    ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
     /// Completes the exact guarded listener handoff after the signed Start ACK.
     /// # Errors
     /// Refuses absent or failed broker acknowledgement or guard activation.

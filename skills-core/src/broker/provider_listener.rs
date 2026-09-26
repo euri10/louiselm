@@ -2,9 +2,10 @@
 
 use std::{
     fs::File,
+    io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     os::{fd::AsRawFd, unix::fs::MetadataExt},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::Duration,
 };
 
@@ -15,14 +16,55 @@ use crate::{
 
 use super::BrokerError;
 
-/// Fields drop in socket-before-lease order. Accepted sockets never escape the
-/// serialized Session worker, which retains this owner until serving completes.
+/// Fields drop in socket-before-lease order. Every accepted connection retains
+/// independent namespace leases until its network worker closes the socket.
 pub(super) struct ProviderListener {
     listener: TcpListener,
     pins: File,
     network: File,
     pub(super) enrollment: GuardEnrollment,
+    owner_lease: Arc<()>,
+}
+
+pub(super) struct ConnectionLease {
+    socket: TcpStream,
+    _pins: File,
+    _network: File,
     _owner_lease: Arc<()>,
+}
+
+impl ConnectionLease {
+    pub(super) fn shutdown(&self) -> io::Result<()> {
+        match self.socket.shutdown(std::net::Shutdown::Both) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+            other => other,
+        }
+    }
+}
+
+pub(super) struct AcceptedProviderStream(Arc<ConnectionLease>);
+
+impl AcceptedProviderStream {
+    pub(super) fn lease(&self) -> Weak<ConnectionLease> {
+        Arc::downgrade(&self.0)
+    }
+}
+
+impl Read for AcceptedProviderStream {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        (&self.0.socket).read(bytes)
+    }
+}
+
+impl Write for AcceptedProviderStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        (&self.0.socket).write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&self.0.socket).flush()
+    }
 }
 
 impl ProviderListener {
@@ -59,7 +101,7 @@ impl ProviderListener {
             pins,
             network,
             enrollment,
-            _owner_lease: owner_lease,
+            owner_lease,
         };
         owner.validate()?;
         owner
@@ -116,12 +158,15 @@ impl ProviderListener {
         Ok(())
     }
 
-    pub(super) fn accept(&self) -> Result<Option<TcpStream>, BrokerError> {
+    pub(super) fn accept(&self) -> Result<Option<AcceptedProviderStream>, BrokerError> {
         let stream = match self.listener.accept() {
             Ok((stream, _)) => stream,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
             Err(_) => return Err(BrokerError::ProviderUnavailable),
         };
+        stream
+            .set_nonblocking(false)
+            .map_err(|_| BrokerError::ProviderUnavailable)?;
         // Idle or incomplete runtime requests cannot hold the Session worker
         // forever. The upstream exchange has its separately enforced expiry.
         let timeout = Some(Duration::from_secs(1));
@@ -131,7 +176,12 @@ impl ProviderListener {
         stream
             .set_write_timeout(timeout)
             .map_err(|_| BrokerError::ProviderUnavailable)?;
-        Ok(Some(stream))
+        Ok(Some(AcceptedProviderStream(Arc::new(ConnectionLease {
+            socket: stream,
+            _pins: self.pins.try_clone().map_err(BrokerError::Storage)?,
+            _network: self.network.try_clone().map_err(BrokerError::Storage)?,
+            _owner_lease: Arc::clone(&self.owner_lease),
+        }))))
     }
 }
 

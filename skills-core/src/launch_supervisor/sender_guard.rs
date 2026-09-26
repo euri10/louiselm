@@ -117,12 +117,21 @@ impl Revocable {
 /// Revision-bound revocation authority for a lifecycle owner that must not
 /// wait for a socket connect, descriptor send or broker acknowledgement.
 /// Retain it only through that revision's handoff and disposal.
+#[derive(Clone)]
 pub struct GuardRevoker {
     state: Arc<Mutex<Revocable>>,
     revision: u64,
 }
 
 impl GuardRevoker {
+    pub(crate) fn active(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.revision == self.revision && !state.revoked
+    }
+
     /// Deletes the endpoint policy and shuts down every retained upstream copy.
     /// A handle from an older revision cannot affect its replacement.
     /// # Errors
@@ -169,6 +178,12 @@ impl Drop for SenderGuard {
 }
 
 impl SenderGuard {
+    /// Exact enrollment acknowledged on this guard's original Session channel.
+    #[must_use]
+    pub fn enrollment(&self) -> Option<&GuardEnrollment> {
+        self.handoff.as_ref().filter(|_| self.announced)
+    }
+
     /// Uses a checkpoint-reconciled channel to prove closure after an uncertain ACK.
     /// It does not re-enroll the runtime or activate a revoked revision.
     pub(crate) fn close_on_reconnected_channel(

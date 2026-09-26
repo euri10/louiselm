@@ -149,6 +149,7 @@ impl BrokerService {
             sequence = next;
         }
         Ok(BrokerSession {
+            provider_work: crate::broker::provider_worker::ProviderWork::default(),
             provider_listener: None,
             provider_revision: None,
             provider_sockets: std::collections::BTreeMap::new(),

@@ -1,10 +1,15 @@
 //! Receiver policy for the supervisor's authenticated descriptor handoff.
 
-use super::{BrokerError, BrokerService, BrokerSession};
+use super::{BrokerError, BrokerService, BrokerSession, provider_worker::ProviderAssignment};
 use crate::{
-    launch_protocol::ResponseResult,
+    launch_protocol::{GuardSocketRetire, PROTOCOL_VERSION, ResponseResult},
     launch_receipt::ReceiptOutcome,
     launch_transport::{AuthenticatedPacket, LauncherPacket},
+};
+use std::{
+    net::SocketAddr,
+    sync::{atomic::Ordering, mpsc},
+    time::{Duration, Instant},
 };
 
 impl BrokerService {
@@ -19,6 +24,24 @@ impl BrokerService {
         session: &mut BrokerSession,
         request_id: &str,
         destination: std::net::SocketAddr,
+        now_ms: u64,
+    ) -> Result<super::GuardedUpstream, BrokerError> {
+        let packet = match super::service::receive(session.channel()) {
+            Ok(packet) => packet,
+            Err(error) => {
+                session.close();
+                return Err(error);
+            }
+        };
+        self.adopt_guarded_upstream(session, packet, request_id, destination, now_ms)
+    }
+
+    fn adopt_guarded_upstream(
+        &self,
+        session: &mut BrokerSession,
+        packet: AuthenticatedPacket,
+        request_id: &str,
+        destination: SocketAddr,
         now_ms: u64,
     ) -> Result<super::GuardedUpstream, BrokerError> {
         let result = (|| {
@@ -41,12 +64,10 @@ impl BrokerService {
                 || now_ms >= approved.expires_at_ms
                 || !permission.addresses.contains(&destination.ip())
                 || url.port_or_known_default() != Some(destination.port())
-                || session.provider_sockets.len()
-                    >= crate::provider_request::MAX_RUN_REQUESTS as usize
+                || session.provider_sockets.len() >= 128
             {
                 return Err(BrokerError::InvalidGrant);
             }
-            let packet = super::service::receive(session.channel())?;
             let owner_lease = std::sync::Arc::new(());
             let socket = super::GuardedUpstream::adopt(
                 packet,
@@ -84,6 +105,50 @@ impl BrokerService {
         result
     }
 
+    pub(in crate::broker) fn finish_provider_handoff(
+        &self,
+        session: &mut BrokerSession,
+        packet: AuthenticatedPacket,
+        now_ms: u64,
+    ) -> Result<(), BrokerError> {
+        let request_id = match &packet.packet {
+            LauncherPacket::Response(response)
+                if matches!(response.result, ResponseResult::SenderGuardUpstream { .. }) =>
+            {
+                response.request_id.clone()
+            }
+            _ => return Err(BrokerError::RequestMismatch),
+        };
+        let pending = session
+            .provider_work
+            .pending
+            .remove(&request_id)
+            .ok_or(BrokerError::RequestMismatch)?;
+        if session.provider_work.cancelled.load(Ordering::Acquire) {
+            return Err(BrokerError::InvalidGrant);
+        }
+        let socket =
+            self.adopt_guarded_upstream(session, packet, &request_id, pending.destination, now_ms)?;
+        let evidence = socket.evidence();
+        let notice = GuardSocketRetire {
+            schema: crate::launch_protocol::GUARD_SOCKET_RETIRE_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            enrollment: evidence.enrollment.clone(),
+            socket_cookie: evidence.socket_cookie,
+        };
+        let assignment = ProviderAssignment {
+            request: pending.job.request,
+            admission: pending.admission,
+            socket,
+            retirement: session.provider_work.retired.0.clone(),
+        };
+        if let Err(mpsc::SendError(assignment)) = pending.job.reply.send(Ok(assignment)) {
+            drop(assignment);
+            let _ = session.provider_work.retired.0.send(notice);
+        }
+        Ok(())
+    }
+
     pub(super) fn close_provider_listener(
         &self,
         session: &mut BrokerSession,
@@ -113,9 +178,10 @@ impl BrokerService {
         {
             return Err(BrokerError::RequestMismatch);
         }
-        // This is the serialized Session owner; serving returned and closed its
-        // accepted stream before it can process a closure packet.
-        let mut retained = false;
+        session.provider_work.cancel();
+        session.provider_work.pending.clear();
+        session.provider_work.shutdown_connections();
+        // Close every accepted connection and upstream before claiming closure.
         for socket in session
             .provider_sockets
             .values()
@@ -124,14 +190,37 @@ impl BrokerService {
             socket
                 .shutdown()
                 .map_err(|_| BrokerError::ProviderUnavailable)?;
-            retained = true;
         }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (session
+            .provider_work
+            .connections
+            .iter()
+            .any(|lease| lease.strong_count() != 0)
+            || session
+                .provider_sockets
+                .values()
+                .any(|lease| lease.strong_count() != 0))
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let retained = session
+            .provider_work
+            .connections
+            .iter()
+            .any(|lease| lease.strong_count() != 0)
+            || session
+                .provider_sockets
+                .values()
+                .any(|lease| lease.strong_count() != 0);
         if retained {
             // A socket owner still exists: stop writes, but never claim all
             // descriptors were closed. The supervisor must poison uncertain cleanup.
             return Err(BrokerError::ProviderUnavailable);
         }
         session.provider_sockets.clear();
+        session.provider_work.connections.clear();
         session.provider_listener = None;
         self.provider_ownership.close(&enrollment.scope)?;
         super::service::send(
@@ -237,10 +326,9 @@ impl BrokerService {
         result
     }
 
-    /// Serves one available connection on the Session's authenticated listener.
-    /// Runs on its serialized broker worker; every complete frame uses the
-    /// production admission, durable budget and relay path. No listener is a no-op.
-    /// The transport must enforce the guard on upstream writes before activation.
+    /// Low-level deterministic harness for one accepted connection. Installed
+    /// composition uses `InstalledBroker::drive_provider` and its split worker;
+    /// this adapter preserves the same admission and relay contract in tests.
     /// # Errors
     /// Refuses lost/stale scope and returns request, upstream or local I/O failures.
     pub fn serve_guarded_provider(
@@ -278,7 +366,7 @@ impl BrokerService {
                         session,
                         credentials,
                         transport,
-                        request,
+                        &request,
                         now,
                         &mut verify,
                     )

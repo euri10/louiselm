@@ -573,7 +573,7 @@ fn endpoint_relays_admitted_chunks_as_they_arrive_and_never_the_key() {
                         &mut fixture.session,
                         &fixture.credentials,
                         upstream,
-                        request,
+                        &request,
                         2500,
                         verify_fixture_signature,
                     );
@@ -611,7 +611,7 @@ fn endpoint_refuses_malformed_or_denied_requests_with_a_typed_error() {
             "400",
             BrokerError::ProviderBudgetExhausted,
         ),
-        (frame(), "403", BrokerError::ProviderBudgetExhausted),
+        (frame(), "429", BrokerError::ProviderBudgetExhausted),
         (frame(), "403", BrokerError::Expired),
         (
             frame(),
@@ -639,7 +639,7 @@ fn endpoint_refuses_malformed_or_denied_requests_with_a_typed_error() {
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
         let error: ProtocolError = serde_json::from_value(body["error"].clone()).unwrap();
         error.validate().unwrap();
-        if expected == "403" {
+        if matches!(expected, "403" | "429") {
             // Budget and expiry refusals are final for the runtime: only an
             // operator extension changes the answer, so nothing retries.
             assert_eq!(error.code, ErrorCode::CapabilityDenied);
@@ -870,7 +870,7 @@ fn a_stream_still_running_at_expiry_is_cut_locally_keeping_what_arrived() {
                         &mut fixture.session,
                         &fixture.credentials,
                         upstream,
-                        request,
+                        &request,
                         admitted_at,
                         verify_fixture_signature,
                     );

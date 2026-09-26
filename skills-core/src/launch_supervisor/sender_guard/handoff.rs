@@ -1,13 +1,19 @@
 //! Exact descriptor acceptance and socket-before-lease closure acknowledgements.
+use super::sockets::GuardedSocket;
 use super::{GuardError, SenderGuard, namespace_id};
 use crate::launch_protocol::{
-    GuardEnrollment, GuardScope, PROTOCOL_VERSION, ProtocolResponse, RESPONSE_SCHEMA,
-    ResponseResult,
+    GuardEnrollment, GuardScope, GuardUpstream, PROTOCOL_VERSION, ProtocolResponse,
+    RESPONSE_SCHEMA, ResponseResult,
 };
 use crate::launch_transport::LauncherPacket;
 use std::sync::mpsc;
-use std::{net::SocketAddr, os::fd::AsFd, time::Duration};
+use std::{
+    net::{SocketAddr, TcpStream},
+    os::fd::AsFd,
+    time::Duration,
+};
 
+#[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum HandoffStage {
     Connected,
@@ -16,12 +22,34 @@ pub(super) enum HandoffStage {
 }
 
 impl SenderGuard {
+    pub(crate) fn prepare_upstream(
+        &mut self,
+        scope: &GuardScope,
+        destination: SocketAddr,
+        timeout: Duration,
+    ) -> Result<(GuardedSocket<TcpStream>, GuardUpstream), GuardError> {
+        let enrollment = self
+            .handoff
+            .clone()
+            .filter(|_| self.announced)
+            .ok_or(GuardError::Enrollment)?;
+        let socket = self.connect_upstream(scope, destination, timeout)?;
+        let evidence = GuardUpstream {
+            enrollment,
+            destination,
+            socket_cookie: socket.cookie()?,
+            network_id: namespace_id(&socket.network)?,
+        };
+        Ok((socket, evidence))
+    }
+
     /// Connects one already-admitted broker destination and transfers the guarded
     /// socket and both leases on the original authenticated channel. No TLS or
     /// Provider bytes are sent here. The caller serializes protocol receives.
     /// # Errors
     /// Refuses lost/stale scope, connection failure or an inexact acknowledgement.
     /// Failed handoff shuts down the socket; uncertain cleanup prevents reuse.
+    #[cfg(test)]
     pub fn handoff_upstream(
         &mut self,
         scope: &GuardScope,
@@ -32,6 +60,7 @@ impl SenderGuard {
         self.handoff_upstream_with(scope, destination, request_id, timeout, |_| {})
     }
 
+    #[cfg(test)]
     pub(super) fn handoff_upstream_with(
         &mut self,
         scope: &GuardScope,

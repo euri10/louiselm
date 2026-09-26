@@ -39,6 +39,9 @@ mod recovery_status;
 #[path = "launch_protocol/conformance.rs"]
 mod conformance;
 
+#[path = "launch_protocol/sender_guard.rs"]
+mod sender_guard;
+
 fn unavailable_recovery() -> launch_protocol::RecoveryReadiness {
     launch_protocol::RecoveryReadiness::Unavailable {
         reason: launch_protocol::RecoveryUnavailableReason::EvidenceMissing,

@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 mod command;
 mod sender_guard;
-pub use sender_guard::{GuardEnrollment, GuardScope, GuardUpstream};
+pub use sender_guard::{
+    GUARD_SOCKET_REQUEST_SCHEMA, GUARD_SOCKET_RETIRE_SCHEMA, GuardEnrollment, GuardScope,
+    GuardSocketRequest, GuardSocketRetire, GuardUpstream,
+};
 pub(crate) mod conformance;
 mod conformance_update;
 pub use conformance::{
@@ -1037,6 +1040,10 @@ impl LaunchAuthorization {
 /// One decoded inbound supervisor message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolMessage {
+    /// Broker-approved destination for one guarded upstream socket.
+    GuardSocketRequest(GuardSocketRequest),
+    /// Broker closed one exact upstream descriptor.
+    GuardSocketRetire(GuardSocketRetire),
     /// Current conformance waiver from the authenticated broker.
     WaiverChange(Box<conformance::WaiverChange>),
     /// Restore selected protected bytes into a distinct frozen target.
@@ -1075,6 +1082,16 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
         .map_err(|_| ProtocolError::new(ErrorCode::MalformedMessage, None, None))?;
     validate_version(header.protocol_version)?;
     match header.schema.as_str() {
+        GUARD_SOCKET_REQUEST_SCHEMA => {
+            let request: GuardSocketRequest = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::GuardSocketRequest(request))
+        }
+        GUARD_SOCKET_RETIRE_SCHEMA => {
+            let request: GuardSocketRetire = decode_closed(bytes)?;
+            request.validate()?;
+            Ok(ProtocolMessage::GuardSocketRetire(request))
+        }
         "louiselm.launch.waiver-change/1" => {
             let request: conformance::WaiverChange = decode_closed(bytes)?;
             request.validate()?;

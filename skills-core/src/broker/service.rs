@@ -61,6 +61,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// or process cleanup has completed. Listener lifetime is independent.
 #[must_use = "Dropping the Session owner closes its supervisor connection."]
 pub struct BrokerSession {
+    pub(in crate::broker) provider_work: super::provider_worker::ProviderWork,
     pub(in crate::broker) provider_listener: Option<super::provider_listener::ProviderListener>,
     pub(in crate::broker) provider_revision: Option<u64>,
     pub(in crate::broker) provider_sockets:
@@ -76,6 +77,23 @@ pub struct BrokerSession {
 }
 
 impl BrokerSession {
+    #[cfg(test)]
+    pub(crate) fn provider_address_for_test(&self) -> Option<std::net::SocketAddr> {
+        self.provider_listener
+            .as_ref()
+            .map(|listener| listener.enrollment.address)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_provider_test_root(&mut self, root: ureq::tls::Certificate<'static>) {
+        self.provider_work.set_test_root(root);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_handoff_pending_for_test(&self) -> bool {
+        self.provider_work.has_pending()
+    }
+
     pub(in crate::broker) fn require_dependency_posture(
         &self,
         now_ms: u64,
@@ -114,6 +132,7 @@ impl BrokerSession {
 
     /// Closes the supervisor transport immediately; repeated calls are harmless.
     pub fn close(&self) {
+        self.provider_work.cancel();
         self.channel.close();
         for socket in self
             .provider_sockets
@@ -124,6 +143,7 @@ impl BrokerSession {
             // attached to surviving owners; the supervisor must revoke on loss.
             let _ = socket.shutdown();
         }
+        self.provider_work.shutdown_connections();
     }
 }
 
@@ -715,6 +735,7 @@ impl BrokerService {
         check_conformance_waiver(&authorization, now_ms, clock)?;
         send(channel, ack.canonical_bytes())?;
         Ok(BrokerSession {
+            provider_work: super::provider_worker::ProviderWork::default(),
             provider_listener: None,
             provider_revision: None,
             provider_sockets: std::collections::BTreeMap::new(),

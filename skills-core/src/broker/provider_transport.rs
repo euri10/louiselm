@@ -5,14 +5,19 @@
 //! Unlike that proxy, the destination comes from the grant, never the request.
 
 use std::{
-    io::Read,
+    fmt,
+    io::{self, Read, Write},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
-use super::BrokerError;
+use super::{BrokerError, GuardedUpstream};
 use crate::{
     dependency_fetch::transport::PinnedResolver,
     provider_request::{ApprovedProviderRequests, ProviderRequest},
+};
+use ureq::unversioned::transport::{
+    Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, RustlsConnector, Transport,
 };
 
 /// Upstream answer whose body the endpoint relays as it arrives.
@@ -47,11 +52,36 @@ pub trait ProviderTransport: Send + Sync {
     ) -> Result<UpstreamResponse, BrokerError>;
 }
 
-/// Broker-owned HTTPS transport. Construction performs no network activity.
-#[derive(Debug, Default)]
-pub struct HttpsProviderTransport;
+/// One broker-owned HTTPS attempt over an authenticated supervisor socket.
+/// There is deliberately no default constructor or ambient connector.
+pub(crate) struct GuardedHttpsProviderTransport {
+    socket: Mutex<Option<GuardedUpstream>>,
+    #[cfg(test)]
+    test_root: Option<ureq::tls::Certificate<'static>>,
+}
 
-impl ProviderTransport for HttpsProviderTransport {
+impl GuardedHttpsProviderTransport {
+    pub(crate) fn new(socket: GuardedUpstream) -> Self {
+        Self {
+            socket: Mutex::new(Some(socket)),
+            #[cfg(test)]
+            test_root: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_root(
+        socket: GuardedUpstream,
+        root: ureq::tls::Certificate<'static>,
+    ) -> Self {
+        Self {
+            socket: Mutex::new(Some(socket)),
+            test_root: Some(root),
+        }
+    }
+}
+
+impl ProviderTransport for GuardedHttpsProviderTransport {
     fn send(
         &self,
         approved: &ApprovedProviderRequests,
@@ -59,17 +89,137 @@ impl ProviderTransport for HttpsProviderTransport {
         request: &ProviderRequest,
         deadline: Instant,
     ) -> Result<UpstreamResponse, BrokerError> {
+        let socket = self
+            .socket
+            .lock()
+            .map_err(|_| BrokerError::ProviderUnavailable)?
+            .take()
+            .ok_or(BrokerError::ProviderUnavailable)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        #[cfg(test)]
+        let settings = config(remaining, self.test_root.as_ref());
+        #[cfg(not(test))]
+        let settings = config(remaining, None);
         let client = ureq::Agent::with_parts(
-            config(deadline.saturating_duration_since(Instant::now())),
-            ureq::unversioned::transport::DefaultConnector::default(),
+            settings,
+            GuardedConnector {
+                socket: Mutex::new(Some(socket)),
+                deadline,
+            }
+            .chain(RustlsConnector::default()),
             resolver(approved)?,
         );
         exchange(&client, approved, bearer, request)
     }
 }
 
-fn config(remaining: Duration) -> ureq::config::Config {
-    ureq::Agent::config_builder()
+struct GuardedConnector {
+    socket: Mutex<Option<GuardedUpstream>>,
+    deadline: Instant,
+}
+
+impl fmt::Debug for GuardedConnector {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GuardedConnector")
+    }
+}
+
+impl Connector for GuardedConnector {
+    type Out = GuardedTransport;
+
+    fn connect(
+        &self,
+        details: &ConnectionDetails<'_>,
+        _chained: Option<()>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        let socket = self
+            .socket
+            .lock()
+            .map_err(|_| ureq::Error::ConnectionFailed)?
+            .take()
+            .ok_or(ureq::Error::ConnectionFailed)?;
+        if !details.addrs.contains(&socket.evidence().destination) {
+            return Err(ureq::Error::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "guarded destination differs from granted address",
+            )));
+        }
+        Ok(Some(GuardedTransport {
+            socket,
+            buffers: LazyBuffers::new(8192, 8192),
+            deadline: self.deadline,
+        }))
+    }
+}
+
+struct GuardedTransport {
+    socket: GuardedUpstream,
+    buffers: LazyBuffers,
+    deadline: Instant,
+}
+
+impl fmt::Debug for GuardedTransport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GuardedTransport")
+    }
+}
+
+impl GuardedTransport {
+    fn timeout(&self, next: NextTimeout) -> Result<Duration, ureq::Error> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        let duration = next
+            .not_zero()
+            .map_or(remaining, |timeout| remaining.min(*timeout));
+        if duration.is_zero() {
+            Err(ureq::Error::Timeout(next.reason))
+        } else {
+            Ok(duration)
+        }
+    }
+}
+
+impl Transport for GuardedTransport {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        &mut self.buffers
+    }
+
+    fn transmit_output(&mut self, amount: usize, next: NextTimeout) -> Result<(), ureq::Error> {
+        self.socket.set_timeout(self.timeout(next)?)?;
+        self.socket
+            .write_all(&self.buffers.output()[..amount])
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                    ureq::Error::Timeout(next.reason)
+                }
+                _ => error.into(),
+            })
+    }
+
+    fn await_input(&mut self, next: NextTimeout) -> Result<bool, ureq::Error> {
+        self.socket.set_timeout(self.timeout(next)?)?;
+        let count =
+            self.socket
+                .read(self.buffers.input_append_buf())
+                .map_err(|error| match error.kind() {
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                        ureq::Error::Timeout(next.reason)
+                    }
+                    _ => error.into(),
+                })?;
+        self.buffers.input_appended(count);
+        Ok(count > 0)
+    }
+
+    fn is_open(&mut self) -> bool {
+        false
+    }
+}
+
+fn config(
+    remaining: Duration,
+    root: Option<&ureq::tls::Certificate<'static>>,
+) -> ureq::config::Config {
+    let mut builder = ureq::Agent::config_builder()
         .https_only(true)
         .proxy(None)
         .max_redirects(0)
@@ -81,8 +231,17 @@ fn config(remaining: Duration) -> ureq::config::Config {
         .timeout_recv_response(Some(Duration::from_mins(5)))
         // Long reasoning streams; the Run's expiry remains the outer bound.
         .timeout_recv_body(Some(Duration::from_hours(1)))
-        .timeout_global(Some(remaining))
-        .build()
+        .timeout_global(Some(remaining));
+    if let Some(root) = root {
+        builder = builder.tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::new_with_certs(std::slice::from_ref(
+                    root,
+                )))
+                .build(),
+        );
+    }
+    builder.build()
 }
 
 fn resolver(approved: &ApprovedProviderRequests) -> Result<PinnedResolver, BrokerError> {

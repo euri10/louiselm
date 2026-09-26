@@ -81,6 +81,10 @@ fn startup(root: &Path, invalid: bool) {
     }
 }
 
+pub(super) fn provision_empty_state(root: &Path) {
+    startup(root, false);
+}
+
 pub(super) fn prepare(root: &Path) {
     // The first real startup provisions empty custody; no Provider is required.
     startup(root, false);

@@ -355,7 +355,7 @@ fn installed_broker_worker() {
         return;
     };
     let root = PathBuf::from(root);
-    let broker = InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap();
+    let broker = Arc::new(InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap());
     if root.join("credential-custody").exists() {
         let handle = broker.provider_credential("acme").unwrap();
         assert_eq!(handle.provider(), "acme");
@@ -380,7 +380,16 @@ fn installed_broker_worker() {
             dependencies: None,
             skill_requests: None,
             beads_mutations: None,
-            provider_requests: root.join("brokered").exists().then(|| guard::approval(now)),
+            provider_requests: root.join("brokered").exists().then(|| {
+                let mut approval = guard::approval(now);
+                if let Ok(port) = fs::read_to_string(root.join("guard-provider-port")) {
+                    approval.upstream =
+                        format!("https://api.openai.com:{}/v1/responses", port.trim());
+                    approval.addresses = vec!["127.0.0.1".parse().unwrap()];
+                    approval.max_run_requests = 2;
+                }
+                approval
+            }),
             require_cold_recovery: true,
             request: request(),
             controller_uid: config.operator_uid,
@@ -430,6 +439,29 @@ fn installed_broker_worker() {
     let proof = inspection.start_evidence.unwrap();
     assert_eq!(proof.assigned_uid, AGENT_UID);
     println!("BROKER_RUNNING {}", proof.agent_pid);
+    if root.join("guard-provider-port").exists() {
+        let root_certificate = ureq::tls::Certificate::from_pem(
+            &fs::read(root.join("guard-provider-root.pem")).unwrap(),
+        )
+        .unwrap();
+        session.set_provider_test_root(root_certificate);
+        println!(
+            "BROKER_PROVIDER_ADDR {}",
+            session.provider_address_for_test().unwrap()
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !root.join("guard-provider-done").exists() {
+            assert!(Instant::now() < deadline, "Provider fixture timed out");
+            broker.drive_provider(&mut session).unwrap();
+            if session.provider_handoff_pending_for_test() {
+                assert!(!broker.step(&mut session).unwrap());
+            } else {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid);
+        return;
+    }
     if root.join("guard-close-no-ack").exists() {
         println!("BROKER_GUARD_HELD");
         thread::sleep(Duration::from_secs(8));

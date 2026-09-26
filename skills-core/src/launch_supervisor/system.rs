@@ -26,9 +26,16 @@ pub(super) mod grant_test_support;
 use std::{
     fs, io,
     net::SocketAddr,
-    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
+    os::{
+        fd::BorrowedFd,
+        unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, chown},
+    },
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, mpsc},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -38,7 +45,7 @@ use crate::{
     launch::LaunchRequest,
     launch_protocol::{
         BROKER_RECONNECT_SCHEMA, BrokerReconnect, ControllerLossAcknowledgement,
-        ControllerLossSettlement, GuardEnrollment, GuardScope, LaunchAuthorization,
+        ControllerLossSettlement, GuardEnrollment, GuardScope, GuardUpstream, LaunchAuthorization,
         PROTOCOL_VERSION, ProtocolMessage, ProtocolResponse, RESPONSE_SCHEMA,
         ReceiptAcknowledgement, ResponseResult,
     },
@@ -180,6 +187,7 @@ struct SeqpacketLaunchBrokerState {
     reconnect: Option<PendingBrokerReconnect>,
     controller_loss_pending: Option<PendingControllerLossSettlement>,
     guard_close_pending: Option<PendingGuardClosure>,
+    guard_upstream_pending: Option<PendingGuardUpstream>,
     session_receive_armed: bool,
 }
 
@@ -196,6 +204,12 @@ struct PendingControllerLossSettlement {
 
 struct PendingGuardClosure {
     enrollment: GuardEnrollment,
+    complete: SupervisorCompletion<()>,
+}
+
+struct PendingGuardUpstream {
+    request_id: String,
+    socket: GuardUpstream,
     complete: SupervisorCompletion<()>,
 }
 
@@ -216,6 +230,7 @@ impl SeqpacketLaunchBroker {
                 reconnect: None,
                 controller_loss_pending: None,
                 guard_close_pending: None,
+                guard_upstream_pending: None,
                 session_receive_armed: false,
             })),
         }
@@ -248,6 +263,64 @@ impl SeqpacketLaunchBroker {
         } else {
             Err(SupervisorError::CleanupUnproven)
         }
+    }
+
+    fn guard_upstream_result(
+        packet: &AuthenticatedPacket,
+        pending: &PendingGuardUpstream,
+    ) -> Result<(), SupervisorError> {
+        let LauncherPacket::Response(response) = &packet.packet else {
+            return Err(SupervisorError::BrokerUnavailable);
+        };
+        if response.request_id == pending.request_id
+            && response.result
+                == (ResponseResult::SenderGuardUpstreamAccepted {
+                    socket: pending.socket.clone(),
+                })
+            && packet.descriptors.is_none()
+        {
+            Ok(())
+        } else {
+            Err(SupervisorError::BrokerUnavailable)
+        }
+    }
+
+    fn receive_direct_guard_close(
+        state: Arc<Mutex<SeqpacketLaunchBrokerState>>,
+        channel: &SeqpacketChannel,
+    ) -> Result<(), SupervisorError> {
+        let next_channel = channel.clone();
+        channel
+            .receive(Box::new(move |received| {
+                if let Ok(packet) = &received
+                    && let LauncherPacket::Response(response) = &packet.packet
+                    && matches!(
+                        response.result,
+                        ResponseResult::SenderGuardUpstreamAccepted { .. }
+                    )
+                {
+                    let pending = lock(&state).guard_upstream_pending.take();
+                    if let Some(pending) = pending {
+                        let result = Self::guard_upstream_result(packet, &pending);
+                        let valid = result.is_ok();
+                        (pending.complete)(result);
+                        if valid
+                            && Self::receive_direct_guard_close(Arc::clone(&state), &next_channel)
+                                .is_ok()
+                        {
+                            return;
+                        }
+                    }
+                }
+                let pending = lock(&state).guard_close_pending.take();
+                if let Some(pending) = pending {
+                    let result = received
+                        .map_err(map_transport)
+                        .and_then(|packet| Self::guard_close_result(&packet, &pending));
+                    (pending.complete)(result);
+                }
+            }))
+            .map_err(map_transport)
     }
 
     fn transact<T>(
@@ -328,6 +401,10 @@ impl SeqpacketLaunchBroker {
             .map_err(map_transport)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The one authenticated reader demultiplexes all outstanding Session acknowledgements before delivery."
+    )]
     fn arm_session_receive(
         state: Arc<Mutex<SeqpacketLaunchBrokerState>>,
         channel: &SeqpacketChannel,
@@ -339,18 +416,22 @@ impl SeqpacketLaunchBroker {
                 let packet = match received.map_err(map_transport) {
                     Ok(packet) => packet,
                     Err(error) => {
-                        let (controller, guard) = {
+                        let (controller, guard, upstream) = {
                             let mut state = lock(&state);
                             state.session_receive_armed = false;
                             (
                                 state.controller_loss_pending.take(),
                                 state.guard_close_pending.take(),
+                                state.guard_upstream_pending.take(),
                             )
                         };
                         if let Some(pending) = controller {
                             (pending.complete)(Err(error.clone()));
                         }
                         if let Some(pending) = guard {
+                            (pending.complete)(Err(error.clone()));
+                        }
+                        if let Some(pending) = upstream {
                             (pending.complete)(Err(error.clone()));
                         }
                         if let Some(complete) = lock(&completion).take() {
@@ -361,6 +442,35 @@ impl SeqpacketLaunchBroker {
                 };
                 let no_descriptors = packet.descriptors.is_none();
                 if let LauncherPacket::Response(response) = packet.packet {
+                    if matches!(
+                        response.result,
+                        ResponseResult::SenderGuardUpstreamAccepted { .. }
+                    ) {
+                        let pending = lock(&state).guard_upstream_pending.take();
+                        if let Some(pending) = pending {
+                            let result = match response.result {
+                                ResponseResult::SenderGuardUpstreamAccepted { socket }
+                                    if response.request_id == pending.request_id
+                                        && socket == pending.socket
+                                        && no_descriptors =>
+                                {
+                                    Ok(())
+                                }
+                                _ => Err(SupervisorError::BrokerUnavailable),
+                            };
+                            (pending.complete)(result);
+                            if let Err(error) = Self::arm_session_receive(
+                                Arc::clone(&state),
+                                &next_channel,
+                                Arc::clone(&completion),
+                            ) && let Some(complete) = lock(&completion).take()
+                            {
+                                lock(&state).session_receive_armed = false;
+                                complete(Err(error));
+                            }
+                            return;
+                        }
+                    }
                     let pending = lock(&state).controller_loss_pending.take();
                     if let Some(pending) = pending {
                         let result = match response.result {
@@ -482,6 +592,54 @@ impl SeqpacketLaunchBroker {
 }
 
 impl LaunchBroker for SeqpacketLaunchBroker {
+    fn send_guarded_upstream(
+        &self,
+        request_id: &str,
+        socket: GuardUpstream,
+        descriptors: [BorrowedFd<'_>; 3],
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        let response = ProtocolResponse {
+            schema: RESPONSE_SCHEMA.into(),
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request_id.into(),
+            result: ResponseResult::SenderGuardUpstream {
+                socket: socket.clone(),
+            },
+        };
+        response
+            .validate()
+            .map_err(|_| SupervisorError::IsolationRejected)?;
+        let channel = self.current_channel()?;
+        {
+            let mut state = lock(&self.state);
+            if state.guard_upstream_pending.is_some() {
+                return Err(SupervisorError::BrokerUnavailable);
+            }
+            state.guard_upstream_pending = Some(PendingGuardUpstream {
+                request_id: request_id.into(),
+                socket,
+                complete,
+            });
+        }
+        let callback_state = Arc::clone(&self.state);
+        if let Err(error) = channel.send_descriptors(
+            response.canonical_bytes(),
+            descriptors,
+            Box::new(move |result| {
+                if result.is_err()
+                    && let Some(pending) = lock(&callback_state).guard_upstream_pending.take()
+                {
+                    (pending.complete)(Err(SupervisorError::BrokerUnavailable));
+                }
+            }),
+        ) {
+            lock(&self.state).guard_upstream_pending.take();
+            return Err(map_transport(error));
+        }
+        Ok(())
+    }
+
     fn sender_guard_channel(&self) -> Result<SeqpacketChannel, SupervisorError> {
         self.current_channel()
     }
@@ -522,26 +680,11 @@ impl LaunchBroker for SeqpacketLaunchBroker {
             });
             (state.channel.clone(), !state.session_receive_armed)
         };
-        if direct_receive {
-            let callback_state = Arc::clone(&self.state);
-            let callback_channel = channel.clone();
-            if channel
-                .receive(Box::new(move |received| {
-                    let pending = lock(&callback_state).guard_close_pending.take();
-                    if let Some(pending) = pending {
-                        let result = received
-                            .map_err(map_transport)
-                            .and_then(|packet| Self::guard_close_result(&packet, &pending));
-                        (pending.complete)(result);
-                    } else {
-                        callback_channel.close();
-                    }
-                }))
-                .is_err()
-            {
-                lock(&self.state).guard_close_pending.take();
-                return Err(SupervisorError::CleanupUnproven);
-            }
+        if direct_receive
+            && Self::receive_direct_guard_close(Arc::clone(&self.state), &channel).is_err()
+        {
+            lock(&self.state).guard_close_pending.take();
+            return Err(SupervisorError::CleanupUnproven);
         }
         let callback_state = Arc::clone(&self.state);
         if channel
@@ -881,7 +1024,14 @@ impl LaunchBroker for SeqpacketLaunchBroker {
     }
 
     fn close(&self) {
-        let (connector, channel, reconnect, controller_loss_pending, guard_close_pending) = {
+        let (
+            connector,
+            channel,
+            reconnect,
+            controller_loss_pending,
+            guard_close_pending,
+            guard_upstream_pending,
+        ) = {
             let mut state = lock(&self.state);
             state.session_receive_armed = false;
             (
@@ -890,6 +1040,7 @@ impl LaunchBroker for SeqpacketLaunchBroker {
                 state.reconnect.take(),
                 state.controller_loss_pending.take(),
                 state.guard_close_pending.take(),
+                state.guard_upstream_pending.take(),
             )
         };
         channel.close();
@@ -905,6 +1056,9 @@ impl LaunchBroker for SeqpacketLaunchBroker {
         }
         if let Some(pending) = guard_close_pending {
             (pending.complete)(Err(SupervisorError::CleanupUnproven));
+        }
+        if let Some(pending) = guard_upstream_pending {
+            (pending.complete)(Err(SupervisorError::BrokerUnavailable));
         }
     }
 }
@@ -1515,7 +1669,9 @@ impl ProcessMembership for SystemProcessMembership {
 
 /// Production lifecycle/relay adapter for an already-confined running Session.
 pub struct SystemRunningAgent {
-    sender_guard: Option<super::sender_guard::SenderGuard>,
+    sender_guard: Option<Arc<Mutex<super::sender_guard::SenderGuard>>>,
+    upstream_worker: Option<thread::JoinHandle<()>>,
+    upstream_acknowledged: Arc<AtomicBool>,
     guard_scope: Option<GuardScope>,
     guard_revoker: Option<super::sender_guard::GuardRevoker>,
     guard_broker: Option<Arc<dyn LaunchBroker>>,
@@ -1540,6 +1696,8 @@ impl SystemRunningAgent {
     pub fn new(session: SandboxedSession) -> Self {
         Self {
             sender_guard: None,
+            upstream_worker: None,
+            upstream_acknowledged: Arc::new(AtomicBool::new(true)),
             guard_scope: None,
             guard_revoker: None,
             guard_broker: None,
@@ -1569,11 +1727,11 @@ impl SystemRunningAgent {
     ) -> Result<Self, SupervisorError> {
         let session = guard.start(prepared).map_err(map_sandbox)?;
         let mut running = Self::new(session);
-        running.sender_guard = Some(guard);
+        running.sender_guard = Some(Arc::new(Mutex::new(guard)));
         running.guard_revoker = match running
             .sender_guard
             .as_ref()
-            .map(super::sender_guard::SenderGuard::revoker)
+            .map(|guard| lock(guard).revoker())
         {
             Some(Ok(revoker)) => Some(revoker),
             _ => {
@@ -1587,10 +1745,10 @@ impl SystemRunningAgent {
         Ok(running)
     }
 
-    /// Guard mechanics for the authenticated handoff/request worker. The caller
-    /// still owns broker admission; possession does not activate an endpoint.
-    pub fn sender_guard(&mut self) -> Option<&mut super::sender_guard::SenderGuard> {
-        self.sender_guard.as_mut()
+    fn join_upstream_worker(&mut self) -> Result<(), SupervisorError> {
+        self.upstream_worker.take().map_or(Ok(()), |worker| {
+            worker.join().map_err(|_| SupervisorError::CleanupUnproven)
+        })
     }
 
     fn join_recovery(&mut self) -> Result<(), SupervisorError> {
@@ -1642,6 +1800,118 @@ fn apply_mechanic<T>(
 }
 
 impl RunningAgent for SystemRunningAgent {
+    fn handoff_guarded_upstream(
+        &mut self,
+        request: &crate::launch_protocol::GuardSocketRequest,
+        timeout: Duration,
+        complete: SupervisorCompletion<()>,
+    ) -> Result<(), SupervisorError> {
+        if self.upstream_worker.is_some() && !self.upstream_acknowledged.load(Ordering::Acquire) {
+            return Err(SupervisorError::BrokerUnavailable);
+        }
+        self.join_upstream_worker()?;
+        let guard = self
+            .sender_guard
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        if lock(guard).enrollment() != Some(&request.enrollment)
+            || self.guard_scope.as_ref() != Some(&request.enrollment.scope)
+        {
+            return Err(SupervisorError::IsolationRejected);
+        }
+        let guard = Arc::clone(guard);
+        let broker = Arc::clone(
+            self.guard_broker
+                .as_ref()
+                .ok_or(SupervisorError::BrokerUnavailable)?,
+        );
+        let revoker = self
+            .guard_revoker
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?
+            .clone();
+        self.upstream_acknowledged.store(false, Ordering::Release);
+        let acknowledged = Arc::clone(&self.upstream_acknowledged);
+        let request = request.clone();
+        self.upstream_worker = Some(
+            thread::Builder::new()
+                .name("louiselm-guard-connect".into())
+                .spawn(move || {
+                    let result = lock(&guard).prepare_upstream(
+                        &request.enrollment.scope,
+                        request.destination,
+                        timeout,
+                    );
+                    let (socket, evidence) = match result {
+                        Ok(value) if revoker.active() => value,
+                        Ok(_) => {
+                            complete(Err(SupervisorError::IsolationRejected));
+                            return;
+                        }
+                        Err(error) => {
+                            let _ = revoker.revoke();
+                            complete(Err(map_guard(error)));
+                            return;
+                        }
+                    };
+                    let pending = Arc::new(Mutex::new(Some(complete)));
+                    let callback_pending = Arc::clone(&pending);
+                    let callback_revoker = revoker.clone();
+                    let (ack_sent, ack_received) = mpsc::sync_channel(1);
+                    let queued = broker.send_guarded_upstream(
+                        &request.request_id,
+                        evidence,
+                        socket.descriptors(),
+                        Box::new(move |result| {
+                            if result.is_err() {
+                                let _ = callback_revoker.revoke();
+                            }
+                            acknowledged.store(true, Ordering::Release);
+                            let _ = ack_sent.try_send(());
+                            if let Some(complete) = lock(&callback_pending).take() {
+                                complete(result);
+                            }
+                        }),
+                    );
+                    if let Err(error) = queued {
+                        let _ = revoker.revoke();
+                        if let Some(complete) = lock(&pending).take() {
+                            complete(Err(error));
+                        }
+                    } else if ack_received.recv_timeout(timeout).is_err() {
+                        let _ = revoker.revoke();
+                        broker.close();
+                        if let Some(complete) = lock(&pending).take() {
+                            complete(Err(SupervisorError::BrokerTimeout));
+                        }
+                    }
+                })
+                .map_err(|_| SupervisorError::WorkerUnavailable)?,
+        );
+        Ok(())
+    }
+
+    fn retire_guarded_upstream(
+        &mut self,
+        request: &crate::launch_protocol::GuardSocketRetire,
+    ) -> Result<(), SupervisorError> {
+        if !self.upstream_acknowledged.load(Ordering::Acquire) {
+            return Err(SupervisorError::BrokerUnavailable);
+        }
+        self.join_upstream_worker()?;
+        let guard = self
+            .sender_guard
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        let mut guard = lock(guard);
+        if guard.enrollment() != Some(&request.enrollment) {
+            return Err(SupervisorError::IsolationRejected);
+        }
+        guard
+            .retire_upstream(&request.enrollment.scope, request.socket_cookie)
+            .map_err(map_guard)
+    }
+
     fn finish_guarded_start(
         &mut self,
         request_id: &str,
@@ -1656,8 +1926,9 @@ impl RunningAgent for SystemRunningAgent {
             .clone();
         let guard = self
             .sender_guard
-            .as_mut()
+            .as_ref()
             .ok_or(SupervisorError::IsolationRejected)?;
+        let mut guard = lock(guard);
         if let Err(error) = guard.announce_enrollment(request_id, timeout) {
             self.guard_revoker
                 .as_ref()
@@ -1696,8 +1967,9 @@ impl RunningAgent for SystemRunningAgent {
     }
 
     fn close_guard_handoff(&mut self) -> Result<(), SupervisorError> {
-        match (self.sender_guard.as_mut(), self.guard_broker.as_ref()) {
-            (Some(guard), Some(broker)) => guard
+        self.join_upstream_worker()?;
+        match (self.sender_guard.as_ref(), self.guard_broker.as_ref()) {
+            (Some(guard), Some(broker)) => lock(guard)
                 .close_handoff_with_broker(broker.as_ref(), Duration::from_secs(5))
                 .map_err(map_guard),
             (None, _) => Ok(()),
@@ -2027,17 +2299,19 @@ impl RunningAgent for SystemRunningAgent {
             .dispose()
             .map(|_| ())
             .map_err(map_sandbox);
-        let guard_closed = if process.is_ok() && tools.is_ok() && verification.is_ok() {
-            match (self.sender_guard.as_mut(), self.guard_broker.as_ref()) {
-                (Some(guard), Some(broker)) => {
-                    guard.dispose_with_broker(broker.as_ref(), Duration::from_secs(5))
+        let upstream = self.join_upstream_worker();
+        let guard_closed =
+            if process.is_ok() && tools.is_ok() && verification.is_ok() && upstream.is_ok() {
+                match (self.sender_guard.as_ref(), self.guard_broker.as_ref()) {
+                    (Some(guard), Some(broker)) => {
+                        lock(guard).dispose_with_broker(broker.as_ref(), Duration::from_secs(5))
+                    }
+                    (Some(guard), None) => lock(guard).dispose(),
+                    (None, _) => Ok(()),
                 }
-                (Some(guard), None) => guard.dispose(),
-                (None, _) => Ok(()),
-            }
-        } else {
-            Err(super::sender_guard::GuardError::Cleanup)
-        };
+            } else {
+                Err(super::sender_guard::GuardError::Cleanup)
+            };
         let sealed = if process.is_ok() && tools.is_ok() && verification.is_ok() {
             self.recovery
                 .as_ref()
@@ -2047,6 +2321,7 @@ impl RunningAgent for SystemRunningAgent {
         };
         if guard.is_err()
             || guard_closed.is_err()
+            || upstream.is_err()
             || cache.is_err()
             || verification.is_err()
             || recovery.is_err()
@@ -3589,6 +3864,78 @@ mod tests {
                 .expect("ordinary request authenticates"),
             ProtocolMessage::Status(status)
         );
+    }
+
+    #[test]
+    fn guard_close_routes_in_flight_upstream_ack_before_its_own_ack() {
+        use std::os::fd::AsFd;
+
+        let (_directory, _listener, broker, server, _pin) = broker_fixture();
+        let broker = Arc::new(broker);
+        let enrollment = guard_enrollment();
+        let upstream = GuardUpstream {
+            enrollment: enrollment.clone(),
+            destination: "127.0.0.1:443".parse().expect("fixture destination"),
+            socket_cookie: 6,
+            network_id: 7,
+        };
+        let descriptor = fs::File::open("/dev/null").expect("fixture descriptor");
+        let (upstream_sender, upstream_done) = mpsc::sync_channel(1);
+        broker
+            .send_guarded_upstream(
+                "guard-upstream",
+                upstream.clone(),
+                [descriptor.as_fd(); 3],
+                Box::new(move |result| {
+                    upstream_sender
+                        .send(result)
+                        .expect("upstream result received");
+                }),
+            )
+            .expect("upstream send queues");
+        let offered = receive_packet(&server);
+        assert!(matches!(offered.packet, LauncherPacket::Response(_)));
+        assert!(offered.descriptors.is_some());
+
+        let (closed_sender, closed_done) = mpsc::sync_channel(1);
+        let closing = Arc::clone(&broker);
+        let waiter = thread::spawn(move || {
+            closed_sender
+                .send(closing.close_sender_guard(enrollment.clone(), Duration::from_secs(2)))
+                .expect("closure result received");
+        });
+        let offered = receive_packet(&server);
+        assert!(matches!(offered.packet, LauncherPacket::Response(_)));
+        send_packet(
+            &server,
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "guard-upstream".into(),
+                result: ResponseResult::SenderGuardUpstreamAccepted {
+                    socket: upstream.clone(),
+                },
+            }
+            .canonical_bytes(),
+        );
+        send_packet(
+            &server,
+            ProtocolResponse {
+                schema: RESPONSE_SCHEMA.into(),
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "guard-close".into(),
+                result: ResponseResult::SenderGuardClosed {
+                    enrollment: upstream.enrollment,
+                },
+            }
+            .canonical_bytes(),
+        );
+        assert_eq!(
+            upstream_done.recv_timeout(Duration::from_secs(2)),
+            Ok(Ok(()))
+        );
+        assert_eq!(closed_done.recv_timeout(Duration::from_secs(2)), Ok(Ok(())));
+        waiter.join().expect("closure worker joins");
     }
 
     #[test]
