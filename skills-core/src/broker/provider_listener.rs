@@ -4,6 +4,7 @@ use std::{
     fs::File,
     net::{TcpListener, TcpStream},
     os::{fd::AsRawFd, unix::fs::MetadataExt},
+    sync::Arc,
     time::Duration,
 };
 
@@ -21,6 +22,7 @@ pub(super) struct ProviderListener {
     pins: File,
     network: File,
     pub(super) enrollment: GuardEnrollment,
+    _owner_lease: Arc<()>,
 }
 
 impl ProviderListener {
@@ -29,6 +31,7 @@ impl ProviderListener {
         supervisor: KernelCredentials,
         scope: &GuardScope,
         runtime_pid: u32,
+        owner_lease: Arc<()>,
     ) -> Result<(Self, String), BrokerError> {
         if packet.peer_credentials != supervisor || packet.message_credentials != supervisor {
             return Err(BrokerError::InvalidGrant);
@@ -56,6 +59,7 @@ impl ProviderListener {
             pins,
             network,
             enrollment,
+            _owner_lease: owner_lease,
         };
         owner.validate()?;
         owner
@@ -192,13 +196,14 @@ mod tests {
     #[test]
     fn exact_listener_is_retained_and_foreign_scope_is_refused() {
         let (packet, scope, peer) = fixture_packet();
-        let (owner, request) = ProviderListener::adopt(packet, peer, &scope, 123).unwrap();
+        let (owner, request) =
+            ProviderListener::adopt(packet, peer, &scope, 123, Arc::new(())).unwrap();
         assert_eq!(request, "handoff");
         assert!(owner.accept().unwrap().is_none());
         let (packet, mut scope, peer) = fixture_packet();
         scope.session_id = "other".into();
         assert!(matches!(
-            ProviderListener::adopt(packet, peer, &scope, 123),
+            ProviderListener::adopt(packet, peer, &scope, 123, Arc::new(())),
             Err(BrokerError::RequestMismatch)
         ));
     }
@@ -224,6 +229,7 @@ mod tests {
                 peer,
                 &scope,
                 if mutation == 2 { 124 } else { 123 },
+                Arc::new(()),
             );
             assert!(matches!(
                 error,

@@ -140,7 +140,7 @@ impl BrokerService {
             LauncherPacket::Response(response)
                 if matches!(response.result, ResponseResult::SenderGuardClosing { .. }) =>
             {
-                Self::close_provider_listener(session, packet)?;
+                self.close_provider_listener(session, packet)?;
                 Ok(false)
             }
             LauncherPacket::Response(response)

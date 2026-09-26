@@ -17,6 +17,7 @@ pub(super) struct SocketLease {
     socket: TcpStream,
     pins: File,
     network: File,
+    _owner_lease: Arc<()>,
 }
 
 impl SocketLease {
@@ -43,6 +44,7 @@ impl GuardedUpstream {
         enrollment: &GuardEnrollment,
         request_id: &str,
         destination: SocketAddr,
+        owner_lease: Arc<()>,
     ) -> Result<Self, BrokerError> {
         if packet.peer_credentials != supervisor || packet.message_credentials != supervisor {
             return Err(BrokerError::InvalidGrant);
@@ -65,6 +67,7 @@ impl GuardedUpstream {
             socket: TcpStream::from(socket),
             pins: File::from(pins),
             network: File::from(network),
+            _owner_lease: owner_lease,
         });
         for (file, kind, id) in [
             (&lease.pins, "mnt", evidence.enrollment.guard_id),

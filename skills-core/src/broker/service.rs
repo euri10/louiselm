@@ -192,6 +192,7 @@ pub struct BrokerService {
     pub(super) skill_requests: super::skill_requests::SkillRequests,
     pub(super) beads_mutations: super::beads_mutation::BeadsMutations,
     pub(super) provider_requests: super::provider_requests::ProviderLedger,
+    pub(super) provider_ownership: super::provider_ownership::ProviderOwnership,
     pub(super) tracker: Option<super::beads_mutation::TrackerConfig>,
     pub(super) beads_replicas: Option<super::beads_replica::Paths>,
     pub(super) verification_inputs: std::path::PathBuf,
@@ -303,6 +304,7 @@ impl BrokerService {
             skill_requests,
             beads_mutations,
             provider_requests,
+            provider_ownership: super::provider_ownership::ProviderOwnership::default(),
             tracker: None,
             beads_replicas: None,
             verification_inputs: socket_path

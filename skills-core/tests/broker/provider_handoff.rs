@@ -1,5 +1,6 @@
 //! Real authenticated transfer, Session admission, relay and closure.
 use super::*;
+use louiselm_skills::launch_protocol::{BROKER_RECONNECT_SCHEMA, BrokerReconnect};
 use louiselm_skills::launch_protocol::{GuardEnrollment, GuardScope};
 use std::{
     fs::File,
@@ -129,6 +130,127 @@ fn transferred_listener_uses_production_admission_and_closes_before_ack() {
             )
             .unwrap()
     );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One held old owner, refused closure, acknowledged retry and forbidden re-enrollment share one causal fixture."
+)]
+fn reconnect_cannot_ack_guard_closure_while_old_session_owns_listener() {
+    let mut fixture = fixture(Some(approval(5)), Some("openai"));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let pins = File::open("/proc/self/ns/mnt").unwrap();
+    let network = File::open("/proc/self/ns/net").unwrap();
+    let mut enrollment = enrollment(&listener, &pins, &network);
+    enrollment.scope.session_id = fixture.session.authorization().session_id.clone();
+    enrollment.scope.revision = fixture.session.authorization().envelope_revision;
+    let enrolled = response(ResponseResult::SenderGuardEnrolled {
+        enrollment: enrollment.clone(),
+    });
+    settle(|complete| {
+        fixture.peer.send_descriptors(
+            enrolled.canonical_bytes(),
+            [listener.as_fd(), pins.as_fd(), network.as_fd()],
+            complete,
+        )
+    });
+    fixture
+        .service
+        .step(&mut fixture.session, 2500, None, verify_fixture_signature)
+        .unwrap();
+    let _accepted = settle(|complete| fixture.peer.receive(complete));
+    fixture.peer.close();
+
+    let head = fixture.current.launcher_head.as_ref().unwrap();
+    let offer = BrokerReconnect {
+        schema: BROKER_RECONNECT_SCHEMA.into(),
+        protocol_version: PROTOCOL_VERSION,
+        request_id: "guard-reconnect".into(),
+        session_id: enrollment.scope.session_id.clone(),
+        run_id: enrollment.scope.run_id.clone(),
+        envelope_revision: enrollment.scope.revision,
+        sequence: head.sequence,
+        receipt_digest: head.digest.clone(),
+    };
+    let connector = SeqpacketConnector::new().unwrap();
+    let peer = settle(|complete| {
+        connector.connect(
+            &fixture.root.path().join("broker.sock"),
+            local_pin(),
+            complete,
+        )
+    });
+    settle(|complete| peer.send(offer.canonical_bytes(), complete));
+    let mut reconnected = fixture
+        .service
+        .serve_reconnect(2500, verify_fixture_signature)
+        .unwrap();
+    let _reply = settle(|complete| peer.receive(complete));
+    let closing = response(ResponseResult::SenderGuardClosing {
+        enrollment: enrollment.clone(),
+    });
+    settle(|complete| peer.send(closing.canonical_bytes(), complete));
+    assert!(matches!(
+        fixture
+            .service
+            .step(&mut reconnected, 2500, None, verify_fixture_signature),
+        Err(BrokerError::ProviderUnavailable)
+    ));
+    drop(reconnected);
+    drop(fixture.session);
+    let peer = settle(|complete| {
+        connector.connect(
+            &fixture.root.path().join("broker.sock"),
+            local_pin(),
+            complete,
+        )
+    });
+    settle(|complete| peer.send(offer.canonical_bytes(), complete));
+    let mut reconnected = fixture
+        .service
+        .serve_reconnect(2500, verify_fixture_signature)
+        .unwrap();
+    let _reply = settle(|complete| peer.receive(complete));
+    settle(|complete| peer.send(closing.canonical_bytes(), complete));
+    fixture
+        .service
+        .step(&mut reconnected, 2500, None, verify_fixture_signature)
+        .unwrap();
+    let packet = settle(|complete| peer.receive(complete));
+    assert!(matches!(
+        packet.packet,
+        LauncherPacket::Response(ack)
+            if ack.result == ResponseResult::SenderGuardClosed { enrollment: enrollment.clone() }
+    ));
+    drop(reconnected);
+    let peer = settle(|complete| {
+        connector.connect(
+            &fixture.root.path().join("broker.sock"),
+            local_pin(),
+            complete,
+        )
+    });
+    settle(|complete| peer.send(offer.canonical_bytes(), complete));
+    let mut reconnected = fixture
+        .service
+        .serve_reconnect(2500, verify_fixture_signature)
+        .unwrap();
+    let _reply = settle(|complete| peer.receive(complete));
+    let enrolled = response(ResponseResult::SenderGuardEnrolled { enrollment });
+    settle(|complete| {
+        peer.send_descriptors(
+            enrolled.canonical_bytes(),
+            [listener.as_fd(), pins.as_fd(), network.as_fd()],
+            complete,
+        )
+    });
+    assert!(matches!(
+        fixture
+            .service
+            .step(&mut reconnected, 2500, None, verify_fixture_signature),
+        Err(BrokerError::ProviderUnavailable)
+    ));
 }
 
 #[test]

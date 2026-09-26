@@ -47,14 +47,18 @@ impl BrokerService {
                 return Err(BrokerError::InvalidGrant);
             }
             let packet = super::service::receive(session.channel())?;
+            let owner_lease = std::sync::Arc::new(());
             let socket = super::GuardedUpstream::adopt(
                 packet,
                 session.channel().peer_credentials(),
                 enrollment,
                 request_id,
                 destination,
+                std::sync::Arc::clone(&owner_lease),
             )?;
             let evidence = socket.evidence().clone();
+            self.provider_ownership
+                .socket(&enrollment.scope, &owner_lease)?;
             if session
                 .provider_sockets
                 .contains_key(&evidence.socket_cookie)
@@ -81,6 +85,7 @@ impl BrokerService {
     }
 
     pub(super) fn close_provider_listener(
+        &self,
         session: &mut BrokerSession,
         packet: AuthenticatedPacket,
     ) -> Result<(), BrokerError> {
@@ -128,6 +133,7 @@ impl BrokerService {
         }
         session.provider_sockets.clear();
         session.provider_listener = None;
+        self.provider_ownership.close(&enrollment.scope)?;
         super::service::send(
             session.channel(),
             super::service::response(
@@ -204,12 +210,15 @@ impl BrokerService {
             })
             .ok_or(BrokerError::ReceiptUnauthorized)?;
         let scope = scope.clone();
+        let owner_lease = std::sync::Arc::new(());
         let (listener, request_id) = super::provider_listener::ProviderListener::adopt(
             packet,
             session.channel().peer_credentials(),
             &scope,
             runtime,
+            std::sync::Arc::clone(&owner_lease),
         )?;
+        self.provider_ownership.listener(&scope, &owner_lease)?;
         let accepted = listener.enrollment.clone();
         session.provider_revision = Some(scope.revision);
         session.provider_listener = Some(listener);

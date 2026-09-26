@@ -41,6 +41,7 @@ pub mod provider_endpoint;
 pub mod provider_extension;
 mod provider_handoff;
 mod provider_listener;
+mod provider_ownership;
 mod provider_socket;
 pub use provider_socket::GuardedUpstream;
 pub mod provider_requests;
