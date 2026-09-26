@@ -103,6 +103,21 @@ T["renders a record that carries no evidence sources at all"] = function()
   MiniTest.expect.equality(has_line(lines, "no observations were recorded"), true)
 end
 
+T["shows current taint without rendering private broker binding or quarantine reason"] = function()
+  local value = record()
+  value.provenance_binding = { kind = "broker", session_id = "private-broker-session" }
+  local inspection = Record.with_availability(value, {}, {
+    schema = "louiselm.session.output-provenance/1",
+    code = "session_output_tainted",
+    taint_digest = "sha256:" .. string.rep("d", 64),
+    clean_review_refs = {},
+  })
+  local rendered = table.concat(View.lines(inspection), "\n")
+  MiniTest.expect.equality(rendered:find("Output provenance: session_output_tainted", 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered:find("sha256:" .. string.rep("d", 64), 1, true) ~= nil, true)
+  MiniTest.expect.equality(rendered:find("private-broker-session", 1, true), nil)
+end
+
 T["refuses a value that is not an inspection"] = function()
   MiniTest.expect.error(function()
     ---@diagnostic disable-next-line: param-type-mismatch -- Proves the guard rejects a value that is not an inspection.

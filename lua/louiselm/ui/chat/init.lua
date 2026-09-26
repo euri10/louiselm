@@ -11,6 +11,8 @@ local Recovery = require("louiselm.workflow.recovery")
 local Picker = require("louiselm.ui.picker")
 local Skills = require("louiselm.skills")
 local Transcript = require("louiselm.session.transcript")
+local OutputProvenance = require("louiselm.output_provenance")
+local PrivateFile = require("louiselm.private_file")
 local Usage = require("louiselm.routing.usage")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
@@ -73,6 +75,7 @@ local nvim = vim
 ---@field limits_refreshing table<string, boolean> Agents with a refresh in flight.
 ---@field limits_timers table<string, louiselm.ui.LimitsTimer> Pending reset-expiry timers by Agent.
 ---@field limits_unsubscribe fun() Agent-limit observer removal function.
+---@field markdown_reads table<fun(), louiselm.ui.ChatView> In-flight transcript provenance reads.
 ---@field winbars table<integer, string> Previous window bars by window id.
 ---@field winbar_targets table<integer, table<integer, string|false|louiselm.ui.LimitsTarget|louiselm.ui.OptionsTarget>> Click targets by window and minwid.
 ---@field winbar_resize_autocmd? integer Resize observer removed on disposal.
@@ -102,7 +105,7 @@ local nvim = vim
 ---@field session_id fun(self: louiselm.ui.Chat): string?, string? Return the current agent-scoped ACP session identifier.
 ---@field collect_forensics fun(self: louiselm.ui.Chat, callback?: fun(path: string?, error_message?: string)): boolean, string? Collect and queue a Forensics resource link.
 ---@field latest_forensics_path fun(self: louiselm.ui.Chat): string?, string? Return the most recently collected Forensics record path for the current session.
----@field to_markdown fun(self: louiselm.ui.Chat, session_id?: string, path?: string): string?, string? Export a session's full transcript to a markdown file.
+---@field to_markdown fun(self: louiselm.ui.Chat, session_id: string?, path: string?, callback: fun(path: string?, error_message: string?), fetch?: fun(session_id: string, callback: fun(payload: string?)): fun()): fun()?, string? Export a full transcript after a current provenance read.
 ---@field open_handoff fun(self: louiselm.ui.Chat, target_session: louiselm.session.Session, source_session_id?: string): integer?, string? Open an editable transcript for a target session.
 ---@field submit_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Submit and close a handoff buffer.
 ---@field abandon_handoff fun(self: louiselm.ui.Chat, buffer: integer): boolean, string? Close a handoff buffer without sending it.
@@ -1468,6 +1471,7 @@ function M.new(api, options)
     limits_refreshing = {},
     limits_timers = {},
     limits_unsubscribe = function() end,
+    markdown_reads = {},
     winbars = {},
     winbar_targets = {},
     winbar_hover_targets = {},
@@ -2165,11 +2169,16 @@ end
 ---@param self louiselm.ui.Chat
 ---@param session_id? string Session id; defaults to the current session.
 ---@param path? string Destination file path; defaults to a generated path in the current working directory.
----@return string? path Markdown file written.
----@return string? error_message Lifecycle, lookup, or filesystem error.
-function Chat:to_markdown(session_id, path)
+---@param callback fun(path: string?, error_message: string?) Completion on the editor loop.
+---@param fetch? fun(session_id: string, callback: fun(payload: string?)): fun() In-memory broker test double.
+---@return fun()? cancel
+---@return string? error_message Immediate validation error.
+function Chat:to_markdown(session_id, path, callback, fetch)
   if self.disposed then
     return nil, "chat UI is disposed"
+  end
+  if type(callback) ~= "function" then
+    return nil, "transcript export requires a callback"
   end
   local id = session_id or self.current_id
   local view = id and self.views[id]
@@ -2178,18 +2187,63 @@ function Chat:to_markdown(session_id, path)
   end
   local state = view.session:inspect()
   local destination = path or default_markdown_path(state)
-  local markdown = Transcript.render(view.transcript:snapshot(), state)
-  local ok, result = pcall(nvim.fn.writefile, nvim.split(markdown, "\n", { plain = true }), destination)
-  if not ok or result ~= 0 then
-    return nil, "could not write markdown file: " .. destination
+  local binding = state.broker_session_id and { kind = "broker", session_id = state.broker_session_id }
+    or { kind = "not_managed" }
+  local completed = false
+  local cancel_read
+  local cancel
+  local function finish(written, err)
+    if completed then
+      return
+    end
+    completed = true
+    self.markdown_reads[cancel] = nil
+    if not self.disposed then
+      callback(written, err)
+    end
   end
-  return destination
+  cancel = function()
+    if completed then
+      return
+    end
+    if cancel_read then
+      cancel_read()
+    end
+    finish(nil, "transcript export cancelled")
+  end
+  cancel_read = OutputProvenance.read(binding, function(provenance)
+    if completed then
+      return
+    end
+    if self.disposed or self.views[id] ~= view then
+      finish(nil, "transcript export cancelled")
+      return
+    end
+    local markdown = OutputProvenance.markdown(Transcript.render(view.transcript:snapshot(), state), provenance)
+    local written = PrivateFile.write(nvim.uv, destination, markdown, "markdown transcript", "replace")
+    if not written then
+      finish(nil, "could not write markdown file: " .. destination)
+    else
+      finish(destination, nil)
+    end
+  end, fetch)
+  self.markdown_reads[cancel] = view
+  return cancel, nil
 end
 
 ---@param self louiselm.ui.Chat
 ---@param view louiselm.ui.ChatView
 local function close_view(self, view)
   local id = view.session:inspect().id
+  local pending = {}
+  for cancel, owner in pairs(self.markdown_reads) do
+    if owner == view then
+      pending[#pending + 1] = cancel
+    end
+  end
+  for _, cancel in ipairs(pending) do
+    cancel()
+  end
   if self.overview ~= nil and self.overview.session_id == id then
     require("louiselm.ui.session_overview").close(self)
   end
@@ -2811,6 +2865,13 @@ function Chat:dispose()
     return true
   end
   self.disposed = true
+  local pending = {}
+  for cancel in pairs(self.markdown_reads) do
+    pending[#pending + 1] = cancel
+  end
+  for _, cancel in ipairs(pending) do
+    cancel()
+  end
   if self.winbar_hover_namespace ~= nil then
     nvim.on_key(nil, self.winbar_hover_namespace)
     self.winbar_hover_namespace = nil

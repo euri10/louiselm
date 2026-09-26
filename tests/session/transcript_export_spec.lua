@@ -1,6 +1,7 @@
 local MiniTest = require("mini.test")
 local Session = require("louiselm.session")
 local TranscriptExport = require("louiselm.session.transcript_export")
+local Provenance = require("louiselm.output_provenance")
 
 local T = MiniTest.new_set()
 
@@ -42,6 +43,14 @@ end
 
 local function read_file(path)
   return table.concat(nvim.fn.readfile(path), "\n")
+end
+
+local function read_bytes(path)
+  local file = assert(nvim.uv.fs_open(path, "r", 0))
+  local stat = assert(nvim.uv.fs_fstat(file))
+  local content = assert(nvim.uv.fs_read(file, stat.size, 0))
+  assert(nvim.uv.fs_close(file))
+  return content
 end
 
 T["export"] = MiniTest.new_set()
@@ -121,6 +130,7 @@ T["export"]["loads a session, captures its replayed history, and exports the ful
   MiniTest.expect.equality(api:list_sessions(), {})
 
   local content = read_file(path)
+  MiniTest.expect.equality(Provenance.inspect_markdown(read_bytes(path)).code, "not_managed")
   MiniTest.expect.equality(content:find("agent: mock", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find("acp session: prior-acp-session", 1, true) ~= nil, true)
   MiniTest.expect.equality(content:find("## User", 1, true) ~= nil, true)

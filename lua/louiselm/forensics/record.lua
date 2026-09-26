@@ -17,12 +17,16 @@
 ---@field diagnosing_session? string Durable diagnosing Session identity.
 ---@field observations table<string, unknown> Fixed, sanitized observations.
 ---@field evidence_sources louiselm.forensics.EvidenceSource[] Known evidence pointers.
+---@field provenance_binding? louiselm.ProvenanceBinding Private broker binding; absent on legacy records.
+---@field output_provenance? louiselm.OutputProvenance Collection-time observation, not current evidence; absent on legacy input.
 
 ---@alias louiselm.forensics.AvailabilityState "available"|"missing"|"unreadable"
 
 ---@class louiselm.forensics.Inspection : louiselm.forensics.Record
 ---@field evidence_availability table<string, louiselm.forensics.AvailabilityState> Current availability by supported evidence property.
+---@field output_provenance louiselm.OutputProvenance Current broker-derived state, unknown until checked.
 
+local Provenance = require("louiselm.output_provenance")
 local M = {}
 
 local VERSION = 1
@@ -186,6 +190,8 @@ function M.build(value)
       dirty_files = dirty_files(observations.dirty_files),
     },
     evidence_sources = sources,
+    provenance_binding = Provenance.valid_binding(value.provenance_binding) and copy(value.provenance_binding) or nil,
+    output_provenance = Provenance.normalize(value.output_provenance),
   }
   if observations.options ~= nil and record.observations.options == nil then
     return nil, "forensics options are malformed"
@@ -205,9 +211,11 @@ end
 ---Create a detached inspection projection from current source availability.
 ---@param record louiselm.forensics.Record Persisted record; never mutated.
 ---@param source_availability louiselm.forensics.AvailabilityState[] Current state for each evidence source.
+---@param output_provenance? louiselm.OutputProvenance Fresh broker observation.
 ---@return louiselm.forensics.Inspection inspection
-function M.with_availability(record, source_availability)
+function M.with_availability(record, source_availability, output_provenance)
   local inspection = copy(record) --[[@as louiselm.forensics.Inspection]]
+  inspection.output_provenance = Provenance.normalize(output_provenance)
   inspection.evidence_availability = {}
   for index, source in ipairs(record.evidence_sources) do
     local state = source_availability[index]

@@ -5,6 +5,7 @@ local Lifecycle = require("louiselm.session.lifecycle")
 local Limits = require("louiselm.session.limits")
 local Validation = require("louiselm.session.validation")
 local ForensicsStore = require("louiselm.forensics.store")
+local Provenance = require("louiselm.output_provenance")
 local Recording = require("louiselm.session.recording")
 local Paths = require("louiselm.paths")
 
@@ -41,6 +42,7 @@ local nvim = vim
 ---@field agent_limits_listeners table<fun(state: louiselm.session.LimitsState), boolean> Agent-limit observers.
 ---@field permission_store louiselm.permission.Store Remembered rules owned by this registry.
 ---@field forensics_store louiselm.forensics.Store Immutable Session Forensics records.
+---@field forensics_reads table<fun(), boolean> Owned current-provenance reads awaiting collection.
 ---@field recording louiselm.session.RecordingStore Shared durable writer; failed writes gate subsequent prompts.
 ---@field disposed boolean Whether this registry is closed.
 ---@field create_session fun(self: louiselm.session.Registry, agent_name: string, options?: louiselm.session.Options, ready_callback?: fun(session: louiselm.session.Session?, error?: string)): louiselm.session.Session?, string?
@@ -163,6 +165,7 @@ local function valid_options(value)
       and key ~= "permission_policy"
       and key ~= "schedule"
       and key ~= "start_timeout_ms"
+      and key ~= "broker_session_id"
     then
       return false
     end
@@ -179,6 +182,10 @@ local function valid_options(value)
   end
   return (value.cwd == nil or type(value.cwd) == "string")
     and (value.name == nil or (type(value.name) == "string" and value.name ~= ""))
+    and (
+      value.broker_session_id == nil
+      or Provenance.valid_binding({ kind = "broker", session_id = value.broker_session_id })
+    )
 end
 
 ---Create a registry after strictly normalizing named agent definitions.
@@ -215,6 +222,7 @@ function M.new(definitions, default_skills_policy, options)
     agent_limits_listeners = {},
     permission_store = permission_store,
     forensics_store = forensics_store,
+    forensics_reads = {},
     disposed = false,
   }, Registry)
   local recording, recording_error = Recording.new(
@@ -425,6 +433,8 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
     observed_at = os.time(),
     subject = { agent = agent_name, acp_session_id = acp_session_id },
     diagnosing_session = options.diagnosing_session_id,
+    provenance_binding = subject.broker_session_id and { kind = "broker", session_id = subject.broker_session_id }
+      or { kind = "not_managed" },
     observations = {
       agent = agent_name,
       cwd = subject.working_dir,
@@ -448,10 +458,19 @@ function Registry:collect_forensics(agent_name, acp_session_id, options, callbac
     if self.disposed then
       return
     end
-    local path, write_error = self.forensics_store:write(record)
-    if callback ~= nil then
-      callback(path, write_error)
-    end
+    local cancel
+    cancel = Provenance.read(record.provenance_binding, function(value)
+      self.forensics_reads[cancel] = nil
+      if self.disposed then
+        return
+      end
+      record.output_provenance = value
+      local path, write_error = self.forensics_store:write(record)
+      if callback ~= nil then
+        callback(path, write_error)
+      end
+    end)
+    self.forensics_reads[cancel] = true
   end
   local cwd = subject.working_dir
   if type(cwd) ~= "string" or cwd == "" then
@@ -497,7 +516,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     return nil, "unknown agent '" .. agent_name .. "'"
   end
   if not valid_options(options) then
-    return nil, "session options must contain only a non-empty name, string cwd, and optional on_event callback"
+    return nil, "session options are malformed or contain an unknown field"
   end
   if options == nil then
     options = {}
@@ -524,6 +543,7 @@ local function start_session(self, agent_name, options, ready_callback, load_id)
     env = options.env,
     name = options.name,
     on_event = options.on_event,
+    broker_session_id = options.broker_session_id,
     permission_policy = permission_policy,
     permission_store = self.permission_store,
     schedule = options.schedule,
@@ -1056,6 +1076,10 @@ function Registry:dispose()
     return true
   end
   self.disposed = true
+  for cancel in pairs(self.forensics_reads) do
+    cancel()
+    self.forensics_reads[cancel] = nil
+  end
   self.agent_limits_listeners = {}
   local first_error
   for id, discovery in pairs(self.discoveries) do

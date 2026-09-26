@@ -1,11 +1,13 @@
 local PrivateFile = require("louiselm.private_file")
 local Record = require("louiselm.forensics.record")
+local Provenance = require("louiselm.output_provenance")
 
 ---@class louiselm.forensics.Store
 ---@field directory string Private record directory.
 ---@field write fun(self: louiselm.forensics.Store, record: louiselm.forensics.Record): string?, string? Write one immutable record.
 ---@field read fun(self: louiselm.forensics.Store, path: string): louiselm.forensics.Record?, string? Read and validate one record.
 ---@field inspect fun(self: louiselm.forensics.Store, path: string): louiselm.forensics.Inspection?, string? Read a record and report current evidence availability without mutating it.
+---@field inspect_current fun(self: louiselm.forensics.Store, path: string, callback: fun(inspection: louiselm.forensics.Inspection), fetch?: fun(session_id: string, callback: fun(payload: string?)): fun()): fun()?, string? Refresh broker provenance asynchronously.
 
 local M = {}
 local Store = {}
@@ -153,6 +155,29 @@ function Store:inspect(path)
     source_availability[index] = current_availability(editor, source)
   end
   return Record.with_availability(record, source_availability), nil
+end
+
+---Refresh producer provenance before presenting a private Forensics inspection.
+---A saved clean observation is never a substitute for the current broker read.
+---@param self louiselm.forensics.Store
+---@param path string Private Forensics record path.
+---@param callback fun(inspection: louiselm.forensics.Inspection) Scheduled on the editor loop.
+---@param fetch? fun(session_id: string, callback: fun(payload: string?)): fun() In-memory broker test double.
+---@return fun()? cancel
+---@return string? error_message
+function Store:inspect_current(path, callback, fetch)
+  if type(callback) ~= "function" then
+    return nil, "Forensics inspection requires a callback"
+  end
+  local inspection, err = self:inspect(path)
+  if inspection == nil then
+    return nil, err
+  end
+  local cancel = Provenance.read(inspection.provenance_binding, function(value)
+    inspection.output_provenance = value
+    callback(inspection)
+  end, fetch)
+  return cancel, nil
 end
 
 return M

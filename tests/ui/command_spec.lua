@@ -337,6 +337,9 @@ T["command"]["renders a Forensics record as a human projection, not raw JSON"] =
   end)
 
   nvim.api.nvim_cmd({ cmd = "LouiselmForensicsView", args = { record_path } }, {})
+  assert(nvim.wait(1000, function()
+    return nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()) == "louiselm://forensics-view"
+  end))
 
   local buffer = nvim.api.nvim_get_current_buf()
   local lines = nvim.api.nvim_buf_get_lines(buffer, 0, -1, false)
@@ -842,6 +845,9 @@ T["command"]["prompts for a path and exports the current session's transcript to
   respond(process, 2, { sessionId = "acp-1" })
 
   nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = {} }, {})
+  assert(nvim.wait(1000, function()
+    return notification ~= nil and notification.message:find("exported transcript", 1, true) ~= nil
+  end))
 
   nvim.ui.input = original_input
   rawset(nvim, "notify", original_notify)
@@ -957,6 +963,9 @@ T["command"]["still prompts for a path when an explicit session id is attached"]
   local session_id = nvim.api.nvim_buf_get_name(nvim.api.nvim_get_current_buf()):match("^louiselm://(.+)$")
 
   nvim.api.nvim_cmd({ cmd = "LouiselmToMarkdown", args = { session_id } }, {})
+  assert(nvim.wait(1000, function()
+    return notification ~= nil and notification.message:find("exported transcript", 1, true) ~= nil
+  end))
 
   nvim.ui.input = original_input
   rawset(nvim, "notify", original_notify)

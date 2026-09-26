@@ -329,6 +329,8 @@ function M.register()
   local inline
   local jsonl ---@type louiselm.ui.JsonlView?
   local export_cancel ---@type fun()?
+  local view_cancel ---@type fun()?
+  local markdown_cancel ---@type fun()?
   local disposed = false
   local restore_mousemove ---@type boolean?
   local mousemove_observer ---@type integer?
@@ -736,25 +738,32 @@ function M.register()
       report_error(store_error)
       return
     end
-    local inspection, inspection_error = store:inspect(path)
-    if inspection == nil then
-      report_error(inspection_error)
-      return
+    if view_cancel then
+      view_cancel()
     end
-    local rendered_ok, rendered = pcall(ForensicsView.lines, inspection)
-    if not rendered_ok then
-      report_error("could not render Forensics inspection")
-      return
-    end
-    local buffer = nvim.api.nvim_create_buf(false, true)
-    nvim.api.nvim_buf_set_name(buffer, "louiselm://forensics-view")
-    nvim.bo[buffer].buftype = "nofile"
-    nvim.bo[buffer].bufhidden = "wipe"
-    nvim.bo[buffer].swapfile = false
-    nvim.bo[buffer].filetype = "markdown"
-    nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, rendered)
-    nvim.bo[buffer].modifiable = false
-    nvim.api.nvim_set_current_buf(buffer)
+    local cancel, inspection_error
+    cancel, inspection_error = store:inspect_current(path, function(inspection)
+      if disposed or view_cancel ~= cancel then
+        return
+      end
+      view_cancel = nil
+      local rendered_ok, rendered = pcall(ForensicsView.lines, inspection)
+      if not rendered_ok then
+        report_error("could not render Forensics inspection")
+        return
+      end
+      local buffer = nvim.api.nvim_create_buf(false, true)
+      nvim.api.nvim_buf_set_name(buffer, "louiselm://forensics-view")
+      nvim.bo[buffer].buftype = "nofile"
+      nvim.bo[buffer].bufhidden = "wipe"
+      nvim.bo[buffer].swapfile = false
+      nvim.bo[buffer].filetype = "markdown"
+      nvim.api.nvim_buf_set_lines(buffer, 0, -1, false, rendered)
+      nvim.bo[buffer].modifiable = false
+      nvim.api.nvim_set_current_buf(buffer)
+    end)
+    view_cancel = cancel
+    report_error(inspection_error)
   end, { nargs = "?", desc = "View a Forensics record", complete = "file", force = true })
 
   nvim.api.nvim_create_user_command("LouiselmForensicsExport", function(arguments)
@@ -813,12 +822,21 @@ function M.register()
       if path == nil then
         return
       end
-      local written_path, write_error = chat:to_markdown(session_id, path ~= "" and path or nil)
-      if written_path == nil then
-        report_error(write_error)
-        return
+      if markdown_cancel then
+        markdown_cancel()
       end
-      nvim.notify("louiselm: exported transcript to " .. written_path, nvim.log.levels.INFO)
+      local cancel, write_error = chat:to_markdown(session_id, path ~= "" and path or nil, function(written_path, err)
+        markdown_cancel = nil
+        if disposed then
+          return
+        end
+        if written_path then
+          nvim.notify("louiselm: exported transcript to " .. written_path, nvim.log.levels.INFO)
+        end
+        report_error(err)
+      end)
+      markdown_cancel = cancel
+      report_error(write_error)
     end)
   end, {
     nargs = "?",
@@ -963,6 +981,12 @@ function M.register()
     end
     if export_cancel then
       export_cancel()
+    end
+    if view_cancel then
+      view_cancel()
+    end
+    if markdown_cancel then
+      markdown_cancel()
     end
     staleness_generation = staleness_generation + 1
     if chat ~= nil then

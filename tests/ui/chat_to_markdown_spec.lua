@@ -1,5 +1,6 @@
 local MiniTest = require("mini.test")
 local Chat = require("louiselm.ui.chat")
+local Provenance = require("louiselm.output_provenance")
 
 local T = MiniTest.new_set()
 
@@ -94,6 +95,28 @@ local function read_file(path)
   return table.concat(nvim.fn.readfile(path), "\n")
 end
 
+local function read_bytes(path)
+  local file = assert(nvim.uv.fs_open(path, "r", 0))
+  local stat = assert(nvim.uv.fs_fstat(file))
+  local content = assert(nvim.uv.fs_read(file, stat.size, 0))
+  assert(nvim.uv.fs_close(file))
+  return content
+end
+
+local function export(chat, session_id, path, fetch)
+  local done, written_path, write_error = false, nil, nil
+  local cancel, error_message = chat:to_markdown(session_id, path, function(value, err)
+    written_path, write_error, done = value, err, true
+  end, fetch)
+  if cancel == nil then
+    return nil, error_message
+  end
+  assert(nvim.wait(1000, function()
+    return done
+  end))
+  return written_path, write_error
+end
+
 T["to_markdown"] = MiniTest.new_set({
   hooks = {
     post_case = function()
@@ -135,7 +158,7 @@ T["to_markdown"]["exports the current session's full transcript, in order, with 
   })
 
   local path = nvim.fn.tempname() .. ".md"
-  local written_path, write_error = chat:to_markdown(nil, path)
+  local written_path, write_error = export(chat, nil, path)
 
   MiniTest.expect.equality(write_error, nil)
   MiniTest.expect.equality(written_path, path)
@@ -171,7 +194,7 @@ T["to_markdown"]["exports a specific attached session by id, independent of the 
   assert(chat:submit("second message"))
 
   local path = nvim.fn.tempname() .. ".md"
-  local written_path, write_error = chat:to_markdown("session-1", path)
+  local written_path, write_error = export(chat, "session-1", path)
 
   MiniTest.expect.equality(write_error, nil)
   MiniTest.expect.equality(written_path, path)
@@ -201,7 +224,7 @@ T["to_markdown"]["captures replayed user_chunk events from a resumed session alo
   })
 
   local path = nvim.fn.tempname() .. ".md"
-  assert(chat:to_markdown(nil, path))
+  assert(export(chat, nil, path))
 
   local content = read_file(path)
   local user_pos = assert(content:find("what did we decide last time", 1, true))
@@ -218,7 +241,7 @@ T["to_markdown"]["defaults to a generated path in the current working directory 
   assert(chat:attach(session))
   assert(chat:submit("hello"))
 
-  local written_path, write_error = assert(chat:to_markdown())
+  local written_path, write_error = assert(export(chat))
 
   MiniTest.expect.equality(write_error, nil)
   MiniTest.expect.equality(written_path:sub(1, #nvim.fn.getcwd()), nvim.fn.getcwd())
@@ -232,7 +255,7 @@ end
 T["to_markdown"]["reports an error when no chat session is open"] = function()
   local chat = assert(Chat.new(fake_api()))
 
-  local written_path, write_error = chat:to_markdown()
+  local written_path, write_error = export(chat)
 
   MiniTest.expect.equality(written_path, nil)
   MiniTest.expect.equality(write_error, "no chat session is open")
@@ -243,7 +266,7 @@ T["to_markdown"]["reports an error when the given session id is not attached"] =
   local chat = assert(Chat.new(fake_api()))
   assert(chat:attach(session))
 
-  local written_path, write_error = chat:to_markdown("does-not-exist", nvim.fn.tempname() .. ".md")
+  local written_path, write_error = export(chat, "does-not-exist", nvim.fn.tempname() .. ".md")
 
   MiniTest.expect.equality(written_path, nil)
   MiniTest.expect.equality(write_error, "session is not attached")
@@ -257,7 +280,7 @@ T["to_markdown"]["reports a clean error instead of crashing when the destination
   assert(chat:submit("hello"))
 
   local path = nvim.fn.tempname() .. "/nope/qa-export.md"
-  local written_path, write_error = chat:to_markdown(nil, path)
+  local written_path, write_error = export(chat, nil, path)
 
   MiniTest.expect.equality(written_path, nil)
   MiniTest.expect.equality(write_error, "could not write markdown file: " .. path)
@@ -270,10 +293,78 @@ T["to_markdown"]["reports an error once the chat UI is disposed"] = function()
   assert(chat:attach(session))
   chat:dispose()
 
-  local written_path, write_error = chat:to_markdown()
+  local written_path, write_error = export(chat)
 
   MiniTest.expect.equality(written_path, nil)
   MiniTest.expect.equality(write_error, "chat UI is disposed")
+end
+
+T["to_markdown"]["adds current broker taint metadata without changing transcript content"] = function()
+  local session = fake_session("session-1", "codex")
+  session.state.broker_session_id = "broker-session"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  assert(chat:submit("secret original prompt"))
+  local path = nvim.fn.tempname() .. ".md"
+  local result, failure
+  local cancel = assert(chat:to_markdown(nil, path, function(value, err)
+    result, failure = value, err
+  end, function(_, callback)
+    nvim.schedule(function()
+      callback(nvim.json.encode({
+        record = { launch = { session_id = "broker-session" } },
+        quarantined = true,
+        output_provenance = {
+          schema = "louiselm.workspace.output-provenance/1",
+          code = "session_output_tainted",
+          taint_digest = "sha256:" .. string.rep("e", 64),
+          clean_review_refs = {},
+        },
+      }))
+    end)
+    return function() end
+  end))
+  assert(nvim.wait(1000, function()
+    return result ~= nil or failure ~= nil
+  end))
+  MiniTest.expect.equality(type(cancel), "function")
+  MiniTest.expect.equality(failure, nil)
+  MiniTest.expect.equality(result, path)
+  local marked = read_bytes(path)
+  MiniTest.expect.equality(Provenance.inspect_markdown(marked).code, "session_output_tainted")
+  MiniTest.expect.equality(marked:find("secret original prompt", 1, true) ~= nil, true)
+  MiniTest.expect.equality(marked:find("broker-session", 1, true), nil)
+  MiniTest.expect.equality(nvim.uv.fs_stat(path).mode % 512, 384)
+  nvim.fn.delete(path)
+  chat:dispose()
+end
+
+T["to_markdown"]["cancellation during broker inspection leaves no transcript file"] = function()
+  local session = fake_session("session-1", "codex")
+  session.state.broker_session_id = "broker-session"
+  local chat = assert(Chat.new(fake_api()))
+  assert(chat:attach(session))
+  local path = nvim.fn.tempname() .. ".md"
+  local pending, called, cancelled = nil, 0, false
+  local cancel = assert(chat:to_markdown(nil, path, function(value, err)
+    called = called + 1
+    MiniTest.expect.equality(value, nil)
+    MiniTest.expect.equality(err, "transcript export cancelled")
+  end, function(_, callback)
+    pending = callback
+    return function()
+      cancelled = true
+    end
+  end))
+  cancel()
+  local reply = assert(pending)
+  reply(nil)
+  assert(nvim.wait(1000, function()
+    return called == 1
+  end))
+  MiniTest.expect.equality(cancelled, true)
+  MiniTest.expect.equality(nvim.uv.fs_stat(path), nil)
+  chat:dispose()
 end
 
 return T

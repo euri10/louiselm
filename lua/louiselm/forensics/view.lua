@@ -1,4 +1,5 @@
 local Record = require("louiselm.forensics.record")
+local Provenance = require("louiselm.output_provenance")
 
 local M = {}
 
@@ -98,6 +99,7 @@ function M.lines(inspection)
     error("forensics view requires an inspection table", 2)
   end
   local subject = inspection.subject
+  local output_provenance = Provenance.normalize(inspection.output_provenance)
   local lines = {
     "# Session Forensics " .. tostring(inspection.id),
     "",
@@ -105,10 +107,14 @@ function M.lines(inspection)
     "Diagnosing Session: " .. (inspection.diagnosing_session or "none recorded"),
     "Observed at:        " .. os.date("!%Y-%m-%dT%H:%M:%SZ", inspection.observed_at),
     "Schema version:     " .. tostring(inspection.schema_version),
-    "",
-    "## Evidence sources",
-    "",
+    "Output provenance: " .. output_provenance.code,
   }
+  if output_provenance.code == "session_output_tainted" then
+    lines[#lines + 1] = "Taint digest:      " .. output_provenance.taint_digest
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "## Evidence sources"
+  lines[#lines + 1] = ""
   local sources = inspection.evidence_sources or {}
   if #sources == 0 then
     lines[#lines + 1] = "no evidence sources were recorded"

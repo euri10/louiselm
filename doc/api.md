@@ -86,6 +86,7 @@ string|table
 - `acp_session_id: string?` -- Agent-side persistent conversation identifier, once available.
 - `activity: string?` -- Current generic tool activity.
 - `agent: string` -- Named agent definition.
+- `broker_session_id: string?` -- Trusted Control broker Session binding, distinct from the ACP Session ID.
 - `commands: louiselm.session.AvailableCommand[]` -- Latest agent-advertised commands, replaced wholesale on each update.
 - `compactions: louiselm.session.Compaction[]` -- Compaction snapshots in first-seen order, including replay.
 - `config_options: louiselm.session.ConfigOption[]` -- Supported agent-advertised options in priority order.
@@ -114,6 +115,7 @@ string|table
 
 ### louiselm.session.Options
 
+- `broker_session_id: string?` -- Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 - `cwd: string?` -- Working directory for the ACP session.
 - `env: table<string, string>?` -- Per-Session Agent process environment overrides.
 - `name: string?` -- User-facing session name.
@@ -221,6 +223,7 @@ fun(sessions: louiselm.session.DiscoveredSession[], errors: louiselm.session.Dis
 - `dispose: fun(self: louiselm.session.Registry):boolean, string?`
 - `disposed: boolean` -- Whether this registry is closed.
 - `flush_recording: fun(self: louiselm.session.Api, callback: fun(error?: louiselm.session.RecordingError))` -- Retry/acknowledge queued facts, including final observations after Disposal.
+- `forensics_reads: table<fun(), boolean>` -- Owned current-provenance reads awaiting collection.
 - `forensics_store: louiselm.forensics.Store` -- Immutable Session Forensics records.
 - `get_session: fun(self: louiselm.session.Registry, id: string):(louiselm.session.Session)?`
 - `handle_agent_notification: fun(self: louiselm.session.Registry, session: louiselm.session.Session, message: louiselm.acp.JsonRpcNotification)`

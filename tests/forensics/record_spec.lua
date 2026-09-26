@@ -1,6 +1,7 @@
 local MiniTest = require("mini.test")
 local Record = require("louiselm.forensics.record")
 local Store = require("louiselm.forensics.store")
+local Provenance = require("louiselm.output_provenance")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -268,6 +269,59 @@ T["store"]["does not let an unknown source kind claim a known evidence property"
     conversation_content = "missing",
     wire_ordering = "missing",
   })
+end
+
+T["store"]["keeps old records readable but never treats stored clean provenance as current"] = function()
+  local store = assert(Store.new(nvim.fs.joinpath(temp_dir, "forensics")))
+  local old = assert(store:write(input()))
+  MiniTest.expect.equality(assert(store:inspect(old)).output_provenance.code, "unknown")
+
+  local value = input()
+  value.id = "managed"
+  value.provenance_binding = { kind = "broker", session_id = "broker-session" }
+  value.output_provenance = {
+    schema = "louiselm.session.output-provenance/1",
+    code = "untainted",
+    taint_digest = nvim.NIL,
+    clean_review_refs = {},
+  }
+  local path = assert(store:write(value))
+  MiniTest.expect.equality(assert(store:inspect(path)).output_provenance.code, "unknown")
+  MiniTest.expect.equality(assert(store:read(path)).output_provenance.code, "untainted")
+end
+
+T["store"]["re-inspects the broker after late quarantine without rewriting Forensics"] = function()
+  local store = assert(Store.new(nvim.fs.joinpath(temp_dir, "forensics")))
+  local value = input()
+  value.provenance_binding = { kind = "broker", session_id = "broker-session" }
+  value.output_provenance = Provenance.unknown()
+  local path = assert(store:write(value))
+  local before = nvim.fn.readfile(path)
+  local payload = nvim.json.encode({
+    record = { launch = { session_id = "broker-session" } },
+    quarantined = true,
+    output_provenance = {
+      schema = "louiselm.workspace.output-provenance/1",
+      code = "session_output_tainted",
+      taint_digest = "sha256:" .. string.rep("b", 64),
+      clean_review_refs = {},
+    },
+  })
+  local completed
+  local cancel = assert(store:inspect_current(path, function(inspection)
+    completed = inspection
+  end, function(_, callback)
+    nvim.schedule(function()
+      callback(payload)
+    end)
+    return function() end
+  end))
+  assert(nvim.wait(1000, function()
+    return completed ~= nil
+  end))
+  MiniTest.expect.equality(type(cancel), "function")
+  MiniTest.expect.equality(completed.output_provenance.code, "session_output_tainted")
+  MiniTest.expect.equality(nvim.fn.readfile(path), before)
 end
 
 return T

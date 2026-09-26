@@ -23,6 +23,7 @@ local nvim = vim
 ---@field source "new"|"loaded" Whether the session was created or restored.
 ---@field agent string Named agent definition.
 ---@field acp_session_id? string Agent-side persistent conversation identifier, once available.
+---@field broker_session_id? string Trusted Control broker Session binding, distinct from the ACP Session ID.
 ---@field status louiselm.session.Status Lifecycle state.
 ---@field working_dir string ACP working directory.
 ---@field current_turn integer Accepted prompt attempts in this local Session, including failed admission; not durable identity.
@@ -51,6 +52,7 @@ local nvim = vim
 ---@field env? table<string, string> Per-Session Agent process environment overrides.
 ---@field name? string User-facing session name.
 ---@field on_event? louiselm.session.EventCallback Initial event listener.
+---@field broker_session_id? string Control broker Session ID supplied by the owning controller; absent for unmanaged Sessions.
 ---@field permission_policy? louiselm.permission.Policy Policy for agent-requested operations.
 ---@field permission_store? louiselm.permission.Store Remembered-permission owner.
 ---@field schedule? fun(delay_ms: integer, callback: fun()) Testable scheduling boundary; defaults to `vim.defer_fn`.
@@ -926,6 +928,7 @@ function M.new(owner, id, agent_name, definition, options, ready_callback, load_
       name = options.name or id,
       source = load_session_id == nil and "new" or "loaded",
       agent = agent_name,
+      broker_session_id = options.broker_session_id,
       status = "starting",
       working_dir = working_dir,
       current_turn = 0,

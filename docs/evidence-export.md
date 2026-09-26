@@ -19,6 +19,17 @@ directory is refused. Existing files, including the source record, are never ove
 The artifact is published through a private temporary file with mode `0600`.
 Inspect its item states before attaching it to an external issue.
 
+The artifact also carries `output_provenance`, a bounded projection of the
+Control broker's current Session output status at export time. Its stable code
+is `session_output_tainted`, `untainted`, `not_managed`, or `unknown`; only a
+tainted result includes a canonical SHA-256 taint digest. Exact acceptance
+references remain empty until an authorized exact-use review exists. A broker
+failure, an old record without a broker binding, or malformed metadata yields
+`unknown`, never clean. Export rechecks the broker, so later quarantine affects
+new exports without changing the original Forensics record or evidence files.
+The private record retains its collection-time observation separately; the
+Forensics view displays current status when it can recheck the broker.
+
 Selectors are `observation:FIELD` and `source:INDEX:FIRST:LAST`. Observation fields
 are `agent`, `agent_version`, `cwd`, `model`, `options`, `capabilities`,
 `neovim_version`, `louiselm_version`, `git_commit`, `git_branch`, and `dirty_files`.

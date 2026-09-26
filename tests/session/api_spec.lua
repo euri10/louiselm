@@ -181,11 +181,12 @@ local function permission_outcomes(process)
   return outcomes
 end
 
-local function start_ready_session(api, processes, name, cwd, agent_capabilities)
+local function start_ready_session(api, processes, name, cwd, agent_capabilities, broker_session_id)
   local ready
-  local session = assert(api:create_session(name, { cwd = cwd }, function(value, err)
-    ready = { session = value, error = err }
-  end))
+  local session =
+    assert(api:create_session(name, { cwd = cwd, broker_session_id = broker_session_id }, function(value, err)
+      ready = { session = value, error = err }
+    end))
   local process = processes[#processes]
   respond(process, 1, { protocolVersion = 1, agentCapabilities = agent_capabilities or {} })
   -- Assert only what this helper is about. Session metadata rides in `_meta`
@@ -602,6 +603,8 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
   local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
   MiniTest.expect.equality(record.subject, { agent = "agent", acp_session_id = "agent-acp" })
   MiniTest.expect.equality(record.diagnosing_session, "agent/diagnoser")
+  MiniTest.expect.equality(record.provenance_binding, { kind = "not_managed" })
+  MiniTest.expect.equality(record.output_provenance.code, "not_managed")
   MiniTest.expect.equality(record.evidence_sources[1].state, "omitted")
   MiniTest.expect.equality(record.observations.capabilities.embedded_context, false)
   MiniTest.expect.equality(nvim.uv.fs_stat(path).mode % 512, 384)
@@ -609,6 +612,43 @@ T["forensics"]["collects an asynchronous private record for a live Session"] = f
   -- notation (louiselm-ysh3): a raw `tostring()` on the double once produced
   -- ids like "1787715628-2.0264597271177e+14".
   MiniTest.expect.equality(record.id:match("^%d+%-%d+$") ~= nil, true)
+end
+
+T["forensics"]["keeps a managed broker binding private for later fresh inspection"] = function()
+  local root = nvim.fn.tempname()
+  assert(nvim.fn.mkdir(root, "p") == 1)
+  local processes, original_system = fake_processes()
+  local fake_system = nvim.system
+  rawset(nvim, "system", function(command, options, on_exit)
+    if command[1] == "/usr/local/lib/louiselm/current/bin/louiselm-control" then
+      nvim.schedule(function()
+        on_exit({ code = 1, signal = 0 })
+      end)
+      return { kill = function() end }
+    end
+    return fake_system(command, options, on_exit)
+  end)
+  local api = assert(new_api({ agent = { provider = "test-service", command = "agent", args = {} } }, nil, {
+    forensics_directory = root,
+  }))
+  MiniTest.finally(function()
+    api:dispose()
+    restore_processes(original_system)
+    nvim.fn.delete(root, "rf")
+  end)
+  local session = start_ready_session(api, processes, "agent", "/tmp/project", nil, "broker-session")
+  MiniTest.expect.equality(session:inspect().broker_session_id, "broker-session")
+  local path, failure
+  assert(api:collect_forensics("agent", "agent-acp", nil, function(value, err)
+    path, failure = value, err
+  end))
+  assert(nvim.wait(1000, function()
+    return path ~= nil or failure ~= nil
+  end))
+  MiniTest.expect.equality(failure, nil)
+  local record = nvim.json.decode(table.concat(nvim.fn.readfile(path), "\n"))
+  MiniTest.expect.equality(record.provenance_binding, { kind = "broker", session_id = "broker-session" })
+  MiniTest.expect.equality(record.output_provenance.code, "unknown")
 end
 
 T["forensics"]["records embedded_context from nested promptCapabilities, not a top-level field"] = function()

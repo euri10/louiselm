@@ -173,6 +173,13 @@ do not rewrite it. Durable turn recording preserves this attribution with usage 
   plain text, showing which evidence is still readable and which is gone.
   [Evidence export](https://gitlab.bartab.fr/oss-public/louiselm/-/blob/main/docs/evidence-export.md) creates a bounded,
   redacted artifact from selected observations or JSONL ranges for sharing.
+  New Forensics and transcript exports report broker-derived output taint when
+  available; a missing or unavailable broker never counts as clean. Markdown
+  exports prepend a provenance comment and keep the full transcript text intact.
+  The comment describes export-time evidence, not a perpetual clean bill: a
+  detached or previously clean file needs a fresh broker check before anyone
+  treats it as currently untainted. Ordinary headless Agent exports are
+  explicitly `not_managed` by Verified posture.
 - **Read JSONL in place.** `:LouiselmJsonl` toggles compact summaries in the
   current text buffer, regardless of its JSON schema. The cursor record and
   Visual selections stay raw for editing and copying; file contents never

@@ -1588,7 +1588,13 @@ T["chat"]["exports the original Markdown after native table presentation"] = fun
     end, 1),
     true
   )
-  assert(chat:to_markdown(nil, path))
+  local exported = false
+  assert(chat:to_markdown(nil, path, function(written, err)
+    exported = written == path and err == nil
+  end))
+  assert(nvim.wait(1000, function()
+    return exported
+  end))
   MiniTest.expect.equality(table.concat(nvim.fn.readfile(path), "\n"):find(reply, 1, true) ~= nil, true)
 end
 

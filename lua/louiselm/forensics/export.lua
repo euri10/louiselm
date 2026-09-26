@@ -1,5 +1,6 @@
 local Format = require("louiselm.forensics.export_format")
 local Record = require("louiselm.forensics.record")
+local Provenance = require("louiselm.output_provenance")
 ---@diagnostic disable-next-line: undefined-global -- Neovim runtime.
 local nvim = vim
 local uv = nvim.uv
@@ -19,9 +20,10 @@ local MAX_OUTPUT = 262144
 ---@param output_path string New destination; existing files are never replaced.
 ---@param selectors string[] observation:FIELD or source:INDEX:FIRST:LAST.
 ---@param callback louiselm.forensics.ExportCallback Completion, including cancellation.
+---@param fetch? fun(session_id: string, callback: fun(payload: string?)): fun() In-memory broker test double.
 ---@return fun()? cancel
 ---@return string? error_message Invalid arguments; no work started.
-function M.write(record_path, output_path, selectors, callback)
+function M.write(record_path, output_path, selectors, callback, fetch)
   for _, path in ipairs({ record_path, output_path }) do
     if type(path) ~= "string" or path == "" or #path > 4096 or path:find("%z") then
       return nil, "record and output paths must be non-empty bounded paths"
@@ -38,6 +40,7 @@ function M.write(record_path, output_path, selectors, callback)
   local invocation_directory = uv.cwd()
   local cancelled, finished = false, false
   local descriptor, temporary
+  local cancel_provenance
   local worker, resume
 
   -- One coroutine owns the operation's descriptors. Every libuv continuation is
@@ -176,7 +179,22 @@ function M.write(record_path, output_path, selectors, callback)
     if not record then
       return nil, "invalid Forensics record"
     end
-    local artifact = { schema_version = 1, kind = "evidence_export", redaction = "structure-only-v1", items = {} }
+    local _, output_provenance = await(function(done)
+      cancel_provenance = Provenance.read(record.provenance_binding, function(current)
+        done(nil, current)
+      end, fetch)
+    end)
+    cancel_provenance = nil
+    if cancelled then
+      return nil, "evidence export cancelled"
+    end
+    local artifact = {
+      schema_version = 1,
+      kind = "evidence_export",
+      redaction = "structure-only-v1",
+      output_provenance = output_provenance,
+      items = {},
+    }
     for _, selection in ipairs(selections) do
       if cancelled then
         return nil, "evidence export cancelled"
@@ -284,6 +302,9 @@ function M.write(record_path, output_path, selectors, callback)
   end)
   return function()
     cancelled = true
+    if cancel_provenance ~= nil then
+      cancel_provenance()
+    end
   end
 end
 

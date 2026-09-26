@@ -14,6 +14,8 @@
 
 local Session = require("louiselm.session")
 local Transcript = require("louiselm.session.transcript")
+local Provenance = require("louiselm.output_provenance")
+local PrivateFile = require("louiselm.private_file")
 
 ---@diagnostic disable-next-line: undefined-global -- `vim` is Neovim's injected runtime API.
 local nvim = vim
@@ -93,8 +95,11 @@ function M.export(api, agent_name, acp_session_id, path, timeout_ms)
   end
 
   local state = session:inspect()
-  local markdown = Transcript.render(transcript:snapshot(), state)
-  local written = nvim.fn.writefile(nvim.split(markdown, "\n", { plain = true }), path) == 0
+  -- This entry point creates an ordinary Agent Session with no Control broker
+  -- binding. Its status is explicitly not_managed, not an inferred clean bill.
+  local provenance = Provenance.initial({ kind = "not_managed" })
+  local markdown = Provenance.markdown(Transcript.render(transcript:snapshot(), state), provenance)
+  local written = PrivateFile.write(nvim.uv, path, markdown, "markdown transcript", "replace")
   session:dispose()
   if not written then
     return nil, "could not write markdown file: " .. path

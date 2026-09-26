@@ -33,7 +33,7 @@ local function fixture(lines)
   return record, source
 end
 
-local function export(record, selections, destination)
+local function export(record, selections, destination, fetch)
   local done, result, failure, fast = false, nil, nil, nil
   local cancel, start_error = require("louiselm.forensics.export").write(
     record,
@@ -41,7 +41,8 @@ local function export(record, selections, destination)
     selections,
     function(path, err)
       result, failure, fast, done = path, err, nvim.in_fast_event(), true
-    end
+    end,
+    fetch
   )
   assert(cancel, start_error)
   assert(nvim.wait(5000, function()
@@ -49,6 +50,92 @@ local function export(record, selections, destination)
   end))
   MiniTest.expect.equality(fast, false)
   return result, failure
+end
+
+T["late quarantine changes fresh exports, while broker loss keeps evidence readable"] = function()
+  local record = fixture()
+  local stored = nvim.json.decode(table.concat(nvim.fn.readfile(record), "\n"))
+  stored.provenance_binding = { kind = "broker", session_id = "broker-session" }
+  stored.output_provenance = {
+    schema = "louiselm.session.output-provenance/1",
+    code = "untainted",
+    taint_digest = nvim.NIL,
+    clean_review_refs = {},
+  }
+  assert(nvim.fn.writefile({ nvim.json.encode(stored) }, record) == 0)
+  local before = nvim.fn.readfile(record)
+  local current = "untainted"
+  local fetch = function(_, callback)
+    nvim.schedule(function()
+      if current == "lost" then
+        callback(nil)
+        return
+      end
+      callback(nvim.json.encode({
+        record = { launch = { session_id = "broker-session" } },
+        quarantined = current == "session_output_tainted",
+        output_provenance = {
+          schema = "louiselm.workspace.output-provenance/1",
+          code = current,
+          taint_digest = current == "session_output_tainted" and ("sha256:" .. string.rep("c", 64)) or nvim.NIL,
+          clean_review_refs = {},
+        },
+      }))
+    end)
+    return function() end
+  end
+  local clean = assert(export(record, { "observation:capabilities" }, root .. "/clean.json", fetch))
+  MiniTest.expect.equality(
+    nvim.json.decode(table.concat(nvim.fn.readfile(clean), "\n")).output_provenance.code,
+    "untainted"
+  )
+  current = "session_output_tainted"
+  local tainted = assert(export(record, { "observation:capabilities" }, root .. "/tainted.json", fetch))
+  local bytes = table.concat(nvim.fn.readfile(tainted), "\n")
+  local artifact = nvim.json.decode(bytes)
+  MiniTest.expect.equality(artifact.output_provenance.code, "session_output_tainted")
+  MiniTest.expect.equality(artifact.items[1].state, "exported")
+  MiniTest.expect.equality(bytes:find("broker-session", 1, true), nil)
+  current = "lost"
+  local lost = assert(export(record, { "observation:capabilities" }, root .. "/lost.json", fetch))
+  local unavailable = nvim.json.decode(table.concat(nvim.fn.readfile(lost), "\n"))
+  MiniTest.expect.equality(unavailable.output_provenance.code, "unknown")
+  MiniTest.expect.equality(unavailable.items[1].state, "exported")
+  MiniTest.expect.equality(nvim.fn.readfile(record), before)
+end
+
+T["cancellation during broker inspection publishes nothing and completes once"] = function()
+  local record = fixture()
+  local stored = nvim.json.decode(table.concat(nvim.fn.readfile(record), "\n"))
+  stored.provenance_binding = { kind = "broker", session_id = "broker-session" }
+  assert(nvim.fn.writefile({ nvim.json.encode(stored) }, record) == 0)
+  local pending, calls, error_message = nil, 0, nil
+  local cancel = assert(
+    require("louiselm.forensics.export").write(
+      record,
+      root .. "/cancelled-broker.json",
+      { "observation:capabilities" },
+      function(path, err)
+        MiniTest.expect.equality(path, nil)
+        calls, error_message = calls + 1, err
+      end,
+      function(_, callback)
+        pending = callback
+        return function() end
+      end
+    )
+  )
+  assert(nvim.wait(1000, function()
+    return pending ~= nil
+  end))
+  cancel()
+  local reply = assert(pending)
+  reply(nil)
+  assert(nvim.wait(1000, function()
+    return calls == 1
+  end))
+  MiniTest.expect.equality(error_message, "evidence export cancelled")
+  MiniTest.expect.equality(nvim.uv.fs_stat(root .. "/cancelled-broker.json"), nil)
 end
 
 T["exports only selected redacted evidence without mutating inputs"] = function()
