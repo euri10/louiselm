@@ -607,6 +607,7 @@ fn installed_guard_case_for(
             &mut controller_peer_output,
             &sessions,
             &finished,
+            agent_pid,
         );
     } else if !matches!(codex, CodexCase::None) {
         // Not a setup message: held until the Codex-shaped descendant is
@@ -766,13 +767,14 @@ fn stock_acp_prompt(
     output: &mut std::os::unix::net::UnixStream,
     sessions: &Path,
     finished: &mpsc::Receiver<Result<i32, SupervisorError>>,
+    agent_pid: u32,
 ) {
     output
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let mut reader = BufReader::new(output.try_clone().unwrap());
     let mut frames = 0;
-    let mut last_update = "none";
+    let mut recent = Vec::new();
     let mut request = |id: u64, method: &str, params: serde_json::Value| {
         writeln!(
             input,
@@ -785,21 +787,34 @@ fn stock_acp_prompt(
             line.clear();
             assert!(
                 reader.read_line(&mut line).unwrap() > 0,
-                "ACP closed before {method} replied; frames={frames}, last_update={last_update}, relay={:?}",
+                "ACP closed before {method} replied; frames={frames}, recent={recent:?}, agent_alive={}, relay={:?}",
+                Path::new(&format!("/proc/{agent_pid}")).exists(),
                 finished.recv_timeout(Duration::from_secs(1))
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             frames += 1;
-            if frame["method"] == "session/update" {
-                last_update = match frame["params"]["update"]["sessionUpdate"].as_str() {
-                    Some("agent_message_chunk") => "agent_message_chunk",
-                    Some("agent_thought_chunk") => "agent_thought_chunk",
-                    Some("tool_call") => "tool_call",
-                    Some("tool_call_update") => "tool_call_update",
-                    Some("usage_update") => "usage_update",
-                    _ => "other",
-                };
+            let kind = if frame.get("id").is_some() {
+                "reply"
+            } else if frame["method"] == "session/update" {
+                frame["params"]["update"]["sessionUpdate"]
+                    .as_str()
+                    .unwrap_or("unknown_update")
+            } else {
+                frame["method"].as_str().unwrap_or("unknown_frame")
+            };
+            let safe_kind = if kind.len() <= 48
+                && kind
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'/'))
+            {
+                kind
+            } else {
+                "invalid_kind"
+            };
+            if recent.len() == 8 {
+                recent.remove(0);
             }
+            recent.push(safe_kind.to_owned());
             assert!(
                 !frame.to_string().contains("Code Mode is unavailable"),
                 "stock Codex started without its measured Code Mode host"
