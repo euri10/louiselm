@@ -1903,6 +1903,7 @@ impl FakePlatform {
             }
             RunningAgentEvent::RelayFailed => "agent.event.relay_failed",
             RunningAgentEvent::AgentIdentityLost => "agent.event.agent_identity_lost",
+            RunningAgentEvent::EnrollmentRequested => "agent.event.enrollment_requested",
         };
         record(&self.events, event_name);
         thread::Builder::new()
@@ -5256,11 +5257,26 @@ fn failed_authorized_disposal_retains_process_control_for_cleanup_retry() {
 #[test]
 fn relay_failure_is_receipted_after_cleanup_and_waits_for_durable_ack() {
     for parked in [false, true] {
-        relay_failure_after_cleanup(parked);
+        relay_failure_after_cleanup(
+            parked,
+            RunningAgentEvent::RelayFailed,
+            "agent.event.relay_failed",
+        );
     }
 }
 
-fn relay_failure_after_cleanup(parked: bool) {
+#[test]
+fn failed_descendant_enrollment_ends_the_session_as_a_relay_failure() {
+    // Held prompts never reach an unenrolled runtime: an Agent that cannot
+    // enroll its sending descendant is disposed like a failed relay.
+    relay_failure_after_cleanup(
+        false,
+        RunningAgentEvent::EnrollmentRequested,
+        "agent.event.enrollment_requested",
+    );
+}
+
+fn relay_failure_after_cleanup(parked: bool, trigger: RunningAgentEvent, trigger_name: &str) {
     let setup = setup(
         true,
         |_| {},
@@ -5278,9 +5294,7 @@ fn relay_failure_after_cleanup(parked: bool) {
     };
     let receipt_index = setup.broker.session_receipt_count();
     setup.broker.wait_for_session_request();
-    setup
-        .platform
-        .send_running_event(RunningAgentEvent::RelayFailed);
+    setup.platform.send_running_event(trigger);
     setup.broker.wait_for_session_receipt(receipt_index);
     let receipt =
         SignedReceipt::parse_canonical(&setup.broker.session_receipt_bytes(receipt_index)).unwrap();
@@ -5298,7 +5312,7 @@ fn relay_failure_after_cleanup(parked: bool) {
     );
     let events = event_snapshot(&setup.events);
     let position = |name| events.iter().rposition(|event| event == name).unwrap();
-    assert!(position("agent.event.relay_failed") < position("capability.close"));
+    assert!(position(trigger_name) < position("capability.close"));
     assert!(position("capability.close") < position("agent.dispose"));
     assert!(position("agent.dispose") < position("identity.release"));
     assert!(position("identity.release") < position("signer.sign"));
@@ -5593,7 +5607,9 @@ fn terminal_event_during_pending_receipt(
             None,
             Err(SupervisorError::AgentIdentityRejected),
         ),
-        RunningAgentEvent::ControllerEof => panic!("only terminal events in this fixture"),
+        RunningAgentEvent::ControllerEof | RunningAgentEvent::EnrollmentRequested => {
+            panic!("only terminal events in this fixture")
+        }
     };
     assert_eq!(terminal.process_exit, classification);
     if pending == PendingAudit::RejectedAck {

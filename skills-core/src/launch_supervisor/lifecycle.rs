@@ -1593,6 +1593,18 @@ impl SessionOwner {
             RunningAgentEvent::AgentIdentityLost => {
                 self.begin_terminal_event(TerminalEvent::AgentIdentityLost);
             }
+            RunningAgentEvent::EnrollmentRequested => {
+                let enrolled = self
+                    .resources
+                    .process
+                    .as_mut()
+                    .ok_or(SupervisorError::IsolationRejected)
+                    .and_then(|process| process.enroll_descendant());
+                // Held prompts never reach an unenrolled runtime; failure ends it.
+                if enrolled.is_err() {
+                    self.begin_terminal_event(TerminalEvent::RelayFailed);
+                }
+            }
         }
     }
 

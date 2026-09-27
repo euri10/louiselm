@@ -114,7 +114,9 @@ pub struct GuardEnrollment {
     pub scope: GuardScope,
     /// Retained private pin-namespace identity.
     pub guard_id: u64,
-    /// Measured runtime process.
+    /// Authenticated Agent process from the Start receipt. For a descendant
+    /// sender contract the kernel grant is on that Agent's measured child,
+    /// which the receipt's tool-isolation evidence contract determines.
     pub runtime_pid: u32,
     /// Original enrolled Control broker process.
     pub broker_pid: u32,

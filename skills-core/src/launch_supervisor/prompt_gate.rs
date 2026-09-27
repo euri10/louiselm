@@ -28,31 +28,11 @@ pub(super) const MAX_HELD_LINE: usize = 1024 * 1024;
 /// Shared state between the relay and the enrollment owner.
 #[derive(Debug, Default)]
 pub(super) struct PromptHold {
-    requested: AtomicBool,
     opened: AtomicBool,
 }
 
 impl PromptHold {
-    /// True once the relay holds input that needs an enrolled sender.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-        )
-    )]
-    pub(super) fn requested(&self) -> bool {
-        self.requested.load(Ordering::Acquire)
-    }
-
     /// Releases held input. Only the enrollment owner calls this, after success.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-        )
-    )]
     pub(super) fn open(&self) {
         self.opened.store(true, Ordering::Release);
     }
@@ -107,6 +87,7 @@ pub(super) struct GatedInput {
     hold: Arc<PromptHold>,
     pending: Vec<u8>,
     held: bool,
+    announced: bool,
     pub(super) eof: bool,
 }
 
@@ -116,6 +97,7 @@ impl GatedInput {
             hold,
             pending: Vec::new(),
             held: false,
+            announced: false,
             eof: false,
         }
     }
@@ -166,11 +148,15 @@ impl GatedInput {
         let admission = admit(&self.pending);
         output.extend(self.pending.drain(..admission.forward));
         let newly_held = admission.hold && !self.held;
-        if newly_held {
-            self.held = true;
-            self.hold.requested.store(true, Ordering::Release);
-        }
+        self.held |= newly_held;
         admission.forward > 0 || newly_held
+    }
+
+    /// True exactly once, when input first becomes held for enrollment.
+    pub(super) fn take_request(&mut self) -> bool {
+        let first = self.held && !self.announced;
+        self.announced |= first;
+        first
     }
 
     /// True when controller EOF has been seen and nothing remains staged.

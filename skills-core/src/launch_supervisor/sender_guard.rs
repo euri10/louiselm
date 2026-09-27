@@ -163,6 +163,8 @@ pub struct SenderGuard {
     broker: SeqpacketChannel,
     broker_pin: OwnedFd,
     enrolled: bool,
+    // Announced for a descendant sender that is not enrolled yet.
+    deferred: bool,
     announced: bool,
     handoff: Option<GuardEnrollment>,
     runtime_pid: u32,
@@ -229,6 +231,25 @@ impl SenderGuard {
         }
         Ok(session)
     }
+    /// Starts a Session whose sender is a later descendant, enrolling nothing.
+    ///
+    /// Until [`Self::enroll_frozen_descendant`] succeeds no task holds a grant
+    /// and policy stays absent, so every send to the endpoint is denied.
+    /// # Errors
+    /// Returns the sandbox's startup/cleanup failure; refuses a missing endpoint.
+    pub(crate) fn start_deferred(
+        &mut self,
+        mut prepared: crate::sandbox::PreparedSession,
+    ) -> Result<crate::sandbox::SandboxedSession, crate::sandbox::SandboxError> {
+        if self.enrolled || self.endpoint.is_none() {
+            prepared.dispose()?;
+            return Err(crate::sandbox::SandboxError::Refused(
+                "Sender guard needs an unenrolled bound endpoint".into(),
+            ));
+        }
+        prepared.start_with_enrollment(|_| Ok(()))
+    }
+
     /// Loads/attaches the embedded object, protects pins, and pins both owners.
     ///
     /// Performs blocking privileged I/O on the launch worker. The authenticated
@@ -313,6 +334,7 @@ impl SenderGuard {
             broker_pin,
             endpoint: None,
             enrolled: false,
+            deferred: false,
             announced: false,
             handoff: None,
             runtime_pid: 0,
@@ -393,25 +415,45 @@ impl SenderGuard {
         self.enroll(process)
     }
 
+    /// Records the authenticated Agent of a deferred start.
+    ///
+    /// The listener may then be announced and revoked, but policy cannot be
+    /// activated until [`Self::enroll_frozen_descendant`]: no task holds a
+    /// grant, so the kernel denies every send to the endpoint meanwhile. The
+    /// announcement names `agent_pid`, the Agent the broker verifies from the
+    /// Start receipt; that receipt's tool-isolation evidence binds the contract
+    /// that determines the later sender.
+    /// # Errors
+    /// Refuses an enrolled or already deferred guard, or one without an endpoint.
+    pub(crate) fn defer_enrollment(&mut self, agent_pid: u32) -> Result<(), GuardError> {
+        if self.enrolled || self.deferred || self.endpoint.is_none() || agent_pid == 0 {
+            return Err(GuardError::Enrollment);
+        }
+        self.live()?;
+        self.deferred = true;
+        self.runtime_pid = agent_pid;
+        Ok(())
+    }
+
     /// Enrolls the measured sending descendant of a deferred start.
     ///
     /// `process` must come from `KernelProcess::from_frozen_member` after the
     /// contract's exact tree check; the frozen cgroup stands in for the exec
     /// stop. Grants attach to the thread-group leader, covering all threads.
     /// # Errors
-    /// Refuses a second enrollment, a foreign network namespace or lost authority.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-        )
-    )]
+    /// Refuses without a deferral, a second enrollment, a foreign network
+    /// namespace or lost authority.
     pub(crate) fn enroll_frozen_descendant(
         &mut self,
         process: &KernelProcess,
     ) -> Result<(), GuardError> {
-        self.enroll(process)
+        if !self.deferred {
+            return Err(GuardError::Enrollment);
+        }
+        let agent_pid = self.runtime_pid;
+        self.enroll(process)?;
+        self.runtime_pid = agent_pid;
+        Ok(())
     }
 
     fn enroll(&mut self, process: &KernelProcess) -> Result<(), GuardError> {
@@ -478,7 +520,7 @@ impl SenderGuard {
     /// # Errors
     /// Refuses a guard without a measured runtime and bound endpoint.
     pub fn revoker(&self) -> Result<GuardRevoker, GuardError> {
-        if !self.enrolled || self.endpoint.is_none() {
+        if !(self.enrolled || self.deferred) || self.endpoint.is_none() {
             return Err(GuardError::Enrollment);
         }
         Ok(GuardRevoker {

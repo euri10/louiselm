@@ -98,13 +98,6 @@ impl KernelProcess {
     /// The frozen cgroup is what replaces the exec stop: no member can run,
     /// fork, exec or reach the runtime between measurement and enrollment.
     /// The caller has already proved which process to pin (louiselm-fkdv8).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-        )
-    )]
     pub(crate) fn from_frozen_member(
         credentials: KernelCredentials,
         pidfd: OwnedFd,
@@ -212,13 +205,6 @@ impl KernelProcess {
 }
 
 /// Whether the cgroup v2 containing `pid` reports its freeze as complete.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-    )
-)]
 fn cgroup_frozen(pid: u32) -> io::Result<bool> {
     let membership = fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
     let path = membership

@@ -250,8 +250,8 @@ def descendant_scenario(executable):
             pids = request(agent, {"op": "spawn"})
             owner = spawn([executable, "--exact", WORKER, "--ignored", "--nocapture"])
             send(owner, {"broker": broker_path, "session": "session-descendant",
-                "runtime": pids["runtime"], "uid": UID, "executable": sys.executable,
-                "descendant": True, "deadline_ms": 300000})
+                "runtime": pids["runtime"], "adapter": agent.pid, "uid": UID,
+                "executable": sys.executable, "descendant": True, "deadline_ms": 300000})
             assert receive(owner, True)["unfrozen_refused"]
             set_frozen(cgroup, True)
             send(owner, {"op": "frozen"})

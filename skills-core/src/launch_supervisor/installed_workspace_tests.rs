@@ -13,6 +13,11 @@ fn snapshot_bytes() -> Vec<u8> {
 }
 
 pub(in crate::launch_supervisor) fn fixture_manifest() -> SessionInputManifest {
+    fixture_manifest_for(false)
+}
+
+/// The fixture manifest, optionally for the Codex-shaped chain in `codex_chain`.
+pub(in crate::launch_supervisor) fn fixture_manifest_for(codex: bool) -> SessionInputManifest {
     let binaries = std::env::current_exe()
         .unwrap()
         .parent()
@@ -33,18 +38,29 @@ pub(in crate::launch_supervisor) fn fixture_manifest() -> SessionInputManifest {
             runtime_id: "runtime".into(),
             arguments: vec![],
             environment: std::collections::BTreeMap::new(),
-            tool_integration: Some(super::super::super::tool_integration::CONTRACT.into()),
+            tool_integration: Some(
+                if codex {
+                    super::super::super::tool_integration::CODEX_CONTRACT
+                } else {
+                    super::super::super::tool_integration::CONTRACT
+                }
+                .into(),
+            ),
         }),
-        runtime: Some(RuntimeMeasurement {
-            runtime_id: "runtime".into(),
-            executable_sha256: Digest::of(
-                &fs::read(binaries.join("louiselm-tool-test-agent")).unwrap(),
-            )
-            .hex()
-            .into(),
-            adapters: vec![],
-            version: "fixture".into(),
-            origin: "fixture".into(),
+        runtime: Some(if codex {
+            super::codex_chain::measurement(&binaries)
+        } else {
+            RuntimeMeasurement {
+                runtime_id: "runtime".into(),
+                executable_sha256: Digest::of(
+                    &fs::read(binaries.join("louiselm-tool-test-agent")).unwrap(),
+                )
+                .hex()
+                .into(),
+                adapters: vec![],
+                version: "fixture".into(),
+                origin: "fixture".into(),
+            }
         }),
         skill_generation_id: Some(Digest::of(b"fixture-generation").to_string()),
         view_digest: Some(Digest::of(b"fixture-view").to_string()),
@@ -91,7 +107,7 @@ pub(in crate::launch_supervisor) fn stage_manifest(
         .parent()
         .unwrap()
         .join("workspace-inputs");
-    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     launch_inputs::stage(
         inputs,

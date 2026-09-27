@@ -60,6 +60,9 @@ mod receipt_history;
 #[path = "installed_workspace_tests.rs"]
 pub(super) mod workspace;
 
+#[path = "installed_codex_chain_tests.rs"]
+mod codex_chain;
+
 #[path = "installed_provider_credentials_tests.rs"]
 mod provider_credentials;
 
@@ -165,6 +168,10 @@ fn paths(root: &Path) -> LauncherPaths {
 }
 
 fn request() -> LaunchRequest {
+    request_for(false)
+}
+
+fn request_for(codex: bool) -> LaunchRequest {
     LaunchRequest {
         schema: REQUEST_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
@@ -176,7 +183,7 @@ fn request() -> LaunchRequest {
         envelope_id: "envelope".into(),
         envelope_revision: 1,
         skill_generation_id: Digest::of(b"fixture-generation").to_string(),
-        session_input_manifest_id: workspace::fixture_manifest().digest().to_string(),
+        session_input_manifest_id: workspace::fixture_manifest_for(codex).digest().to_string(),
     }
 }
 
@@ -391,7 +398,7 @@ fn installed_broker_worker() {
                 approval
             }),
             require_cold_recovery: true,
-            request: request(),
+            request: request_for(root.join("codex-chain").exists()),
             controller_uid: config.operator_uid,
             expires_at_ms: fixture_expiry(&root, now),
             broker_loss_grace_ms: 500,

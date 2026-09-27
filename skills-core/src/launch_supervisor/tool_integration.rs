@@ -186,13 +186,6 @@ impl ToolIsolationEvidence {
 }
 
 /// One Session process observed while the whole tree is frozen.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-    )
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ObservedProcess {
     pub(super) pid: u32,
@@ -200,13 +193,6 @@ pub(super) struct ObservedProcess {
     pub(super) executable_sha256: String,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-    )
-)]
 impl ObservedProcess {
     pub(super) fn new(pid: u32, parent: u32, executable_sha256: &str) -> Self {
         Self {
@@ -217,14 +203,18 @@ impl ObservedProcess {
     }
 }
 
+/// Which measured file a process's executable identity matched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Executable {
+    /// The authenticated adapter executable.
+    Adapter,
+    /// The measured Codex runtime file.
+    Runtime,
+    /// Anything else, including unreadable executables.
+    Other,
+}
+
 /// Why a frozen tree is not exactly the contract's measured chain.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-    )
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TreeRefusal {
     /// The evidence is for a contract whose sender is its first process.
@@ -244,6 +234,18 @@ pub(super) enum TreeRefusal {
 }
 
 impl ToolIsolationEvidence {
+    /// The measured digest for an executable matched by kernel identity.
+    ///
+    /// Matching the pinned device/inode of already-measured files avoids
+    /// rehashing a large runtime at every enrollment.
+    pub(super) fn digest_of(&self, executable: Executable) -> &str {
+        match (executable, &self.codex) {
+            (Executable::Adapter, _) => &self.executable_digest,
+            (Executable::Runtime, Some(codex)) => &codex.runtime,
+            _ => "unmeasured",
+        }
+    }
+
     /// Returns the one process the Sender guard may enroll for this contract.
     ///
     /// The tree must be exactly the authenticated adapter plus one direct child
@@ -251,13 +253,6 @@ impl ToolIsolationEvidence {
     /// first prompt no tool can legitimately exist, so an extra process is
     /// never tolerated. Threads need no listing; the kernel grant is keyed by
     /// the enrolled process's thread-group leader.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-        )
-    )]
     pub(super) fn codex_sender(
         &self,
         processes: &[ObservedProcess],

@@ -104,6 +104,8 @@ pub enum RunningAgentEvent {
     AgentIdentityLost,
     /// An opaque relay worker failed without exposing payload or process details.
     RelayFailed,
+    /// The relay holds the first prompt until the sending descendant is enrolled.
+    EnrollmentRequested,
 }
 
 /// Sanitized process-tree observation after a lifecycle mechanic did not complete normally.
@@ -583,6 +585,17 @@ pub trait RunningAgent: Send {
         _broker: Arc<dyn LaunchBroker>,
         _timeout: Duration,
     ) -> Result<(), SupervisorError> {
+        Err(SupervisorError::IsolationRejected)
+    }
+
+    /// Enrolls a contract's measured sending descendant, then releases held prompts.
+    ///
+    /// Blocking and bounded by the launch timeout. Called by the Session owner
+    /// only after the relay reports held input.
+    /// # Errors
+    /// Refuses a tree that is not exactly the contract's chain, or any failed
+    /// freeze, enrollment, broker acknowledgement or activation.
+    fn enroll_descendant(&mut self) -> Result<(), SupervisorError> {
         Err(SupervisorError::IsolationRejected)
     }
 

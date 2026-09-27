@@ -37,6 +37,7 @@ pub(super) struct RelayWorker {
 }
 
 impl RelayWorker {
+    #[cfg(test)]
     pub(super) fn start(
         controller: mpsc::Receiver<RelayStdio>,
         input: ChildStdin,
@@ -55,29 +56,22 @@ impl RelayWorker {
         )
     }
 
-    /// Starts a relay that holds prompts until `hold` is opened.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
-        )
-    )]
-    pub(super) fn start_gated(
+    /// Starts a relay that, with a hold, forwards prompts only once it opens.
+    pub(super) fn start_with_hold(
         controller: mpsc::Receiver<RelayStdio>,
         input: ChildStdin,
         output: ChildStdout,
         error: ChildStderr,
         try_wait: impl FnMut() -> Result<Option<i32>, SupervisorError> + Send + 'static,
         events: RunningAgentEvents,
-        hold: Arc<PromptHold>,
+        hold: Option<Arc<PromptHold>>,
     ) -> Result<Self, SupervisorError> {
         Self::start_with(
             controller,
             (input, output, error),
             try_wait,
             events,
-            Some(hold),
+            hold,
             spawn,
         )
     }
@@ -268,6 +262,9 @@ impl RelayLoop {
                     }
                     progress |= gate.admit_into(&mut self.to_agent.bytes);
                     self.to_agent.eof |= gate.drained();
+                    if gate.take_request() {
+                        emit(stopped, events, RunningAgentEvent::EnrollmentRequested);
+                    }
                 } else if let Some(controller) = self.controller.as_mut() {
                     progress |= self.to_agent.read(controller)?;
                 } else if self.detached {

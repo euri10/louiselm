@@ -24,7 +24,8 @@ pub(super) mod command_test_support;
 pub(super) mod grant_test_support;
 
 use std::{
-    fs, io,
+    fs::{self, File},
+    io,
     net::SocketAddr,
     os::{
         fd::BorrowedFd,
@@ -1220,7 +1221,7 @@ impl SystemLaunchPlatform {
         request: &LaunchRequest,
         plan: &mut ConfinementPlan,
         release_root: &Path,
-    ) -> Result<super::ToolIsolationEvidence, SupervisorError> {
+    ) -> Result<(super::ToolIsolationEvidence, Option<File>), SupervisorError> {
         let integration = crate::registry::Registry::open_trusted(&self.registry_root)
             .and_then(|registry| registry.agent(&request.agent_id))
             .map_err(|_| SupervisorError::ToolIsolationUnproven)
@@ -1232,11 +1233,23 @@ impl SystemLaunchPlatform {
             &self.config.release_id,
             &self.config.bwrap_digest,
         )?;
+        // The descendant is later matched against this exact open inode, so a
+        // replaced runtime path cannot substitute an unmeasured executable.
+        let runtime = evidence
+            .requires_descendant_enrollment()
+            .then(|| {
+                File::open(
+                    plan.runtime_root
+                        .join(super::tool_integration::CODEX_RUNTIME),
+                )
+            })
+            .transpose()
+            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
         // Measurement requires empty registered values; the contract then
         // supplies its exact launcher-owned arguments and environment.
         (plan.arguments, plan.environment) =
             super::tool_integration::launch_values(integration, &plan.runtime_root, &plan.home);
-        Ok(evidence)
+        Ok((evidence, runtime))
     }
 
     fn prepare_workspace(
@@ -1446,7 +1459,8 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 .release_prefix
                 .join("releases")
                 .join(&self.config.release_id);
-            let tool_isolation = self.measure_integration(request, &mut plan, &release_root)?;
+            let (tool_isolation, descendant_runtime) =
+                self.measure_integration(request, &mut plan, &release_root)?;
             // Registration is validated first; this derived private path is a
             // launcher-owned environment addition, shared with confined tools.
             plan.environment.insert(
@@ -1510,6 +1524,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
                 prepared,
                 backend_id: self.config.bwrap_digest.clone(),
                 tool_isolation: Some(tool_isolation),
+                descendant_runtime,
                 tools: Some(tools),
                 recovery,
                 verification,
@@ -1561,6 +1576,8 @@ struct SystemPreparedAgent {
     verification: Arc<super::verification::Storage>,
     workspace: Option<super::workspace::SessionWorkspace>,
     sender_guard: Option<(super::sender_guard::SenderGuard, GuardScope)>,
+    // The measured Codex runtime file for descendant-sender contracts.
+    descendant_runtime: Option<File>,
 }
 
 impl PreparedAgent for SystemPreparedAgent {
@@ -1610,14 +1627,7 @@ impl PreparedAgent for SystemPreparedAgent {
         scope: GuardScope,
         broker: SeqpacketChannel,
     ) -> Result<(), SupervisorError> {
-        if self.sender_guard.is_some()
-            || self
-                .tool_isolation
-                .as_ref()
-                .is_some_and(super::ToolIsolationEvidence::requires_descendant_enrollment)
-        {
-            // Refused until the guard can enroll the measured sending descendant
-            // (louiselm-g3rvu); enrolling the adapter would misplace authority.
+        if self.sender_guard.is_some() {
             return Err(SupervisorError::IsolationRejected);
         }
         let mut guard =
@@ -1643,7 +1653,9 @@ impl PreparedAgent for SystemPreparedAgent {
             self.dispose()?;
             return Err(SupervisorError::IsolationRejected);
         };
-        let mut running = match SystemRunningAgent::start_guarded(self.prepared, guard) {
+        let descendant = self.descendant_runtime.take();
+        let mut running = match SystemRunningAgent::start_guarded(self.prepared, guard, descendant)
+        {
             Ok(running) => running,
             Err(error) => {
                 if let Some(workspace) = &self.workspace {
@@ -1708,6 +1720,15 @@ pub struct SystemRunningAgent {
     recovery_worker: Option<super::recovery_worker::Worker>,
     verification_storage: Option<Arc<super::verification::Storage>>,
     verification_worker: Option<super::verification::Worker>,
+    descendant: Option<DescendantEnrollment>,
+}
+
+/// Deferred Sender guard enrollment for a contract whose sender is a descendant.
+struct DescendantEnrollment {
+    hold: Arc<super::prompt_gate::PromptHold>,
+    runtime_file: File,
+    // The pinned enrolled runtime; its pidfd must outlive the grant.
+    runtime: Option<Arc<crate::launch_transport::KernelProcess>>,
 }
 
 impl SystemRunningAgent {
@@ -1734,6 +1755,7 @@ impl SystemRunningAgent {
             recovery_worker: None,
             verification_storage: None,
             verification_worker: None,
+            descendant: None,
         }
     }
 
@@ -1747,9 +1769,33 @@ impl SystemRunningAgent {
     pub fn start_guarded(
         prepared: PreparedSession,
         mut guard: super::sender_guard::SenderGuard,
+        descendant_runtime: Option<File>,
     ) -> Result<Self, SupervisorError> {
-        let session = guard.start(prepared).map_err(map_sandbox)?;
+        let session = match &descendant_runtime {
+            Some(_) => guard.start_deferred(prepared),
+            None => guard.start(prepared),
+        }
+        .map_err(map_sandbox)?;
         let mut running = Self::new(session);
+        running.descendant = descendant_runtime.map(|runtime_file| DescendantEnrollment {
+            hold: Arc::default(),
+            runtime_file,
+            runtime: None,
+        });
+        if running.descendant.is_some() {
+            // Announced at Start like any guard; policy waits for enrollment.
+            let deferred = lock(&running.session)
+                .agent_identity()
+                .ok_or(super::sender_guard::GuardError::Enrollment)
+                .and_then(|agent| guard.defer_enrollment(agent.credentials().pid));
+            if deferred.is_err() {
+                return Err(if running.dispose().is_ok() {
+                    SupervisorError::IsolationRejected
+                } else {
+                    SupervisorError::CleanupUnproven
+                });
+            }
+        }
         running.sender_guard = Some(Arc::new(Mutex::new(guard)));
         running.guard_revoker = match running
             .sender_guard
@@ -1766,6 +1812,129 @@ impl SystemRunningAgent {
             }
         };
         Ok(running)
+    }
+
+    /// Announces the listener to the broker and, when `activate`, its policy.
+    fn announce_and_activate(
+        &mut self,
+        request_id: &str,
+        head: &ReceiptHead,
+        broker: Arc<dyn LaunchBroker>,
+        timeout: Duration,
+        activate: bool,
+    ) -> Result<(), SupervisorError> {
+        let scope = self
+            .guard_scope
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?
+            .clone();
+        let guard = self
+            .sender_guard
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        let mut guard = lock(guard);
+        if let Err(error) = guard.announce_enrollment(request_id, timeout) {
+            self.guard_revoker
+                .as_ref()
+                .ok_or(SupervisorError::CleanupUnproven)?
+                .revoke()
+                .map_err(|_| SupervisorError::CleanupUnproven)?;
+            let deadline = Instant::now()
+                .checked_add(timeout)
+                .ok_or(SupervisorError::CleanupUnproven)?;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(SupervisorError::CleanupUnproven);
+                }
+                let channel = reconnect_guard_channel(broker.as_ref(), &scope, head, remaining)?;
+                match guard.close_on_reconnected_channel(channel, remaining) {
+                    Ok(()) => return Err(map_guard(error)),
+                    Err(super::sender_guard::GuardError::Cleanup) => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return Err(SupervisorError::CleanupUnproven),
+                }
+            }
+        }
+        self.guard_broker = Some(broker);
+        if activate {
+            guard.activate(&scope).map_err(map_guard)?;
+        }
+        Ok(())
+    }
+
+    /// Pins and enrolls the contract's sending descendant; the tree is frozen.
+    fn enroll_frozen_runtime(&mut self) -> Result<(), SupervisorError> {
+        let evidence = self
+            .tool_isolation
+            .as_ref()
+            .ok_or(SupervisorError::ToolIsolationUnproven)?;
+        let descendant = self
+            .descendant
+            .as_mut()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        let runtime_identity = descendant
+            .runtime_file
+            .metadata()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+        let session = lock(&self.session);
+        let adapter = session
+            .agent_identity()
+            .ok_or(SupervisorError::AgentIdentityRejected)?;
+        let adapter_identity = adapter.executable_identity();
+        let infrastructure = [Some(session.monitor_pid()), session.sandbox_leader_pid()];
+        let observed = session
+            .processes()
+            .map_err(map_sandbox)?
+            .into_iter()
+            .filter(|pid| !infrastructure.contains(&Some(*pid)))
+            .map(|pid| {
+                let executable = match executable_identity(pid) {
+                    Some(identity) if identity == adapter_identity => {
+                        super::tool_integration::Executable::Adapter
+                    }
+                    Some(identity) if identity == runtime_identity => {
+                        super::tool_integration::Executable::Runtime
+                    }
+                    _ => super::tool_integration::Executable::Other,
+                };
+                super::tool_integration::ObservedProcess::new(
+                    pid,
+                    parent_pid(pid).unwrap_or(0),
+                    evidence.digest_of(executable),
+                )
+            })
+            .collect::<Vec<_>>();
+        let credentials = adapter.credentials();
+        let pid = evidence
+            .codex_sender(&observed, credentials.pid)
+            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+        let pidfd = rustix::process::pidfd_open(
+            rustix::process::Pid::from_raw(
+                i32::try_from(pid).map_err(|_| SupervisorError::AgentIdentityRejected)?,
+            )
+            .ok_or(SupervisorError::AgentIdentityRejected)?,
+            rustix::process::PidfdFlags::empty(),
+        )
+        .map_err(|_| SupervisorError::AgentIdentityRejected)?;
+        let runtime = crate::launch_transport::KernelProcess::from_frozen_member(
+            crate::launch_transport::KernelCredentials { pid, ..credentials },
+            pidfd,
+            &descendant.runtime_file,
+        )
+        .map_err(|_| SupervisorError::AgentIdentityRejected)?;
+        drop(session);
+        lock(
+            self.sender_guard
+                .as_ref()
+                .ok_or(SupervisorError::IsolationRejected)?,
+        )
+        .enroll_frozen_descendant(&runtime)
+        .map_err(map_guard)?;
+        descendant.runtime = Some(Arc::new(runtime));
+        Ok(())
     }
 
     fn join_upstream_worker(&mut self) -> Result<(), SupervisorError> {
@@ -1942,42 +2111,40 @@ impl RunningAgent for SystemRunningAgent {
         broker: Arc<dyn LaunchBroker>,
         timeout: Duration,
     ) -> Result<(), SupervisorError> {
+        // A descendant sender activates policy only after its enrollment.
+        let activate = self.descendant.is_none();
+        self.announce_and_activate(request_id, head, broker, timeout, activate)
+    }
+
+    fn enroll_descendant(&mut self) -> Result<(), SupervisorError> {
+        if self
+            .descendant
+            .as_ref()
+            .is_none_or(|descendant| descendant.runtime.is_some())
+        {
+            return Err(SupervisorError::IsolationRejected);
+        }
+        lock(&self.session).park().map_err(map_sandbox)?;
+        let enrolled = self.enroll_frozen_runtime();
+        let resumed = lock(&self.session).resume().map_err(map_sandbox);
+        enrolled?;
+        resumed?;
         let scope = self
             .guard_scope
             .as_ref()
-            .ok_or(SupervisorError::IsolationRejected)?
-            .clone();
-        let guard = self
-            .sender_guard
-            .as_ref()
             .ok_or(SupervisorError::IsolationRejected)?;
-        let mut guard = lock(guard);
-        if let Err(error) = guard.announce_enrollment(request_id, timeout) {
-            self.guard_revoker
+        lock(
+            self.sender_guard
                 .as_ref()
-                .ok_or(SupervisorError::CleanupUnproven)?
-                .revoke()
-                .map_err(|_| SupervisorError::CleanupUnproven)?;
-            let deadline = Instant::now()
-                .checked_add(timeout)
-                .ok_or(SupervisorError::CleanupUnproven)?;
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(SupervisorError::CleanupUnproven);
-                }
-                let channel = reconnect_guard_channel(broker.as_ref(), &scope, head, remaining)?;
-                match guard.close_on_reconnected_channel(channel, remaining) {
-                    Ok(()) => return Err(map_guard(error)),
-                    Err(super::sender_guard::GuardError::Cleanup) => {
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => return Err(SupervisorError::CleanupUnproven),
-                }
-            }
-        }
-        self.guard_broker = Some(broker);
-        guard.activate(&scope).map_err(map_guard)?;
+                .ok_or(SupervisorError::IsolationRejected)?,
+        )
+        .activate(scope)
+        .map_err(map_guard)?;
+        self.descendant
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?
+            .hold
+            .open();
         Ok(())
     }
 
@@ -2218,7 +2385,11 @@ impl RunningAgent for SystemRunningAgent {
         };
         let session = Arc::clone(&self.session);
         let mut identity_lost_at = None;
-        self.relay = Some(RelayWorker::start(
+        let hold = self
+            .descendant
+            .as_ref()
+            .map(|descendant| Arc::clone(&descendant.hold));
+        self.relay = Some(RelayWorker::start_with_hold(
             controller,
             input,
             output,
@@ -2245,6 +2416,7 @@ impl RunningAgent for SystemRunningAgent {
                 Ok(exited)
             },
             events,
+            hold,
         )?);
         Ok(())
     }
@@ -2927,6 +3099,24 @@ fn ensure_system_cgroup_root() -> Result<(), SupervisorError> {
         return Err(SupervisorError::SpawnFailed);
     }
     Ok(())
+}
+
+/// Host-view device/inode of a process's executable, if still readable.
+fn executable_identity(pid: u32) -> Option<(u64, u64)> {
+    fs::metadata(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+/// Host-view parent PID from `/proc/<pid>/stat`; the command name may contain spaces.
+fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]

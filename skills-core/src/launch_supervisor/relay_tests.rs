@@ -367,14 +367,15 @@ fn gated_relay_forwards_setup_and_holds_the_first_prompt_until_opened() {
     attachment.send(stdio).unwrap();
     let (input, stdout, stderr) = child.pipes();
     let hold = Arc::new(super::super::prompt_gate::PromptHold::default());
-    let mut relay = RelayWorker::start_gated(
+    let (sender, events) = mpsc::channel();
+    let mut relay = RelayWorker::start_with_hold(
         receiver,
         input,
         stdout,
         stderr,
         child.wait_callback(),
-        Arc::new(|_| true),
-        Arc::clone(&hold),
+        Arc::new(move |event| sender.send(event).is_ok()),
+        Some(Arc::clone(&hold)),
     )
     .unwrap();
     let setup = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
@@ -386,14 +387,10 @@ fn gated_relay_forwards_setup_and_holds_the_first_prompt_until_opened() {
     let mut first = String::new();
     echoed.read_line(&mut first).unwrap();
     assert_eq!(first.as_bytes(), setup);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !hold.requested() {
-        assert!(
-            Instant::now() < deadline,
-            "the held prompt requests enrollment"
-        );
-        thread::sleep(IDLE_POLL);
-    }
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(2)).unwrap(),
+        RunningAgentEvent::EnrollmentRequested
+    );
     echoed
         .get_ref()
         .set_read_timeout(Some(Duration::from_millis(200)))
@@ -402,6 +399,10 @@ fn gated_relay_forwards_setup_and_holds_the_first_prompt_until_opened() {
     assert!(
         echoed.read_line(&mut early).is_err(),
         "no prompt byte reaches the Agent before enrollment: {early:?}"
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "enrollment is requested exactly once"
     );
     hold.open();
     echoed

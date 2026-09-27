@@ -198,6 +198,12 @@ fn pin_and_enroll(
     };
     assert_eq!(guard.activate(scope), Err(GuardError::Enrollment));
     if descendant {
+        assert_eq!(
+            guard.enroll_frozen_descendant(&runtime),
+            Err(GuardError::Enrollment),
+            "enrollment needs a recorded deferral"
+        );
+        guard.defer_enrollment(number(setup, "adapter")).unwrap();
         guard.enroll_frozen_descendant(&runtime).unwrap();
     } else {
         guard.enroll_at_exec_stop(&runtime).unwrap();

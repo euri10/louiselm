@@ -30,9 +30,19 @@ adapters. The launcher supplies the adapter argument and a fixed environment:
 (`http://127.0.0.1:40773/v1`) with no MCP servers, `DEFAULT_AUTH_REQUEST` carries
 no headers or credentials, and `HOME` is the private Session home. No operator
 Codex home or configuration is read. The evidence adds the adapter, runtime and
-configuration digests. Guarded Brokered start refuses this contract until the
-Sender guard can enroll the measured Codex descendant rather than the adapter
-(louiselm-g3rvu).
+configuration digests.
+
+Its sender is the adapter's child, not the first exec, so Brokered start defers
+enrollment (louiselm-g3rvu). The listener is announced at Start with no active
+policy, so the kernel denies every send to it. The relay forwards only
+`initialize`, `authenticate` and `session/new` lines and holds everything else.
+At the first held line the supervisor freezes the Session cgroup, requires the
+tree to be exactly the adapter plus one direct child running the measured
+`codex` inode (Bubblewrap's monitor and leader excluded), pins that child,
+enrolls it, activates policy, thaws and releases the held input. Any refusal
+ends the Session as a relay failure. The installed CI case
+`privileged_installed_brokered_codex_chain_enrolls_descendant` runs this with a
+Codex-shaped fixture chain; real stock Codex is louiselm-98wr4.
 
 The deterministic Agent is the executable itself, not a runtime wrapper. It
 echoes ordinary stdin bytes. A record separator (`0x1e`) introduces a bounded

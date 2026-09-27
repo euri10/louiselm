@@ -275,14 +275,15 @@ fn privileged_installed_brokered_provider_stream() {
 }
 
 #[test]
+fn privileged_installed_brokered_codex_chain_enrolls_descendant() {
+    installed_guard_case_for(false, true, false, true, false, true);
+}
+
+#[test]
 fn privileged_installed_brokered_without_provider_permission_refuses() {
     installed_guard_case(false, false, false, false, true);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "One disposable fixture owns the certificate, non-root broker, launch and terminal containment."
-)]
 #[expect(
     clippy::fn_params_excessive_bools,
     reason = "Independent fault flags select one installed fixture case."
@@ -293,6 +294,32 @@ fn installed_guard_case(
     broker_outage: bool,
     provider: bool,
     no_permission: bool,
+) {
+    installed_guard_case_for(
+        hold_close_ack,
+        park,
+        broker_outage,
+        provider,
+        no_permission,
+        false,
+    );
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "One disposable fixture owns the certificate, non-root broker, launch and terminal containment."
+)]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "Independent fault flags select one installed fixture case."
+)]
+fn installed_guard_case_for(
+    hold_close_ack: bool,
+    park: bool,
+    broker_outage: bool,
+    provider: bool,
+    no_permission: bool,
+    codex: bool,
 ) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
         eprintln!("requires disposable root and a current installed guard certificate");
@@ -305,6 +332,9 @@ fn installed_guard_case(
         .tempdir_in("/var/lib")
         .unwrap();
     let (paths, mut config, registry_root) = install_fixture_with_slots(root.path(), 3);
+    if codex {
+        super::codex_chain::install(root.path(), &registry_root, &config);
+    }
     if !no_permission {
         fs::write(root.path().join("brokered"), b"").unwrap();
     }
@@ -375,7 +405,7 @@ fn installed_guard_case(
     .unwrap();
     supervisor
         .launch(
-            request(),
+            request_for(codex),
             config.operator_uid,
             now_ms,
             Box::new(move |outcome| sent.send(outcome).unwrap()),
@@ -396,21 +426,25 @@ fn installed_guard_case(
         return;
     }
     let session = launched.unwrap();
-    marker(&lines, "BROKER_GUARD_ACKED");
-    let agent_pid: u32 = marker(&lines, "BROKER_RUNNING ")
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let provider_address = provider.then(|| {
-        marker(&lines, "BROKER_PROVIDER_ADDR ")
+    let read_markers = |lines: &mpsc::Receiver<String>| {
+        marker(lines, "BROKER_GUARD_ACKED");
+        let agent_pid: u32 = marker(lines, "BROKER_RUNNING ")
             .split_whitespace()
             .nth(1)
             .unwrap()
-            .parse::<SocketAddr>()
-            .unwrap()
-    });
+            .parse()
+            .unwrap();
+        let provider_address = provider.then(|| {
+            marker(lines, "BROKER_PROVIDER_ADDR ")
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<SocketAddr>()
+                .unwrap()
+        });
+        (agent_pid, provider_address)
+    };
+    let (agent_pid, provider_address) = read_markers(&lines);
     if hold_close_ack {
         marker(&lines, "BROKER_GUARD_HELD");
     }
@@ -431,6 +465,19 @@ fn installed_guard_case(
         .unwrap();
         let _ = done.send(session.relay_stdio(relay));
     });
+    if codex {
+        // Not a setup message: held until the Codex-shaped descendant is
+        // enrolled and policy activated, then the test Agent echoes it.
+        controller_peer_input
+            .write_all(b"enroll-trigger\n")
+            .unwrap();
+        controller_peer_output
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let mut echoed = [0; 15];
+        controller_peer_output.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"enroll-trigger\n");
+    }
     if let Some(address) = provider_address {
         controller_peer_output
             .set_read_timeout(Some(Duration::from_secs(20)))

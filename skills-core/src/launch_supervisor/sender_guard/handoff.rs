@@ -147,7 +147,7 @@ impl SenderGuard {
         timeout: Duration,
     ) -> Result<(), GuardError> {
         self.check_scope(&self.scope)?;
-        if !self.enrolled || self.handoff.is_some() {
+        if !(self.enrolled || self.deferred) || self.handoff.is_some() {
             return Err(GuardError::Enrollment);
         }
         let endpoint = self.endpoint.as_ref().ok_or(GuardError::Enrollment)?;

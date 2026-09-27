@@ -83,7 +83,8 @@ fn held_input_requests_enrollment_and_flushes_only_after_opening() {
     let mut output = Vec::new();
     assert!(gate.admit_into(&mut output));
     assert_eq!(output, line("initialize"));
-    assert!(hold.requested());
+    assert!(gate.take_request(), "the held prompt requests enrollment");
+    assert!(!gate.take_request(), "enrollment is requested once");
     output.clear();
     assert!(!gate.admit_into(&mut output), "held input stays staged");
     assert!(output.is_empty());
