@@ -27,8 +27,10 @@ use openssl::{
 };
 use std::{
     io::{Read, Write},
-    net::{SocketAddr, TcpListener},
+    net::{IpAddr, SocketAddr, TcpListener},
 };
+
+const LIVE_OPENAI_KEY: &str = "/root/louiselm-live-openai.key";
 
 pub(super) fn approval(now_ms: u64) -> crate::provider_request::ApprovedProviderRequests {
     crate::provider_request::ApprovedProviderRequests {
@@ -168,7 +170,7 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
                                 &request[header_end + 4..header_end + 4 + length],
                             )
                             .unwrap();
-                            assert_eq!(body["model"], "gpt-6-astra");
+                            assert_eq!(body["model"], "gpt-5.6-luna");
                             assert_eq!(body["reasoning"]["effort"], "low");
                             if request_index == 0 {
                                 assert!(
@@ -271,7 +273,12 @@ fn custom_tool_response() -> Vec<u8> {
     response.into_bytes()
 }
 
-pub(super) fn park_and_dispose(broker: &InstalledBroker, session: &mut BrokerSession, uid: u32) {
+pub(super) fn park_and_dispose(
+    broker: &InstalledBroker,
+    session: &mut BrokerSession,
+    uid: u32,
+    already_parked: bool,
+) {
     let caller = LifecycleCaller::Operator { uid };
     let request = |request_id: &str, action, state, sequence| LifecycleRequest {
         schema: LIFECYCLE_REQUEST_SCHEMA.into(),
@@ -285,22 +292,26 @@ pub(super) fn park_and_dispose(broker: &InstalledBroker, session: &mut BrokerSes
         expected_receipt_sequence: Some(sequence),
         envelope_revision: 1,
     };
-    broker
-        .request_lifecycle(
-            session,
-            &caller,
-            &request(
-                "guard-park",
-                LifecycleAction::Park,
-                SessionState::Running,
-                1,
-            ),
-        )
-        .unwrap();
+    if !already_parked {
+        broker
+            .request_lifecycle(
+                session,
+                &caller,
+                &request(
+                    "guard-park",
+                    LifecycleAction::Park,
+                    SessionState::Running,
+                    1,
+                ),
+            )
+            .unwrap();
+    }
     while broker.inspect("session").unwrap().unwrap().state != SessionState::Parked {
         assert!(!broker.step(session).unwrap());
     }
-    println!("BROKER_PARKED");
+    if !already_parked {
+        println!("BROKER_PARKED");
+    }
     assert!(
         broker
             .request_lifecycle(
@@ -393,6 +404,40 @@ fn privileged_installed_brokered_stock_codex_completes_prompt() {
 }
 
 #[test]
+#[ignore = "requires a dedicated hard-capped API project and private VM key"]
+fn privileged_installed_brokered_stock_codex_real_openai() {
+    assert_eq!(
+        std::env::var("LOUISELM_REQUIRE_LIVE_OPENAI").as_deref(),
+        Ok("1"),
+        "live API calls require an explicit opt-in"
+    );
+    assert!(std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some());
+    let stock = std::env::var_os("LOUISELM_STOCK_CODEX_DIR")
+        .expect("provide the hash-pinned stock Codex chain");
+    let address: IpAddr = std::env::var("LOUISELM_LIVE_OPENAI_IP")
+        .expect("provide the resolved OpenAI address")
+        .parse()
+        .expect("OpenAI address must be an IP literal");
+    assert!(!address.is_loopback() && !address.is_unspecified());
+    let key = fs::symlink_metadata(LIVE_OPENAI_KEY).expect("provision the private guest key");
+    assert!(
+        key.is_file()
+            && key.uid() == 0
+            && key.mode() & 0o7777 == 0o600
+            && key.nlink() == 1
+            && (1..=16 * 1024).contains(&key.len())
+    );
+    installed_guard_case_for(
+        false,
+        true,
+        false,
+        true,
+        false,
+        CodexCase::Live(Path::new(&stock), address),
+    );
+}
+
+#[test]
 fn privileged_installed_brokered_without_provider_permission_refuses() {
     installed_guard_case(false, false, false, false, true);
 }
@@ -425,6 +470,7 @@ enum CodexCase<'a> {
     Missing,
     WrongAncestry,
     Stock(&'a Path),
+    Live(&'a Path, IpAddr),
 }
 
 #[expect(
@@ -460,7 +506,7 @@ fn installed_guard_case_for(
             &registry_root,
             &config,
             match codex {
-                CodexCase::Stock(path) => Some(path),
+                CodexCase::Stock(path) | CodexCase::Live(path, _) => Some(path),
                 _ => None,
             },
             match codex {
@@ -473,16 +519,33 @@ fn installed_guard_case_for(
     if !no_permission {
         fs::write(root.path().join("brokered"), b"").unwrap();
     }
-    let tls_server = provider
+    let live_address = match codex {
+        CodexCase::Live(_, address) => Some(address),
+        _ => None,
+    };
+    let tls_server = (provider && live_address.is_none())
         .then(|| start_provider_upstream(root.path(), matches!(codex, CodexCase::Stock(_))));
-    if let Some((port, _)) = &tls_server {
+    if provider {
         super::provider_credentials::provision_empty_state(root.path());
-        fs::write(root.path().join("guard-provider-port"), port.to_string()).unwrap();
+        if let Some((port, _)) = &tls_server {
+            fs::write(root.path().join("guard-provider-port"), port.to_string()).unwrap();
+        }
+        if let Some(address) = live_address {
+            fs::write(
+                root.path().join("guard-provider-live-ip"),
+                address.to_string(),
+            )
+            .unwrap();
+        }
         let custody = ProviderCredentialStore::root_in(&root.path().join("state"));
         chown(&custody, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
         fs::set_permissions(&custody, fs::Permissions::from_mode(0o700)).unwrap();
         let credential = custody.join("openai");
-        fs::write(&credential, b"fixture-secret").unwrap();
+        if live_address.is_some() {
+            fs::copy(LIVE_OPENAI_KEY, &credential).unwrap();
+        } else {
+            fs::write(&credential, b"fixture-secret").unwrap();
+        }
         chown(&credential, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
         fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
     }
@@ -581,6 +644,16 @@ fn installed_guard_case_for(
         (agent_pid, provider_address)
     };
     let (agent_pid, provider_address) = read_markers(&lines);
+    if live_address.is_some() {
+        super::provider_credentials::assert_session_surfaces(
+            root.path(),
+            "openai",
+            agent_pid,
+            broker_child.0.id(),
+        );
+        super::provider_credentials::assert_records(root.path(), "openai");
+        println!("LIVE_CUSTODY_PROBES_PASSED");
+    }
     if hold_close_ack {
         marker(&lines, "BROKER_GUARD_HELD");
     }
@@ -601,12 +674,21 @@ fn installed_guard_case_for(
         .unwrap();
         let _ = done.send(session.relay_stdio(relay));
     });
-    if matches!(codex, CodexCase::Stock(_)) {
-        stock_acp_prompt(
-            &mut controller_peer_input,
-            &mut controller_peer_output,
-            &sessions,
-        );
+    if matches!(codex, CodexCase::Stock(_) | CodexCase::Live(_, _)) {
+        if live_address.is_some() {
+            stock_acp_live_prompts(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                &sessions,
+                root.path(),
+            );
+        } else {
+            stock_acp_prompt(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                &sessions,
+            );
+        }
     } else if !matches!(codex, CodexCase::None) {
         // Not a setup message: held until the Codex-shaped descendant is
         // enrolled and policy activated, then the test Agent echoes it.
@@ -640,7 +722,28 @@ fn installed_guard_case_for(
         assert_eq!(&echoed, b"enroll-trigger\n");
     }
     if let Some(address) = provider_address {
-        if matches!(codex, CodexCase::Stock(_)) {
+        if live_address.is_some() {
+            marker(&lines, "BROKER_PARKED");
+            assert_eq!(live_spent(root.path()), 2);
+            let outbox = crate::broker::attention::Outbox::open(
+                &root.path().join("state/authorizations/attention-outbox"),
+            )
+            .unwrap();
+            let attention = outbox.next().unwrap().unwrap();
+            assert_eq!(
+                attention.wire()["change"]["attention"]["kind"],
+                "run_parked"
+            );
+            super::provider_credentials::assert_session_surfaces(
+                root.path(),
+                "openai",
+                agent_pid,
+                broker_child.0.id(),
+            );
+            super::provider_credentials::assert_records(root.path(), "openai");
+            println!("LIVE_REQUESTS=2 EXHAUSTED=1 ATTENTION=run_parked");
+            fs::write(root.path().join("guard-provider-done"), b"").unwrap();
+        } else if matches!(codex, CodexCase::Stock(_)) {
             fs::write(root.path().join("guard-provider-done"), b"").unwrap();
             tls_server.unwrap().1.join().unwrap();
         } else {
@@ -824,4 +927,137 @@ fn stock_acp_prompt(
         }),
     );
     assert_eq!(completed["stopReason"], "end_turn", "{completed}");
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "One redacted live ACP script checks denials before the two paid turns and exhaustion."
+)]
+fn stock_acp_live_prompts(
+    input: &mut std::os::unix::net::UnixStream,
+    output: &mut std::os::unix::net::UnixStream,
+    sessions: &Path,
+    root: &Path,
+) {
+    output
+        .set_read_timeout(Some(Duration::from_mins(1)))
+        .unwrap();
+    let mut reader = BufReader::new(output.try_clone().unwrap());
+    let mut request = |id: u64, method: &str, params: serde_json::Value| {
+        writeln!(
+            input,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        )
+        .unwrap();
+        let mut line = String::new();
+        let mut denied = false;
+        loop {
+            line.clear();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "ACP closed during {method}"
+            );
+            let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+            denied |= line.contains("capability_denied");
+            if frame.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                return (
+                    frame["result"].clone(),
+                    denied,
+                    frame.get("error").is_some(),
+                );
+            }
+        }
+    };
+    let (initialized, denied, errored) = request(
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion":1,
+            "clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},
+            "clientInfo":{"name":"louiselm-live-gate","version":"1"}
+        }),
+    );
+    assert_eq!(initialized["protocolVersion"], 1);
+    assert!(!denied && !errored);
+    let (created, denied, errored) = request(
+        2,
+        "session/new",
+        serde_json::json!({"cwd":sessions.join("session/workspace"),"mcpServers":[]}),
+    );
+    assert!(!denied && !errored);
+    let session_id = created["sessionId"].as_str().unwrap();
+    let (_, denied, errored) = request(
+        3,
+        "session/set_config_option",
+        serde_json::json!({"sessionId":session_id,"configId":"reasoning_effort","value":"xhigh"}),
+    );
+    assert!(!denied && !errored, "ACP configuration was refused");
+    let (_, denied, _) = request(
+        4,
+        "session/prompt",
+        serde_json::json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Reply with OK. Do not use tools."}]}),
+    );
+    assert!(
+        denied,
+        "above-ceiling effort was not rejected by the broker"
+    );
+    assert_eq!(live_spent(root), 0);
+    for (id, config_id, value) in [(5, "reasoning_effort", "low"), (6, "model", "gpt-6-sol")] {
+        let (_, denied, errored) = request(
+            id,
+            "session/set_config_option",
+            serde_json::json!({"sessionId":session_id,"configId":config_id,"value":value}),
+        );
+        assert!(!denied && !errored, "ACP configuration was refused");
+    }
+    let (_, denied, _) = request(
+        7,
+        "session/prompt",
+        serde_json::json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Reply with OK. Do not use tools."}]}),
+    );
+    assert!(
+        denied,
+        "non-allowlisted Model was not rejected by the broker"
+    );
+    assert_eq!(live_spent(root), 0);
+    let (_, denied, errored) = request(
+        8,
+        "session/set_config_option",
+        serde_json::json!({"sessionId":session_id,"configId":"model","value":"gpt-5.6-luna"}),
+    );
+    assert!(!denied && !errored, "ACP configuration was refused");
+    for id in [9, 10] {
+        let (completed, denied, errored) = request(
+            id,
+            "session/prompt",
+            serde_json::json!({"sessionId":session_id,"prompt":[{"type":"text","text":"Reply with OK. Do not use tools."}]}),
+        );
+        assert_eq!(
+            completed["stopReason"], "end_turn",
+            "live turn did not complete"
+        );
+        assert!(!denied && !errored, "live turn received a refusal");
+    }
+    assert_eq!(live_spent(root), 2);
+    println!("LIVE_TURNS=2");
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({
+            "jsonrpc":"2.0","id":11,"method":"session/prompt",
+            "params":{"sessionId":session_id,"prompt":[{"type":"text","text":"Reply with OK."}]}
+        })
+    )
+    .unwrap();
+}
+
+fn live_spent(root: &Path) -> usize {
+    let attempts = root
+        .join("state/authorizations/provider-requests/runs")
+        .join(Digest::of(b"run").hex());
+    if !attempts.exists() {
+        return 0;
+    }
+    fs::read_dir(attempts).unwrap().count()
 }

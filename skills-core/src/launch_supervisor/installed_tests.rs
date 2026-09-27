@@ -515,7 +515,7 @@ fn installed_broker_worker() {
                 println!("BROKER_PARKED");
             }
         }
-        guard::park_and_dispose(&broker, &mut session, config.operator_uid);
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid, live_provider);
         return;
     }
     if root.join("guard-close-no-ack").exists() {
@@ -529,7 +529,7 @@ fn installed_broker_worker() {
         return;
     }
     if root.join("guard-park").exists() {
-        guard::park_and_dispose(&broker, &mut session, config.operator_uid);
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid, false);
         return;
     }
     if root.join("key-revocation").exists() {
@@ -764,6 +764,7 @@ fn installed_broker_effects(
     if credential_custody {
         provider_credentials::assert_session_surfaces(
             root.path(),
+            "acme",
             agent_pid,
             broker_process.0.id(),
         );
@@ -847,7 +848,7 @@ fn installed_broker_effects(
     }
     assert!(broker_process.0.wait().unwrap().success());
     if credential_custody {
-        provider_credentials::assert_records(root.path());
+        provider_credentials::assert_records(root.path(), "acme");
     }
     crate::launcher_install::acquire_identity(&paths, 0)
         .unwrap()

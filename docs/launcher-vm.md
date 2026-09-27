@@ -66,6 +66,85 @@ the existing host rustup executable provisions the pinned guest toolchain.
 ./scripts/launcher-vm reset --discard       # stopped only; fresh disk AND UEFI variables
 ```
 
+## Capped live OpenAI acceptance
+
+`louiselm-qbr.5.1.3.13` is a maintainer-run check, never a CI gate. First create
+a dedicated OpenAI API project and set a monthly spend limit of about $20 with
+**Enforce a hard limit** enabled in Project settings → Limits → Spend. A spend
+alert alone does not stop requests, and [OpenAI says hard-limit enforcement can
+lag slightly](https://developers.openai.com/api/docs/guides/spend-limits). Create
+a project-scoped key for this disposable check. Do not send the key to an Agent,
+put it in an environment variable, or paste it into Beads.
+
+Use a committed revision containing
+`privileged_installed_brokered_stock_codex_real_openai`; a `git archive HEAD`
+does not contain uncommitted edits. Start from a fresh overlay and inspect the
+explicit guest-egress mode:
+
+```sh
+./scripts/launcher-vm status
+./scripts/launcher-vm reset --discard
+./scripts/launcher-vm plan --provider-egress
+./scripts/launcher-vm start --provider-egress
+git archive HEAD skills-core scripts/fetch-stock-codex-chain |
+  ./scripts/launcher-vm exec tar -x -C /home/vm
+./scripts/launcher-vm exec python3 /home/vm/scripts/fetch-stock-codex-chain \
+  /var/tmp/louiselm-stock-chain
+./scripts/launcher-vm exec env PATH=/home/vm/.cargo/bin:/usr/bin:/bin \
+  CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 \
+  CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+  CARGO_TARGET_DIR=/var/tmp/louiselm-skills-target \
+  cargo test --manifest-path /home/vm/skills-core/Cargo.toml \
+  --all-features --locked --no-run
+./scripts/launcher-vm exec sudo -n strip --strip-debug \
+  /var/tmp/louiselm-skills-target/debug/louiselm-launch
+./scripts/launcher-vm exec sudo -n env \
+  LOUISELM_REQUIRE_BROKER_GUARD=1 \
+  LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
+  /bin/bash -c 'set -euo pipefail; mapfile -t tests < <(find /var/tmp/louiselm-skills-target/debug/deps -maxdepth 1 -type f -perm /111 -name "louiselm_skills-*"); test "${#tests[@]}" -eq 1; exec timeout 180 unshare --net "${tests[0]}" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt --exact --nocapture --test-threads=1'
+./scripts/launcher-vm exec getent ahostsv4 api.openai.com
+```
+
+The offline stock gate must pass before provisioning a key or making a paid
+request. It also checks the installed guard and measured runtime. The stripped
+debug launcher stays within the installed profile's 128 MiB file limit.
+
+Choose one IPv4 literal from the last command for `OPENAI_IP` below. Before
+provisioning the key, the maintainer opens `./scripts/launcher-vm terminal` in a
+private, unrecorded terminal and runs the following inside the guest. The key is
+typed at the silent prompt; it never appears in an argument, shell history or
+the Agent's environment:
+
+```sh
+sudo -n bash -c 'umask 077; read -r -s -p "Project API key: " key </dev/tty; printf "\n" >/dev/tty; printf %s "$key" > /root/louiselm-live-openai.key; unset key'
+```
+
+Run the ignored test as guest root, replacing `OPENAI_IP` with the selected
+literal. The test refuses absent/unsafe key files and requires both opt-in
+variables. Its only upstream is `https://api.openai.com/v1/responses`, through
+the broker's selected IP and TLS hostname. It requests two Luna turns at low
+effort under a two-request Run limit; above-high effort and a Model outside the
+allowlist are tried first and must spend zero units. A third Luna prompt must
+exhaust the Run, Park the Session and create a `run_parked` Attention item.
+
+```sh
+./scripts/launcher-vm exec sudo -n env \
+  LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_REQUIRE_LIVE_OPENAI=1 \
+  LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain \
+  LOUISELM_LIVE_OPENAI_IP=OPENAI_IP \
+  /bin/bash -c 'set -euo pipefail; mapfile -t tests < <(find /var/tmp/louiselm-skills-target/debug/deps -maxdepth 1 -type f -perm /111 -name "louiselm_skills-*"); test "${#tests[@]}" -eq 1; exec timeout 180 "${tests[0]}" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_real_openai --exact --ignored --nocapture --test-threads=1'
+```
+
+Record the test's redacted markers, compiled revision, Node/Codex/adapter
+versions and hashes, chosen IP, request count and typed denial/Park/Attention
+outcomes on the issue. Never record key bytes, response content or ACP payloads.
+The custody probes scan Session process state, files and broker records for the
+key. A passing result is disposable-VM acceptance, not host installation.
+Finally stop the VM, revoke the project key, and discard the credential-bearing
+overlay. `reset --discard` archives the old overlay instead of erasing it; after
+revocation, remove that exact archived disk by its printed path. Keep the prior
+unrelated overlays untouched.
+
 ## Explicit recovery connections
 
 Only after the maintainer authorizes temporary token access, identify the

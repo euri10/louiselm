@@ -126,9 +126,14 @@ fn scan(directory: &Path, secret: &[u8]) {
     }
 }
 
-pub(super) fn assert_session_surfaces(root: &Path, agent_pid: u32, broker_pid: u32) {
+pub(super) fn assert_session_surfaces(
+    root: &Path,
+    provider: &str,
+    agent_pid: u32,
+    broker_pid: u32,
+) {
     let directory = ProviderCredentialStore::root_in(&root.join("state"));
-    let credential = directory.join("acme");
+    let credential = directory.join(provider);
     let secret = fs::read(&credential).unwrap();
     for pid in [agent_pid, broker_pid] {
         for name in ["environ", "cmdline"] {
@@ -163,9 +168,9 @@ pub(super) fn assert_session_surfaces(root: &Path, agent_pid: u32, broker_pid: u
     scan(&root.join("registry"), &secret);
 }
 
-pub(super) fn assert_records(root: &Path) {
+pub(super) fn assert_records(root: &Path, provider: &str) {
     let custody = ProviderCredentialStore::root_in(&root.join("state"));
-    let secret = fs::read(custody.join("acme")).unwrap();
+    let secret = fs::read(custody.join(provider)).unwrap();
     for entry in fs::read_dir(root.join("state")).unwrap() {
         let entry = entry.unwrap();
         if entry.path() == custody {

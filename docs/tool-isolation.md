@@ -28,7 +28,7 @@ files sit at those fixed names in the runtime root and must be registered
 adapters. The launcher supplies the adapter argument and a fixed environment:
 `CODEX_CONFIG` names only the Session's broker listener
 (`http://127.0.0.1:40773/v1`) with no MCP servers, `DEFAULT_AUTH_REQUEST` carries
-no headers or credentials, the model is `gpt-6-astra` at `low` effort, and `HOME` is the private Session home. No operator
+no headers or credentials, the model is `gpt-5.6-luna` at `low` effort, and `HOME` is the private Session home. No operator
 Codex home or configuration is read. The evidence adds the adapter, runtime and
 configuration digests.
 

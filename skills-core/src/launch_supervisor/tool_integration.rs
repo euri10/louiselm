@@ -352,7 +352,7 @@ fn codex_configuration() -> (String, String) {
     let config = serde_json::json!({
         "features": {"code_mode_host": true},
         "mcp_servers": {},
-        "model": "gpt-6-astra",
+        "model": "gpt-5.6-luna",
         "model_provider": CODEX_PROVIDER,
         "model_reasoning_effort": "low",
         "model_providers": {
@@ -615,6 +615,7 @@ mod tests {
         assert_eq!(environment["HOME"], "/session/home");
         assert_eq!(environment["PATH"], "/runtime:/usr/bin:/bin");
         let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
+        assert_eq!(config["model"], "gpt-5.6-luna");
         assert_eq!(config["mcp_servers"], serde_json::json!({}));
         assert_eq!(config["features"]["code_mode_host"], true);
         assert_eq!(

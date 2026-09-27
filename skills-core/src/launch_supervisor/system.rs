@@ -1998,8 +1998,9 @@ fn apply_mechanic<T>(
 }
 
 impl SystemRunningAgent {
-    /// Waits only for the measured runtime to appear. Frozen tree validation
-    /// still decides whether its ancestry and the complete process set are safe.
+    /// Waits for startup helpers to leave and the tree to stay quiet for 100ms
+    /// before freezing it. Stock Codex may briefly fork Git during startup.
+    /// The frozen snapshot still validates identity, ancestry, and every member.
     fn wait_for_runtime(&self) -> Result<(), SupervisorError> {
         let descendant = self
             .descendant
@@ -2013,14 +2014,34 @@ impl SystemRunningAgent {
         let deadline = Instant::now()
             .checked_add(descendant.timeout)
             .ok_or(SupervisorError::ToolIsolationUnproven)?;
+        let mut quiet_since = None;
         loop {
-            if lock(&self.session)
+            let session = lock(&self.session);
+            let adapter_pid = session
+                .agent_identity()
+                .ok_or(SupervisorError::AgentIdentityRejected)?
+                .credentials()
+                .pid;
+            let infrastructure = [Some(session.monitor_pid()), session.sandbox_leader_pid()];
+            let processes = session
                 .processes()
                 .map_err(map_sandbox)?
                 .into_iter()
-                .any(|pid| executable_identity(pid) == Some(identity))
-            {
-                return Ok(());
+                .filter(|pid| !infrastructure.contains(&Some(*pid)))
+                .collect::<Vec<_>>();
+            let ready = processes.len() == 2
+                && processes.contains(&adapter_pid)
+                && processes
+                    .iter()
+                    .any(|pid| *pid != adapter_pid && executable_identity(*pid) == Some(identity));
+            drop(session);
+            if ready {
+                let since = quiet_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(100) {
+                    return Ok(());
+                }
+            } else {
+                quiet_since = None;
             }
             if Instant::now() >= deadline {
                 return Err(SupervisorError::ToolIsolationUnproven);
