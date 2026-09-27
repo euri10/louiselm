@@ -226,6 +226,7 @@ pub(super) fn privileged_case() {
         certificate.observations.result().unwrap(),
         ReportResult::Passed
     );
+    prepare_operator_socket(root.path());
     fs::copy(
         std::env::current_exe().unwrap(),
         operator_client(root.path()),

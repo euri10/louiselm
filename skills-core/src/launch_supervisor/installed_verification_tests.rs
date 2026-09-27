@@ -122,9 +122,6 @@ fn authorize_child(
 }
 
 fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
-    let parent = root.join("operator-api");
-    fs::create_dir(&parent).unwrap();
-    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
     let server =
         crate::broker::operator::OperatorServer::bind(&operator_socket(root), uid).unwrap();
     thread::spawn(move || {
@@ -160,6 +157,13 @@ fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
                 .unwrap();
         }
     });
+}
+
+fn prepare_operator_socket(root: &Path) {
+    let parent = root.join("operator-api");
+    fs::create_dir(&parent).unwrap();
+    chown(&parent, Some(BROKER_UID), Some(BROKER_UID)).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 #[path = "installed_promotion_tests.rs"]
@@ -678,6 +682,7 @@ fn privileged_verification_case(index: usize) {
         .unwrap();
     // Broker identity reconciliation is separate work: each consumed launch keeps its slot reserved.
     let (paths, config, registry) = install_fixture_with_slots(root.path(), 2);
+    prepare_operator_socket(root.path());
     fs::copy(
         std::env::current_exe().unwrap(),
         operator_client(root.path()),
