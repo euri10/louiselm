@@ -164,6 +164,7 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
                     if request.len() >= header_end + 4 + length {
                         assert!(header.contains("authorization: bearer fixture-secret"));
                         if stock {
+                            eprintln!("STOCK_UPSTREAM_REQUEST {request_index}");
                             let body: serde_json::Value = serde_json::from_slice(
                                 &request[header_end + 4..header_end + 4 + length],
                             )
@@ -212,6 +213,9 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
             .unwrap();
             tls.write_all(&response).unwrap();
             tls.flush().unwrap();
+            if stock {
+                eprintln!("STOCK_UPSTREAM_RESPONSE {request_index}");
+            }
         }
     });
     (port, worker)
@@ -787,9 +791,14 @@ fn stock_acp_prompt(
             line.clear();
             assert!(
                 reader.read_line(&mut line).unwrap() > 0,
-                "ACP closed before {method} replied; frames={frames}, recent={recent:?}, agent_alive={}, relay={:?}",
-                Path::new(&format!("/proc/{agent_pid}")).exists(),
-                finished.recv_timeout(Duration::from_secs(1))
+                "ACP closed before {method} replied; frames={frames}, recent={recent:?}, agent_state={:?}, children={:?}, relay={:?}",
+                fs::read_to_string(format!("/proc/{agent_pid}/stat"))
+                    .ok()
+                    .and_then(|stat| stat.split_whitespace().nth(2).map(str::to_owned)),
+                fs::read_to_string(format!("/proc/{agent_pid}/task/{agent_pid}/children"))
+                    .ok()
+                    .map(|children| children.split_whitespace().count()),
+                finished.recv_timeout(Duration::from_secs(3))
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             frames += 1;
