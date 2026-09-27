@@ -12,8 +12,8 @@ fn line(method: &str) -> Vec<u8> {
 }
 
 #[test]
-fn only_complete_setup_lines_pass_before_enrollment() {
-    let setup = [line("initialize"), line("session/new")].concat();
+fn only_initialize_passes_before_enrollment() {
+    let setup = line("initialize");
     assert_eq!(
         admit(&setup),
         Admission {
@@ -21,14 +21,17 @@ fn only_complete_setup_lines_pass_before_enrollment() {
             hold: false
         }
     );
-    let prompt = [setup.clone(), line("session/prompt"), line("initialize")].concat();
-    assert_eq!(
-        admit(&prompt),
-        Admission {
-            forward: setup.len(),
-            hold: true
-        }
-    );
+    for method in ["session/new", "authenticate", "session/prompt"] {
+        let input = [setup.clone(), line(method), line("initialize")].concat();
+        assert_eq!(
+            admit(&input),
+            Admission {
+                forward: setup.len(),
+                hold: true
+            },
+            "{method} must wait for enrollment"
+        );
+    }
     let partial = [setup.clone(), b"{\"method\":\"session/new\"".to_vec()].concat();
     assert_eq!(
         admit(&partial),
@@ -78,12 +81,18 @@ fn doubtful_input_holds_instead_of_passing() {
 fn held_input_requests_enrollment_and_flushes_only_after_opening() {
     let hold = Arc::new(PromptHold::default());
     let mut gate = GatedInput::new(Arc::clone(&hold));
-    let input = [line("initialize"), line("session/prompt"), line("later")].concat();
+    let input = [
+        line("initialize"),
+        line("session/new"),
+        line("session/prompt"),
+        line("later"),
+    ]
+    .concat();
     assert!(gate.read(&mut input.as_slice()).unwrap());
     let mut output = Vec::new();
     assert!(gate.admit_into(&mut output));
     assert_eq!(output, line("initialize"));
-    assert!(gate.take_request(), "the held prompt requests enrollment");
+    assert!(gate.take_request(), "the held Session requests enrollment");
     assert!(!gate.take_request(), "enrollment is requested once");
     output.clear();
     assert!(!gate.admit_into(&mut output), "held input stays staged");
@@ -94,5 +103,8 @@ fn held_input_requests_enrollment_and_flushes_only_after_opening() {
     );
     hold.open();
     assert!(gate.admit_into(&mut output));
-    assert_eq!(output, [line("session/prompt"), line("later")].concat());
+    assert_eq!(
+        output,
+        [line("session/new"), line("session/prompt"), line("later")].concat()
+    );
 }

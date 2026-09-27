@@ -56,7 +56,7 @@ impl RelayWorker {
         )
     }
 
-    /// Starts a relay that, with a hold, forwards prompts only once it opens.
+    /// Starts a relay that, with a hold, forwards Session requests only once it opens.
     pub(super) fn start_with_hold(
         controller: mpsc::Receiver<RelayStdio>,
         input: ChildStdin,

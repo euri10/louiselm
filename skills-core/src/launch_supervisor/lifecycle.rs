@@ -1608,7 +1608,7 @@ impl SessionOwner {
                 if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
                     eprintln!("STOCK_ENROLL_RESULT {enrolled:?}");
                 }
-                // Held prompts never reach an unenrolled runtime; failure ends it.
+                // Held Session requests never reach an unenrolled runtime; failure ends it.
                 if enrolled.is_err() {
                     self.begin_terminal_event(TerminalEvent::RelayFailed);
                 }

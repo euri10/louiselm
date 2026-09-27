@@ -1,10 +1,10 @@
-//! Holds controller ACP input before the first prompt until sender enrollment.
+//! Holds controller ACP input after initialization until sender enrollment.
 //!
 //! For a contract whose sending runtime is a descendant (louiselm-fkdv8), no
-//! prompt may reach the Agent before the Sender guard has enrolled that
-//! runtime: prompts start tools, and a tool existing before enrollment could
-//! steer the runtime's later authority. Before the hold opens, only complete
-//! newline-delimited JSON-RPC lines naming a setup method pass. Anything else,
+//! Session request may reach the Agent before the Sender guard has enrolled
+//! that runtime: even session setup can start another process, which would
+//! invalidate the exact two-process enrollment tree. Before the hold opens,
+//! only complete newline-delimited initialize requests pass. Anything else,
 //! including unparseable or oversized input, stops forwarding and requests
 //! enrollment. Holding never grants authority, so every doubt fails closed.
 
@@ -20,8 +20,6 @@ use std::{
     },
 };
 
-/// Methods that set up a Session without starting Agent work.
-const SETUP_METHODS: [&str; 3] = ["initialize", "authenticate", "session/new"];
 /// Bound on one held line, and on bytes read ahead while the hold is closed.
 pub(super) const MAX_HELD_LINE: usize = 1024 * 1024;
 
@@ -45,7 +43,7 @@ impl PromptHold {
 /// How much of the pending controller input may pass before enrollment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Admission {
-    /// Bytes forming complete setup lines, safe to forward now.
+    /// Bytes forming complete initialization lines, safe to forward now.
     pub(super) forward: usize,
     /// Whether the next input needs an enrolled sender.
     pub(super) hold: bool,
@@ -56,7 +54,7 @@ pub(super) fn admit(pending: &[u8]) -> Admission {
     let mut start = 0;
     while let Some(end) = pending[start..].iter().position(|&byte| byte == b'\n') {
         let line = &pending[start..=start + end];
-        if !is_setup(line) {
+        if !is_initialize(line) {
             return Admission {
                 forward: start,
                 hold: true,
@@ -70,15 +68,12 @@ pub(super) fn admit(pending: &[u8]) -> Admission {
     }
 }
 
-fn is_setup(line: &[u8]) -> bool {
+fn is_initialize(line: &[u8]) -> bool {
     if line.iter().all(u8::is_ascii_whitespace) {
         return true;
     }
     serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|message| {
-        message
-            .get("method")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|method| SETUP_METHODS.contains(&method))
+        message.get("method").and_then(serde_json::Value::as_str) == Some("initialize")
     })
 }
 
