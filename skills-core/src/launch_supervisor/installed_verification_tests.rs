@@ -655,7 +655,6 @@ fn privileged_installed_exact_job_verification() {
     for index in 0..5 {
         privileged_verification_case(index);
     }
-    budget::privileged_case();
 }
 
 #[expect(

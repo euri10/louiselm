@@ -202,7 +202,14 @@ fn worker(root: &Path) -> (BrokerChild, mpsc::Receiver<String>) {
     (BrokerChild(child), rx)
 }
 
-pub(super) fn privileged_case() {
+#[test]
+fn privileged_installed_run_budget() {
+    if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
+        eprintln!("skipping: shared Run budget requires the Debian launcher VM");
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root());
+    let _account = BrokerAccount::create();
     let root = tempfile::Builder::new()
         .prefix("louiselm-run-budget-")
         .tempdir_in("/var/lib")

@@ -220,6 +220,8 @@ jobs:
               sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 timeout 90 unshare --net -- \
                 /bin/bash -c '\''umask 022; exec "$1" "$2" --exact --nocapture'\'' bash "$library_test" "launch_supervisor::system::installed_tests::guard::$scenario"
             done
+            sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 timeout 120 unshare --net -- \
+              /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::verification::budget::privileged_installed_run_budget --exact --nocapture'\'' bash "$library_test"
             sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 90 unshare --net -- \
               /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt --exact --nocapture'\'' bash "$library_test"
             LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain "$library_test" launch_supervisor::system::installed_tests::codex_chain::stock_runtime_rejects_a_wrong_registered_hash --exact
