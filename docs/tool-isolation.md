@@ -47,6 +47,24 @@ Codex-shaped fixture chain. CI also runs pinned stock Codex against a synthetic
 brokered Responses endpoint and checks missing-descendant and wrong-ancestry
 refusals (louiselm-98wr4).
 
+### Controller-side Agent recipe
+
+The Contained Codex process order is Neovim → `acp-proxy` → the installed
+launcher → Node/`codex-acp.js` → Codex. As the operator, the controller starts:
+
+```sh
+acp-proxy -- sudo -n /usr/local/lib/louiselm/current/bin/louiselm-launch run
+```
+
+The controller must write the canonical LaunchRequest JSON line to stdin first,
+then use the same stream for ACP; this is a process recipe, not a working
+standalone shell command or an already-wired Neovim Agent configuration. The
+launcher never takes arbitrary Agent arguments from this command. Keep
+`acp-proxy` outside the sandbox so its ACP logs remain in the operator's normal
+state directory for `louiselm-usage`. The proxy can relay and log ACP, but it
+cannot read the broker-held Provider key, join the contained process identity,
+or acquire a broker grant merely by relaying that stream.
+
 The deterministic Agent is the executable itself, not a runtime wrapper. It
 echoes ordinary stdin bytes. A record separator (`0x1e`) introduces a bounded
 newline-terminated JSON command or delegation request, which this native process
