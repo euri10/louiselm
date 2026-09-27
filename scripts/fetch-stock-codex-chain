@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fetch the hash-pinned stock Codex ACP chain for the installed CI gate.
 
-Downloads exactly three public artifacts, verifies each archive and each
-extracted file against the pins below, and writes `node`, `codex-acp.js` and
-`codex` into a new directory. Nothing is executed. Upgrading Codex, the
+Downloads exactly four public artifacts, verifies each archive and each
+extracted file against the pins below, and writes `node`, `codex-acp.js`,
+`codex` and `codex-code-mode-host` into a new directory. Nothing is executed. Upgrading Codex, the
 adapter or Node changes these pins and the broker disclosure profile together
 (louiselm-fkdv8, louiselm-98wr4).
 """
@@ -36,6 +36,13 @@ ARTIFACTS = {
         "archive": "aff46539a83aff86e3c62c592bce2c50d95391f9df289afaf03a50c01d14533d",
         "member": "codex-x86_64-unknown-linux-musl",
         "file": "0b2e9301d6100dddda3b9d5c80ebaeaa3a2f1962388f2f36f6b96a9f08b1f33f",
+        "mode": 0o555,
+    },
+    "codex-code-mode-host": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz",
+        "archive": "a929daa9f6a0bddc00c0c9e6402df117b125acd96f9d554f6c99c32c7e66c608",
+        "member": "codex-code-mode-host-x86_64-unknown-linux-musl",
+        "file": "45ba654b0e145406f3316be4729b886980ce811aa2e3b6ed4e033dd41ab524f1",
         "mode": 0o555,
     },
 }

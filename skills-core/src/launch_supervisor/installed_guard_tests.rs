@@ -97,6 +97,10 @@ fn signed_certificate(
     certificate.build()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "installed provider fixture keeps the wire assertions together"
+)]
 fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread::JoinHandle<()>) {
     let root_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let root_certificate = signed_certificate("LouiseLM test root", &root_key, None, 1);
@@ -122,7 +126,7 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
     listener.set_nonblocking(true).unwrap();
     let worker = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(20);
-        for _ in 0..if stock { 1 } else { 2 } {
+        for request_index in 0..2 {
             let stream = loop {
                 assert!(Instant::now() < deadline, "upstream was not reached");
                 match listener.accept() {
@@ -166,6 +170,24 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
                             .unwrap();
                             assert_eq!(body["model"], "gpt-6-astra");
                             assert_eq!(body["reasoning"]["effort"], "low");
+                            if request_index == 0 {
+                                assert!(
+                                    body["input"]
+                                        .as_array()
+                                        .unwrap()
+                                        .iter()
+                                        .all(|item| { item["type"] != "custom_tool_call_output" })
+                                );
+                            } else {
+                                let output = body["input"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .find(|item| item["type"] == "custom_tool_call_output")
+                                    .expect("Codex did not return the exec result");
+                                assert_eq!(output["call_id"], "call_tool");
+                                assert!(output.to_string().contains("TOOL_OK"), "{output}");
+                            }
                         } else {
                             assert!(
                                 request[header_end + 4..header_end + 4 + length]
@@ -178,7 +200,7 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
                 }
             }
             let response = if stock {
-                stock_response()
+                stock_response(request_index == 0)
             } else {
                 b"event: first\n\nevent: last\n\n".to_vec()
             };
@@ -195,13 +217,45 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
     (port, worker)
 }
 
-fn stock_response() -> Vec<u8> {
+fn stock_response(first: bool) -> Vec<u8> {
+    if first {
+        return custom_tool_response();
+    }
     let item = serde_json::json!({"type":"message","id":"msg_stock","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OFFLINE_STOCK_OK","annotations":[]}]});
     let events = [
         serde_json::json!({"type":"response.created","response":{"id":"resp_stock"}}),
         serde_json::json!({"type":"response.output_item.added","output_index":0,"item":item}),
         serde_json::json!({"type":"response.output_item.done","output_index":0,"item":item}),
         serde_json::json!({"type":"response.completed","response":{"id":"resp_stock","status":"completed","output":[item],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+    ];
+    let mut response = String::new();
+    for event in events {
+        use std::fmt::Write as _;
+        write!(
+            response,
+            "event: {}\ndata: {}\n\n",
+            event["type"].as_str().unwrap(),
+            event
+        )
+        .unwrap();
+    }
+    response.into_bytes()
+}
+
+fn custom_tool_response() -> Vec<u8> {
+    let item = serde_json::json!({
+        "type":"custom_tool_call",
+        "id":"item_tool",
+        "call_id":"call_tool",
+        "name":"exec",
+        "status":"completed",
+        "input":"await tools.functions.exec({cmd: 'printf TOOL_OK'})"
+    });
+    let events = [
+        serde_json::json!({"type":"response.created","response":{"id":"resp_tool"}}),
+        serde_json::json!({"type":"response.output_item.added","output_index":0,"item":item}),
+        serde_json::json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        serde_json::json!({"type":"response.completed","response":{"id":"resp_tool","status":"completed","output":[item],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
     ];
     let mut response = String::new();
     for event in events {
@@ -731,6 +785,10 @@ fn stock_acp_prompt(
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert!(
+                !frame.to_string().contains("Code Mode is unavailable"),
+                "stock Codex started without its measured Code Mode host"
+            );
+            assert!(
                 frame.get("error").is_none(),
                 "ACP {method} refused: {frame}"
             );
@@ -744,7 +802,7 @@ fn stock_acp_prompt(
         "initialize",
         serde_json::json!({
             "protocolVersion":1,
-            "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},
+            "clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true},
             "clientInfo":{"name":"louiselm-stock-gate","version":"1"}
         }),
     );

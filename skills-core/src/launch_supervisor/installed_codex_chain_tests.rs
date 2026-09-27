@@ -30,7 +30,7 @@ pub(super) fn measurement(runtime: &Path) -> RuntimeMeasurement {
     RuntimeMeasurement {
         runtime_id: "runtime".into(),
         executable_sha256: digest(&runtime.join("node")),
-        adapters: ["codex-acp.js", "codex"]
+        adapters: ["codex-acp.js", "codex", "codex-code-mode-host"]
             .into_iter()
             .map(|name| MeasuredFile {
                 path: name.into(),
@@ -64,7 +64,7 @@ pub(super) fn install(
     fs::create_dir(&runtime).unwrap();
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
     if let Some(stock) = stock {
-        for name in ["node", "codex-acp.js", "codex"] {
+        for name in ["node", "codex-acp.js", "codex", "codex-code-mode-host"] {
             fs::copy(stock.join(name), runtime.join(name)).unwrap();
         }
     } else {
@@ -79,8 +79,14 @@ pub(super) fn install(
             runtime.join("codex"),
         )
         .unwrap();
+        fs::write(runtime.join("codex-code-mode-host"), b"fixture-host").unwrap();
     }
-    for (name, mode) in [("node", 0o555), ("codex-acp.js", 0o444), ("codex", 0o555)] {
+    for (name, mode) in [
+        ("node", 0o555),
+        ("codex-acp.js", 0o444),
+        ("codex", 0o555),
+        ("codex-code-mode-host", 0o555),
+    ] {
         fs::set_permissions(runtime.join(name), fs::Permissions::from_mode(mode)).unwrap();
     }
     let measured = measurement(&runtime);

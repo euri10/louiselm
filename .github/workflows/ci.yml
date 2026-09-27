@@ -177,7 +177,7 @@ jobs:
         run: |
           ./scripts/launcher-vm start
           ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-stock-chain
-          tar -C "$RUNNER_TEMP/louiselm-stock-chain" -c node codex-acp.js codex |
+          tar -C "$RUNNER_TEMP/louiselm-stock-chain" -c node codex-acp.js codex codex-code-mode-host |
             ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-stock-chain
           git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/test-sender-guard-handoff.py scripts/probes/codex-kernel-guard \
             skills-core/src/launch_supervisor/sender_guard/binding.bpf.c skills-core/src/launch_supervisor/sender_guard/lifecycle.bpf.c |

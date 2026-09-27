@@ -21,6 +21,8 @@ const COMPONENT: &str = "louiselm-tool-test-agent";
 pub(super) const CODEX_ADAPTER: &str = "codex-acp.js";
 /// Runtime-root-relative stock Codex executable the adapter starts.
 pub(super) const CODEX_RUNTIME: &str = "codex";
+/// Runtime-root-relative Code Mode helper; it never gains sender authority.
+pub(super) const CODEX_HOST: &str = "codex-code-mode-host";
 /// The Session-local broker listener; the Sender guard binds this exact address.
 const CODEX_BASE_URL: &str = "http://127.0.0.1:40773/v1";
 const CODEX_PROVIDER: &str = "louiselm-broker";
@@ -37,9 +39,10 @@ pub(super) enum Integration {
 /// Stock Codex ACP chain identity bound into the evidence.
 #[derive(Clone, Debug, Serialize)]
 struct CodexEvidence {
-    // SHA-256 digests of the adapter, runtime and fixed configuration.
+    // SHA-256 digests of the adapter, runtime, helper and fixed configuration.
     adapter: String,
     runtime: String,
+    code_mode_host: String,
     configuration: String,
 }
 
@@ -100,6 +103,7 @@ impl ToolIsolationEvidence {
             Integration::CodexAcp => Some(CodexEvidence {
                 adapter: hash(&plan.runtime_root.join(CODEX_ADAPTER))?,
                 runtime: hash(&plan.runtime_root.join(CODEX_RUNTIME))?,
+                code_mode_host: hash(&plan.runtime_root.join(CODEX_HOST))?,
                 configuration: configuration_digest(),
             }),
         };
@@ -163,6 +167,7 @@ impl ToolIsolationEvidence {
                 self.contract == CODEX_CONTRACT
                     && adapter(CODEX_ADAPTER) == Some(codex.adapter.as_str())
                     && adapter(CODEX_RUNTIME) == Some(codex.runtime.as_str())
+                    && adapter(CODEX_HOST) == Some(codex.code_mode_host.as_str())
                     && codex.configuration == configuration_digest()
             }
             _ => false,
@@ -345,6 +350,7 @@ pub(super) fn launch_values(
 /// broker adds the Provider key after admission.
 fn codex_configuration() -> (String, String) {
     let config = serde_json::json!({
+        "features": {"code_mode_host": true},
         "mcp_servers": {},
         "model": "gpt-6-astra",
         "model_provider": CODEX_PROVIDER,
@@ -495,12 +501,15 @@ mod tests {
         };
         assert!(measure(&plan).is_err(), "a missing Codex runtime refuses");
         fs::write(root.path().join(CODEX_RUNTIME), b"codex").unwrap();
+        assert!(measure(&plan).is_err(), "a missing Code Mode host refuses");
+        fs::write(root.path().join("codex-code-mode-host"), b"host").unwrap();
         let evidence = measure(&plan).unwrap();
         assert!(evidence.requires_descendant_enrollment());
         let value: serde_json::Value = serde_json::from_slice(&evidence.canonical_bytes()).unwrap();
         assert_eq!(value["contract"], CODEX_CONTRACT);
         assert_eq!(value["codex"]["runtime"], Digest::of(b"codex").hex());
         assert_eq!(value["codex"]["adapter"], Digest::of(b"adapter").hex());
+        assert_eq!(value["codex"]["code_mode_host"], Digest::of(b"host").hex());
         assert_eq!(value["codex"]["configuration"], configuration_digest());
 
         let mut overridden = plan.clone();
@@ -534,6 +543,7 @@ mod tests {
         fs::write(&plan.executable, b"node").unwrap();
         fs::write(root.join(CODEX_ADAPTER), b"adapter").unwrap();
         fs::write(root.join(CODEX_RUNTIME), b"codex").unwrap();
+        fs::write(root.join(CODEX_HOST), b"host").unwrap();
         ToolIsolationEvidence::measure(Integration::CodexAcp, &plan, root, "r", "b").unwrap()
     }
 
@@ -606,6 +616,7 @@ mod tests {
         assert_eq!(environment["PATH"], "/runtime:/usr/bin:/bin");
         let config: serde_json::Value = serde_json::from_str(&environment["CODEX_CONFIG"]).unwrap();
         assert_eq!(config["mcp_servers"], serde_json::json!({}));
+        assert_eq!(config["features"]["code_mode_host"], true);
         assert_eq!(
             config["model_providers"][CODEX_PROVIDER]["base_url"],
             CODEX_BASE_URL
