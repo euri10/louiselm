@@ -135,37 +135,7 @@ fn production_loader_worker() {
     let endpoint = guard
         .bind_in_namespace(&network, "127.0.0.1:0".parse().unwrap())
         .unwrap();
-    // The driver owns and has waited for this exact stopped child. Construct
-    // the same measured lifetime pin used at the production exec stop.
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-    assert!(status.lines().any(|line| line.starts_with("State:\tT")));
-    let pin = pidfd_open(
-        Pid::from_raw(i32::try_from(pid).unwrap()).unwrap(),
-        PidfdFlags::empty(),
-    )
-    .unwrap();
-    let executable = File::open(setup["executable"].as_str().unwrap()).unwrap();
-    let runtime = KernelProcess::from_exec_stop(
-        KernelCredentials {
-            pid,
-            uid: number(&setup, "uid"),
-            gid: number(&setup, "uid"),
-        },
-        pin,
-        &executable,
-    )
-    .unwrap();
-    assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
-    guard.enroll_at_exec_stop(&runtime).unwrap();
-    assert!(
-        runtime.valid().unwrap(),
-        "enrolled runtime must retain its kernel identity proof"
-    );
-    assert_eq!(guard.activate(&scope), Err(GuardError::Enrollment));
-    assert_eq!(
-        guard.enroll_at_exec_stop(&runtime),
-        Err(GuardError::Enrollment)
-    );
+    let runtime = pin_and_enroll(&mut guard, &scope, &setup, pid, &mut lines);
     let ids: Vec<_> = guard
         .maps
         .values()
@@ -186,6 +156,66 @@ fn production_loader_worker() {
         .unwrap();
     emit(&json!({"ready":true,"port":endpoint.socket.local_addr().unwrap().port(),"maps":ids}));
     serve_actions(&mut guard, &runtime, scope, lines, current.as_ref());
+}
+
+/// Pins the driver's runtime (exec-stopped, or a frozen descendant) and enrolls it.
+fn pin_and_enroll(
+    guard: &mut SenderGuard,
+    scope: &GuardScope,
+    setup: &Value,
+    pid: u32,
+    lines: &mut impl Iterator<Item = std::io::Result<String>>,
+) -> KernelProcess {
+    let credentials = KernelCredentials {
+        pid,
+        uid: number(setup, "uid"),
+        gid: number(setup, "uid"),
+    };
+    let executable = File::open(setup["executable"].as_str().unwrap()).unwrap();
+    let pin = || {
+        pidfd_open(
+            Pid::from_raw(i32::try_from(pid).unwrap()).unwrap(),
+            PidfdFlags::empty(),
+        )
+        .unwrap()
+    };
+    let descendant = setup["descendant"].as_bool().unwrap_or(false);
+    let runtime = if descendant {
+        // A running descendant has no exec stop; only a frozen cgroup pins it.
+        assert!(
+            KernelProcess::from_frozen_member(credentials, pin(), &executable).is_err(),
+            "a running descendant must not be pinned"
+        );
+        emit(&json!({"unfrozen_refused":true}));
+        assert_eq!(read(lines)["op"], "frozen");
+        KernelProcess::from_frozen_member(credentials, pin(), &executable).unwrap()
+    } else {
+        // The driver owns and has waited for this exact stopped child. Construct
+        // the same measured lifetime pin used at the production exec stop.
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+        KernelProcess::from_exec_stop(credentials, pin(), &executable).unwrap()
+    };
+    assert_eq!(guard.activate(scope), Err(GuardError::Enrollment));
+    if descendant {
+        guard.enroll_frozen_descendant(&runtime).unwrap();
+    } else {
+        guard.enroll_at_exec_stop(&runtime).unwrap();
+    }
+    assert!(
+        runtime.valid().unwrap(),
+        "enrolled runtime must retain its kernel identity proof"
+    );
+    assert_eq!(guard.activate(scope), Err(GuardError::Enrollment));
+    assert_eq!(
+        guard.enroll_at_exec_stop(&runtime),
+        Err(GuardError::Enrollment)
+    );
+    assert_eq!(
+        guard.enroll_frozen_descendant(&runtime),
+        Err(GuardError::Enrollment)
+    );
+    runtime
 }
 
 #[expect(

@@ -390,6 +390,31 @@ impl SenderGuard {
         &mut self,
         process: &KernelProcess,
     ) -> Result<(), GuardError> {
+        self.enroll(process)
+    }
+
+    /// Enrolls the measured sending descendant of a deferred start.
+    ///
+    /// `process` must come from `KernelProcess::from_frozen_member` after the
+    /// contract's exact tree check; the frozen cgroup stands in for the exec
+    /// stop. Grants attach to the thread-group leader, covering all threads.
+    /// # Errors
+    /// Refuses a second enrollment, a foreign network namespace or lost authority.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+        )
+    )]
+    pub(crate) fn enroll_frozen_descendant(
+        &mut self,
+        process: &KernelProcess,
+    ) -> Result<(), GuardError> {
+        self.enroll(process)
+    }
+
+    fn enroll(&mut self, process: &KernelProcess) -> Result<(), GuardError> {
         if self.enrolled || self.endpoint.is_none() {
             return Err(GuardError::Enrollment);
         }

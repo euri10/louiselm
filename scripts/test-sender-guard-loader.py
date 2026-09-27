@@ -183,6 +183,118 @@ def runtime():
             raise AssertionError(action)
 
 
+def adapter():
+    """Stand-in adapter: relays actions to itself or to its two children."""
+    children = {}
+    emit({"ready": True})
+    for line in sys.stdin:
+        action = json.loads(line)
+        if action["op"] == "spawn":
+            for name in ("runtime", "sibling"):
+                child = subprocess.Popen([sys.executable, __file__, "--runtime"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                assert json.loads(child.stdout.readline())["ready"]
+                children[name] = child
+            emit({name: child.pid for name, child in children.items()})
+            continue
+        target = action.pop("to")
+        if target == "adapter":
+            if action["op"] == "connect":
+                connection = socket.create_connection(("127.0.0.1", action["port"]), timeout=3)
+                emit({"connected": True})
+            else:
+                try:
+                    connection.sendall(b"adapter-request\n")
+                    emit({"sent": True})
+                except OSError as error:
+                    emit({"sent": False, "errno": error.errno})
+            continue
+        child = children[target]
+        child.stdin.write(json.dumps(action) + "\n")
+        child.stdin.flush()
+        if action["op"] != "exec":
+            print(child.stdout.readline(), end="", flush=True)
+
+
+def set_frozen(cgroup, frozen):
+    (cgroup / "cgroup.freeze").write_text("1" if frozen else "0")
+    deadline = time.monotonic() + 5
+    while f"frozen {int(frozen)}" not in (cgroup / "cgroup.events").read_text().split("\n"):
+        assert time.monotonic() < deadline, ("cgroup freeze state not confirmed", frozen)
+        time.sleep(0.01)
+
+
+def descendant_scenario(executable):
+    """A running descendant is enrolled only while its cgroup is frozen."""
+    children, leases, maps = [], [], []
+    cgroup = Path(f"/sys/fs/cgroup/louiselm-loader-descendant-{os.getpid()}")
+    with tempfile.TemporaryDirectory(prefix="louiselm-loader-", dir="/var/tmp") as directory:
+        root = Path(directory)
+        root.chmod(0o755)
+        broker_directory = root / "broker"
+        broker_directory.mkdir(mode=0o700)
+        os.chown(broker_directory, BROKER_UID, BROKER_UID)
+        def spawn(arguments, uid=0):
+            process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, user=uid, group=uid, extra_groups=[])
+            children.append(process)
+            return process
+        cgroup.mkdir()
+        try:
+            broker_path = str(broker_directory / "control.sock")
+            peer = spawn([sys.executable, __file__, "--broker", broker_path], BROKER_UID)
+            assert receive(peer)["ready"]
+            agent = spawn([sys.executable, __file__, "--adapter"], UID)
+            assert receive(agent)["ready"]
+            (cgroup / "cgroup.procs").write_text(str(agent.pid))
+            pids = request(agent, {"op": "spawn"})
+            owner = spawn([executable, "--exact", WORKER, "--ignored", "--nocapture"])
+            send(owner, {"broker": broker_path, "session": "session-descendant",
+                "runtime": pids["runtime"], "uid": UID, "executable": sys.executable,
+                "descendant": True, "deadline_ms": 300000})
+            assert receive(owner, True)["unfrozen_refused"]
+            set_frozen(cgroup, True)
+            send(owner, {"op": "frozen"})
+            send(peer, {"op": "enrollment", "owner": owner.pid, "session": "session-descendant"})
+            ready = receive(owner, True)
+            assert ready["ready"]
+            maps.extend(ready["maps"])
+            leases.append(os.open(f"/proc/{owner.pid}/ns/mnt", os.O_RDONLY))
+            assert receive(peer)["enrolled"]
+            set_frozen(cgroup, False)
+            denied = {"sent": False, "errno": errno.EPERM}
+            for target in ("runtime", "sibling", "adapter"):
+                assert request(agent, {"to": target, "op": "connect", "port": ready["port"]})["connected"]
+            assert request(agent, {"to": "runtime", "op": "send"}) == denied
+            assert request(owner, {"op": "activate"}, True)["activated"]
+            assert request(agent, {"to": "runtime", "op": "send"})["sent"]
+            for target in ("sibling", "adapter"):
+                assert request(agent, {"to": target, "op": "send"}) == denied, target
+            send(agent, {"to": "runtime", "op": "exec"})
+            assert request(owner, {"op": "lost"}, True)["lost"]
+            owner.kill()
+            owner.wait(5)
+            assert request(peer, {"op": "close"})["closed"]
+            peer.wait(5)
+        finally:
+            for process in reversed(children):
+                if process.poll() is None:
+                    process.kill()
+                process.wait(5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    stream.close()
+            (cgroup / "cgroup.kill").write_text("1")
+            deadline = time.monotonic() + 5
+            while (cgroup / "cgroup.procs").read_text().strip():
+                assert time.monotonic() < deadline, "descendant fixture survived"
+                time.sleep(0.01)
+            cgroup.rmdir()
+            for fd in leases:
+                os.close(fd)
+        assert_maps_released(maps)
+    print("production Sender guard: descendant passed", flush=True)
+
+
 def assert_maps_released(ids):
     library = ctypes.CDLL("libbpf.so.1", use_errno=True)
     library.bpf_map_get_fd_by_id.argtypes = [ctypes.c_uint32]
@@ -346,6 +458,9 @@ def main():
     if sys.argv[1:2] == ["--runtime"]:
         runtime()
         return
+    if sys.argv[1:2] == ["--adapter"]:
+        adapter()
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("library_tests", type=Path, help="Exact library-test executable, or its clean target/debug/deps directory")
     args = parser.parse_args()
@@ -359,6 +474,7 @@ def main():
         executable = candidates[0]
     for variant in ("owner-death", "exec", "runtime-exit", "runtime-exec", "revision", "broker-crash", "retire", "expiry", "dispose"):
         scenario(str(executable), variant)
+    descendant_scenario(str(executable))
     print("PRODUCTION_SENDER_GUARD_COMPONENT_PASS_NOT_VERIFIED", flush=True)
 
 

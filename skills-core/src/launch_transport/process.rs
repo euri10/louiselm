@@ -93,6 +93,33 @@ impl KernelProcess {
         Ok(process)
     }
 
+    /// Pins a measured descendant while its whole Session cgroup is frozen.
+    ///
+    /// The frozen cgroup is what replaces the exec stop: no member can run,
+    /// fork, exec or reach the runtime between measurement and enrollment.
+    /// The caller has already proved which process to pin (louiselm-fkdv8).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+        )
+    )]
+    pub(crate) fn from_frozen_member(
+        credentials: KernelCredentials,
+        pidfd: OwnedFd,
+        expected: &fs::File,
+    ) -> io::Result<Self> {
+        let process = Self::from_exec_stop(credentials, pidfd, expected)?;
+        if !cgroup_frozen(credentials.pid)? || !process.alive()? {
+            return Err(io::Error::other(format!(
+                "process {} is not a live member of a frozen cgroup",
+                credentials.pid
+            )));
+        }
+        Ok(process)
+    }
+
     /// Returns credentials established by the trusted launcher.
     #[must_use]
     pub fn credentials(&self) -> KernelCredentials {
@@ -182,4 +209,22 @@ impl KernelProcess {
         poll(&mut fds, Some(&Timespec::default()))?;
         Ok(fds[0].revents().is_empty())
     }
+}
+
+/// Whether the cgroup v2 containing `pid` reports its freeze as complete.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+    )
+)]
+fn cgroup_frozen(pid: u32) -> io::Result<bool> {
+    let membership = fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
+    let path = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .ok_or_else(|| io::Error::other("process has no cgroup v2 membership"))?;
+    let events = fs::read_to_string(format!("/sys/fs/cgroup{path}/cgroup.events"))?;
+    Ok(events.lines().any(|line| line == "frozen 1"))
 }

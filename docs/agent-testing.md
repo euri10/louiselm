@@ -76,6 +76,8 @@ certify installed-host acceptance. Production guard loading additionally runs
 only inside that disposable guest. It uses the real Rust loader, authenticated
 enrollment channel and kernel sockets; nine scenarios cover loss and expiry at
 actual upstream writes, cross-Session isolation, frozen enrollment and complete cleanup.
+A tenth enrolls a running descendant only while its cgroup is frozen: the
+descendant alone may send, its parent and sibling are denied, and exec revokes it.
 The same CI job requires both gates. A skipped ignored Rust fixture is not a
 loader pass, and neither gate enables Brokered or certifies a desktop Session.
 
