@@ -515,7 +515,7 @@ fn installed_broker_worker() {
                 println!("BROKER_PARKED");
             }
         }
-        guard::park_and_dispose(&broker, &mut session, config.operator_uid, live_provider);
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid);
         return;
     }
     if root.join("guard-close-no-ack").exists() {
