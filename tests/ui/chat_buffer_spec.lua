@@ -28,6 +28,50 @@ local function new_buffer(options)
   return owner
 end
 
+T["long standalone completed tool folds its full title"] = function()
+  local owner = new_buffer()
+  local title = ("long command "):rep(30)
+  owner:render({ type = "tool_call_started", session_id = "buffer-test", data = { toolCallId = "long", title = title } })
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = { toolCallId = "long", status = "completed" },
+  })
+  owner:render({ type = "thought_chunk", session_id = "buffer-test", data = { text = "next" } })
+  local lines = buffer_lines(owner.buffer)
+  MiniTest.expect.equality(lines[6]:find(title, 1, true), nil)
+  MiniTest.expect.equality(lines[7], "  " .. title)
+  MiniTest.expect.equality(nvim.fn.foldclosed(6), 6)
+  MiniTest.expect.equality(nvim.fn.foldclosedend(6), 7)
+  nvim.api.nvim_win_set_cursor(owner.window, { 6, 0 })
+  nvim.api.nvim_feedkeys("za", "mx", false)
+  MiniTest.expect.equality(nvim.fn.foldclosed(6), -1)
+  local updated = title .. " updated"
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = { toolCallId = "long", title = updated, status = "completed" },
+  })
+  lines = buffer_lines(owner.buffer)
+  MiniTest.expect.equality(lines[6]:find(updated, 1, true), nil)
+  MiniTest.expect.equality(lines[7], "  " .. updated)
+end
+
+T["za on a standalone short tool does not raise a fold error"] = function()
+  local owner = new_buffer()
+  owner:render({
+    type = "tool_call_finished",
+    session_id = "buffer-test",
+    data = { toolCallId = "short", title = "Read file", status = "completed" },
+  })
+  owner:finish_turn()
+  nvim.api.nvim_win_set_cursor(owner.window, { 6, 0 })
+  nvim.v.errmsg = ""
+  nvim.api.nvim_feedkeys("za", "mx", false)
+  MiniTest.expect.equality(nvim.v.errmsg, "")
+  MiniTest.expect.equality(nvim.fn.foldlevel(6), 0)
+end
+
 T["reasoning folds follow edits and survive undo redo before showing again"] = function()
   local owner = new_buffer()
   owner:append({ "preceding line", "another line" })

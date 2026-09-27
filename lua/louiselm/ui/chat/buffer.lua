@@ -241,6 +241,25 @@ local function close_tool_fold_run(view)
   if run == nil then
     return
   end
+  if run.first == run.last and run.last == view.transcript_tail then
+    local id = view.tool_ids[run.first]
+    local title = id and view.tool_titles[id]
+    if title ~= nil and nvim.fn.strchars(title) > 100 and view.tool_statuses[id] == "completed" then
+      local row = nvim.api.nvim_buf_get_lines(view.buffer, run.first, run.first + 1, false)[1]
+      local image_hint = row:find(" · image result", 1, true) and " · image result — use :LouiselmInspectTool" or ""
+      set_line(
+        view,
+        run.first,
+        "[tool] " .. id .. ": " .. nvim.fn.strcharpart(title, 0, 100) .. "… (completed)" .. image_hint
+      )
+      nvim.api.nvim_buf_set_lines(view.buffer, run.last + 1, run.last + 1, false, { "  " .. title })
+      view.transcript_tail = run.last + 1
+      run.last = run.last + 1
+      view.tool_ids[run.last] = id
+      mark_prompt(view, view.prompt_line + 1)
+      anchor_row(view, view.tool_marks, id, run.first)
+    end
+  end
   local fold_first
   local added = false
   for line = run.first, run.last + 1 do
@@ -314,8 +333,7 @@ end
 ---@param view louiselm.ui.ChatBuffer
 local function toggle_chat_fold(view)
   local line = nvim.api.nvim_win_get_cursor(view.window)[1] - 1
-  local run = view.thought_run
-  if run ~= nil and line == run.first and nvim.fn.foldlevel(line + 1) == 0 then
+  if nvim.fn.foldlevel(line + 1) == 0 then
     return
   end
   nvim.cmd("normal! za")
@@ -984,6 +1002,13 @@ function Buffer:render(event, replay_active, continuing_prompt)
       local line = view.tool_lines[id]
       local rendered_line
       if line ~= nil and line < nvim.api.nvim_buf_line_count(view.buffer) then
+        if view.tool_ids[line + 1] == id and title ~= nil and nvim.fn.strchars(title) > 100 then
+          nvim.api.nvim_buf_set_lines(view.buffer, line + 1, line + 2, false, { "  " .. title })
+          detail = id .. ": " .. nvim.fn.strcharpart(title, 0, 100) .. "… (" .. (status or "finished") .. ")"
+          if tool_has_image(event.data) then
+            detail = detail .. " · image result — use :LouiselmInspectTool"
+          end
+        end
         set_line(view, line, "[tool] " .. detail)
         rendered_line = line
       else
