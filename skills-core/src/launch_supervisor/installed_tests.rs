@@ -196,6 +196,36 @@ fn fixture_expiry(root: &Path, now_ms: u64) -> u64 {
         }
 }
 
+fn fixture_run_envelope(
+    grant: &GrantRequest,
+    verification_plan_digest: String,
+    now_ms: u64,
+) -> crate::broker::run_envelope::RunEnvelope {
+    crate::broker::run_envelope::RunEnvelope {
+        schema: "louiselm.broker.run-envelope/1".into(),
+        run_id: grant.request.run_id.clone(),
+        envelope_id: grant.request.envelope_id.clone(),
+        envelope_revision: grant.request.envelope_revision,
+        controller_uid: grant.controller_uid,
+        bead_scope: crate::beads_mutation::ApprovedBeadsMutations {
+            project_digest: Digest::of(b"project").to_string(),
+            role: crate::beads_mutation::BeadsRole::Coordinator,
+            issue_ids: vec!["louiselm-a".into()],
+            effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
+            max_mutations: 1,
+            expires_at_ms: now_ms + 120_000,
+        },
+        provider_requests: grant
+            .provider_requests
+            .clone()
+            .unwrap_or_else(|| guard::approval(now_ms)),
+        commands: grant.commands.clone(),
+        verification_plan_digest,
+        max_sessions: 2,
+        expires_at_ms: now_ms + 120_000,
+    }
+}
+
 fn write_json(path: &Path, value: &impl serde::Serialize) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
 }
@@ -381,43 +411,53 @@ fn installed_broker_worker() {
     )
     .unwrap();
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
+    let grant = GrantRequest {
+        conformance: crate::launch_protocol::ConformanceAuthorization::default(),
+        dependencies: None,
+        skill_requests: None,
+        beads_mutations: None,
+        provider_requests: root.join("brokered").exists().then(|| {
+            let mut approval = guard::approval(now);
+            if root.join("stock-codex").exists() {
+                approval.models = vec!["gpt-5.6-luna".into(), "gpt-6-astra".into()];
+                approval.max_effort = crate::provider_request::ReasoningEffort::High;
+            }
+            if let Ok(port) = fs::read_to_string(root.join("guard-provider-port")) {
+                approval.upstream = format!("https://api.openai.com:{}/v1/responses", port.trim());
+                approval.addresses = vec!["127.0.0.1".parse().unwrap()];
+                approval.max_run_requests = 2;
+            }
+            if let Ok(address) = fs::read_to_string(root.join("guard-provider-live-ip")) {
+                approval.addresses = vec![address.trim().parse().unwrap()];
+                approval.max_run_requests = 2;
+            }
+            approval
+        }),
+        require_cold_recovery: true,
+        request: request_for(codex_chain::runtime_directory(&root).as_deref()),
+        controller_uid: config.operator_uid,
+        expires_at_ms: fixture_expiry(&root, now),
+        broker_loss_grace_ms: 500,
+        commands: Some(ApprovedCommands {
+            command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
+            timeout_ms: 5000,
+            uses: if root.join("uncapped-commands").exists() {
+                None
+            } else {
+                Some(3)
+            },
+            allow_delegation: true,
+            expires_at_ms: now + 60_000,
+        }),
+    };
     broker
-        .authorize(&GrantRequest {
-            conformance: crate::launch_protocol::ConformanceAuthorization::default(),
-            dependencies: None,
-            skill_requests: None,
-            beads_mutations: None,
-            provider_requests: root.join("brokered").exists().then(|| {
-                let mut approval = guard::approval(now);
-                if root.join("stock-codex").exists() {
-                    approval.models = vec!["gpt-6-astra".into()];
-                }
-                if let Ok(port) = fs::read_to_string(root.join("guard-provider-port")) {
-                    approval.upstream =
-                        format!("https://api.openai.com:{}/v1/responses", port.trim());
-                    approval.addresses = vec!["127.0.0.1".parse().unwrap()];
-                    approval.max_run_requests = 2;
-                }
-                approval
-            }),
-            require_cold_recovery: true,
-            request: request_for(codex_chain::runtime_directory(&root).as_deref()),
-            controller_uid: config.operator_uid,
-            expires_at_ms: fixture_expiry(&root, now),
-            broker_loss_grace_ms: 500,
-            commands: Some(ApprovedCommands {
-                command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
-                timeout_ms: 5000,
-                uses: if root.join("uncapped-commands").exists() {
-                    None
-                } else {
-                    Some(3)
-                },
-                allow_delegation: true,
-                expires_at_ms: now + 60_000,
-            }),
-        })
+        .authorize_run(&fixture_run_envelope(
+            &grant,
+            Digest::of(b"fixture-plan").to_string(),
+            now,
+        ))
         .unwrap();
+    broker.authorize(&grant).unwrap();
     println!("BROKER_READY");
     let launched = broker.serve_launch();
     if std::env::var_os("LOUISELM_BROKER_FAULT").is_some() {
@@ -449,17 +489,21 @@ fn installed_broker_worker() {
     let proof = inspection.start_evidence.unwrap();
     assert_eq!(proof.assigned_uid, AGENT_UID);
     println!("BROKER_RUNNING {}", proof.agent_pid);
-    if root.join("guard-provider-port").exists() {
-        let root_certificate = ureq::tls::Certificate::from_pem(
-            &fs::read(root.join("guard-provider-root.pem")).unwrap(),
-        )
-        .unwrap();
-        session.set_provider_test_root(root_certificate);
+    let live_provider = root.join("guard-provider-live-ip").exists();
+    if root.join("guard-provider-port").exists() || live_provider {
+        if !live_provider {
+            let root_certificate = ureq::tls::Certificate::from_pem(
+                &fs::read(root.join("guard-provider-root.pem")).unwrap(),
+            )
+            .unwrap();
+            session.set_provider_test_root(root_certificate);
+        }
         println!(
             "BROKER_PROVIDER_ADDR {}",
             session.provider_address_for_test().unwrap()
         );
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now()
+            + Duration::from_secs(if live_provider { 90 } else { 20 });
         while !root.join("guard-provider-done").exists() {
             assert!(Instant::now() < deadline, "Provider fixture timed out");
             broker.drive_provider(&mut session).unwrap();
@@ -468,8 +512,11 @@ fn installed_broker_worker() {
             } else {
                 thread::sleep(Duration::from_millis(10));
             }
+            if live_provider && broker.settle_provider_hold(&mut session).unwrap().is_some() {
+                println!("BROKER_PARKED");
+            }
         }
-        guard::park_and_dispose(&broker, &mut session, config.operator_uid);
+        guard::park_and_dispose(&broker, &mut session, config.operator_uid, live_provider);
         return;
     }
     if root.join("guard-close-no-ack").exists() {

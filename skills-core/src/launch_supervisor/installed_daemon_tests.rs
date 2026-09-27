@@ -54,30 +54,58 @@ fn seed_authorizations() {
             .as_millis(),
     )
     .unwrap();
+    let bead_scope = beads::permission("tracker", now).unwrap_or_else(|| {
+        crate::beads_mutation::ApprovedBeadsMutations {
+            project_digest: Digest::of(b"fixture-project").to_string(),
+            role: crate::beads_mutation::BeadsRole::Worker,
+            issue_ids: vec!["louiselm-a".into()],
+            effects: vec![crate::beads_mutation::BeadsEffect::CommentAdd],
+            max_mutations: 1,
+            expires_at_ms: now + 180_000,
+        }
+    });
+    let run = broker
+        .authorize_run(&crate::broker::run_envelope::RunEnvelope {
+            schema: "louiselm.broker.run-envelope/1".into(),
+            run_id: "run".into(),
+            envelope_id: "envelope".into(),
+            envelope_revision: 1,
+            controller_uid: config.operator_uid,
+            bead_scope,
+            provider_requests: guard::approval(now),
+            commands: None,
+            verification_plan_digest: Digest::of(b"daemon-fixture-plan").to_string(),
+            max_sessions: u32::try_from(beads::subjects().len()).unwrap(),
+            expires_at_ms: now + 180_000,
+        })
+        .unwrap();
     for name in beads::subjects() {
         broker
-            .authorize(&GrantRequest {
-                conformance: crate::launch_protocol::ConformanceAuthorization {
-                    attendance: if config.conformance
-                        == crate::conformance::admission::Enforcement::Enforced
-                    {
-                        crate::conformance::admission::Attendance::Interactive
-                    } else {
-                        crate::conformance::admission::Attendance::Unattended
+            .authorize_child(
+                &GrantRequest {
+                    conformance: crate::launch_protocol::ConformanceAuthorization {
+                        attendance: if config.conformance
+                            == crate::conformance::admission::Enforcement::Enforced
+                        {
+                            crate::conformance::admission::Attendance::Interactive
+                        } else {
+                            crate::conformance::admission::Attendance::Unattended
+                        },
+                        waiver: None,
                     },
-                    waiver: None,
+                    dependencies: None,
+                    skill_requests: None,
+                    beads_mutations: beads::permission(name, now),
+                    provider_requests: None,
+                    request: named_request(name),
+                    controller_uid: config.operator_uid,
+                    require_cold_recovery: false,
+                    expires_at_ms: now + 180_000,
+                    broker_loss_grace_ms: crate::launch::MAX_BROKER_LOSS_GRACE_MS,
+                    commands: None,
                 },
-                dependencies: None,
-                skill_requests: None,
-                beads_mutations: beads::permission(name, now),
-                provider_requests: None,
-                request: named_request(name),
-                controller_uid: config.operator_uid,
-                require_cold_recovery: false,
-                expires_at_ms: now + 180_000,
-                broker_loss_grace_ms: crate::launch::MAX_BROKER_LOSS_GRACE_MS,
-                commands: None,
-            })
+                &run.envelope_digest,
+            )
             .unwrap();
     }
     attention::enqueue("before-start");

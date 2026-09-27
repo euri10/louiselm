@@ -73,30 +73,77 @@ fn approval(launch: LaunchRequest, uid: u32, commands: Option<ApprovedCommands>)
     }
 }
 
+fn assert_run_child_denials(broker: &InstalledBroker, grant: &GrantRequest, digest: &str) {
+    let mut wrong_run = grant.clone();
+    wrong_run.request.run_id = "other-run".into();
+    assert!(broker.authorize_child(&wrong_run, digest).is_err());
+    let mut wrong_operator = grant.clone();
+    wrong_operator.controller_uid += 1;
+    assert!(broker.authorize_child(&wrong_operator, digest).is_err());
+    let mut stale_revision = grant.clone();
+    stale_revision.request.envelope_revision += 1;
+    assert!(broker.authorize_child(&stale_revision, digest).is_err());
+    let mut widened_provider = grant.clone();
+    let mut provider = guard::approval(clock_ms());
+    provider.max_run_requests += 1;
+    widened_provider.provider_requests = Some(provider);
+    assert!(broker.authorize_child(&widened_provider, digest).is_err());
+    let mut widened_command = grant.clone();
+    widened_command.commands.as_mut().unwrap().timeout_ms += 1;
+    assert!(broker.authorize_child(&widened_command, digest).is_err());
+    let mut expired = grant.clone();
+    expired.expires_at_ms = 1;
+    assert!(broker.authorize_child(&expired, digest).is_err());
+    assert!(
+        broker
+            .authorize_child(grant, &Digest::of(b"stale").to_string())
+            .is_err()
+    );
+}
+
 #[test]
 fn installed_verification_worker() {
     let Some(root) = std::env::var_os("LOUISELM_VERIFICATION_FIXTURE") else {
         return;
     };
     let root = PathBuf::from(root);
+    let index: usize = std::env::var("LOUISELM_VERIFICATION_CASE")
+        .unwrap()
+        .parse()
+        .unwrap();
     let broker = InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap();
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
     let caller = LifecycleCaller::Operator {
         uid: config.operator_uid,
     };
-    broker
-        .authorize(&approval(
-            request(),
-            config.operator_uid,
-            Some(ApprovedCommands {
-                command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
-                timeout_ms: 5000,
-                uses: Some(1),
-                allow_delegation: false,
-                expires_at_ms: clock_ms() + 60000,
-            }),
-        ))
+    let now = clock_ms();
+    let grant = approval(
+        request(),
+        config.operator_uid,
+        Some(ApprovedCommands {
+            command_digest: Digest::of(COMMAND.as_bytes()).to_string(),
+            timeout_ms: 5000,
+            uses: Some(1),
+            allow_delegation: false,
+            expires_at_ms: now + 60000,
+        }),
+    );
+    let plan_digest =
+        Digest::of(&fs::read(root.join(format!("inputs/plan-{index}.json"))).unwrap()).to_string();
+    let run = broker
+        .authorize_run(&fixture_run_envelope(&grant, plan_digest, now))
         .unwrap();
+    assert_ne!(run.envelope_digest, grant.request.digest().to_string());
+    assert_run_child_denials(&broker, &grant, &run.envelope_digest);
+    let child = broker
+        .authorize_child(&grant, &run.envelope_digest)
+        .unwrap();
+    assert_eq!(child.request_digest, grant.request.digest().to_string());
+    assert!(
+        broker
+            .authorize_child(&grant, &run.envelope_digest)
+            .is_err()
+    );
     println!("PRODUCER_READY");
     let mut producer = broker.serve_launch().unwrap();
     // The producing Agent really requests and completes this governed write.
@@ -107,17 +154,18 @@ fn installed_verification_worker() {
     broker
         .request_lifecycle(&mut producer, &caller, &park)
         .unwrap();
-    for index in 0..5 {
-        run_job(
-            &broker,
-            &mut producer,
-            &caller,
-            &root,
-            index,
-            config.operator_uid,
-        );
+    run_job(
+        &broker,
+        &mut producer,
+        &caller,
+        &root,
+        index,
+        config.operator_uid,
+        &run.envelope_digest,
+    );
+    if index == 0 {
+        promotion::broker_tainted_round(&broker, &mut producer, &root);
     }
-    promotion::broker_tainted_round(&broker, &mut producer, &root);
     let disposal = lifecycle(
         &producer,
         LifecycleAction::Disposal,
@@ -141,6 +189,7 @@ fn run_job(
     root: &Path,
     index: usize,
     uid: u32,
+    envelope_digest: &str,
 ) {
     let root = root.join("inputs");
     let snapshot = root.join("snapshot");
@@ -171,13 +220,44 @@ fn run_job(
             input_digest: input.to_string(),
         },
     };
+    let other_plan = root.join(format!("plan-{}.json", (index + 1) % 5));
+    let other_input_id = format!("unapproved-input-{index}");
+    let other_input = broker
+        .stage_verification(
+            &other_input_id,
+            &snapshot,
+            &Digest::of(&fs::read(snapshot.join("snapshot.json")).unwrap()),
+            &other_plan,
+            &Digest::of(&fs::read(&other_plan).unwrap()),
+        )
+        .unwrap();
+    let mut widened_plan = export_request.clone();
+    widened_plan.operation = VerificationOperation::Export {
+        input_id: other_input_id,
+        input_digest: other_input.to_string(),
+    };
+    assert!(
+        broker
+            .export_verification(producer, caller, &widened_plan)
+            .is_err(),
+        "a different plan is outside the fixed Run envelope"
+    );
     let exported = broker
         .export_verification(producer, caller, &export_request)
         .unwrap();
     let launch = verifier_launch(index);
     broker
-        .authorize(&approval(launch.clone(), uid, None))
+        .authorize_child(&approval(launch.clone(), uid, None), envelope_digest)
         .unwrap();
+    assert!(
+        broker
+            .authorize_child(
+                &approval(verifier_launch(index + 10), uid, None),
+                envelope_digest
+            )
+            .is_err(),
+        "the third Session exceeds the fixed Run ceiling"
+    );
     println!("VERIFIER_READY_{index}");
     let mut verifier = broker.serve_launch().unwrap();
     let run = VerificationRequest {
@@ -352,7 +432,7 @@ fn prepare_inputs(root: &Path) {
     }
 }
 
-fn worker(root: &Path) -> (BrokerChild, mpsc::Receiver<String>) {
+fn worker(root: &Path, index: usize) -> (BrokerChild, mpsc::Receiver<String>) {
     let mut child = Command::new("/usr/bin/setpriv")
         .args([
             "--reuid",
@@ -366,6 +446,7 @@ fn worker(root: &Path) -> (BrokerChild, mpsc::Receiver<String>) {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LOUISELM_VERIFICATION_FIXTURE", root)
+        .env("LOUISELM_VERIFICATION_CASE", index.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -416,10 +497,6 @@ fn launch_real(
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "One disposable fixture owns real producer/verifier lifetimes, adverse events and independent cleanup assertions."
-)]
 fn privileged_installed_exact_job_verification() {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_LAUNCH").is_none() {
         eprintln!("skipping: exact-job verification requires the disposable launcher VM");
@@ -433,18 +510,28 @@ fn privileged_installed_exact_job_verification() {
             .eq(["0", "0", "4294967295"])
     );
     let _account = BrokerAccount::create();
+    for index in 0..5 {
+        privileged_verification_case(index);
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "Each fixed-plan Run owns real producer/verifier lifetimes, adverse events and independent cleanup assertions."
+)]
+fn privileged_verification_case(index: usize) {
     let root = tempfile::Builder::new()
         .prefix("louiselm-verification-")
         .tempdir_in("/var/lib")
         .unwrap();
     // Broker identity reconciliation is separate work: each consumed launch keeps its slot reserved.
-    let (paths, config, registry) = install_fixture_with_slots(root.path(), 6);
+    let (paths, config, registry) = install_fixture_with_slots(root.path(), 2);
     prepare_inputs(root.path());
     promotion::prepare(root.path(), config.operator_uid);
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
-    let (mut child, lines) = worker(root.path());
+    let (mut child, lines) = worker(root.path(), index);
     marker(&lines, "PRODUCER_READY");
     let producer = launch_real(&paths, &config, &registry, &sessions, request());
     let (mut input, controller_input) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -478,85 +565,85 @@ fn privileged_installed_exact_job_verification() {
     assert!(
         matches!(response.operation, CommandOperation::Result { outcome: CommandOutcome::Completed { output } } if output.exit_code == 0)
     );
-    for index in 0..5 {
-        marker(&lines, &format!("VERIFIER_READY_{index}"));
-        if index == 3 {
-            fs::write(
-                sessions.join("session/verification-exports/export-3/job/source/effect"),
-                b"tampered",
-            )
-            .unwrap();
-        }
-        let verifier = launch_real(
-            &paths,
-            &config,
-            &registry,
-            &sessions,
-            verifier_launch(index),
-        );
-        if index == 4 {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !sessions
-                .join("verifier-4/verification-run/workspace/started")
-                .exists()
-            {
-                assert!(
-                    Instant::now() < deadline,
-                    "verification must actually start before cancellation"
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
-            let crate::launch_receipt::ReceiptOutcome::Start { evidence, .. } =
-                &verifier.receipt().payload.outcome
-            else {
-                panic!("actual Agent identity");
-            };
-            rustix::process::kill_process(
-                rustix::process::Pid::from_raw(i32::try_from(evidence.agent_pid).unwrap()).unwrap(),
-                rustix::process::Signal::TERM,
-            )
-            .unwrap();
-        }
-        if index == 0 {
-            marker(&lines, "PROMOTION_READY");
-            promotion::operator_round(root.path(), config.operator_uid);
-        } else if index < 3 {
-            marker(&lines, &format!("PROMOTION_DENIAL_{index}"));
-            promotion::operator_denial(root.path(), config.operator_uid, index);
-        }
-        marker(&lines, &format!("VERIFIER_DONE_{index}"));
-        eprintln!("verification fixture case {index}: durable outcome checked");
-        if index == 0 {
-            let work = sessions.join("verifier-0/verification-run/workspace");
-            assert!(work.join(LITERAL_ARGUMENT).exists());
-            assert!(
-                !work.join("INJECTED").exists(),
-                "argv must never gain implicit shell interpretation"
-            );
-        }
-        let retained = sessions.join(format!(
-            "session/verification-exports/export-{index}/job/source/effect"
-        ));
-        assert_eq!(
-            fs::read(retained).unwrap(),
-            if index == 3 {
-                b"tampered".as_slice()
-            } else {
-                b"authorized".as_slice()
-            },
-            "commands cannot mutate the retained job"
-        );
-        assert!(
-            !sessions
-                .join(format!(
-                    "verifier-{index}/verification-run/workspace/NOT_ALLOWED"
-                ))
-                .exists()
-        );
-        verifier.dispose().unwrap();
+    marker(&lines, &format!("VERIFIER_READY_{index}"));
+    if index == 3 {
+        fs::write(
+            sessions.join("session/verification-exports/export-3/job/source/effect"),
+            b"tampered",
+        )
+        .unwrap();
     }
-    marker(&lines, "TAINTED_PROMOTION_READY");
-    promotion::operator_tainted_round(root.path(), config.operator_uid);
+    let verifier = launch_real(
+        &paths,
+        &config,
+        &registry,
+        &sessions,
+        verifier_launch(index),
+    );
+    if index == 4 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !sessions
+            .join("verifier-4/verification-run/workspace/started")
+            .exists()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "verification must actually start before cancellation"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let crate::launch_receipt::ReceiptOutcome::Start { evidence, .. } =
+            &verifier.receipt().payload.outcome
+        else {
+            panic!("actual Agent identity");
+        };
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(i32::try_from(evidence.agent_pid).unwrap()).unwrap(),
+            rustix::process::Signal::TERM,
+        )
+        .unwrap();
+    }
+    if index == 0 {
+        marker(&lines, "PROMOTION_READY");
+        promotion::operator_round(root.path(), config.operator_uid);
+    } else if index < 3 {
+        marker(&lines, &format!("PROMOTION_DENIAL_{index}"));
+        promotion::operator_denial(root.path(), config.operator_uid, index);
+    }
+    marker(&lines, &format!("VERIFIER_DONE_{index}"));
+    eprintln!("verification fixture case {index}: durable outcome checked");
+    if index == 0 {
+        let work = sessions.join("verifier-0/verification-run/workspace");
+        assert!(work.join(LITERAL_ARGUMENT).exists());
+        assert!(
+            !work.join("INJECTED").exists(),
+            "argv must never gain implicit shell interpretation"
+        );
+    }
+    let retained = sessions.join(format!(
+        "session/verification-exports/export-{index}/job/source/effect"
+    ));
+    assert_eq!(
+        fs::read(retained).unwrap(),
+        if index == 3 {
+            b"tampered".as_slice()
+        } else {
+            b"authorized".as_slice()
+        },
+        "commands cannot mutate the retained job"
+    );
+    assert!(
+        !sessions
+            .join(format!(
+                "verifier-{index}/verification-run/workspace/NOT_ALLOWED"
+            ))
+            .exists()
+    );
+    verifier.dispose().unwrap();
+    if index == 0 {
+        marker(&lines, "TAINTED_PROMOTION_READY");
+        promotion::operator_tainted_round(root.path(), config.operator_uid);
+    }
     marker(&lines, "VERIFICATION_DONE");
     assert!(child.0.wait().unwrap().success());
     assert_eq!(
@@ -564,7 +651,7 @@ fn privileged_installed_exact_job_verification() {
         b"authorized"
     );
     relay.join().unwrap().unwrap();
-    for slot in 0..6 {
+    for slot in 0..2 {
         crate::launcher_install::acquire_identity(&paths, slot)
             .unwrap()
             .release()

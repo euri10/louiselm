@@ -33,6 +33,9 @@ impl InstalledBroker {
         caller: &LifecycleCaller,
         request: &VerificationRequest,
     ) -> Result<VerificationExport, BrokerError> {
+        let plan = self.service.verification_plan_digest(request)?;
+        self.run_envelopes
+            .check_verification(request, &plan, now_ms()?)?;
         let mut failure = None;
         let result = self.service.export_verification(
             session,
@@ -63,6 +66,9 @@ impl InstalledBroker {
         caller: &LifecycleCaller,
         request: &VerificationRequest,
     ) -> Result<VerificationRecord, BrokerError> {
+        let plan = self.service.verification_plan_digest(request)?;
+        self.run_envelopes
+            .check_verification(request, &plan, now_ms()?)?;
         let mut failure = None;
         let result = self.service.run_verification(
             session,

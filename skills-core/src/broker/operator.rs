@@ -4,6 +4,10 @@ mod wire;
 
 use super::conformance_inspection::{ConformanceInspection, MAX_INSPECTION_BYTES};
 use crate::beads_mutation::{BeadsControlDecision, BeadsInspection, BeadsInspectionDetail};
+use crate::broker::{
+    GrantRequest,
+    run_envelope::{ChildAuthorization, RunAuthorization, RunEnvelope},
+};
 use crate::launch_protocol::SessionStatus;
 use crate::skill_request::{SkillRequestOutcome, SkillRequestStatus};
 use serde::{Deserialize, Serialize};
@@ -81,6 +85,10 @@ impl InspectError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 enum Request {
+    #[serde(rename = "louiselm.operator-authorization/1")]
+    Authorization {
+        authorization: Box<AuthorizationRequest>,
+    },
     #[serde(rename = "louiselm.operator-conformance-waiver/1")]
     Waiver {
         session_id: String,
@@ -115,6 +123,94 @@ enum Request {
         operation_id: String,
         outcome: Option<SkillRequestOutcome>,
     },
+}
+
+/// One operator-approved Run or one controller-requested child launch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthorizationRequest {
+    /// Persist the exact Run policy as the authenticated operator.
+    Run {
+        /// Exact policy the operator approves.
+        envelope: Box<RunEnvelope>,
+    },
+    /// Persist a child grant under the exact previously returned Run digest.
+    Session {
+        /// Exact single-use child launch authority.
+        grant: Box<GrantRequest>,
+        /// Digest returned by the Run approval the controller selected.
+        expected_envelope_digest: String,
+    },
+}
+
+/// The distinct Run and Session digests a controller must retain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthorizationResponse {
+    /// The immutable approved Run record.
+    Run {
+        /// Durable Run approval.
+        receipt: RunAuthorization,
+    },
+    /// The exact child Session launch record.
+    Session {
+        /// Durable child Session authorization.
+        receipt: ChildAuthorization,
+    },
+}
+
+/// Sends one authenticated authorization request to the installed broker.
+/// The caller may run this blocking exchange on a Lua `vim.system` worker.
+/// # Errors
+/// Refuses a foreign broker, malformed response, mismatched digest or policy denial.
+pub fn authorization(
+    path: &Path,
+    broker_uid: u32,
+    authorization: &AuthorizationRequest,
+    timeout: Duration,
+) -> Result<AuthorizationResponse, InspectError> {
+    let bytes = exchange(
+        path,
+        broker_uid,
+        &Request::Authorization {
+            authorization: Box::new(authorization.clone()),
+        },
+        timeout,
+    )?;
+    let response: AuthorizationResponse =
+        serde_json::from_slice(&bytes).map_err(|_| InspectError::StatusUnavailable)?;
+    if serde_json::to_vec(&response).map_err(|_| InspectError::StatusUnavailable)? != bytes {
+        return Err(InspectError::StatusUnavailable);
+    }
+    let matches = match (authorization, &response) {
+        (AuthorizationRequest::Run { envelope }, AuthorizationResponse::Run { receipt }) => {
+            receipt.schema == "louiselm.broker.run-authorization/1"
+                && receipt.run_id == envelope.run_id
+                && receipt.envelope_revision == envelope.envelope_revision
+                && receipt.envelope_digest
+                    == crate::Digest::of(&envelope.canonical_bytes()).to_string()
+        }
+        (
+            AuthorizationRequest::Session {
+                grant,
+                expected_envelope_digest,
+            },
+            AuthorizationResponse::Session { receipt },
+        ) => {
+            receipt.schema == "louiselm.broker.child-authorization/1"
+                && receipt.run_id == grant.request.run_id
+                && receipt.session_id == grant.request.session_id
+                && receipt.authorization_id == grant.request.authorization_id
+                && receipt.envelope_revision == grant.request.envelope_revision
+                && receipt.request_digest == grant.request.digest().to_string()
+                && receipt.envelope_digest == *expected_envelope_digest
+        }
+        _ => false,
+    };
+    if !matches {
+        return Err(InspectError::StatusUnavailable);
+    }
+    Ok(response)
 }
 
 /// A bounded authenticated Provider budget extension exchange.
@@ -610,6 +706,7 @@ impl OperatorServer {
     )]
     pub fn serve_once(
         &self,
+        authorization: impl FnOnce(&AuthorizationRequest) -> Result<AuthorizationResponse, InspectError>,
         dependencies: impl FnOnce(
             &str,
             Option<&[String]>,
@@ -655,6 +752,10 @@ impl OperatorServer {
                 return Err(InspectError::StatusUnavailable);
             }
             match request {
+                Request::Authorization {
+                    authorization: request,
+                } => serde_json::to_vec(&authorization(&request)?)
+                    .map_err(|_| InspectError::StatusUnavailable),
                 Request::Waiver {
                     session_id,
                     request,

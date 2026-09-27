@@ -381,6 +381,7 @@ fn installed_linked_admission_server() {
     for _ in 0..calls {
         server
             .serve_once(
+                |_| panic!("authorization request not expected"),
                 |_, _| Err(louiselm_skills::broker::operator::InspectError::UnknownSession),
                 |_, _| Err(InspectError::UnknownSession),
                 |_| Err(InspectError::UnknownSession),

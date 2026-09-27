@@ -28,7 +28,7 @@ fn validates_verbs_confirmation_and_socket_activation() {
             error.contains(if arguments == ["serve"] {
                 "socket activation"
             } else {
-                "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'"
+                "expected 'serve', 'adopt-state --confirm', 'run authorize --json', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'"
             }),
             "{error}"
         );

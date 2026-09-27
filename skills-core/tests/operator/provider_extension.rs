@@ -46,6 +46,7 @@ fn extension_reply_must_answer_the_exact_request_and_session() {
             }
             server
                 .serve_once(
+                    |_| panic!("authorization request not expected"),
                     |_, _| panic!("not dependencies"),
                     |_, _| panic!("not status"),
                     |_| panic!("not conformance"),

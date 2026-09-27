@@ -29,6 +29,7 @@ use crate::{
 /// All methods perform blocking I/O on the explicitly owned broker worker.
 pub struct InstalledBroker {
     preparation_paths: LauncherPaths,
+    pub(in crate::broker) run_envelopes: super::run_envelope::RunEnvelopeStore,
     pub(in crate::broker) service: BrokerService,
     pub(in crate::broker) verifier: Arc<LauncherVerifier>,
     pub(in crate::broker) provider_credentials:
@@ -607,6 +608,9 @@ impl InstalledBroker {
         )?;
         Ok(Self {
             preparation_paths: paths.clone(),
+            run_envelopes: super::run_envelope::RunEnvelopeStore::open(
+                &state.join("run-envelopes"),
+            )?,
             provider_credentials,
             _state_lock: state_lock,
             service,
@@ -614,12 +618,70 @@ impl InstalledBroker {
         })
     }
 
-    /// Persists exact authority already approved by the trusted operator/controller.
+    /// Persists an operator-approved Run envelope before any child Session starts.
+    /// # Errors
+    /// Refuses foreign operator identity, malformed policy or unavailable storage.
+    pub fn authorize_run(
+        &self,
+        envelope: &super::run_envelope::RunEnvelope,
+    ) -> Result<super::run_envelope::RunAuthorization, BrokerError> {
+        if envelope.controller_uid != self.verifier.config().operator_uid {
+            return Err(BrokerError::ControllerMismatch);
+        }
+        if self
+            .service
+            .tracker
+            .as_ref()
+            .is_some_and(|tracker| envelope.bead_scope.project_digest != tracker.project_digest())
+        {
+            return Err(BrokerError::InvalidGrant);
+        }
+        self.run_envelopes.approve_with(envelope, now_ms()?, || {
+            if self
+                .service
+                .authorizations()
+                .session_count_for_run(&envelope.run_id)?
+                != 0
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
+            Ok(())
+        })
+    }
+
+    /// Persists exact child authority bounded by the current approved Run.
     /// This Rust API is not an Agent-facing approval endpoint.
     ///
     /// # Errors
     /// Refuses a foreign controller, malformed/expired approval, exhausted pool or storage failure.
     pub fn authorize(&self, grant: &GrantRequest) -> Result<PendingAuthorization, BrokerError> {
+        self.authorize_child_inner(grant, None)
+            .map(|(pending, _)| pending)
+    }
+
+    /// Authorizes one child Session under the exact Run digest the controller reviewed.
+    /// # Errors
+    /// Refuses a stale digest, widened grant, foreign controller or unavailable storage.
+    pub fn authorize_child(
+        &self,
+        grant: &GrantRequest,
+        expected_envelope_digest: &str,
+    ) -> Result<super::run_envelope::ChildAuthorization, BrokerError> {
+        self.authorize_child_inner(grant, Some(expected_envelope_digest))
+            .map(|(_, receipt)| receipt)
+    }
+
+    fn authorize_child_inner(
+        &self,
+        grant: &GrantRequest,
+        expected_envelope_digest: Option<&str>,
+    ) -> Result<
+        (
+            PendingAuthorization,
+            super::run_envelope::ChildAuthorization,
+        ),
+        BrokerError,
+    > {
         if grant.controller_uid != self.verifier.config().operator_uid {
             return Err(BrokerError::ControllerMismatch);
         }
@@ -633,7 +695,39 @@ impl InstalledBroker {
                 return Err(BrokerError::InvalidGrant);
             }
         }
-        self.service.authorizations().authorize(grant, now_ms()?)
+        let now = now_ms()?;
+        self.run_envelopes.with_child(grant, now, |envelope| {
+            let digest = crate::Digest::of(&envelope.canonical_bytes()).to_string();
+            if expected_envelope_digest.is_some_and(|expected| expected != digest) {
+                return Err(BrokerError::RequestMismatch);
+            }
+            if self
+                .service
+                .authorizations()
+                .has_session(&grant.request.session_id)?
+            {
+                return Err(BrokerError::DuplicateAuthorization);
+            }
+            if self
+                .service
+                .authorizations()
+                .session_count_for_run(&grant.request.run_id)?
+                >= envelope.max_sessions as usize
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
+            let pending = self.service.authorizations().authorize(grant, now)?;
+            let receipt = super::run_envelope::ChildAuthorization {
+                schema: "louiselm.broker.child-authorization/1".into(),
+                run_id: pending.run_id.clone(),
+                session_id: pending.session_id.clone(),
+                envelope_digest: digest,
+                request_digest: pending.request_digest.clone(),
+                authorization_id: pending.authorization_id.clone(),
+                envelope_revision: pending.envelope_revision,
+            };
+            Ok((pending, receipt))
+        })
     }
 
     /// Consumes one pending launch and verifies both exact receipts with installed keys.

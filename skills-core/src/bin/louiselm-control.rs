@@ -26,6 +26,8 @@ mod dependencies;
 mod inspection;
 #[path = "control/provider_extension.rs"]
 mod provider_extension;
+#[path = "control/run_authorization.rs"]
+mod run_authorization;
 #[path = "control/waiver.rs"]
 mod waiver;
 
@@ -49,6 +51,9 @@ fn main() -> ExitCode {
     if collected.first().is_some_and(|verb| verb == "beads") {
         return ExitCode::from(beads::cli(&collected[1..]));
     }
+    if collected.first().is_some_and(|verb| verb == "run") {
+        return ExitCode::from(run_authorization::cli(&collected[1..]));
+    }
     if collected
         .first()
         .is_some_and(|verb| verb == "skill-request")
@@ -67,7 +72,7 @@ fn main() -> ExitCode {
             adopt_state()
         }
         _ => Err(
-            "expected 'serve', 'adopt-state --confirm', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
+            "expected 'serve', 'adopt-state --confirm', 'run authorize --json', 'session inspect|conformance ID --json', 'beads inspect OPERATION_UUID --json', 'skill-request inspect|reject|cancel ID --json', 'dependencies inspect|approve SESSION [CANDIDATE...] --json', 'waiver inspect|plan|apply|result|revoke SESSION [DIGEST] --json', or 'provider-extend SESSION REQUEST_ID REQUESTS [EXPIRES_AT_MS] --json'".to_owned(),
         ),
     };
     match result {

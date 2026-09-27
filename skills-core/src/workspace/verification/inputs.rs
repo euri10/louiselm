@@ -52,6 +52,24 @@ pub(crate) fn stage_inputs(
     Ok(Digest::of(&inputs))
 }
 
+pub(crate) fn staged_plan_digest(
+    input: &Path,
+    expected: &Digest,
+) -> Result<Digest, WorkspaceError> {
+    let root = filesystem::open_directory(input)?;
+    let bytes = read(&root, "inputs.json", MAX_PLAN_BYTES)?;
+    if Digest::of(&bytes) != *expected {
+        return Err(WorkspaceError::Invalid(
+            "verification input digest mismatch",
+        ));
+    }
+    let inputs: Inputs = serde_json::from_slice(&bytes)?;
+    if serde_json::to_vec(&inputs)? != bytes {
+        return Err(WorkspaceError::Invalid("noncanonical verification input"));
+    }
+    Digest::parse(&inputs.plan_digest).map_err(|_| WorkspaceError::Invalid("invalid plan digest"))
+}
+
 pub(crate) fn export_job(
     input: &Path,
     expected: &Digest,

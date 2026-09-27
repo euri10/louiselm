@@ -79,7 +79,8 @@ impl ApprovedCommands {
 }
 
 /// A launch the operator's controller has authorized but not yet started.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrantRequest {
     /// Exact dependency scope approved before Run start; omission denies fetching.
     pub dependencies: Option<crate::dependency_fetch::ApprovedDependencies>,
@@ -197,6 +198,31 @@ pub struct AuthorizationStore {
 }
 
 impl AuthorizationStore {
+    /// Counts every distinct Session authorized for a Run, including consumed
+    /// grants and expired pending grants so retries cannot reclaim the ceiling.
+    /// # Errors
+    /// Refuses unreadable or malformed durable authorization state.
+    pub fn session_count_for_run(&self, run_id: &str) -> Result<usize, BrokerError> {
+        let mut sessions = std::collections::BTreeSet::new();
+        for directory in [PENDING_DIRECTORY, CONSUMED_DIRECTORY] {
+            for entry in fs::read_dir(self.root.join(directory)).map_err(BrokerError::Storage)? {
+                let entry = entry.map_err(BrokerError::Storage)?;
+                let held = if directory == PENDING_DIRECTORY {
+                    read_record::<PendingAuthorization>(&entry.path())?
+                } else {
+                    read_record::<ConsumedAuthorization>(&entry.path())?
+                        .map(|record| record.authorization)
+                };
+                if let Some(held) = held
+                    && held.run_id == run_id
+                {
+                    sessions.insert(held.session_id);
+                }
+            }
+        }
+        Ok(sessions.len())
+    }
+
     pub(super) fn with_pending<T>(
         &self,
         session_id: &str,

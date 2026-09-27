@@ -20,7 +20,7 @@ use crate::{Digest, ManifestEntry};
 mod tests;
 
 mod inputs;
-pub(crate) use inputs::{export_job, stage_inputs};
+pub(crate) use inputs::{export_job, stage_inputs, staged_plan_digest};
 
 const SCHEMA: &str = "louiselm.workspace.verification-job/1";
 const MAX_PLAN_BYTES: usize = 64 * 1024;

@@ -191,6 +191,32 @@ impl Queries {
             .spawn(move || {
                 loop {
                     if let Err(error) = endpoint.serve_once(
+                        |request| {
+                            use louiselm_skills::broker::operator::{
+                                AuthorizationRequest, AuthorizationResponse,
+                            };
+                            let result = match request {
+                                AuthorizationRequest::Run { envelope } => broker
+                                    .authorize_run(envelope)
+                                    .map(|receipt| AuthorizationResponse::Run { receipt }),
+                                AuthorizationRequest::Session {
+                                    grant,
+                                    expected_envelope_digest,
+                                } => broker
+                                    .authorize_child(grant, expected_envelope_digest)
+                                    .map(|receipt| AuthorizationResponse::Session { receipt }),
+                            };
+                            result.map_err(|error| match error {
+                                BrokerError::InvalidGrant
+                                | BrokerError::RequestMismatch
+                                | BrokerError::ControllerMismatch
+                                | BrokerError::Expired
+                                | BrokerError::DuplicateAuthorization => {
+                                    InspectError::InvalidRequest
+                                }
+                                _ => InspectError::StatusUnavailable,
+                            })
+                        },
                         |id, candidates| {
                             broker
                                 .dependency_control(owner.operator_uid, id, candidates)

@@ -4,8 +4,8 @@ use super::{
     check_operator,
 };
 use crate::{
-    broker::{BrokerSession, InstalledBroker},
-    launch_protocol::RecoveryRestoreRequest,
+    broker::{BrokerSession, GrantRequest, InstalledBroker},
+    launch_protocol::{ConformanceAuthorization, RecoveryRestoreRequest},
 };
 
 impl InstalledBroker {
@@ -21,20 +21,54 @@ impl InstalledBroker {
         caller: &LifecycleCaller,
     ) -> Result<ColdResumeAllocation, BrokerError> {
         check_operator(caller, self.verifier.config().operator_uid)?;
+        let original = self
+            .service
+            .authorizations()
+            .consumed_for_session(source_id)?
+            .ok_or(BrokerError::UnknownAuthorization)?;
+        // Reconstruction drops these capabilities; commands can only shrink.
+        let child = GrantRequest {
+            dependencies: None,
+            conformance: ConformanceAuthorization::default(),
+            require_cold_recovery: original.require_cold_recovery,
+            request: target.clone(),
+            controller_uid: original.controller_uid,
+            expires_at_ms: original.expires_at_ms,
+            broker_loss_grace_ms: original.broker_loss_grace_ms,
+            commands: original.commands,
+            skill_requests: None,
+            beads_mutations: None,
+            provider_requests: None,
+        };
+        let now = super::super::now_ms()?;
         let mut failure = None;
-        let result = self.service.authorize_cold_resume(
-            source_id,
-            target,
-            caller,
-            super::super::now_ms()?,
-            |key, payload, signature| match self.verifier.verify(key, payload, signature) {
-                Ok(()) => true,
-                Err(error) => {
-                    failure = Some(error);
-                    false
-                }
-            },
-        );
+        let result = self.run_envelopes.with_child(&child, now, |envelope| {
+            if self
+                .service
+                .authorizations()
+                .session_count_for_run(&target.run_id)?
+                >= envelope.max_sessions as usize
+                && !self
+                    .service
+                    .authorizations()
+                    .has_session(&target.session_id)?
+            {
+                return Err(BrokerError::InvalidGrant);
+            }
+            self.service.authorize_cold_resume(
+                source_id,
+                target,
+                caller,
+                now,
+                |key, payload, signature| match self.verifier.verify(key, payload, signature) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        failure = Some(error);
+                        false
+                    }
+                },
+            )
+        });
         match failure {
             Some(error) => Err(BrokerError::Verification(error)),
             None => result,

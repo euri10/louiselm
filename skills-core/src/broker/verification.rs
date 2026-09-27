@@ -57,6 +57,48 @@ pub enum VerificationStatus {
 }
 
 impl BrokerService {
+    pub(in crate::broker) fn verification_plan_digest(
+        &self,
+        request: &VerificationRequest,
+    ) -> Result<String, BrokerError> {
+        request.validate()?;
+        match &request.operation {
+            VerificationOperation::Export {
+                input_id,
+                input_digest,
+            } => {
+                record_name(input_id)?;
+                let expected =
+                    Digest::parse(input_digest).map_err(|_| BrokerError::InvalidGrant)?;
+                Ok(crate::workspace::verification::staged_plan_digest(
+                    &self.verification_inputs.join(input_id),
+                    &expected,
+                )?
+                .to_string())
+            }
+            VerificationOperation::Run {
+                producer_session_id,
+                export_request_id,
+                export_digest,
+                job_digest,
+            } => {
+                let export: VerificationExport =
+                    read_record(&self.export_path(producer_session_id, export_request_id)?)?
+                        .ok_or(BrokerError::InvalidGrant)?;
+                if export.request.launch.session_id != *producer_session_id
+                    || export.request.request_id != *export_request_id
+                    || export.digest()?.to_string() != *export_digest
+                    || export.job.job_digest != *job_digest
+                    || export.request.launch.run_id != request.launch.run_id
+                {
+                    return Err(BrokerError::RequestMismatch);
+                }
+                Ok(export.job.plan_digest)
+            }
+            VerificationOperation::Transfer { .. } => Err(BrokerError::InvalidGrant),
+        }
+    }
+
     /// Copies exact approved baseline and plan bytes into private broker storage.
     /// This blocking worker operation executes nothing and grants no job authority.
     /// # Errors

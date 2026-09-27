@@ -35,8 +35,9 @@ before opening the broker stores. The supplementary list may repeat the primary
 GID, as systemd initializes it; any other GID is refused.
 
 One Control broker serves exactly one operator identity, enforced by
-`InstalledBroker::authorize` and `LifecycleCaller::Operator`. Multiple operators
-would require separate broker instances, identities, sockets and state; a
+`InstalledBroker::authorize_run`, child authorization and
+`LifecycleCaller::Operator`. Multiple operators would require separate broker
+instances, identities, sockets and state; a
 partitioned multi-operator broker is not supported.
 
 The daemon separates `accept_connection` from `serve_accepted`: each accepted
@@ -1122,6 +1123,44 @@ Once admitted, the original waiver expiry governs its lifetime; the preparation'
 five-minute review window does not shorten a running Session's approved waiver.
 Pre-cutover Sessions have no measured failure to waive. Installing the new fixed
 `prepare` command and desktop activation remain explicit operator work.
+
+## Run authorization
+
+The operator approves one closed `louiselm.broker.run-envelope/1` document before
+the first Session. It fixes the Run ID and envelope revision, exact Beads scope,
+Provider policy and shared request total, one verification-plan digest, optional
+exact command scope, Session count, and expiry. The broker persists the envelope
+and returns its digest. The controller later submits each single-use Session
+`GrantRequest` with that digest; the broker checks it as a subset and returns a
+distinct launch-request digest. A new envelope revision is refused after any
+Session in that Run has been authorized, so active authority cannot change under
+a Session. Missing or stale envelopes refuse child launches and verification.
+Cold-resume reconstruction also consumes a Session slot and must remain inside
+the current Run approval; it cannot derive a replacement from an old Session
+to bypass the envelope.
+
+The installed operator entrypoint accepts a bounded JSON request on stdin and
+returns a typed JSON receipt on stdout:
+
+```sh
+louiselm-control run authorize --json
+```
+
+The request is `{"kind":"run","envelope":{...}}` for operator approval or
+`{"kind":"session","grant":{...},"expected_envelope_digest":"..."}` for
+a child launch. The socket authenticates the operator UID before reading either
+request; an Agent cannot authorize itself. Lua may invoke the CLI asynchronously
+through `vim.system()` and retain both returned digests. Verification still uses
+its separate request, bound to a consumed Session launch and receipt head; the
+installed broker checks its staged plan against the Run envelope before the
+operation starts. The first Run path denies child dependency and skill-request
+grants, since they have no Run-level ceiling in this contract.
+
+The opt-in installed verification VM gate now uses a separate fixed-plan Run
+for each adverse plan. Each Run authorizes exactly two child Sessions (producer
+and verifier); it rejects stale identity/revision, widened scopes, a changed
+plan, expired/replayed grants and a third Session. The Provider ledger's
+separate Run-scoped tests cover refusal of a cap reset across Session IDs.
 
 ## Provider budget holds and extensions
 

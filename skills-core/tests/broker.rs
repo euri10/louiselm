@@ -388,6 +388,22 @@ fn pending_approval_is_exact_durable_and_expiring() {
 }
 
 #[test]
+fn run_session_count_includes_pending_and_consumed_after_restart() {
+    let root = TempDir::new().unwrap();
+    let store = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    let first = request("session-1");
+    let second = request("session-2");
+    store.authorize(&grant(&first), 1_000).unwrap();
+    store.authorize(&grant(&second), 1_000).unwrap();
+    store.consume(&first, CONTROLLER_UID, 2_000).unwrap();
+    assert_eq!(store.session_count_for_run("run-1").unwrap(), 2);
+    drop(store);
+    let reopened = AuthorizationStore::open(root.path(), pool(4)).unwrap();
+    assert_eq!(reopened.session_count_for_run("run-1").unwrap(), 2);
+    assert_eq!(reopened.session_count_for_run("other-run").unwrap(), 0);
+}
+
+#[test]
 fn one_authorization_is_consumed_once_and_stays_consumed_across_restart() {
     let root = TempDir::new().expect("broker state directory");
     let store = AuthorizationStore::open(root.path(), pool(4)).expect("open store");
