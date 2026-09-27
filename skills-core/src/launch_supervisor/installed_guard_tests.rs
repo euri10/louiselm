@@ -791,13 +791,18 @@ fn stock_acp_prompt(
             line.clear();
             assert!(
                 reader.read_line(&mut line).unwrap() > 0,
-                "ACP closed before {method} replied; frames={frames}, recent={recent:?}, agent_state={:?}, children={:?}, relay={:?}",
+                "ACP closed before {method} replied; frames={frames}, recent={recent:?}, agent_state={:?}, child_states={:?}, relay={:?}",
                 fs::read_to_string(format!("/proc/{agent_pid}/stat"))
                     .ok()
                     .and_then(|stat| stat.split_whitespace().nth(2).map(str::to_owned)),
                 fs::read_to_string(format!("/proc/{agent_pid}/task/{agent_pid}/children"))
                     .ok()
-                    .map(|children| children.split_whitespace().count()),
+                    .map(|children| children
+                        .split_whitespace()
+                        .filter_map(|pid| fs::read_to_string(format!("/proc/{pid}/stat"))
+                            .ok()
+                            .and_then(|stat| stat.split_whitespace().nth(2).map(str::to_owned)))
+                        .collect::<Vec<_>>()),
                 finished.recv_timeout(Duration::from_secs(3))
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();

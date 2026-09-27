@@ -1582,6 +1582,10 @@ impl SessionOwner {
     }
 
     fn handle_running_agent_event(&mut self, event: RunningAgentEvent) {
+        #[cfg(test)]
+        if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
+            eprintln!("STOCK_RELAY_EVENT {event:?}");
+        }
         match event {
             RunningAgentEvent::ControllerEof => self.begin_controller_loss(),
             RunningAgentEvent::ProcessExited(classification) => {
