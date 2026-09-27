@@ -30,10 +30,19 @@ fn completed<T: Send + 'static>(queue: impl FnOnce(Box<dyn FnOnce(T) + Send>)) -
 
 fn named_request(name: &str) -> LaunchRequest {
     let mut request = request();
+    request.run_id = named_run_id().into();
     request.session_id = name.into();
     request.request_id = format!("launch-{name}");
     request.authorization_id = format!("approval-{name}");
     request
+}
+
+fn named_run_id() -> &'static str {
+    if Path::new(beads::TRACKER_CONFIG).exists() {
+        "run-tracker"
+    } else {
+        "run"
+    }
 }
 
 #[test]
@@ -67,7 +76,7 @@ fn seed_authorizations() {
     let run = broker
         .authorize_run(&crate::broker::run_envelope::RunEnvelope {
             schema: "louiselm.broker.run-envelope/1".into(),
-            run_id: "run".into(),
+            run_id: named_run_id().into(),
             envelope_id: "envelope".into(),
             envelope_revision: 1,
             controller_uid: config.operator_uid,

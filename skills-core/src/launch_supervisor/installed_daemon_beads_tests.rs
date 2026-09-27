@@ -6,7 +6,7 @@ use crate::beads_mutation::{
 };
 use crate::launch_protocol::COMMAND_SCHEMA;
 
-const TRACKER_CONFIG: &str = "/etc/louiselm-broker-beads.json";
+pub(super) const TRACKER_CONFIG: &str = "/etc/louiselm-broker-beads.json";
 
 pub(super) fn subjects() -> &'static [&'static str] {
     if Path::new(TRACKER_CONFIG).exists() {
@@ -206,7 +206,7 @@ fn relay(session: LaunchedSession, issue: &str, allowed: bool) {
         protocol_version: PROTOCOL_VERSION,
         request_id: "relay-comment".into(),
         session_id: id.clone(),
-        run_id: "run".into(),
+        run_id: named_run_id().into(),
         envelope_revision: 1,
         operation: CommandOperation::BeadsMutation {
             request: BeadsMutationRequest {
