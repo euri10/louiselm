@@ -214,7 +214,7 @@ fn privileged_installed_run_budget() {
         .prefix("louiselm-run-budget-")
         .tempdir_in("/var/lib")
         .unwrap();
-    let (paths, mut config, registry) = install_fixture_with_slots(root.path(), 2);
+    let (paths, mut config, registry) = install_fixture_with_slots(root.path(), 3);
     provider_credentials::provision_empty_state(root.path());
     let custody = ProviderCredentialStore::root_in(&root.path().join("state"));
     fs::write(custody.join("openai"), b"fixture-secret").unwrap();
@@ -236,7 +236,9 @@ fn privileged_installed_run_budget() {
     let certificate = certify(&paths, Instant::now() + Duration::from_mins(3), parent).unwrap();
     assert_eq!(
         certificate.observations.result().unwrap(),
-        ReportResult::Passed
+        ReportResult::Passed,
+        "{:?}",
+        certificate.observations
     );
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
@@ -291,7 +293,7 @@ fn privileged_installed_run_budget() {
     assert!(child.0.wait().unwrap().success());
     first.finish();
     second.finish();
-    for slot in 0..2 {
+    for slot in 0..3 {
         crate::launcher_install::acquire_identity(&paths, slot)
             .unwrap()
             .release()
