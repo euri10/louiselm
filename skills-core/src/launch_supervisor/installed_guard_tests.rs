@@ -551,7 +551,7 @@ fn installed_guard_case_for(
     if no_permission {
         assert!(matches!(
             launched,
-            Err(SupervisorError::AuthorizationRejected)
+            Err(SupervisorError::BrokeredProviderAuthenticationUnavailable)
         ));
         marker(&lines, "BROKER_REJECTED");
         assert!(broker_child.0.wait().unwrap().success());
