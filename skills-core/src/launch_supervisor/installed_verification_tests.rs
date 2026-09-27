@@ -166,6 +166,17 @@ fn prepare_operator_socket(root: &Path) {
     fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+fn wait_for_operator(root: &Path, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !root.join(name).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "operator fixture timed out: {name}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[path = "installed_promotion_tests.rs"]
 mod promotion;
 
@@ -283,16 +294,10 @@ fn installed_verification_worker() {
     let plan_digest =
         Digest::of(&fs::read(root.join(format!("inputs/plan-{index}.json"))).unwrap()).to_string();
     let envelope = fixture_run_envelope(&grant, plan_digest, now);
-    let wrong_peer = crate::broker::operator::AuthorizationRequest::Run {
-        envelope: Box::new(envelope.clone()),
-    };
-    assert!(operator_request(&root, AGENT_UID, &wrong_peer).is_err());
-    let run = authorize_run(&root, config.operator_uid, envelope);
-    assert_ne!(run.envelope_digest, grant.request.digest().to_string());
-    assert_run_child_denials(&root, config.operator_uid, &grant, &run.envelope_digest);
-    let child = authorize_child(&root, config.operator_uid, &grant, &run.envelope_digest).unwrap();
-    assert_eq!(child.request_digest, grant.request.digest().to_string());
-    assert!(authorize_child(&root, config.operator_uid, &grant, &run.envelope_digest).is_err());
+    write_json(&root.join("operator-api/run-envelope.json"), &envelope);
+    write_json(&root.join("operator-api/producer-grant.json"), &grant);
+    println!("OPERATOR_READY");
+    wait_for_operator(&root, "operator-producer-approved");
     println!("PRODUCER_READY");
     let mut producer = broker.serve_launch().unwrap();
     // The producing Agent really requests and completes this governed write.
@@ -303,15 +308,7 @@ fn installed_verification_worker() {
     broker
         .request_lifecycle(&mut producer, &caller, &park)
         .unwrap();
-    run_job(
-        &broker,
-        &mut producer,
-        &caller,
-        &root,
-        index,
-        config.operator_uid,
-        &run.envelope_digest,
-    );
+    run_job(&broker, &mut producer, &caller, &root, index);
     if index == 0 {
         promotion::broker_tainted_round(&broker, &mut producer, &root);
     }
@@ -337,8 +334,6 @@ fn run_job(
     caller: &LifecycleCaller,
     root: &Path,
     index: usize,
-    uid: u32,
-    envelope_digest: &str,
 ) {
     let operator_root = root;
     let root = root.join("inputs");
@@ -396,23 +391,15 @@ fn run_job(
         .export_verification(producer, caller, &export_request)
         .unwrap();
     let launch = verifier_launch(index);
-    authorize_child(
-        operator_root,
-        uid,
-        &approval(launch.clone(), uid, None),
-        envelope_digest,
-    )
-    .unwrap();
-    assert!(
-        authorize_child(
-            operator_root,
-            uid,
-            &approval(verifier_launch(index + 10), uid, None),
-            envelope_digest
-        )
-        .is_err(),
-        "the third Session exceeds the fixed Run ceiling"
+    let LifecycleCaller::Operator { uid } = caller else {
+        panic!("operator owns verification")
+    };
+    write_json(
+        &operator_root.join("operator-api/verifier-grant.json"),
+        &approval(launch.clone(), *uid, None),
     );
+    println!("VERIFIER_AUTH_READY_{index}");
+    wait_for_operator(operator_root, "operator-verifier-approved");
     println!("VERIFIER_READY_{index}");
     let mut verifier = broker.serve_launch().unwrap();
     let run = VerificationRequest {
@@ -699,6 +686,48 @@ fn privileged_verification_case(index: usize) {
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
     let (mut child, lines) = worker(root.path(), index);
+    marker(&lines, "OPERATOR_READY");
+    let envelope: crate::broker::run_envelope::RunEnvelope = serde_json::from_slice(
+        &fs::read(root.path().join("operator-api/run-envelope.json")).unwrap(),
+    )
+    .unwrap();
+    let grant: GrantRequest = serde_json::from_slice(
+        &fs::read(root.path().join("operator-api/producer-grant.json")).unwrap(),
+    )
+    .unwrap();
+    let wrong_peer = crate::broker::operator::AuthorizationRequest::Run {
+        envelope: Box::new(envelope.clone()),
+    };
+    assert!(operator_request(root.path(), AGENT_UID, &wrong_peer).is_err());
+    let run = authorize_run(root.path(), config.operator_uid, envelope);
+    assert_ne!(run.envelope_digest, grant.request.digest().to_string());
+    assert_run_child_denials(
+        root.path(),
+        config.operator_uid,
+        &grant,
+        &run.envelope_digest,
+    );
+    let authorized = authorize_child(
+        root.path(),
+        config.operator_uid,
+        &grant,
+        &run.envelope_digest,
+    )
+    .unwrap();
+    assert_eq!(
+        authorized.request_digest,
+        grant.request.digest().to_string()
+    );
+    assert!(
+        authorize_child(
+            root.path(),
+            config.operator_uid,
+            &grant,
+            &run.envelope_digest
+        )
+        .is_err()
+    );
+    fs::write(root.path().join("operator-producer-approved"), b"").unwrap();
     marker(&lines, "PRODUCER_READY");
     let producer = launch_real(&paths, &config, &registry, &sessions, request());
     let (mut input, controller_input) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -732,6 +761,29 @@ fn privileged_verification_case(index: usize) {
     assert!(
         matches!(response.operation, CommandOperation::Result { outcome: CommandOutcome::Completed { output } } if output.exit_code == 0)
     );
+    marker(&lines, &format!("VERIFIER_AUTH_READY_{index}"));
+    let verifier_grant: GrantRequest = serde_json::from_slice(
+        &fs::read(root.path().join("operator-api/verifier-grant.json")).unwrap(),
+    )
+    .unwrap();
+    authorize_child(
+        root.path(),
+        config.operator_uid,
+        &verifier_grant,
+        &run.envelope_digest,
+    )
+    .unwrap();
+    assert!(
+        authorize_child(
+            root.path(),
+            config.operator_uid,
+            &approval(verifier_launch(index + 10), config.operator_uid, None),
+            &run.envelope_digest
+        )
+        .is_err(),
+        "the third Session exceeds the fixed Run ceiling"
+    );
+    fs::write(root.path().join("operator-verifier-approved"), b"").unwrap();
     marker(&lines, &format!("VERIFIER_READY_{index}"));
     if index == 3 {
         fs::write(

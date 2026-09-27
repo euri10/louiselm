@@ -71,17 +71,22 @@ fn installed_budget_worker() {
     let root = PathBuf::from(root);
     let broker = Arc::new(InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap());
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
-    start_operator_server(Arc::clone(&broker), &root, config.operator_uid);
     let now = clock_ms();
     let first = child_grant(request(), config.operator_uid, now);
     let second = child_grant(verifier_launch(0), config.operator_uid, now);
-    let run = authorize_run(
-        &root,
-        config.operator_uid,
-        fixture_run_envelope(&first, Digest::of(b"budget-plan").to_string(), now),
-    );
-    authorize_child(&root, config.operator_uid, &first, &run.envelope_digest).unwrap();
-    authorize_child(&root, config.operator_uid, &second, &run.envelope_digest).unwrap();
+    let run = broker
+        .authorize_run(&fixture_run_envelope(
+            &first,
+            Digest::of(b"budget-plan").to_string(),
+            now,
+        ))
+        .unwrap();
+    broker
+        .authorize_child(&first, &run.envelope_digest)
+        .unwrap();
+    broker
+        .authorize_child(&second, &run.envelope_digest)
+        .unwrap();
     println!("BUDGET_FIRST_READY");
     let mut first_session = broker.serve_launch().unwrap();
     assert!(!broker.step(&mut first_session).unwrap());
@@ -226,17 +231,6 @@ pub(super) fn privileged_case() {
         certificate.observations.result().unwrap(),
         ReportResult::Passed
     );
-    prepare_operator_socket(root.path());
-    fs::copy(
-        std::env::current_exe().unwrap(),
-        operator_client(root.path()),
-    )
-    .unwrap();
-    fs::set_permissions(
-        operator_client(root.path()),
-        fs::Permissions::from_mode(0o555),
-    )
-    .unwrap();
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
