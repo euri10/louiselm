@@ -502,8 +502,7 @@ fn installed_broker_worker() {
             "BROKER_PROVIDER_ADDR {}",
             session.provider_address_for_test().unwrap()
         );
-        let deadline = Instant::now()
-            + Duration::from_secs(if live_provider { 90 } else { 20 });
+        let deadline = Instant::now() + Duration::from_secs(if live_provider { 90 } else { 20 });
         while !root.join("guard-provider-done").exists() {
             assert!(Instant::now() < deadline, "Provider fixture timed out");
             broker.drive_provider(&mut session).unwrap();
