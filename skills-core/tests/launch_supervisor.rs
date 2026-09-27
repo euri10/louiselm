@@ -3133,12 +3133,19 @@ fn brokered_setup(provider_expires_at_ms: Option<u64>) -> Setup {
 
 #[test]
 fn brokered_launch_refuses_without_a_live_provider_deadline() {
-    for expiry in [None, Some(NOW_MS)] {
+    let cases = [
+        (
+            None,
+            SupervisorError::BrokeredProviderAuthenticationUnavailable,
+        ),
+        (Some(NOW_MS), SupervisorError::AuthorizationRejected),
+    ];
+    for (expiry, expected) in cases {
         let setup = brokered_setup(expiry);
         let (receiver, _) = begin_launch(&setup, CONTROLLER_UID);
         assert!(matches!(
             receiver.recv_timeout(CALLBACK_TIMEOUT).unwrap(),
-            Err(SupervisorError::AuthorizationRejected)
+            Err(error) if error == expected
         ));
         assert!(setup.signer.payloads().is_empty());
         assert!(!lock(&setup.platform.agent).started);

@@ -867,6 +867,9 @@ pub enum SupervisorError {
     /// The broker did not return one matching live authorization.
     #[error("launch authorization rejected")]
     AuthorizationRejected,
+    /// A Brokered/Verified launch has no broker-held or ephemeral Provider credential.
+    #[error("brokered Provider authentication unavailable")]
+    BrokeredProviderAuthenticationUnavailable,
     /// The authorization or acknowledgement broker operation failed.
     #[error("Control broker unavailable")]
     BrokerUnavailable,
@@ -1156,10 +1159,14 @@ fn run_launch(
         let checked_at_ms = now_ms.saturating_add(
             u64::try_from(validation_clock.elapsed().as_millis()).unwrap_or(u64::MAX),
         );
-        if authorization
-            .provider_expires_at_ms
-            .is_none_or(|expiry| checked_at_ms >= expiry)
-        {
+        let Some(provider_expiry) = authorization.provider_expires_at_ms else {
+            capability.close();
+            return Err(release_identity(
+                identity,
+                SupervisorError::BrokeredProviderAuthenticationUnavailable,
+            ));
+        };
+        if checked_at_ms >= provider_expiry {
             capability.close();
             return Err(release_identity(
                 identity,
