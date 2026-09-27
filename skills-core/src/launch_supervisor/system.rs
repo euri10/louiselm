@@ -1916,7 +1916,17 @@ impl SystemRunningAgent {
         let credentials = adapter.credentials();
         let pid = evidence
             .codex_sender(&observed, credentials.pid)
-            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+            .map_err(|refusal| {
+                #[cfg(test)]
+                if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
+                    eprintln!(
+                        "STOCK_TREE_REFUSAL {refusal:?} process_count={}",
+                        observed.len()
+                    );
+                }
+                let _ = refusal;
+                SupervisorError::ToolIsolationUnproven
+            })?;
         let pidfd = rustix::process::pidfd_open(
             rustix::process::Pid::from_raw(
                 i32::try_from(pid).map_err(|_| SupervisorError::AgentIdentityRejected)?,
@@ -2023,6 +2033,10 @@ impl SystemRunningAgent {
                 return Ok(());
             }
             if Instant::now() >= deadline {
+                #[cfg(test)]
+                if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
+                    eprintln!("STOCK_RUNTIME_WAIT_TIMEOUT");
+                }
                 return Err(SupervisorError::ToolIsolationUnproven);
             }
             thread::sleep(Duration::from_millis(10));

@@ -1604,6 +1604,10 @@ impl SessionOwner {
                     .as_mut()
                     .ok_or(SupervisorError::IsolationRejected)
                     .and_then(|process| process.enroll_descendant());
+                #[cfg(test)]
+                if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
+                    eprintln!("STOCK_ENROLL_RESULT {enrolled:?}");
+                }
                 // Held prompts never reach an unenrolled runtime; failure ends it.
                 if enrolled.is_err() {
                     self.begin_terminal_event(TerminalEvent::RelayFailed);
