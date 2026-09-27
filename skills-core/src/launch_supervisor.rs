@@ -52,6 +52,7 @@ pub mod command;
 mod conformance;
 pub use conformance::ConformanceAdmission;
 mod lifecycle;
+mod prompt_gate;
 pub mod recovery;
 mod recovery_worker;
 mod tool_execution;

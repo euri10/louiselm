@@ -19,7 +19,9 @@ use std::{
 };
 
 use super::{
-    RelayStdio, RunningAgentEvent, RunningAgentEvents, SupervisorError, stdio::NonblockingFile,
+    RelayStdio, RunningAgentEvent, RunningAgentEvents, SupervisorError,
+    prompt_gate::{GatedInput, PromptHold},
+    stdio::NonblockingFile,
 };
 
 const IDLE_POLL: Duration = Duration::from_millis(10);
@@ -43,20 +45,49 @@ impl RelayWorker {
         try_wait: impl FnMut() -> Result<Option<i32>, SupervisorError> + Send + 'static,
         events: RunningAgentEvents,
     ) -> Result<Self, SupervisorError> {
-        Self::start_with(controller, input, output, error, try_wait, events, |work| {
-            thread::Builder::new()
-                .name("louiselm-launch-relay".to_owned())
-                .spawn(work)
-        })
+        Self::start_with(
+            controller,
+            (input, output, error),
+            try_wait,
+            events,
+            None,
+            spawn,
+        )
     }
 
-    fn start_with(
+    /// Starts a relay that holds prompts until `hold` is opened.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+        )
+    )]
+    pub(super) fn start_gated(
         controller: mpsc::Receiver<RelayStdio>,
         input: ChildStdin,
         output: ChildStdout,
         error: ChildStderr,
         try_wait: impl FnMut() -> Result<Option<i32>, SupervisorError> + Send + 'static,
         events: RunningAgentEvents,
+        hold: Arc<PromptHold>,
+    ) -> Result<Self, SupervisorError> {
+        Self::start_with(
+            controller,
+            (input, output, error),
+            try_wait,
+            events,
+            Some(hold),
+            spawn,
+        )
+    }
+
+    fn start_with(
+        controller: mpsc::Receiver<RelayStdio>,
+        (input, output, error): (ChildStdin, ChildStdout, ChildStderr),
+        try_wait: impl FnMut() -> Result<Option<i32>, SupervisorError> + Send + 'static,
+        events: RunningAgentEvents,
+        hold: Option<Arc<PromptHold>>,
         spawn: impl FnOnce(
             Box<dyn FnOnce() -> Result<(), SupervisorError> + Send>,
         ) -> io::Result<JoinHandle<Result<(), SupervisorError>>>,
@@ -76,6 +107,7 @@ impl RelayWorker {
                 output,
                 error,
                 to_agent: CopyBuffer::default(),
+                gate: hold.map(GatedInput::new),
                 to_controller: CopyBuffer::default(),
                 stderr_eof: false,
             };
@@ -116,6 +148,14 @@ impl Drop for RelayWorker {
         // The fallback still joins on failed setup or unwinding; never detach I/O.
         let _ = self.stop();
     }
+}
+
+fn spawn(
+    work: Box<dyn FnOnce() -> Result<(), SupervisorError> + Send>,
+) -> io::Result<JoinHandle<Result<(), SupervisorError>>> {
+    thread::Builder::new()
+        .name("louiselm-launch-relay".to_owned())
+        .spawn(work)
 }
 
 fn emit(stopped: &AtomicBool, events: &RunningAgentEvents, event: RunningAgentEvent) {
@@ -194,6 +234,8 @@ struct RelayLoop {
     output: NonblockingFile,
     error: NonblockingFile,
     to_agent: CopyBuffer,
+    // Present only for contracts that enroll a descendant sender.
+    gate: Option<GatedInput>,
     to_controller: CopyBuffer,
     stderr_eof: bool,
 }
@@ -218,7 +260,15 @@ impl RelayLoop {
             }
             let mut progress = false;
             if let Some(input) = self.input.as_mut() {
-                if let Some(controller) = self.controller.as_mut() {
+                if let Some(gate) = self.gate.as_mut() {
+                    if let Some(controller) = self.controller.as_mut() {
+                        progress |= gate.read(controller)?;
+                    } else if self.detached {
+                        gate.eof = true;
+                    }
+                    progress |= gate.admit_into(&mut self.to_agent.bytes);
+                    self.to_agent.eof |= gate.drained();
+                } else if let Some(controller) = self.controller.as_mut() {
                     progress |= self.to_agent.read(controller)?;
                 } else if self.detached {
                     self.to_agent.eof = true;

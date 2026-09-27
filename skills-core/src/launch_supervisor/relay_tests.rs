@@ -7,7 +7,7 @@
 )]
 
 use std::{
-    io::BufReader,
+    io::{BufRead, BufReader},
     net::Shutdown,
     os::unix::net::UnixStream,
     process::{Child, Command, Stdio},
@@ -317,11 +317,10 @@ fn worker_spawn_failure_drops_all_captured_pipes_and_controller_descriptors() {
     let (input, output, error) = child.pipes();
     let result = RelayWorker::start_with(
         receiver,
-        input,
-        output,
-        error,
+        (input, output, error),
         child.wait_callback(),
         Arc::new(|_| true),
+        None,
         |_work| Err(io::ErrorKind::OutOfMemory.into()),
     );
     assert!(matches!(result, Err(SupervisorError::WorkerUnavailable)));
@@ -358,4 +357,59 @@ fn worker_panic_fails_quiescence_after_joining_and_closing_io() {
     assert_eq!(relay.stop(), Err(SupervisorError::CleanupUnproven));
     assert_eq!(Arc::strong_count(&child.0), 1);
     assert_eq!(input_peer.read(&mut [0]).unwrap(), 0);
+}
+
+#[test]
+fn gated_relay_forwards_setup_and_holds_the_first_prompt_until_opened() {
+    let child = ChildProbe::spawn();
+    let (attachment, receiver) = mpsc::sync_channel(1);
+    let (stdio, mut input_peer, output_peer) = controller();
+    attachment.send(stdio).unwrap();
+    let (input, stdout, stderr) = child.pipes();
+    let hold = Arc::new(super::super::prompt_gate::PromptHold::default());
+    let mut relay = RelayWorker::start_gated(
+        receiver,
+        input,
+        stdout,
+        stderr,
+        child.wait_callback(),
+        Arc::new(|_| true),
+        Arc::clone(&hold),
+    )
+    .unwrap();
+    let setup = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+    let prompt = b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/prompt\"}\n";
+    input_peer.write_all(setup).unwrap();
+    input_peer.write_all(prompt).unwrap();
+    // /bin/cat echoes exactly what reached the Agent.
+    let mut echoed = BufReader::new(output_peer);
+    let mut first = String::new();
+    echoed.read_line(&mut first).unwrap();
+    assert_eq!(first.as_bytes(), setup);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !hold.requested() {
+        assert!(
+            Instant::now() < deadline,
+            "the held prompt requests enrollment"
+        );
+        thread::sleep(IDLE_POLL);
+    }
+    echoed
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut early = String::new();
+    assert!(
+        echoed.read_line(&mut early).is_err(),
+        "no prompt byte reaches the Agent before enrollment: {early:?}"
+    );
+    hold.open();
+    echoed
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut released = String::new();
+    echoed.read_line(&mut released).unwrap();
+    assert_eq!(format!("{early}{released}").as_bytes(), prompt);
+    relay.stop().unwrap();
 }
