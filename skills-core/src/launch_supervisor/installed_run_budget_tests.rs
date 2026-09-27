@@ -9,22 +9,26 @@ use crate::{
         installed::{certify, measure},
     },
 };
-use std::{io::Read, net::SocketAddr, os::unix::net::UnixStream};
+use std::{
+    io::Read,
+    net::{SocketAddr, TcpListener},
+    os::unix::net::UnixStream,
+};
 
 const BUDGET_WORKER: &str =
     "launch_supervisor::system::installed_tests::verification::budget::installed_budget_worker";
 
-fn permission(now: u64) -> crate::provider_request::ApprovedProviderRequests {
+fn permission(now: u64, port: u16) -> crate::provider_request::ApprovedProviderRequests {
     let mut permission = guard::approval(now);
-    permission.upstream = "https://api.openai.com:1/v1/responses".into();
+    permission.upstream = format!("https://api.openai.com:{port}/v1/responses");
     permission.addresses = vec!["127.0.0.1".parse().unwrap()];
     permission
 }
 
-fn child_grant(launch: LaunchRequest, uid: u32, now: u64) -> GrantRequest {
+fn child_grant(launch: LaunchRequest, uid: u32, now: u64, port: u16) -> GrantRequest {
     let mut grant = approval(launch, uid, None);
     grant.expires_at_ms = now + 120_000;
-    grant.provider_requests = Some(permission(now));
+    grant.provider_requests = Some(permission(now, port));
     grant
 }
 
@@ -75,8 +79,12 @@ fn installed_budget_worker() {
     let broker = Arc::new(InstalledBroker::bind(&paths(&root), &root.join("state")).unwrap());
     let config = crate::launcher_install::public_runtime_config(&paths(&root)).unwrap();
     let now = clock_ms();
-    let first = child_grant(request(), config.operator_uid, now);
-    let second = child_grant(verifier_launch(0), config.operator_uid, now);
+    let port = fs::read_to_string(root.join("budget-upstream-port"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let first = child_grant(request(), config.operator_uid, now, port);
+    let second = child_grant(verifier_launch(0), config.operator_uid, now, port);
     let run = broker
         .authorize_run(&fixture_run_envelope(
             &first,
@@ -205,6 +213,23 @@ fn worker(root: &Path) -> (BrokerChild, mpsc::Receiver<String>) {
     (BrokerChild(child), rx)
 }
 
+fn start_refusing_upstream(root: &Path) -> thread::JoinHandle<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    fs::write(
+        root.join("budget-upstream-port"),
+        listener.local_addr().unwrap().port().to_string(),
+    )
+    .unwrap();
+    thread::spawn(move || {
+        let (mut connection, _) = listener.accept().unwrap();
+        connection
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut hello = [0];
+        assert_eq!(connection.read(&mut hello).unwrap(), 1);
+    })
+}
+
 #[test]
 fn privileged_installed_run_budget() {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
@@ -246,6 +271,7 @@ fn privileged_installed_run_budget() {
     let sessions = root.path().join("sessions");
     fs::create_dir(&sessions).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o711)).unwrap();
+    let upstream = start_refusing_upstream(root.path());
     let (mut child, lines) = worker(root.path());
     marker(&lines, "BUDGET_FIRST_READY");
     let mut first = Controller::new(launch_real(
@@ -268,6 +294,7 @@ fn privileged_installed_run_budget() {
         1,
         "first Session must spend the Run unit"
     );
+    upstream.join().unwrap();
     fs::write(root.path().join("budget-first-done"), b"").unwrap();
     marker(&lines, "BUDGET_SECOND_READY");
     let mut second = Controller::new(launch_real(
