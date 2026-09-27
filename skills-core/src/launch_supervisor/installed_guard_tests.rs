@@ -164,7 +164,6 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
                     if request.len() >= header_end + 4 + length {
                         assert!(header.contains("authorization: bearer fixture-secret"));
                         if stock {
-                            eprintln!("STOCK_UPSTREAM_REQUEST {request_index}");
                             let body: serde_json::Value = serde_json::from_slice(
                                 &request[header_end + 4..header_end + 4 + length],
                             )
@@ -213,9 +212,6 @@ fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread:
             .unwrap();
             tls.write_all(&response).unwrap();
             tls.flush().unwrap();
-            if stock {
-                eprintln!("STOCK_UPSTREAM_RESPONSE {request_index}");
-            }
         }
     });
     (port, worker)
@@ -610,8 +606,6 @@ fn installed_guard_case_for(
             &mut controller_peer_input,
             &mut controller_peer_output,
             &sessions,
-            &finished,
-            agent_pid,
         );
     } else if !matches!(codex, CodexCase::None) {
         // Not a setup message: held until the Codex-shaped descendant is
@@ -770,15 +764,11 @@ fn stock_acp_prompt(
     input: &mut std::os::unix::net::UnixStream,
     output: &mut std::os::unix::net::UnixStream,
     sessions: &Path,
-    finished: &mpsc::Receiver<Result<i32, SupervisorError>>,
-    agent_pid: u32,
 ) {
     output
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     let mut reader = BufReader::new(output.try_clone().unwrap());
-    let mut frames = 0;
-    let mut recent = Vec::new();
     let mut request = |id: u64, method: &str, params: serde_json::Value| {
         writeln!(
             input,
@@ -791,44 +781,9 @@ fn stock_acp_prompt(
             line.clear();
             assert!(
                 reader.read_line(&mut line).unwrap() > 0,
-                "ACP closed before {method} replied; frames={frames}, recent={recent:?}, agent_state={:?}, child_states={:?}, relay={:?}",
-                fs::read_to_string(format!("/proc/{agent_pid}/stat"))
-                    .ok()
-                    .and_then(|stat| stat.split_whitespace().nth(2).map(str::to_owned)),
-                fs::read_to_string(format!("/proc/{agent_pid}/task/{agent_pid}/children"))
-                    .ok()
-                    .map(|children| children
-                        .split_whitespace()
-                        .filter_map(|pid| fs::read_to_string(format!("/proc/{pid}/stat"))
-                            .ok()
-                            .and_then(|stat| stat.split_whitespace().nth(2).map(str::to_owned)))
-                        .collect::<Vec<_>>()),
-                finished.recv_timeout(Duration::from_secs(3))
+                "ACP closed before {method} replied"
             );
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
-            frames += 1;
-            let kind = if frame.get("id").is_some() {
-                "reply"
-            } else if frame["method"] == "session/update" {
-                frame["params"]["update"]["sessionUpdate"]
-                    .as_str()
-                    .unwrap_or("unknown_update")
-            } else {
-                frame["method"].as_str().unwrap_or("unknown_frame")
-            };
-            let safe_kind = if kind.len() <= 48
-                && kind
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'/'))
-            {
-                kind
-            } else {
-                "invalid_kind"
-            };
-            if recent.len() == 8 {
-                recent.remove(0);
-            }
-            recent.push(safe_kind.to_owned());
             assert!(
                 !frame.to_string().contains("Code Mode is unavailable"),
                 "stock Codex started without its measured Code Mode host"

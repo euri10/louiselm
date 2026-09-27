@@ -1582,10 +1582,6 @@ impl SessionOwner {
     }
 
     fn handle_running_agent_event(&mut self, event: RunningAgentEvent) {
-        #[cfg(test)]
-        if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
-            eprintln!("STOCK_RELAY_EVENT {event:?}");
-        }
         match event {
             RunningAgentEvent::ControllerEof => self.begin_controller_loss(),
             RunningAgentEvent::ProcessExited(classification) => {
@@ -1604,10 +1600,6 @@ impl SessionOwner {
                     .as_mut()
                     .ok_or(SupervisorError::IsolationRejected)
                     .and_then(|process| process.enroll_descendant());
-                #[cfg(test)]
-                if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some() {
-                    eprintln!("STOCK_ENROLL_RESULT {enrolled:?}");
-                }
                 // Held Session requests never reach an unenrolled runtime; failure ends it.
                 if enrolled.is_err() {
                     self.begin_terminal_event(TerminalEvent::RelayFailed);

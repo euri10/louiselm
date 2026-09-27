@@ -161,18 +161,6 @@ fn emit(stopped: &AtomicBool, events: &RunningAgentEvents, event: RunningAgentEv
     }
 }
 
-fn checked_io<T>(site: &'static str, result: io::Result<T>) -> io::Result<T> {
-    #[cfg(test)]
-    if let Err(error) = &result
-        && std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_some()
-    {
-        eprintln!("STOCK_RELAY_IO {site} {:?}", error.kind());
-    }
-    #[cfg(not(test))]
-    let _ = site;
-    result
-}
-
 #[derive(Default)]
 struct CopyBuffer {
     bytes: Vec<u8>,
@@ -268,7 +256,7 @@ impl RelayLoop {
             if let Some(input) = self.input.as_mut() {
                 if let Some(gate) = self.gate.as_mut() {
                     if let Some(controller) = self.controller.as_mut() {
-                        progress |= checked_io("gate_read", gate.read(controller))?;
+                        progress |= gate.read(controller)?;
                     } else if self.detached {
                         gate.eof = true;
                     }
@@ -278,11 +266,11 @@ impl RelayLoop {
                         emit(stopped, events, RunningAgentEvent::EnrollmentRequested);
                     }
                 } else if let Some(controller) = self.controller.as_mut() {
-                    progress |= checked_io("controller_read", self.to_agent.read(controller))?;
+                    progress |= self.to_agent.read(controller)?;
                 } else if self.detached {
                     self.to_agent.eof = true;
                 }
-                progress |= checked_io("agent_write", self.to_agent.write(input))?;
+                progress |= self.to_agent.write(input)?;
                 if self.to_agent.done() && !self.loss_reported {
                     // EOF is a lifecycle cause, not permission to end the Agent.
                     // Keep stdin owned until freeze/settlement/disposal; closing
@@ -291,9 +279,9 @@ impl RelayLoop {
                     emit(stopped, events, RunningAgentEvent::ControllerEof);
                 }
             }
-            progress |= checked_io("agent_read", self.to_controller.read(&mut self.output))?;
+            progress |= self.to_controller.read(&mut self.output)?;
             if let Some(controller) = self.controller.as_mut() {
-                progress |= checked_io("controller_write", self.to_controller.write(controller))?;
+                progress |= self.to_controller.write(controller)?;
             } else if self.detached {
                 progress |= self.to_controller.write(&mut io::sink())?;
             }
