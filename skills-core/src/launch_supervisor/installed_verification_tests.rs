@@ -165,6 +165,9 @@ fn start_operator_server(broker: Arc<InstalledBroker>, root: &Path, uid: u32) {
 #[path = "installed_promotion_tests.rs"]
 mod promotion;
 
+#[path = "installed_run_budget_tests.rs"]
+mod budget;
+
 fn clock_ms() -> u64 {
     u64::try_from(
         SystemTime::now()
@@ -661,6 +664,7 @@ fn privileged_installed_exact_job_verification() {
     for index in 0..5 {
         privileged_verification_case(index);
     }
+    budget::privileged_case();
 }
 
 #[expect(
