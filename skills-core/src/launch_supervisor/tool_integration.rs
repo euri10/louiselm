@@ -185,6 +185,112 @@ impl ToolIsolationEvidence {
     }
 }
 
+/// One Session process observed while the whole tree is frozen.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+    )
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ObservedProcess {
+    pub(super) pid: u32,
+    pub(super) parent: u32,
+    pub(super) executable_sha256: String,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+    )
+)]
+impl ObservedProcess {
+    pub(super) fn new(pid: u32, parent: u32, executable_sha256: &str) -> Self {
+        Self {
+            pid,
+            parent,
+            executable_sha256: executable_sha256.to_owned(),
+        }
+    }
+}
+
+/// Why a frozen tree is not exactly the contract's measured chain.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+    )
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TreeRefusal {
+    /// The evidence is for a contract whose sender is its first process.
+    NotDescendantContract,
+    /// The authenticated adapter process is not in the tree.
+    AdapterMissing,
+    /// The adapter process no longer runs the measured executable.
+    AdapterChanged,
+    /// No process runs the measured Codex runtime.
+    RuntimeMissing,
+    /// More than one process runs the measured Codex runtime.
+    RuntimeDuplicated,
+    /// The Codex runtime is not a direct child of the adapter.
+    RuntimeAncestry,
+    /// A process outside the contract's chain exists.
+    UnexpectedProcess,
+}
+
+impl ToolIsolationEvidence {
+    /// Returns the one process the Sender guard may enroll for this contract.
+    ///
+    /// The tree must be exactly the authenticated adapter plus one direct child
+    /// running the measured Codex runtime. Anything else refuses: before the
+    /// first prompt no tool can legitimately exist, so an extra process is
+    /// never tolerated. Threads need no listing; the kernel grant is keyed by
+    /// the enrolled process's thread-group leader.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Consumed by descendant enrollment in louiselm-ky6f4."
+        )
+    )]
+    pub(super) fn codex_sender(
+        &self,
+        processes: &[ObservedProcess],
+        adapter_pid: u32,
+    ) -> Result<u32, TreeRefusal> {
+        let codex = self
+            .codex
+            .as_ref()
+            .ok_or(TreeRefusal::NotDescendantContract)?;
+        let adapter = processes
+            .iter()
+            .find(|process| process.pid == adapter_pid)
+            .ok_or(TreeRefusal::AdapterMissing)?;
+        if adapter.executable_sha256 != self.executable_digest {
+            return Err(TreeRefusal::AdapterChanged);
+        }
+        let mut runtimes = processes
+            .iter()
+            .filter(|process| process.executable_sha256 == codex.runtime);
+        let runtime = runtimes.next().ok_or(TreeRefusal::RuntimeMissing)?;
+        if runtimes.next().is_some() {
+            return Err(TreeRefusal::RuntimeDuplicated);
+        }
+        if runtime.parent != adapter_pid {
+            return Err(TreeRefusal::RuntimeAncestry);
+        }
+        if processes.len() != 2 {
+            return Err(TreeRefusal::UnexpectedProcess);
+        }
+        Ok(runtime.pid)
+    }
+}
+
 /// Accepts only a known contract with empty registered arguments/environment.
 pub(super) fn validate_registration(
     agent: &AgentRegistration,
@@ -411,6 +517,85 @@ mod tests {
         fs::write(root.path().join(CODEX_RUNTIME), b"updated codex").unwrap();
         let changed = measure(&plan).unwrap().canonical_bytes();
         assert_ne!(changed, evidence.canonical_bytes());
+    }
+
+    fn tree(runtime_parent: u32, extra: &[(u32, u32, &str)]) -> Vec<ObservedProcess> {
+        let mut processes = vec![
+            ObservedProcess::new(10, 1, "node"),
+            ObservedProcess::new(11, runtime_parent, "codex"),
+        ];
+        processes.extend(
+            extra
+                .iter()
+                .map(|&(pid, parent, digest)| ObservedProcess::new(pid, parent, digest)),
+        );
+        processes
+    }
+
+    fn evidence(root: &Path) -> ToolIsolationEvidence {
+        let plan = codex_plan(root);
+        fs::write(&plan.executable, b"node").unwrap();
+        fs::write(root.join(CODEX_ADAPTER), b"adapter").unwrap();
+        fs::write(root.join(CODEX_RUNTIME), b"codex").unwrap();
+        ToolIsolationEvidence::measure(Integration::CodexAcp, &plan, root, "r", "b").unwrap()
+    }
+
+    #[test]
+    fn codex_sender_is_the_one_measured_runtime_child_of_the_adapter() {
+        let root = tempfile::tempdir().unwrap();
+        let evidence = evidence(root.path());
+        let node = Digest::of(b"node").hex().to_owned();
+        let codex = Digest::of(b"codex").hex().to_owned();
+        let digests = |processes: Vec<ObservedProcess>| {
+            processes
+                .into_iter()
+                .map(|process| {
+                    let digest = match process.executable_sha256.as_str() {
+                        "node" => node.clone(),
+                        "codex" => codex.clone(),
+                        other => other.to_owned(),
+                    };
+                    ObservedProcess::new(process.pid, process.parent, &digest)
+                })
+                .collect::<Vec<_>>()
+        };
+        let sender = |processes| evidence.codex_sender(&digests(processes), 10);
+        assert_eq!(sender(tree(10, &[])), Ok(11));
+        assert_eq!(
+            sender(vec![ObservedProcess::new(10, 1, "node")]),
+            Err(TreeRefusal::RuntimeMissing)
+        );
+        assert_eq!(
+            sender(tree(10, &[(12, 10, "codex")])),
+            Err(TreeRefusal::RuntimeDuplicated)
+        );
+        assert_eq!(
+            sender(tree(10, &[(12, 11, "codex")])),
+            Err(TreeRefusal::RuntimeDuplicated)
+        );
+        assert_eq!(sender(tree(99, &[])), Err(TreeRefusal::RuntimeAncestry));
+        assert_eq!(
+            sender(tree(10, &[(12, 11, "tool")])),
+            Err(TreeRefusal::UnexpectedProcess)
+        );
+        let mut changed = tree(10, &[]);
+        changed[0] = ObservedProcess::new(10, 1, "patched node");
+        assert_eq!(sender(changed), Err(TreeRefusal::AdapterChanged));
+        assert_eq!(
+            evidence.codex_sender(&digests(tree(10, &[])), 42),
+            Err(TreeRefusal::AdapterMissing)
+        );
+    }
+
+    #[test]
+    fn test_contract_has_no_descendant_sender() {
+        let root = tempfile::tempdir().unwrap();
+        let mut evidence = evidence(root.path());
+        evidence.codex = None;
+        assert_eq!(
+            evidence.codex_sender(&tree(10, &[]), 10),
+            Err(TreeRefusal::NotDescendantContract)
+        );
     }
 
     #[test]
