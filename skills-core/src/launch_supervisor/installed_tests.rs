@@ -168,10 +168,10 @@ fn paths(root: &Path) -> LauncherPaths {
 }
 
 fn request() -> LaunchRequest {
-    request_for(false)
+    request_for(None)
 }
 
-fn request_for(codex: bool) -> LaunchRequest {
+fn request_for(codex: Option<&Path>) -> LaunchRequest {
     LaunchRequest {
         schema: REQUEST_SCHEMA.into(),
         protocol_version: PROTOCOL_VERSION,
@@ -389,6 +389,9 @@ fn installed_broker_worker() {
             beads_mutations: None,
             provider_requests: root.join("brokered").exists().then(|| {
                 let mut approval = guard::approval(now);
+                if root.join("stock-codex").exists() {
+                    approval.models = vec!["gpt-6-astra".into()];
+                }
                 if let Ok(port) = fs::read_to_string(root.join("guard-provider-port")) {
                     approval.upstream =
                         format!("https://api.openai.com:{}/v1/responses", port.trim());
@@ -398,7 +401,7 @@ fn installed_broker_worker() {
                 approval
             }),
             require_cold_recovery: true,
-            request: request_for(root.join("codex-chain").exists()),
+            request: request_for(codex_chain::runtime_directory(&root).as_deref()),
             controller_uid: config.operator_uid,
             expires_at_ms: fixture_expiry(&root, now),
             broker_loss_grace_ms: 500,

@@ -1,5 +1,5 @@
 {
-  "id": "codex-responses-metadata/1",
+  "id": "codex-responses-metadata/2",
   "max_string_bytes": 4096,
   "max_turn_bytes": 8192,
   "prompt_cache_key": "string",
@@ -11,6 +11,7 @@
     "session-id": "string",
     "thread-id": "string",
     "x-client-request-id": "string",
+    "x-client-feature-id": "string",
     "x-codex-beta-features": "string",
     "x-codex-window-id": "string",
     "x-codex-turn-metadata": "turn"
@@ -45,6 +46,7 @@
     "turn_started_at_unix_ms": "unsigned",
     "analytics_enabled": "boolean",
     "model": "string",
-    "reasoning_effort": "string"
+    "reasoning_effort": "string",
+    "workspaces": "workspaces"
   }
 }

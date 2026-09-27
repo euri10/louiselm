@@ -283,7 +283,7 @@ fn posture_discloses_the_retained_profile_without_metadata_values() {
     });
     let notice = &status.posture.provider_disclosure_notice;
     assert!(notice.contains(&approval(5).disclosure_profile));
-    assert!(notice.contains("codex-responses-metadata/1"));
+    assert!(notice.contains("codex-responses-metadata/2"));
     assert!(notice.contains("cross-Run linkage"));
     assert!(!notice.contains(SECRET));
     // Metadata approval alone does not prove the complete input disclosure.

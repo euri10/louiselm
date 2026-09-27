@@ -13,11 +13,13 @@ fn snapshot_bytes() -> Vec<u8> {
 }
 
 pub(in crate::launch_supervisor) fn fixture_manifest() -> SessionInputManifest {
-    fixture_manifest_for(false)
+    fixture_manifest_for(None)
 }
 
-/// The fixture manifest, optionally for the Codex-shaped chain in `codex_chain`.
-pub(in crate::launch_supervisor) fn fixture_manifest_for(codex: bool) -> SessionInputManifest {
+/// The fixture manifest, optionally for an installed Codex-contract runtime.
+pub(in crate::launch_supervisor) fn fixture_manifest_for(
+    codex: Option<&Path>,
+) -> SessionInputManifest {
     let binaries = std::env::current_exe()
         .unwrap()
         .parent()
@@ -39,7 +41,7 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(codex: bool) -> Session
             arguments: vec![],
             environment: std::collections::BTreeMap::new(),
             tool_integration: Some(
-                if codex {
+                if codex.is_some() {
                     super::super::super::tool_integration::CODEX_CONTRACT
                 } else {
                     super::super::super::tool_integration::CONTRACT
@@ -47,8 +49,8 @@ pub(in crate::launch_supervisor) fn fixture_manifest_for(codex: bool) -> Session
                 .into(),
             ),
         }),
-        runtime: Some(if codex {
-            super::codex_chain::measurement(&binaries)
+        runtime: Some(if let Some(runtime) = codex {
+            super::codex_chain::measurement(runtime)
         } else {
             RuntimeMeasurement {
                 runtime_id: "runtime".into(),

@@ -740,7 +740,9 @@ Model, stating a higher or unknown effort, or stating none is refused with
 `CapabilityDenied` before any unit is spent.
 
 `disclosure_profile` binds the consumed `src/provider_request/disclosure.json`
-bytes (`codex-responses-metadata/1`, observed offline with Codex 0.156.1).
+bytes (`codex-responses-metadata/2`, exercised with stock Codex 0.156.1 in the
+installed VM gate). The reviewed metadata includes the private workspace path,
+its Git commit hash and dirty state.
 There is no deserialization default or automatic profile upgrade. The existing
 permission flow uses `ApprovedProviderRequests::disclosure_notice()` to display
 the safe version/digest and stable-ID/cross-Run-linkage warning; auto-approval

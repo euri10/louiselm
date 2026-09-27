@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const PROFILE: &[u8] = include_bytes!("disclosure.json");
 
 /// Safe disclosure text: no metadata values, payloads or anonymity promise.
-pub const NOTICE: &str = "Reviewed client metadata is forwarded unchanged to the approved Provider, including stable installation and Session/thread/turn identifiers and client runtime settings. Stable identifiers permit cross-Run linkage. This is not anonymity.";
+pub const NOTICE: &str = "Reviewed client metadata is forwarded unchanged to the approved Provider, including stable installation and Session/thread/turn identifiers, client runtime settings, and workspace paths with Git state. Stable identifiers permit cross-Run linkage. This is not anonymity.";
 
 /// Exact consumed schema identity; changing any profile bytes invalidates approval.
 #[must_use]
@@ -60,6 +60,7 @@ enum Kind {
     Boolean,
     Unsigned,
     Turn,
+    Workspaces,
 }
 
 fn profile() -> Result<Profile, ProtocolError> {
@@ -87,8 +88,8 @@ fn unique_fields<'de, D: serde::Deserializer<'de>>(
             mut map: A,
         ) -> Result<Self::Value, A::Error> {
             let mut fields = BTreeMap::new();
-            while let Some((key, value)) = map.next_entry::<String, Value>()? {
-                if fields.insert(key, value).is_some() {
+            while let Some((key, value)) = map.next_entry::<String, Unique>()? {
+                if fields.insert(key, value.0).is_some() {
                     return Err(serde::de::Error::custom("duplicate metadata field"));
                 }
             }
@@ -96,6 +97,68 @@ fn unique_fields<'de, D: serde::Deserializer<'de>>(
         }
     }
     deserializer.deserialize_map(Visitor)
+}
+
+// The workspace map nests objects; duplicate keys must be refused there too.
+struct Unique(Value);
+
+impl<'de> Deserialize<'de> for Unique {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Unique;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("JSON value without duplicate keys")
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Unique, E> {
+                Ok(Unique(Value::Bool(value)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Unique, E> {
+                Ok(Unique(Value::Number(value.into())))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Unique, E> {
+                Ok(Unique(Value::Number(value.into())))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Unique, E> {
+                serde_json::Number::from_f64(value)
+                    .map(Value::Number)
+                    .map(Unique)
+                    .ok_or_else(|| E::custom("nonfinite number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Unique, E> {
+                Ok(Unique(Value::String(value.to_owned())))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Unique, E> {
+                Ok(Unique(Value::String(value)))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Unique, E> {
+                Ok(Unique(Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Unique, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = seq.next_element::<Unique>()? {
+                    values.push(value.0);
+                }
+                Ok(Unique(Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Unique, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, value)) = map.next_entry::<String, Unique>()? {
+                    if values.insert(key, value.0).is_some() {
+                        return Err(serde::de::Error::custom("duplicate metadata field"));
+                    }
+                }
+                Ok(Unique(Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 #[derive(Deserialize)]
@@ -168,6 +231,25 @@ impl Profile {
                 self.object(&self.turn_metadata, &fields.0)?;
                 true
             }
+            Kind::Workspaces => value.as_object().is_some_and(|workspaces| {
+                workspaces.len() <= 16
+                    && workspaces.iter().all(|(path, state)| {
+                        path.starts_with('/')
+                            && path.len() <= self.max_string_bytes
+                            && !path.chars().any(char::is_control)
+                            && state.as_object().is_some_and(|state| {
+                                state.len() == 2
+                                    && state.get("has_changes").is_some_and(Value::is_boolean)
+                                    && state
+                                        .get("latest_git_commit_hash")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|hash| {
+                                            [40, 64].contains(&hash.len())
+                                                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                                        })
+                            })
+                    })
+            }),
         };
         if valid { Ok(()) } else { Err(denied()) }
     }

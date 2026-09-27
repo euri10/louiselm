@@ -1522,6 +1522,7 @@ impl LaunchPlatform for SystemLaunchPlatform {
             };
             Ok(Box::new(SystemPreparedAgent {
                 prepared,
+                timeout: self.timeout,
                 backend_id: self.config.bwrap_digest.clone(),
                 tool_isolation: Some(tool_isolation),
                 descendant_runtime,
@@ -1569,6 +1570,7 @@ impl IdentityGuard for SystemIdentityGuard {
 
 struct SystemPreparedAgent {
     prepared: PreparedSession,
+    timeout: Duration,
     backend_id: String,
     tool_isolation: Option<super::ToolIsolationEvidence>,
     tools: Option<super::tool_execution::ToolExecutor>,
@@ -1654,16 +1656,17 @@ impl PreparedAgent for SystemPreparedAgent {
             return Err(SupervisorError::IsolationRejected);
         };
         let descendant = self.descendant_runtime.take();
-        let mut running = match SystemRunningAgent::start_guarded(self.prepared, guard, descendant)
-        {
-            Ok(running) => running,
-            Err(error) => {
-                if let Some(workspace) = &self.workspace {
-                    workspace.seal()?;
+        let mut running =
+            match SystemRunningAgent::start_guarded(self.prepared, guard, descendant, self.timeout)
+            {
+                Ok(running) => running,
+                Err(error) => {
+                    if let Some(workspace) = &self.workspace {
+                        workspace.seal()?;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
+            };
         running.guard_scope = Some(scope);
         running.tools = self.tools;
         running.tool_isolation = self.tool_isolation;
@@ -1727,6 +1730,7 @@ pub struct SystemRunningAgent {
 struct DescendantEnrollment {
     hold: Arc<super::prompt_gate::PromptHold>,
     runtime_file: File,
+    timeout: Duration,
     // The pinned enrolled runtime; its pidfd must outlive the grant.
     runtime: Option<Arc<crate::launch_transport::KernelProcess>>,
 }
@@ -1770,6 +1774,7 @@ impl SystemRunningAgent {
         prepared: PreparedSession,
         mut guard: super::sender_guard::SenderGuard,
         descendant_runtime: Option<File>,
+        timeout: Duration,
     ) -> Result<Self, SupervisorError> {
         let session = match &descendant_runtime {
             Some(_) => guard.start_deferred(prepared),
@@ -1780,6 +1785,7 @@ impl SystemRunningAgent {
         running.descendant = descendant_runtime.map(|runtime_file| DescendantEnrollment {
             hold: Arc::default(),
             runtime_file,
+            timeout,
             runtime: None,
         });
         if running.descendant.is_some() {
@@ -1991,6 +1997,39 @@ fn apply_mechanic<T>(
     }
 }
 
+impl SystemRunningAgent {
+    /// Waits only for the measured runtime to appear. Frozen tree validation
+    /// still decides whether its ancestry and the complete process set are safe.
+    fn wait_for_runtime(&self) -> Result<(), SupervisorError> {
+        let descendant = self
+            .descendant
+            .as_ref()
+            .ok_or(SupervisorError::IsolationRejected)?;
+        let metadata = descendant
+            .runtime_file
+            .metadata()
+            .map_err(|_| SupervisorError::ToolIsolationUnproven)?;
+        let identity = (metadata.dev(), metadata.ino());
+        let deadline = Instant::now()
+            .checked_add(descendant.timeout)
+            .ok_or(SupervisorError::ToolIsolationUnproven)?;
+        loop {
+            if lock(&self.session)
+                .processes()
+                .map_err(map_sandbox)?
+                .into_iter()
+                .any(|pid| executable_identity(pid) == Some(identity))
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(SupervisorError::ToolIsolationUnproven);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 impl RunningAgent for SystemRunningAgent {
     fn handoff_guarded_upstream(
         &mut self,
@@ -2124,6 +2163,7 @@ impl RunningAgent for SystemRunningAgent {
         {
             return Err(SupervisorError::IsolationRejected);
         }
+        self.wait_for_runtime()?;
         lock(&self.session).park().map_err(map_sandbox)?;
         let enrolled = self.enroll_frozen_runtime();
         let resumed = lock(&self.session).resume().map_err(map_sandbox);

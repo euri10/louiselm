@@ -346,7 +346,9 @@ pub(super) fn launch_values(
 fn codex_configuration() -> (String, String) {
     let config = serde_json::json!({
         "mcp_servers": {},
+        "model": "gpt-6-astra",
         "model_provider": CODEX_PROVIDER,
+        "model_reasoning_effort": "low",
         "model_providers": {
             CODEX_PROVIDER: {
                 "base_url": CODEX_BASE_URL,

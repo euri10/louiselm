@@ -1,45 +1,58 @@
-//! A Codex-shaped measured chain for installed composition tests.
+//! Codex-contract chains for installed composition tests.
 //!
-//! No real Codex is needed: "node" is the system shell, `codex-acp.js` is a
-//! script that runs `$CODEX_PATH` as a waited child (never `exec`), and "codex"
-//! is the deterministic test Agent. The tree is therefore exactly adapter plus
-//! one runtime child, as `louiselm.codex-acp-integration/1` requires.
+//! The fixture chain needs no real Codex: "node" is the system shell,
+//! `codex-acp.js` runs `$CODEX_PATH` as a waited child (never `exec`), and
+//! "codex" is the deterministic test Agent. The stock chain copies the three
+//! hash-pinned files from `scripts/fetch-stock-codex-chain`. Either way the
+//! tree is exactly adapter plus one runtime child, as
+//! `louiselm.codex-acp-integration/1` requires.
 
 use super::*;
-use crate::registry::{MeasuredFile, RuntimeMeasurement};
+use crate::registry::{MeasuredFile, RegistryError, RuntimeMeasurement, RuntimePackage};
 
 const ADAPTER_SCRIPT: &[u8] = b"\"$CODEX_PATH\"\nstatus=$?\nexit \"$status\"\n";
+pub(super) const MISSING_RUNTIME_SCRIPT: &[u8] = b"read line\n";
+pub(super) const WRONG_ANCESTRY_SCRIPT: &[u8] = b"/bin/sh -c '\"$CODEX_PATH\"; /bin/true'\n";
 
-fn shell() -> PathBuf {
-    fs::canonicalize("/bin/sh").unwrap()
+/// Where the installed Codex-contract runtime lives in a fixture root.
+pub(super) fn runtime_directory(root: &Path) -> Option<PathBuf> {
+    root.join("codex-chain")
+        .exists()
+        .then(|| root.join("runtime-codex"))
 }
 
-fn digest(bytes: &[u8]) -> String {
-    Digest::of(bytes).hex().into()
+fn digest(path: &Path) -> String {
+    Digest::of(&fs::read(path).unwrap()).hex().into()
 }
 
-/// The runtime measurement a Codex-chain registration must produce.
-pub(super) fn measurement(binaries: &Path) -> RuntimeMeasurement {
+/// The runtime measurement of an installed Codex-contract directory.
+pub(super) fn measurement(runtime: &Path) -> RuntimeMeasurement {
     RuntimeMeasurement {
         runtime_id: "runtime".into(),
-        executable_sha256: digest(&fs::read(shell()).unwrap()),
-        adapters: vec![
-            MeasuredFile {
-                path: "codex-acp.js".into(),
-                sha256: digest(ADAPTER_SCRIPT),
-            },
-            MeasuredFile {
-                path: "codex".into(),
-                sha256: digest(&fs::read(binaries.join("louiselm-tool-test-agent")).unwrap()),
-            },
-        ],
+        executable_sha256: digest(&runtime.join("node")),
+        adapters: ["codex-acp.js", "codex"]
+            .into_iter()
+            .map(|name| MeasuredFile {
+                path: name.into(),
+                sha256: digest(&runtime.join(name)),
+            })
+            .collect(),
         version: "fixture".into(),
         origin: "fixture".into(),
     }
 }
 
-/// Replaces the fixture Agent with the Codex-shaped chain and restages inputs.
-pub(super) fn install(root: &Path, registry: &Path, config: &LauncherConfig) {
+/// Replaces the fixture Agent with a Codex-contract chain and restages inputs.
+///
+/// `stock` names a directory produced by `scripts/fetch-stock-codex-chain`;
+/// without it the shell/test-Agent fixture chain is installed.
+pub(super) fn install(
+    root: &Path,
+    registry: &Path,
+    config: &LauncherConfig,
+    stock: Option<&Path>,
+    synthetic_script: Option<&[u8]>,
+) {
     let binaries = std::env::current_exe()
         .unwrap()
         .parent()
@@ -50,17 +63,27 @@ pub(super) fn install(root: &Path, registry: &Path, config: &LauncherConfig) {
     let runtime = root.join("runtime-codex");
     fs::create_dir(&runtime).unwrap();
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::copy(shell(), runtime.join("node")).unwrap();
-    fs::write(runtime.join("codex-acp.js"), ADAPTER_SCRIPT).unwrap();
-    fs::copy(
-        binaries.join("louiselm-tool-test-agent"),
-        runtime.join("codex"),
-    )
-    .unwrap();
+    if let Some(stock) = stock {
+        for name in ["node", "codex-acp.js", "codex"] {
+            fs::copy(stock.join(name), runtime.join(name)).unwrap();
+        }
+    } else {
+        fs::copy(fs::canonicalize("/bin/sh").unwrap(), runtime.join("node")).unwrap();
+        fs::write(
+            runtime.join("codex-acp.js"),
+            synthetic_script.unwrap_or(ADAPTER_SCRIPT),
+        )
+        .unwrap();
+        fs::copy(
+            binaries.join("louiselm-tool-test-agent"),
+            runtime.join("codex"),
+        )
+        .unwrap();
+    }
     for (name, mode) in [("node", 0o555), ("codex-acp.js", 0o444), ("codex", 0o555)] {
         fs::set_permissions(runtime.join(name), fs::Permissions::from_mode(mode)).unwrap();
     }
-    let measured = measurement(&binaries);
+    let measured = measurement(&runtime);
     registry_record(
         &registry.join("agents.json"),
         &serde_json::json!([{
@@ -76,6 +99,32 @@ pub(super) fn install(root: &Path, registry: &Path, config: &LauncherConfig) {
             "version":"fixture","origin":"fixture"
         }]),
     );
-    workspace::stage_manifest(config, &workspace::fixture_manifest_for(true));
+    workspace::stage_manifest(config, &workspace::fixture_manifest_for(Some(&runtime)));
     fs::write(root.join("codex-chain"), b"").unwrap();
+    if stock.is_some() {
+        fs::write(root.join("stock-codex"), b"").unwrap();
+    }
+}
+
+#[test]
+fn stock_runtime_rejects_a_wrong_registered_hash() {
+    let Some(stock) = std::env::var_os("LOUISELM_STOCK_CODEX_DIR") else {
+        return;
+    };
+    let stock = PathBuf::from(stock);
+    let measured = measurement(&stock);
+    let mut runtime = RuntimePackage {
+        id: "runtime".into(),
+        root: stock,
+        executable: "node".into(),
+        executable_sha256: measured.executable_sha256,
+        adapters: measured.adapters,
+        version: "pinned".into(),
+        origin: "pinned".into(),
+    };
+    assert!(runtime.measure().is_ok());
+    runtime.adapters[0].sha256 = "0".repeat(64);
+    assert!(
+        matches!(runtime.measure(), Err(RegistryError::RuntimeChanged { path, .. }) if path == "codex-acp.js")
+    );
 }

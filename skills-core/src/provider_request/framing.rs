@@ -18,7 +18,7 @@ const MAX_BUFFER: usize = MAX_HEADER + MAX_BODY;
 const MAX_HEADERS: usize = 32;
 
 /// Reviewed headers relayed upstream unchanged.
-const FORWARDED: [&str; 10] = [
+const FORWARDED: [&str; 11] = [
     "accept",
     "content-type",
     "originator",
@@ -26,6 +26,7 @@ const FORWARDED: [&str; 10] = [
     "session-id",
     "thread-id",
     "x-client-request-id",
+    "x-client-feature-id",
     "x-codex-beta-features",
     "x-codex-window-id",
     "x-codex-turn-metadata",

@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Fetch the hash-pinned stock Codex ACP chain for the installed CI gate.
+
+Downloads exactly three public artifacts, verifies each archive and each
+extracted file against the pins below, and writes `node`, `codex-acp.js` and
+`codex` into a new directory. Nothing is executed. Upgrading Codex, the
+adapter or Node changes these pins and the broker disclosure profile together
+(louiselm-fkdv8, louiselm-98wr4).
+"""
+import argparse
+import hashlib
+import io
+import json
+import sys
+import tarfile
+import urllib.request
+from pathlib import Path
+
+ARTIFACTS = {
+    "node": {
+        "url": "https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-x64.tar.xz",
+        "archive": "d804845d34eddc21dc1092b519d643ef40b1f58ec5dec5c22b1f4bd8fabde6c9",
+        "member": "node-v24.16.0-linux-x64/bin/node",
+        "file": "b2959781cc5a74c357ffa02367efa8a0330cbb1c9cb347732fdfaaaca381cbcd",
+        "mode": 0o555,
+    },
+    "codex-acp.js": {
+        "url": "https://registry.npmjs.org/@agentclientprotocol/codex-acp/-/codex-acp-1.10.0.tgz",
+        "archive": "9dffb525b728d0579a8b19d48322281ecad7eea7ba1640fa2f8de1199346352c",
+        "member": "package/dist/index.js",
+        "file": "4602784c5896fbf05a7d89b09655bacc768d0bf281e0d03a10333ff81da45268",
+        "mode": 0o444,
+    },
+    "codex": {
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-x86_64-unknown-linux-musl.tar.gz",
+        "archive": "aff46539a83aff86e3c62c592bce2c50d95391f9df289afaf03a50c01d14533d",
+        "member": "codex-x86_64-unknown-linux-musl",
+        "file": "0b2e9301d6100dddda3b9d5c80ebaeaa3a2f1962388f2f36f6b96a9f08b1f33f",
+        "mode": 0o555,
+    },
+}
+MAX_ARCHIVE = 256 * 1024 * 1024
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=120) as response:
+        data = response.read(MAX_ARCHIVE + 1)
+    if len(data) > MAX_ARCHIVE:
+        raise SystemExit(f"archive exceeds bound: {url}")
+    return data
+
+
+def extract(archive, member):
+    with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+        entry = bundle.getmember(member)
+        if not entry.isfile():
+            raise SystemExit(f"not a regular file: {member}")
+        return bundle.extractfile(entry).read()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", type=Path, help="new directory to create")
+    output = parser.parse_args().output
+    output.mkdir(mode=0o755)
+    digests = {}
+    for name, pin in ARTIFACTS.items():
+        archive = fetch(pin["url"])
+        if hashlib.sha256(archive).hexdigest() != pin["archive"]:
+            raise SystemExit(f"archive digest mismatch: {pin['url']}")
+        data = extract(archive, pin["member"])
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != pin["file"]:
+            raise SystemExit(f"file digest mismatch: {name}")
+        path = output / name
+        path.write_bytes(data)
+        path.chmod(pin["mode"])
+        digests[name] = digest
+    json.dump(digests, sys.stdout, sort_keys=True)
+    print()
+
+
+if __name__ == "__main__":
+    main()

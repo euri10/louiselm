@@ -54,7 +54,7 @@ local PROVIDER_DISCLOSURE_NOTICE =
 local EMBEDDED_INSTRUCTIONS_NOTICE =
   "Instructions embedded in the measured executable are part of runtime trust, not admitted Skill supply."
 local METADATA_NOTICE =
-  "Reviewed client metadata is forwarded unchanged to the approved Provider, including stable installation and Session/thread/turn identifiers and client runtime settings. Stable identifiers permit cross-Run linkage. This is not anonymity."
+  "Reviewed client metadata is forwarded unchanged to the approved Provider, including stable installation and Session/thread/turn identifiers, client runtime settings, and workspace paths with Git state. Stable identifiers permit cross-Run linkage. This is not anonymity."
 local DIMENSIONS = {
   "managed_supply",
   "native_supply",
@@ -330,7 +330,7 @@ local function validate(posture)
         return false, "Provider metadata profile is invalid or repeated"
       end
       profile_seen = true
-      notice = notice .. " Metadata profile codex-responses-metadata/1 (" .. evidence.id .. "). " .. METADATA_NOTICE
+      notice = notice .. " Metadata profile codex-responses-metadata/2 (" .. evidence.id .. "). " .. METADATA_NOTICE
     end
   end
   if posture.provider_disclosure_notice ~= notice then

@@ -97,7 +97,7 @@ fn signed_certificate(
     certificate.build()
 }
 
-fn start_provider_upstream(root: &std::path::Path) -> (u16, thread::JoinHandle<()>) {
+fn start_provider_upstream(root: &std::path::Path, stock: bool) -> (u16, thread::JoinHandle<()>) {
     let root_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let root_certificate = signed_certificate("LouiseLM test root", &root_key, None, 1);
     fs::write(
@@ -122,7 +122,7 @@ fn start_provider_upstream(root: &std::path::Path) -> (u16, thread::JoinHandle<(
     listener.set_nonblocking(true).unwrap();
     let worker = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(20);
-        for _ in 0..2 {
+        for _ in 0..if stock { 1 } else { 2 } {
             let stream = loop {
                 assert!(Instant::now() < deadline, "upstream was not reached");
                 match listener.accept() {
@@ -159,31 +159,62 @@ fn start_provider_upstream(root: &std::path::Path) -> (u16, thread::JoinHandle<(
                         .unwrap();
                     if request.len() >= header_end + 4 + length {
                         assert!(header.contains("authorization: bearer fixture-secret"));
-                        assert!(
-                            request[header_end + 4..header_end + 4 + length]
-                                .windows(b"fixture-model".len())
-                                .any(|bytes| bytes == b"fixture-model")
-                        );
+                        if stock {
+                            let body: serde_json::Value = serde_json::from_slice(
+                                &request[header_end + 4..header_end + 4 + length],
+                            )
+                            .unwrap();
+                            assert_eq!(body["model"], "gpt-6-astra");
+                            assert_eq!(body["reasoning"]["effort"], "low");
+                        } else {
+                            assert!(
+                                request[header_end + 4..header_end + 4 + length]
+                                    .windows(b"fixture-model".len())
+                                    .any(|bytes| bytes == b"fixture-model")
+                            );
+                        }
                         break;
                     }
                 }
             }
-            let first = b"event: first\n\n";
-            let last = b"event: last\n\n";
+            let response = if stock {
+                stock_response()
+            } else {
+                b"event: first\n\nevent: last\n\n".to_vec()
+            };
             write!(
                 tls,
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                first.len() + last.len(),
+                response.len(),
             )
             .unwrap();
-            tls.write_all(first).unwrap();
-            tls.flush().unwrap();
-            thread::sleep(Duration::from_millis(20));
-            tls.write_all(last).unwrap();
+            tls.write_all(&response).unwrap();
             tls.flush().unwrap();
         }
     });
     (port, worker)
+}
+
+fn stock_response() -> Vec<u8> {
+    let item = serde_json::json!({"type":"message","id":"msg_stock","role":"assistant","status":"completed","content":[{"type":"output_text","text":"OFFLINE_STOCK_OK","annotations":[]}]});
+    let events = [
+        serde_json::json!({"type":"response.created","response":{"id":"resp_stock"}}),
+        serde_json::json!({"type":"response.output_item.added","output_index":0,"item":item}),
+        serde_json::json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        serde_json::json!({"type":"response.completed","response":{"id":"resp_stock","status":"completed","output":[item],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}),
+    ];
+    let mut response = String::new();
+    for event in events {
+        use std::fmt::Write as _;
+        write!(
+            response,
+            "event: {}\ndata: {}\n\n",
+            event["type"].as_str().unwrap(),
+            event
+        )
+        .unwrap();
+    }
+    response.into_bytes()
 }
 
 pub(super) fn park_and_dispose(broker: &InstalledBroker, session: &mut BrokerSession, uid: u32) {
@@ -276,7 +307,35 @@ fn privileged_installed_brokered_provider_stream() {
 
 #[test]
 fn privileged_installed_brokered_codex_chain_enrolls_descendant() {
-    installed_guard_case_for(false, true, false, true, false, true);
+    installed_guard_case_for(false, true, false, true, false, CodexCase::Fixture);
+}
+
+#[test]
+fn privileged_installed_brokered_codex_missing_descendant_times_out() {
+    installed_guard_case_for(false, false, false, false, false, CodexCase::Missing);
+}
+
+#[test]
+fn privileged_installed_brokered_codex_wrong_ancestry_refuses() {
+    installed_guard_case_for(false, false, false, false, false, CodexCase::WrongAncestry);
+}
+
+#[test]
+fn privileged_installed_brokered_stock_codex_completes_prompt() {
+    if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
+        eprintln!("requires disposable root and the pinned stock chain");
+        return;
+    }
+    let stock = std::env::var_os("LOUISELM_STOCK_CODEX_DIR")
+        .expect("CI must provide the hash-pinned stock Codex chain");
+    installed_guard_case_for(
+        false,
+        true,
+        false,
+        true,
+        false,
+        CodexCase::Stock(Path::new(&stock)),
+    );
 }
 
 #[test]
@@ -301,8 +360,17 @@ fn installed_guard_case(
         broker_outage,
         provider,
         no_permission,
-        false,
+        CodexCase::None,
     );
+}
+
+#[derive(Clone, Copy)]
+enum CodexCase<'a> {
+    None,
+    Fixture,
+    Missing,
+    WrongAncestry,
+    Stock(&'a Path),
 }
 
 #[expect(
@@ -319,7 +387,7 @@ fn installed_guard_case_for(
     broker_outage: bool,
     provider: bool,
     no_permission: bool,
-    codex: bool,
+    codex: CodexCase<'_>,
 ) {
     if std::env::var_os("LOUISELM_REQUIRE_BROKER_GUARD").is_none() {
         eprintln!("requires disposable root and a current installed guard certificate");
@@ -332,13 +400,27 @@ fn installed_guard_case_for(
         .tempdir_in("/var/lib")
         .unwrap();
     let (paths, mut config, registry_root) = install_fixture_with_slots(root.path(), 3);
-    if codex {
-        super::codex_chain::install(root.path(), &registry_root, &config);
+    if !matches!(codex, CodexCase::None) {
+        super::codex_chain::install(
+            root.path(),
+            &registry_root,
+            &config,
+            match codex {
+                CodexCase::Stock(path) => Some(path),
+                _ => None,
+            },
+            match codex {
+                CodexCase::Missing => Some(super::codex_chain::MISSING_RUNTIME_SCRIPT),
+                CodexCase::WrongAncestry => Some(super::codex_chain::WRONG_ANCESTRY_SCRIPT),
+                _ => None,
+            },
+        );
     }
     if !no_permission {
         fs::write(root.path().join("brokered"), b"").unwrap();
     }
-    let tls_server = provider.then(|| start_provider_upstream(root.path()));
+    let tls_server = provider
+        .then(|| start_provider_upstream(root.path(), matches!(codex, CodexCase::Stock(_))));
     if let Some((port, _)) = &tls_server {
         super::provider_credentials::provision_empty_state(root.path());
         fs::write(root.path().join("guard-provider-port"), port.to_string()).unwrap();
@@ -392,7 +474,7 @@ fn installed_guard_case_for(
         Arc::new(InstalledLaunchSigner::open(&paths, Duration::from_secs(5)).unwrap()),
         Arc::new(platform),
         Arc::new(Registry::open_trusted(&registry_root).unwrap()),
-        sessions,
+        sessions.clone(),
         Duration::from_secs(5),
     );
     let (sent, result) = mpsc::channel();
@@ -405,7 +487,7 @@ fn installed_guard_case_for(
     .unwrap();
     supervisor
         .launch(
-            request_for(codex),
+            request_for(super::codex_chain::runtime_directory(root.path()).as_deref()),
             config.operator_uid,
             now_ms,
             Box::new(move |outcome| sent.send(outcome).unwrap()),
@@ -465,12 +547,37 @@ fn installed_guard_case_for(
         .unwrap();
         let _ = done.send(session.relay_stdio(relay));
     });
-    if codex {
+    if matches!(codex, CodexCase::Stock(_)) {
+        stock_acp_prompt(
+            &mut controller_peer_input,
+            &mut controller_peer_output,
+            &sessions,
+        );
+    } else if !matches!(codex, CodexCase::None) {
         // Not a setup message: held until the Codex-shaped descendant is
         // enrolled and policy activated, then the test Agent echoes it.
+        let started = Instant::now();
         controller_peer_input
             .write_all(b"enroll-trigger\n")
             .unwrap();
+        if matches!(codex, CodexCase::Missing | CodexCase::WrongAncestry) {
+            let outcome = finished.recv_timeout(Duration::from_secs(20)).unwrap();
+            assert_eq!(outcome, Err(SupervisorError::RelayFailed));
+            if matches!(codex, CodexCase::Missing) {
+                assert!(
+                    started.elapsed() >= Duration::from_secs(1),
+                    "missing descendant did not wait"
+                );
+            }
+            marker(&lines, "BROKER_TERMINAL");
+            assert!(!Path::new(&format!("/proc/{agent_pid}")).exists());
+            assert!(broker_child.0.wait().unwrap().success());
+            crate::launcher_install::acquire_identity(&paths, 0)
+                .unwrap()
+                .release()
+                .unwrap();
+            return;
+        }
         controller_peer_output
             .set_read_timeout(Some(Duration::from_secs(20)))
             .unwrap();
@@ -479,62 +586,67 @@ fn installed_guard_case_for(
         assert_eq!(&echoed, b"enroll-trigger\n");
     }
     if let Some(address) = provider_address {
-        controller_peer_output
-            .set_read_timeout(Some(Duration::from_secs(20)))
-            .unwrap();
-        let invalid_model = provider_exchange(
-            &mut controller_peer_input,
-            &mut controller_peer_output,
-            address,
-            "bad-model",
-        );
-        assert!(
-            invalid_model.contains("capability_denied"),
-            "{invalid_model}"
-        );
-        let invalid_disclosure = provider_exchange(
-            &mut controller_peer_input,
-            &mut controller_peer_output,
-            address,
-            "bad-disclosure",
-        );
-        assert!(
-            invalid_disclosure.contains("provider_disclosure_denied"),
-            "{invalid_disclosure}"
-        );
-        let invalid_host = provider_exchange(
-            &mut controller_peer_input,
-            &mut controller_peer_output,
-            address,
-            "bad-host",
-        );
-        assert!(
-            invalid_host.starts_with("HTTP/1.1 400 Bad Request"),
-            "{invalid_host}"
-        );
-        assert!(invalid_host.contains("invalid_request"), "{invalid_host}");
-        let answer = provider_exchange(
-            &mut controller_peer_input,
-            &mut controller_peer_output,
-            address,
-            "valid-batch",
-        );
-        assert_eq!(answer.matches("HTTP/1.1 200 OK").count(), 2, "{answer}");
-        assert_eq!(answer.matches("event: first").count(), 2, "{answer}");
-        assert_eq!(answer.matches("event: last").count(), 2, "{answer}");
-        let exhausted = provider_exchange(
-            &mut controller_peer_input,
-            &mut controller_peer_output,
-            address,
-            "valid-once",
-        );
-        assert!(
-            exhausted.contains("HTTP/1.1 429 Too Many Requests"),
-            "{exhausted}"
-        );
-        assert!(exhausted.contains("capability_denied"), "{exhausted}");
-        fs::write(root.path().join("guard-provider-done"), b"").unwrap();
-        tls_server.unwrap().1.join().unwrap();
+        if matches!(codex, CodexCase::Stock(_)) {
+            fs::write(root.path().join("guard-provider-done"), b"").unwrap();
+            tls_server.unwrap().1.join().unwrap();
+        } else {
+            controller_peer_output
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let invalid_model = provider_exchange(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                address,
+                "bad-model",
+            );
+            assert!(
+                invalid_model.contains("capability_denied"),
+                "{invalid_model}"
+            );
+            let invalid_disclosure = provider_exchange(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                address,
+                "bad-disclosure",
+            );
+            assert!(
+                invalid_disclosure.contains("provider_disclosure_denied"),
+                "{invalid_disclosure}"
+            );
+            let invalid_host = provider_exchange(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                address,
+                "bad-host",
+            );
+            assert!(
+                invalid_host.starts_with("HTTP/1.1 400 Bad Request"),
+                "{invalid_host}"
+            );
+            assert!(invalid_host.contains("invalid_request"), "{invalid_host}");
+            let answer = provider_exchange(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                address,
+                "valid-batch",
+            );
+            assert_eq!(answer.matches("HTTP/1.1 200 OK").count(), 2, "{answer}");
+            assert_eq!(answer.matches("event: first").count(), 2, "{answer}");
+            assert_eq!(answer.matches("event: last").count(), 2, "{answer}");
+            let exhausted = provider_exchange(
+                &mut controller_peer_input,
+                &mut controller_peer_output,
+                address,
+                "valid-once",
+            );
+            assert!(
+                exhausted.contains("HTTP/1.1 429 Too Many Requests"),
+                "{exhausted}"
+            );
+            assert!(exhausted.contains("capability_denied"), "{exhausted}");
+            fs::write(root.path().join("guard-provider-done"), b"").unwrap();
+            tls_server.unwrap().1.join().unwrap();
+        }
     }
     if !park {
         rustix::process::kill_process(
@@ -592,4 +704,66 @@ fn provider_exchange(
     let mut answer = vec![0; length];
     output.read_exact(&mut answer).unwrap();
     String::from_utf8(answer).unwrap()
+}
+
+fn stock_acp_prompt(
+    input: &mut std::os::unix::net::UnixStream,
+    output: &mut std::os::unix::net::UnixStream,
+    sessions: &Path,
+) {
+    output
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut reader = BufReader::new(output.try_clone().unwrap());
+    let mut request = |id: u64, method: &str, params: serde_json::Value| {
+        writeln!(
+            input,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        )
+        .unwrap();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "ACP closed before {method} replied"
+            );
+            let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert!(
+                frame.get("error").is_none(),
+                "ACP {method} refused: {frame}"
+            );
+            if frame.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                return frame["result"].clone();
+            }
+        }
+    };
+    let initialized = request(
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion":1,
+            "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},
+            "clientInfo":{"name":"louiselm-stock-gate","version":"1"}
+        }),
+    );
+    assert_eq!(initialized["protocolVersion"], 1);
+    let created = request(
+        2,
+        "session/new",
+        serde_json::json!({
+            "cwd":sessions.join("session/workspace"), "mcpServers":[]
+        }),
+    );
+    let session_id = created["sessionId"].as_str().unwrap();
+    let completed = request(
+        3,
+        "session/prompt",
+        serde_json::json!({
+            "sessionId":session_id,
+            "prompt":[{"type":"text","text":"Reply with OFFLINE_STOCK_OK."}]
+        }),
+    );
+    assert_eq!(completed["stopReason"], "end_turn", "{completed}");
 }

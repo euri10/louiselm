@@ -171,9 +171,14 @@ jobs:
         run: |
           install -d -m 700 "${XDG_CACHE_HOME:-$HOME/.cache}"
           ./scripts/launcher-vm prepare
+      - name: Fetch the hash-pinned stock Codex chain
+        run: python3 scripts/fetch-stock-codex-chain "$RUNNER_TEMP/louiselm-stock-chain"
       - name: Exercise the embedded object with restricted guest networking
         run: |
           ./scripts/launcher-vm start
+          ./scripts/launcher-vm exec mkdir -p /var/tmp/louiselm-stock-chain
+          tar -C "$RUNNER_TEMP/louiselm-stock-chain" -c node codex-acp.js codex |
+            ./scripts/launcher-vm exec tar -x -C /var/tmp/louiselm-stock-chain
           git archive HEAD scripts/test-sender-guard.py scripts/test-sender-guard-loader.py scripts/test-sender-guard-handoff.py scripts/probes/codex-kernel-guard \
             skills-core/src/launch_supervisor/sender_guard/binding.bpf.c skills-core/src/launch_supervisor/sender_guard/lifecycle.bpf.c |
             ./scripts/launcher-vm exec tar -x -C /var/tmp
@@ -209,10 +214,17 @@ jobs:
               privileged_installed_brokered_guard_park_closes_before_receipt \
               privileged_installed_brokered_provider_stream \
               privileged_installed_brokered_codex_chain_enrolls_descendant \
+              privileged_installed_brokered_codex_missing_descendant_times_out \
+              privileged_installed_brokered_codex_wrong_ancestry_refuses \
               privileged_installed_brokered_without_provider_permission_refuses; do
               sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 timeout 90 unshare --net -- \
                 /bin/bash -c '\''umask 022; exec "$1" "$2" --exact --nocapture'\'' bash "$library_test" "launch_supervisor::system::installed_tests::guard::$scenario"
             done
+            sudo -n env LOUISELM_REQUIRE_BROKER_GUARD=1 LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain timeout 90 unshare --net -- \
+              /bin/bash -c '\''umask 022; exec "$1" launch_supervisor::system::installed_tests::guard::privileged_installed_brokered_stock_codex_completes_prompt --exact --nocapture'\'' bash "$library_test"
+            LOUISELM_STOCK_CODEX_DIR=/var/tmp/louiselm-stock-chain "$library_test" launch_supervisor::system::installed_tests::codex_chain::stock_runtime_rejects_a_wrong_registered_hash --exact
+            "$library_test" launch_supervisor::tool_integration::tests::registration_selects_only_known_contracts_without_overrides --exact
+            "$library_test" launch_supervisor::tool_integration::tests::codex_sender_is_the_one_measured_runtime_child_of_the_adapter --exact
           '
       - name: Dispose the guest
         if: always()

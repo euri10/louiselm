@@ -282,6 +282,54 @@ fn observed_metadata_is_forwarded_byte_for_byte() {
 }
 
 #[test]
+fn stock_codex_workspace_metadata_has_a_bounded_reviewed_shape() {
+    let workspace = serde_json::json!({"/session/workspace": {
+        "has_changes": false,
+        "latest_git_commit_hash": "a".repeat(40),
+    }});
+    let turn = serde_json::json!({"workspaces":workspace}).to_string();
+    let metadata = serde_json::json!({"session_id":"s","x-codex-turn-metadata":turn});
+    let payload = body("m").replace(r#"{"session_id":"s"}"#, &metadata.to_string());
+    let wire = String::from_utf8(frame_with(&payload, "x-client-feature-id: codex\r\n")).unwrap();
+    let mut parser = frames();
+    parser.feed(wire.as_bytes()).unwrap();
+    let accepted = parser.next_request().unwrap().unwrap();
+    assert!(
+        accepted
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-client-feature-id" && value == "codex")
+    );
+    for workspace in [
+        serde_json::json!({"relative": {"has_changes":false,"latest_git_commit_hash":"a".repeat(40)}}),
+        serde_json::json!({"/session/workspace": {"has_changes":false,"latest_git_commit_hash":"not-a-hash"}}),
+        serde_json::json!({"/session/workspace": {"has_changes":false,"latest_git_commit_hash":"a".repeat(40),"extra":true}}),
+    ] {
+        let turn = serde_json::json!({"workspaces":workspace}).to_string();
+        let metadata = serde_json::json!({"session_id":"s","x-codex-turn-metadata":turn});
+        let payload = body("m").replace(r#"{"session_id":"s"}"#, &metadata.to_string());
+        let mut parser = frames();
+        parser.feed(&frame(&payload)).unwrap();
+        assert_eq!(
+            parser.next_request().unwrap_err().code,
+            ErrorCode::ProviderDisclosureDenied
+        );
+    }
+    let turn = format!(
+        r#"{{"workspaces":{{"/session/workspace":{{"has_changes":false,"has_changes":true,"latest_git_commit_hash":"{}"}}}}}}"#,
+        "a".repeat(40)
+    );
+    let metadata = serde_json::json!({"session_id":"s","x-codex-turn-metadata":turn});
+    let payload = body("m").replace(r#"{"session_id":"s"}"#, &metadata.to_string());
+    let mut parser = frames();
+    parser.feed(&frame(&payload)).unwrap();
+    assert_eq!(
+        parser.next_request().unwrap_err().code,
+        ErrorCode::ProviderDisclosureDenied
+    );
+}
+
+#[test]
 fn permission_requires_the_exact_profile_without_a_deserialization_default() {
     let original = approved();
     let notice = original.disclosure_notice().unwrap();
@@ -305,7 +353,7 @@ fn permission_requires_the_exact_profile_without_a_deserialization_default() {
     }
     assert_eq!(
         disclosure::profile_id().unwrap(),
-        "codex-responses-metadata/1"
+        "codex-responses-metadata/2"
     );
 }
 
