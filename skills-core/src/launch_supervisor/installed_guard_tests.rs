@@ -249,7 +249,7 @@ fn custom_tool_response() -> Vec<u8> {
         "call_id":"call_tool",
         "name":"exec",
         "status":"completed",
-        "input":"await tools.functions.exec({cmd: 'printf TOOL_OK'})"
+        "input":"await tools.exec_command({cmd: 'printf TOOL_OK'})"
     });
     let events = [
         serde_json::json!({"type":"response.created","response":{"id":"resp_tool"}}),
