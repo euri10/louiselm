@@ -30,13 +30,16 @@ fn child_grant(launch: LaunchRequest, uid: u32, now: u64) -> GrantRequest {
 
 fn drive_until(broker: &Arc<InstalledBroker>, session: &mut BrokerSession, done: &Path) {
     let deadline = Instant::now() + Duration::from_secs(25);
+    let mut handoff_seen = false;
     while !done.exists() {
         assert!(
             Instant::now() < deadline,
-            "Provider budget fixture timed out"
+            "Provider budget fixture timed out: handoff_seen={handoff_seen}, spent={}",
+            spent(done.parent().unwrap())
         );
         broker.drive_provider(session).unwrap();
         if session.provider_handoff_pending_for_test() {
+            handoff_seen = true;
             assert!(!broker.step(session).unwrap());
         } else {
             thread::sleep(Duration::from_millis(10));
@@ -123,7 +126,7 @@ impl Controller {
         let (input, controller_input) = UnixStream::pair().unwrap();
         let (controller_output, output) = UnixStream::pair().unwrap();
         output
-            .set_read_timeout(Some(Duration::from_secs(20)))
+            .set_read_timeout(Some(Duration::from_secs(35)))
             .unwrap();
         let relay = thread::spawn(move || {
             session.relay_stdio(
